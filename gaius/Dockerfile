@@ -27,8 +27,8 @@ RUN cd ${PHOENIX_SUBDIR}/assets \
 # Create a release version of the application
 RUN mix release \
     && mv _build/prod/rel/${APP_NAME} /opt/release \
-    && tree -L 4 /opt \
-    && /opt/release/gaius/bin/gaius /opt/release/bin/start_server
+    && tree /opt
+#    && mv /opt/release/gaius/bin/gaius /opt/release/bin/start_server
 
 # Prepare final layer
 FROM alpine:latest
@@ -49,5 +49,5 @@ COPY --from=0 /opt/release .
 ENV RUNNER_LOG_DIR /var/log
 
 # Command to execute the application.
-CMD ["/opt/release/bin/start_server", "foreground", "boot_var=/tmp"]
+CMD ["/opt/release/gaius/bin/gaius", "start", "boot_var=/tmp"]
 
