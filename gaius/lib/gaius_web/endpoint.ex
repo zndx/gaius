@@ -7,7 +7,7 @@ defmodule GaiusWeb.Endpoint do
   @session_options [
     store: :cookie,
     key: "_gaius_key",
-    signing_salt: "pstJp81C"
+    signing_salt: "YEvuW3Cc"
   ]
 
   socket "/socket", GaiusWeb.UserSocket,

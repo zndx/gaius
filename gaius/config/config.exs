@@ -10,10 +10,10 @@ use Mix.Config
 # Configures the endpoint
 config :gaius, GaiusWeb.Endpoint,
   url: [host: "localhost"],
-  secret_key_base: "LsGPJ4bLKk6WyaQCIPDhORHjuDYJpcv3k1T7gXCdsoiMRNKO8fSQvP+np6JCsBZh",
+  secret_key_base: "1X9xoYaXTte4Z6Fab2LFD4B0p4J3lx3nOYCie4ir5Rc8EisQgpMULrjncm/VpmGx",
   render_errors: [view: GaiusWeb.ErrorView, accepts: ~w(html json), layout: false],
   pubsub_server: Gaius.PubSub,
-  live_view: [signing_salt: "hUY178Ic"]
+  live_view: [signing_salt: "kqx4uwws"]
 
 # Configures Elixir's Logger
 config :logger, :console,
