@@ -75,7 +75,7 @@ AGENT_DATA = [
 
 # File tree structure
 FILE_TREE = {
-    "/current": {
+    "current": {
         "projects": {
             "gaius": ["README.md", "CLAUDE.md", "pyproject.toml"],
             "pension-model": ["model.py", "data/", "reports/"],
@@ -85,7 +85,7 @@ FILE_TREE = {
             "references": ["tda-intro.pdf", "bloomberg-guide.md"],
         },
     },
-    "/scratch": {
+    "scratch": {
         "2025-11-28": [
             "1732816800.md",  # Morning notes
             "1732831200.md",  # Afternoon session
@@ -95,7 +95,7 @@ FILE_TREE = {
             "1732744800.md",
         ],
     },
-    "/archive": {
+    "archive": {
         "2025Q3": {
             "projects": ["q3-review/"],
             "attachments": ["chart1.png", "report.pdf"],

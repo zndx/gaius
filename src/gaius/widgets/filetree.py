@@ -13,10 +13,12 @@ class FileTree(Widget):
 
     Plan 9 inspired: agents are represented as files.
     Structure:
-    - /current (manual organization)
-    - /scratch (Zettelkasten, date-organized)
-    - /archive (quarterly)
-    - /agents (virtual, represents swarm)
+    /
+    ├── Agents/     (virtual, represents swarm)
+    └── KB/
+        ├── current/  (manual organization)
+        ├── scratch/  (Zettelkasten, date-organized)
+        └── archive/  (quarterly)
     """
 
     DEFAULT_CSS = """
@@ -49,16 +51,13 @@ class FileTree(Widget):
 
     def compose(self):
         """Compose the tree widget."""
-        tree = Tree("KB", id="kb-tree")
+        tree = Tree("/", id="kb-tree")
         tree.root.expand()
 
-        # Add file structure
-        self._build_tree(tree.root, self._file_tree)
-
-        # Add agents section (Plan 9: agents as files)
+        # Add agents section first (Plan 9: agents as files)
         if self._agents:
-            agents_node = tree.root.add("agents/", expand=True)
-            agents_node.data = {"type": "dir", "path": "/agents"}
+            agents_node = tree.root.add("Agents/", expand=True)
+            agents_node.data = {"type": "dir", "path": "/Agents"}
             for agent in self._agents:
                 agent_node = agents_node.add(f"{agent['name'].lower()}")
                 agent_node.data = {
@@ -67,11 +66,16 @@ class FileTree(Widget):
                     "color": agent.get("color", "white"),
                 }
 
+        # Add KB section with file structure
+        kb_node = tree.root.add("KB/", expand=True)
+        kb_node.data = {"type": "dir", "path": "/KB"}
+        self._build_tree(kb_node, self._file_tree)
+
         yield tree
 
     def _build_tree(self, parent: TreeNode, structure: dict, path: str = "") -> None:
-        """Recursively build tree from dict structure."""
-        for key, value in structure.items():
+        """Recursively build tree from dict structure (alphabetically sorted)."""
+        for key, value in sorted(structure.items()):
             current_path = f"{path}/{key}" if path else key
 
             if isinstance(value, dict):
@@ -83,7 +87,7 @@ class FileTree(Widget):
                 # Directory with file list
                 node = parent.add(f"{key}/")
                 node.data = {"type": "dir", "path": current_path}
-                for item in value:
+                for item in sorted(value):
                     if item.endswith("/"):
                         # Subdirectory
                         subnode = node.add(item)

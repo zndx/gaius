@@ -19,6 +19,7 @@ from .widgets.minigrid import MiniGrid
 from .widgets.filetree import FileTree
 from .widgets.content import ContentPanel
 from .widgets.command import CommandInput, CommandSubmitted
+from .widgets.location import LocationIndicator
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -49,7 +50,9 @@ class GaiusApp(App):
        │ Files/  │  │    Main      ├────────┤ │ Content   │
        │ Agents  │  │    Grid      │  9×9   │ │           │
        │         │  │              │  Iso   │ │           │
-       │         │  └──────────────┴────────┘ │           │
+       │         │  ├──────────────┴────────┤ │           │
+       │         │  │◉ RA 12h30m Dec +45° ψ │ │           │
+       │         │  └───────────────────────┘ │           │
        ├─────────┴────────────────────────────┴───────────┤
        │ Command Input                                     │
        └───────────────────────────────────────────────────┘
@@ -148,6 +151,15 @@ class GaiusApp(App):
         border: round $primary-darken-2;
         background: $surface-darken-1;
         padding: 0 1;
+    }
+
+    /* Location indicator below main grid */
+    #location-indicator {
+        width: 100%;
+        height: 1;
+        margin-top: 0;
+        background: $primary-darken-3;
+        color: $text;
     }
 
     /* ─────────────────────────────────────────────────────────────────────
@@ -255,7 +267,7 @@ class GaiusApp(App):
             with Horizontal(id="main-horizontal"):
                 # Left panel (files/agents)
                 with Vertical(id="left-panel"):
-                    yield Static("📁 KB / Agents", id="left-panel-header")
+                    yield Static("Navigator", id="left-panel-header")
                     yield FileTree(
                         self.state,
                         file_tree=FILE_TREE,
@@ -267,9 +279,14 @@ class GaiusApp(App):
                 with Vertical(id="center-area"):
                     # Grid row: 19x19 main grid + right column of mini-grids
                     with Horizontal(id="grid-row"):
-                        # Main 19x19 grid
-                        with Container(id="main-grid-wrapper"):
+                        # Main 19x19 grid with location indicator below
+                        with Vertical(id="main-grid-wrapper"):
                             yield MainGrid(self.state, id="main-grid")
+                            yield LocationIndicator(
+                                self.state.cursor_x,
+                                self.state.cursor_y,
+                                id="location-indicator"
+                            )
 
                         # Right column: two stacked 9x9 mini-grids
                         with Vertical(id="right-minigrids"):
@@ -320,6 +337,11 @@ class GaiusApp(App):
         if "top" in data:
             self.query_one("#minigrid-bottom", MiniGrid).update_data(data["top"])
 
+    def _update_location(self) -> None:
+        """Update the location indicator with current cursor position."""
+        indicator = self.query_one("#location-indicator", LocationIndicator)
+        indicator.update_position(self.state.cursor_x, self.state.cursor_y)
+
     # ─────────────────────────────────────────────────────────────────────
     # Actions
     # ─────────────────────────────────────────────────────────────────────
@@ -330,6 +352,7 @@ class GaiusApp(App):
             self._refresh_grid()
             self._update_status()
             self._update_minigrids()
+            self._update_location()
 
             # Update content panel with position hint
             hint = get_position_hint(self.state.cursor_x, self.state.cursor_y)
@@ -431,6 +454,7 @@ Press **q** to quit.
                 self._refresh_grid()
                 self._update_status()
                 self._update_minigrids()
+                self._update_location()
 
     # ─────────────────────────────────────────────────────────────────────
     # Event Handlers

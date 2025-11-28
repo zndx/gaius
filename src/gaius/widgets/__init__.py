@@ -5,6 +5,7 @@ from .minigrid import MiniGrid
 from .filetree import FileTree
 from .content import ContentPanel
 from .command import CommandInput
+from .location import LocationIndicator
 
 __all__ = [
     "MainGrid",
@@ -12,4 +13,5 @@ __all__ = [
     "FileTree",
     "ContentPanel",
     "CommandInput",
+    "LocationIndicator",
 ]
