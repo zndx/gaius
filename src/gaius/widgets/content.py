@@ -1,0 +1,159 @@
+"""Content panel for displaying file contents and agent output."""
+
+from textual.widget import Widget
+from textual.widgets import Static, Markdown
+from textual.containers import VerticalScroll
+from rich.text import Text
+from rich.markdown import Markdown as RichMarkdown
+
+from ..core.state import AppState
+
+
+class ContentPanel(Widget):
+    """Right panel for displaying content.
+
+    Shows:
+    - Selected file contents (with Markdown rendering for .md)
+    - Agent output during swarm rounds
+    - Contextual information based on cursor position
+    """
+
+    DEFAULT_CSS = """
+    ContentPanel {
+        width: 100%;
+        height: 100%;
+        background: $surface;
+        border-left: solid $primary-darken-2;
+    }
+
+    ContentPanel > VerticalScroll {
+        width: 100%;
+        height: 100%;
+    }
+
+    ContentPanel .content-header {
+        background: $primary-darken-3;
+        padding: 0 1;
+        text-style: bold;
+    }
+
+    ContentPanel .content-body {
+        padding: 1;
+    }
+
+    ContentPanel .agent-output {
+        border-bottom: dashed $surface-lighten-1;
+        padding: 1;
+        margin-bottom: 1;
+    }
+
+    ContentPanel .agent-name {
+        text-style: bold;
+    }
+    """
+
+    def __init__(
+        self,
+        state: AppState,
+        name: str | None = None,
+        id: str | None = None,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(name=name, id=id, classes=classes)
+        self.state = state
+        self._content = ""
+        self._content_type = "text"  # "text", "markdown", "agent"
+        self._title = "Content"
+
+    def compose(self):
+        """Compose the content panel."""
+        yield Static(self._title, classes="content-header", id="content-header")
+        with VerticalScroll():
+            yield Static("Select a file or agent to view content.",
+                        classes="content-body", id="content-body")
+
+    def show_file(self, path: str, content: str) -> None:
+        """Display file content."""
+        self._title = path.split("/")[-1]
+        self._content = content
+        self._content_type = "markdown" if path.endswith(".md") else "text"
+
+        header = self.query_one("#content-header", Static)
+        header.update(f"📄 {self._title}")
+
+        body = self.query_one("#content-body", Static)
+        if self._content_type == "markdown":
+            body.update(RichMarkdown(content))
+        else:
+            body.update(content)
+
+    def show_agent(self, name: str, role: str, output: str, color: str = "white") -> None:
+        """Display agent information and output."""
+        self._title = f"Agent: {name}"
+        self._content_type = "agent"
+
+        header = self.query_one("#content-header", Static)
+        header.update(f"🤖 {name}")
+
+        text = Text()
+        text.append("Role: ", style="dim")
+        text.append(role, style="italic")
+        text.append("\n\n")
+        text.append("Last Output:\n", style="dim")
+        text.append(output, style=color)
+
+        body = self.query_one("#content-body", Static)
+        body.update(text)
+
+    def show_position_info(self, x: int, y: int, hint: str) -> None:
+        """Display information about a grid position."""
+        coord = self._coord_string(x, y)
+        self._title = f"Position {coord}"
+
+        header = self.query_one("#content-header", Static)
+        header.update(f"📍 {coord}")
+
+        text = Text()
+        text.append(f"Coordinates: ", style="dim")
+        text.append(f"{coord} ({x}, {y})\n\n", style="bold")
+        text.append("Context:\n", style="dim")
+        text.append(hint)
+
+        body = self.query_one("#content-body", Static)
+        body.update(text)
+
+    def show_swarm_output(self, agents_output: list[tuple[str, str, str]]) -> None:
+        """Display output from a swarm round.
+
+        Args:
+            agents_output: List of (name, color, output) tuples
+        """
+        self._title = "Swarm Round"
+        self._content_type = "swarm"
+
+        header = self.query_one("#content-header", Static)
+        header.update("🐝 Swarm Output")
+
+        text = Text()
+        for name, color, output in agents_output:
+            text.append(f"[{name}]", style=f"bold {color}")
+            text.append("\n")
+            text.append(output)
+            text.append("\n\n")
+
+        body = self.query_one("#content-body", Static)
+        body.update(text)
+
+    def clear(self) -> None:
+        """Clear the content panel."""
+        header = self.query_one("#content-header", Static)
+        header.update("Content")
+
+        body = self.query_one("#content-body", Static)
+        body.update("Select a file or agent to view content.")
+
+    def _coord_string(self, x: int, y: int) -> str:
+        """Convert x, y to Go coordinate string."""
+        col = chr(65 + x + (1 if x >= 8 else 0))  # Skip 'I'
+        row = 19 - y
+        return f"{col}{row}"
