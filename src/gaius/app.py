@@ -20,12 +20,12 @@ from .widgets.filetree import FileTree
 from .widgets.content import ContentPanel
 from .widgets.command import CommandInput, CommandSubmitted
 from .widgets.location import LocationIndicator
+from .widgets.note_editor import NoteEditor
+from .widgets.filetree import FileTreeSelection
 from .static import (
     GRID_DATA,
     AGENT_DATA,
-    FILE_TREE,
     DEATH_LOOPS,
-    FILE_CONTENTS,
     TDA_METRICS,
     get_minigrid_data,
     get_position_hint,
@@ -52,6 +52,8 @@ class GaiusApp(App):
        │         │  │              │  Iso   │ │           │
        │         │  ├──────────────┴────────┤ │           │
        │         │  │◉ RA 12h30m Dec +45° ψ │ │           │
+       │         │  ├───────────────────────┤ │           │
+       │         │  │ Note Editor (Ctrl-N)  │ │           │
        │         │  └───────────────────────┘ │           │
        ├─────────┴────────────────────────────┴───────────┤
        │ Command Input                                     │
@@ -162,6 +164,26 @@ class GaiusApp(App):
         color: $text;
     }
 
+    /* Note editor below location indicator */
+    #note-editor {
+        width: 100%;
+        height: 1fr;
+        min-height: 5;
+        margin-top: 1;
+        border: solid $primary-darken-2;
+        background: $surface;
+    }
+
+    #note-editor TextArea {
+        width: 100%;
+        height: 100%;
+        background: $surface;
+    }
+
+    #note-editor.hidden {
+        display: none;
+    }
+
     /* ─────────────────────────────────────────────────────────────────────
        RIGHT PANEL (Content)
        ───────────────────────────────────────────────────────────────────── */
@@ -226,8 +248,11 @@ class GaiusApp(App):
         # Tenuki (play elsewhere - jump to strategic point)
         Binding("t", "tenuki", "Tenuki"),
 
-        # Quit
-        Binding("q", "quit", "Quit"),
+        # Notes
+        Binding("ctrl+n", "new_note", "New Note"),
+
+        # Quit hint (actual quit via /q or /exit command)
+        Binding("q", "quit_hint", "Quit", show=False),
     ]
 
     def __init__(self) -> None:
@@ -270,8 +295,8 @@ class GaiusApp(App):
                     yield Static("Navigator", id="left-panel-header")
                     yield FileTree(
                         self.state,
-                        file_tree=FILE_TREE,
                         agents=AGENT_DATA,
+                        kb_root="build/dev",
                         id="file-tree",
                     )
 
@@ -292,6 +317,9 @@ class GaiusApp(App):
                         with Vertical(id="right-minigrids"):
                             yield MiniGrid("Embed", id="minigrid-top", classes="right")
                             yield MiniGrid("Iso", id="minigrid-bottom", classes="bottom-right")
+
+                    # Note editor below the grids (hidden by default, Ctrl-N to show)
+                    yield NoteEditor(id="note-editor", classes="hidden")
 
                 # Right panel (content)
                 with Vertical(id="right-panel"):
@@ -415,6 +443,13 @@ class GaiusApp(App):
 - **]**: Toggle right panel (content)
 - **\\\\**: Toggle both panels
 
+## Notes (Zettelkasten)
+- **Ctrl-N**: Create new scratch note
+- Vim-style editing (i/I/A/o/O to insert, ESC for normal)
+- **:q** or **:wq**: Close editor
+- Auto-saves on every edit
+- Notes: build/dev/scratch/{date}/{timestamp}.md
+
 ## Commands
 - **/**: Enter command mode
 - **?**: Show this help
@@ -424,8 +459,7 @@ class GaiusApp(App):
 - `/info`: Show cursor position info
 - `/analyze`: Run analysis at cursor
 - `/round`: Execute swarm round
-
-Press **q** to quit.
+- `/q` or `/exit`: Quit Gaius
 """
         content.show_file("help.md", help_text)
 
@@ -456,6 +490,32 @@ Press **q** to quit.
                 self._update_minigrids()
                 self._update_location()
 
+    def action_new_note(self) -> None:
+        """Create a new Zettelkasten note and focus the editor."""
+        editor = self.query_one("#note-editor", NoteEditor)
+
+        # Show the editor if hidden
+        editor.remove_class("hidden")
+
+        # Create new note with timestamp filename
+        filepath = editor.new_note()
+
+        # Refresh the file tree to show new note
+        file_tree = self.query_one("#file-tree", FileTree)
+        file_tree.refresh_tree()
+
+        # Update status to show we're editing
+        self._update_status()
+
+        # Show confirmation in content panel
+        content = self.query_one("#content-panel", ContentPanel)
+        content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
+
+    def action_quit_hint(self) -> None:
+        """Show quit hint instead of immediately quitting."""
+        content = self.query_one("#content-panel", ContentPanel)
+        content.show_file("quit.txt", "Use /q or /exit to quit Gaius.")
+
     # ─────────────────────────────────────────────────────────────────────
     # Event Handlers
     # ─────────────────────────────────────────────────────────────────────
@@ -472,6 +532,43 @@ Press **q** to quit.
         """Handle command submission."""
         cmd = event.command.strip()
         self._execute_command(cmd)
+
+    def on_file_tree_selection(self, event: FileTreeSelection) -> None:
+        """Handle file/agent selection from the tree."""
+        data = event.data
+        content = self.query_one("#content-panel", ContentPanel)
+        editor = self.query_one("#note-editor", NoteEditor)
+
+        if data["type"] == "file":
+            filepath = data["path"]
+            # Check if it's a scratch note (editable) or other file (view only)
+            if "/scratch/" in filepath and filepath.endswith(".md"):
+                # Open in editor
+                editor.remove_class("hidden")
+                editor.open_note(filepath)
+            else:
+                # Show in content panel (read-only)
+                try:
+                    from pathlib import Path
+                    text = Path(filepath).read_text()
+                    content.show_file(Path(filepath).name, text)
+                except Exception as e:
+                    content.show_file("error.txt", f"Cannot read file: {e}")
+
+        elif data["type"] == "agent":
+            # Show agent status in content panel
+            agent_info = f"""# Agent: {data['name']}
+
+**Role:** {data.get('role', 'Unknown')}
+**Status:** Active
+
+## Last Output
+{data.get('last', 'No recent output.')}
+
+---
+*Select agent file to interact*
+"""
+            content.show_file(f"{data['name'].lower()}.md", agent_info)
 
     def _execute_command(self, cmd: str) -> None:
         """Execute a slash command."""
@@ -514,7 +611,7 @@ Press **q** to quit.
                     content.show_file("error.txt", f"Unknown view: {args}")
             else:
                 self.action_cycle_view()
-        elif command == "quit" or command == "q":
+        elif command in ("quit", "q", "exit"):
             self.exit()
         else:
             content.show_file("error.txt", f"Unknown command: {command}\n\nType /help for available commands.")

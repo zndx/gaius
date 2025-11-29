@@ -6,6 +6,7 @@ from .filetree import FileTree
 from .content import ContentPanel
 from .command import CommandInput
 from .location import LocationIndicator
+from .note_editor import NoteEditor
 
 __all__ = [
     "MainGrid",
@@ -14,4 +15,5 @@ __all__ = [
     "ContentPanel",
     "CommandInput",
     "LocationIndicator",
+    "NoteEditor",
 ]

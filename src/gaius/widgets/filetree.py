@@ -1,11 +1,21 @@
 """File tree widget for KB navigation (Plan 9 inspired)."""
 
+from pathlib import Path
+
 from textual.widget import Widget
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
-from rich.text import Text
+from textual.message import Message
 
 from ..core.state import AppState
+
+
+class FileTreeSelection(Message):
+    """Message sent when a file/agent is selected."""
+
+    def __init__(self, data: dict) -> None:
+        self.data = data
+        super().__init__()
 
 
 class FileTree(Widget):
@@ -19,6 +29,8 @@ class FileTree(Widget):
         ├── current/  (manual organization)
         ├── scratch/  (Zettelkasten, date-organized)
         └── archive/  (quarterly)
+
+    The KB section scans the actual filesystem under kb_root.
     """
 
     DEFAULT_CSS = """
@@ -38,75 +50,81 @@ class FileTree(Widget):
     def __init__(
         self,
         state: AppState,
-        file_tree: dict | None = None,
         agents: list | None = None,
+        kb_root: str = "build/dev",
         name: str | None = None,
         id: str | None = None,
         classes: str | None = None,
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
         self.state = state
-        self._file_tree = file_tree or {}
         self._agents = agents or []
+        self._kb_root = Path(kb_root)
+        self._tree: Tree | None = None
 
     def compose(self):
         """Compose the tree widget."""
-        tree = Tree("/", id="kb-tree")
-        tree.root.expand()
+        self._tree = Tree("/", id="kb-tree")
+        self._tree.root.expand()
+        self._populate_tree()
+        yield self._tree
+
+    def _populate_tree(self) -> None:
+        """Populate the tree from filesystem and agent data."""
+        if not self._tree:
+            return
+
+        # Clear existing nodes (keep root)
+        self._tree.root.remove_children()
 
         # Add agents section first (Plan 9: agents as files)
         if self._agents:
-            agents_node = tree.root.add("Agents/", expand=True)
+            agents_node = self._tree.root.add("Agents/", expand=True)
             agents_node.data = {"type": "dir", "path": "/Agents"}
-            for agent in self._agents:
+            for agent in sorted(self._agents, key=lambda a: a["name"].lower()):
                 agent_node = agents_node.add(f"{agent['name'].lower()}")
                 agent_node.data = {
                     "type": "agent",
                     "name": agent["name"],
+                    "role": agent.get("role", ""),
                     "color": agent.get("color", "white"),
+                    "last": agent.get("last", ""),
                 }
 
-        # Add KB section with file structure
-        kb_node = tree.root.add("KB/", expand=True)
-        kb_node.data = {"type": "dir", "path": "/KB"}
-        self._build_tree(kb_node, self._file_tree)
+        # Add KB section from filesystem
+        kb_node = self._tree.root.add("KB/", expand=True)
+        kb_node.data = {"type": "dir", "path": str(self._kb_root)}
 
-        yield tree
+        # Scan the three KB directories
+        for subdir in ["archive", "current", "scratch"]:
+            subdir_path = self._kb_root / subdir
+            if subdir_path.exists():
+                self._add_directory(kb_node, subdir_path, subdir)
 
-    def _build_tree(self, parent: TreeNode, structure: dict, path: str = "") -> None:
-        """Recursively build tree from dict structure (alphabetically sorted)."""
-        for key, value in sorted(structure.items()):
-            current_path = f"{path}/{key}" if path else key
+    def _add_directory(self, parent: TreeNode, path: Path, name: str) -> None:
+        """Recursively add a directory to the tree."""
+        node = parent.add(f"{name}/")
+        node.data = {"type": "dir", "path": str(path)}
 
-            if isinstance(value, dict):
-                # Directory
-                node = parent.add(f"{key}/")
-                node.data = {"type": "dir", "path": current_path}
-                self._build_tree(node, value, current_path)
-            elif isinstance(value, list):
-                # Directory with file list
-                node = parent.add(f"{key}/")
-                node.data = {"type": "dir", "path": current_path}
-                for item in sorted(value):
-                    if item.endswith("/"):
-                        # Subdirectory
-                        subnode = node.add(item)
-                        subnode.data = {"type": "dir", "path": f"{current_path}/{item}"}
-                    else:
-                        # File
-                        file_node = node.add(item)
-                        file_node.data = {"type": "file", "path": f"{current_path}/{item}"}
+        # Get sorted contents (directories first, then files)
+        try:
+            items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except PermissionError:
+            return
+
+        for item in items:
+            if item.name.startswith("."):
+                continue  # Skip hidden files
+
+            if item.is_dir():
+                self._add_directory(node, item, item.name)
             else:
-                # Single file
-                file_node = parent.add(key)
-                file_node.data = {"type": "file", "path": current_path}
+                file_node = node.add(item.name)
+                file_node.data = {"type": "file", "path": str(item)}
 
-    def update_tree(self, file_tree: dict, agents: list) -> None:
-        """Update the tree with new data."""
-        self._file_tree = file_tree
-        self._agents = agents
-        # Would need to rebuild tree - for now just store
-        self.refresh()
+    def refresh_tree(self) -> None:
+        """Refresh the tree by rescanning the filesystem."""
+        self._populate_tree()
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Handle tree node selection."""
@@ -120,10 +138,3 @@ class FileTree(Widget):
                 self.state.selected_file = None
             # Post message for parent to handle
             self.post_message(FileTreeSelection(node.data))
-
-
-class FileTreeSelection:
-    """Message sent when a file/agent is selected."""
-
-    def __init__(self, data: dict) -> None:
-        self.data = data
