@@ -9,12 +9,14 @@ import random
 
 from textual.widget import Widget
 from textual.reactive import reactive
+from textual.message import Message
+from textual import events
 from rich.text import Text
 
 from ..core.links import parse_wikilinks, LinkGraph
 
 
-class GraphView(Widget):
+class GraphView(Widget, can_focus=True):
     """Displays wiki-links as a force-directed graph on a 19×19 grid.
 
     The current note is placed at center (9,9). Connected nodes are
@@ -22,7 +24,23 @@ class GraphView(Widget):
     - Edges act as springs (attractive force)
     - All nodes repel each other (repulsive force)
     - Iterate until stable layout
+
+    Navigation:
+    - Arrow keys: Move between nodes
+    - Enter: Open selected node's file
     """
+
+    class NodeSelected(Message):
+        """Emitted when Enter is pressed on a node."""
+        def __init__(self, filepath: str) -> None:
+            self.filepath = filepath
+            super().__init__()
+
+    class NodeHighlighted(Message):
+        """Emitted when cursor moves to a new node."""
+        def __init__(self, filepath: str) -> None:
+            self.filepath = filepath
+            super().__init__()
 
     DEFAULT_CSS = """
     GraphView {
@@ -51,6 +69,7 @@ class GraphView(Widget):
     MAX_BACK = 12
 
     current_file: reactive[str | None] = reactive(None)
+    selected_node: reactive[str | None] = reactive(None)  # Currently selected node ID
 
     def __init__(
         self,
@@ -118,10 +137,12 @@ class GraphView(Widget):
         # Add forward link nodes - spread in lower half (below center)
         for i, link in enumerate(displayed_forward):
             node_id = f"fwd_{i}"
+            # Resolve link to full path with .md extension
+            link_path = str(self.kb_root / f"{link}.md")
             self._graph_nodes[node_id] = {
                 "name": self._display_name(link),
                 "type": "forward",
-                "path": link,
+                "path": link_path,
             }
             # Position forward links below center, spread in arc
             count = len(displayed_forward)
@@ -275,23 +296,25 @@ class GraphView(Widget):
             x, y = self._positions[nid]
             gx, gy = int(round(x)), int(round(y))
             if 0 <= gx < self.GRID_SIZE and 0 <= gy < self.GRID_SIZE:
+                is_selected = (nid == self.selected_node)
                 if info["type"] == "current":
-                    grid[gy][gx] = "◉ "
-                    styles[gy][gx] = "bold yellow"
+                    grid[gy][gx] = "◆ " if is_selected else "◉ "
+                    styles[gy][gx] = "bold reverse yellow" if is_selected else "bold yellow"
                 elif info["type"] == "forward":
-                    grid[gy][gx] = "○ "
-                    styles[gy][gx] = "green"
+                    grid[gy][gx] = "◆ " if is_selected else "○ "
+                    styles[gy][gx] = "bold reverse green" if is_selected else "green"
                 elif info["type"] == "backlink":
-                    grid[gy][gx] = "● "
-                    styles[gy][gx] = "cyan"
+                    grid[gy][gx] = "◆ " if is_selected else "● "
+                    styles[gy][gx] = "bold reverse cyan" if is_selected else "cyan"
 
         # Build output text
         text = Text()
 
-        # Title row with counts
+        # Title row with counts (highlight when focused)
         back_count = sum(1 for n in self._graph_nodes if "back" in n)
         fwd_count = sum(1 for n in self._graph_nodes if "fwd" in n)
-        text.append("  Link Graph ", style="bold dim")
+        title_style = "bold reverse green" if self.has_focus else "bold dim"
+        text.append("  Link Graph ", style=title_style)
         text.append(f"●{self._total_back}", style="cyan")
         text.append(" ", style="dim")
         text.append(f"○{self._total_forward}\n", style="green")
@@ -368,3 +391,75 @@ class GraphView(Widget):
     def toggle(self) -> None:
         """Toggle visibility."""
         self.toggle_class("hidden")
+
+    def on_focus(self) -> None:
+        """Refresh when gaining focus to update title highlight."""
+        self.refresh()
+
+    def on_blur(self) -> None:
+        """Refresh when losing focus to update title highlight."""
+        self.refresh()
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle arrow key navigation and Enter for selection."""
+        if event.key in ("up", "down", "left", "right"):
+            self._move_cursor(event.key)
+            event.stop()
+            event.prevent_default()
+        elif event.key == "enter":
+            if self.selected_node and self.selected_node in self._graph_nodes:
+                info = self._graph_nodes[self.selected_node]
+                if "path" in info:
+                    self.post_message(self.NodeSelected(info["path"]))
+            event.stop()
+            event.prevent_default()
+
+    def _move_cursor(self, direction: str) -> None:
+        """Move selection to nearest node in given direction."""
+        # If no node selected, select center node
+        if not self.selected_node or self.selected_node not in self._positions:
+            if self._current_id:
+                self.selected_node = self._current_id
+                self.refresh()
+            return
+
+        cx, cy = self._positions[self.selected_node]
+        candidates: list[tuple[float, str]] = []
+
+        for node_id, (nx, ny) in self._positions.items():
+            if node_id == self.selected_node:
+                continue
+
+            # Filter by direction
+            if direction == "up" and ny >= cy:
+                continue
+            if direction == "down" and ny <= cy:
+                continue
+            if direction == "left" and nx >= cx:
+                continue
+            if direction == "right" and nx <= cx:
+                continue
+
+            # Calculate Manhattan distance
+            dist = abs(nx - cx) + abs(ny - cy)
+            candidates.append((dist, node_id))
+
+        if candidates:
+            candidates.sort()
+            self.selected_node = candidates[0][1]
+
+            # Emit highlight message with file path
+            if self.selected_node in self._graph_nodes:
+                info = self._graph_nodes[self.selected_node]
+                if "path" in info:
+                    self.post_message(self.NodeHighlighted(info["path"]))
+
+            self.refresh()
+
+    def select_node_by_path(self, filepath: str) -> None:
+        """Select a node by its file path (for sync with FileTree)."""
+        for node_id, info in self._graph_nodes.items():
+            if info.get("path") == filepath:
+                self.selected_node = node_id
+                self.refresh()
+                return

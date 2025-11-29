@@ -11,7 +11,15 @@ from ..core.state import AppState
 
 
 class FileTreeSelection(Message):
-    """Message sent when a file/agent is selected."""
+    """Message sent when a file/agent is selected (Enter pressed)."""
+
+    def __init__(self, data: dict) -> None:
+        self.data = data
+        super().__init__()
+
+
+class FileTreeHighlight(Message):
+    """Message sent when cursor moves to a new node (for graph preview)."""
 
     def __init__(self, data: dict) -> None:
         self.data = data
@@ -138,3 +146,34 @@ class FileTree(Widget):
                 self.state.selected_file = None
             # Post message for parent to handle
             self.post_message(FileTreeSelection(node.data))
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        """Handle cursor movement - post highlight for graph preview."""
+        node = event.node
+        if node.data:
+            self.post_message(FileTreeHighlight(node.data))
+
+    def highlight_path(self, filepath: str) -> None:
+        """Move cursor to the node matching filepath (for graph sync)."""
+        if not self._tree:
+            return
+
+        # Recursive search for node with matching path
+        def find_node(node: TreeNode) -> TreeNode | None:
+            if node.data and node.data.get("path") == filepath:
+                return node
+            for child in node.children:
+                result = find_node(child)
+                if result:
+                    return result
+            return None
+
+        found = find_node(self._tree.root)
+        if found:
+            # Expand parent nodes to make target visible
+            parent = found.parent
+            while parent:
+                parent.expand()
+                parent = parent.parent
+            # Scroll to make the node visible
+            self._tree.scroll_to_node(found)

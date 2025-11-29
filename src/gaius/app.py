@@ -8,21 +8,23 @@ Usage:
     uv run gaius-cli --cmd "/state" # CLI mode
 """
 
+from pathlib import Path
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
+from textual.timer import Timer
 from textual.widgets import Static, Header, Footer
 
 from .core.state import AppState, ViewMode, OverlayMode
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
-from .widgets.filetree import FileTree
+from .widgets.filetree import FileTree, FileTreeSelection, FileTreeHighlight
 from .widgets.content import ContentPanel
 from .widgets.command import CommandInput, CommandSubmitted
 from .widgets.location import LocationIndicator
 from .widgets.note_editor import NoteEditor
 from .widgets.graph_view import GraphView
-from .widgets.filetree import FileTreeSelection
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -281,6 +283,7 @@ class GaiusApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.state = AppState()
+        self._graph_update_timer: Timer | None = None
         self._load_test_data()
 
     def _load_test_data(self) -> None:
@@ -482,14 +485,19 @@ class GaiusApp(App):
 - **Ctrl-N**: Create new scratch note
 - Vim-style editing (i/I/A/o/O to insert, ESC for normal)
 - **:q** or **:wq**: Close editor
+- **:mv path/to/file.md**: Move file to new location
+- **:rename [name]**: Move to scratch/<today>/<name or timestamp>.md
 - Auto-saves on every edit
 - Notes: build/dev/scratch/{date}/{timestamp}.md
 - Wiki-links: [[path/to/note]]
 
 ## Graph View
 - **g**: Toggle wiki-link graph
+- **Arrow keys**: Navigate between nodes (when graph focused)
+- **Enter**: Open selected node's file
 - Shows backlinks (what links here)
 - Shows forward links (what this links to)
+- Syncs with FileTree cursor
 
 ## Commands
 - **/**: Enter command mode
@@ -602,15 +610,17 @@ class GaiusApp(App):
             if not graph.has_class("hidden"):
                 graph.update_for_file(filepath)
 
-            # Check if it's a scratch note (editable) or other file (view only)
-            if "/scratch/" in filepath and filepath.endswith(".md"):
+            # Check if it's an editable KB file (.md under archive/, current/, or scratch/)
+            path_parts = Path(filepath).parts
+            kb_dirs = ("archive", "current", "scratch")
+            is_editable = any(d in path_parts for d in kb_dirs) and filepath.endswith(".md")
+            if is_editable:
                 # Open in editor
                 editor.remove_class("hidden")
                 editor.open_note(filepath)
             else:
                 # Show in content panel (read-only)
                 try:
-                    from pathlib import Path
                     text = Path(filepath).read_text()
                     content.show_file(Path(filepath).name, text)
                 except Exception as e:
@@ -630,6 +640,123 @@ class GaiusApp(App):
 *Select agent file to interact*
 """
             content.show_file(f"{data['name'].lower()}.md", agent_info)
+
+    def on_file_tree_highlight(self, event: FileTreeHighlight) -> None:
+        """Handle cursor movement in FileTree - debounced graph update."""
+        data = event.data
+
+        # Only update for files
+        if data.get("type") != "file":
+            return
+
+        filepath = data.get("path")
+        if not filepath:
+            return
+
+        # Cancel any pending timer
+        if self._graph_update_timer:
+            self._graph_update_timer.stop()
+
+        # Set new debounced timer (150ms)
+        def update_graph() -> None:
+            graph = self.query_one("#graph-view", GraphView)
+            if not graph.has_class("hidden"):
+                # Try to select this node in the graph if it exists
+                graph.select_node_by_path(filepath)
+
+        self._graph_update_timer = self.set_timer(0.15, update_graph)
+
+    def on_note_editor_file_renamed(self, event: NoteEditor.FileRenamed) -> None:
+        """Handle file rename/move from editor."""
+        # Refresh file tree to show new location
+        file_tree = self.query_one("#file-tree", FileTree)
+        file_tree.refresh_tree()
+
+        # Update graph if visible
+        graph = self.query_one("#graph-view", GraphView)
+        if not graph.has_class("hidden"):
+            graph.scan_kb()  # Rescan for updated paths
+            graph.update_for_file(event.new_path)
+
+    def on_graph_view_node_highlighted(self, event: GraphView.NodeHighlighted) -> None:
+        """Sync FileTree cursor when graph cursor moves."""
+        file_tree = self.query_one("#file-tree", FileTree)
+        file_tree.highlight_path(event.filepath)
+
+    def on_graph_view_node_selected(self, event: GraphView.NodeSelected) -> None:
+        """Open file when Enter pressed on graph node."""
+        filepath = event.filepath
+        editor = self.query_one("#note-editor", NoteEditor)
+        content = self.query_one("#content-panel", ContentPanel)
+        file_tree = self.query_one("#file-tree", FileTree)
+        # KB root and allowed directories for file creation
+        kb_root = Path("build/dev")
+        allowed_dirs = ("archive", "current", "scratch")
+
+        path = Path(filepath)
+
+        # Ensure .md extension (wiki-links don't include extension)
+        if not filepath.endswith(".md"):
+            path = Path(f"{filepath}.md")
+
+        # Normalize path: if relative, check if it's relative to KB root
+        if not path.is_absolute():
+            parts = path.parts
+            kb_parts = kb_root.parts  # ('build', 'dev')
+
+            # Check if path already starts with kb_root (e.g., "build/dev/current/...")
+            if parts[:len(kb_parts)] == kb_parts:
+                # Already has kb_root prefix, use as-is
+                pass
+            elif parts and parts[0] in allowed_dirs:
+                # Path like "current/topics/kudu.md" - prepend kb_root
+                path = kb_root / path
+            else:
+                # Try prepending kb_root for other relative paths
+                path = kb_root / path
+
+        # Create file if it doesn't exist (wiki-link creates on navigate)
+        if not path.exists():
+            # Validate path is within allowed KB directories
+            try:
+                rel_path = path.resolve().relative_to(kb_root.resolve())
+                top_dir = rel_path.parts[0] if rel_path.parts else ""
+                if top_dir not in allowed_dirs:
+                    content.show_file(
+                        "error.txt",
+                        f"Cannot create file outside KB directories.\n\n"
+                        f"Path: {filepath}\n"
+                        f"Allowed: {', '.join(allowed_dirs)}"
+                    )
+                    return
+            except ValueError:
+                # Path is outside kb_root entirely
+                content.show_file(
+                    "error.txt",
+                    f"Cannot create file outside KB root.\n\nPath: {filepath}"
+                )
+                return
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+            # Refresh file tree to show new file
+            file_tree.refresh_tree()
+            content.show_file("created.txt", f"Created: {filepath}")
+
+        # Open in editor if it's an editable KB file (.md under archive/, current/, or scratch/)
+        path_parts = path.parts
+        kb_dirs = ("archive", "current", "scratch")
+        is_editable = any(d in path_parts for d in kb_dirs) and str(path).endswith(".md")
+        if is_editable:
+            editor.remove_class("hidden")
+            editor.open_note(str(path))
+        else:
+            # Show in content panel (read-only, e.g. archive/)
+            try:
+                text = path.read_text()
+                content.show_file(path.name, text)
+            except Exception as e:
+                content.show_file("error.txt", f"Cannot read file: {e}")
 
     def _execute_command(self, cmd: str) -> None:
         """Execute a slash command."""

@@ -68,6 +68,7 @@ class CommandInput(Widget):
         classes: str | None = None,
     ) -> None:
         super().__init__(name=name, id=id, classes=classes)
+        self.can_focus = False  # Remove from tab cycle; use '/' to activate
         self.state = state
         self._prompt = ">"
         self._in_command_mode = False

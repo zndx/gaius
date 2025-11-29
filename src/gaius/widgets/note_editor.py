@@ -1,6 +1,8 @@
 """Note editor widget for Zettelkasten scratch notes with vim-style editing."""
 
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 from textual.widget import Widget
@@ -107,6 +109,13 @@ class NoteEditor(Widget, can_focus=True):
     class EditorClosed(Message):
         """Emitted when editor is closed via :q."""
         pass
+
+    class FileRenamed(Message):
+        """Emitted when file is renamed/moved."""
+        def __init__(self, old_path: str, new_path: str) -> None:
+            self.old_path = old_path
+            self.new_path = new_path
+            super().__init__()
 
     def __init__(
         self,
@@ -231,17 +240,104 @@ class NoteEditor(Widget, can_focus=True):
         self.command_buffer = ""
         self._update_mode_display()
 
+    def _move_file(self, new_path: str) -> None:
+        """Move file to arbitrary path in KB.
+
+        :mv current/projects/foo.md - absolute from KB root
+        :mv ../other/bar.md - relative from current location
+        """
+        if not self.current_file:
+            return
+
+        old = Path(self.current_file)
+        kb_root = self.scratch_dir.parent  # build/dev
+
+        # Handle absolute (from KB root) vs relative paths
+        if new_path.startswith("/"):
+            new = kb_root / new_path.lstrip("/")
+        else:
+            new = (old.parent / new_path).resolve()
+
+        # Ensure we stay within KB root
+        try:
+            new.relative_to(kb_root)
+        except ValueError:
+            # Path escapes KB root - deny
+            return
+
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+            self.current_file = str(new)
+            self.post_message(self.FileRenamed(str(old), str(new)))
+            self._update_mode_display()
+        except Exception:
+            # Silently fail - could add error display later
+            pass
+
+    def _rename_to_scratch(self, name: str | None = None) -> None:
+        """Move file to safe scratch location with timestamp name.
+
+        :rename - move to scratch/<today>/<original_timestamp>.md
+        :rename foo - move to scratch/<today>/foo.md
+        """
+        if not self.current_file:
+            return
+
+        old = Path(self.current_file)
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Determine filename
+        if name:
+            # Use provided name (add .md if not present)
+            filename = name if name.endswith(".md") else f"{name}.md"
+        else:
+            # Try to extract timestamp from current filename, or use current time
+            ts = self._extract_timestamp(old.stem)
+            if ts is None:
+                ts = int(time.time())
+            filename = f"{ts}.md"
+
+        new = self.scratch_dir / today / filename
+
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+            self.current_file = str(new)
+            self.post_message(self.FileRenamed(str(old), str(new)))
+            self._update_mode_display()
+        except Exception:
+            pass
+
+    def _extract_timestamp(self, stem: str) -> int | None:
+        """Extract Unix timestamp from filename stem if present."""
+        # Match typical Zettelkasten timestamp filenames (10 digits)
+        match = re.match(r"^(\d{10})$", stem)
+        if match:
+            return int(match.group(1))
+        return None
+
     def _execute_command(self, cmd: str) -> None:
         """Execute an ex command."""
-        cmd = cmd.strip().lower()
+        cmd_stripped = cmd.strip()
+        cmd_lower = cmd_stripped.lower()
 
-        if cmd in ("q", "wq", "q!", "wq!"):
+        if cmd_lower in ("q", "wq", "q!", "wq!"):
             # Close editor (w is no-op since we auto-save)
             self.close_editor()
             self.post_message(self.EditorClosed())
-        elif cmd == "w":
+        elif cmd_lower == "w":
             # Explicit save (no-op, but acknowledge)
             self._update_mode_display()
+        elif cmd_lower.startswith("mv "):
+            # :mv path/to/newname.md - move file to arbitrary location
+            _, new_path = cmd_stripped.split(maxsplit=1)
+            self._move_file(new_path.strip())
+        elif cmd_lower == "rename" or cmd_lower.startswith("rename "):
+            # :rename [name] - move to scratch/<today>/<name or timestamp>.md
+            parts = cmd_stripped.split(maxsplit=1)
+            name = parts[1].strip() if len(parts) > 1 else None
+            self._rename_to_scratch(name)
 
         self._in_command_mode = False
         self.command_buffer = ""
@@ -347,8 +443,6 @@ class NoteEditor(Widget, can_focus=True):
 
     def new_note(self) -> str:
         """Create a new Zettelkasten note with timestamp filename."""
-        from datetime import datetime
-
         today = datetime.now().strftime("%Y-%m-%d")
         date_dir = self.scratch_dir / today
         date_dir.mkdir(parents=True, exist_ok=True)
