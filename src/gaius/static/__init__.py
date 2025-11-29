@@ -10,6 +10,7 @@ from .test_data import (
     get_minigrid_data,
     get_position_hint,
 )
+from .explain import generate_explanation
 
 __all__ = [
     "GRID_DATA",
@@ -20,4 +21,5 @@ __all__ = [
     "TDA_METRICS",
     "get_minigrid_data",
     "get_position_hint",
+    "generate_explanation",
 ]

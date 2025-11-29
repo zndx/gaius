@@ -1,0 +1,141 @@
+"""Contextual explanations for grid state and overlays."""
+
+from ..core.state import ViewMode, OverlayMode
+
+
+def get_view_explanation(view_mode: ViewMode) -> str:
+    """Get explanation for the current view mode."""
+    explanations = {
+        ViewMode.GO: """**Go View**: Strategic territory visualization.
+Black and white stones represent competing positions or allocations.
+Influence radiates from stone positions, creating territories.""",
+
+        ViewMode.PENSION: """**Pension View**: Asset allocation heatmap.
+Color intensity shows allocation weight (0-100%).
+Brighter cells indicate higher concentration.
+Navigate to explore allocation distribution.""",
+
+        ViewMode.SWARM: """**Swarm View**: Multi-agent activity map.
+Agent positions shown with role indicators.
+Activity intensity reflects recent agent engagement.
+Agents collaborate to analyze the current domain.""",
+    }
+    return explanations.get(view_mode, "Unknown view mode.")
+
+
+def get_overlay_explanation(overlay_mode: OverlayMode, x: int, y: int) -> str:
+    """Get explanation for the current overlay mode."""
+    explanations = {
+        OverlayMode.NONE: """**No Overlay**: Raw view without additional analysis layers.""",
+
+        OverlayMode.RISK: f"""**Risk Overlay**: Volatility and exposure analysis.
+Position ({x}, {y}) risk factors:
+- Market sensitivity: {"High" if x > 12 or y > 12 else "Moderate" if x > 6 or y > 6 else "Low"}
+- Correlation exposure: {"Elevated" if (x + y) % 3 == 0 else "Normal"}
+- Liquidity risk: {"Watch" if x < 3 or y < 3 or x > 15 or y > 15 else "Adequate"}""",
+
+        OverlayMode.H1: f"""**H1 Overlay**: First homology features (loops/cycles).
+Persistent loops indicate stable cyclical patterns in the data.
+Position ({x}, {y}) loop density: {"High" if 4 <= x <= 7 and 4 <= y <= 7 else "Moderate" if 10 <= x <= 15 else "Low"}
+Death loops mark boundaries of significant topological features.""",
+
+        OverlayMode.H2: f"""**H2 Overlay**: Second homology features (voids/cavities).
+Voids represent gaps or missing connections in the topology.
+Position ({x}, {y}) shows {"potential void boundary" if (x - 9)**2 + (y - 9)**2 > 49 else "dense region"}.""",
+
+        OverlayMode.AGENTS: f"""**Agents Overlay**: Swarm member positions and states.
+Each agent occupies a strategic position based on their role.
+Position ({x}, {y}) {"is near an agent" if _near_agent(x, y) else "is unoccupied"}.
+Agent roles: Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary.""",
+
+        OverlayMode.TEMPORAL: f"""**Temporal Overlay**: Time-evolution analysis.
+Shows how positions have changed over recent time steps.
+Position ({x}, {y}) trend: {"Increasing" if (x + y) % 2 == 0 else "Stable" if x == y else "Decreasing"}
+Temporal patterns reveal momentum and mean-reversion.""",
+    }
+    return explanations.get(overlay_mode, "Unknown overlay mode.")
+
+
+def _near_agent(x: int, y: int) -> bool:
+    """Check if position is near a known agent position."""
+    agent_positions = [(10, 10), (5, 5), (14, 8), (8, 14), (12, 4), (6, 12), (16, 16)]
+    for ax, ay in agent_positions:
+        if abs(x - ax) <= 2 and abs(y - ay) <= 2:
+            return True
+    return False
+
+
+def get_position_context(x: int, y: int) -> str:
+    """Get contextual explanation for a grid position."""
+    # Quadrant analysis
+    if x < 6 and y < 6:
+        quadrant = "Upper-left quadrant: Conservative/defensive positioning."
+    elif x >= 13 and y < 6:
+        quadrant = "Upper-right quadrant: Growth-oriented exposure."
+    elif x < 6 and y >= 13:
+        quadrant = "Lower-left quadrant: Fixed income concentration."
+    elif x >= 13 and y >= 13:
+        quadrant = "Lower-right quadrant: Alternative investments."
+    elif 6 <= x <= 12 and 6 <= y <= 12:
+        quadrant = "Central region: Balanced, diversified core."
+    else:
+        quadrant = "Edge region: Transitional positioning."
+
+    # Corner/star point significance (Go terminology)
+    star_points = [(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15), (15, 3), (15, 9), (15, 15)]
+    if (x, y) in star_points:
+        star = "\n**Star Point**: Key strategic position with high influence potential."
+    elif (x, y) == (9, 9):
+        star = "\n**Tengen**: Center of the board - maximum strategic flexibility."
+    else:
+        star = ""
+
+    return f"{quadrant}{star}"
+
+
+def get_minigrid_explanation(grid_name: str, x: int, y: int) -> str:
+    """Get explanation for what a mini-grid is showing."""
+    explanations = {
+        "Embed": f"""**Embedding Projection**: Local neighborhood in embedding space.
+Shows nearby points projected from high-dimensional representation.
+Cursor at ({x}, {y}) - mini-grid shows relative positions of neighbors.""",
+
+        "Iso": f"""**Isometric View**: Orthographic projection of 3D topology.
+Reveals depth and layering not visible in 2D.
+Height represents data density or feature intensity.""",
+
+        "Time": f"""**Temporal Slice**: Recent history of this region.
+Horizontal axis: time steps (left=past, right=present).
+Vertical axis: metric values over time.""",
+    }
+    return explanations.get(grid_name, "Auxiliary projection view.")
+
+
+def generate_explanation(
+    view_mode: ViewMode,
+    overlay_mode: OverlayMode,
+    x: int,
+    y: int,
+) -> str:
+    """Generate a full contextual explanation for the current state."""
+    sections = [
+        f"## Position ({x}, {y})",
+        "",
+        get_position_context(x, y),
+        "",
+        "---",
+        "",
+        get_view_explanation(view_mode),
+        "",
+        "---",
+        "",
+        get_overlay_explanation(overlay_mode, x, y),
+        "",
+        "---",
+        "",
+        "### Mini-Grids",
+        get_minigrid_explanation("Embed", x, y),
+        "",
+        get_minigrid_explanation("Iso", x, y),
+    ]
+    return "\n".join(sections)

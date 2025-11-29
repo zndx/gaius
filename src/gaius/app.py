@@ -21,6 +21,7 @@ from .widgets.content import ContentPanel
 from .widgets.command import CommandInput, CommandSubmitted
 from .widgets.location import LocationIndicator
 from .widgets.note_editor import NoteEditor
+from .widgets.graph_view import GraphView
 from .widgets.filetree import FileTreeSelection
 from .static import (
     GRID_DATA,
@@ -29,6 +30,7 @@ from .static import (
     TDA_METRICS,
     get_minigrid_data,
     get_position_hint,
+    generate_explanation,
 )
 
 
@@ -96,6 +98,7 @@ class GaiusApp(App):
         height: 100%;
         background: $surface-darken-1;
         border-right: solid $primary-darken-2;
+        overflow: hidden;
     }
 
     #left-panel.hidden {
@@ -116,23 +119,27 @@ class GaiusApp(App):
         width: 1fr;
         height: 100%;
         padding: 1;
+        overflow: hidden;
     }
 
     /* Grid row: Main grid + right column of mini-grids */
     #grid-row {
-        width: 100%;
+        width: auto;
         height: auto;
+        overflow: hidden;
     }
 
     /* Main 19x19 grid wrapper */
     #main-grid-wrapper {
         width: auto;
         height: auto;
+        overflow: hidden;
     }
 
     MainGrid {
-        width: auto;
-        height: auto;
+        width: 40;
+        height: 21;
+        overflow: hidden;
     }
 
     /* Right column with two stacked mini-grids */
@@ -140,6 +147,7 @@ class GaiusApp(App):
         width: auto;
         height: auto;
         margin-left: 1;
+        overflow: hidden;
     }
 
     #minigrid-top {
@@ -153,6 +161,16 @@ class GaiusApp(App):
         border: round $primary-darken-2;
         background: $surface-darken-1;
         padding: 0 1;
+        overflow: hidden;
+    }
+
+    /* Graph view (wiki-link visualization) - 19x19 borderless grid */
+    #graph-view {
+        width: 40;
+        height: 21;
+        margin-left: 1;
+        background: $surface-darken-1;
+        overflow: hidden;
     }
 
     /* Location indicator below main grid */
@@ -192,6 +210,7 @@ class GaiusApp(App):
         height: 100%;
         background: $surface-darken-1;
         border-left: solid $primary-darken-2;
+        overflow: hidden;
     }
 
     #right-panel.hidden {
@@ -201,6 +220,7 @@ class GaiusApp(App):
     ContentPanel {
         width: 100%;
         height: 100%;
+        overflow: hidden auto;
     }
 
     /* ─────────────────────────────────────────────────────────────────────
@@ -250,6 +270,9 @@ class GaiusApp(App):
 
         # Notes
         Binding("ctrl+n", "new_note", "New Note"),
+
+        # Graph view (wiki-links)
+        Binding("g", "toggle_graph", "Graph"),
 
         # Quit hint (actual quit via /q or /exit command)
         Binding("q", "quit_hint", "Quit", show=False),
@@ -318,6 +341,9 @@ class GaiusApp(App):
                             yield MiniGrid("Embed", id="minigrid-top", classes="right")
                             yield MiniGrid("Iso", id="minigrid-bottom", classes="bottom-right")
 
+                        # Graph view (wiki-links) - hidden by default, 'g' to show
+                        yield GraphView(kb_root="build/dev", id="graph-view", classes="hidden")
+
                     # Note editor below the grids (hidden by default, Ctrl-N to show)
                     yield NoteEditor(id="note-editor", classes="hidden")
 
@@ -370,6 +396,17 @@ class GaiusApp(App):
         indicator = self.query_one("#location-indicator", LocationIndicator)
         indicator.update_position(self.state.cursor_x, self.state.cursor_y)
 
+    def _update_explanation(self) -> None:
+        """Update the content panel with contextual explanation."""
+        explanation = generate_explanation(
+            self.state.view_mode,
+            self.state.overlay_mode,
+            self.state.cursor_x,
+            self.state.cursor_y,
+        )
+        content = self.query_one("#content-panel", ContentPanel)
+        content.show_file("context.md", explanation)
+
     # ─────────────────────────────────────────────────────────────────────
     # Actions
     # ─────────────────────────────────────────────────────────────────────
@@ -381,23 +418,21 @@ class GaiusApp(App):
             self._update_status()
             self._update_minigrids()
             self._update_location()
-
-            # Update content panel with position hint
-            hint = get_position_hint(self.state.cursor_x, self.state.cursor_y)
-            content = self.query_one("#content-panel", ContentPanel)
-            content.show_position_info(self.state.cursor_x, self.state.cursor_y, hint)
+            self._update_explanation()
 
     def action_cycle_view(self) -> None:
         """Cycle through view modes."""
         self.state.cycle_view_mode()
         self._refresh_grid()
         self._update_status()
+        self._update_explanation()
 
     def action_cycle_overlay(self) -> None:
         """Cycle through overlay modes."""
         self.state.cycle_overlay_mode()
         self._refresh_grid()
         self._update_status()
+        self._update_explanation()
 
     def action_toggle_candidates(self) -> None:
         """Toggle candidate markers."""
@@ -449,6 +484,12 @@ class GaiusApp(App):
 - **:q** or **:wq**: Close editor
 - Auto-saves on every edit
 - Notes: build/dev/scratch/{date}/{timestamp}.md
+- Wiki-links: [[path/to/note]]
+
+## Graph View
+- **g**: Toggle wiki-link graph
+- Shows backlinks (what links here)
+- Shows forward links (what this links to)
 
 ## Commands
 - **/**: Enter command mode
@@ -504,12 +545,29 @@ class GaiusApp(App):
         file_tree = self.query_one("#file-tree", FileTree)
         file_tree.refresh_tree()
 
+        # Update graph if visible
+        graph = self.query_one("#graph-view", GraphView)
+        if not graph.has_class("hidden"):
+            graph.update_for_file(filepath)
+
         # Update status to show we're editing
         self._update_status()
 
         # Show confirmation in content panel
         content = self.query_one("#content-panel", ContentPanel)
         content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
+
+    def action_toggle_graph(self) -> None:
+        """Toggle graph view visibility."""
+        graph = self.query_one("#graph-view", GraphView)
+        graph.toggle()
+
+        # If showing, scan KB and update for current note
+        if not graph.has_class("hidden"):
+            graph.scan_kb()
+            editor = self.query_one("#note-editor", NoteEditor)
+            if editor.current_file:
+                graph.update_for_file(editor.current_file)
 
     def action_quit_hint(self) -> None:
         """Show quit hint instead of immediately quitting."""
@@ -524,9 +582,7 @@ class GaiusApp(App):
         """Initialize on mount."""
         self._refresh_grid()
         self._update_minigrids()
-
-        # Show initial help
-        self.action_show_help()
+        self._update_explanation()
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
         """Handle command submission."""
@@ -538,9 +594,14 @@ class GaiusApp(App):
         data = event.data
         content = self.query_one("#content-panel", ContentPanel)
         editor = self.query_one("#note-editor", NoteEditor)
+        graph = self.query_one("#graph-view", GraphView)
 
         if data["type"] == "file":
             filepath = data["path"]
+            # Update graph view if visible
+            if not graph.has_class("hidden"):
+                graph.update_for_file(filepath)
+
             # Check if it's a scratch note (editable) or other file (view only)
             if "/scratch/" in filepath and filepath.endswith(".md"):
                 # Open in editor
