@@ -223,10 +223,12 @@ class ModelRouter:
 
         # Get inference client and call
         try:
-            from .client import get_inference_client
+            from . import get_client, Message
 
-            client = get_inference_client(config)
-            return await client.chat(prompt, **kwargs)
+            client = get_client()
+            return await client.complete(
+                [Message(role="user", content=prompt)], **kwargs
+            )
         except Exception as e:
             # Return error response
             from dataclasses import dataclass

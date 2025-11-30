@@ -84,6 +84,7 @@ class OptillmConfig:
     """optillm-specific settings."""
 
     url: str = "http://localhost:8080/v1"
+    api_key: str = "sk-optillm"
     technique: str = ""
 
 
@@ -293,6 +294,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
 
     optillm = OptillmConfig(
         url=g.get("inference.optillm.url", "http://localhost:8080/v1"),
+        api_key=g.get("inference.optillm.api_key", "sk-optillm"),
         technique=g.get("inference.optillm.technique", ""),
     )
 

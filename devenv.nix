@@ -7,6 +7,12 @@
 
   env.PATH_CONF = "conf";
 
+  # Library paths for Python C extensions (numpy, scipy, etc.)
+  env.LD_LIBRARY_PATH = lib.makeLibraryPath [
+    pkgs.zlib
+    pkgs.stdenv.cc.cc.lib  # libstdc++
+  ];
+
   # Override MinIO data directory to use RAID storage
   env.MINIO_DATA_DIR = lib.mkForce "/raid/minio/gaius";
 
@@ -17,6 +23,7 @@
 
   # https://devenv.sh/packages/
   packages = with pkgs; [
+    ansible
     cmake
     conftest
     d2
@@ -29,8 +36,11 @@
     mdbook-d2
     mdbook-katex
     mdbook-mermaid
+    opentofu
     presenterm
     qdrant
+    wrangler
+    zlib  # Required for numpy C extensions
   ];
 
   services.minio = {

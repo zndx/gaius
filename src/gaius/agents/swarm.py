@@ -206,16 +206,16 @@ class SwarmManager:
         else:
             # Try to use inference client
             try:
-                from ..inference.client import get_inference_client
+                from ..inference import get_client, Message
 
-                client = get_inference_client()
-                result = await client.chat(
-                    prompt,
+                client = get_client()
+                result = await client.complete(
+                    [Message(role="user", content=prompt)],
                     temperature=role_def.temperature,
                     max_tokens=role_def.max_tokens,
                 )
                 content = result.content
-                tokens = result.usage.total_tokens if result.usage else 0
+                tokens = result.input_tokens + result.output_tokens
                 model = result.model or ""
             except ImportError:
                 # Inference client not available - return placeholder
