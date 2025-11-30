@@ -19,6 +19,8 @@ from textual.widgets import Static, Header, Footer
 from .core.state import AppState, ViewMode, OverlayMode, CenterPanelMode
 from .core.config import get_config, GaiusConfig
 from .core.telemetry import init_from_config as init_telemetry
+from .core.projection import get_grid_manager, GridData
+from .core.tda import get_tda_manager
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
 from .widgets.filetree import FileTree, FileTreeSelection, FileTreeHighlight
@@ -334,7 +336,12 @@ class GaiusApp(App):
             pass  # Keep default
 
     def _load_test_data(self) -> None:
-        """Initialize with static test data."""
+        """Initialize with static test data as fallback."""
+        # Try to load real grid data first
+        if self._try_load_real_grid_data():
+            return
+
+        # Fall back to static test data
         self.state.black_stones = GRID_DATA["black"]
         self.state.white_stones = GRID_DATA["white"]
         self.state.allocations = GRID_DATA["alloc"]
@@ -352,6 +359,105 @@ class GaiusApp(App):
 
         # Set some candidates
         self.state.candidates = [(3, 3), (15, 15), (10, 10), (5, 14), (14, 5)]
+
+    def _try_load_real_grid_data(self) -> bool:
+        """Try to load real grid data from embeddings.
+
+        Returns:
+            True if real data was loaded, False to use fallback
+        """
+        try:
+            # Get grid manager with config settings
+            grid_manager = get_grid_manager(
+                method=self.config.tda.projection_method,
+                kb_root=self.config.kb.root,
+            )
+
+            # Try to get grid data (will be empty if Qdrant unavailable)
+            grid_data = grid_manager.get_grid_data()
+
+            if grid_data.n_documents == 0:
+                return False  # No data, use fallback
+
+            # Apply real data to state
+            self.state.black_stones = grid_data.document_positions
+            self.state.white_stones = grid_data.cluster_centers
+            self.state.allocations = grid_data.allocations
+
+            # Try to compute TDA
+            try:
+                tda_manager = get_tda_manager()
+                if grid_data.points:
+                    import numpy as np
+                    grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                    features = tda_manager.compute_features(grid_coords, grid_coords)
+                    self.state.death_loops = [
+                        dl.to_tuple() for dl in features.death_loops
+                    ]
+                    self.state.tda_entropy = features.entropy
+            except Exception:
+                # TDA computation failed, use defaults
+                self.state.death_loops = []
+                self.state.tda_entropy = 0.0
+
+            # Still load agent positions from static data
+            for agent in AGENT_DATA:
+                self.state.agent_positions.append((
+                    agent["name"],
+                    agent["pos"][0],
+                    agent["pos"][1],
+                    agent["color"],
+                ))
+
+            return True
+
+        except Exception:
+            return False  # Any error, use fallback
+
+    def _refresh_from_embeddings(self) -> bool:
+        """Refresh grid data from KB embeddings.
+
+        Called by /reindex command.
+
+        Returns:
+            True if refresh succeeded
+        """
+        try:
+            grid_manager = get_grid_manager(
+                method=self.config.tda.projection_method,
+                kb_root=self.config.kb.root,
+            )
+
+            # Reindex and project
+            grid_data = grid_manager.reindex_and_project()
+
+            if grid_data.n_documents > 0:
+                self.state.black_stones = grid_data.document_positions
+                self.state.allocations = grid_data.allocations
+
+                # Refresh TDA
+                try:
+                    import numpy as np
+                    tda_manager = get_tda_manager()
+                    if grid_data.points:
+                        grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                        features = tda_manager.compute_features(
+                            grid_coords, grid_coords, force_refresh=True
+                        )
+                        self.state.death_loops = [
+                            dl.to_tuple() for dl in features.death_loops
+                        ]
+                        self.state.tda_entropy = features.entropy
+                except Exception:
+                    pass
+
+                self._refresh_grid()
+                return True
+
+            return False
+
+        except Exception:
+            return False
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -998,6 +1104,34 @@ class GaiusApp(App):
                     content.show_file("error.txt", f"Unknown view: {args}")
             else:
                 self.action_cycle_view()
+        elif command == "reindex":
+            # Reindex KB embeddings and refresh grid
+            content.show_file("reindex.txt", "Reindexing KB embeddings...\n\nThis may take a moment.")
+            if self._refresh_from_embeddings():
+                content.show_file("reindex.txt", "KB reindexed and grid updated.\n\nDocuments projected to grid.")
+            else:
+                content.show_file("reindex.txt", "Reindex failed.\n\nCheck that Qdrant is running and KB has content.")
+        elif command == "tda":
+            # Show TDA metrics
+            try:
+                tda_manager = get_tda_manager()
+                metrics = tda_manager.get_metrics()
+                tda_text = f"""# TDA Metrics
+
+**H0 (Components):** {metrics.get('h0_count', 0)}
+**H1 (Loops):** {metrics.get('h1_count', 0)}
+**H2 (Voids):** {metrics.get('h2_count', 0)}
+**Entropy:** {metrics.get('entropy', 0):.3f}
+**Persistence Range:** {metrics.get('persistence_range', (0, 1))}
+
+## Death Loops
+{len(metrics.get('death_loops', []))} loops detected
+
+Use `/reindex` to refresh TDA from current KB.
+"""
+                content.show_file("tda.md", tda_text)
+            except Exception as e:
+                content.show_file("error.txt", f"TDA error: {e}")
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:

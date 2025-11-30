@@ -30,6 +30,20 @@ from .telemetry import (
     record_inference,
     record_swarm_round,
 )
+from .projection import (
+    GridProjector,
+    GridData,
+    GridDataManager,
+    GridPoint,
+    get_grid_manager,
+)
+from .tda import (
+    TDAComputer,
+    TDAFeatures,
+    TDAManager,
+    BoundingBox,
+    get_tda_manager,
+)
 
 __all__ = [
     # State
@@ -69,4 +83,16 @@ __all__ = [
     "record_search",
     "record_inference",
     "record_swarm_round",
+    # Projection
+    "GridProjector",
+    "GridData",
+    "GridDataManager",
+    "GridPoint",
+    "get_grid_manager",
+    # TDA
+    "TDAComputer",
+    "TDAFeatures",
+    "TDAManager",
+    "BoundingBox",
+    "get_tda_manager",
 ]
