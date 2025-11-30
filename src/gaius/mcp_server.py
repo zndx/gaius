@@ -454,6 +454,42 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- KB Resources ---
+    # Expose KB entries as MCP resources for direct browsing
+
+    def _register_kb_resources():
+        """Register all KB entries as resources."""
+        kb_root = get_kb_root()
+
+        for allowed_dir in ALLOWED_DIRS:
+            dir_path = kb_root / allowed_dir
+            if not dir_path.exists():
+                continue
+
+            for md_file in dir_path.rglob("*.md"):
+                rel_path = md_file.relative_to(kb_root)
+                uri = f"gaius://kb/{rel_path}"
+
+                # Create a closure to capture the path
+                def make_reader(file_path: Path):
+                    @server.resource(
+                        uri=f"gaius://kb/{file_path.relative_to(kb_root)}",
+                        name=file_path.name,
+                        description=f"KB entry: {file_path.relative_to(kb_root)}",
+                        mime_type="text/markdown",
+                    )
+                    def read_resource() -> str:
+                        if file_path.exists():
+                            return file_path.read_text()
+                        return f"# Not Found\n\nFile not found: {file_path}"
+
+                    return read_resource
+
+                make_reader(md_file)
+
+    # Register existing KB resources
+    _register_kb_resources()
+
     return server
 
 
