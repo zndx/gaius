@@ -21,6 +21,7 @@ from .core.config import get_config, GaiusConfig
 from .core.telemetry import init_from_config as init_telemetry
 from .core.projection import get_grid_manager, GridData
 from .core.tda import get_tda_manager
+from .agents import get_swarm_manager
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
 from .widgets.filetree import FileTree, FileTreeSelection, FileTreeHighlight
@@ -458,6 +459,161 @@ class GaiusApp(App):
 
         except Exception:
             return False
+
+    def _run_swarm_analysis(self, domain_override: str | None = None) -> None:
+        """Run swarm analysis on current domain.
+
+        Args:
+            domain_override: Override domain (otherwise uses state.domain)
+        """
+        import asyncio
+
+        content = self.query_one("#content-panel", ContentPanel)
+        domain = domain_override or self.state.domain
+
+        # Update domain if override provided
+        if domain_override:
+            self.state.domain = domain_override
+            self._update_status()
+
+        # Show starting message
+        content.show_file("swarm.txt", f"Running swarm analysis on: {domain}\n\nAgents: Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary\n\nPlease wait...")
+
+        # Run swarm asynchronously
+        async def run_swarm():
+            from .agents import run_swarm_round
+            return await run_swarm_round(domain)
+
+        try:
+            # Run in event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Schedule as task
+                asyncio.create_task(self._complete_swarm_analysis(domain))
+            else:
+                result = loop.run_until_complete(run_swarm())
+                self._apply_swarm_results(result)
+        except Exception as e:
+            content.show_file("error.txt", f"Swarm error: {e}")
+
+    async def _complete_swarm_analysis(self, domain: str) -> None:
+        """Complete swarm analysis asynchronously."""
+        from .agents import run_swarm_round
+
+        try:
+            result = await run_swarm_round(domain)
+            self._apply_swarm_results(result)
+        except Exception as e:
+            content = self.query_one("#content-panel", ContentPanel)
+            content.show_file("error.txt", f"Swarm error: {e}")
+
+    def _apply_swarm_results(self, result) -> None:
+        """Apply swarm results to state and UI."""
+        content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        # Update agent positions
+        swarm_manager = get_swarm_manager()
+        self.state.agent_positions = swarm_manager.get_agent_positions()
+
+        # Add reasoning trace
+        from datetime import datetime
+        from .core.state import ReasoningTrace
+
+        trace = ReasoningTrace(
+            timestamp=datetime.now(),
+            operation="swarm",
+            query=result.domain,
+            summary=f"Swarm round: {result.success_rate:.0%} success",
+            tokens=result.total_tokens,
+            sources=len(result.responses),
+            technique="parallel",
+            duration_ms=result.total_latency_ms,
+        )
+        self.state.add_reasoning_trace(trace)
+        think.update_state(self.state)
+
+        # Build result summary
+        lines = [
+            f"# Swarm Analysis: {result.domain}",
+            "",
+            f"**Success Rate:** {result.success_rate:.0%}",
+            f"**Total Tokens:** {result.total_tokens}",
+            f"**Latency:** {result.total_latency_ms}ms",
+            "",
+            "## Agent Responses",
+            "",
+        ]
+
+        for response in result.responses:
+            status = "✓" if response.succeeded else "✗"
+            lines.append(f"### {status} {response.name}")
+            if response.succeeded:
+                # Show first 300 chars of response
+                preview = response.content[:300]
+                if len(response.content) > 300:
+                    preview += "..."
+                lines.append(f"\n{preview}\n")
+            else:
+                lines.append(f"\n*Error: {response.error}*\n")
+
+        if result.consensus:
+            lines.extend([
+                "",
+                "## Consensus (Leader)",
+                "",
+                result.consensus,
+            ])
+
+        content.show_file("swarm-result.md", "\n".join(lines))
+        self._refresh_grid()
+        self._update_status()
+
+    def _show_agent_status(self) -> None:
+        """Show current agent positions and status."""
+        content = self.query_one("#content-panel", ContentPanel)
+
+        lines = [
+            "# Agent Status",
+            "",
+            "| Agent | Position | Color |",
+            "|-------|----------|-------|",
+        ]
+
+        for name, x, y, color in self.state.agent_positions:
+            coord = self._grid_to_coord(x, y)
+            lines.append(f"| {name} | {coord} ({x},{y}) | {color} |")
+
+        if not self.state.agent_positions:
+            lines.append("| (no agents) | - | - |")
+
+        lines.extend([
+            "",
+            "## Commands",
+            "- `/swarm` - Run swarm analysis on current domain",
+            "- `/swarm <domain>` - Run on specified domain",
+            "- `/domain <name>` - Change domain",
+        ])
+
+        # Show last swarm summary if available
+        swarm_manager = get_swarm_manager()
+        last_round = swarm_manager.get_last_round()
+        if last_round:
+            lines.extend([
+                "",
+                "## Last Round",
+                f"- Domain: {last_round.domain}",
+                f"- Time: {last_round.timestamp.strftime('%H:%M:%S')}",
+                f"- Success: {last_round.success_rate:.0%}",
+            ])
+
+        content.show_file("agents.md", "\n".join(lines))
+
+    def _grid_to_coord(self, x: int, y: int) -> str:
+        """Convert grid position to Go coordinate string."""
+        col = chr(65 + x + (1 if x >= 8 else 0))  # Skip 'I'
+        row = 19 - y
+        return f"{col}{row}"
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -1081,9 +1237,22 @@ class GaiusApp(App):
             content.show_position_info(self.state.cursor_x, self.state.cursor_y, hint)
         elif command == "domain":
             if args:
+                old_domain = self.state.domain
                 self.state.domain = args
                 self._update_status()
                 content.show_file("domain.txt", f"Domain set to: {args}")
+
+                # Auto-trigger swarm if enabled
+                if (
+                    self.config.swarm.auto_trigger_on_domain
+                    and self.config.swarm.enabled
+                    and args != old_domain
+                ):
+                    content.show_file(
+                        "domain.txt",
+                        f"Domain set to: {args}\n\nAuto-triggering swarm analysis...",
+                    )
+                    self._run_swarm_analysis()
         elif command == "overlay":
             if args:
                 try:
@@ -1132,6 +1301,12 @@ Use `/reindex` to refresh TDA from current KB.
                 content.show_file("tda.md", tda_text)
             except Exception as e:
                 content.show_file("error.txt", f"TDA error: {e}")
+        elif command == "swarm":
+            # Run swarm analysis
+            self._run_swarm_analysis(args if args else None)
+        elif command == "agents":
+            # Show agent status
+            self._show_agent_status()
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
