@@ -653,7 +653,7 @@ uv run mypy src/gaius
 
 Apache License 2.0 - See [LICENSE](LICENSE) for details.
 
-Copyright 2025 Cloudera, Inc.
+Copyright 2025 Ryan Hill and Zndx Limited
 
 ---
 
