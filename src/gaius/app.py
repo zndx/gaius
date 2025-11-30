@@ -21,7 +21,9 @@ from .core.config import get_config, GaiusConfig
 from .core.telemetry import init_from_config as init_telemetry
 from .core.projection import get_grid_manager, GridData
 from .core.tda import get_tda_manager
+from .core.activity import get_activity_tracker, log_activity, ActivityType
 from .agents import get_swarm_manager
+from .awareness import generate_startup_report
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
 from .widgets.filetree import FileTree, FileTreeSelection, FileTreeHighlight
@@ -509,8 +511,25 @@ class GaiusApp(App):
 
     def _apply_swarm_results(self, result) -> None:
         """Apply swarm results to state and UI."""
+        import asyncio
+
         content = self.query_one("#content-panel", ContentPanel)
         think = self.query_one("#think-panel", ThinkPanel)
+
+        # Log swarm activity
+        asyncio.create_task(
+            log_activity(
+                ActivityType.SWARM_RUN,
+                profile_name=self.config.profile,
+                domain=result.domain,
+                details={
+                    "agents": len(result.responses),
+                    "tokens": result.total_tokens,
+                    "latency_ms": result.total_latency_ms,
+                    "success_rate": result.success_rate,
+                },
+            )
+        )
 
         # Update agent positions
         swarm_manager = get_swarm_manager()
@@ -614,6 +633,83 @@ class GaiusApp(App):
         col = chr(65 + x + (1 if x >= 8 else 0))  # Skip 'I'
         row = 19 - y
         return f"{col}{row}"
+
+    def _show_daily_summary(self) -> None:
+        """Generate and show daily summary."""
+        import asyncio
+
+        content = self.query_one("#content-panel", ContentPanel)
+        content.show_file("summary.md", "Generating daily summary...\n\n*This may take a moment.*")
+
+        async def generate():
+            try:
+                from .agents import generate_daily_summary
+
+                note = await generate_daily_summary(
+                    profile=self.config.profile,
+                    use_llm=True,
+                    write_to_kb=True,
+                )
+                content.show_file("summary.md", note.to_markdown())
+            except Exception as e:
+                content.show_file("error.txt", f"Summary generation failed: {e}")
+
+        asyncio.create_task(generate())
+
+    def _show_activity(self) -> None:
+        """Show recent activity log."""
+        import asyncio
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        async def show():
+            try:
+                tracker = get_activity_tracker()
+
+                # Get summaries
+                today = await tracker.get_today()
+                yesterday = await tracker.get_yesterday()
+                week = await tracker.get_this_week()
+
+                # Get recent events
+                recent = await tracker.get_recent_events(limit=15)
+
+                lines = [
+                    "# Activity",
+                    "",
+                    today.to_markdown(),
+                    "",
+                ]
+
+                if yesterday.total_events > 0:
+                    lines.extend([
+                        yesterday.to_markdown(),
+                        "",
+                    ])
+
+                lines.extend([
+                    "## This Week",
+                    f"**Total events:** {week.total_events}",
+                    f"**Queries:** {week.queries}",
+                    f"**Swarm runs:** {week.swarm_runs}",
+                    "",
+                    "## Recent Events",
+                ])
+
+                for event in recent[:10]:
+                    time_str = event.created_at.strftime("%H:%M")
+                    domain_str = f" [{event.domain}]" if event.domain else ""
+                    lines.append(f"- `{time_str}` **{event.event_type.value}**{domain_str}")
+
+                if not recent:
+                    lines.append("*No events recorded yet.*")
+
+                content.show_file("activity.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("error.txt", f"Activity query failed: {e}")
+
+        asyncio.create_task(show())
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -980,43 +1076,57 @@ class GaiusApp(App):
 
     def _show_situational_summary(self, commands_run: list[str]) -> None:
         """Display situational awareness summary on startup."""
-        from datetime import datetime
+        import asyncio
 
         content = self.query_one("#content-panel", ContentPanel)
-        awareness = self.config.awareness
 
-        # Build summary
-        now = datetime.now()
-        lines = [
-            f"# Gaius {self.config.app.version}",
-            f"**Profile:** {self.config.profile}",
-            f"**Started:** {now.strftime('%Y-%m-%d %H:%M')}",
-            "",
-            "## Awareness Horizons",
-            f"- Emphasis: {awareness.emphasis_hours}h",
-            f"- Default: {awareness.default_horizon_days}d",
-            f"- Strategic: {awareness.strategic_horizon_days}d",
-            f"- Secular: {awareness.secular_horizon_days}d",
-            "",
-            f"## Domain",
-            f"{self.state.domain}",
-            "",
-        ]
+        # Log startup event
+        asyncio.create_task(
+            log_activity(
+                ActivityType.STARTUP,
+                profile_name=self.config.profile,
+                domain=self.state.domain,
+                details={"commands": commands_run},
+            )
+        )
 
-        if commands_run:
-            lines.extend([
-                "## Startup Commands",
-                *[f"- `{cmd}`" for cmd in commands_run],
-                "",
-            ])
+        # Generate and show situational report asynchronously
+        async def show_report():
+            try:
+                report = await generate_startup_report(
+                    profile=self.config.profile,
+                    domain=self.state.domain,
+                    include_insights=True,
+                )
+                content.show_file("startup.md", report.to_markdown())
+            except Exception as e:
+                # Fallback to simple summary
+                from datetime import datetime
 
-        # Add hints
-        lines.extend([
-            "---",
-            "*Press ? for help, / for commands*",
-        ])
+                awareness = self.config.awareness
+                now = datetime.now()
+                lines = [
+                    f"# Gaius {self.config.app.version}",
+                    f"**Profile:** {self.config.profile}",
+                    f"**Started:** {now.strftime('%Y-%m-%d %H:%M')}",
+                    "",
+                    f"## Domain",
+                    f"{self.state.domain}",
+                    "",
+                ]
+                if commands_run:
+                    lines.extend([
+                        "## Startup Commands",
+                        *[f"- `{cmd}`" for cmd in commands_run],
+                        "",
+                    ])
+                lines.extend([
+                    "---",
+                    "*Press ? for help, / for commands*",
+                ])
+                content.show_file("startup.md", "\n".join(lines))
 
-        content.show_file("startup.md", "\n".join(lines))
+        asyncio.create_task(show_report())
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
         """Handle command submission."""
@@ -1237,10 +1347,22 @@ class GaiusApp(App):
             content.show_position_info(self.state.cursor_x, self.state.cursor_y, hint)
         elif command == "domain":
             if args:
+                import asyncio
+
                 old_domain = self.state.domain
                 self.state.domain = args
                 self._update_status()
                 content.show_file("domain.txt", f"Domain set to: {args}")
+
+                # Log domain change
+                asyncio.create_task(
+                    log_activity(
+                        ActivityType.DOMAIN_CHANGE,
+                        profile_name=self.config.profile,
+                        domain=args,
+                        details={"previous_domain": old_domain},
+                    )
+                )
 
                 # Auto-trigger swarm if enabled
                 if (
@@ -1307,6 +1429,12 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "agents":
             # Show agent status
             self._show_agent_status()
+        elif command == "summary":
+            # Generate daily summary
+            self._show_daily_summary()
+        elif command == "activity":
+            # Show activity log
+            self._show_activity()
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:

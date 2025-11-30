@@ -15,6 +15,12 @@ from .swarm import (
     get_swarm_manager,
     run_swarm_round,
 )
+from .daily_summary import (
+    DailySummaryAgent,
+    DailySummaryNote,
+    get_daily_summary_agent,
+    generate_daily_summary,
+)
 
 __all__ = [
     # Roles
@@ -30,4 +36,9 @@ __all__ = [
     "AgentResponse",
     "get_swarm_manager",
     "run_swarm_round",
+    # Daily Summary
+    "DailySummaryAgent",
+    "DailySummaryNote",
+    "get_daily_summary_agent",
+    "generate_daily_summary",
 ]

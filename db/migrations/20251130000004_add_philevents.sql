@@ -1,5 +1,6 @@
+-- migrate:up
+
 -- Add philevents source type and source entry
--- Run as: psql -f db/migrations/20251130000004_add_philevents.sql
 
 -- Add philevents to source_type enum
 ALTER TYPE source_type ADD VALUE IF NOT EXISTS 'philevents';
@@ -35,3 +36,8 @@ WHERE name = 'philevents' AND source_type != 'philevents';
 -- 574 - Philosophy of Language
 -- 634 - Logic and Philosophy of Logic
 -- 599 - Philosophy of Cognitive Science
+
+-- migrate:down
+
+DELETE FROM feed_sources WHERE name = 'philevents';
+-- Note: Cannot easily remove enum value in PostgreSQL

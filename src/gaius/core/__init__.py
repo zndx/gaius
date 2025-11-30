@@ -44,6 +44,14 @@ from .tda import (
     BoundingBox,
     get_tda_manager,
 )
+from .activity import (
+    ActivityTracker,
+    ActivityType,
+    ActivityEvent,
+    ActivitySummary,
+    get_activity_tracker,
+    log_activity,
+)
 
 __all__ = [
     # State
@@ -95,4 +103,11 @@ __all__ = [
     "TDAManager",
     "BoundingBox",
     "get_tda_manager",
+    # Activity
+    "ActivityTracker",
+    "ActivityType",
+    "ActivityEvent",
+    "ActivitySummary",
+    "get_activity_tracker",
+    "log_activity",
 ]

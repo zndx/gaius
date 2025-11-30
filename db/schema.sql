@@ -1,4 +1,4 @@
-\restrict ovM2Lxy14K1pxXwFrj1P9soAZB5iBeuIJGZi3A0so6uqGfRsqTmdLCWJLFAfjvb
+\restrict pA15IWjC9GHlajlodLPRYDRE1gHkeQVG2f2EkZbzoct6PVuMi3TiLhxaBclTr4L
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -29,6 +29,24 @@ COMMENT ON EXTENSION pg_cron IS 'Job scheduler for PostgreSQL';
 
 
 --
+-- Name: activity_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.activity_type AS ENUM (
+    'query',
+    'domain_change',
+    'swarm_run',
+    'tda_compute',
+    'projection',
+    'kb_create',
+    'kb_update',
+    'command',
+    'startup',
+    'shutdown'
+);
+
+
+--
 -- Name: source_type; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -39,7 +57,9 @@ CREATE TYPE public.source_type AS ENUM (
     'api',
     'scraper',
     'philpapers',
-    'docs'
+    'docs',
+    'brave',
+    'philevents'
 );
 
 
@@ -160,6 +180,67 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: activity_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.activity_events (
+    id integer NOT NULL,
+    event_type public.activity_type NOT NULL,
+    profile_name text,
+    domain text,
+    details jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: activity_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.activity_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: activity_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.activity_events_id_seq OWNED BY public.activity_events.id;
+
+
+--
+-- Name: activity_this_week; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.activity_this_week AS
+ SELECT date(created_at) AS day,
+    event_type,
+    count(*) AS count
+   FROM public.activity_events
+  WHERE (created_at >= date_trunc('week'::text, (CURRENT_DATE)::timestamp with time zone))
+  GROUP BY (date(created_at)), event_type
+  ORDER BY (date(created_at)) DESC, event_type;
+
+
+--
+-- Name: activity_today; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.activity_today AS
+ SELECT event_type,
+    count(*) AS count,
+    max(created_at) AS last_at
+   FROM public.activity_events
+  WHERE (created_at >= CURRENT_DATE)
+  GROUP BY event_type;
+
+
+--
 -- Name: content_items; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -200,6 +281,42 @@ CREATE SEQUENCE public.content_items_id_seq
 --
 
 ALTER SEQUENCE public.content_items_id_seq OWNED BY public.content_items.id;
+
+
+--
+-- Name: daily_summaries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_summaries (
+    id integer NOT NULL,
+    summary_date date NOT NULL,
+    profile_name text,
+    content text NOT NULL,
+    highlights jsonb DEFAULT '[]'::jsonb,
+    metrics jsonb DEFAULT '{}'::jsonb,
+    generated_at timestamp with time zone DEFAULT now(),
+    generator_model text
+);
+
+
+--
+-- Name: daily_summaries_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_summaries_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_summaries_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_summaries_id_seq OWNED BY public.daily_summaries.id;
 
 
 --
@@ -363,10 +480,24 @@ SELECT
 
 
 --
+-- Name: activity_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_events ALTER COLUMN id SET DEFAULT nextval('public.activity_events_id_seq'::regclass);
+
+
+--
 -- Name: content_items id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.content_items ALTER COLUMN id SET DEFAULT nextval('public.content_items_id_seq'::regclass);
+
+
+--
+-- Name: daily_summaries id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_summaries ALTER COLUMN id SET DEFAULT nextval('public.daily_summaries_id_seq'::regclass);
 
 
 --
@@ -391,6 +522,14 @@ ALTER TABLE ONLY public.profiles ALTER COLUMN id SET DEFAULT nextval('public.pro
 
 
 --
+-- Name: activity_events activity_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_events
+    ADD CONSTRAINT activity_events_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: content_items content_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -404,6 +543,22 @@ ALTER TABLE ONLY public.content_items
 
 ALTER TABLE ONLY public.content_items
     ADD CONSTRAINT content_items_source_id_external_id_key UNIQUE (source_id, external_id);
+
+
+--
+-- Name: daily_summaries daily_summaries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_summaries
+    ADD CONSTRAINT daily_summaries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_summaries daily_summaries_summary_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_summaries
+    ADD CONSTRAINT daily_summaries_summary_date_key UNIQUE (summary_date);
 
 
 --
@@ -463,6 +618,34 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: idx_activity_events_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_activity_events_created ON public.activity_events USING btree (created_at DESC);
+
+
+--
+-- Name: idx_activity_events_domain; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_activity_events_domain ON public.activity_events USING btree (domain) WHERE (domain IS NOT NULL);
+
+
+--
+-- Name: idx_activity_events_profile; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_activity_events_profile ON public.activity_events USING btree (profile_name);
+
+
+--
+-- Name: idx_activity_events_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_activity_events_type ON public.activity_events USING btree (event_type);
+
+
+--
 -- Name: idx_content_items_fetched; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -488,6 +671,13 @@ CREATE INDEX idx_content_items_published ON public.content_items USING btree (pu
 --
 
 CREATE INDEX idx_content_items_source ON public.content_items USING btree (source_id);
+
+
+--
+-- Name: idx_daily_summaries_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_daily_summaries_date ON public.daily_summaries USING btree (summary_date DESC);
 
 
 --
@@ -616,7 +806,7 @@ ALTER TABLE ONLY public.profile_sources
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ovM2Lxy14K1pxXwFrj1P9soAZB5iBeuIJGZi3A0so6uqGfRsqTmdLCWJLFAfjvb
+\unrestrict pA15IWjC9GHlajlodLPRYDRE1gHkeQVG2f2EkZbzoct6PVuMi3TiLhxaBclTr4L
 
 
 --
@@ -626,4 +816,6 @@ ALTER TABLE ONLY public.profile_sources
 INSERT INTO public.schema_migrations (version) VALUES
     ('20251130000001'),
     ('20251130000002'),
-    ('20251130000003');
+    ('20251130000003'),
+    ('20251130000004'),
+    ('20251130000005');
