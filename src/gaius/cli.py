@@ -107,6 +107,12 @@ class GaiusCLI:
                 result["data"] = self._run_async(self._cmd_search(args))
             elif command == "research":
                 result["data"] = self._run_async(self._cmd_research(args))
+            elif command == "research!" or command == "research-eval":
+                result["data"] = self._run_async(self._cmd_research_eval(args))
+            elif command == "eval":
+                result["data"] = self._run_async(self._cmd_eval(args))
+            elif command == "eval-stats":
+                result["data"] = self._cmd_eval_stats()
             elif command == "technique":
                 result["data"] = self._cmd_technique(args)
             elif command == "kb":
@@ -218,8 +224,11 @@ class GaiusCLI:
                 "help": "Show this help",
                 # Inference commands
                 "ask <question>": "Query local LLM (optillm)",
-                "search <query>": "Web search via Brave API",
-                "research <topic>": "Research topic and save to KB",
+                "search <query>": "Hybrid search (BM25 + Vector + Web)",
+                "research <topic>": "Hybrid search + LLM → Zettelkasten note",
+                "research-eval <topic>": "Research + evaluate with frontier model",
+                "eval <path>": "Evaluate a Zettelkasten note",
+                "eval-stats": "Show aggregate evaluation statistics",
                 "technique [name]": "Set or show optillm technique",
                 "kb <subcommand>": "KB operations (list, read <path>, search <query>)",
             }
@@ -250,82 +259,362 @@ class GaiusCLI:
             raise RuntimeError("Inference not available. Run: uv sync --extra inference")
 
     async def _cmd_search(self, args: str) -> dict:
-        """Web search via Brave API."""
+        """Hybrid search: BM25 + Vector (Qdrant) + Brave web search.
+
+        Combines lexical, semantic, and web results for comprehensive search.
+        Uses RRF (Reciprocal Rank Fusion) to merge KB results.
+        """
         if not args:
             raise ValueError("search requires a query")
 
+        bm25_results = []
+        vector_results = []
+        web_results = []
+        errors = []
+
+        # BM25 lexical search over KB
+        try:
+            from .inference.search import get_kb_search
+
+            kb_search = get_kb_search()
+            if kb_search.index_size == 0:
+                kb_search.build_index()
+
+            bm25_hits = kb_search.search(args, top_k=10)
+            bm25_results = [
+                {
+                    "source": "bm25",
+                    "path": r.path,
+                    "title": r.title,
+                    "snippet": r.snippet[:150],
+                    "score": round(r.score, 2),
+                    "citation": f"{r.path}:/{r.match_pattern}/" if r.match_pattern else r.path,
+                }
+                for r in bm25_hits
+            ]
+        except ImportError:
+            errors.append("BM25 not available (run: uv sync --extra search)")
+        except Exception as e:
+            errors.append(f"BM25 error: {e}")
+
+        # Vector semantic search over KB (Qdrant)
+        try:
+            from .inference.search import get_vector_search
+
+            vector_search = get_vector_search()
+            vector_hits = vector_search.search(args, top_k=10)
+            vector_results = [
+                {
+                    "source": "vector",
+                    "path": r.path,
+                    "title": r.title,
+                    "snippet": r.snippet[:150],
+                    "score": round(r.score, 3),
+                    "chunk_id": r.chunk_id,
+                }
+                for r in vector_hits
+            ]
+        except ImportError:
+            errors.append("Vector search not available")
+        except Exception as e:
+            errors.append(f"Vector search error: {e}")
+
+        # Brave web search
         try:
             from .inference import get_search
 
             search = get_search()
-            results = await search.search(args, count=5)
-
-            return {
-                "query": args,
-                "results": [
-                    {"title": r.title, "url": r.url, "snippet": r.snippet[:100]}
-                    for r in results
-                ],
-            }
+            web_hits = await search.search(args, count=5)
+            web_results = [
+                {
+                    "source": "web",
+                    "url": r.url,
+                    "title": r.title,
+                    "snippet": r.snippet[:150],
+                }
+                for r in web_hits
+            ]
         except ImportError:
-            raise RuntimeError("Search not available. Run: uv sync --extra inference")
+            errors.append("Brave search not available")
         except RuntimeError as e:
-            raise RuntimeError(f"Search failed: {e}")
+            errors.append(f"Web search error: {e}")
+
+        # RRF fusion of BM25 + Vector results
+        fused_kb = self._rrf_fusion(bm25_results, vector_results, k=60)
+
+        return {
+            "query": args,
+            "kb_results": fused_kb[:10],  # Top 10 fused
+            "web_results": web_results,
+            "kb_count": len(fused_kb),
+            "web_count": len(web_results),
+            "bm25_count": len(bm25_results),
+            "vector_count": len(vector_results),
+            "errors": errors if errors else None,
+        }
+
+    def _rrf_fusion(
+        self,
+        bm25_results: list[dict],
+        vector_results: list[dict],
+        k: int = 60,
+    ) -> list[dict]:
+        """Reciprocal Rank Fusion of BM25 and vector results.
+
+        RRF score = sum(1 / (k + rank)) across result lists.
+        """
+        scores: dict[str, float] = {}
+        docs: dict[str, dict] = {}
+
+        # Score BM25 results
+        for rank, doc in enumerate(bm25_results, 1):
+            path = doc["path"]
+            scores[path] = scores.get(path, 0) + 1 / (k + rank)
+            if path not in docs:
+                docs[path] = doc.copy()
+                docs[path]["sources"] = []
+            docs[path]["sources"].append("bm25")
+
+        # Score vector results
+        for rank, doc in enumerate(vector_results, 1):
+            path = doc["path"]
+            scores[path] = scores.get(path, 0) + 1 / (k + rank)
+            if path not in docs:
+                docs[path] = doc.copy()
+                docs[path]["sources"] = []
+            if "vector" not in docs[path].get("sources", []):
+                docs[path]["sources"].append("vector")
+
+        # Sort by RRF score and return
+        sorted_paths = sorted(scores.keys(), key=lambda p: scores[p], reverse=True)
+        result = []
+        for path in sorted_paths:
+            doc = docs[path]
+            doc["rrf_score"] = round(scores[path], 4)
+            doc["source"] = "+".join(doc.pop("sources", ["kb"]))
+            result.append(doc)
+
+        return result
 
     async def _cmd_research(self, args: str) -> dict:
-        """Research topic and save to KB."""
+        """Research topic using hybrid search and generate Zettelkasten note.
+
+        Uses BM25 + Vector + Web search, then synthesizes with LLM.
+        """
         if not args:
             raise ValueError("research requires a topic")
 
         try:
-            from .inference import get_client, get_search, Message
-            from datetime import datetime
+            # First, run hybrid search
+            search_result = await self._cmd_search(args)
 
-            # Search
-            search = get_search()
-            results = await search.search_for_kb(args, self.state.domain or "general")
+            kb_results = search_result.get("kb_results", [])
+            web_results = search_result.get("web_results", [])
 
-            if not results:
+            if not kb_results and not web_results:
                 return {"error": "No search results found"}
 
-            # Synthesize
-            sources_text = "\n".join(
-                f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
+            # Synthesize Zettelkasten note
+            from .inference import ZettelkastenSynthesizer
+
+            synthesizer = ZettelkastenSynthesizer()
+            note = await synthesizer.synthesize(
+                query=args,
+                kb_results=kb_results,
+                web_results=web_results,
+                domain=self.state.domain,
             )
 
-            client = get_client()
-            synthesis = await client.complete(
-                messages=[
-                    Message(
-                        role="system",
-                        content=f"You are a research assistant for {self.state.domain or 'general topics'}.",
-                    ),
-                    Message(
-                        role="user",
-                        content=f"Topic: {args}\n\nSources:\n{sources_text}\n\nCreate a structured note.",
-                    ),
-                ],
-                technique="cot_reflection",
-            )
+            # Save note
+            saved_path = note.save()
 
-            # Save to KB
-            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
-            today = datetime.now().strftime("%Y-%m-%d")
-            timestamp = datetime.now().strftime("%H%M%S")
-            safe_topic = args.replace(" ", "_").replace("/", "-")[:50]
-            kb_path = kb_root / "scratch" / today / f"{timestamp}_{safe_topic}.md"
-
-            kb_path.parent.mkdir(parents=True, exist_ok=True)
-            content = f"# {args}\n\nCreated: {datetime.now().isoformat()}\n\n---\n\n{synthesis.content}\n\n---\n\n## Sources\n\n{sources_text}"
-            kb_path.write_text(content)
+            # Verify KB citations
+            verification = synthesizer.verify_citations(note)
+            verified_count = sum(1 for v in verification.values() if v)
 
             return {
                 "topic": args,
-                "saved_to": str(kb_path),
-                "sources": len(results),
+                "saved_to": str(saved_path),
+                "kb_sources": len([c for c in note.citations if not c.is_web]),
+                "web_sources": len([c for c in note.citations if c.is_web]),
+                "wiki_links": note.wiki_links,
+                "citations_verified": f"{verified_count}/{len(verification)}",
+                "model": note.metadata.get("model"),
+                "technique": note.metadata.get("technique"),
             }
-        except ImportError:
-            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+        except ImportError as e:
+            raise RuntimeError(f"Inference not available: {e}. Run: uv sync --extra search")
+
+    async def _cmd_research_eval(self, args: str) -> dict:
+        """Research topic and evaluate the generated note with frontier model."""
+        if not args:
+            raise ValueError("research! requires a topic")
+
+        # First do the research
+        research_result = await self._cmd_research(args)
+
+        if "error" in research_result:
+            return research_result
+
+        # Now evaluate
+        try:
+            from .inference import (
+                SynthesisEvaluator,
+                ZettelkastenSynthesizer,
+            )
+
+            # Load the note we just created
+            saved_path = research_result.get("saved_to")
+            if not saved_path:
+                return {**research_result, "eval_error": "No note path available"}
+
+            # Re-run search to get sources for evaluation context
+            search_result = await self._cmd_search(args)
+            all_sources = (
+                search_result.get("kb_results", []) +
+                search_result.get("web_results", [])
+            )
+
+            # Load the saved note
+            from pathlib import Path
+            note_path = Path(saved_path)
+            note_content = note_path.read_text()
+
+            # Reconstruct minimal note for evaluation
+            from .inference import ZettelkastenNote
+            from datetime import datetime
+
+            # Parse some metadata from content
+            note = ZettelkastenNote(
+                query=args,
+                content=note_content,
+            )
+
+            # Evaluate - check for backend hint in domain
+            backend = None
+            if self.state.domain and self.state.domain.startswith("eval:"):
+                backend = self.state.domain.split(":")[1]
+
+            evaluator = SynthesisEvaluator(backend=backend)
+            eval_result = await evaluator.evaluate(note, all_sources)
+            eval_result.note_path = str(saved_path)
+
+            # Save evaluation
+            eval_path = eval_result.save()
+
+            return {
+                **research_result,
+                "evaluation": {
+                    "overall_score": round(eval_result.overall_score, 2),
+                    "dimension_scores": {
+                        ds.dimension: ds.score
+                        for ds in eval_result.dimension_scores
+                    },
+                    "strengths": eval_result.strengths[:3],
+                    "weaknesses": eval_result.weaknesses[:3],
+                    "eval_saved_to": str(eval_path),
+                },
+            }
+        except ImportError as e:
+            return {**research_result, "eval_error": f"Evaluation not available: {e}"}
+        except Exception as e:
+            return {**research_result, "eval_error": str(e)}
+
+    async def _cmd_eval(self, args: str) -> dict:
+        """Evaluate an existing Zettelkasten note."""
+        if not args:
+            raise ValueError("eval requires a note path")
+
+        try:
+            from pathlib import Path
+            from .inference import (
+                SynthesisEvaluator,
+                ZettelkastenNote,
+            )
+
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+            note_path = kb_root / args if not args.startswith("/") else Path(args)
+
+            if not note_path.exists():
+                return {"error": f"Note not found: {args}"}
+
+            # Read and parse note
+            content = note_path.read_text()
+
+            # Extract query from title (first # line)
+            import re
+            title_match = re.search(r'^# (.+)$', content, re.MULTILINE)
+            query = title_match.group(1) if title_match else "unknown"
+
+            note = ZettelkastenNote(
+                query=query,
+                content=content,
+            )
+
+            # For evaluation we need sources - try to extract from note
+            # This is a simplified version; ideally we'd store sources separately
+            sources = []
+
+            # Evaluate
+            evaluator = SynthesisEvaluator()
+            eval_result = await evaluator.evaluate(note, sources)
+            eval_result.note_path = str(note_path)
+
+            # Save evaluation
+            eval_path = eval_result.save()
+
+            return {
+                "note_path": str(note_path),
+                "query": query,
+                "overall_score": round(eval_result.overall_score, 2),
+                "dimension_scores": {
+                    ds.dimension: ds.score
+                    for ds in eval_result.dimension_scores
+                },
+                "strengths": eval_result.strengths,
+                "weaknesses": eval_result.weaknesses,
+                "improvement_suggestions": eval_result.improvement_suggestions,
+                "eval_saved_to": str(eval_path),
+            }
+        except ImportError as e:
+            raise RuntimeError(f"Evaluation not available: {e}")
+
+    def _cmd_eval_stats(self) -> dict:
+        """Show aggregate evaluation statistics."""
+        try:
+            from .inference import load_evaluations, compute_aggregate_scores
+
+            results = load_evaluations()
+
+            if not results:
+                return {
+                    "total_evaluations": 0,
+                    "message": "No evaluations found. Run /research! to generate evaluated notes.",
+                }
+
+            aggregates = compute_aggregate_scores(results)
+
+            # Get recent trend (last 5 vs all)
+            recent = results[-5:] if len(results) > 5 else results
+            recent_agg = compute_aggregate_scores(recent)
+
+            return {
+                "total_evaluations": len(results),
+                "overall_average": round(aggregates.get("overall", 0), 2),
+                "dimension_averages": {
+                    k: round(v, 2)
+                    for k, v in aggregates.items()
+                    if k != "overall"
+                },
+                "recent_trend": {
+                    "count": len(recent),
+                    "overall": round(recent_agg.get("overall", 0), 2),
+                },
+                "best_scoring": max(results, key=lambda r: r.overall_score).note_path if results else None,
+                "worst_scoring": min(results, key=lambda r: r.overall_score).note_path if results else None,
+            }
+        except ImportError as e:
+            raise RuntimeError(f"Evaluation not available: {e}")
 
     def _cmd_technique(self, args: str) -> dict:
         """Set or show optillm technique."""

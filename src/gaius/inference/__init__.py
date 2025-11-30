@@ -13,10 +13,29 @@ Usage:
     # Search
     search = get_search()
     results = await search.search("query")
+
+    # Synthesis
+    from gaius.inference import synthesize_search
+    note = await synthesize_search(query, kb_results, web_results)
 """
 
 from .config import InferenceConfig, InferenceBackend, OptillmTechnique
 from .client import InferenceClient, Message, CompletionResult
+from .synthesis import (
+    ZettelkastenSynthesizer,
+    ZettelkastenNote,
+    Citation,
+    synthesize_search,
+)
+from .evaluation import (
+    SynthesisEvaluator,
+    EvaluationResult,
+    DimensionScore,
+    evaluate_synthesis,
+    load_evaluations,
+    compute_aggregate_scores,
+    EVAL_DIMENSIONS,
+)
 
 __all__ = [
     # Config
@@ -27,6 +46,19 @@ __all__ = [
     "InferenceClient",
     "Message",
     "CompletionResult",
+    # Synthesis
+    "ZettelkastenSynthesizer",
+    "ZettelkastenNote",
+    "Citation",
+    "synthesize_search",
+    # Evaluation
+    "SynthesisEvaluator",
+    "EvaluationResult",
+    "DimensionScore",
+    "evaluate_synthesis",
+    "load_evaluations",
+    "compute_aggregate_scores",
+    "EVAL_DIMENSIONS",
     # Factory functions
     "get_client",
     "get_search",

@@ -25,7 +25,6 @@ resources/audit/
 resources/prod/
 docs/*.md
 docs/notes/
-scripts/
 
 .venv
 
