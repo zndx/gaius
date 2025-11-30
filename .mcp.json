@@ -8,7 +8,8 @@
         "OPTILLM_API_KEY": "sk-optillm",
         "GAIUS_OPTILLM_URL": "http://localhost:8080/v1",
         "GAIUS_VLLM_URL": "http://localhost:8088/v1",
-        "GAIUS_KB_ROOT": "build/dev"
+        "GAIUS_KB_ROOT": "build/dev",
+        "GAIUS_OFFLINE": "true"
       }
     }
   }
