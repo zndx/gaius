@@ -651,7 +651,9 @@ uv run mypy src/gaius
 
 ## License
 
-MIT
+Apache License 2.0 - See [LICENSE](LICENSE) for details.
+
+Copyright 2025 Cloudera, Inc.
 
 ---
 
