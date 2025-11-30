@@ -94,12 +94,12 @@ class GaiusApp(App):
 
     /* ─────────────────────────────────────────────────────────────────────
        LEFT PANEL (Files/Agents)
+       Light background shading for visual separation (no borders)
        ───────────────────────────────────────────────────────────────────── */
     #left-panel {
         width: 24;
         height: 100%;
-        background: $surface-darken-1;
-        border-right: solid $primary-darken-2;
+        background: $surface-lighten-1;
         overflow: hidden;
     }
 
@@ -156,12 +156,11 @@ class GaiusApp(App):
         margin-bottom: 1;
     }
 
-    /* Mini-grid styling */
+    /* Mini-grid styling - light background shading instead of borders */
     MiniGrid {
         width: 21;
         height: 11;
-        border: round $primary-darken-2;
-        background: $surface-darken-1;
+        background: $surface-lighten-1;
         padding: 0 1;
         overflow: hidden;
     }
@@ -184,14 +183,13 @@ class GaiusApp(App):
         color: $text;
     }
 
-    /* Note editor below location indicator */
+    /* Note editor below location indicator - subtle background distinction */
     #note-editor {
         width: 100%;
         height: 1fr;
         min-height: 5;
         margin-top: 1;
-        border: solid $primary-darken-2;
-        background: $surface;
+        background: $surface-lighten-1;
     }
 
     #note-editor TextArea {
@@ -206,12 +204,12 @@ class GaiusApp(App):
 
     /* ─────────────────────────────────────────────────────────────────────
        RIGHT PANEL (Content)
+       Light background shading for visual separation (no borders)
        ───────────────────────────────────────────────────────────────────── */
     #right-panel {
         width: 32;
         height: 100%;
-        background: $surface-darken-1;
-        border-left: solid $primary-darken-2;
+        background: $surface-lighten-1;
         overflow: hidden;
     }
 
@@ -227,12 +225,12 @@ class GaiusApp(App):
 
     /* ─────────────────────────────────────────────────────────────────────
        COMMAND INPUT (Bottom)
+       Darker background for visual distinction (no borders)
        ───────────────────────────────────────────────────────────────────── */
     CommandInput {
         dock: bottom;
         height: 3;
-        background: $surface-darken-2;
-        border-top: solid $primary-darken-2;
+        background: $surface-darken-1;
         padding: 0 1;
     }
 
@@ -679,9 +677,44 @@ class GaiusApp(App):
             graph.update_for_file(event.new_path)
 
     def on_graph_view_node_highlighted(self, event: GraphView.NodeHighlighted) -> None:
-        """Sync FileTree cursor when graph cursor moves."""
+        """Sync FileTree cursor and preview content when graph cursor moves."""
         file_tree = self.query_one("#file-tree", FileTree)
         file_tree.highlight_path(event.filepath)
+
+        # Preview file content in ContentPanel
+        content_panel = self.query_one("#content-panel", ContentPanel)
+        filepath = event.filepath
+
+        # Ensure .md extension
+        if not filepath.endswith(".md"):
+            filepath = f"{filepath}.md"
+
+        path = Path(filepath)
+        # Normalize relative paths to KB root
+        if not path.is_absolute():
+            kb_root = Path("build/dev")
+            allowed_dirs = ("archive", "current", "scratch")
+            parts = path.parts
+            kb_parts = kb_root.parts
+
+            if parts[:len(kb_parts)] != kb_parts:
+                if parts and parts[0] in allowed_dirs:
+                    path = kb_root / path
+                else:
+                    path = kb_root / path
+
+        # Show preview if file exists
+        if path.exists() and path.is_file():
+            try:
+                text = path.read_text()
+                # Truncate for preview (first 500 chars or 20 lines)
+                lines = text.split("\n")[:20]
+                preview = "\n".join(lines)
+                if len(text) > len(preview):
+                    preview += "\n\n... (truncated)"
+                content_panel.show_file(path.name, preview)
+            except Exception:
+                pass  # Silently ignore read errors during preview
 
     def on_graph_view_node_selected(self, event: GraphView.NodeSelected) -> None:
         """Open file when Enter pressed on graph node."""

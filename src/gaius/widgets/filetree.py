@@ -30,13 +30,12 @@ class FileTree(Widget):
     """Hierarchical file/agent browser.
 
     Plan 9 inspired: agents are represented as files.
-    Structure:
-    /
-    ├── Agents/     (virtual, represents swarm)
-    └── KB/
-        ├── current/  (manual organization)
-        ├── scratch/  (Zettelkasten, date-organized)
-        └── archive/  (quarterly)
+    Structure (root node hidden):
+    Agents/     (virtual, represents swarm)
+    KB/
+    ├── current/  (manual organization)
+    ├── scratch/  (Zettelkasten, date-organized)
+    └── archive/  (quarterly)
 
     The KB section scans the actual filesystem under kb_root.
     """
@@ -72,7 +71,8 @@ class FileTree(Widget):
 
     def compose(self):
         """Compose the tree widget."""
-        self._tree = Tree("/", id="kb-tree")
+        self._tree = Tree("Gaius", id="kb-tree")
+        self._tree.show_root = False  # Hide the root node for cleaner UX
         self._tree.root.expand()
         self._populate_tree()
         yield self._tree
