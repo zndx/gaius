@@ -16,7 +16,9 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import Static, Header, Footer
 
-from .core.state import AppState, ViewMode, OverlayMode
+from .core.state import AppState, ViewMode, OverlayMode, CenterPanelMode
+from .core.config import get_config, GaiusConfig
+from .core.telemetry import init_from_config as init_telemetry
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
 from .widgets.filetree import FileTree, FileTreeSelection, FileTreeHighlight
@@ -25,6 +27,7 @@ from .widgets.command import CommandInput, CommandSubmitted
 from .widgets.location import LocationIndicator
 from .widgets.note_editor import NoteEditor
 from .widgets.graph_view import GraphView
+from .widgets.think_panel import ThinkPanel
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -170,8 +173,25 @@ class GaiusApp(App):
         width: 40;
         height: 21;
         margin-left: 1;
-        background: $surface-darken-1;
+        background: $surface-lighten-1;
         overflow: hidden;
+    }
+
+    #graph-view.hidden {
+        display: none;
+    }
+
+    /* Think panel (reasoning traces) - same size as graph view */
+    #think-panel {
+        width: 40;
+        height: 21;
+        margin-left: 1;
+        background: $surface-lighten-1;
+        overflow: hidden;
+    }
+
+    #think-panel.hidden {
+        display: none;
     }
 
     /* Location indicator below main grid */
@@ -278,11 +298,40 @@ class GaiusApp(App):
         Binding("q", "quit_hint", "Quit", show=False),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, profile: str | None = None) -> None:
         super().__init__()
+        self.config = get_config(profile=profile)
+        init_telemetry(self.config)  # Initialize OpenTelemetry
         self.state = AppState()
         self._graph_update_timer: Timer | None = None
+        self._apply_config()
         self._load_test_data()
+
+    def _apply_config(self) -> None:
+        """Apply HOCON configuration to app state."""
+        ui = self.config.ui
+
+        # Apply UI state from config
+        self.state.left_panel_visible = ui.left_panel_visible
+        self.state.right_panel_visible = ui.right_panel_visible
+
+        # Apply view mode
+        try:
+            self.state.view_mode = ViewMode(ui.view_mode)
+        except ValueError:
+            pass  # Keep default
+
+        # Apply overlay mode
+        try:
+            self.state.overlay_mode = OverlayMode(ui.overlay_mode)
+        except ValueError:
+            pass  # Keep default
+
+        # Apply center panel mode
+        try:
+            self.state.center_panel_mode = CenterPanelMode(ui.center_panel_mode)
+        except ValueError:
+            pass  # Keep default
 
     def _load_test_data(self) -> None:
         """Initialize with static test data."""
@@ -320,7 +369,7 @@ class GaiusApp(App):
                     yield FileTree(
                         self.state,
                         agents=AGENT_DATA,
-                        kb_root="build/dev",
+                        kb_root=self.config.kb.root,
                         id="file-tree",
                     )
 
@@ -342,8 +391,11 @@ class GaiusApp(App):
                             yield MiniGrid("Embed", id="minigrid-top", classes="right")
                             yield MiniGrid("Iso", id="minigrid-bottom", classes="bottom-right")
 
-                        # Graph view (wiki-links) - hidden by default, 'g' to show
-                        yield GraphView(kb_root="build/dev", id="graph-view", classes="hidden")
+                        # Graph view (wiki-links) - hidden by default, 'g' cycles modes
+                        yield GraphView(kb_root=self.config.kb.root, id="graph-view", classes="hidden")
+
+                        # Think panel (reasoning traces) - hidden by default, 'g' cycles modes
+                        yield ThinkPanel(self.state, id="think-panel", classes="hidden")
 
                     # Note editor below the grids (hidden by default, Ctrl-N to show)
                     yield NoteEditor(id="note-editor", classes="hidden")
@@ -364,12 +416,21 @@ class GaiusApp(App):
         coord = self.state.cursor_coord
         domain = self.state.domain[:20] + "..." if len(self.state.domain) > 23 else self.state.domain
 
+        # Center panel mode indicator
+        center_mode = self.state.center_panel_mode.value.upper()
+        center_style = {
+            "GRAPH": "blue",
+            "THINK": "magenta",
+            "NONE": "dim",
+        }.get(center_mode, "white")
+
         return (
             f"[bold green]{mode}[/] │ "
             f"[yellow]{overlay}[/] │ "
+            f"[{center_style}]{center_mode}[/] │ "
             f"[bold cyan]{coord}[/] │ "
             f"{domain} │ "
-            f"[dim]hjkl:move o:overlay v:view /:cmd[/]"
+            f"[dim]hjkl:move o:overlay v:view g:panel /:cmd[/]"
         )
 
     def _update_status(self) -> None:
@@ -564,16 +625,32 @@ class GaiusApp(App):
         content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
 
     def action_toggle_graph(self) -> None:
-        """Toggle graph view visibility."""
+        """Cycle center panel mode: GRAPH → THINK → NONE → GRAPH."""
         graph = self.query_one("#graph-view", GraphView)
-        graph.toggle()
+        think = self.query_one("#think-panel", ThinkPanel)
 
-        # If showing, scan KB and update for current note
-        if not graph.has_class("hidden"):
+        # Cycle to next mode
+        new_mode = self.state.cycle_center_panel_mode()
+
+        # Update visibility based on mode
+        if new_mode == CenterPanelMode.GRAPH:
+            graph.remove_class("hidden")
+            think.add_class("hidden")
+            # Refresh graph content
             graph.scan_kb()
             editor = self.query_one("#note-editor", NoteEditor)
             if editor.current_file:
                 graph.update_for_file(editor.current_file)
+        elif new_mode == CenterPanelMode.THINK:
+            graph.add_class("hidden")
+            think.remove_class("hidden")
+            think.refresh()
+        else:  # NONE
+            graph.add_class("hidden")
+            think.add_class("hidden")
+
+        # Update status to show current mode
+        self._update_status()
 
     def action_quit_hint(self) -> None:
         """Show quit hint instead of immediately quitting."""
@@ -585,10 +662,99 @@ class GaiusApp(App):
     # ─────────────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        """Initialize on mount."""
+        """Initialize on mount - runs enterApp startup procedure."""
         self._refresh_grid()
         self._update_minigrids()
         self._update_explanation()
+
+        # Apply panel visibility from config
+        if not self.state.left_panel_visible:
+            self.query_one("#left-panel").add_class("hidden")
+        if not self.state.right_panel_visible:
+            self.query_one("#right-panel").add_class("hidden")
+
+        # Apply center panel mode from config
+        self._apply_center_panel_mode()
+
+        # Run enterApp startup procedure
+        self._run_startup_commands()
+
+    def _apply_center_panel_mode(self) -> None:
+        """Apply center panel mode visibility from state."""
+        graph = self.query_one("#graph-view", GraphView)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        mode = self.state.center_panel_mode
+        if mode == CenterPanelMode.GRAPH:
+            graph.remove_class("hidden")
+            think.add_class("hidden")
+        elif mode == CenterPanelMode.THINK:
+            graph.add_class("hidden")
+            think.remove_class("hidden")
+        else:  # NONE
+            graph.add_class("hidden")
+            think.add_class("hidden")
+
+    def _run_startup_commands(self) -> None:
+        """Execute startup commands from HOCON config.
+
+        Like devenv's enterShell, this runs a sequence of commands
+        when the app starts. Profile-specific commands allow for
+        different startup behaviors per environment.
+        """
+        startup = self.config.startup
+        content = self.query_one("#content-panel", ContentPanel)
+
+        # Run each startup command
+        commands_run = []
+        for cmd in startup.commands:
+            # Execute command (silently)
+            self._execute_command(cmd)
+            commands_run.append(cmd)
+
+        # Show situational awareness summary if enabled
+        if startup.show_situational:
+            self._show_situational_summary(commands_run)
+
+    def _show_situational_summary(self, commands_run: list[str]) -> None:
+        """Display situational awareness summary on startup."""
+        from datetime import datetime
+
+        content = self.query_one("#content-panel", ContentPanel)
+        awareness = self.config.awareness
+
+        # Build summary
+        now = datetime.now()
+        lines = [
+            f"# Gaius {self.config.app.version}",
+            f"**Profile:** {self.config.profile}",
+            f"**Started:** {now.strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "## Awareness Horizons",
+            f"- Emphasis: {awareness.emphasis_hours}h",
+            f"- Default: {awareness.default_horizon_days}d",
+            f"- Strategic: {awareness.strategic_horizon_days}d",
+            f"- Secular: {awareness.secular_horizon_days}d",
+            "",
+            f"## Domain",
+            f"{self.state.domain}",
+            "",
+        ]
+
+        if commands_run:
+            lines.extend([
+                "## Startup Commands",
+                *[f"- `{cmd}`" for cmd in commands_run],
+                "",
+            ])
+
+        # Add hints
+        lines.extend([
+            "---",
+            "*Press ? for help, / for commands*",
+        ])
+
+        content.show_file("startup.md", "\n".join(lines))
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
         """Handle command submission."""
@@ -840,7 +1006,17 @@ class GaiusApp(App):
 
 def main():
     """Entry point for the Gaius TUI."""
-    app = GaiusApp()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Gaius - Spatial Intelligence Interface")
+    parser.add_argument(
+        "--profile", "-p",
+        help="Configuration profile to load (default, cloudera, weathership)",
+        default=None,
+    )
+    args = parser.parse_args()
+
+    app = GaiusApp(profile=args.profile)
     app.run()
 
 

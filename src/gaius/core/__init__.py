@@ -1,6 +1,6 @@
 """Core application logic."""
 
-from .state import AppState, ViewMode, OverlayMode
+from .state import AppState, ViewMode, OverlayMode, CenterPanelMode, ReasoningTrace
 from .links import LinkGraph, parse_wikilinks, resolve_link, create_linked_file
 from .config import (
     GaiusConfig,
@@ -21,12 +21,23 @@ from .config import (
     AwarenessConfig,
     TelemetryConfig,
 )
+from .telemetry import (
+    get_tracer,
+    get_meter,
+    trace_operation,
+    init_from_config as init_telemetry,
+    record_search,
+    record_inference,
+    record_swarm_round,
+)
 
 __all__ = [
     # State
     "AppState",
     "ViewMode",
     "OverlayMode",
+    "CenterPanelMode",
+    "ReasoningTrace",
     # Links
     "LinkGraph",
     "parse_wikilinks",
@@ -50,4 +61,12 @@ __all__ = [
     "StartupConfig",
     "AwarenessConfig",
     "TelemetryConfig",
+    # Telemetry
+    "get_tracer",
+    "get_meter",
+    "trace_operation",
+    "init_telemetry",
+    "record_search",
+    "record_inference",
+    "record_swarm_round",
 ]

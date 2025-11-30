@@ -1,6 +1,7 @@
 """Application state management."""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -20,6 +21,33 @@ class OverlayMode(Enum):
     H2 = "h2"      # Voids
     AGENTS = "agents"
     TEMPORAL = "temporal"
+
+
+class CenterPanelMode(Enum):
+    """Mode for the center auxiliary panel (graph area).
+
+    Cycles: GRAPH → THINK → NONE → GRAPH
+    """
+    GRAPH = "graph"   # Wiki-link graph visualization
+    THINK = "think"   # Reasoning traces and agent thinking
+    NONE = "none"     # Hidden (more space for main grid)
+
+
+@dataclass
+class ReasoningTrace:
+    """A captured reasoning trace from agent/inference operations.
+
+    Used to populate the ThinkPanel with condensed reasoning history.
+    """
+    timestamp: datetime
+    operation: str      # "search", "synthesis", "inference", "swarm"
+    query: str          # What was being processed
+    summary: str        # Condensed summary of the reasoning
+    tokens: int = 0     # Token count if applicable
+    sources: int = 0    # Number of sources consulted
+    technique: str = "" # optillm technique used (e.g., "cot_reflection")
+    duration_ms: int = 0  # Operation duration
+    full_trace: str = ""  # Full reasoning text (may be truncated)
 
 
 @dataclass
@@ -65,6 +93,13 @@ class AppState:
     # Agent positions (list of (name, x, y, color))
     agent_positions: list = field(default_factory=list)
 
+    # Center panel mode (graph/think/none)
+    center_panel_mode: CenterPanelMode = CenterPanelMode.GRAPH
+
+    # Think mode state
+    active_reasoning: Optional[str] = None  # Current reasoning being displayed
+    reasoning_traces: list = field(default_factory=list)  # History of ReasoningTrace
+
     def move_cursor(self, dx: int, dy: int) -> bool:
         """Move cursor by delta, return True if moved."""
         new_x = max(0, min(18, self.cursor_x + dx))
@@ -103,6 +138,24 @@ class AppState:
         """Toggle candidate display."""
         self.show_candidates = not self.show_candidates
         return self.show_candidates
+
+    def cycle_center_panel_mode(self) -> CenterPanelMode:
+        """Cycle through center panel modes: GRAPH → THINK → NONE → GRAPH."""
+        modes = [CenterPanelMode.GRAPH, CenterPanelMode.THINK, CenterPanelMode.NONE]
+        idx = modes.index(self.center_panel_mode)
+        self.center_panel_mode = modes[(idx + 1) % len(modes)]
+        return self.center_panel_mode
+
+    def add_reasoning_trace(self, trace: ReasoningTrace) -> None:
+        """Add a reasoning trace to history (max 50 entries)."""
+        self.reasoning_traces.append(trace)
+        # Keep only last 50 traces
+        if len(self.reasoning_traces) > 50:
+            self.reasoning_traces = self.reasoning_traces[-50:]
+
+    def set_active_reasoning(self, text: str | None) -> None:
+        """Set the current active reasoning text."""
+        self.active_reasoning = text
 
     def add_command(self, cmd: str) -> None:
         """Add command to history."""

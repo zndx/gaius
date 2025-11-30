@@ -8,6 +8,7 @@ from .command import CommandInput
 from .location import LocationIndicator
 from .note_editor import NoteEditor
 from .graph_view import GraphView
+from .think_panel import ThinkPanel
 
 __all__ = [
     "MainGrid",
@@ -19,4 +20,5 @@ __all__ = [
     "LocationIndicator",
     "NoteEditor",
     "GraphView",
+    "ThinkPanel",
 ]
