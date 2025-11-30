@@ -1,0 +1,59 @@
+"""Gaius Inference Module.
+
+Provides local-first inference with optillm optimization techniques,
+web search via Brave API, and KB population tools.
+
+Usage:
+    from gaius.inference import get_client, get_search
+
+    # Inference
+    client = get_client()
+    response = await client.complete([Message(role="user", content="Hello")])
+
+    # Search
+    search = get_search()
+    results = await search.search("query")
+"""
+
+from .config import InferenceConfig, InferenceBackend, OptillmTechnique
+from .client import InferenceClient, Message, CompletionResult
+
+__all__ = [
+    # Config
+    "InferenceConfig",
+    "InferenceBackend",
+    "OptillmTechnique",
+    # Client
+    "InferenceClient",
+    "Message",
+    "CompletionResult",
+    # Factory functions
+    "get_client",
+    "get_search",
+]
+
+# Module-level singletons (lazy initialized)
+_client: InferenceClient | None = None
+_search = None  # Will be BraveSearch when implemented
+
+
+def get_client(config: InferenceConfig | None = None) -> InferenceClient:
+    """Get or create the inference client singleton."""
+    global _client
+    if _client is None:
+        _client = InferenceClient(config or InferenceConfig.from_env())
+    return _client
+
+
+def get_search():
+    """Get or create the search client singleton."""
+    global _search
+    if _search is None:
+        from .search.brave import BraveSearch
+
+        config = InferenceConfig.from_env()
+        if config.brave_api_key:
+            _search = BraveSearch(config.brave_api_key)
+        else:
+            raise RuntimeError("BRAVE_API_KEY not set")
+    return _search

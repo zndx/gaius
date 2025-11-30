@@ -9,6 +9,8 @@ description = "Spatial Intelligence Interface - CLI-first TUI for complex data d
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "math-verify>=0.8.0",
+    "optillm>=0.3.9",
     "textual>=0.60.0",
 ]
 
@@ -29,10 +31,26 @@ full = [
     "gaius[tda]",
     "gaius[swarm]",
 ]
+# Inference features (optillm, vLLM)
+inference = [
+    "openai>=1.0.0",
+    "httpx>=0.25.0",
+]
+# Search features (Brave API)
+search = [
+    "gaius[inference]",
+]
+# MCP server
+mcp = [
+    "gaius[inference]",
+    "gaius[search]",
+    "mcp>=1.0.0",
+]
 
 [project.scripts]
 gaius = "gaius.app:main"
 gaius-cli = "gaius.cli:main"
+gaius-mcp = "gaius.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gaius"]

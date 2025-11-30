@@ -22,8 +22,11 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
+import os
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from .core.state import AppState, ViewMode, OverlayMode
@@ -46,6 +49,10 @@ class GaiusCLI:
         self.error = error
         self.format = "text"
         self._load_test_data()
+
+    def _run_async(self, coro):
+        """Run an async coroutine synchronously."""
+        return asyncio.run(coro)
 
     def _load_test_data(self) -> None:
         """Initialize with static test data."""
@@ -93,6 +100,17 @@ class GaiusCLI:
                 result["data"] = self._cmd_grid()
             elif command == "help":
                 result["data"] = self._cmd_help()
+            # Inference commands (async)
+            elif command == "ask":
+                result["data"] = self._run_async(self._cmd_ask(args))
+            elif command == "search":
+                result["data"] = self._run_async(self._cmd_search(args))
+            elif command == "research":
+                result["data"] = self._run_async(self._cmd_research(args))
+            elif command == "technique":
+                result["data"] = self._cmd_technique(args)
+            elif command == "kb":
+                result["data"] = self._cmd_kb(args)
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -198,8 +216,179 @@ class GaiusCLI:
                 "agents": "List all agents",
                 "grid": "Get ASCII grid representation",
                 "help": "Show this help",
+                # Inference commands
+                "ask <question>": "Query local LLM (optillm)",
+                "search <query>": "Web search via Brave API",
+                "research <topic>": "Research topic and save to KB",
+                "technique [name]": "Set or show optillm technique",
+                "kb <subcommand>": "KB operations (list, read <path>, search <query>)",
             }
         }
+
+    # --- Inference Commands ---
+
+    async def _cmd_ask(self, args: str) -> dict:
+        """Query local LLM via optillm."""
+        if not args:
+            raise ValueError("ask requires a question")
+
+        try:
+            from .inference import get_client, Message
+
+            client = get_client()
+            result = await client.complete(
+                messages=[Message(role="user", content=args)],
+            )
+
+            return {
+                "response": result.content,
+                "model": result.model,
+                "technique": result.technique,
+                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+            }
+        except ImportError:
+            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+
+    async def _cmd_search(self, args: str) -> dict:
+        """Web search via Brave API."""
+        if not args:
+            raise ValueError("search requires a query")
+
+        try:
+            from .inference import get_search
+
+            search = get_search()
+            results = await search.search(args, count=5)
+
+            return {
+                "query": args,
+                "results": [
+                    {"title": r.title, "url": r.url, "snippet": r.snippet[:100]}
+                    for r in results
+                ],
+            }
+        except ImportError:
+            raise RuntimeError("Search not available. Run: uv sync --extra inference")
+        except RuntimeError as e:
+            raise RuntimeError(f"Search failed: {e}")
+
+    async def _cmd_research(self, args: str) -> dict:
+        """Research topic and save to KB."""
+        if not args:
+            raise ValueError("research requires a topic")
+
+        try:
+            from .inference import get_client, get_search, Message
+            from datetime import datetime
+
+            # Search
+            search = get_search()
+            results = await search.search_for_kb(args, self.state.domain or "general")
+
+            if not results:
+                return {"error": "No search results found"}
+
+            # Synthesize
+            sources_text = "\n".join(
+                f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
+            )
+
+            client = get_client()
+            synthesis = await client.complete(
+                messages=[
+                    Message(
+                        role="system",
+                        content=f"You are a research assistant for {self.state.domain or 'general topics'}.",
+                    ),
+                    Message(
+                        role="user",
+                        content=f"Topic: {args}\n\nSources:\n{sources_text}\n\nCreate a structured note.",
+                    ),
+                ],
+                technique="cot_reflection",
+            )
+
+            # Save to KB
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+            today = datetime.now().strftime("%Y-%m-%d")
+            timestamp = datetime.now().strftime("%H%M%S")
+            safe_topic = args.replace(" ", "_").replace("/", "-")[:50]
+            kb_path = kb_root / "scratch" / today / f"{timestamp}_{safe_topic}.md"
+
+            kb_path.parent.mkdir(parents=True, exist_ok=True)
+            content = f"# {args}\n\nCreated: {datetime.now().isoformat()}\n\n---\n\n{synthesis.content}\n\n---\n\n## Sources\n\n{sources_text}"
+            kb_path.write_text(content)
+
+            return {
+                "topic": args,
+                "saved_to": str(kb_path),
+                "sources": len(results),
+            }
+        except ImportError:
+            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+
+    def _cmd_technique(self, args: str) -> dict:
+        """Set or show optillm technique."""
+        try:
+            from .inference import get_client
+            from .inference.config import OptillmTechnique
+
+            client = get_client()
+
+            if args:
+                client.set_technique(args)
+                return {"technique": args, "status": "set"}
+            else:
+                return {
+                    "current": client.config.optillm_technique.value or "none",
+                    "available": [t.value for t in OptillmTechnique if t.value],
+                }
+        except ImportError:
+            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+
+    def _cmd_kb(self, args: str) -> dict:
+        """KB operations."""
+        parts = args.split(maxsplit=1)
+        subcmd = parts[0] if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+
+        kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+        allowed_dirs = ("archive", "current", "scratch")
+
+        if subcmd == "list":
+            entries = []
+            for d in allowed_dirs:
+                dir_path = kb_root / d
+                if dir_path.exists():
+                    for f in dir_path.rglob("*.md"):
+                        entries.append(str(f.relative_to(kb_root)))
+            return {"entries": entries, "total": len(entries)}
+
+        elif subcmd == "read":
+            if not subargs:
+                raise ValueError("kb read requires a path")
+            path = kb_root / subargs
+            if not path.exists():
+                return {"error": f"Not found: {subargs}"}
+            return {"path": subargs, "content": path.read_text()}
+
+        elif subcmd == "search":
+            if not subargs:
+                raise ValueError("kb search requires a query")
+            results = []
+            for d in allowed_dirs:
+                dir_path = kb_root / d
+                if not dir_path.exists():
+                    continue
+                for f in dir_path.rglob("*.md"):
+                    if subargs.lower() in f.name.lower():
+                        results.append(str(f.relative_to(kb_root)))
+                    elif subargs.lower() in f.read_text().lower():
+                        results.append(str(f.relative_to(kb_root)))
+            return {"query": subargs, "results": results}
+
+        else:
+            return {"error": f"Unknown kb subcommand: {subcmd}"}
 
     def _parse_coord(self, coord: str) -> tuple[int, int]:
         """Parse coordinate string like 'K10' to (x, y)."""
