@@ -87,6 +87,23 @@
   tasks = {
     "docs:build".exec = "mdbook build docs";
     "docs:open".exec = "mdbook build docs --open";
+
+    # MCP server tasks
+    "mcp:test".exec = ''
+      # Test that MCP server can start (useful for debugging)
+      PYTHONPATH="" .devenv/state/venv/bin/python -c "from gaius.mcp_server import create_server; print('MCP server OK')"
+    '';
+  };
+
+  # MCP server as an optional process (for debugging - Claude Code manages its own)
+  processes.gaius-mcp = {
+    exec = ''
+      # Clear PYTHONPATH to avoid Nix store conflicts
+      export PYTHONPATH=""
+      exec .devenv/state/venv/bin/python -m gaius.mcp_server
+    '';
+    # Not started by default - use `devenv up gaius-mcp` to start manually
+    process-compose.disabled = true;
   };
 }
 

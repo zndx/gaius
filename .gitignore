@@ -36,6 +36,7 @@ docs/notes/
 
 .DS*
 .env
+.mcp.json
 
 docs/book
 

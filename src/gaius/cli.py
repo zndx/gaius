@@ -117,6 +117,16 @@ class GaiusCLI:
                 result["data"] = self._cmd_technique(args)
             elif command == "kb":
                 result["data"] = self._cmd_kb(args)
+            # Scheduler commands
+            elif command == "scheduler" or command == "sched":
+                result["data"] = self._run_async(self._cmd_scheduler(args))
+            elif command == "submit":
+                result["data"] = self._run_async(self._cmd_submit(args))
+            elif command == "swarm":
+                result["data"] = self._run_async(self._cmd_swarm(args))
+            # GPU Orchestrator commands
+            elif command == "gpu" or command == "orch":
+                result["data"] = self._run_async(self._cmd_gpu(args))
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -231,6 +241,12 @@ class GaiusCLI:
                 "eval-stats": "Show aggregate evaluation statistics",
                 "technique [name]": "Set or show optillm technique",
                 "kb <subcommand>": "KB operations (list, read <path>, search <query>)",
+                # Scheduler commands
+                "scheduler [cmd]": "Scheduler ops (status, health, metrics, start, stop)",
+                "submit [flags] <prompt>": "Submit job (flags: priority:high model:name)",
+                "swarm <domain> [context]": "Run swarm analysis with optimal scheduling",
+                # GPU Orchestrator commands
+                "gpu [cmd] [args]": "GPU orchestrator (status, start, stop, restart, logs, health)",
             }
         }
 
@@ -634,6 +650,245 @@ class GaiusCLI:
                 }
         except ImportError:
             raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+
+    # --- Scheduler Commands ---
+
+    async def _cmd_scheduler(self, args: str) -> dict:
+        """Scheduler operations: status, health, metrics."""
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+
+        try:
+            from .inference.scheduler import get_scheduler_service
+
+            service = get_scheduler_service()
+
+            if subcmd == "status":
+                return service.get_status()
+
+            elif subcmd == "health":
+                health = await service.health_check()
+                return {
+                    "endpoints": health,
+                    "all_healthy": all(health.values()),
+                    "healthy_count": sum(1 for v in health.values() if v),
+                }
+
+            elif subcmd == "metrics":
+                return service.get_metrics()
+
+            elif subcmd == "start":
+                await service.start()
+                return {"status": "started"}
+
+            elif subcmd == "stop":
+                await service.stop()
+                return {"status": "stopped"}
+
+            else:
+                return {"error": f"Unknown scheduler command: {subcmd}"}
+
+        except ImportError as e:
+            raise RuntimeError(f"Scheduler not available: {e}")
+
+    async def _cmd_submit(self, args: str) -> dict:
+        """Submit an inference job to the scheduler.
+
+        Usage: /submit [priority:high] [model:qwen] <prompt>
+        """
+        if not args:
+            raise ValueError("submit requires a prompt")
+
+        try:
+            from .inference.scheduler import (
+                get_scheduler_service,
+                Job,
+                JobPriority,
+            )
+
+            # Parse optional flags
+            priority = JobPriority.NORMAL
+            model = ""
+            prompt_parts = []
+
+            for part in args.split():
+                if part.startswith("priority:"):
+                    p = part.split(":")[1].lower()
+                    priority_map = {
+                        "critical": JobPriority.CRITICAL,
+                        "high": JobPriority.HIGH,
+                        "normal": JobPriority.NORMAL,
+                        "low": JobPriority.LOW,
+                    }
+                    priority = priority_map.get(p, JobPriority.NORMAL)
+                elif part.startswith("model:"):
+                    model = part.split(":")[1]
+                else:
+                    prompt_parts.append(part)
+
+            prompt = " ".join(prompt_parts)
+            if not prompt:
+                raise ValueError("submit requires a prompt after flags")
+
+            service = get_scheduler_service()
+
+            job = Job(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                priority=priority,
+            )
+
+            result = await service.submit(job)
+
+            return {
+                "job_id": result.job_id,
+                "status": result.status.value,
+                "content": result.content[:500] + "..." if len(result.content) > 500 else result.content,
+                "model": result.model,
+                "endpoint": result.endpoint,
+                "latency_ms": result.latency_ms,
+                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "error": result.error,
+            }
+
+        except ImportError as e:
+            raise RuntimeError(f"Scheduler not available: {e}")
+
+    async def _cmd_swarm(self, args: str) -> dict:
+        """Run a swarm analysis.
+
+        Usage: /swarm <domain> [context...]
+        """
+        if not args:
+            args = self.state.domain or "general analysis"
+
+        try:
+            from .inference.scheduler import get_scheduler_service
+
+            service = get_scheduler_service()
+
+            # Parse domain and context
+            parts = args.split(maxsplit=1)
+            domain = parts[0]
+            context = parts[1] if len(parts) > 1 else ""
+
+            results = await service.run_swarm(
+                domain=domain,
+                context=context,
+            )
+
+            # Format results
+            output = {
+                "domain": domain,
+                "agents": {},
+                "summary": {
+                    "total": len(results),
+                    "completed": sum(1 for r in results.values() if r.status.value == "completed"),
+                    "failed": sum(1 for r in results.values() if r.status.value == "failed"),
+                    "total_tokens": sum(r.input_tokens + r.output_tokens for r in results.values()),
+                    "total_latency_ms": sum(r.latency_ms for r in results.values()),
+                },
+            }
+
+            for role_name, result in results.items():
+                output["agents"][role_name] = {
+                    "status": result.status.value,
+                    "preview": result.content[:200] + "..." if len(result.content) > 200 else result.content,
+                    "endpoint": result.endpoint,
+                    "latency_ms": result.latency_ms,
+                }
+
+            return output
+
+        except ImportError as e:
+            raise RuntimeError(f"Scheduler not available: {e}")
+
+    async def _cmd_gpu(self, args: str) -> dict:
+        """GPU orchestrator operations.
+
+        Usage:
+            /gpu status          - Show all endpoints and GPU health
+            /gpu start [name]    - Start endpoint(s)
+            /gpu stop [name]     - Stop endpoint(s)
+            /gpu restart <name>  - Restart endpoint
+            /gpu logs <name>     - Show endpoint logs
+            /gpu health          - Detailed GPU metrics
+        """
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+        subargs = parts[1] if len(parts) > 1 else ""
+
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+
+            if subcmd == "status":
+                return orchestrator.get_status()
+
+            elif subcmd == "start":
+                if subargs:
+                    success = await orchestrator.start_endpoint(subargs)
+                    proc = orchestrator.get_endpoint_status(subargs)
+                    return {
+                        "endpoint": subargs,
+                        "started": success,
+                        "status": proc.status.value if proc else "unknown",
+                        "pid": proc.pid if proc else None,
+                    }
+                else:
+                    results = await orchestrator.start_all()
+                    return {
+                        "action": "start_all",
+                        "results": results,
+                        "successful": sum(1 for v in results.values() if v),
+                    }
+
+            elif subcmd == "stop":
+                if subargs:
+                    success = await orchestrator.stop_endpoint(subargs)
+                    return {"endpoint": subargs, "stopped": success}
+                else:
+                    results = await orchestrator.stop_all()
+                    return {
+                        "action": "stop_all",
+                        "results": results,
+                        "stopped": sum(1 for v in results.values() if v),
+                    }
+
+            elif subcmd == "restart":
+                if not subargs:
+                    return {"error": "restart requires an endpoint name"}
+                success = await orchestrator.restart_endpoint(subargs)
+                proc = orchestrator.get_endpoint_status(subargs)
+                return {
+                    "endpoint": subargs,
+                    "restarted": success,
+                    "status": proc.status.value if proc else "unknown",
+                    "pid": proc.pid if proc else None,
+                }
+
+            elif subcmd == "logs":
+                if not subargs:
+                    return {"error": "logs requires an endpoint name"}
+                logs = orchestrator.get_logs(subargs, lines=50)
+                return {
+                    "endpoint": subargs,
+                    "lines": len(logs),
+                    "logs": logs,
+                }
+
+            elif subcmd == "health":
+                from .inference.health import get_health_monitor
+
+                monitor = get_health_monitor()
+                return monitor.get_summary()
+
+            else:
+                return {"error": f"Unknown gpu command: {subcmd}"}
+
+        except ImportError as e:
+            raise RuntimeError(f"GPU orchestrator not available: {e}")
 
     def _cmd_kb(self, args: str) -> dict:
         """KB operations."""

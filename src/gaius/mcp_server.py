@@ -1,10 +1,46 @@
 """Gaius MCP Server.
 
-Exposes Gaius capabilities to Claude Code and other MCP clients:
-- KB operations (search, read, create, update, delete)
-- Local inference via optillm
-- Web search via Brave API
-- Research and KB population
+Exposes full Gaius capabilities to Claude Code and other MCP clients:
+
+**KB Operations**
+- search_kb, read_kb, create_kb, update_kb, delete_kb, list_kb
+
+**Inference**
+- ask_local: Query local LLM via optillm
+- ask_reasoning: Query reasoning model (QwQ-32B)
+
+**Search**
+- web_search: Brave API search
+- research_topic: Search + synthesize to KB
+- semantic_search: Vector similarity search
+
+**Model Library**
+- list_models: List available models
+- get_model: Get model for specific task
+
+**Embeddings**
+- embed_text: Generate text embedding
+- embed_texts: Batch text embeddings
+
+**Evaluation**
+- evaluate_output: Frontier model (xAI) evaluation
+
+**Agent Versioning**
+- list_agent_versions: Version history
+- get_active_config: Current agent config
+- rollback_agent: Rollback to previous version
+- save_agent_version: Save new version
+
+**Optimization**
+- optimize_agent: Run APO/GEPA optimization
+
+**Activity & Summary**
+- log_activity: Record activity event
+- get_daily_summary: Generate/retrieve daily summary
+- get_activity_stats: Activity statistics
+
+**Swarm**
+- run_swarm: Execute swarm analysis
 
 Usage:
     # Start the server
@@ -17,7 +53,8 @@ Usage:
           "command": "uv",
           "args": ["run", "gaius-mcp"],
           "env": {
-            "BRAVE_API_KEY": "..."
+            "BRAVE_API_KEY": "...",
+            "XAI_API_KEY": "..."
           }
         }
       }
@@ -448,6 +485,1442 @@ Domain: {domain or 'general'}
                     "synthesis": synthesis.content,
                     "sources": results,
                     "kb_path": kb_path,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Model Registry Operations ---
+
+    @server.tool()
+    async def list_models(capability: str = "") -> str:
+        """List available models in the registry.
+
+        Args:
+            capability: Filter by capability (reasoning, coding, text_embedding, etc.)
+        """
+        try:
+            from .models import get_model_registry, ModelCapability
+
+            registry = get_model_registry()
+
+            if capability:
+                cap = ModelCapability[capability.upper()]
+                models = registry.list_by_capability(cap)
+            else:
+                models = registry.list_models()
+
+            return json.dumps(
+                {
+                    "models": [
+                        {
+                            "model_id": m.model_id,
+                            "name": m.name,
+                            "provider": m.provider,
+                            "capabilities": [c.name for c in m.capabilities],
+                            "context_length": m.context_length,
+                            "description": m.description,
+                        }
+                        for m in models
+                    ],
+                    "total": len(models),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_model(task: str) -> str:
+        """Get the best model for a specific task.
+
+        Args:
+            task: Task type (reasoning, coding, orchestration, text_embedding, vision_embedding, etc.)
+        """
+        try:
+            from .models import get_model_for_task, TaskType
+
+            task_type = TaskType[task.upper()]
+            model = get_model_for_task(task_type)
+
+            return json.dumps(
+                {
+                    "model_id": model.model_id,
+                    "name": model.name,
+                    "provider": model.provider,
+                    "capabilities": [c.name for c in model.capabilities],
+                    "context_length": model.context_length,
+                    "default_temperature": model.default_temperature,
+                    "description": model.description,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def ask_reasoning(
+        question: str,
+        system_prompt: str = "",
+        max_tokens: int = 4096,
+    ) -> str:
+        """Query the reasoning model for complex analysis.
+
+        Uses chain-of-thought reasoning for math, logic, and analysis tasks.
+        Falls back to default model if preferred reasoning model unavailable.
+
+        Args:
+            question: The question or prompt
+            system_prompt: Optional system prompt
+            max_tokens: Maximum tokens to generate
+        """
+        try:
+            from .inference import get_client, Message
+            from .models import get_model_for_task, TaskType
+
+            # Get preferred reasoning model (may not be deployed)
+            model_spec = get_model_for_task(TaskType.REASONING)
+            client = get_client()
+
+            messages = []
+            if system_prompt:
+                messages.append(Message(role="system", content=system_prompt))
+            messages.append(Message(role="user", content=question))
+
+            # Try with preferred model, fallback to default on error
+            try:
+                result = await client.complete(
+                    messages=messages,
+                    model=model_spec.model_id if model_spec else None,
+                    temperature=model_spec.default_temperature if model_spec else 0.6,
+                    max_tokens=max_tokens,
+                )
+            except Exception:
+                # Fallback: use default model (no override)
+                result = await client.complete(
+                    messages=messages,
+                    temperature=0.6,
+                    max_tokens=max_tokens,
+                )
+
+            return json.dumps(
+                {
+                    "response": result.content,
+                    "model": result.model,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Embedding Operations ---
+
+    @server.tool()
+    async def embed_text(text: str) -> str:
+        """Generate a text embedding using Nomic.
+
+        Returns a 768-dimensional vector in the unified text+vision space.
+
+        Args:
+            text: Text to embed
+        """
+        try:
+            from .models import get_embeddings
+
+            embeddings = get_embeddings()
+            result = await embeddings.embed_text(text)
+
+            return json.dumps(
+                {
+                    "vector": result.to_list(),
+                    "dimension": result.dim,
+                    "model": result.model,
+                    "latency_ms": result.latency_ms,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def embed_texts(texts: str) -> str:
+        """Generate embeddings for multiple texts.
+
+        Args:
+            texts: JSON array of texts to embed
+        """
+        try:
+            from .models import get_embeddings
+
+            text_list = json.loads(texts)
+            embeddings = get_embeddings()
+            result = await embeddings.embed_texts(text_list)
+
+            return json.dumps(
+                {
+                    "count": result.count,
+                    "dimension": result.dim,
+                    "model": result.model,
+                    "latency_ms": result.latency_ms,
+                    "vectors": result.vectors.tolist(),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def semantic_search(query: str, collection: str = "kb", limit: int = 10) -> str:
+        """Perform semantic similarity search.
+
+        Args:
+            query: Search query
+            collection: Collection to search (kb, research, etc.)
+            limit: Maximum results
+        """
+        try:
+            from .search import get_vector_search
+
+            search = get_vector_search()
+            results = await search.search(query, collection=collection, limit=limit)
+
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": r.id,
+                            "content": r.content[:500],
+                            "score": r.score,
+                            "metadata": r.metadata,
+                        }
+                        for r in results
+                    ],
+                    "total": len(results),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Evaluation Operations ---
+
+    @server.tool()
+    async def evaluate_output(
+        output: str,
+        task_prompt: str,
+        context: str = "",
+        dimensions: str = "",
+    ) -> str:
+        """Evaluate agent output using frontier model (xAI Grok).
+
+        Args:
+            output: The agent output to evaluate
+            task_prompt: Original task/prompt
+            context: Additional context
+            dimensions: Comma-separated dimensions (accuracy,coherence,relevance,completeness,clarity)
+        """
+        try:
+            from .models import get_evaluator, EvaluationDimension
+
+            evaluator = get_evaluator()
+
+            dims = None
+            if dimensions:
+                dim_names = [d.strip().upper() for d in dimensions.split(",")]
+                dims = [EvaluationDimension[d] for d in dim_names]
+
+            result = await evaluator.evaluate(
+                agent_output=output,
+                task_prompt=task_prompt,
+                context=context,
+                dimensions=dims,
+            )
+
+            return json.dumps(result.to_dict(), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Agent Versioning Operations ---
+
+    @server.tool()
+    async def list_agent_versions(agent_id: str, limit: int = 10) -> str:
+        """List version history for an agent.
+
+        Args:
+            agent_id: Agent identifier (leader, worker, critic, etc.)
+            limit: Maximum versions to return
+        """
+        try:
+            from .models import get_version_manager
+
+            manager = get_version_manager()
+            versions = await manager.get_versions(agent_id, limit=limit)
+
+            return json.dumps(
+                {
+                    "agent_id": agent_id,
+                    "versions": [
+                        {
+                            "version_id": v.version_id,
+                            "is_active": v.is_active,
+                            "avg_score": v.avg_overall_score,
+                            "eval_count": v.evaluation_count,
+                            "created_at": v.created_at.isoformat(),
+                            "change_notes": v.change_notes,
+                        }
+                        for v in versions
+                    ],
+                    "total": len(versions),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_active_config(agent_id: str) -> str:
+        """Get the active configuration for an agent.
+
+        Args:
+            agent_id: Agent identifier
+        """
+        try:
+            from .models import get_version_manager
+
+            manager = get_version_manager()
+            version = await manager.get_active_version(agent_id)
+
+            if version is None:
+                return json.dumps({"error": f"No active version for {agent_id}"})
+
+            return json.dumps(
+                {
+                    "version_id": version.version_id,
+                    "agent_id": version.agent_id,
+                    "config": version.config.to_dict(),
+                    "metrics": version.metrics,
+                    "avg_score": version.avg_overall_score,
+                    "eval_count": version.evaluation_count,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_best_agent_version(agent_id: str, metric: str = "avg_overall_score") -> str:
+        """Get the best performing version for an agent.
+
+        Args:
+            agent_id: Agent identifier
+            metric: Metric to rank by (avg_overall_score, accuracy, coherence, etc.)
+        """
+        try:
+            from .models import get_version_manager
+
+            manager = get_version_manager()
+            version = await manager.get_best_version(agent_id, metric=metric)
+
+            if version is None:
+                return json.dumps({"error": f"No versions with sufficient evaluations for {agent_id}"})
+
+            return json.dumps(
+                {
+                    "version_id": version.version_id,
+                    "agent_id": version.agent_id,
+                    "config": version.config.to_dict(),
+                    "metrics": version.metrics,
+                    "avg_score": version.avg_overall_score,
+                    "eval_count": version.evaluation_count,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def rollback_agent(agent_id: str, version_id: str) -> str:
+        """Rollback an agent to a previous version.
+
+        Args:
+            agent_id: Agent identifier
+            version_id: Version to activate
+        """
+        try:
+            from .models import get_version_manager
+
+            manager = get_version_manager()
+            success = await manager.set_active_version(agent_id, version_id)
+
+            return json.dumps(
+                {
+                    "success": success,
+                    "agent_id": agent_id,
+                    "activated_version": version_id,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def save_agent_version(
+        agent_id: str,
+        system_prompt: str,
+        model: str = "",
+        temperature: float = 0.7,
+        change_notes: str = "",
+    ) -> str:
+        """Save a new agent version.
+
+        Args:
+            agent_id: Agent identifier
+            system_prompt: System prompt for the agent
+            model: Model to use (empty for default)
+            temperature: Temperature setting
+            change_notes: Description of changes
+        """
+        try:
+            from .models import get_version_manager, AgentConfig
+
+            manager = get_version_manager()
+
+            config = AgentConfig(
+                system_prompt=system_prompt,
+                model=model or "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+                temperature=temperature,
+            )
+
+            version = await manager.save_version(
+                agent_id=agent_id,
+                config=config,
+                change_notes=change_notes,
+                set_active=True,
+            )
+
+            return json.dumps(
+                {
+                    "version_id": version.version_id,
+                    "agent_id": version.agent_id,
+                    "is_active": version.is_active,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Optimization Operations ---
+
+    @server.tool()
+    async def optimize_agent(
+        agent_id: str,
+        examples: str,
+        strategy: str = "apo",
+        num_candidates: int = 5,
+        num_iterations: int = 3,
+    ) -> str:
+        """Run optimization on an agent using APO or GEPA.
+
+        Args:
+            agent_id: Agent to optimize
+            examples: JSON array of task examples [{input_prompt, expected_output?, context?}]
+            strategy: Optimization strategy (apo, gepa, hybrid)
+            num_candidates: Candidates per iteration
+            num_iterations: Maximum iterations
+        """
+        try:
+            from .models import (
+                get_optimizer,
+                OptimizationStrategy,
+                TaskExample,
+            )
+
+            strat = OptimizationStrategy[strategy.upper()]
+            optimizer = get_optimizer(strat)
+
+            example_list = json.loads(examples)
+            task_examples = [
+                TaskExample(
+                    input_prompt=e["input_prompt"],
+                    expected_output=e.get("expected_output"),
+                    context=e.get("context", ""),
+                )
+                for e in example_list
+            ]
+
+            result = await optimizer.optimize(
+                agent_id=agent_id,
+                task_examples=task_examples,
+                num_candidates=num_candidates,
+                num_iterations=num_iterations,
+            )
+
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "new_version_id": result.new_version_id,
+                    "improvement_percent": result.improvement_percent,
+                    "baseline_score": result.baseline_score,
+                    "best_score": result.best_candidate_score,
+                    "iterations": result.iteration,
+                    "total_evaluations": result.total_evaluations,
+                    "latency_ms": result.latency_ms,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Activity & Summary Operations ---
+
+    @server.tool()
+    async def log_activity(
+        event_type: str,
+        domain: str = "",
+        details: str = "{}",
+    ) -> str:
+        """Log an activity event.
+
+        Args:
+            event_type: Event type (query, domain_change, swarm_run, kb_create, command, etc.)
+            domain: Domain context
+            details: JSON object with event details
+        """
+        try:
+            from .core.activity import get_activity_tracker, ActivityType
+
+            tracker = get_activity_tracker()
+            detail_dict = json.loads(details) if details else {}
+
+            # Convert string to ActivityType enum
+            try:
+                activity_type = ActivityType(event_type)
+            except ValueError:
+                # For custom event types, default to COMMAND
+                activity_type = ActivityType.COMMAND
+
+            await tracker.log_event(
+                event_type=activity_type,
+                domain=domain or None,
+                details=detail_dict,
+            )
+
+            return json.dumps({"logged": True, "event_type": event_type}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_activity_stats(days: int = 7) -> str:
+        """Get activity statistics.
+
+        Args:
+            days: Number of days to analyze
+        """
+        try:
+            from .core.activity import get_activity_tracker
+
+            tracker = get_activity_tracker()
+            stats = await tracker.get_stats(days=days)
+
+            return json.dumps(stats, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_daily_summary(date: str = "") -> str:
+        """Get or generate daily summary.
+
+        Args:
+            date: Date in YYYY-MM-DD format (empty for today)
+        """
+        try:
+            from datetime import date as date_type
+            from .agents.daily_summary import get_daily_summary_agent
+
+            if date:
+                summary_date = date_type.fromisoformat(date)
+            else:
+                summary_date = date_type.today()
+
+            agent = get_daily_summary_agent()
+            summary = await agent.generate_summary(summary_date)
+
+            return json.dumps(
+                {
+                    "date": str(summary_date),
+                    "content": summary.to_markdown(),
+                    "overview": summary.overview,
+                    "insights": summary.insights,
+                    "tomorrow_focus": summary.tomorrow_focus,
+                    "metrics": {
+                        "queries": summary.total_queries,
+                        "swarm_runs": summary.total_swarm_runs,
+                        "kb_entries": summary.total_entries,
+                        "tokens": summary.total_tokens,
+                        "domains": summary.domains_active,
+                    },
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Swarm Operations ---
+
+    @server.tool()
+    async def run_swarm(
+        query: str,
+        domain: str = "",
+        num_agents: int = 7,
+    ) -> str:
+        """Run swarm analysis on a query.
+
+        Args:
+            query: The query or topic to analyze
+            domain: Domain context (pension, kudu, etc.)
+            num_agents: Number of specialist agents
+        """
+        try:
+            from .agents.swarm import get_swarm_manager
+            from .agents.roles import AgentRole
+
+            # Select subset of roles based on num_agents
+            all_roles = list(AgentRole)
+            roles = all_roles[:num_agents] if num_agents < len(all_roles) else all_roles
+
+            manager = get_swarm_manager(roles=roles)
+            result = await manager.run_round(domain=domain or query, context=query)
+
+            return json.dumps(
+                {
+                    "query": query,
+                    "domain": domain or query,
+                    "synthesis": result.consensus,
+                    "perspectives": [
+                        {
+                            "agent": r.name,
+                            "role": r.role.value,
+                            "analysis": r.content[:500] + "..." if len(r.content) > 500 else r.content,
+                            "tokens": r.tokens,
+                            "succeeded": r.succeeded,
+                        }
+                        for r in result.responses
+                    ],
+                    "success_rate": result.success_rate,
+                    "tokens_used": result.total_tokens,
+                    "latency_ms": result.total_latency_ms,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Scheduler Operations ---
+
+    @server.tool()
+    async def scheduler_status() -> str:
+        """Get scheduler status including endpoints, queue, and metrics.
+
+        Returns comprehensive status of the inference scheduler.
+        """
+        try:
+            from .inference.scheduler import get_scheduler_service
+
+            service = get_scheduler_service()
+            status = service.get_status()
+
+            return json.dumps(status, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def scheduler_submit(
+        prompt: str,
+        model: str = "",
+        priority: str = "normal",
+        max_tokens: int = 1024,
+    ) -> str:
+        """Submit an inference job to the scheduler.
+
+        Args:
+            prompt: The prompt to send
+            model: Model to use (empty for default)
+            priority: Job priority (critical, high, normal, low)
+            max_tokens: Maximum tokens to generate
+        """
+        try:
+            from .inference.scheduler import (
+                get_scheduler_service,
+                Job,
+                JobPriority,
+            )
+
+            # Parse priority
+            priority_map = {
+                "critical": JobPriority.CRITICAL,
+                "high": JobPriority.HIGH,
+                "normal": JobPriority.NORMAL,
+                "low": JobPriority.LOW,
+            }
+            job_priority = priority_map.get(priority.lower(), JobPriority.NORMAL)
+
+            service = get_scheduler_service()
+
+            job = Job(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                priority=job_priority,
+                estimated_tokens=max_tokens,
+            )
+
+            result = await service.submit(job)
+
+            return json.dumps(
+                {
+                    "job_id": result.job_id,
+                    "status": result.status.value,
+                    "content": result.content,
+                    "model": result.model,
+                    "endpoint": result.endpoint,
+                    "latency_ms": result.latency_ms,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "error": result.error,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def scheduler_submit_async(
+        prompt: str,
+        model: str = "",
+        priority: str = "normal",
+        max_tokens: int = 1024,
+    ) -> str:
+        """Submit a job for background execution (non-blocking).
+
+        Args:
+            prompt: The prompt to send
+            model: Model to use (empty for default)
+            priority: Job priority (critical, high, normal, low)
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Job ID for tracking
+        """
+        try:
+            from .inference.scheduler import (
+                get_scheduler_service,
+                Job,
+                JobPriority,
+            )
+
+            priority_map = {
+                "critical": JobPriority.CRITICAL,
+                "high": JobPriority.HIGH,
+                "normal": JobPriority.NORMAL,
+                "low": JobPriority.LOW,
+            }
+            job_priority = priority_map.get(priority.lower(), JobPriority.NORMAL)
+
+            service = get_scheduler_service()
+
+            job = Job(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                priority=job_priority,
+                estimated_tokens=max_tokens,
+            )
+
+            job_id = await service.submit_async(job)
+
+            return json.dumps(
+                {
+                    "job_id": job_id,
+                    "status": "submitted",
+                    "message": "Job submitted for background execution",
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def scheduler_get_result(job_id: str) -> str:
+        """Get the result of a submitted job.
+
+        Args:
+            job_id: Job ID to retrieve
+        """
+        try:
+            from .inference.scheduler import get_scheduler_service
+
+            service = get_scheduler_service()
+            result = service.get_result(job_id)
+
+            if result is None:
+                return json.dumps(
+                    {"job_id": job_id, "status": "pending", "message": "Job still running"},
+                    indent=2,
+                )
+
+            return json.dumps(
+                {
+                    "job_id": result.job_id,
+                    "status": result.status.value,
+                    "content": result.content,
+                    "model": result.model,
+                    "endpoint": result.endpoint,
+                    "latency_ms": result.latency_ms,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "error": result.error,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def scheduler_run_swarm(
+        domain: str,
+        context: str = "",
+        roles: str = "",
+    ) -> str:
+        """Run a swarm analysis with optimal scheduling.
+
+        Args:
+            domain: Domain to analyze
+            context: Additional context
+            roles: Comma-separated role names (empty for all)
+        """
+        try:
+            from .inference.scheduler import get_scheduler_service
+            from .agents.roles import AgentRole
+
+            service = get_scheduler_service()
+
+            # Parse roles
+            role_list = None
+            if roles:
+                role_names = [r.strip() for r in roles.split(",")]
+                role_list = []
+                for name in role_names:
+                    try:
+                        role_list.append(AgentRole(name))
+                    except ValueError:
+                        pass
+
+            results = await service.run_swarm(
+                domain=domain,
+                context=context,
+                roles=role_list,
+            )
+
+            # Format results
+            output = {
+                "domain": domain,
+                "agents": {},
+                "summary": {
+                    "total": len(results),
+                    "completed": sum(1 for r in results.values() if r.status.value == "completed"),
+                    "failed": sum(1 for r in results.values() if r.status.value == "failed"),
+                },
+            }
+
+            for role_name, result in results.items():
+                output["agents"][role_name] = {
+                    "status": result.status.value,
+                    "content": result.content[:500] + "..." if len(result.content) > 500 else result.content,
+                    "model": result.model,
+                    "endpoint": result.endpoint,
+                    "latency_ms": result.latency_ms,
+                    "error": result.error,
+                }
+
+            return json.dumps(output, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def scheduler_health_check() -> str:
+        """Check health of all GPU endpoints."""
+        try:
+            from .inference.scheduler import get_scheduler_service
+
+            service = get_scheduler_service()
+            health = await service.health_check()
+
+            return json.dumps(
+                {
+                    "endpoints": health,
+                    "all_healthy": all(health.values()),
+                    "healthy_count": sum(1 for v in health.values() if v),
+                    "total_count": len(health),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def scheduler_metrics() -> str:
+        """Get scheduler performance metrics."""
+        try:
+            from .inference.scheduler import get_scheduler_service
+
+            service = get_scheduler_service()
+            metrics = service.get_metrics()
+
+            return json.dumps(metrics, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- GPU Orchestrator Operations ---
+
+    @server.tool()
+    async def orchestrator_status() -> str:
+        """Get GPU orchestrator status including all vLLM processes and GPU health.
+
+        Returns comprehensive status of GPU resources, process health, and scheduling metrics.
+        """
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+            status = orchestrator.get_status()
+
+            return json.dumps(status, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def orchestrator_start(endpoint: str = "") -> str:
+        """Start vLLM endpoint(s).
+
+        Args:
+            endpoint: Endpoint name to start (empty string starts all configured endpoints)
+        """
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+
+            if endpoint:
+                success = await orchestrator.start_endpoint(endpoint)
+                return json.dumps(
+                    {
+                        "endpoint": endpoint,
+                        "started": success,
+                        "status": orchestrator.get_endpoint_status(endpoint).status.value
+                        if orchestrator.get_endpoint_status(endpoint) else "unknown",
+                    },
+                    indent=2,
+                )
+            else:
+                results = await orchestrator.start_all()
+                return json.dumps(
+                    {
+                        "action": "start_all",
+                        "results": results,
+                        "successful": sum(1 for v in results.values() if v),
+                        "total": len(results),
+                    },
+                    indent=2,
+                )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def orchestrator_stop(endpoint: str = "") -> str:
+        """Stop vLLM endpoint(s).
+
+        Args:
+            endpoint: Endpoint name to stop (empty string stops all)
+        """
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+
+            if endpoint:
+                success = await orchestrator.stop_endpoint(endpoint)
+                return json.dumps(
+                    {"endpoint": endpoint, "stopped": success},
+                    indent=2,
+                )
+            else:
+                results = await orchestrator.stop_all()
+                return json.dumps(
+                    {
+                        "action": "stop_all",
+                        "results": results,
+                        "stopped": sum(1 for v in results.values() if v),
+                        "total": len(results),
+                    },
+                    indent=2,
+                )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def orchestrator_restart(endpoint: str) -> str:
+        """Restart a specific vLLM endpoint.
+
+        Args:
+            endpoint: Endpoint name to restart
+        """
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+            success = await orchestrator.restart_endpoint(endpoint)
+
+            proc = orchestrator.get_endpoint_status(endpoint)
+            return json.dumps(
+                {
+                    "endpoint": endpoint,
+                    "restarted": success,
+                    "status": proc.status.value if proc else "unknown",
+                    "pid": proc.pid if proc else None,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def orchestrator_logs(endpoint: str, lines: int = 50) -> str:
+        """Get recent stdout/stderr logs from a vLLM endpoint.
+
+        Args:
+            endpoint: Endpoint name
+            lines: Number of lines to return (default: 50)
+        """
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+            logs = orchestrator.get_logs(endpoint, lines=lines)
+
+            return json.dumps(
+                {
+                    "endpoint": endpoint,
+                    "lines": len(logs),
+                    "logs": logs,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def gpu_health() -> str:
+        """Get detailed GPU health metrics (VRAM, temp, power, utilization).
+
+        Uses pynvml for real-time GPU monitoring.
+        """
+        try:
+            from .inference.health import get_health_monitor
+
+            monitor = get_health_monitor()
+
+            # Try to reinitialize if not available (e.g., pynvml installed after startup)
+            if not monitor.available:
+                if monitor.reinitialize():
+                    pass  # Successfully reinitialized
+
+            summary = monitor.get_summary()
+
+            return json.dumps(summary, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Cognition Operations ---
+    # Background thinking and thought generation
+
+    @server.tool()
+    async def trigger_cognition(
+        max_thoughts: int = 5,
+        trigger_reason: str = "manual",
+    ) -> str:
+        """Run a cognition cycle to generate thoughts.
+
+        Analyzes recent KB entries and activity to detect patterns,
+        find connections, and generate curiosity-driven questions.
+
+        Args:
+            max_thoughts: Maximum thoughts to generate
+            trigger_reason: Why cognition was triggered (manual, scheduled, content_threshold, session_start)
+        """
+        try:
+            from .agents.cognition import get_cognition_agent
+
+            agent = get_cognition_agent()
+            result = await agent.think(
+                max_thoughts=max_thoughts,
+                trigger_reason=trigger_reason,
+            )
+
+            return json.dumps(
+                {
+                    "thoughts_generated": len(result.thoughts),
+                    "thoughts": [t.to_dict() for t in result.thoughts],
+                    "patterns_detected": result.patterns_detected,
+                    "connections_found": result.connections_found,
+                    "curiosities_generated": result.curiosities_generated,
+                    "duration_ms": result.duration_ms,
+                    "trigger_reason": result.trigger_reason,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_recent_thoughts(limit: int = 10) -> str:
+        """Get currently active thoughts from the cognition agent.
+
+        Args:
+            limit: Maximum number of thoughts to return
+        """
+        try:
+            from .agents.cognition import get_cognition_agent
+
+            agent = get_cognition_agent()
+            thoughts = await agent.get_active_thoughts(limit=limit)
+
+            return json.dumps(
+                {
+                    "count": len(thoughts),
+                    "thoughts": [t.to_dict() for t in thoughts],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def what_are_you_thinking(depth: str = "quick") -> str:
+        """Get a synthesis of what Gaius is currently thinking about.
+
+        Combines active thoughts, recent patterns, and a quick reflection
+        into a coherent summary. This is the answer to "What have you been thinking about?"
+
+        Args:
+            depth: Reflection depth (quick, moderate, deep)
+        """
+        try:
+            from .agents.cognition import get_cognition_agent
+            from .agents.reflection import get_reflection_agent, ReflectionDepth
+
+            cognition = get_cognition_agent()
+            reflection = get_reflection_agent()
+
+            # Get active thoughts
+            thoughts = await cognition.get_active_thoughts(limit=5)
+
+            # Get reflection based on depth
+            depth_enum = ReflectionDepth(depth)
+            result = await reflection.reflect(depth=depth_enum)
+
+            # Build response
+            thought_summaries = []
+            for t in thoughts:
+                thought_summaries.append({
+                    "type": t.thought_type.value,
+                    "title": t.title,
+                    "summary": t.summary or t.content[:100],
+                    "salience": t.salience,
+                })
+
+            return json.dumps(
+                {
+                    "active_thoughts": thought_summaries,
+                    "synthesis": result.synthesis,
+                    "questions": result.questions,
+                    "confidence_notes": result.confidence_notes,
+                    "recommendations": result.recommendations,
+                    "domains_analyzed": result.domains_analyzed,
+                    "depth": depth,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Session Operations ---
+    # Session lifecycle and research thread management
+
+    @server.tool()
+    async def start_session(domain: str = "") -> str:
+        """Start a new session and get handoff from previous.
+
+        Args:
+            domain: Initial domain context
+        """
+        try:
+            from .core.session import get_session_manager
+
+            manager = get_session_manager()
+            session, handoff = await manager.start_session(domain=domain or None)
+
+            return json.dumps(
+                {
+                    "session_id": session.id,
+                    "started_at": session.started_at.isoformat(),
+                    "handoff": {
+                        "has_content": handoff.has_content(),
+                        "time_since_last": str(handoff.time_since_last) if handoff.time_since_last else None,
+                        "summary": handoff.summary,
+                        "open_threads": [t.to_dict() for t in handoff.open_threads],
+                    },
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def end_session(domain: str = "", generate_handoff: bool = True) -> str:
+        """End the current session.
+
+        Args:
+            domain: Final domain context
+            generate_handoff: Whether to generate LLM handoff summary
+        """
+        try:
+            from .core.session import get_session_manager
+
+            manager = get_session_manager()
+            session = await manager.end_session(
+                domain=domain or None,
+                generate_handoff=generate_handoff,
+            )
+
+            if session is None:
+                return json.dumps({"error": "No active session to end"}, indent=2)
+
+            return json.dumps(
+                {
+                    "session_id": session.id,
+                    "duration_seconds": session.duration_seconds,
+                    "queries": session.queries,
+                    "kb_entries": session.kb_entries,
+                    "open_threads": len(session.open_threads),
+                    "handoff_generated": session.handoff_generated,
+                    "handoff_summary": session.handoff_summary,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_session_handoff() -> str:
+        """Get handoff information from previous session.
+
+        Returns context about what was being worked on, open threads,
+        and a summary of the last session.
+        """
+        try:
+            from .core.session import get_session_manager
+
+            manager = get_session_manager()
+            handoff = await manager.get_handoff()
+
+            return json.dumps(
+                {
+                    "has_content": handoff.has_content(),
+                    "time_since_last": str(handoff.time_since_last) if handoff.time_since_last else None,
+                    "summary": handoff.summary,
+                    "quick_context": handoff.quick_context,
+                    "open_threads": [t.to_dict() for t in handoff.open_threads],
+                    "previous_session": {
+                        "id": handoff.previous_session.id if handoff.previous_session else None,
+                        "duration_seconds": handoff.previous_session.duration_seconds if handoff.previous_session else None,
+                        "queries": handoff.previous_session.queries if handoff.previous_session else 0,
+                        "key_topics": handoff.previous_session.key_topics if handoff.previous_session else [],
+                    },
+                    "markdown": handoff.to_markdown(),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def list_open_threads(limit: int = 10) -> str:
+        """List active research threads.
+
+        Args:
+            limit: Maximum threads to return
+        """
+        try:
+            from .core.session import get_session_manager
+
+            manager = get_session_manager()
+            threads = await manager.get_active_threads(limit=limit)
+
+            return json.dumps(
+                {
+                    "count": len(threads),
+                    "threads": [t.to_dict() for t in threads],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def create_research_thread(
+        topic: str,
+        domain: str = "",
+        initial_query: str = "",
+        goal: str = "",
+    ) -> str:
+        """Create a new research thread.
+
+        Args:
+            topic: Thread topic
+            domain: Domain context
+            initial_query: The query that started this thread
+            goal: Research goal
+        """
+        try:
+            from .core.session import get_session_manager
+
+            manager = get_session_manager()
+            thread = await manager.create_thread(
+                topic=topic,
+                domain=domain or None,
+                initial_query=initial_query,
+                goal=goal,
+            )
+
+            return json.dumps(thread.to_dict(), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Reflection Operations ---
+
+    @server.tool()
+    async def reflect(
+        depth: str = "moderate",
+        focus_domains: str = "",
+        focus_topic: str = "",
+    ) -> str:
+        """Perform deep reflection on accumulated knowledge.
+
+        Args:
+            depth: How deep to reflect (quick, moderate, deep)
+            focus_domains: Comma-separated list of domains to focus on
+            focus_topic: Specific topic to focus on
+        """
+        try:
+            from .agents.reflection import get_reflection_agent, ReflectionDepth
+
+            agent = get_reflection_agent()
+
+            domains = [d.strip() for d in focus_domains.split(",")] if focus_domains else None
+
+            result = await agent.reflect(
+                depth=ReflectionDepth(depth),
+                focus_domains=domains,
+                focus_topic=focus_topic or None,
+            )
+
+            return json.dumps(result.to_dict(), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def quick_thought(topic: str) -> str:
+        """Generate a quick thought on a specific topic.
+
+        Args:
+            topic: Topic to think about
+        """
+        try:
+            from .agents.reflection import get_reflection_agent
+
+            agent = get_reflection_agent()
+            thought = await agent.quick_thought(topic)
+
+            return json.dumps({"topic": topic, "thought": thought}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def compare_domains(domain1: str, domain2: str) -> str:
+        """Compare two domains for patterns and connections.
+
+        Args:
+            domain1: First domain
+            domain2: Second domain
+        """
+        try:
+            from .agents.reflection import get_reflection_agent
+
+            agent = get_reflection_agent()
+            result = await agent.compare_domains(domain1, domain2)
+
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def calibrate_understanding(topic: str) -> str:
+        """Calibrate confidence in understanding of a topic.
+
+        Args:
+            topic: Topic to assess
+        """
+        try:
+            from .agents.reflection import get_reflection_agent
+
+            agent = get_reflection_agent()
+            result = await agent.calibrate_understanding(topic)
+
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- TDA Operations ---
+
+    @server.tool()
+    async def compute_tda(
+        data: str,
+        method: str = "persistent_homology",
+    ) -> str:
+        """Compute topological data analysis on embeddings.
+
+        Args:
+            data: JSON array of vectors or path to data file
+            method: TDA method (persistent_homology, mapper, etc.)
+        """
+        try:
+            from .tda import compute_persistence, TopologyResult
+
+            if data.startswith("["):
+                vectors = json.loads(data)
+            else:
+                # Load from file
+                import numpy as np
+                vectors = np.load(data).tolist()
+
+            result = await compute_persistence(vectors)
+
+            return json.dumps(
+                {
+                    "betti_numbers": result.betti_numbers,
+                    "persistence_pairs": result.persistence_pairs,
+                    "features": result.features,
                 },
                 indent=2,
             )

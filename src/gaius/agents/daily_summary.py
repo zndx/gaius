@@ -373,6 +373,14 @@ Format as JSON with keys: overview, insights (array), tomorrow_focus"""
         except Exception:
             pass  # Silently fail - summary was still generated
 
+    async def generate_summary(
+        self,
+        target_date: date | None = None,
+        use_llm: bool = True,
+    ) -> DailySummaryNote:
+        """Alias for generate() - used by MCP server."""
+        return await self.generate(target_date, use_llm)
+
     async def write_to_kb(self, note: DailySummaryNote) -> str | None:
         """Write summary to KB as Zettelkasten note.
 
