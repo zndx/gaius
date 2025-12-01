@@ -3,20 +3,32 @@
 from textual.widget import Widget
 from textual.widgets import Static, Markdown
 from textual.containers import VerticalScroll
+from textual.binding import Binding
 from rich.text import Text
 from rich.markdown import Markdown as RichMarkdown
 
 from ..core.state import AppState
 
 
-class ContentPanel(Widget):
+class ContentPanel(Widget, can_focus=True):
     """Right panel for displaying content.
 
     Shows:
     - Selected file contents (with Markdown rendering for .md)
     - Agent output during swarm rounds
     - Contextual information based on cursor position
+
+    Arrow keys scroll content when focused (without entering edit mode).
     """
+
+    BINDINGS = [
+        Binding("up", "scroll_up", "Scroll up", show=False),
+        Binding("down", "scroll_down", "Scroll down", show=False),
+        Binding("pageup", "page_up", "Page up", show=False),
+        Binding("pagedown", "page_down", "Page down", show=False),
+        Binding("home", "scroll_home", "Scroll to top", show=False),
+        Binding("end", "scroll_end", "Scroll to bottom", show=False),
+    ]
 
     DEFAULT_CSS = """
     ContentPanel {
@@ -157,3 +169,37 @@ class ContentPanel(Widget):
         col = chr(65 + x + (1 if x >= 8 else 0))  # Skip 'I'
         row = 19 - y
         return f"{col}{row}"
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Scroll Actions (arrow keys when focused)
+    # ─────────────────────────────────────────────────────────────────────
+
+    def action_scroll_up(self) -> None:
+        """Scroll content up by one line."""
+        scroll = self.query_one(VerticalScroll)
+        scroll.scroll_relative(y=-2)
+
+    def action_scroll_down(self) -> None:
+        """Scroll content down by one line."""
+        scroll = self.query_one(VerticalScroll)
+        scroll.scroll_relative(y=2)
+
+    def action_page_up(self) -> None:
+        """Scroll content up by one page."""
+        scroll = self.query_one(VerticalScroll)
+        scroll.scroll_page_up()
+
+    def action_page_down(self) -> None:
+        """Scroll content down by one page."""
+        scroll = self.query_one(VerticalScroll)
+        scroll.scroll_page_down()
+
+    def action_scroll_home(self) -> None:
+        """Scroll to top of content."""
+        scroll = self.query_one(VerticalScroll)
+        scroll.scroll_home()
+
+    def action_scroll_end(self) -> None:
+        """Scroll to bottom of content."""
+        scroll = self.query_one(VerticalScroll)
+        scroll.scroll_end()

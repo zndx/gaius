@@ -8,7 +8,10 @@ from ..core.state import AppState, ViewMode, OverlayMode
 
 
 class MainGrid(Widget):
-    """The primary 19x19 Go board grid."""
+    """The primary 19x19 Go board grid.
+
+    Not focusable - navigation via hjkl keys works globally.
+    """
 
     DEFAULT_CSS = """
     MainGrid {

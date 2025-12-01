@@ -22,7 +22,10 @@ from .core.telemetry import init_from_config as init_telemetry
 from .core.projection import get_grid_manager, GridData
 from .core.tda import get_tda_manager
 from .core.activity import get_activity_tracker, log_activity, ActivityType
+from .core.session import get_session_manager, SessionHandoff
 from .agents import get_swarm_manager
+from .agents.cognition import get_cognition_agent, Thought
+from .agents.reflection import get_reflection_agent, ReflectionDepth
 from .awareness import generate_startup_report
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
@@ -102,12 +105,12 @@ class GaiusApp(App):
 
     /* ─────────────────────────────────────────────────────────────────────
        LEFT PANEL (Files/Agents)
-       Light background shading for visual separation (no borders)
+       Interior border for visual separation
        ───────────────────────────────────────────────────────────────────── */
     #left-panel {
         width: 24;
         height: 100%;
-        background: $surface-lighten-1;
+        border-right: solid $primary-darken-2;
         overflow: hidden;
     }
 
@@ -164,11 +167,10 @@ class GaiusApp(App):
         margin-bottom: 1;
     }
 
-    /* Mini-grid styling - light background shading instead of borders */
+    /* Mini-grid styling - border-based visual separation */
     MiniGrid {
         width: 21;
         height: 11;
-        background: $surface-lighten-1;
         padding: 0 1;
         overflow: hidden;
     }
@@ -178,7 +180,6 @@ class GaiusApp(App):
         width: 40;
         height: 21;
         margin-left: 1;
-        background: $surface-lighten-1;
         overflow: hidden;
     }
 
@@ -186,12 +187,11 @@ class GaiusApp(App):
         display: none;
     }
 
-    /* Think panel (reasoning traces) - same size as graph view */
+    /* Think panel (reasoning traces) - bordered panel */
     #think-panel {
         width: 40;
         height: 21;
         margin-left: 1;
-        background: $surface-lighten-1;
         overflow: hidden;
     }
 
@@ -208,19 +208,17 @@ class GaiusApp(App):
         color: $text;
     }
 
-    /* Note editor below location indicator - subtle background distinction */
+    /* Note editor below location indicator */
     #note-editor {
         width: 100%;
         height: 1fr;
         min-height: 5;
         margin-top: 1;
-        background: $surface-lighten-1;
     }
 
     #note-editor TextArea {
         width: 100%;
         height: 100%;
-        background: $surface;
     }
 
     #note-editor.hidden {
@@ -229,12 +227,11 @@ class GaiusApp(App):
 
     /* ─────────────────────────────────────────────────────────────────────
        RIGHT PANEL (Content)
-       Light background shading for visual separation (no borders)
+       Border-based visual separation
        ───────────────────────────────────────────────────────────────────── */
     #right-panel {
         width: 32;
         height: 100%;
-        background: $surface-lighten-1;
         overflow: hidden;
     }
 
@@ -266,6 +263,27 @@ class GaiusApp(App):
 
     CommandInput Input:focus {
         border: none;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────
+       FOCUS INDICATORS
+       Visual indication when widgets receive focus via Tab navigation.
+       Uses existing interior borders - just changes color to $accent.
+       ───────────────────────────────────────────────────────────────────── */
+
+    /* Left panel - change interior border color on focus */
+    #left-panel:focus-within {
+        border-right: solid $accent;
+    }
+
+    /* Right panel (content) - change interior border color on focus */
+    ContentPanel:focus {
+        border-left: solid $accent;
+    }
+
+    /* Note editor focus - border around the editor area */
+    #note-editor:focus-within {
+        border: solid $accent;
     }
     """
 
@@ -639,19 +657,37 @@ class GaiusApp(App):
         import asyncio
 
         content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
         content.show_file("summary.md", "Generating daily summary...\n\n*This may take a moment.*")
+        think.stream_reasoning("Generating daily summary...")
 
         async def generate():
             try:
                 from .agents import generate_daily_summary
+                from datetime import datetime
 
+                start_time = datetime.now()
                 note = await generate_daily_summary(
                     profile=self.config.profile,
                     use_llm=True,
                     write_to_kb=True,
                 )
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
                 content.show_file("summary.md", note.to_markdown())
+
+                # Record trace
+                think.complete_trace(
+                    operation="synthesis",
+                    query="daily summary",
+                    summary=f"Generated summary: {note.title}",
+                    tokens=0,
+                    sources=len(note.citations) if note.citations else 0,
+                    duration_ms=duration_ms,
+                )
             except Exception as e:
+                think.clear_active()
                 content.show_file("error.txt", f"Summary generation failed: {e}")
 
         asyncio.create_task(generate())
@@ -1006,6 +1042,8 @@ class GaiusApp(App):
         else:  # NONE
             graph.add_class("hidden")
             think.add_class("hidden")
+            # Force layout refresh when hiding both panels
+            self.query_one("#grid-row").refresh(layout=True)
 
         # Update status to show current mode
         self._update_status()
@@ -1034,8 +1072,22 @@ class GaiusApp(App):
         # Apply center panel mode from config
         self._apply_center_panel_mode()
 
+        # Start scheduler service (background)
+        self._start_scheduler()
+
         # Run enterApp startup procedure
         self._run_startup_commands()
+
+    def _start_scheduler(self) -> None:
+        """Start the scheduler service for background inference."""
+        try:
+            from .inference.scheduler import get_scheduler_service
+            import asyncio
+
+            service = get_scheduler_service()
+            asyncio.create_task(service.start())
+        except ImportError:
+            pass  # Scheduler not available
 
     def _apply_center_panel_mode(self) -> None:
         """Apply center panel mode visibility from state."""
@@ -1075,10 +1127,21 @@ class GaiusApp(App):
             self._show_situational_summary(commands_run)
 
     def _show_situational_summary(self, commands_run: list[str]) -> None:
-        """Display situational awareness summary on startup."""
+        """Display situational awareness summary on startup.
+
+        Generates a Zettelkasten note with:
+        - Active thoughts from cognition agent
+        - Session handoff (where we left off)
+        - Quick reflection on current state
+        - Questions worth exploring
+
+        The note is persisted to scratch/<iso-date>/<timestamp>_thoughts.md
+        and opened in the center content panel.
+        """
         import asyncio
 
         content = self.query_one("#content-panel", ContentPanel)
+        editor = self.query_one("#note-editor", NoteEditor)
 
         # Log startup event
         asyncio.create_task(
@@ -1090,43 +1153,165 @@ class GaiusApp(App):
             )
         )
 
-        # Generate and show situational report asynchronously
-        async def show_report():
-            try:
-                report = await generate_startup_report(
-                    profile=self.config.profile,
-                    domain=self.state.domain,
-                    include_insights=True,
-                )
-                content.show_file("startup.md", report.to_markdown())
-            except Exception as e:
-                # Fallback to simple summary
-                from datetime import datetime
+        # Generate and show startup thoughts asynchronously
+        async def generate_startup_thoughts():
+            from datetime import datetime
 
-                awareness = self.config.awareness
-                now = datetime.now()
-                lines = [
-                    f"# Gaius {self.config.app.version}",
-                    f"**Profile:** {self.config.profile}",
-                    f"**Started:** {now.strftime('%Y-%m-%d %H:%M')}",
-                    "",
-                    f"## Domain",
-                    f"{self.state.domain}",
-                    "",
-                ]
-                if commands_run:
-                    lines.extend([
-                        "## Startup Commands",
-                        *[f"- `{cmd}`" for cmd in commands_run],
-                        "",
-                    ])
+            now = datetime.now()
+
+            # Start session and get handoff
+            session_manager = get_session_manager(self.config.profile)
+            session, handoff = await session_manager.start_session(
+                domain=self.state.domain
+            )
+
+            # Get active thoughts from cognition
+            cognition = get_cognition_agent(self.config.profile)
+            thoughts = await cognition.get_active_thoughts(
+                limit=self.config.cognition.greeting_thoughts
+            )
+
+            # Generate quick reflection if enabled
+            reflection_text = ""
+            questions = []
+            think = self.query_one("#think-panel", ThinkPanel)
+
+            if self.config.cognition.use_llm:
+                try:
+                    # Stream to think panel
+                    think.stream_reasoning("Generating startup reflection...")
+
+                    reflection = get_reflection_agent(self.config.profile)
+                    result = await reflection.reflect(
+                        depth=ReflectionDepth.QUICK,
+                        focus_topic=self.state.domain if self.state.domain != "General Analysis" else None,
+                    )
+                    reflection_text = result.synthesis
+                    questions = result.questions
+
+                    # Record trace
+                    think.complete_trace(
+                        operation="synthesis",
+                        query=f"startup: {self.state.domain}",
+                        summary=f"Reflection ({len(reflection_text)} chars)",
+                        tokens=result.tokens_used,
+                        sources=result.entries_considered,
+                        duration_ms=result.duration_ms,
+                    )
+                except Exception:
+                    think.clear_active()
+                    pass  # Reflection is optional
+
+            # Build the Zettelkasten note
+            lines = [
+                f"# Thoughts: {now.strftime('%Y-%m-%d %H:%M')}",
+                "",
+                "---",
+                f"created: {now.isoformat()}",
+                "type: thoughts",
+                f"profile: {self.config.profile}",
+            ]
+
+            # Add session gap if we have handoff info
+            if handoff.time_since_last:
+                hours = handoff.time_since_last.total_seconds() / 3600
+                if hours < 1:
+                    gap_str = f"{int(hours * 60)}m"
+                elif hours < 24:
+                    gap_str = f"{hours:.1f}h"
+                else:
+                    gap_str = f"{hours / 24:.1f}d"
+                lines.append(f"session_gap: {gap_str}")
+
+            lines.extend(["---", ""])
+
+            # Section: What I've Been Thinking About
+            if thoughts:
+                lines.append("## What I've Been Thinking About")
+                lines.append("")
+
+                for thought in thoughts:
+                    lines.append(thought.to_markdown())
+                    lines.append("")
+
+            # Section: Where We Left Off (session handoff)
+            if handoff.has_content():
+                lines.append(handoff.to_markdown())
+                lines.append("")
+
+            # Section: Quick Reflection
+            if reflection_text:
+                lines.append("## Current State")
+                lines.append(reflection_text)
+                lines.append("")
+
+            # Section: Questions I'm Curious About
+            if questions:
+                lines.append("## Questions Worth Exploring")
+                lines.append("")
+                for i, q in enumerate(questions, 1):
+                    lines.append(f"{i}. {q}")
+                lines.append("")
+
+            # Fallback: If nothing substantive, show basic startup info
+            if not thoughts and not handoff.has_content() and not reflection_text:
                 lines.extend([
-                    "---",
-                    "*Press ? for help, / for commands*",
+                    "## Welcome",
+                    "",
+                    f"**Profile:** {self.config.profile}",
+                    f"**Domain:** {self.state.domain}",
+                    "",
+                    "*No recent thoughts or sessions to report.*",
+                    "*Start exploring to build context.*",
+                    "",
                 ])
-                content.show_file("startup.md", "\n".join(lines))
 
-        asyncio.create_task(show_report())
+            # Footer
+            lines.extend([
+                "---",
+                "",
+                "*This note is part of the knowledge base. Edit, link, or dismiss as you wish.*",
+            ])
+
+            note_content = "\n".join(lines)
+
+            # Persist the note to scratch/<iso-date>/<timestamp>_thoughts.md
+            scratch_path = Path(self.config.kb.scratch)
+            date_dir = scratch_path / now.strftime("%Y-%m-%d")
+            date_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = now.strftime("%H%M%S")
+            note_path = date_dir / f"{timestamp}_thoughts.md"
+
+            try:
+                note_path.write_text(note_content)
+
+                # Open in editor (center panel)
+                editor.remove_class("hidden")
+                editor.open_note(str(note_path))
+
+                # Refresh file tree
+                file_tree = self.query_one("#file-tree", FileTree)
+                file_tree.refresh_tree()
+
+                # Show brief summary in info panel (not full duplicate)
+                content.show_file(
+                    "startup.md",
+                    f"# Session Started\n\n"
+                    f"**Thoughts note:** `{note_path.name}`\n\n"
+                    f"*Edit in center panel or dismiss with `[`*"
+                )
+
+                # Mark thoughts as surfaced
+                if thoughts:
+                    thought_ids = [t.id for t in thoughts if t.id]
+                    await cognition.mark_surfaced(thought_ids)
+
+            except Exception as e:
+                # Fallback: just show in content panel
+                content.show_file("startup.md", note_content)
+
+        asyncio.create_task(generate_startup_thoughts())
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
         """Handle command submission."""

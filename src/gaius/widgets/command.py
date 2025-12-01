@@ -81,6 +81,8 @@ class CommandInput(Widget):
     def on_mount(self) -> None:
         """Set up the input."""
         self._input = self.query_one("#cmd-input", Input)
+        # Remove from tab cycle - access via '/' key
+        self._input.can_focus = False
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle command submission."""
@@ -90,6 +92,8 @@ class CommandInput(Widget):
             self.post_message(CommandSubmitted(value))
         self._input.value = ""
         self._in_command_mode = False
+        # Remove from tab cycle again
+        self._input.can_focus = False
 
     def on_key(self, event) -> None:
         """Handle special keys for history navigation."""
@@ -108,6 +112,8 @@ class CommandInput(Widget):
         elif event.key == "escape":
             self._input.value = ""
             self._in_command_mode = False
+            # Remove from tab cycle again
+            self._input.can_focus = False
             self.app.set_focus(None)
             event.stop()
 
@@ -116,6 +122,8 @@ class CommandInput(Widget):
         self._in_command_mode = True
         self._input.value = initial
         self._input.cursor_position = len(initial)
+        # Temporarily enable focus to allow focusing
+        self._input.can_focus = True
         self._input.focus()
 
     def set_prompt(self, prompt: str) -> None:

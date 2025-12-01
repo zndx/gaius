@@ -21,7 +21,6 @@ class MiniGrid(Widget):
         height: 10;
         border: solid $primary-darken-2;
         padding: 0;
-        background: $surface-darken-1;
     }
 
     MiniGrid.right {

@@ -46,7 +46,6 @@ class GraphView(Widget, can_focus=True):
     GraphView {
         width: 40;
         height: 21;
-        background: $surface-darken-1;
         padding: 0;
         overflow: hidden;
     }

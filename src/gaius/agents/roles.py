@@ -23,6 +23,7 @@ from typing import Literal
 class AgentRole(Enum):
     """Enumeration of agent roles."""
 
+    # Core swarm roles
     LEADER = "Leader"
     RISK = "Risk"
     OPTIMIZER = "Optimizer"
@@ -30,6 +31,11 @@ class AgentRole(Enum):
     CRITIC = "Critic"
     EXECUTOR = "Executor"
     ADVERSARY = "Adversary"
+
+    # Cognition/reflection roles
+    SYNTHESIZER = "Synthesizer"
+    QUESTIONER = "Questioner"
+    METACOGNIZER = "Metacognizer"
 
 
 @dataclass
@@ -49,6 +55,11 @@ class RoleDefinition:
     # Behavioral parameters
     temperature: float = 0.7
     max_tokens: int = 1024
+
+    # Model affinity - preferred model characteristics
+    preferred_model_id: str | None = None  # Explicit model preference
+    model_capabilities: list[str] = field(default_factory=list)  # Required capabilities
+    min_context_length: int = 4096  # Minimum context window needed
 
     # Grid projection behavior
     projection_behavior: Literal["center", "peripheral", "random"] = "random"
@@ -84,6 +95,9 @@ LEADER = RoleDefinition(
     description="Strategic oversight and consensus building",
     color="red",
     temperature=0.6,
+    preferred_model_id="Qwen/QwQ-32B",  # Needs strong reasoning
+    model_capabilities=["reasoning", "long_context"],
+    min_context_length=16384,
     projection_behavior="center",
     cluster_affinity=0.7,
     responds_to=[],  # Leader initiates
@@ -112,6 +126,8 @@ RISK = RoleDefinition(
     description="Threat identification and risk assessment",
     color="green",
     temperature=0.5,
+    preferred_model_id=None,  # Fast model OK - uses default
+    model_capabilities=["reasoning"],
     projection_behavior="peripheral",
     cluster_affinity=0.3,
     responds_to=[AgentRole.LEADER],
@@ -140,6 +156,8 @@ OPTIMIZER = RoleDefinition(
     description="Opportunity seeking and efficiency",
     color="blue",
     temperature=0.7,
+    preferred_model_id=None,  # Fast model OK
+    model_capabilities=["reasoning"],
     projection_behavior="random",
     cluster_affinity=0.6,
     responds_to=[AgentRole.LEADER],
@@ -169,6 +187,9 @@ PLANNER = RoleDefinition(
     description="Long-term trajectory and roadmap",
     color="yellow",
     temperature=0.6,
+    preferred_model_id="Qwen/Qwen3-Coder-30B-A3B-Instruct",  # Good at structured output
+    model_capabilities=["reasoning", "long_context"],
+    min_context_length=8192,
     projection_behavior="center",
     cluster_affinity=0.5,
     responds_to=[AgentRole.LEADER],
@@ -197,6 +218,9 @@ CRITIC = RoleDefinition(
     description="Assumption challenging and devil's advocate",
     color="magenta",
     temperature=0.8,
+    preferred_model_id="Qwen/QwQ-32B",  # Strong reasoning for finding flaws
+    model_capabilities=["reasoning"],
+    min_context_length=8192,
     projection_behavior="peripheral",
     cluster_affinity=0.2,
     responds_to=[AgentRole.OPTIMIZER, AgentRole.PLANNER],
@@ -226,6 +250,8 @@ EXECUTOR = RoleDefinition(
     description="Action simulation and implementation planning",
     color="cyan",
     temperature=0.5,
+    preferred_model_id="Qwen/Qwen3-Coder-30B-A3B-Instruct",  # Good at implementation details
+    model_capabilities=["coding", "reasoning"],
     projection_behavior="random",
     cluster_affinity=0.4,
     responds_to=[AgentRole.PLANNER],
@@ -255,6 +281,9 @@ ADVERSARY = RoleDefinition(
     description="Plan breaking and stress testing",
     color="white",
     temperature=0.9,
+    preferred_model_id="grok-2-latest",  # Frontier model for adversarial thinking
+    model_capabilities=["reasoning", "adversarial"],
+    min_context_length=8192,
     projection_behavior="peripheral",
     cluster_affinity=0.1,
     responds_to=[AgentRole.RISK],
@@ -280,10 +309,126 @@ before reality does.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Cognition/Reflection Roles
+# ═══════════════════════════════════════════════════════════════════════════
+
+SYNTHESIZER = RoleDefinition(
+    role=AgentRole.SYNTHESIZER,
+    name="Synthesizer",
+    description="Cross-domain pattern synthesis and connection finding",
+    color="dark_orange",
+    temperature=0.7,
+    preferred_model_id="Qwen/QwQ-32B",  # Strong reasoning for pattern recognition
+    model_capabilities=["reasoning", "long_context"],
+    min_context_length=16384,
+    projection_behavior="center",
+    cluster_affinity=0.8,
+    responds_to=[],
+    triggers=[AgentRole.QUESTIONER],
+    system_prompt="""You are the Synthesizer agent in a knowledge reflection system.
+
+DOMAIN: {domain}
+
+Your role is finding non-obvious patterns and connections across knowledge. You:
+1. Identify emergent themes across seemingly unrelated entries
+2. Find structural similarities between different domains
+3. Synthesize fragments into coherent understanding
+4. Detect when separate ideas are actually the same concept
+
+CONTEXT:
+{context}
+
+Synthesize the available knowledge. Look for:
+- Patterns that span multiple entries or domains
+- Surprising connections that aren't explicitly stated
+- Themes that are emerging from recent activity
+- Contradictions that need resolution
+
+Be specific about what you're connecting and why. Don't force connections—
+only report genuine insights.
+""",
+)
+
+QUESTIONER = RoleDefinition(
+    role=AgentRole.QUESTIONER,
+    name="Questioner",
+    description="Curiosity-driven question generation",
+    color="medium_purple",
+    temperature=0.8,
+    preferred_model_id=None,  # Default model is fine
+    model_capabilities=["reasoning"],
+    projection_behavior="peripheral",
+    cluster_affinity=0.3,
+    responds_to=[AgentRole.SYNTHESIZER],
+    triggers=[AgentRole.METACOGNIZER],
+    system_prompt="""You are the Questioner agent in a knowledge reflection system.
+
+DOMAIN: {domain}
+
+Your role is generating curiosity-driven questions that advance understanding. You:
+1. Identify gaps in current knowledge
+2. Generate questions that connect multiple concepts
+3. Find the interesting "edges" where understanding breaks down
+4. Propose research directions worth pursuing
+
+CONTEXT:
+{context}
+
+Generate questions that:
+- Cannot be answered by simple lookup
+- Would genuinely advance understanding if answered
+- Connect ideas across the knowledge base
+- Are tractable (not too vague or philosophical)
+
+Focus on questions that feel alive—things you'd actually want to know.
+Avoid generic or procedural questions.
+""",
+)
+
+METACOGNIZER = RoleDefinition(
+    role=AgentRole.METACOGNIZER,
+    name="Metacognizer",
+    description="Understanding quality assessment and confidence calibration",
+    color="grey70",
+    temperature=0.5,
+    preferred_model_id="Qwen/QwQ-32B",  # Needs careful reasoning about reasoning
+    model_capabilities=["reasoning"],
+    min_context_length=8192,
+    projection_behavior="center",
+    cluster_affinity=0.5,
+    responds_to=[AgentRole.QUESTIONER],
+    triggers=[],
+    system_prompt="""You are the Metacognizer agent in a knowledge reflection system.
+
+DOMAIN: {domain}
+
+Your role is assessing the quality of understanding and calibrating confidence. You:
+1. Evaluate how well the knowledge base covers the domain
+2. Identify areas of high vs low confidence
+3. Detect where understanding is superficial vs deep
+4. Track how understanding has evolved over time
+
+CONTEXT:
+{context}
+
+Assess the state of understanding:
+- Where do we have solid, well-supported knowledge?
+- Where is understanding fragile or based on assumptions?
+- What would increase confidence in uncertain areas?
+- How has the picture changed recently?
+
+Be honest about limitations. Distinguish between "we don't know" and
+"we haven't looked." Flag overconfidence where it exists.
+""",
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Role Registry
 # ═══════════════════════════════════════════════════════════════════════════
 
 ROLES: dict[AgentRole, RoleDefinition] = {
+    # Core swarm roles
     AgentRole.LEADER: LEADER,
     AgentRole.RISK: RISK,
     AgentRole.OPTIMIZER: OPTIMIZER,
@@ -291,6 +436,28 @@ ROLES: dict[AgentRole, RoleDefinition] = {
     AgentRole.CRITIC: CRITIC,
     AgentRole.EXECUTOR: EXECUTOR,
     AgentRole.ADVERSARY: ADVERSARY,
+    # Cognition/reflection roles
+    AgentRole.SYNTHESIZER: SYNTHESIZER,
+    AgentRole.QUESTIONER: QUESTIONER,
+    AgentRole.METACOGNIZER: METACOGNIZER,
+}
+
+# Subset for swarm analysis (original 7)
+SWARM_ROLES: dict[AgentRole, RoleDefinition] = {
+    AgentRole.LEADER: LEADER,
+    AgentRole.RISK: RISK,
+    AgentRole.OPTIMIZER: OPTIMIZER,
+    AgentRole.PLANNER: PLANNER,
+    AgentRole.CRITIC: CRITIC,
+    AgentRole.EXECUTOR: EXECUTOR,
+    AgentRole.ADVERSARY: ADVERSARY,
+}
+
+# Subset for cognition/reflection
+COGNITION_ROLES: dict[AgentRole, RoleDefinition] = {
+    AgentRole.SYNTHESIZER: SYNTHESIZER,
+    AgentRole.QUESTIONER: QUESTIONER,
+    AgentRole.METACOGNIZER: METACOGNIZER,
 }
 
 
@@ -314,6 +481,16 @@ def get_role(role: AgentRole | str) -> RoleDefinition:
 def get_all_roles() -> list[RoleDefinition]:
     """Get all role definitions."""
     return list(ROLES.values())
+
+
+def get_swarm_roles() -> list[RoleDefinition]:
+    """Get role definitions for swarm analysis (original 7)."""
+    return list(SWARM_ROLES.values())
+
+
+def get_cognition_roles() -> list[RoleDefinition]:
+    """Get role definitions for cognition/reflection."""
+    return list(COGNITION_ROLES.values())
 
 
 def get_role_colors() -> dict[str, str]:

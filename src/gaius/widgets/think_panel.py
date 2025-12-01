@@ -20,6 +20,8 @@ from ..core.state import AppState, ReasoningTrace
 class ThinkPanel(Widget):
     """Displays reasoning traces and active thinking.
 
+    Not focusable - panel title provides visual indication when active.
+
     Layout:
     +- Active Reasoning ----------------------------------------+
     | > Analyzing query: distributed consensus                  |
@@ -38,7 +40,6 @@ class ThinkPanel(Widget):
     ThinkPanel {
         width: 40;
         height: 21;
-        background: $surface-lighten-1;
         overflow: hidden;
     }
     """
