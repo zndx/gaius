@@ -214,6 +214,55 @@ class TelemetryConfig:
 
 
 @dataclass
+class CognitionConfig:
+    """Background cognition agent configuration."""
+
+    enabled: bool = True
+    content_threshold: int = 10      # Items before auto-cognition
+    time_threshold_hours: int = 4    # Max hours between cycles
+    max_thoughts: int = 20           # Active thought limit
+    greeting_thoughts: int = 3       # Thoughts to show on startup
+    stale_days: int = 7              # Days before thoughts become stale
+    use_llm: bool = True             # Always use LLM for generation
+
+
+@dataclass
+class SessionConfig:
+    """Session lifecycle configuration."""
+
+    enabled: bool = True
+    gap_hours: int = 4               # Gap that defines a new session
+    track_threads: bool = True       # Auto-detect research threads
+    handoff_llm: bool = True         # Use LLM for handoff summaries
+    max_threads: int = 10            # Max active threads to track
+
+
+@dataclass
+class ThemeConfig:
+    """UI theme configuration.
+
+    Themes control the visual appearance of Gaius. Built-in themes:
+    - dark: Default dark theme with blue accents
+    - light: Light theme for bright environments
+    - terminal: Minimal, high-contrast terminal style
+    - go: Muted wood-tone theme inspired by Go boards
+    """
+
+    name: str = "dark"
+    # Border styling
+    border_style: str = "solid"  # solid, round, double, heavy, none
+    # Colors (Textual CSS color names or hex)
+    primary: str = "$primary"
+    secondary: str = "$secondary"
+    surface: str = "$surface"
+    accent: str = "$accent"
+    # Component-specific
+    panel_border: str = "$primary-darken-2"
+    header_bg: str = "$primary-darken-3"
+    status_bar_bg: str = "$primary-darken-3"
+
+
+@dataclass
 class ProfileConfig:
     """Profile metadata."""
 
@@ -244,6 +293,9 @@ class GaiusConfig:
     startup: StartupConfig = field(default_factory=StartupConfig)
     awareness: AwarenessConfig = field(default_factory=AwarenessConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    theme: ThemeConfig = field(default_factory=ThemeConfig)
+    cognition: CognitionConfig = field(default_factory=CognitionConfig)
+    session: SessionConfig = field(default_factory=SessionConfig)
 
     # Raw HOCON tree for accessing custom settings
     _raw: ConfigTree | None = field(default=None, repr=False)
@@ -280,8 +332,13 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         archive=g.get("kb.archive", "build/dev/archive"),
     )
 
+    # Strip quotes from database URL if present (common .env issue)
+    db_url = g.get("database.url", "postgres://localhost:5438/zndx_gaius?sslmode=disable")
+    if isinstance(db_url, str):
+        db_url = db_url.strip('"').strip("'")
+
     database = DatabaseConfig(
-        url=g.get("database.url", "postgres://localhost:5438/zndx_gaius?sslmode=disable"),
+        url=db_url,
         pool_size=g.get("database.pool_size", 10),
     )
 
@@ -377,6 +434,36 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         service_name=g.get("telemetry.service_name", "gaius"),
     )
 
+    theme = ThemeConfig(
+        name=g.get("theme.name", "dark"),
+        border_style=g.get("theme.border_style", "solid"),
+        primary=g.get("theme.primary", "$primary"),
+        secondary=g.get("theme.secondary", "$secondary"),
+        surface=g.get("theme.surface", "$surface"),
+        accent=g.get("theme.accent", "$accent"),
+        panel_border=g.get("theme.panel_border", "$primary-darken-2"),
+        header_bg=g.get("theme.header_bg", "$primary-darken-3"),
+        status_bar_bg=g.get("theme.status_bar_bg", "$primary-darken-3"),
+    )
+
+    cognition = CognitionConfig(
+        enabled=g.get("cognition.enabled", True),
+        content_threshold=int(g.get("cognition.content_threshold", 10)),
+        time_threshold_hours=int(g.get("cognition.time_threshold_hours", 4)),
+        max_thoughts=int(g.get("cognition.max_thoughts", 20)),
+        greeting_thoughts=int(g.get("cognition.greeting_thoughts", 3)),
+        stale_days=int(g.get("cognition.stale_days", 7)),
+        use_llm=g.get("cognition.use_llm", True),
+    )
+
+    session = SessionConfig(
+        enabled=g.get("session.enabled", True),
+        gap_hours=int(g.get("session.gap_hours", 4)),
+        track_threads=g.get("session.track_threads", True),
+        handoff_llm=g.get("session.handoff_llm", True),
+        max_threads=int(g.get("session.max_threads", 10)),
+    )
+
     return GaiusConfig(
         profile=g.get("profile", "default"),
         app=app,
@@ -392,6 +479,9 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         startup=startup,
         awareness=awareness,
         telemetry=telemetry,
+        theme=theme,
+        cognition=cognition,
+        session=session,
         _raw=tree,
     )
 

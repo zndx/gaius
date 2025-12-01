@@ -360,6 +360,118 @@ class ActivityTracker:
 
         return summary
 
+    async def get_stats(self, days: int = 7) -> dict:
+        """Get activity statistics for the past N days.
+
+        Args:
+            days: Number of days to analyze
+
+        Returns:
+            Dictionary with event counts, domain breakdown, and daily trends
+        """
+        today = date.today()
+        start_date = today - timedelta(days=days - 1)
+
+        stats = {
+            "period": {"days": days, "start": str(start_date), "end": str(today)},
+            "totals": {"events": 0, "queries": 0, "swarm_runs": 0, "kb_entries": 0},
+            "by_type": {},
+            "by_domain": {},
+            "daily": [],
+        }
+
+        pool = await self._get_pool()
+
+        if pool is not None:
+            try:
+                async with pool.acquire() as conn:
+                    # Total events by type
+                    rows = await conn.fetch(
+                        """
+                        SELECT event_type, COUNT(*) as count
+                        FROM activity_events
+                        WHERE created_at >= $1
+                        GROUP BY event_type
+                        ORDER BY count DESC
+                        """,
+                        datetime.combine(start_date, datetime.min.time()),
+                    )
+                    for row in rows:
+                        stats["by_type"][row["event_type"]] = row["count"]
+                        stats["totals"]["events"] += row["count"]
+                        if row["event_type"] == "query":
+                            stats["totals"]["queries"] = row["count"]
+                        elif row["event_type"] == "swarm_run":
+                            stats["totals"]["swarm_runs"] = row["count"]
+                        elif row["event_type"] == "kb_create":
+                            stats["totals"]["kb_entries"] = row["count"]
+
+                    # Events by domain
+                    rows = await conn.fetch(
+                        """
+                        SELECT domain, COUNT(*) as count
+                        FROM activity_events
+                        WHERE created_at >= $1 AND domain IS NOT NULL
+                        GROUP BY domain
+                        ORDER BY count DESC
+                        """,
+                        datetime.combine(start_date, datetime.min.time()),
+                    )
+                    for row in rows:
+                        stats["by_domain"][row["domain"]] = row["count"]
+
+                    # Daily breakdown
+                    rows = await conn.fetch(
+                        """
+                        SELECT DATE(created_at) as day, COUNT(*) as count
+                        FROM activity_events
+                        WHERE created_at >= $1
+                        GROUP BY DATE(created_at)
+                        ORDER BY day
+                        """,
+                        datetime.combine(start_date, datetime.min.time()),
+                    )
+                    for row in rows:
+                        stats["daily"].append({"date": str(row["day"]), "events": row["count"]})
+
+            except Exception:
+                pass
+        else:
+            # Memory fallback
+            start_dt = datetime.combine(start_date, datetime.min.time())
+            daily_counts: dict[str, int] = {}
+
+            for event in self._memory_events:
+                if event.created_at >= start_dt:
+                    stats["totals"]["events"] += 1
+
+                    # By type
+                    evt_type = event.event_type.value
+                    stats["by_type"][evt_type] = stats["by_type"].get(evt_type, 0) + 1
+
+                    if evt_type == "query":
+                        stats["totals"]["queries"] += 1
+                    elif evt_type == "swarm_run":
+                        stats["totals"]["swarm_runs"] += 1
+                    elif evt_type == "kb_create":
+                        stats["totals"]["kb_entries"] += 1
+
+                    # By domain
+                    if event.domain:
+                        stats["by_domain"][event.domain] = (
+                            stats["by_domain"].get(event.domain, 0) + 1
+                        )
+
+                    # Daily
+                    day_str = str(event.created_at.date())
+                    daily_counts[day_str] = daily_counts.get(day_str, 0) + 1
+
+            stats["daily"] = [
+                {"date": d, "events": c} for d, c in sorted(daily_counts.items())
+            ]
+
+        return stats
+
     async def close(self) -> None:
         """Close database connections."""
         if self._pool:
