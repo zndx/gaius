@@ -272,3 +272,342 @@ def get_model_router() -> ModelRouter:
     if _router is None:
         _router = ModelRouter()
     return _router
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Multi-Endpoint Router for Distributed GPU Deployment
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from dataclasses import field
+
+try:
+    from openai import AsyncOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+
+@dataclass
+class EndpointConfig:
+    """Configuration for a vLLM endpoint."""
+
+    name: str
+    url: str
+    models: list[str] = field(default_factory=list)
+    gpus: list[int] = field(default_factory=list)
+    tensor_parallel: int = 1
+    api_key: str = "sk-vllm"
+    priority: int = 0  # Higher = preferred for overflow
+    healthy: bool = True
+
+
+@dataclass
+class EndpointRouterConfig:
+    """Configuration for the multi-endpoint router."""
+
+    endpoints: dict[str, EndpointConfig] = field(default_factory=dict)
+    model_routing: dict[str, str] = field(default_factory=dict)
+    default_endpoint: str = "coding"
+    failover_enabled: bool = True
+
+
+class EndpointRouter:
+    """Routes inference to appropriate vLLM endpoints based on model/role.
+
+    Manages multiple vLLM endpoints across GPUs, handles failover,
+    and supports role-specific model selection.
+
+    Usage:
+        from gaius.inference.router import get_endpoint_router
+
+        router = get_endpoint_router()
+        result = await router.complete(
+            messages=[Message(role="user", content="Hello")],
+            model="Qwen/QwQ-32B",  # Routes to reasoning endpoint
+        )
+
+        # Or route by agent role
+        from gaius.agents.roles import AgentRole
+        result = await router.complete_for_role(
+            messages=[...],
+            role=AgentRole.LEADER,
+        )
+    """
+
+    def __init__(self, config: EndpointRouterConfig | None = None):
+        if not OPENAI_AVAILABLE:
+            raise ImportError(
+                "openai package required. Install with: uv sync --extra inference"
+            )
+
+        self.config = config or self._load_config()
+        self._clients: dict[str, AsyncOpenAI] = {}
+        self._init_clients()
+
+    def _load_config(self) -> EndpointRouterConfig:
+        """Load router config from application config."""
+        try:
+            from ..core.config import get_config
+
+            app_config = get_config()
+            inference = app_config._raw.get("gaius", {}).get("inference", {})
+
+            endpoints_raw = inference.get("endpoints", {})
+            model_routing = inference.get("model_routing", {})
+
+            endpoints = {}
+            for name, ep in endpoints_raw.items():
+                if isinstance(ep, dict):
+                    endpoints[name] = EndpointConfig(
+                        name=name,
+                        url=ep.get("url", f"http://localhost:808{len(endpoints)+1}/v1"),
+                        models=ep.get("models", []),
+                        gpus=ep.get("gpus", []),
+                        tensor_parallel=ep.get("tensor_parallel", 1),
+                    )
+
+            return EndpointRouterConfig(
+                endpoints=endpoints,
+                model_routing={k: v for k, v in model_routing.items() if k != "default"},
+                default_endpoint=model_routing.get("default", "coding"),
+            )
+
+        except Exception:
+            # Fallback to minimal config
+            return EndpointRouterConfig(
+                endpoints={
+                    "default": EndpointConfig(
+                        name="default",
+                        url="http://localhost:8088/v1",
+                    )
+                },
+                default_endpoint="default",
+            )
+
+    def _init_clients(self) -> None:
+        """Initialize OpenAI clients for each endpoint."""
+        for name, endpoint in self.config.endpoints.items():
+            self._clients[name] = AsyncOpenAI(
+                api_key=endpoint.api_key,
+                base_url=endpoint.url,
+                timeout=60,
+            )
+
+    def get_endpoint_for_model(self, model: str) -> str:
+        """Get the endpoint name that serves a model."""
+        # Check explicit routing
+        if model in self.config.model_routing:
+            return self.config.model_routing[model]
+
+        # Check which endpoints have this model
+        for name, endpoint in self.config.endpoints.items():
+            if model in endpoint.models:
+                return name
+
+        return self.config.default_endpoint
+
+    def get_endpoint_for_role(self, role) -> str:
+        """Get the best endpoint for an agent role."""
+        from ..agents.roles import get_role
+
+        role_def = get_role(role)
+
+        # Use role's preferred model
+        if role_def.preferred_model_id:
+            return self.get_endpoint_for_model(role_def.preferred_model_id)
+
+        # Match by capabilities
+        for name, endpoint in self.config.endpoints.items():
+            if "reasoning" in role_def.model_capabilities and "reasoning" in name:
+                return name
+            if "coding" in role_def.model_capabilities and "coding" in name:
+                return name
+
+        return self.config.default_endpoint
+
+    async def complete(
+        self,
+        messages: list,
+        model: str | None = None,
+        endpoint: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        **kwargs,
+    ):
+        """Complete a conversation using appropriate endpoint.
+
+        Args:
+            messages: Chat messages (list of Message or dicts)
+            model: Model to use (determines endpoint if not specified)
+            endpoint: Explicit endpoint override
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            CompletionResult with response
+        """
+        from .client import CompletionResult
+
+        # Determine endpoint
+        if endpoint is None:
+            if model:
+                endpoint = self.get_endpoint_for_model(model)
+            else:
+                endpoint = self.config.default_endpoint
+
+        # Get client
+        client = self._clients.get(endpoint)
+        if client is None:
+            # Fallback to default
+            client = list(self._clients.values())[0] if self._clients else None
+            if client is None:
+                raise ValueError(f"No endpoints available")
+
+        # Get model for endpoint if not specified
+        if model is None:
+            ep_config = self.config.endpoints.get(endpoint)
+            if ep_config and ep_config.models:
+                model = ep_config.models[0]
+            else:
+                model = "default"
+
+        # Convert messages
+        openai_messages = []
+        for m in messages:
+            if hasattr(m, "role"):
+                openai_messages.append({"role": m.role, "content": m.content})
+            else:
+                openai_messages.append(m)
+
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=openai_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+            choice = response.choices[0]
+            usage = response.usage
+
+            return CompletionResult(
+                content=choice.message.content or "",
+                model=response.model,
+                input_tokens=usage.prompt_tokens if usage else 0,
+                output_tokens=usage.completion_tokens if usage else 0,
+            )
+
+        except Exception as e:
+            # Try failover if enabled
+            if self.config.failover_enabled:
+                return await self._failover_complete(
+                    messages, model, endpoint, temperature, max_tokens, e
+                )
+            raise
+
+    async def _failover_complete(
+        self,
+        messages: list,
+        model: str,
+        failed_endpoint: str,
+        temperature: float,
+        max_tokens: int,
+        original_error: Exception,
+    ):
+        """Attempt completion on alternate endpoints."""
+        from .client import CompletionResult
+
+        # Mark endpoint unhealthy
+        if failed_endpoint in self.config.endpoints:
+            self.config.endpoints[failed_endpoint].healthy = False
+
+        # Try other endpoints
+        for name, ep in self.config.endpoints.items():
+            if name != failed_endpoint and ep.healthy:
+                try:
+                    return await self.complete(
+                        messages=messages,
+                        model=None,  # Use endpoint's default
+                        endpoint=name,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                except Exception:
+                    continue
+
+        # All endpoints failed - return error result
+        return CompletionResult(
+            content="",
+            model=model or "unknown",
+            input_tokens=0,
+            output_tokens=0,
+            raw_response={"error": str(original_error)},
+        )
+
+    async def complete_for_role(
+        self,
+        messages: list,
+        role,
+        **kwargs,
+    ):
+        """Complete using the best endpoint for an agent role."""
+        from ..agents.roles import get_role
+
+        role_def = get_role(role)
+        endpoint = self.get_endpoint_for_role(role)
+
+        return await self.complete(
+            messages=messages,
+            model=role_def.preferred_model_id,
+            endpoint=endpoint,
+            temperature=role_def.temperature,
+            max_tokens=role_def.max_tokens,
+            **kwargs,
+        )
+
+    async def health_check(self) -> dict[str, bool]:
+        """Check health of all endpoints."""
+        import httpx
+
+        results = {}
+
+        async with httpx.AsyncClient() as client:
+            for name, endpoint in self.config.endpoints.items():
+                try:
+                    base_url = endpoint.url.rstrip("/v1")
+                    r = await client.get(f"{base_url}/v1/models", timeout=5)
+                    endpoint.healthy = r.status_code == 200
+                    results[name] = endpoint.healthy
+                except Exception:
+                    endpoint.healthy = False
+                    results[name] = False
+
+        return results
+
+    def get_status(self) -> dict[str, Any]:
+        """Get router status summary."""
+        return {
+            "endpoints": {
+                name: {
+                    "url": ep.url,
+                    "models": ep.models,
+                    "gpus": ep.gpus,
+                    "healthy": ep.healthy,
+                }
+                for name, ep in self.config.endpoints.items()
+            },
+            "model_routing": self.config.model_routing,
+            "default_endpoint": self.config.default_endpoint,
+        }
+
+
+# Module-level singleton for endpoint router
+_endpoint_router: EndpointRouter | None = None
+
+
+def get_endpoint_router() -> EndpointRouter:
+    """Get or create the multi-endpoint router singleton."""
+    global _endpoint_router
+    if _endpoint_router is None:
+        _endpoint_router = EndpointRouter()
+    return _endpoint_router
