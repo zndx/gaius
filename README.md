@@ -85,6 +85,19 @@ uv run gaius-cli --cmd "/state" --format json
 ## Layout
 
 ```
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+┌─────────┬────────────────────────────┬───────────┐
+│ Files/  │  19×19 Grid  │  9×9 Views  │ Content   │
+│ Agents  │              │             │           │
+│         │──────────────┴─────────────│           │
+│         │  Think Panel / Graph       │           │
+├─────────┴────────────────────────────┴───────────┤
+│ / Command                                        │
+└──────────────────────────────────────────────────┘
+=======
+>>>>>>> 43f9bab (Fix layout diagram in README to match current UI)
 ┌─────────┬──────────────┬───────┬─────────┬──────────┐
 │ Agents  │              │ Embed │ Graph/  │   Info   │
 │ ─────── │  19×19 Grid  │  9×9  │ Think   │          │
@@ -96,6 +109,10 @@ uv run gaius-cli --cmd "/state" --format json
 ├─────────┴────────────────────────────────┴──────────┤
 │ / Command                                           │
 └─────────────────────────────────────────────────────┘
+<<<<<<< HEAD
+=======
+>>>>>>> 60abb11 (Fix layout diagram in README to match current UI)
+>>>>>>> 43f9bab (Fix layout diagram in README to match current UI)
 ```
 
 ## Features
