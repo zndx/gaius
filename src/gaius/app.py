@@ -966,7 +966,7 @@ Domain: {domain}
                     operation="research",
                     query=topic,
                     summary=f"Synthesized {len(results)} sources → {kb_path}",
-                    tokens=synthesis.usage.get("total_tokens", 0) if synthesis.usage else 0,
+                    tokens=synthesis.input_tokens + synthesis.output_tokens,
                     sources=len(results),
                     duration_ms=duration_ms,
                 )
