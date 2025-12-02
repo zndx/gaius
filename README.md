@@ -75,6 +75,8 @@ uv run gaius-cli --cmd "/state" --format json
 
 | Command | Description |
 |---------|-------------|
+| `/search <query>` | Search KB files and content |
+| `/research <topic>` | Web search + LLM synthesis to KB |
 | `/domain <name>` | Set domain focus |
 | `/swarm [domain]` | Run multi-agent analysis |
 | `/summary` | Generate daily summary |
