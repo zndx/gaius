@@ -747,6 +747,240 @@ class GaiusApp(App):
 
         asyncio.create_task(show())
 
+    def _run_search(self, query: str) -> None:
+        """Search KB and optionally web for a query."""
+        import asyncio
+        from datetime import datetime
+
+        content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        if not query:
+            content.show_file("error.txt", "Usage: /search <query>\n\nSearches KB files and content.")
+            return
+
+        content.show_file("search.md", f"Searching for: **{query}**\n\n*Searching KB...*")
+        think.stream_reasoning(f"Searching KB for: {query}")
+
+        async def search():
+            start_time = datetime.now()
+            kb_root = Path(self.config.kb.root)
+            results = []
+
+            # Search KB files
+            for allowed_dir in ("archive", "current", "scratch"):
+                dir_path = kb_root / allowed_dir
+                if not dir_path.exists():
+                    continue
+
+                for md_file in dir_path.rglob("*.md"):
+                    # Check filename
+                    if query.lower() in md_file.name.lower():
+                        rel_path = md_file.relative_to(kb_root)
+                        results.append({
+                            "path": str(rel_path),
+                            "match": "filename",
+                            "preview": md_file.name,
+                        })
+                        continue
+
+                    # Check content
+                    try:
+                        file_content = md_file.read_text()
+                        if query.lower() in file_content.lower():
+                            idx = file_content.lower().find(query.lower())
+                            start = max(0, idx - 50)
+                            end = min(len(file_content), idx + len(query) + 50)
+                            preview = file_content[start:end].replace("\n", " ")
+                            if start > 0:
+                                preview = "..." + preview
+                            if end < len(file_content):
+                                preview = preview + "..."
+
+                            rel_path = md_file.relative_to(kb_root)
+                            results.append({
+                                "path": str(rel_path),
+                                "match": "content",
+                                "preview": preview,
+                            })
+                    except Exception:
+                        continue
+
+                    if len(results) >= 20:
+                        break
+                if len(results) >= 20:
+                    break
+
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            # Format results
+            lines = [
+                f"# Search: {query}",
+                "",
+                f"**Found:** {len(results)} results in KB",
+                "",
+            ]
+
+            if results:
+                lines.append("## KB Results")
+                lines.append("")
+                for r in results:
+                    match_type = "📄" if r["match"] == "filename" else "📝"
+                    lines.append(f"- {match_type} **{r['path']}**")
+                    lines.append(f"  {r['preview'][:100]}")
+                    lines.append("")
+            else:
+                lines.append("*No results in KB.*")
+                lines.append("")
+                lines.append("Try `/research <topic>` to search the web and save to KB.")
+
+            content.show_file("search.md", "\n".join(lines))
+
+            # Record trace
+            think.complete_trace(
+                operation="search",
+                query=query,
+                summary=f"Found {len(results)} KB results",
+                tokens=0,
+                sources=len(results),
+                duration_ms=duration_ms,
+            )
+
+        asyncio.create_task(search())
+
+    def _run_research(self, topic: str) -> None:
+        """Research a topic using web search and LLM synthesis."""
+        import asyncio
+        from datetime import datetime
+
+        content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        if not topic:
+            content.show_file("error.txt", "Usage: /research <topic>\n\nSearches web and synthesizes results to KB.")
+            return
+
+        domain = self.state.domain or "general"
+        content.show_file("research.md", f"Researching: **{topic}**\n\nDomain: {domain}\n\n*Searching web...*")
+        think.stream_reasoning(f"Researching: {topic}")
+
+        async def research():
+            start_time = datetime.now()
+            try:
+                from .inference import get_client, get_search, Message
+
+                # Search for information
+                think.stream_reasoning("Searching web sources...")
+                search = get_search()
+                results = await search.search_for_kb(topic, domain, count=5)
+
+                if not results:
+                    content.show_file("research.md", f"# Research: {topic}\n\n*No search results found.*\n\nTry a different query or check your internet connection.")
+                    think.clear_active()
+                    return
+
+                # Show search progress
+                content.show_file("research.md", f"Researching: **{topic}**\n\nDomain: {domain}\n\nFound {len(results)} sources, synthesizing...")
+                think.stream_reasoning(f"Found {len(results)} sources, synthesizing...")
+
+                # Format sources for synthesis
+                sources_text = "\n".join(
+                    f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
+                )
+
+                # Synthesize with LLM
+                client = get_client()
+                synthesis_prompt = f"""Topic: {topic}
+Domain: {domain}
+
+Sources:
+{sources_text}
+
+Create a structured markdown note with:
+1. Key points and facts
+2. Implications or applications
+3. Related concepts (as wiki-links using [[concept]] syntax)
+
+Be concise but thorough."""
+
+                synthesis = await client.complete(
+                    messages=[
+                        Message(
+                            role="system",
+                            content=f"You are a research assistant specializing in {domain}.",
+                        ),
+                        Message(role="user", content=synthesis_prompt),
+                    ],
+                    technique="cot_reflection",
+                    max_tokens=2048,
+                )
+
+                # Save to KB
+                today = datetime.now().strftime("%Y-%m-%d")
+                timestamp = datetime.now().strftime("%H%M%S")
+                safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
+                kb_path = f"scratch/{today}/{timestamp}_{safe_topic}.md"
+
+                full_content = f"""# {topic}
+
+Created: {datetime.now().isoformat()}
+Domain: {domain}
+
+---
+
+{synthesis.content}
+
+---
+
+## Sources
+
+{sources_text}
+"""
+                kb_root = Path(self.config.kb.root)
+                full_path = kb_root / kb_path
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                full_path.write_text(full_content)
+
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+                # Show result
+                result_text = f"""# Research: {topic}
+
+**Domain:** {domain}
+**Saved to:** `{kb_path}`
+
+---
+
+{synthesis.content}
+
+---
+
+## Sources
+
+{sources_text}
+"""
+                content.show_file("research.md", result_text)
+
+                # Record trace
+                think.complete_trace(
+                    operation="research",
+                    query=topic,
+                    summary=f"Synthesized {len(results)} sources → {kb_path}",
+                    tokens=synthesis.usage.get("total_tokens", 0) if synthesis.usage else 0,
+                    sources=len(results),
+                    duration_ms=duration_ms,
+                )
+
+                # Refresh file tree
+                file_tree = self.query_one("#file-tree", FileTree)
+                file_tree.refresh_tree()
+
+            except Exception as e:
+                think.clear_active()
+                content.show_file("error.txt", f"Research failed: {e}\n\nCheck that inference services are running.")
+
+        asyncio.create_task(research())
+
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
         yield Header()
@@ -958,9 +1192,13 @@ class GaiusApp(App):
 
 ## Common Commands
 - `/domain <name>`: Set analysis domain
+- `/search <query>`: Search KB files and content
+- `/research <topic>`: Web search + LLM synthesis to KB
+- `/swarm [domain]`: Run multi-agent analysis
+- `/summary`: Generate daily summary
+- `/activity`: View activity log
+- `/tda`: Show topological features
 - `/info`: Show cursor position info
-- `/analyze`: Run analysis at cursor
-- `/round`: Execute swarm round
 - `/q` or `/exit`: Quit Gaius
 """
         content.show_file("help.md", help_text)
@@ -1620,6 +1858,12 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "activity":
             # Show activity log
             self._show_activity()
+        elif command == "search":
+            # Search KB
+            self._run_search(args)
+        elif command == "research":
+            # Research topic (web search + LLM synthesis)
+            self._run_research(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
