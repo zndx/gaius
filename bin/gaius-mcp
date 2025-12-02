@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Wrapper script to run gaius-mcp with clean PYTHONPATH
+# Required to avoid Nix store package conflicts in devenv
+
+cd "$(dirname "$0")/.."
+export PYTHONPATH=""
+exec .devenv/state/venv/bin/python -m gaius.mcp_server "$@"
