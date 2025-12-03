@@ -87,9 +87,13 @@ class MainGrid(Widget):
         elif self.state.view_mode == ViewMode.SWARM:
             self._render_swarm_mode(grid)
 
-        # Overlays
-        if self.state.overlay_mode == OverlayMode.H1:
-            self._render_death_loops(grid)
+        # Overlays (new 4-category system)
+        if self.state.overlay_mode == OverlayMode.TOPOLOGY:
+            self._render_topology(grid)
+        elif self.state.overlay_mode == OverlayMode.GEOMETRY:
+            self._render_geometry(grid)
+        elif self.state.overlay_mode == OverlayMode.DYNAMICS:
+            self._render_dynamics(grid)
         elif self.state.overlay_mode == OverlayMode.AGENTS:
             self._render_agents(grid)
 
@@ -134,15 +138,103 @@ class MainGrid(Widget):
             if 0 <= x < 19 and 0 <= y < 19:
                 grid[y][x] = ("●", f"bold {color}")
 
-    def _render_death_loops(self, grid: list) -> None:
-        """Render H1 death loop indicators."""
-        for x1, y1, x2, y2 in self.state.death_loops:
+    def _render_topology(self, grid: list) -> None:
+        """Render TOPOLOGY overlay: H0/H1/H2 persistent homology features.
+
+        Shows H1 cycles (loops) and H2 voids (cavities) as bounding boxes.
+        """
+        # H1 cycles (1-cycles/loops) - red edges
+        for x1, y1, x2, y2 in self.state.h1_cycles:
             for y in range(y1, y2 + 1):
                 for x in range(x1, x2 + 1):
                     if 0 <= x < 19 and 0 <= y < 19:
                         # Only mark edges of the bounding box
                         if x == x1 or x == x2 or y == y1 or y == y2:
                             grid[y][x] = ("⚠", "bold red on dark_red")
+
+        # H2 voids (2-voids/cavities) - magenta diamonds
+        for x1, y1, x2, y2 in self.state.h2_voids:
+            for y in range(y1, y2 + 1):
+                for x in range(x1, x2 + 1):
+                    if 0 <= x < 19 and 0 <= y < 19:
+                        # Only mark edges of the bounding box
+                        if x == x1 or x == x2 or y == y1 or y == y2:
+                            grid[y][x] = ("◇", "bold magenta on dark_magenta")
+
+    def _render_geometry(self, grid: list) -> None:
+        """Render GEOMETRY overlay: Ricci curvature heatmap.
+
+        Curvature reveals semantic boundaries (turbulence/complexity):
+        - Negative curvature (red) = boundaries, bridge points
+        - Positive curvature (blue) = cluster interiors
+        - Flat (white) = uniform regions
+        """
+        if not self.state.curvature_map:
+            return
+
+        for y in range(19):
+            for x in range(19):
+                if y < len(self.state.curvature_map) and x < len(self.state.curvature_map[y]):
+                    κ = self.state.curvature_map[y][x]
+
+                    # Map curvature to visualization
+                    # Negative κ = boundaries (high complexity, like turbulent diatoms)
+                    # Positive κ = interiors (low complexity, like calm water)
+                    if κ < -0.3:
+                        grid[y][x] = ("█", "bold red")      # Strong boundary
+                    elif κ < -0.1:
+                        grid[y][x] = ("▓", "red")           # Weak boundary
+                    elif κ < 0:
+                        grid[y][x] = ("▒", "yellow")        # Slight boundary
+                    elif κ > 0.3:
+                        grid[y][x] = ("█", "bold blue")     # Strong interior
+                    elif κ > 0.1:
+                        grid[y][x] = ("▓", "blue")          # Weak interior
+                    elif κ > 0:
+                        grid[y][x] = ("▒", "cyan")          # Slight interior
+                    # else κ ≈ 0: keep as-is (flat geometry)
+
+    def _render_dynamics(self, grid: list) -> None:
+        """Render DYNAMICS overlay: gradient vector field + divergence.
+
+        Shows direction of semantic change (gradient arrows) and
+        sources/sinks (divergence intensity).
+        """
+        if not self.state.gradient_field:
+            return
+
+        # Unicode arrows for 8 directions
+        arrows = ["→", "↗", "↑", "↖", "←", "↙", "↓", "↘"]
+
+        for entry in self.state.gradient_field:
+            if len(entry) != 4:
+                continue
+            x, y, gx, gy = entry
+
+            if not (0 <= x < 19 and 0 <= y < 19):
+                continue
+
+            # Compute gradient direction and magnitude
+            import math
+            magnitude = math.sqrt(gx**2 + gy**2)
+
+            if magnitude < 0.01:
+                # Nearly zero gradient = stable point
+                grid[y][x] = ("·", "dim white")
+                continue
+
+            # Map angle to arrow direction
+            angle = math.atan2(gy, gx)
+            arrow_idx = int((angle + math.pi) / (2 * math.pi / 8)) % 8
+            arrow = arrows[arrow_idx]
+
+            # Color by magnitude (green = moderate, bright green = strong)
+            if magnitude > 0.5:
+                grid[y][x] = (arrow, "bright_green")
+            elif magnitude > 0.2:
+                grid[y][x] = (arrow, "green")
+            else:
+                grid[y][x] = (arrow, "dark_green")
 
     def _render_agents(self, grid: list) -> None:
         """Render agent positions as overlay."""
