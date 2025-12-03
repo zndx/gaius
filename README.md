@@ -77,6 +77,7 @@ uv run gaius-cli --cmd "/state" --format json
 |---------|-------------|
 | `/search <query>` | Search KB files and content |
 | `/research <topic>` | Web search + LLM synthesis to KB |
+| `/explain [pos]` | Explain grid position with differential geometry (saves to KB) |
 | `/domain <name>` | Set domain focus |
 | `/swarm [domain]` | Run multi-agent analysis |
 | `/summary` | Generate daily summary |
@@ -103,9 +104,20 @@ uv run gaius-cli --cmd "/state" --format json
 ## Features
 
 **Grid Visualization**
-- KB entries projected onto 19×19 board
+- KB entries projected onto 19×19 board via UMAP
 - View modes: Go, Pension, Swarm
 - Overlays: Risk, H1/H2 homology, Agents, Temporal
+
+**Orthographic Mini-Grids (9×9)**
+- **Embed view**: Cosine similarity spotlight around cursor document
+- **Iso view**: Ricci curvature elevation map (boundaries vs interiors)
+- Unicode block visualization (█▓▒░·) for spatial intuition
+
+**Differential Geometry**
+- Ricci curvature computation on semantic manifold
+- Visual interpretation: bright Embed + low Iso = cluster core
+- `/explain` generates LLM interpretations saved as KB notes
+- Captures mini-grid snapshots in zettelkasten format
 
 **Multi-Agent Analysis**
 - 7 specialized agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary)
@@ -127,9 +139,17 @@ uv run gaius-cli --cmd "/state" --format json
 src/gaius/
 ├── app.py              # TUI application
 ├── cli.py              # Non-interactive CLI
-├── core/               # Config, state, projection, TDA
+├── mcp_server.py       # MCP server for Claude Code integration
+├── core/
+│   ├── config.py       # HOCON configuration
+│   ├── state.py        # Application state
+│   ├── projection.py   # UMAP grid projection
+│   ├── tda.py          # Topological data analysis
+│   ├── geometry.py     # Ricci curvature computation
+│   ├── minigrids.py    # 9×9 orthographic views
+│   └── kb_capture.py   # Zettelkasten note generation
 ├── agents/             # Swarm roles and orchestration
-├── inference/          # LLM client and synthesis
+├── inference/          # LLM client, synthesis, embeddings
 ├── widgets/            # Grid, panels, command input
 └── awareness/          # Situational reports
 ```
@@ -140,10 +160,17 @@ Gaius includes an MCP server for integration with Claude Code and other MCP clie
 
 ```bash
 # Run MCP server
-uv run python -m gaius.mcp_server
+uv run gaius-mcp
 ```
 
-See `src/gaius/mcp_server.py` for available tools.
+**Key Tools:**
+- `search_kb`, `read_kb`, `create_kb` - Knowledge base operations
+- `explain_grid_position` - Differential geometry explanation with KB capture
+- `run_swarm` - Multi-agent analysis
+- `semantic_search` - Vector similarity search
+- `research_topic` - Web search + LLM synthesis
+
+See `src/gaius/mcp_server.py` for full tool list.
 
 ## Development
 
