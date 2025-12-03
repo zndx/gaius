@@ -103,3 +103,4 @@ mdbook documentation in `docs/`. Save work summaries and notes to `docs/notes/$(
 - **Plan 9 / Acme**: Everything is a file, text as command
 - **Claude Code**: Slash commands, conversational interface
 - **CAD orthographic views**: Multiple projection views updating together
+- Do not rely on fallbacks nor workarounds when testing; all functional aspects of new features must be verified directly.

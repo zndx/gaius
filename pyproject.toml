@@ -7,7 +7,7 @@ name = "gaius"
 version = "0.2.0"
 description = "Spatial Intelligence Interface - CLI-first TUI for complex data domains"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "~=3.12.0"  # Pin to 3.12.x (giotto-tda not available for 3.13+)
 dependencies = [
     "asyncpg>=0.31.0",
     "behave>=1.3.3",
@@ -18,16 +18,23 @@ dependencies = [
     "optillm>=0.3.9",
     "owlready2>=0.49",
     "pyhocon>=0.3.61",
-    "pynvml>=13.0.1",
+    "nvidia-ml-py>=12.0.0", # GPU monitoring (provides pynvml module)
     "textual>=0.60.0",
+    "umap-learn>=0.5.7",
+    "cuml-cu12>=25.6.0", # Updated for numba 0.61.2 compatibility (required by vLLM 0.9+)
+    "vllm>=0.9.0", # Qwen3 support requires vLLM 0.9.0+
+    "graphriccicurvature>=0.5.3.2",
 ]
 
 [project.optional-dependencies]
-# TDA features (requires Python 3.11 for giotto-tda)
+# TDA features (differential geometry + persistent homology)
+# Uses Ollivier-Ricci curvature and fast ripser for topology
 tda = [
     "numpy>=1.24.0",
     "scikit-learn>=1.3.0",
-    "giotto-tda>=0.6.0",
+    "networkx>=3.0",                   # For k-NN graph structure
+    "GraphRicciCurvature>=0.5.3",      # Ollivier-Ricci curvature computation
+    "ripser>=0.6.12",                  # Fast persistent homology (H0, H1, H2)
 ]
 # Swarm/agent features
 swarm = [
@@ -48,9 +55,9 @@ inference = [
 scheduler = [
     "ortools>=9.8.0",
 ]
-# GPU monitoring (pynvml for NVIDIA GPU metrics)
+# GPU monitoring (nvidia-ml-py provides pynvml module)
 gpu = [
-    "pynvml>=12.0.0",
+    "nvidia-ml-py>=12.0.0",
 ]
 # Full GPU orchestrator (scheduler + GPU monitoring)
 orchestrator = [
@@ -64,6 +71,14 @@ search = [
     "PyStemmer>=2.2.0",  # For bm25s stemming
     "qdrant-client>=1.12.0",
     "sentence-transformers>=3.0.0",  # Local embeddings
+]
+# Multimodal features (ColQwen2.5 for unified text+image embeddings)
+multimodal = [
+    "colpali-engine>=0.3.0",  # ColQwen2.5 multimodal embeddings
+    "Pillow>=10.0.0",         # Image loading
+    "pypdf>=3.0.0",           # PDF page extraction
+    "torch>=2.0.0",           # Required for ColQwen
+    "transformers>=4.40.0",   # HuggingFace models
 ]
 # MCP server
 mcp = [

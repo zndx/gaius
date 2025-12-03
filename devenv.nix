@@ -7,10 +7,18 @@
 
   env.PATH_CONF = "conf";
 
-  # Library paths for Python C extensions (numpy, scipy, etc.)
-  env.LD_LIBRARY_PATH = lib.makeLibraryPath [
-    pkgs.zlib
-    pkgs.stdenv.cc.cc.lib  # libstdc++
+  # Library paths for Python C extensions and CUDA
+  # Use project-local symlinks to NVIDIA drivers (avoids glibc conflicts with Nix)
+  env.LD_LIBRARY_PATH = lib.concatStringsSep ":" [
+    (lib.makeLibraryPath [
+      pkgs.zlib
+      pkgs.stdenv.cc.cc.lib  # libstdc++
+    ])
+    # NVIDIA drivers (symlinked to .devenv/nvidia-libs to avoid system glibc conflicts)
+    "${config.devenv.root}/.devenv/nvidia-libs"
+    # CUDA toolkit paths (if available)
+    "/usr/local/cuda/lib64"
+    "/usr/local/cuda/extras/CUPTI/lib64"
   ];
 
   # Override MinIO data directory to use RAID storage
@@ -23,7 +31,8 @@
 
   # https://devenv.sh/packages/
   packages = with pkgs; [
-    ansible
+    # ansible  # Commented out - conflicts with Python 3.12 venv (brings Python 3.13)
+              # Install via pip/uv if needed: uv pip install ansible
     cmake
     conftest
     d2
