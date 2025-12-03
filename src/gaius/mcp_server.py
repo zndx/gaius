@@ -78,6 +78,64 @@ except ImportError:
 KB_ROOT = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
 ALLOWED_DIRS = ("archive", "current", "scratch")
 
+# Module-level geometry cache for MCP context
+_mcp_curvatures: list[float] | None = None
+_mcp_tda_features = None  # TDAFeatures | None
+
+
+async def _ensure_geometry_computed() -> tuple[list[float] | None, object]:
+    """Lazily compute and cache TDA/geometry features for MCP context.
+
+    Returns:
+        (curvatures, tda_features) tuple
+    """
+    global _mcp_curvatures, _mcp_tda_features
+
+    # Return cached if available
+    if _mcp_curvatures is not None or _mcp_tda_features is not None:
+        return _mcp_curvatures, _mcp_tda_features
+
+    try:
+        import asyncio
+        import concurrent.futures
+        import numpy as np
+        from .core.projection import get_grid_manager
+        from .core.geometry import GeometryComputer
+        from .core.tda import get_tda_manager
+
+        grid_data = get_grid_manager().get_grid_data()
+
+        if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) < 15:
+            return None, None
+
+        # Compute TDA features (for h0/h1/h2 counts, entropy)
+        tda_manager = get_tda_manager()
+        grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+        _mcp_tda_features = tda_manager.compute_features(
+            grid_data.raw_embeddings, grid_coords
+        )
+
+        # Compute geometry features (for actual Ricci curvatures)
+        gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+
+        # Run geometry in thread pool to avoid blocking event loop
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            geom_features = await loop.run_in_executor(
+                pool,
+                lambda: asyncio.run(gc.compute_features(grid_data.raw_embeddings, grid_coords))
+            )
+
+        if geom_features is not None:
+            _mcp_curvatures = [float(k) for k in geom_features.curvatures]
+
+        return _mcp_curvatures, _mcp_tda_features
+
+    except Exception as e:
+        import sys
+        print(f"Geometry computation error: {e}", file=sys.stderr)
+        return None, None
+
 
 def ensure_mcp():
     """Raise helpful error if MCP not installed."""
@@ -244,6 +302,19 @@ def create_server() -> "FastMCP":
 
         full_path.write_text(content)
 
+        # Log activity
+        try:
+            from .core.activity import get_activity_tracker, ActivityType
+
+            tracker = get_activity_tracker()
+            rel_path = str(full_path.relative_to(get_kb_root()))
+            await tracker.log_event(
+                event_type=ActivityType.KB_CREATE,
+                details={"path": rel_path, "size": len(content)},
+            )
+        except Exception:
+            pass  # Don't fail on logging errors
+
         return json.dumps(
             {
                 "created": str(full_path.relative_to(get_kb_root())),
@@ -267,6 +338,18 @@ def create_server() -> "FastMCP":
 
         old_size = len(full_path.read_text())
         full_path.write_text(content)
+
+        # Log activity
+        try:
+            from .core.activity import get_activity_tracker, ActivityType
+
+            tracker = get_activity_tracker()
+            await tracker.log_event(
+                event_type=ActivityType.KB_UPDATE,
+                details={"path": path, "old_size": old_size, "new_size": len(content)},
+            )
+        except Exception:
+            pass  # Don't fail on logging errors
 
         return json.dumps(
             {
@@ -1924,6 +2007,69 @@ Domain: {domain or 'general'}
                 },
                 indent=2,
             )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Grid Explanation ---
+
+    @server.tool()
+    async def explain_grid_position(
+        x: int = 9,
+        y: int = 9,
+        save: bool = False,
+    ) -> str:
+        """Explain a grid position using local LLM with differential geometry.
+
+        Uses the local inference endpoint (nvidia/Orchestrator-8B) to generate
+        an explanation of the semantic and topological significance of a position
+        on the 19x19 UMAP projection grid.
+
+        Args:
+            x: X coordinate (0-18, default 9 = center)
+            y: Y coordinate (0-18, default 9 = center)
+            save: Whether to save the explanation to KB as a zettelkasten document
+        """
+        import asyncio
+        import subprocess
+
+        try:
+            # Validate coordinates
+            if not (0 <= x < 19 and 0 <= y < 19):
+                return json.dumps({"error": f"Invalid coordinates: ({x}, {y}). Must be 0-18."})
+
+            # Convert coordinates to Go notation
+            col = chr(65 + x + (1 if x >= 8 else 0))  # Skip 'I'
+            row = 19 - y
+            position = f"{col}{row}"
+
+            # Build CLI command
+            cmd_args = position
+            if save:
+                cmd_args += " --save"
+
+            # Run CLI via subprocess (completely isolated)
+            cmd = ["uv", "run", "gaius-cli", "--cmd", f"/explain {cmd_args}", "--format", "json"]
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            )
+
+            if result.returncode != 0:
+                return json.dumps({"error": result.stderr}, indent=2)
+
+            # Parse CLI JSON output
+            import re
+            # Find the JSON object in output (skip warnings)
+            json_match = re.search(r'\{[\s\S]*\}', result.stdout)
+            if json_match:
+                return json_match.group(0)
+            else:
+                return json.dumps({"error": "No JSON output from CLI", "stdout": result.stdout})
+
+        except subprocess.TimeoutExpired:
+            return json.dumps({"error": "CLI timeout after 120s"})
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
