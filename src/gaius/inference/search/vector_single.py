@@ -362,60 +362,36 @@ class VectorSearch:
 _vector_search: VectorSearch | None = None
 
 
-def get_vector_search(kb_root: Path | str | None = None):
-    """Get or create vector search singleton (router pattern).
+def get_vector_search(kb_root: Path | str | None = None) -> VectorSearch:
+    """Get or create vector search singleton.
 
-    Routes to either single-vector or multi-vector implementation based on config.
-
-    Returns:
-        VectorSearch (single-vector) or VectorSearchMulti (multi-vector)
+    Reads embedding model and security settings from config if available.
     """
     global _vector_search
     if _vector_search is None:
-        # Determine embedding type from config
-        embedding_type = "single"  # Default
+        # Try to get settings from config
+        model_name = DEFAULT_MODEL
+        model_revision = None
+        use_safetensors = True
+        trust_remote_code = False
 
         try:
             from ...core.config import get_config
-
             config = get_config()
             vs_config = config.vector_store
-            embedding_type = getattr(vs_config, "embedding_type", "single")
+            if vs_config.embedding_model:
+                model_name = vs_config.embedding_model
+            model_revision = vs_config.model_revision
+            use_safetensors = vs_config.use_safetensors
+            trust_remote_code = vs_config.trust_remote_code
         except Exception:
-            pass  # Use default if config not available
+            pass  # Use defaults if config not available
 
-        if embedding_type == "multi":
-            # Use multi-vector implementation with ColQwen
-            from .vector_multi import get_vector_search_multi
-
-            _vector_search = get_vector_search_multi(kb_root)
-        else:
-            # Use legacy single-vector implementation
-            # Get settings from config
-            model_name = DEFAULT_MODEL
-            model_revision = None
-            use_safetensors = True
-            trust_remote_code = False
-
-            try:
-                from ...core.config import get_config
-
-                config = get_config()
-                vs_config = config.vector_store
-                if vs_config.embedding_model:
-                    model_name = vs_config.embedding_model
-                model_revision = vs_config.model_revision
-                use_safetensors = vs_config.use_safetensors
-                trust_remote_code = vs_config.trust_remote_code
-            except Exception:
-                pass  # Use defaults if config not available
-
-            _vector_search = VectorSearch(
-                kb_root,
-                model_name=model_name,
-                model_revision=model_revision,
-                use_safetensors=use_safetensors,
-                trust_remote_code=trust_remote_code,
-            )
-
+        _vector_search = VectorSearch(
+            kb_root,
+            model_name=model_name,
+            model_revision=model_revision,
+            use_safetensors=use_safetensors,
+            trust_remote_code=trust_remote_code,
+        )
     return _vector_search
