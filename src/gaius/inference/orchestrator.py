@@ -37,6 +37,30 @@ class ProcessStatus(Enum):
     FAILED = "failed"
 
 
+# vLLM startup progress patterns - ordered by typical appearance sequence
+# Each tuple: (regex pattern, human-readable status message, progress weight 0-1)
+VLLM_PROGRESS_PATTERNS: list[tuple[str, str, float]] = [
+    (r"Initializing .* engine", "Initializing engine", 0.05),
+    (r"Starting engine", "Starting engine", 0.05),
+    (r"Loading model weights", "Loading model weights", 0.10),
+    (r"Loading checkpoint shards.*?(\d+)%", "Loading checkpoint: {0}%", 0.15),
+    (r"Loading checkpoint shards", "Loading checkpoint shards", 0.15),
+    (r"loading weights.*safetensors", "Loading safetensors", 0.20),
+    (r"Loading model.*VRAM", "Loading into VRAM", 0.25),
+    (r"Model.*loaded", "Model loaded", 0.50),
+    (r"CUDA graphs", "Building CUDA graphs", 0.60),
+    (r"CUDAGraph.*captured", "CUDA graphs captured", 0.70),
+    (r"Warming up model", "Warming up model", 0.75),
+    (r"Starting.*server", "Starting API server", 0.85),
+    (r"Uvicorn running", "Server running", 0.95),
+    (r"Application startup complete", "Startup complete", 0.98),
+    # Error patterns (negative progress indicates error)
+    (r"OutOfMemoryError|OOM", "Out of memory error", -1.0),
+    (r"CUDA error", "CUDA error", -1.0),
+    (r"Free memory.*less than", "Insufficient GPU memory", -1.0),
+]
+
+
 @dataclass
 class EndpointConfig:
     """Configuration for a GPU endpoint."""
@@ -149,6 +173,66 @@ class GPUOrchestrator:
             return int(match.group(1))
         return 8000
 
+    def get_startup_progress(self, endpoint: str) -> tuple[str, float]:
+        """Get startup progress from vLLM output buffers.
+
+        Parses stdout/stderr buffers for meaningful progress indicators.
+
+        Args:
+            endpoint: Endpoint name
+
+        Returns:
+            Tuple of (status_message, progress_0_to_1)
+            Progress of -1.0 indicates an error condition.
+        """
+        proc = self._processes.get(endpoint)
+        if not proc:
+            return ("Not started", 0.0)
+
+        # Combine buffers and check recent lines (last 50)
+        all_output = list(proc.stdout_buffer)[-50:] + list(proc.stderr_buffer)[-50:]
+
+        best_progress = 0.0
+        best_message = "Starting"
+
+        for line in all_output:
+            for pattern, message_template, progress in VLLM_PROGRESS_PATTERNS:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    # Handle templates with captured groups
+                    if "{0}" in message_template and match.groups():
+                        message = message_template.format(*match.groups())
+                    else:
+                        message = message_template
+
+                    # Error conditions
+                    if progress < 0:
+                        return (message, progress)
+
+                    # Track highest progress
+                    if progress > best_progress:
+                        best_progress = progress
+                        best_message = message
+
+        return (best_message, best_progress)
+
+    def get_recent_output(self, endpoint: str, lines: int = 20) -> list[str]:
+        """Get recent output from endpoint.
+
+        Args:
+            endpoint: Endpoint name
+            lines: Number of lines to return
+
+        Returns:
+            List of recent output lines (combined stdout/stderr)
+        """
+        proc = self._processes.get(endpoint)
+        if not proc:
+            return []
+
+        combined = list(proc.stdout_buffer) + list(proc.stderr_buffer)
+        return combined[-lines:] if combined else []
+
     # ─────────────────────────────────────────────────────────────────────────
     # Lifecycle Management
     # ─────────────────────────────────────────────────────────────────────────
@@ -188,6 +272,27 @@ class GPUOrchestrator:
 
         logger.info("GPU Orchestrator stopped")
 
+    async def _check_port_in_use(self, url: str) -> bool:
+        """Check if an endpoint is already responding at the given URL.
+
+        This detects existing vLLM processes (e.g., from previous sessions or MCP).
+
+        Args:
+            url: Base URL to check (e.g., "http://localhost:8084/v1")
+
+        Returns:
+            True if endpoint is responding
+        """
+        import httpx
+
+        base_url = url.rstrip("/v1")
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"{base_url}/v1/models", timeout=3)
+                return r.status_code == 200
+        except Exception:
+            return False
+
     async def start_endpoint(self, endpoint: str) -> bool:
         """Start a vLLM instance for the specified endpoint.
 
@@ -205,6 +310,24 @@ class GPUOrchestrator:
             if not config.models:
                 logger.warning(f"Endpoint {endpoint} has no configured models")
                 return False
+
+            # Check if endpoint is already responding (from previous session or MCP)
+            if await self._check_port_in_use(config.url):
+                logger.info(
+                    f"Endpoint {endpoint} already responding at {config.url}, "
+                    f"assuming healthy"
+                )
+                # Create process state to track it (without subprocess handle)
+                proc = VLLMProcess(
+                    endpoint_name=endpoint,
+                    model=config.models[0],
+                    port=self._extract_port(config.url),
+                    gpus=config.gpus,
+                    tensor_parallel=config.tensor_parallel,
+                    status=ProcessStatus.HEALTHY,
+                )
+                self._processes[endpoint] = proc
+                return True
 
             # Check if already running
             proc = self._processes.get(endpoint)
@@ -282,6 +405,14 @@ class GPUOrchestrator:
                 logger.error(f"Endpoint {endpoint} failed to become healthy")
                 return False
 
+        except FileNotFoundError as e:
+            error_msg = f"vLLM binary not found: {self._vllm_binary}"
+            logger.error(f"Failed to start vLLM for {endpoint}: {error_msg}")
+            logger.error("Install vLLM with: pip install vllm")
+            logger.error("Or set GAIUS_VLLM_BINARY env var to vLLM path")
+            proc.status = ProcessStatus.FAILED
+            proc.recovery_attempts = 999  # Don't retry if binary missing
+            return False
         except Exception as e:
             logger.error(f"Failed to start vLLM for {endpoint}: {e}")
             proc.status = ProcessStatus.FAILED

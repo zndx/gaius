@@ -2,6 +2,36 @@
 # Wrapper script to run gaius-mcp with clean PYTHONPATH
 # Required to avoid Nix store package conflicts in devenv
 
+set -e
+
 cd "$(dirname "$0")/.."
+
+# Ensure devenv services are running (postgres, minio, qdrant)
+# Check if postgres is already running to avoid duplicate starts
+if ! pg_isready -h localhost -p 5438 > /dev/null 2>&1; then
+    echo "[gaius-mcp] Starting devenv services (postgres, minio, qdrant)..." >&2
+
+    # Start services in background (gaius-mcp process is disabled in devenv.nix)
+    devenv up -d > /dev/null 2>&1 || true
+
+    # Wait for postgres to be ready (up to 5 seconds)
+    echo "[gaius-mcp] Waiting for PostgreSQL..." >&2
+    for i in {1..10}; do
+        if pg_isready -h localhost -p 5438 > /dev/null 2>&1; then
+            echo "[gaius-mcp] Services ready" >&2
+            break
+        fi
+        if [ $i -eq 10 ]; then
+            echo "[gaius-mcp] WARNING: PostgreSQL not ready after 5s, continuing anyway..." >&2
+        fi
+        sleep 0.5
+    done
+else
+    echo "[gaius-mcp] Services already running" >&2
+fi
+
+# Clear PYTHONPATH to avoid Nix store conflicts
 export PYTHONPATH=""
+
+# Run MCP server
 exec .devenv/state/venv/bin/python -m gaius.mcp_server "$@"

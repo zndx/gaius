@@ -82,13 +82,10 @@ class InferenceClient:
 
     def _init_clients(self) -> None:
         """Initialize OpenAI-compatible clients for all available backends."""
-        # Always try to initialize local backends
-        # Note: optillm typically uses sk-optillm as default key
-        optillm_key = os.getenv("OPTILLM_API_KEY", "sk-optillm")
-
         # optillm (local proxy with optimization)
+        # Uses API key from config (which loads from env var or HOCON)
         self._clients["optillm"] = AsyncOpenAI(
-            api_key=optillm_key,
+            api_key=self.config.optillm_api_key,
             base_url=self.config.optillm_url,
             timeout=self.config.timeout,
         )
@@ -221,6 +218,10 @@ class InferenceClient:
                 continue  # Skip if already tried
 
             try:
+                # Discover vLLM model if needed (different model may be loaded)
+                if backend_name == "vllm":
+                    await self._discover_vllm_model()
+
                 # Use appropriate model for backend
                 fallback_model = self._get_model_for_backend(backend_name)
                 response = await client.chat.completions.create(
@@ -241,12 +242,39 @@ class InferenceClient:
     def _get_model_for_backend(self, backend: str) -> str:
         """Get appropriate model name for a backend."""
         if backend == "vllm":
-            return self.config.model  # Local model
+            # Use cached model if available, otherwise use config default
+            return getattr(self, "_vllm_model", None) or self.config.model
         elif backend == "xai":
             return self.config.xai_model
         elif backend == "openai":
             return self.config.fallback_model
         return self.config.model
+
+    async def _discover_vllm_model(self) -> str | None:
+        """Discover available model from vLLM endpoint.
+
+        Queries /v1/models and caches the first available model.
+        Returns None if endpoint unavailable or no models loaded.
+        """
+        if hasattr(self, "_vllm_model") and self._vllm_model:
+            return self._vllm_model
+
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"{self.config.vllm_url.rstrip('/v1')}/v1/models",
+                    timeout=5,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("data"):
+                        self._vllm_model = data["data"][0]["id"]
+                        logger.debug(f"Discovered vLLM model: {self._vllm_model}")
+                        return self._vllm_model
+        except Exception as e:
+            logger.debug(f"vLLM model discovery failed: {e}")
+
+        return None
 
     async def evaluate(
         self,
@@ -374,7 +402,7 @@ class InferenceClient:
                     # Add auth header for optillm
                     headers = {}
                     if name == "optillm":
-                        headers["Authorization"] = f"Bearer {os.getenv('OPTILLM_API_KEY', 'sk-optillm')}"
+                        headers["Authorization"] = f"Bearer {self.config.optillm_api_key}"
 
                     r = await http_client.get(
                         f"{base_url}/v1/models",
