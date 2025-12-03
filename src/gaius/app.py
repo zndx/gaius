@@ -357,16 +357,20 @@ class GaiusApp(App):
             pass  # Keep default
 
     def _load_test_data(self) -> None:
-        """Initialize with static test data as fallback."""
-        # Try to load real grid data first
-        if self._try_load_real_grid_data():
+        """Initialize grid state on startup.
+
+        Loads from cache if available, otherwise uses static fallback.
+        Run /init to populate cache from real KB data.
+        """
+        # Try to load from cache first (fast)
+        if self._try_load_cached_state():
             return
 
         # Fall back to static test data
         self.state.black_stones = GRID_DATA["black"]
         self.state.white_stones = GRID_DATA["white"]
         self.state.allocations = GRID_DATA["alloc"]
-        self.state.death_loops = DEATH_LOOPS
+        self.state.h1_cycles = DEATH_LOOPS
         self.state.tda_entropy = TDA_METRICS["entropy"]
 
         # Load agent positions
@@ -380,6 +384,81 @@ class GaiusApp(App):
 
         # Set some candidates
         self.state.candidates = [(3, 3), (15, 15), (10, 10), (5, 14), (14, 5)]
+
+    def _try_load_cached_state(self) -> bool:
+        """Try to load cached grid/TDA state.
+
+        Returns:
+            True if cache was loaded successfully
+        """
+        try:
+            from .core.cache import load_cached_state, check_cache_validity
+
+            # Check if cache is valid for current config
+            if not check_cache_validity(
+                self.config.kb.root,
+                self.config.vector_store.embedding_model,
+                self.config.tda.projection_method,
+            ):
+                return False
+
+            # Load cached data
+            grid_data, tda_features, metadata = load_cached_state(self.config.kb.root)
+
+            if grid_data is None or tda_features is None:
+                return False
+
+            # Apply cached grid data to state
+            self.state.black_stones = grid_data.document_positions
+            self.state.white_stones = grid_data.cluster_centers
+            self.state.allocations = grid_data.allocations
+
+            # Apply cached TDA features
+            self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
+            self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
+            self.state.tda_entropy = tda_features.entropy
+
+            # Compute risk map from cached TDA
+            if grid_data.embedding_to_grid and tda_features.risk_scores:
+                self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
+
+            # Compute geometry from cached embeddings (for Iso view)
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
+                try:
+                    import asyncio
+                    import numpy as np
+                    from .core.geometry import GeometryComputer
+
+                    grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                    gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+
+                    # Run async geometry computation
+                    loop = asyncio.new_event_loop()
+                    geom_features = loop.run_until_complete(
+                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                    )
+                    loop.close()
+
+                    # Populate geometry state
+                    if geom_features:
+                        self._populate_geometry_state(geom_features, grid_data)
+                except Exception as e:
+                    # Geometry failed - Iso view will be empty but app still works
+                    pass
+
+            # Load agent positions from static data for now
+            for agent in AGENT_DATA:
+                self.state.agent_positions.append((
+                    agent["name"],
+                    agent["pos"][0],
+                    agent["pos"][1],
+                    agent["color"],
+                ))
+
+            return True
+
+        except Exception:
+            return False
 
     def _try_load_real_grid_data(self) -> bool:
         """Try to load real grid data from embeddings.
@@ -405,21 +484,50 @@ class GaiusApp(App):
             self.state.white_stones = grid_data.cluster_centers
             self.state.allocations = grid_data.allocations
 
-            # Try to compute TDA
+            # Try to compute TDA on 768-dim embeddings (not 2D projections)
             try:
                 tda_manager = get_tda_manager()
-                if grid_data.points:
+                if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
                     import numpy as np
                     grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                    features = tda_manager.compute_features(grid_coords, grid_coords)
-                    self.state.death_loops = [
-                        dl.to_tuple() for dl in features.death_loops
+                    # Pass 768-dim embeddings for TDA, grid_coords for bounding boxes
+                    features = tda_manager.compute_features(
+                        grid_data.raw_embeddings,  # High-dim for real topology
+                        grid_coords,               # 2D for visualization mapping
+                    )
+                    self.state.h1_cycles = [
+                        dl.to_tuple() for dl in features.h1_cycles
+                    ]
+                    self.state.h2_voids = [
+                        v.to_tuple() for v in features.h2_voids
                     ]
                     self.state.tda_entropy = features.entropy
+                    # Compute risk map from per-point scores
+                    self._compute_risk_map(features, grid_data.embedding_to_grid)
             except Exception:
                 # TDA computation failed, use defaults
-                self.state.death_loops = []
+                self.state.h1_cycles = []
+                self.state.h2_voids = []
+                self.state.risk_map = []
                 self.state.tda_entropy = 0.0
+
+            # Compute geometry for Iso view
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
+                try:
+                    import asyncio
+                    from .core.geometry import GeometryComputer
+
+                    gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+                    loop = asyncio.new_event_loop()
+                    geom_features = loop.run_until_complete(
+                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                    )
+                    loop.close()
+
+                    if geom_features:
+                        self._populate_geometry_state(geom_features, grid_data)
+                except Exception:
+                    pass  # Geometry failed, Iso view will be empty
 
             # Still load agent positions from static data
             for agent in AGENT_DATA:
@@ -435,8 +543,285 @@ class GaiusApp(App):
         except Exception:
             return False  # Any error, use fallback
 
+    def _run_full_init(self) -> bool:
+        """Run full initialization pipeline and cache results.
+
+        Steps:
+        1. Index KB documents with embeddings
+        2. Project to 19x19 grid (UMAP/PCA)
+        3. Compute TDA features on 768-dim embeddings
+        4. Save to cache for fast startup
+
+        Returns:
+            True if initialization succeeded
+        """
+        try:
+            from .inference.search import get_vector_search
+            from .core.cache import save_cached_state
+            import numpy as np
+
+            # Step 1: Ensure KB is indexed (will skip if already done)
+            vector_search = get_vector_search(self.config.kb.root)
+            vector_search.index_kb()  # Index any new documents
+
+            # Verify we have embeddings in Qdrant
+            try:
+                info = vector_search.client.get_collection(vector_search.collection_name)
+                if info.points_count == 0:
+                    return False  # No data to work with
+            except Exception:
+                return False
+
+            # Step 2: Get grid manager and project embeddings
+            grid_manager = get_grid_manager(
+                method=self.config.tda.projection_method,
+                kb_root=self.config.kb.root,
+            )
+            grid_manager.invalidate_cache()  # Force fresh projection
+            grid_data = grid_manager.reindex_and_project()
+
+            if grid_data.n_documents == 0:
+                return False
+
+            # Step 3: Compute TDA on 768-dim embeddings
+            if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) < 3:
+                return False
+
+            tda_manager = get_tda_manager()
+            tda_manager.invalidate_cache()
+
+            grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+            tda_features = tda_manager.compute_features(
+                grid_data.raw_embeddings,  # High-dim for real topology
+                grid_coords,               # 2D for visualization mapping
+                force_refresh=True,
+            )
+
+            # Step 3.5: Compute differential geometry features
+            try:
+                from .core.geometry import GeometryComputer
+                geom_computer = GeometryComputer(k_neighbors=15)
+
+                # Compute curvature, gradients, divergence
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                geom_features = loop.run_until_complete(
+                    geom_computer.compute_features(
+                        grid_data.raw_embeddings,
+                        grid_coords
+                    )
+                )
+                loop.close()
+            except Exception as e:
+                print(f"Geometry computation failed (skipping): {e}")
+                geom_features = None
+
+            # Step 4: Save to cache
+            save_cached_state(
+                self.config.kb.root,
+                grid_data,
+                tda_features,
+                self.config.vector_store.embedding_model,
+                self.config.tda.projection_method,
+            )
+
+            # Step 5: Apply to UI state
+            self.state.black_stones = grid_data.document_positions
+            self.state.white_stones = grid_data.cluster_centers
+            self.state.allocations = grid_data.allocations
+
+            self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
+            self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
+            self.state.tda_entropy = tda_features.entropy
+
+            # Populate geometry state
+            if geom_features:
+                self._populate_geometry_state(geom_features, grid_data)
+
+            # Compute risk map
+            self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
+
+            # Refresh UI
+            self._refresh_grid()
+
+            return True
+
+        except Exception as e:
+            import traceback
+            print(f"Init error: {e}")
+            traceback.print_exc()
+            return False
+
+    async def _async_full_init(self) -> None:
+        """Async wrapper for _run_full_init with progress tracking."""
+        from datetime import datetime
+        from .core.state import BackgroundTask
+
+        # Create background task
+        task = BackgroundTask(
+            id="init",
+            name="Platform Init",
+            status="running",
+            started_at=datetime.now(),
+        )
+        self.state.background_tasks = [task]
+
+        # Force ThinkPanel refresh
+        try:
+            think_panel = self.query_one("#think-panel", ThinkPanel)
+            think_panel.refresh()
+        except Exception:
+            pass
+
+        # Run in thread pool
+        import asyncio
+
+        def run_init():
+            try:
+                from .inference.search import get_vector_search
+                from .core.cache import save_cached_state
+                import numpy as np
+
+                task.message = "Step 1/5: Indexing KB documents..."
+                task.progress = 0.1
+
+                vector_search = get_vector_search(self.config.kb.root)
+                vector_search.index_kb()
+
+                try:
+                    info = vector_search.client.get_collection(vector_search.collection_name)
+                    if info.points_count == 0:
+                        task.status = "failed"
+                        task.error = "No documents in Qdrant"
+                        return False
+                except Exception as e:
+                    task.status = "failed"
+                    task.error = f"Qdrant error: {e}"
+                    return False
+
+                task.message = "Step 2/5: Loading embeddings..."
+                task.progress = 0.25
+
+                grid_manager = get_grid_manager(
+                    method=self.config.tda.projection_method,
+                    kb_root=self.config.kb.root,
+                )
+                grid_manager.invalidate_cache()
+
+                task.message = "Step 3/5: Projecting to 19x19 grid (UMAP)..."
+                task.progress = 0.4
+                grid_data = grid_manager.reindex_and_project()
+
+                if grid_data.n_documents == 0:
+                    task.status = "failed"
+                    task.error = "Projection failed"
+                    return False
+
+                if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) < 3:
+                    task.status = "failed"
+                    task.error = "No embeddings"
+                    return False
+
+                task.message = "Step 4/6: Computing TDA (H0/H1/H2)..."
+                task.progress = 0.6
+
+                tda_manager = get_tda_manager()
+                tda_manager.invalidate_cache()
+
+                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                tda_features = tda_manager.compute_features(
+                    grid_data.raw_embeddings,
+                    grid_coords,
+                    force_refresh=True,
+                )
+
+                task.message = "Step 5/6: Computing differential geometry (κ, ∇)..."
+                task.progress = 0.75
+
+                # Compute geometry features
+                try:
+                    from .core.geometry import GeometryComputer
+                    geom_computer = GeometryComputer(k_neighbors=15)
+
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    geom_features = loop.run_until_complete(
+                        geom_computer.compute_features(
+                            grid_data.raw_embeddings,
+                            grid_coords
+                        )
+                    )
+                    loop.close()
+                except Exception as e:
+                    print(f"Geometry computation failed (skipping): {e}")
+                    geom_features = None
+
+                task.message = "Step 6/6: Saving to cache..."
+                task.progress = 0.9
+
+                save_cached_state(
+                    self.config.kb.root,
+                    grid_data,
+                    tda_features,
+                    self.config.vector_store.embedding_model,
+                    self.config.tda.projection_method,
+                )
+
+                # Apply to state
+                self.state.black_stones = grid_data.document_positions
+                self.state.white_stones = grid_data.cluster_centers
+                self.state.allocations = grid_data.allocations
+                self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
+                self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
+                self.state.tda_entropy = tda_features.entropy
+                self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
+
+                # Populate geometry state
+                if geom_features:
+                    self._populate_geometry_state(geom_features, grid_data)
+
+                self._refresh_grid()
+
+                task.progress = 1.0
+                task.status = "completed"
+                task.completed_at = datetime.now()
+                task.message = f"Complete: {grid_data.n_documents} docs, entropy={tda_features.entropy:.2f}"
+                return True
+
+            except Exception as e:
+                task.status = "failed"
+                task.error = str(e)
+                task.completed_at = datetime.now()
+                return False
+
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, run_init)
+
+        # Show result
+        content = self.query_one("#content-panel", ContentPanel)
+        if success:
+            content.show_file(
+                "init.txt",
+                f"Platform initialized!\n\n"
+                f"Documents: {len(self.state.black_stones)}\n"
+                f"H1 cycles (loops): {len(self.state.h1_cycles)}\n"
+                f"H2 voids (cavities): {len(self.state.h2_voids)}\n"
+                f"Entropy: {self.state.tda_entropy:.2f}\n\n"
+                f"Cache saved - future startups instant.\n"
+                f"Press 'o' to cycle overlays."
+            )
+        else:
+            content.show_file("init.txt", f"Init failed: {task.error}")
+
+        # Keep task visible for a bit
+        await asyncio.sleep(5)
+        if task in self.state.background_tasks:
+            self.state.background_tasks.remove(task)
+
     def _refresh_from_embeddings(self) -> bool:
-        """Refresh grid data from KB embeddings.
+        """Refresh grid data from KB embeddings and update cache.
 
         Called by /reindex command.
 
@@ -444,6 +829,9 @@ class GaiusApp(App):
             True if refresh succeeded
         """
         try:
+            from .core.cache import save_cached_state
+            import numpy as np
+
             grid_manager = get_grid_manager(
                 method=self.config.tda.projection_method,
                 kb_root=self.config.kb.root,
@@ -456,21 +844,40 @@ class GaiusApp(App):
                 self.state.black_stones = grid_data.document_positions
                 self.state.allocations = grid_data.allocations
 
-                # Refresh TDA
+                # Refresh TDA on 768-dim embeddings (not 2D projections)
+                tda_features = None
                 try:
-                    import numpy as np
                     tda_manager = get_tda_manager()
-                    if grid_data.points:
+                    if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
                         grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                        features = tda_manager.compute_features(
-                            grid_coords, grid_coords, force_refresh=True
+                        # Pass 768-dim embeddings for TDA, grid_coords for bounding boxes
+                        tda_features = tda_manager.compute_features(
+                            grid_data.raw_embeddings,  # High-dim for real topology
+                            grid_coords,               # 2D for visualization mapping
+                            force_refresh=True,
                         )
-                        self.state.death_loops = [
-                            dl.to_tuple() for dl in features.death_loops
+                        self.state.h1_cycles = [
+                            dl.to_tuple() for dl in tda_features.h1_cycles
                         ]
-                        self.state.tda_entropy = features.entropy
+                        self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
+                        self.state.tda_entropy = tda_features.entropy
+                        # Compute risk map from per-point scores
+                        self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
                 except Exception:
                     pass
+
+                # Update cache with new data
+                if tda_features is not None:
+                    try:
+                        save_cached_state(
+                            self.config.kb.root,
+                            grid_data,
+                            tda_features,
+                            self.config.vector_store.embedding_model,
+                            self.config.tda.projection_method,
+                        )
+                    except Exception:
+                        pass  # Cache update is non-critical
 
                 self._refresh_grid()
                 return True
@@ -479,6 +886,248 @@ class GaiusApp(App):
 
         except Exception:
             return False
+
+    async def _async_refresh_from_embeddings(self) -> None:
+        """Async wrapper for _refresh_from_embeddings with progress tracking."""
+        from datetime import datetime
+        from .core.state import BackgroundTask
+
+        # Create background task
+        task = BackgroundTask(
+            id="reindex",
+            name="Reindexing KB",
+            status="running",
+            started_at=datetime.now(),
+        )
+        self.state.background_tasks = [task]
+
+        # Force ThinkPanel refresh
+        try:
+            think_panel = self.query_one("#think-panel", ThinkPanel)
+            think_panel.refresh()
+        except Exception:
+            pass
+
+        # Run in thread pool to avoid blocking
+        import asyncio
+        from functools import partial
+
+        def run_reindex():
+            try:
+                task.message = "Step 1/4: Loading embeddings from Qdrant..."
+                task.progress = 0.1
+
+                from .core.cache import save_cached_state
+                import numpy as np
+
+                grid_manager = get_grid_manager(
+                    method=self.config.tda.projection_method,
+                    kb_root=self.config.kb.root,
+                )
+
+                task.message = "Step 2/4: Projecting to 19x19 grid (UMAP)..."
+                task.progress = 0.3
+                grid_data = grid_manager.reindex_and_project()
+
+                if grid_data.n_documents == 0:
+                    task.status = "failed"
+                    task.error = "No documents found"
+                    return False
+
+                self.state.black_stones = grid_data.document_positions
+                self.state.allocations = grid_data.allocations
+
+                # Refresh TDA
+                task.message = "Step 3/4: Computing TDA features (H0/H1/H2)..."
+                task.progress = 0.6
+
+                tda_features = None
+                try:
+                    tda_manager = get_tda_manager()
+                    if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
+                        grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                        tda_features = tda_manager.compute_features(
+                            grid_data.raw_embeddings,
+                            grid_coords,
+                            force_refresh=True,
+                        )
+                        self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
+                        self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
+                        self.state.tda_entropy = tda_features.entropy
+                        self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
+                except Exception as e:
+                    task.error = f"TDA failed: {e}"
+
+                # Update cache
+                task.message = "Step 4/4: Saving to cache..."
+                task.progress = 0.9
+
+                if tda_features is not None:
+                    try:
+                        save_cached_state(
+                            self.config.kb.root,
+                            grid_data,
+                            tda_features,
+                            self.config.vector_store.embedding_model,
+                            self.config.tda.projection_method,
+                        )
+                    except Exception:
+                        pass
+
+                self._refresh_grid()
+                task.progress = 1.0
+                task.status = "completed"
+                task.completed_at = datetime.now()
+                task.message = f"Complete: {grid_data.n_documents} docs, H1={len(self.state.h1_cycles)}"
+                return True
+
+            except Exception as e:
+                task.status = "failed"
+                task.error = str(e)
+                task.completed_at = datetime.now()
+                return False
+
+        # Run in thread pool
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, run_reindex)
+
+        # Show result in content panel
+        content = self.query_one("#content-panel", ContentPanel)
+        if success:
+            content.show_file(
+                "reindex.txt",
+                f"Reindex complete!\n\n"
+                f"Documents: {len(self.state.black_stones)}\n"
+                f"H1 cycles (loops): {len(self.state.h1_cycles)}\n"
+                f"H2 voids (cavities): {len(self.state.h2_voids)}\n"
+                f"Entropy: {self.state.tda_entropy:.2f}\n\n"
+                f"Press 'o' to cycle overlays."
+            )
+        else:
+            content.show_file("reindex.txt", f"Reindex failed: {task.error}")
+
+        # Keep task in history for a bit
+        await asyncio.sleep(5)
+        if task in self.state.background_tasks:
+            self.state.background_tasks.remove(task)
+
+    def _compute_risk_map(
+        self,
+        features,  # TDAFeatures
+        embedding_to_grid: dict[int, tuple[int, int]],
+    ) -> None:
+        """Compute 19x19 risk map from TDA per-point risk scores.
+
+        Maps risk_scores from embedding indices to grid positions,
+        averaging when multiple embeddings map to the same cell.
+
+        Args:
+            features: TDAFeatures with risk_scores list
+            embedding_to_grid: Mapping from embedding index to (x, y) grid position
+        """
+        if not features.risk_scores:
+            self.state.risk_map = []
+            return
+
+        # Accumulate risk per cell (for averaging)
+        risk_sum = [[0.0] * 19 for _ in range(19)]
+        risk_count = [[0] * 19 for _ in range(19)]
+
+        for idx, risk in enumerate(features.risk_scores):
+            if idx in embedding_to_grid:
+                x, y = embedding_to_grid[idx]
+                if 0 <= x < 19 and 0 <= y < 19:
+                    risk_sum[y][x] += risk
+                    risk_count[y][x] += 1
+
+        # Compute average risk per cell
+        risk_map = []
+        for y in range(19):
+            row = []
+            for x in range(19):
+                if risk_count[y][x] > 0:
+                    row.append(risk_sum[y][x] / risk_count[y][x])
+                else:
+                    row.append(0.0)  # No data for this cell
+            risk_map.append(row)
+
+        self.state.risk_map = risk_map
+
+    def _populate_geometry_state(
+        self,
+        geom_features,  # GeometricFeatures
+        grid_data: GridData,
+    ) -> None:
+        """Populate geometry state from differential geometry features.
+
+        Maps curvature, gradients, and divergence to grid positions.
+
+        Args:
+            geom_features: GeometricFeatures with curvatures, gradients, divergence
+            grid_data: GridData with embedding_to_grid mapping
+        """
+        import numpy as np
+
+        # Build 19x19 curvature map
+        curvature_sum = [[0.0] * 19 for _ in range(19)]
+        curvature_count = [[0] * 19 for _ in range(19)]
+
+        for idx, kappa in enumerate(geom_features.curvatures):
+            if idx in grid_data.embedding_to_grid:
+                x, y = grid_data.embedding_to_grid[idx]
+                if 0 <= x < 19 and 0 <= y < 19:
+                    curvature_sum[y][x] += kappa
+                    curvature_count[y][x] += 1
+
+        # Average curvature per cell
+        curvature_map = []
+        for y in range(19):
+            row = []
+            for x in range(19):
+                if curvature_count[y][x] > 0:
+                    row.append(curvature_sum[y][x] / curvature_count[y][x])
+                else:
+                    row.append(0.0)  # No data
+            curvature_map.append(row)
+
+        self.state.curvature_map = curvature_map
+
+        # Store raw per-point curvatures for Iso view
+        self.state.curvatures_raw = [float(k) for k in geom_features.curvatures]
+
+        # Build gradient field (list of (x, y, gx, gy) tuples)
+        gradient_field = []
+        for idx, (gx, gy) in enumerate(geom_features.gradients):
+            if idx in grid_data.embedding_to_grid:
+                x, y = grid_data.embedding_to_grid[idx]
+                if 0 <= x < 19 and 0 <= y < 19:
+                    gradient_field.append([x, y, float(gx), float(gy)])
+
+        self.state.gradient_field = gradient_field
+
+        # Build 19x19 divergence map
+        divergence_sum = [[0.0] * 19 for _ in range(19)]
+        divergence_count = [[0] * 19 for _ in range(19)]
+
+        for idx, div in enumerate(geom_features.divergence):
+            if idx in grid_data.embedding_to_grid:
+                x, y = grid_data.embedding_to_grid[idx]
+                if 0 <= x < 19 and 0 <= y < 19:
+                    divergence_sum[y][x] += div
+                    divergence_count[y][x] += 1
+
+        # Average divergence per cell
+        divergence_map = []
+        for y in range(19):
+            row = []
+            for x in range(19):
+                if divergence_count[y][x] > 0:
+                    row.append(divergence_sum[y][x] / divergence_count[y][x])
+                else:
+                    row.append(0.0)  # No data
+            divergence_map.append(row)
+
+        self.state.divergence_map = divergence_map
 
     def _run_swarm_analysis(self, domain_override: str | None = None) -> None:
         """Run swarm analysis on current domain.
@@ -681,9 +1330,9 @@ class GaiusApp(App):
                 think.complete_trace(
                     operation="synthesis",
                     query="daily summary",
-                    summary=f"Generated summary: {note.title}",
+                    summary=f"Generated summary for {note.summary_date}",
                     tokens=0,
-                    sources=len(note.citations) if note.citations else 0,
+                    sources=len(note.key_entries),  # Number of KB entries in summary
                     duration_ms=duration_ms,
                 )
             except Exception as e:
@@ -746,6 +1395,423 @@ class GaiusApp(App):
                 content.show_file("error.txt", f"Activity query failed: {e}")
 
         asyncio.create_task(show())
+
+    def _explain_grid_view(self, args: str = "") -> None:
+        """Explain current grid view using local LLM with differential geometry.
+
+        Args:
+            args: Optional arguments: [position] [--no-save]
+                  position: Go notation like K10 (default: cursor position)
+                  --no-save: Don't save explanation to KB (default: save)
+        """
+        import asyncio
+        from datetime import datetime
+        from pathlib import Path
+        from .inference.llm import explain_position, ExplanationContext
+        from .core.projection import get_grid_manager
+        from .core.tda import get_tda_manager
+        from .core.minigrids import get_embed_view, get_iso_view
+
+        content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        # Parse args - save by default, --no-save to disable
+        save_to_kb = "--no-save" not in args
+        args = args.replace("--no-save", "").replace("--save", "").strip()
+
+        async def generate():
+            try:
+                think.start_trace(
+                    operation="explanation",
+                    query="grid interpretation",
+                    model="local LLM"
+                )
+
+                start_time = datetime.now()
+
+                # Get grid data and TDA features from managers
+                try:
+                    grid_data = get_grid_manager().get_grid_data()
+                    tda_manager = get_tda_manager()
+                    tda_features = tda_manager._cached_features  # May be None
+                except Exception as e:
+                    content.show_file("error.txt", f"Failed to get grid data: {e}")
+                    think.clear_active()
+                    return
+
+                # Determine position (from args or cursor)
+                cx, cy = self.state.cursor_x, self.state.cursor_y
+                if args:
+                    # Parse Go notation (e.g., K10)
+                    try:
+                        col = args[0].upper()
+                        row = int(args[1:])
+                        # Convert to grid coords (A=0, skip I, 1=bottom)
+                        col_idx = ord(col) - ord('A')
+                        if col >= 'I':
+                            col_idx -= 1
+                        cx = col_idx
+                        cy = 19 - row
+                    except (ValueError, IndexError):
+                        pass  # Use cursor position
+
+                # Get document at cursor (if any)
+                document_title = None
+                document_path = None
+                point_idx = grid_data.grid_to_embedding.get((cx, cy))
+                if point_idx is not None and point_idx < len(grid_data.points):
+                    point = grid_data.points[point_idx]
+                    document_title = point.title
+                    document_path = point.path
+
+                # Extract geometric features (differential geometry)
+                curvature = None
+                gradient_x = None
+                gradient_y = None
+                divergence = None
+
+                if self.state.curvature_map and cy < len(self.state.curvature_map):
+                    if cx < len(self.state.curvature_map[cy]):
+                        curvature = self.state.curvature_map[cy][cx]
+
+                # Find gradient at cursor position
+                if self.state.gradient_field:
+                    for entry in self.state.gradient_field:
+                        if len(entry) == 4 and entry[0] == cx and entry[1] == cy:
+                            gradient_x = entry[2]
+                            gradient_y = entry[3]
+                            break
+
+                if self.state.divergence_map and cy < len(self.state.divergence_map):
+                    if cx < len(self.state.divergence_map[cy]):
+                        divergence = self.state.divergence_map[cy][cx]
+
+                # Extract TDA features
+                tda_entropy = tda_features.entropy if tda_features else None
+                h0_count = tda_features.h0_count if tda_features else None
+                h1_count = tda_features.h1_count if tda_features else None
+                h2_count = tda_features.h2_count if tda_features else None
+
+                # Risk score at cursor
+                risk_score = None
+                if tda_features and point_idx is not None:
+                    if point_idx < len(tda_features.risk_scores):
+                        risk_score = tda_features.risk_scores[point_idx]
+
+                # Find nearby documents (3x3 neighborhood)
+                nearby_documents = []
+                for dy in [-1, 0, 1]:
+                    for dx in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = cx + dx, cy + dy
+                        if 0 <= nx < 19 and 0 <= ny < 19:
+                            neighbor_idx = grid_data.grid_to_embedding.get((nx, ny))
+                            if neighbor_idx is not None and neighbor_idx < len(grid_data.points):
+                                nearby_documents.append(grid_data.points[neighbor_idx].title)
+
+                # Get mini-grid data for visual descriptions
+                embed_grid = None
+                iso_grid = None
+                embed_data = get_embed_view(grid_data, cx, cy)
+                embed_grid = embed_data.grid
+
+                curvatures = getattr(self.state, 'curvatures_raw', None)
+                iso_data = get_iso_view(grid_data, curvatures, cx, cy)
+                iso_grid = iso_data.grid
+
+                # Create explanation context
+                ctx = ExplanationContext(
+                    cursor_x=cx,
+                    cursor_y=cy,
+                    document_title=document_title,
+                    document_path=document_path,
+                    curvature=curvature,
+                    gradient_x=gradient_x,
+                    gradient_y=gradient_y,
+                    divergence=divergence,
+                    tda_entropy=tda_entropy,
+                    h0_count=h0_count,
+                    h1_count=h1_count,
+                    h2_count=h2_count,
+                    risk_score=risk_score,
+                    view_mode=self.state.view_mode.value,
+                    overlay_mode=self.state.overlay_mode.value,
+                    grid_coverage=grid_data.coverage,
+                    total_documents=grid_data.n_documents,
+                    nearby_documents=nearby_documents if nearby_documents else None,
+                    embed_grid=embed_grid,
+                    iso_grid=iso_grid,
+                )
+
+                # Generate explanation using new LLM interface
+                explanation = await explain_position(ctx)
+
+                # Strip thinking tags if present
+                if '<think>' in explanation and '</think>' in explanation:
+                    explanation = explanation.split('</think>')[-1].strip()
+
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+                # Convert coordinates to Go notation
+                col = chr(ord('A') + cx + (1 if cx >= 8 else 0))
+                position_str = f"{col}{19 - cy}"
+
+                # Build output with geometric context
+                output = [
+                    f"# Grid Explanation: {position_str}",
+                    "",
+                    f"**Position:** {position_str} ({cx}, {cy})",
+                    f"**Document:** {document_title or 'Empty cell'}",
+                    f"**View:** {self.state.view_mode.value}",
+                    f"**Overlay:** {self.state.overlay_mode.value}",
+                    "",
+                ]
+
+                # Add geometric features summary
+                if curvature is not None:
+                    output.append("## Differential Geometry")
+                    output.append("")
+                    output.append(f"- **Ricci curvature κ:** {curvature:.3f}")
+                    if gradient_x is not None and gradient_y is not None:
+                        import math
+                        mag = math.sqrt(gradient_x**2 + gradient_y**2)
+                        output.append(f"- **Gradient magnitude:** {mag:.3f}")
+                    if divergence is not None:
+                        output.append(f"- **Divergence:** {divergence:.3f}")
+                    output.append("")
+
+                output.extend([
+                    "## LLM Interpretation",
+                    "",
+                    explanation,
+                ])
+
+                # Save to KB if requested
+                kb_path = None
+                if save_to_kb:
+                    from .core.kb_capture import ExplainCapture
+
+                    capture = ExplainCapture(
+                        position=position_str,
+                        x=cx,
+                        y=cy,
+                        document_title=document_title,
+                        document_path=document_path,
+                        nearby_documents=nearby_documents[:8],
+                        curvature=curvature,
+                        gradient=(gradient_x, gradient_y) if gradient_x is not None else None,
+                        risk_score=risk_score,
+                        h0_count=h0_count or 0,
+                        h1_count=h1_count or 0,
+                        h2_count=h2_count or 0,
+                        tda_entropy=tda_entropy or 0.0,
+                        embed_grid=embed_grid,
+                        iso_grid=iso_grid,
+                        grid_coverage=grid_data.coverage,
+                        total_documents=grid_data.n_documents,
+                        view_mode=self.state.view_mode.value,
+                        overlay_mode=self.state.overlay_mode.value,
+                        explanation=explanation,
+                        model="local LLM",
+                        elapsed_ms=duration_ms,
+                    )
+
+                    scratch_root = Path("build/dev/scratch")
+                    kb_path = capture.save_to_kb(scratch_root)
+                    output.extend([
+                        "",
+                        f"---",
+                        f"*Saved to: {kb_path}*",
+                    ])
+
+                content.show_file("explain.md", "\n".join(output))
+
+                # Record trace
+                summary = f"Generated explanation in {duration_ms}ms"
+                if kb_path:
+                    summary += f" (saved to {kb_path.name})"
+                think.complete_trace(
+                    operation="explanation",
+                    query="grid interpretation",
+                    summary=summary,
+                    tokens=0,
+                    sources=1,
+                    duration_ms=duration_ms,
+                )
+
+            except Exception as e:
+                import traceback
+                think.clear_active()
+                error_detail = traceback.format_exc()
+                content.show_file(
+                    "error.txt",
+                    f"Explanation failed: {e}\n\n"
+                    f"Make sure optillm/vLLM is running.\n\n"
+                    f"Details:\n{error_detail}"
+                )
+
+        asyncio.create_task(generate())
+
+    def _handle_inference_command(self, args: str) -> None:
+        """Handle /inference subcommands.
+
+        Usage:
+            /inference status              - Show all endpoints and queue status
+            /inference start <endpoint>    - Start specific endpoint
+            /inference stop <endpoint>     - Stop specific endpoint
+            /inference restart <endpoint>  - Restart specific endpoint
+            /inference ensure              - Ensure default model (nvidia/Orchestrator-8B) running
+        """
+        import asyncio
+        from .inference.manager import get_inference_manager
+        from .inference.orchestrator import ProcessStatus
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        if not args or args == "status":
+            # Show status
+            async def show_status():
+                try:
+                    manager = get_inference_manager()
+                    status = await manager.get_status()
+
+                    # Format endpoint status
+                    endpoint_lines = []
+                    for name, proc_status in status.endpoints_running.items():
+                        status_icon = "✓" if proc_status == ProcessStatus.HEALTHY else "✗"
+                        endpoint_lines.append(f"  {status_icon} **{name}**: {proc_status.value}")
+
+                    endpoints_text = "\n".join(endpoint_lines) if endpoint_lines else "  *No endpoints running*"
+
+                    output = f"""# Inference Stack Status
+
+**Orchestrator**: {'Running' if status.orchestrator_running else 'Stopped'}
+**Scheduler**: {'Healthy' if status.scheduler_healthy else 'Unhealthy'}
+**Default Model** (nvidia/Orchestrator-8B): {'Ready' if status.default_model_ready else 'Not Ready'}
+
+## Endpoints
+
+{endpoints_text}
+
+## Metrics
+
+**Total Requests**: {status.total_requests}
+**Queue Depth**: {status.queue_depth}
+
+---
+
+Use `/inference ensure` to start the default model (nvidia/Orchestrator-8B).
+Use `/inference start <endpoint>` to start an endpoint.
+Use `/inference stop <endpoint>` to stop an endpoint.
+"""
+                    content.show_file("inference.md", output)
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Failed to get status: {e}")
+
+            asyncio.create_task(show_status())
+
+        elif args.startswith("start "):
+            endpoint = args[6:].strip()
+            if not endpoint:
+                content.show_file("error.txt", "Usage: /inference start <endpoint>")
+                return
+
+            content.show_file("inference.txt", f"Starting {endpoint}...")
+
+            async def start():
+                try:
+                    manager = get_inference_manager()
+                    success = await manager.start_endpoint(endpoint)
+
+                    if success:
+                        content.show_file("inference.txt", f"Started {endpoint} successfully.")
+                    else:
+                        content.show_file("error.txt", f"Failed to start {endpoint}.")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error starting {endpoint}: {e}")
+
+            asyncio.create_task(start())
+
+        elif args.startswith("stop "):
+            endpoint = args[5:].strip()
+            if not endpoint:
+                content.show_file("error.txt", "Usage: /inference stop <endpoint>")
+                return
+
+            content.show_file("inference.txt", f"Stopping {endpoint}...")
+
+            async def stop():
+                try:
+                    manager = get_inference_manager()
+                    success = await manager.stop_endpoint(endpoint)
+
+                    if success:
+                        content.show_file("inference.txt", f"Stopped {endpoint} successfully.")
+                    else:
+                        content.show_file("error.txt", f"Failed to stop {endpoint}.")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error stopping {endpoint}: {e}")
+
+            asyncio.create_task(stop())
+
+        elif args.startswith("restart "):
+            endpoint = args[8:].strip()
+            if not endpoint:
+                content.show_file("error.txt", "Usage: /inference restart <endpoint>")
+                return
+
+            content.show_file("inference.txt", f"Restarting {endpoint}...")
+
+            async def restart():
+                try:
+                    manager = get_inference_manager()
+                    success = await manager.restart_endpoint(endpoint)
+
+                    if success:
+                        content.show_file("inference.txt", f"Restarted {endpoint} successfully.")
+                    else:
+                        content.show_file("error.txt", f"Failed to restart {endpoint}.")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error restarting {endpoint}: {e}")
+
+            asyncio.create_task(restart())
+
+        elif args == "ensure":
+            # Ensure default model (nvidia/Orchestrator-8B) is running
+            content.show_file("inference.txt", "Ensuring nvidia/Orchestrator-8B is running...")
+
+            async def ensure():
+                try:
+                    manager = get_inference_manager()
+
+                    # Track progress in content panel
+                    progress_lines = ["# Starting nvidia/Orchestrator-8B", ""]
+
+                    def update_progress(task_name: str, progress: float, message: str):
+                        progress_lines.append(f"[{progress:.0%}] {message}")
+                        content.show_file("inference.md", "\n".join(progress_lines))
+
+                    success = await manager.ensure_orchestrator_running(update_progress)
+
+                    if success:
+                        progress_lines.append("")
+                        progress_lines.append("✓ nvidia/Orchestrator-8B is ready")
+                        content.show_file("inference.md", "\n".join(progress_lines))
+                    else:
+                        content.show_file("error.txt", "Failed to ensure default model is running.")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error ensuring default model: {e}")
+
+            asyncio.create_task(ensure())
+
+        else:
+            content.show_file("error.txt", f"Unknown inference subcommand: {args}\n\nUsage:\n  /inference status\n  /inference start <endpoint>\n  /inference stop <endpoint>\n  /inference restart <endpoint>\n  /inference ensure")
 
     def _run_search(self, query: str) -> None:
         """Search KB and optionally web for a query."""
@@ -1072,14 +2138,51 @@ Domain: {domain}
         grid.update_state(self.state)
 
     def _update_minigrids(self) -> None:
-        """Update mini-grids based on cursor position."""
-        data = get_minigrid_data(self.state.cursor_x, self.state.cursor_y)
+        """Update mini-grids based on cursor position with real TDA/UMAP data."""
+        from .core.minigrids import get_real_minigrid_data
+        from .core.projection import get_grid_manager
+        from .core.tda import get_tda_manager
+
+        # Get grid data and TDA features from managers
+        try:
+            grid_manager = get_grid_manager()
+            grid_data = grid_manager.get_grid_data()
+            tda_manager = get_tda_manager()
+            tda_features = tda_manager._cached_features  # May be None if not computed yet
+
+            # Debug: Check if we have data
+            if grid_data and grid_data.n_documents == 0:
+                # No documents loaded yet, use empty grids
+                grid_data = None
+
+        except Exception as e:
+            # If grid data not available, fall back to empty mini-grids
+            # But log the error so we know what went wrong
+            import traceback
+            self.log.error(f"Failed to get grid data: {e}")
+            self.log.error(traceback.format_exc())
+            grid_data = None
+            tda_features = None
+
+        # Get curvatures for Iso view
+        curvatures = self.state.curvatures_raw if self.state.curvatures_raw else None
+
+        # Use real data from grid projection and geometry
+        data = get_real_minigrid_data(
+            grid_data=grid_data,
+            curvatures=curvatures,
+            cursor_x=self.state.cursor_x,
+            cursor_y=self.state.cursor_y,
+        )
 
         # Update each mini-grid (right column: top and bottom)
-        if "right" in data:
-            self.query_one("#minigrid-top", MiniGrid).update_data(data["right"])
-        if "top" in data:
-            self.query_one("#minigrid-bottom", MiniGrid).update_data(data["top"])
+        try:
+            if "right" in data and data["right"]:
+                self.query_one("#minigrid-top", MiniGrid).update_data(data["right"])
+            if "top" in data and data["top"]:
+                self.query_one("#minigrid-bottom", MiniGrid).update_data(data["top"])
+        except Exception as e:
+            self.log.error(f"Failed to update mini-grids: {e}")
 
     def _update_location(self) -> None:
         """Update the location indicator with current cursor position."""
@@ -1191,6 +2294,8 @@ Domain: {domain}
 - **?**: Show this help
 
 ## Common Commands
+- `/init`: Initialize platform (index KB + project + TDA + cache)
+- `/reindex`: Refresh grid from current KB embeddings
 - `/domain <name>`: Set analysis domain
 - `/search <query>`: Search KB files and content
 - `/research <topic>`: Web search + LLM synthesis to KB
@@ -1199,36 +2304,129 @@ Domain: {domain}
 - `/activity`: View activity log
 - `/tda`: Show topological features
 - `/info`: Show cursor position info
+- `/inference [status|start|stop|restart]`: Manage inference stack
 - `/q` or `/exit`: Quit Gaius
 """
         content.show_file("help.md", help_text)
+
+    def _find_tenuki_target(self) -> tuple[int, int] | None:
+        """Find high-curvature region for strategic exploration (tenuki).
+
+        Uses differential geometry to identify semantic boundaries where
+        meaning changes rapidly - the "turbulent" regions in the manifold.
+
+        Scoring: |curvature| × distance_factor × novelty_factor
+
+        Returns:
+            (x, y) position or None if no curvature data
+        """
+        if not self.state.curvature_map:
+            # Fallback: cycle through agent positions
+            if self.state.agent_positions:
+                current = (self.state.cursor_x, self.state.cursor_y)
+                best_dist = 0
+                best_pos = None
+
+                for name, x, y, color in self.state.agent_positions:
+                    dist = abs(x - current[0]) + abs(y - current[1])
+                    if dist > best_dist:
+                        best_dist = dist
+                        best_pos = (x, y)
+
+                return best_pos
+            return None
+
+        current = (self.state.cursor_x, self.state.cursor_y)
+        best_score = 0.0
+        best_pos = None
+        exploration_radius = 3
+
+        # Scan all grid positions for high-curvature regions
+        for y in range(19):
+            for x in range(19):
+                # Skip if no curvature data at this position
+                if y >= len(self.state.curvature_map) or x >= len(self.state.curvature_map[y]):
+                    continue
+                if self.state.curvature_map[y][x] == 0:  # No data
+                    continue
+
+                # Curvature magnitude (higher = more interesting)
+                curvature = abs(self.state.curvature_map[y][x])
+
+                # Distance from cursor (Manhattan distance)
+                dist = abs(x - current[0]) + abs(y - current[1])
+
+                # Distance factor: prefer moderate distances
+                if dist < 3:
+                    dist_factor = 0.1  # Too close, not much strategic value
+                elif dist < 7:
+                    dist_factor = 1.0  # Ideal distance
+                elif dist < 12:
+                    dist_factor = 0.7  # Moderate distance
+                else:
+                    dist_factor = 0.4  # Far away
+
+                # Novelty factor: avoid recently visited regions
+                min_visited_dist = 999
+                for vx, vy in self.state.tenuki_visited:
+                    visited_dist = abs(x - vx) + abs(y - vy)
+                    min_visited_dist = min(min_visited_dist, visited_dist)
+
+                if min_visited_dist < 3:
+                    novelty_factor = 0.3  # Recently explored
+                elif min_visited_dist < 6:
+                    novelty_factor = 0.7  # Moderately explored
+                else:
+                    novelty_factor = 1.0  # Novel region
+
+                # Combined score
+                score = curvature * dist_factor * novelty_factor
+
+                if score > best_score:
+                    best_score = score
+                    best_pos = (x, y)
+
+        # Mark visited region (with radius) if we found a target
+        if best_pos:
+            for dx in range(-exploration_radius, exploration_radius + 1):
+                for dy in range(-exploration_radius, exploration_radius + 1):
+                    vx, vy = best_pos[0] + dx, best_pos[1] + dy
+                    if 0 <= vx < 19 and 0 <= vy < 19:
+                        self.state.tenuki_visited.add((vx, vy))
+
+        return best_pos
 
     def action_tenuki(self) -> None:
         """Jump to point of highest strategic interest (tenuki).
 
         In Go, tenuki means 'playing elsewhere' - ignoring the local
-        situation for a bigger play. Here we jump to the most interesting
-        point based on current analysis.
+        situation for a bigger play. Here we jump to high-curvature regions:
+        semantic boundaries where understanding changes rapidly.
+
+        Uses Ricci curvature to find 'turbulent' areas (complex boundaries)
+        while avoiding recently visited regions.
         """
-        # For now, cycle through agent positions
-        if self.state.agent_positions:
-            # Find the agent we're not currently near
-            current = (self.state.cursor_x, self.state.cursor_y)
-            best_dist = 0
-            best_pos = current
+        target = self._find_tenuki_target()
 
-            for name, x, y, color in self.state.agent_positions:
-                dist = abs(x - current[0]) + abs(y - current[1])
-                if dist > best_dist:
-                    best_dist = dist
-                    best_pos = (x, y)
+        if target and target != (self.state.cursor_x, self.state.cursor_y):
+            self.state.cursor_x, self.state.cursor_y = target
+            self._refresh_grid()
+            self._update_status()
+            self._update_minigrids()
+            self._update_location()
 
-            if best_pos != current:
-                self.state.cursor_x, self.state.cursor_y = best_pos
-                self._refresh_grid()
-                self._update_status()
-                self._update_minigrids()
-                self._update_location()
+            # Show notification
+            κ = 0.0
+            if (self.state.curvature_map and
+                target[1] < len(self.state.curvature_map) and
+                target[0] < len(self.state.curvature_map[target[1]])):
+                κ = self.state.curvature_map[target[1]][target[0]]
+
+            self.notify(
+                f"Tenuki → ({target[0]}, {target[1]}) | κ={κ:.3f}",
+                severity="information",
+                timeout=3
+            )
 
     def action_new_note(self) -> None:
         """Create a new Zettelkasten note and focus the editor."""
@@ -1310,11 +2508,69 @@ Domain: {domain}
         # Apply center panel mode from config
         self._apply_center_panel_mode()
 
+        # Start inference stack (orchestrator + nvidia/Orchestrator-8B)
+        self._start_inference_stack()
+
         # Start scheduler service (background)
         self._start_scheduler()
 
         # Run enterApp startup procedure
         self._run_startup_commands()
+
+    def _start_inference_stack(self) -> None:
+        """Start inference orchestrator and default model (nvidia/Orchestrator-8B).
+
+        Creates background task with progress tracking.
+        """
+        import asyncio
+        from datetime import datetime
+        from .core.state import BackgroundTask
+        from .inference.manager import get_inference_manager
+
+        # Create background task
+        task = BackgroundTask(
+            id="inference_startup",
+            name="Starting nvidia/Orchestrator-8B",
+            status="running",
+            started_at=datetime.now(),
+        )
+        self.state.background_tasks.append(task)
+
+        async def start_with_progress():
+            """Start inference stack with progress updates."""
+            manager = get_inference_manager()
+
+            def update_progress(task_name: str, progress: float, message: str):
+                """Update background task progress."""
+                task.progress = progress
+                task.message = message
+                # Force refresh of think panel if visible
+                try:
+                    think = self.query_one("#think-panel", ThinkPanel)
+                    think.refresh()
+                except Exception:
+                    pass
+
+            try:
+                success = await manager.ensure_orchestrator_running(update_progress)
+
+                if success:
+                    task.status = "completed"
+                    task.progress = 1.0
+                    task.message = "nvidia/Orchestrator-8B ready"
+                    task.completed_at = datetime.now()
+                else:
+                    task.status = "failed"
+                    task.error = "Failed to start orchestrator"
+                    task.completed_at = datetime.now()
+
+            except Exception as e:
+                task.status = "failed"
+                task.error = str(e)
+                task.completed_at = datetime.now()
+                self.log.exception("Inference stack startup failed")
+
+        asyncio.create_task(start_with_progress())
 
     def _start_scheduler(self) -> None:
         """Start the scheduler service for background inference."""
@@ -1818,13 +3074,34 @@ Domain: {domain}
                     content.show_file("error.txt", f"Unknown view: {args}")
             else:
                 self.action_cycle_view()
+        elif command == "init":
+            # Initialize platform: full pipeline + cache (async with progress)
+            content.show_file(
+                "init.txt",
+                "Starting full initialization...\n\n"
+                "Running in background (2-5 minutes):\n"
+                "1. Index KB documents\n"
+                "2. Project to 19x19 grid (UMAP)\n"
+                "3. Compute TDA features\n"
+                "4. Cache for fast startup\n\n"
+                "Press 'g' to toggle ThinkPanel for progress.\n"
+                "The UI remains responsive during processing."
+            )
+            # Run async
+            import asyncio
+            asyncio.create_task(self._async_full_init())
         elif command == "reindex":
-            # Reindex KB embeddings and refresh grid
-            content.show_file("reindex.txt", "Reindexing KB embeddings...\n\nThis may take a moment.")
-            if self._refresh_from_embeddings():
-                content.show_file("reindex.txt", "KB reindexed and grid updated.\n\nDocuments projected to grid.")
-            else:
-                content.show_file("reindex.txt", "Reindex failed.\n\nCheck that Qdrant is running and KB has content.")
+            # Reindex KB embeddings and refresh grid (async with progress)
+            content.show_file(
+                "reindex.txt",
+                "Starting reindex...\n\n"
+                "Running in background (2-5 minutes).\n"
+                "Press 'g' to toggle ThinkPanel for progress.\n\n"
+                "The UI remains responsive during processing."
+            )
+            # Run async
+            import asyncio
+            asyncio.create_task(self._async_refresh_from_embeddings())
         elif command == "tda":
             # Show TDA metrics
             try:
@@ -1838,8 +3115,8 @@ Domain: {domain}
 **Entropy:** {metrics.get('entropy', 0):.3f}
 **Persistence Range:** {metrics.get('persistence_range', (0, 1))}
 
-## Death Loops
-{len(metrics.get('death_loops', []))} loops detected
+## H1 Cycles (Loops)
+{len(metrics.get('h1_cycles', []))} 1-cycles detected
 
 Use `/reindex` to refresh TDA from current KB.
 """
@@ -1864,6 +3141,12 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "research":
             # Research topic (web search + LLM synthesis)
             self._run_research(args)
+        elif command == "explain":
+            # Explain grid view using local LLM
+            self._explain_grid_view(args)
+        elif command == "inference":
+            # Manage inference stack (orchestrator, endpoints, models)
+            self._handle_inference_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
