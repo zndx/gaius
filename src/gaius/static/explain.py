@@ -28,30 +28,29 @@ def get_overlay_explanation(overlay_mode: OverlayMode, x: int, y: int) -> str:
     explanations = {
         OverlayMode.NONE: """**No Overlay**: Raw view without additional analysis layers.""",
 
-        OverlayMode.RISK: f"""**Risk Overlay**: Volatility and exposure analysis.
-Position ({x}, {y}) risk factors:
-- Market sensitivity: {"High" if x > 12 or y > 12 else "Moderate" if x > 6 or y > 6 else "Low"}
-- Correlation exposure: {"Elevated" if (x + y) % 3 == 0 else "Normal"}
-- Liquidity risk: {"Watch" if x < 3 or y < 3 or x > 15 or y > 15 else "Adequate"}""",
+        OverlayMode.TOPOLOGY: f"""**Topology Overlay**: Persistent homology features (H0/H1/H2).
+- H1 cycles (red ⚠): Loops in the knowledge graph - connected concepts
+- H2 voids (magenta ◇): Cavities - missing knowledge or gaps
+Position ({x}, {y}) topological significance: {"High" if 4 <= x <= 14 and 4 <= y <= 14 else "Edge region"}
+Persistent features reveal stable structural patterns in the data.""",
 
-        OverlayMode.H1: f"""**H1 Overlay**: First homology features (loops/cycles).
-Persistent loops indicate stable cyclical patterns in the data.
-Position ({x}, {y}) loop density: {"High" if 4 <= x <= 7 and 4 <= y <= 7 else "Moderate" if 10 <= x <= 15 else "Low"}
-Death loops mark boundaries of significant topological features.""",
+        OverlayMode.GEOMETRY: f"""**Geometry Overlay**: Ricci curvature heatmap.
+- Red regions (κ < 0): Semantic boundaries - meaning changes rapidly
+- Blue regions (κ > 0): Semantic interiors - uniform concept clusters
+Like turbulent water driving complex diatom colonies, negative curvature
+indicates "turbulent" regions where understanding shifts abruptly.
+Position ({x}, {y}) is {"a boundary region" if (x + y) % 5 < 2 else "an interior region"}.""",
 
-        OverlayMode.H2: f"""**H2 Overlay**: Second homology features (voids/cavities).
-Voids represent gaps or missing connections in the topology.
-Position ({x}, {y}) shows {"potential void boundary" if (x - 9)**2 + (y - 9)**2 > 49 else "dense region"}.""",
+        OverlayMode.DYNAMICS: f"""**Dynamics Overlay**: Gradient vector field.
+Arrows show the direction of semantic change on the manifold.
+- Bright arrows: Strong gradient (rapid semantic shift)
+- Dim dots: Stable points (semantic equilibria)
+Position ({x}, {y}) flow direction indicates {"high gradient" if abs(x - 9) > 5 or abs(y - 9) > 5 else "moderate flow"}.""",
 
         OverlayMode.AGENTS: f"""**Agents Overlay**: Swarm member positions and states.
 Each agent occupies a strategic position based on their role.
 Position ({x}, {y}) {"is near an agent" if _near_agent(x, y) else "is unoccupied"}.
 Agent roles: Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary.""",
-
-        OverlayMode.TEMPORAL: f"""**Temporal Overlay**: Time-evolution analysis.
-Shows how positions have changed over recent time steps.
-Position ({x}, {y}) trend: {"Increasing" if (x + y) % 2 == 0 else "Stable" if x == y else "Decreasing"}
-Temporal patterns reveal momentum and mean-reversion.""",
     }
     return explanations.get(overlay_mode, "Unknown overlay mode.")
 

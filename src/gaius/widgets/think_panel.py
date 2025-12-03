@@ -14,7 +14,7 @@ from rich.text import Text
 from textual.widget import Widget
 from textual.reactive import reactive
 
-from ..core.state import AppState, ReasoningTrace
+from ..core.state import AppState, ReasoningTrace, BackgroundTask
 
 
 class ThinkPanel(Widget):
@@ -61,20 +61,64 @@ class ThinkPanel(Widget):
         """Render the think panel content."""
         lines = []
 
-        # Active reasoning section (top half)
-        lines.append(Text("Active Reasoning", style="bold cyan"))
-        lines.append(Text("─" * 36, style="dim"))
+        # Background tasks section (top half) - prioritize showing active work
+        if self.state.background_tasks:
+            lines.append(Text("Background Tasks", style="bold cyan"))
+            lines.append(Text("─" * 36, style="dim"))
 
-        if self.state.active_reasoning:
-            # Split active reasoning into lines
+            for task in self.state.background_tasks:
+                # Task name with status indicator
+                text = Text()
+                if task.status == "running":
+                    text.append("⚙ ", style="bold yellow")
+                elif task.status == "completed":
+                    text.append("✓ ", style="bold green")
+                elif task.status == "failed":
+                    text.append("✗ ", style="bold red")
+                else:
+                    text.append("• ", style="dim")
+
+                text.append(task.name, style="bold white")
+                lines.append(text)
+
+                # Progress bar
+                if task.status == "running" and task.progress > 0:
+                    bar_width = 30
+                    filled = int(task.progress * bar_width)
+                    bar = "█" * filled + "░" * (bar_width - filled)
+                    pct = f"{task.progress * 100:.0f}%"
+                    bar_text = Text()
+                    bar_text.append(f"{bar} {pct}", style="cyan")
+                    lines.append(bar_text)
+
+                # Status message
+                if task.message:
+                    msg_text = Text()
+                    msg_text.append("  ", style="dim")
+                    msg_text.append(task.message[:34], style="white")
+                    lines.append(msg_text)
+
+                # Error if failed
+                if task.error:
+                    err_text = Text()
+                    err_text.append("  Error: ", style="bold red")
+                    err_text.append(task.error[:25], style="red")
+                    lines.append(err_text)
+
+        # Active reasoning section (if no background tasks)
+        elif self.state.active_reasoning:
+            lines.append(Text("Active Reasoning", style="bold cyan"))
+            lines.append(Text("─" * 36, style="dim"))
             active_lines = self.state.active_reasoning.split("\n")
-            for line in active_lines[:6]:  # Max 6 lines for active
+            for line in active_lines[:6]:
                 text = Text()
                 text.append("> ", style="green")
                 text.append(line[:34], style="white")
                 lines.append(text)
         else:
-            lines.append(Text("  (no active reasoning)", style="dim"))
+            lines.append(Text("Active Reasoning", style="bold cyan"))
+            lines.append(Text("─" * 36, style="dim"))
+            lines.append(Text("  (no active tasks)", style="dim"))
 
         # Padding to fill active section
         while len(lines) < 9:
@@ -143,6 +187,29 @@ class ThinkPanel(Widget):
 
         return text
 
+    def start_trace(
+        self,
+        operation: str,
+        query: str,
+        model: str = "",
+    ) -> None:
+        """Start a new reasoning trace.
+
+        Called at the beginning of an inference/search operation.
+
+        Args:
+            operation: Type of operation (explanation, search, synthesis, etc.)
+            query: What's being processed
+            model: Model being used (optional)
+        """
+        initial_text = f"Starting {operation}..."
+        if model:
+            initial_text += f"\nUsing: {model}"
+        initial_text += f"\nQuery: {query}"
+
+        self.state.active_reasoning = initial_text
+        self.refresh()
+
     def stream_reasoning(self, text: str) -> None:
         """Append text to active reasoning display.
 
@@ -201,3 +268,12 @@ class ThinkPanel(Widget):
         self.state = state
         self.trace_count = len(self.state.reasoning_traces)
         self.refresh()
+
+    def on_mount(self) -> None:
+        """Set up periodic refresh for background tasks."""
+        self.set_interval(0.5, self._check_background_tasks)
+
+    def _check_background_tasks(self) -> None:
+        """Refresh if there are active background tasks."""
+        if self.state.background_tasks:
+            self.refresh()
