@@ -66,6 +66,15 @@ class GridData:
     n_documents: int = 0
     coverage: float = 0.0  # Fraction of grid cells with documents
 
+    # Raw embeddings for TDA computation (768-dim, not 2D projections)
+    raw_embeddings: np.ndarray | None = None
+
+    # Mapping from embedding index to grid position
+    embedding_to_grid: dict[int, tuple[int, int]] = field(default_factory=dict)
+
+    # Reverse mapping: grid position to embedding index (for mini-grids)
+    grid_to_embedding: dict[tuple[int, int], int] = field(default_factory=dict)
+
     def __post_init__(self):
         if not self.allocations:
             self.allocations = [[0] * 19 for _ in range(19)]
@@ -135,7 +144,7 @@ class GridProjector:
         """Project all KB embeddings to grid.
 
         Returns:
-            GridData with positions and allocations
+            GridData with positions, allocations, and raw embeddings for TDA
         """
         # Retrieve embeddings from Qdrant
         embeddings, metadata = self._retrieve_embeddings()
@@ -149,8 +158,8 @@ class GridProjector:
         # Normalize to grid coordinates
         grid_coords = self._normalize_to_grid(coords_2d)
 
-        # Build grid data
-        return self._build_grid_data(grid_coords, metadata)
+        # Build grid data with raw embeddings preserved for TDA
+        return self._build_grid_data(grid_coords, metadata, embeddings)
 
     def project_points(
         self,
@@ -164,17 +173,21 @@ class GridProjector:
             metadata: List of dicts with path, title, id
 
         Returns:
-            GridData with positions
+            GridData with positions and raw embeddings for TDA
         """
         if len(embeddings) == 0:
             return GridData(method=self.method)
 
         coords_2d = self._project_to_2d(embeddings)
         grid_coords = self._normalize_to_grid(coords_2d)
-        return self._build_grid_data(grid_coords, metadata)
+        return self._build_grid_data(grid_coords, metadata, embeddings)
 
     def _retrieve_embeddings(self) -> tuple[np.ndarray, list[dict]]:
-        """Retrieve all embeddings from Qdrant."""
+        """Retrieve all embeddings from Qdrant.
+
+        For multi-vector embeddings, fetches aggregated vectors ("agg" named vector).
+        For single-vector embeddings, fetches default vector.
+        """
         if self.vector_search is None:
             return np.array([]), []
 
@@ -190,6 +203,16 @@ class GridProjector:
             except Exception:
                 return np.array([]), []
 
+            # Determine embedding type from config
+            embedding_type = "single"  # Default
+            try:
+                from .config import get_config
+
+                config = get_config()
+                embedding_type = getattr(config.vector_store, "embedding_type", "single")
+            except Exception:
+                pass  # Use default
+
             # Scroll through all points
             all_embeddings = []
             all_metadata = []
@@ -197,12 +220,20 @@ class GridProjector:
             offset = None
             batch_size = 100
 
+            # Configure which vectors to fetch
+            if embedding_type == "multi":
+                # Multi-vector: fetch "agg" named vector
+                with_vectors = ["agg"]
+            else:
+                # Single-vector: fetch default vector
+                with_vectors = True
+
             while True:
                 results, offset = client.scroll(
                     collection_name=collection,
                     limit=batch_size,
                     offset=offset,
-                    with_vectors=True,
+                    with_vectors=with_vectors,
                     with_payload=True,
                 )
 
@@ -210,8 +241,16 @@ class GridProjector:
                     break
 
                 for point in results:
-                    if point.vector is not None:
-                        all_embeddings.append(point.vector)
+                    # Extract vector based on type
+                    if embedding_type == "multi":
+                        # Named vectors: point.vector is a dict
+                        vector = point.vector.get("agg") if point.vector else None
+                    else:
+                        # Single vector: point.vector is a list
+                        vector = point.vector
+
+                    if vector is not None:
+                        all_embeddings.append(vector)
                         payload = point.payload or {}
                         all_metadata.append(
                             {
@@ -279,14 +318,24 @@ class GridProjector:
         self,
         grid_coords: np.ndarray,
         metadata: list[dict],
+        embeddings: np.ndarray | None = None,
     ) -> GridData:
-        """Build GridData from projected coordinates."""
+        """Build GridData from projected coordinates.
+
+        Args:
+            grid_coords: 2D grid coordinates (n, 2) in [0, 18] range
+            metadata: List of dicts with path, title, chunk_id
+            embeddings: Optional raw high-dim embeddings for TDA computation
+        """
         grid_data = GridData(method=self.method, n_documents=len(metadata))
+
+        # Store raw embeddings for TDA (768-dim, not 2D projections)
+        grid_data.raw_embeddings = embeddings
 
         # Track density per cell
         density = np.zeros((19, 19), dtype=int)
 
-        # Build points and positions
+        # Build points, positions, and embedding-to-grid mapping
         for i, (x, y) in enumerate(grid_coords):
             meta = metadata[i] if i < len(metadata) else {}
 
@@ -299,6 +348,8 @@ class GridProjector:
             )
             grid_data.points.append(point)
             grid_data.document_positions.add((int(x), int(y)))
+            grid_data.embedding_to_grid[i] = (int(x), int(y))
+            grid_data.grid_to_embedding[(int(x), int(y))] = i  # Reverse mapping
             density[y, x] += 1
 
         # Convert density to allocation (0-100 scale)

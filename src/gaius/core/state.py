@@ -14,13 +14,19 @@ class ViewMode(Enum):
 
 
 class OverlayMode(Enum):
-    """Overlay modes for additional visualization layers."""
+    """Overlay modes for additional visualization layers.
+
+    NEW DESIGN (differential geometry):
+    - TOPOLOGY: H0/H1/H2 persistent homology features
+    - GEOMETRY: Curvature heatmap (semantic boundaries)
+    - DYNAMICS: Gradient vector field (semantic change direction)
+    - AGENTS: Agent positions (unchanged)
+    """
     NONE = "none"
-    RISK = "risk"
-    H1 = "h1"      # Death loops
-    H2 = "h2"      # Voids
+    TOPOLOGY = "topology"  # H0/H1/H2 (components, loops, voids)
+    GEOMETRY = "geometry"  # Curvature (boundaries vs interiors)
+    DYNAMICS = "dynamics"  # Gradient field + divergence
     AGENTS = "agents"
-    TEMPORAL = "temporal"
 
 
 class CenterPanelMode(Enum):
@@ -31,6 +37,22 @@ class CenterPanelMode(Enum):
     GRAPH = "graph"   # Wiki-link graph visualization
     THINK = "think"   # Reasoning traces and agent thinking
     NONE = "none"     # Hidden (more space for main grid)
+
+
+@dataclass
+class BackgroundTask:
+    """A background task with status tracking.
+
+    Used for long-running operations that shouldn't block UI startup.
+    """
+    id: str             # Unique task identifier
+    name: str           # Display name (e.g., "Loading KB embeddings")
+    status: str         # "pending", "running", "completed", "failed"
+    progress: float = 0.0  # 0-1 progress indicator
+    message: str = ""   # Current status message
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error: Optional[str] = None
 
 
 @dataclass
@@ -86,9 +108,18 @@ class AppState:
     command_history: list = field(default_factory=list)
     command_index: int = -1
 
-    # TDA state
-    death_loops: list = field(default_factory=list)
+    # TDA state (topology)
+    h1_cycles: list = field(default_factory=list)  # H1 bounding boxes (1-cycles/loops)
+    h2_voids: list = field(default_factory=list)   # H2 bounding boxes (2-voids/cavities)
+    risk_map: list = field(default_factory=list)   # 19x19 risk values (0-1) [legacy]
     tda_entropy: float = 0.0
+
+    # Geometry state (curvature, gradients)
+    curvature_map: list = field(default_factory=list)  # 19x19 Ricci curvature values (for grid overlay)
+    curvatures_raw: list = field(default_factory=list)  # Per-point curvature list (for Iso view)
+    gradient_field: list = field(default_factory=list)  # List of (x, y, gx, gy) gradient vectors
+    divergence_map: list = field(default_factory=list)  # 19x19 divergence values
+    tenuki_visited: set = field(default_factory=set)    # Set of (x, y) positions visited by tenuki
 
     # Agent positions (list of (name, x, y, color))
     agent_positions: list = field(default_factory=list)
@@ -99,6 +130,7 @@ class AppState:
     # Think mode state
     active_reasoning: Optional[str] = None  # Current reasoning being displayed
     reasoning_traces: list = field(default_factory=list)  # History of ReasoningTrace
+    background_tasks: list = field(default_factory=list)  # BackgroundTask instances
 
     def move_cursor(self, dx: int, dy: int) -> bool:
         """Move cursor by delta, return True if moved."""

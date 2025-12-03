@@ -76,7 +76,16 @@ class VectorStoreConfig:
     host: str = "localhost"
     port: int = 6339
     collection: str = "gaius_kb"
-    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_model: str = "all-MiniLM-L6-v2"  # For single-vector mode
+    model_revision: str | None = None  # Pin to specific commit (e.g., "main", commit hash)
+    use_safetensors: bool = True  # Require safetensors format (safer than pickle)
+    trust_remote_code: bool = False  # Only enable for trusted models like Nomic
+
+    # Multimodal settings
+    embedding_type: str = "single"  # "single" or "multi" (ColQwen)
+    multimodal_model: str = "nomic-ai/colnomic-embed-multimodal-7b"  # For multi mode
+    aggregation: str = "mean"  # "mean", "max", or "first"
+    batch_size: int = 4  # Batch size for multimodal embedding (small for 7B model)
 
 
 @dataclass
@@ -171,7 +180,8 @@ class TDAConfig:
 
     enabled: bool = True
     compute_interval_minutes: int = 60
-    projection_method: str = "umap"
+    projection_method: str = "umap"  # or "pca"
+    max_points: int = 500  # Subsample for TDA (giotto-tda is O(n^3))
 
 
 @dataclass
@@ -347,6 +357,16 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         port=g.get("vector_store.port", 6339),
         collection=g.get("vector_store.collection", "gaius_kb"),
         embedding_model=g.get("vector_store.embedding_model", "all-MiniLM-L6-v2"),
+        model_revision=g.get("vector_store.model_revision"),  # None if not set
+        use_safetensors=g.get("vector_store.use_safetensors", True),
+        trust_remote_code=g.get("vector_store.trust_remote_code", False),
+        # Multimodal settings
+        embedding_type=g.get("vector_store.embedding_type", "single"),
+        multimodal_model=g.get(
+            "vector_store.multimodal.model", "nomic-ai/colnomic-embed-multimodal-7b"
+        ),
+        aggregation=g.get("vector_store.multimodal.aggregation", "mean"),
+        batch_size=int(g.get("vector_store.multimodal.batch_size", 4)),
     )
 
     optillm = OptillmConfig(
@@ -405,6 +425,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         enabled=g.get("tda.enabled", True),
         compute_interval_minutes=int(g.get("tda.compute_interval_minutes", 60)),
         projection_method=g.get("tda.projection_method", "umap"),
+        max_points=int(g.get("tda.max_points", 500)),
     )
 
     ui = UIConfig(

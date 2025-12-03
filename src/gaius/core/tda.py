@@ -1,6 +1,6 @@
 """Topological Data Analysis (TDA) integration for Gaius.
 
-Uses giotto-tda to compute persistent homology features from embeddings,
+Uses ripser for fast persistent homology computation from embeddings,
 providing topological insights displayed on the 19x19 grid.
 
 Features:
@@ -15,7 +15,7 @@ Usage:
     features = computer.compute(embeddings)
 
     # Access results
-    death_loops = features.death_loops  # List of bounding boxes
+    h1_cycles = features.h1_cycles  # List of bounding boxes (1-cycles)
     entropy = features.entropy
 """
 
@@ -75,10 +75,13 @@ class TDAFeatures:
     # Raw persistence intervals
     intervals: list[PersistenceInterval] = field(default_factory=list)
 
-    # Bounding boxes for visualization
-    death_loops: list[BoundingBox] = field(default_factory=list)  # H1 features
-    voids: list[BoundingBox] = field(default_factory=list)  # H2 features
-    components: list[BoundingBox] = field(default_factory=list)  # H0 features
+    # Bounding boxes for visualization (TDA standard terminology)
+    h1_cycles: list[BoundingBox] = field(default_factory=list)  # H1 features (1-cycles/loops)
+    h2_voids: list[BoundingBox] = field(default_factory=list)   # H2 features (2-voids/cavities)
+    components: list[BoundingBox] = field(default_factory=list)  # H0 features (connected components)
+
+    # Per-point risk scores (0-1) for risk overlay
+    risk_scores: list[float] = field(default_factory=list)
 
     # Summary statistics
     h0_count: int = 0  # Number of connected components
@@ -100,8 +103,9 @@ class TDAFeatures:
             "entropy": self.entropy,
             "persistence_range": self.persistence_range,
             "n_points": self.n_points,
-            "death_loops": [dl.to_tuple() for dl in self.death_loops],
-            "voids": [v.to_tuple() for v in self.voids],
+            "h1_cycles": [dl.to_tuple() for dl in self.h1_cycles],
+            "h2_voids": [v.to_tuple() for v in self.h2_voids],
+            "risk_scores": self.risk_scores,
         }
 
 
@@ -129,13 +133,13 @@ class TDAComputer:
         self.max_edge_length = max_edge_length
         self.method = method
 
-        # Check if giotto-tda is available
-        self._giotto_available = self._check_giotto()
+        # Check if ripser is available
+        self._ripser_available = self._check_ripser()
 
-    def _check_giotto(self) -> bool:
-        """Check if giotto-tda is installed."""
+    def _check_ripser(self) -> bool:
+        """Check if ripser is installed."""
         try:
-            import gtda
+            import ripser
 
             return True
         except ImportError:
@@ -158,45 +162,64 @@ class TDAComputer:
         if len(embeddings) < 3:
             return TDAFeatures(n_points=len(embeddings))
 
-        if self._giotto_available:
-            return self._compute_giotto(embeddings, grid_coords)
+        if self._ripser_available:
+            return self._compute_ripser(embeddings, grid_coords)
         else:
             return self._compute_fallback(embeddings, grid_coords)
 
-    def _compute_giotto(
+    def _compute_ripser(
         self,
         embeddings: np.ndarray,
         grid_coords: np.ndarray | None,
     ) -> TDAFeatures:
-        """Compute TDA using giotto-tda."""
-        from gtda.homology import VietorisRipsPersistence
-        from gtda.diagrams import PersistenceEntropy
+        """Compute TDA using ripser (fast persistent homology).
 
-        features = TDAFeatures(n_points=len(embeddings), method=self.method)
+        Subsamples if dataset is too large (ripser is O(n^3) worst case).
+        """
+        import ripser
+
+        n_points = len(embeddings)
+        features = TDAFeatures(n_points=n_points, method=self.method)
 
         try:
-            # Compute persistent homology
-            vr = VietorisRipsPersistence(
-                homology_dimensions=list(range(self.max_dimension + 1)),
-                max_edge_length=self.max_edge_length,
+            # Subsample if too many points (TDA is expensive)
+            from ...core.config import get_config
+            max_points = get_config().tda.max_points
+
+            if n_points > max_points:
+                # Random sample for diversity
+                indices = np.random.choice(n_points, max_points, replace=False)
+                sampled_embeddings = embeddings[indices]
+                sampled_coords = grid_coords[indices] if grid_coords is not None else None
+            else:
+                sampled_embeddings = embeddings
+                sampled_coords = grid_coords
+                indices = np.arange(n_points)
+
+            # Compute persistent homology using ripser
+            # ripser expects (n_points, n_features) array
+            # Returns {'dgms': [H0_diagram, H1_diagram, H2_diagram, ...]}
+            result = ripser.ripser(
+                sampled_embeddings,
+                maxdim=self.max_dimension,
+                thresh=self.max_edge_length if self.max_edge_length != np.inf else 0,
+                metric="cosine",  # Use cosine distance for embeddings
             )
 
-            # Reshape for giotto-tda (expects 3D: n_samples x n_points x n_features)
-            X = embeddings.reshape(1, *embeddings.shape)
-            diagrams = vr.fit_transform(X)[0]  # Get first (only) sample
+            diagrams = result['dgms']  # List of (n, 2) arrays: [(birth, death), ...]
 
-            # Parse persistence diagrams
+            # Parse persistence diagrams into intervals
             intervals = []
-            for row in diagrams:
-                birth, death, dim = row
-                if np.isfinite(death):  # Skip infinite death times
-                    intervals.append(
-                        PersistenceInterval(
-                            birth=float(birth),
-                            death=float(death),
-                            dimension=int(dim),
+            for dim, diagram in enumerate(diagrams):
+                for birth, death in diagram:
+                    if np.isfinite(death):  # Skip infinite death times
+                        intervals.append(
+                            PersistenceInterval(
+                                birth=float(birth),
+                                death=float(death),
+                                dimension=int(dim),
+                            )
                         )
-                    )
 
             features.intervals = intervals
 
@@ -205,12 +228,18 @@ class TDAComputer:
             features.h1_count = sum(1 for i in intervals if i.dimension == 1)
             features.h2_count = sum(1 for i in intervals if i.dimension == 2)
 
-            # Compute persistence entropy
-            try:
-                pe = PersistenceEntropy()
-                entropy_values = pe.fit_transform(diagrams.reshape(1, -1, 3))
-                features.entropy = float(entropy_values[0].mean())
-            except Exception:
+            # Compute persistence entropy (simple version without giotto-tda)
+            if intervals:
+                persistences = np.array([i.persistence for i in intervals])
+                # Normalize persistences to probabilities
+                total_persistence = np.sum(persistences)
+                if total_persistence > 0:
+                    probs = persistences / total_persistence
+                    # Shannon entropy: -Σ p*log(p)
+                    features.entropy = float(-np.sum(probs * np.log(probs + 1e-10)))
+                else:
+                    features.entropy = 0.0
+            else:
                 features.entropy = 0.0
 
             # Compute persistence range
@@ -218,14 +247,17 @@ class TDAComputer:
                 persistences = [i.persistence for i in intervals]
                 features.persistence_range = (min(persistences), max(persistences))
 
-            # Generate bounding boxes if grid coordinates provided
-            if grid_coords is not None:
-                features.death_loops = self._compute_bounding_boxes(
-                    intervals, grid_coords, dimension=1
+            # Generate bounding boxes if grid coordinates provided (use sampled coords)
+            if sampled_coords is not None:
+                features.h1_cycles = self._compute_bounding_boxes(
+                    intervals, sampled_coords, dimension=1
                 )
-                features.voids = self._compute_bounding_boxes(
-                    intervals, grid_coords, dimension=2
+                features.h2_voids = self._compute_bounding_boxes(
+                    intervals, sampled_coords, dimension=2
                 )
+
+            # Compute per-point risk scores on ALL points (not just sample)
+            features.risk_scores = self._compute_point_risk(embeddings)
 
         except Exception as e:
             # Fall back to simplified computation on error
@@ -238,7 +270,7 @@ class TDAComputer:
         embeddings: np.ndarray,
         grid_coords: np.ndarray | None,
     ) -> TDAFeatures:
-        """Simplified TDA computation without giotto-tda.
+        """Simplified TDA computation without ripser.
 
         Uses clustering and distance analysis as approximation.
         """
@@ -257,10 +289,10 @@ class TDAComputer:
             # Approximate H1 by finding dense regions
             # This is a rough approximation - real TDA would be better
             if grid_coords is not None and len(grid_coords) >= 4:
-                features.death_loops = self._find_dense_regions(
+                features.h1_cycles = self._find_dense_regions(
                     grid_coords, labels, dimension=1
                 )
-                features.h1_count = len(features.death_loops)
+                features.h1_count = len(features.h1_cycles)
 
             # Simple entropy approximation
             if len(embeddings) > 1:
@@ -269,6 +301,9 @@ class TDAComputer:
                 features.entropy = float(np.log1p(variance))
 
             features.persistence_range = (0.1, 0.9)
+
+            # Compute per-point risk scores
+            features.risk_scores = self._compute_point_risk(embeddings)
 
         except Exception:
             pass
@@ -362,6 +397,47 @@ class TDAComputer:
 
         return boxes[:5]  # Limit to top 5
 
+    def _compute_point_risk(self, embeddings: np.ndarray) -> list[float]:
+        """Compute per-point risk based on local topology.
+
+        Points with more distant neighbors are less stable (higher risk).
+        Uses k-NN distances as a proxy for local topological instability.
+
+        Args:
+            embeddings: High-dimensional embeddings (n, dim)
+
+        Returns:
+            List of risk scores (0-1) for each point
+        """
+        n_points = len(embeddings)
+        if n_points < 3:
+            return [0.5] * n_points
+
+        try:
+            from sklearn.neighbors import NearestNeighbors
+
+            # Use k nearest neighbors to assess local density
+            n_neighbors = min(10, n_points - 1)
+            nn = NearestNeighbors(n_neighbors=n_neighbors, metric="cosine")
+            nn.fit(embeddings)
+            distances, _ = nn.kneighbors(embeddings)
+
+            # Average distance to neighbors (skip self at index 0)
+            avg_distances = distances[:, 1:].mean(axis=1)
+
+            # Normalize to 0-1 range
+            min_d, max_d = avg_distances.min(), avg_distances.max()
+            if max_d > min_d:
+                risk = (avg_distances - min_d) / (max_d - min_d)
+            else:
+                risk = np.full(n_points, 0.5)
+
+            return risk.tolist()
+
+        except Exception:
+            # Fallback: uniform risk
+            return [0.5] * n_points
+
 
 class TDAManager:
     """Manages TDA computation lifecycle.
@@ -401,11 +477,11 @@ class TDAManager:
         """Mark cache as invalid."""
         self._cache_valid = False
 
-    def get_death_loops_as_tuples(self) -> list[tuple[int, int, int, int]]:
-        """Get death loops in tuple format for compatibility."""
+    def get_h1_cycles_as_tuples(self) -> list[tuple[int, int, int, int]]:
+        """Get H1 cycles (1-cycles/loops) in tuple format for compatibility."""
         if self._cached_features is None:
             return []
-        return [dl.to_tuple() for dl in self._cached_features.death_loops]
+        return [cycle.to_tuple() for cycle in self._cached_features.h1_cycles]
 
     def get_metrics(self) -> dict:
         """Get TDA metrics for status display."""
