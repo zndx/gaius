@@ -61,10 +61,15 @@ class InferenceConfig:
 
     # optillm settings (proxy to local vLLM with optimization)
     optillm_url: str = "http://localhost:8080/v1"
+    optillm_api_key: str = field(
+        default_factory=lambda: os.getenv("GAIUS_OPTILLM_API_KEY") or os.getenv("OPTILLM_API_KEY", "sk-optillm")
+    )
     optillm_technique: OptillmTechnique = OptillmTechnique.NONE
 
     # vLLM settings (direct local inference)
-    vllm_url: str = "http://localhost:8088/v1"
+    # Default to orchestration endpoint (8084) which supports general-purpose tasks
+    # Other endpoints: reasoning=8081, coding=8082, fast=8083
+    vllm_url: str = "http://localhost:8084/v1"
 
     # XAI settings (outsider model for evaluation)
     xai_url: str = "https://api.x.ai/v1"
@@ -111,7 +116,8 @@ class InferenceConfig:
             backend=backend,
             optillm_technique=technique,
             optillm_url=os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8080/v1"),
-            vllm_url=os.getenv("GAIUS_VLLM_URL", "http://localhost:8088/v1"),
+            optillm_api_key=os.getenv("GAIUS_OPTILLM_API_KEY") or os.getenv("OPTILLM_API_KEY", "sk-optillm"),
+            vllm_url=os.getenv("GAIUS_VLLM_URL", "http://localhost:8084/v1"),
             xai_url=os.getenv("XAI_API_URL", "https://api.x.ai/v1"),
             xai_model=os.getenv("XAI_MODEL", "grok-3-latest"),
             model=os.getenv("GAIUS_MODEL", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
@@ -131,6 +137,7 @@ class InferenceConfig:
             model=self.model,
             fallback_model=self.fallback_model,
             optillm_url=self.optillm_url,
+            optillm_api_key=self.optillm_api_key,
             optillm_technique=technique,
             vllm_url=self.vllm_url,
             xai_url=self.xai_url,

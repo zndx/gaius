@@ -1,6 +1,6 @@
-"""GPU Health Monitoring via pynvml.
+"""GPU Health Monitoring via NVIDIA Management Library.
 
-Provides detailed GPU metrics including:
+Uses nvidia-ml-py (which provides the pynvml module) for GPU metrics:
 - VRAM usage
 - Temperature
 - Power draw
@@ -22,13 +22,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Try to import pynvml
+# Try to import pynvml (provided by nvidia-ml-py package)
 try:
     import pynvml
     PYNVML_AVAILABLE = True
 except ImportError:
     PYNVML_AVAILABLE = False
-    logger.warning("pynvml not available - GPU monitoring disabled")
+    logger.warning("nvidia-ml-py not available - GPU monitoring disabled")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
