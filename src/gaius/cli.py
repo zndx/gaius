@@ -59,7 +59,7 @@ class GaiusCLI:
         self.state.black_stones = GRID_DATA["black"]
         self.state.white_stones = GRID_DATA["white"]
         self.state.allocations = GRID_DATA["alloc"]
-        self.state.death_loops = DEATH_LOOPS
+        self.state.h1_cycles = DEATH_LOOPS
         self.state.tda_entropy = TDA_METRICS["entropy"]
 
         for agent in AGENT_DATA:
@@ -127,6 +127,11 @@ class GaiusCLI:
             # GPU Orchestrator commands
             elif command == "gpu" or command == "orch":
                 result["data"] = self._run_async(self._cmd_gpu(args))
+            # Inference management (high-level)
+            elif command == "inference" or command == "inf":
+                result["data"] = self._run_async(self._cmd_inference(args))
+            elif command == "explain":
+                result["data"] = self._run_async(self._cmd_explain(args))
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -198,7 +203,10 @@ class GaiusCLI:
             "domain": self.state.domain,
             "tda_entropy": self.state.tda_entropy,
             "num_agents": len(self.state.agent_positions),
-            "num_death_loops": len(self.state.death_loops),
+            "num_h1_cycles": len(self.state.h1_cycles),
+            "num_h2_voids": len(self.state.h2_voids),
+            "has_curvature_map": bool(self.state.curvature_map),
+            "has_gradient_field": bool(self.state.gradient_field),
         }
 
     def _cmd_agents(self) -> dict:
@@ -247,6 +255,10 @@ class GaiusCLI:
                 "swarm <domain> [context]": "Run swarm analysis with optimal scheduling",
                 # GPU Orchestrator commands
                 "gpu [cmd] [args]": "GPU orchestrator (status, start, stop, restart, logs, health)",
+                # Inference management (high-level)
+                "inference [cmd] [args]": "Inference stack (status, start, stop, restart, ensure)",
+                # Explain command
+                "explain [pos]": "Explain grid position using local LLM (default: K10)",
             }
         }
 
@@ -889,6 +901,339 @@ class GaiusCLI:
 
         except ImportError as e:
             raise RuntimeError(f"GPU orchestrator not available: {e}")
+
+    async def _cmd_inference(self, args: str) -> dict:
+        """Inference management operations (high-level).
+
+        Usage:
+            /inference status              - Show inference stack status
+            /inference start <endpoint>    - Start specific endpoint
+            /inference stop <endpoint>     - Stop specific endpoint
+            /inference restart <endpoint>  - Restart specific endpoint
+            /inference ensure              - Ensure default model running
+        """
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+        subargs = parts[1] if len(parts) > 1 else ""
+
+        try:
+            from .inference.manager import get_inference_manager
+
+            manager = get_inference_manager()
+
+            if subcmd == "status":
+                status = await manager.get_status()
+                return {
+                    "orchestrator_running": status.orchestrator_running,
+                    "scheduler_healthy": status.scheduler_healthy,
+                    "default_model_ready": status.default_model_ready,
+                    "endpoints": {
+                        name: proc_status.value
+                        for name, proc_status in status.endpoints_running.items()
+                    },
+                    "total_requests": status.total_requests,
+                    "queue_depth": status.queue_depth,
+                }
+
+            elif subcmd == "start":
+                if not subargs:
+                    return {"error": "start requires an endpoint name"}
+
+                # Track progress via print
+                progress_messages = []
+
+                def track_progress(task_name: str, progress: float, message: str):
+                    progress_messages.append({
+                        "task": task_name,
+                        "progress": progress,
+                        "message": message,
+                    })
+                    # Print to stderr for real-time feedback
+                    import sys
+                    print(f"[{progress:.0%}] {message}", file=sys.stderr)
+
+                success = await manager.start_endpoint(
+                    subargs,
+                    progress_callback=track_progress
+                )
+
+                return {
+                    "endpoint": subargs,
+                    "success": success,
+                    "progress": progress_messages,
+                }
+
+            elif subcmd == "stop":
+                if not subargs:
+                    return {"error": "stop requires an endpoint name"}
+
+                success = await manager.stop_endpoint(subargs)
+                return {
+                    "endpoint": subargs,
+                    "success": success,
+                }
+
+            elif subcmd == "restart":
+                if not subargs:
+                    return {"error": "restart requires an endpoint name"}
+
+                progress_messages = []
+
+                def track_progress(task_name: str, progress: float, message: str):
+                    progress_messages.append({
+                        "task": task_name,
+                        "progress": progress,
+                        "message": message,
+                    })
+                    import sys
+                    print(f"[{progress:.0%}] {message}", file=sys.stderr)
+
+                success = await manager.restart_endpoint(
+                    subargs,
+                    progress_callback=track_progress
+                )
+
+                return {
+                    "endpoint": subargs,
+                    "success": success,
+                    "progress": progress_messages,
+                }
+
+            elif subcmd == "ensure":
+                # Ensure default model (nvidia/Orchestrator-8B) is running
+                progress_messages = []
+
+                def track_progress(task_name: str, progress: float, message: str):
+                    progress_messages.append({
+                        "task": task_name,
+                        "progress": progress,
+                        "message": message,
+                    })
+                    import sys
+                    print(f"[{progress:.0%}] {message}", file=sys.stderr)
+
+                success = await manager.ensure_orchestrator_running(track_progress)
+
+                return {
+                    "action": "ensure_orchestrator",
+                    "success": success,
+                    "progress": progress_messages,
+                }
+
+            else:
+                return {"error": f"Unknown inference command: {subcmd}"}
+
+        except ImportError as e:
+            raise RuntimeError(f"Inference manager not available: {e}")
+
+    async def _cmd_explain(self, args: str) -> dict:
+        """Explain a grid position using local LLM with differential geometry.
+
+        Usage: /explain [pos] [--save]
+        Examples:
+            /explain K10        - Explain position K10
+            /explain K10 --save - Explain and save to KB
+            /explain --save     - Explain default position and save
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        try:
+            import asyncio
+            import numpy as np
+            from .inference.llm import explain_position, ExplanationContext
+            from .core.projection import get_grid_manager
+            from .core.tda import get_tda_manager
+            from .core.geometry import GeometryComputer
+            from .core.minigrids import get_embed_view, get_iso_view
+        except ImportError as e:
+            raise RuntimeError(f"Explain not available: {e}. Run: uv sync --extra inference")
+
+        # Parse --save flag
+        save_to_kb = "--save" in args
+        args = args.replace("--save", "").strip()
+
+        # Parse position (default K10 = center)
+        if args:
+            cx, cy = self._parse_coord(args)
+        else:
+            cx, cy = 9, 9  # K10 (center)
+
+        start_time = datetime.now()
+
+        # Try to get real grid data with computed features
+        grid_data = None
+        tda_features = None
+        curvatures_list = None
+        try:
+            grid_data = get_grid_manager().get_grid_data()
+
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
+                # Compute TDA features
+                tda_manager = get_tda_manager()
+                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                tda_features = tda_manager.compute_features(
+                    grid_data.raw_embeddings, grid_coords
+                )
+
+                # Compute geometry features (Ricci curvatures)
+                gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+
+                # Handle async: check if already in event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Already in event loop, use nest_asyncio or thread
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                        )
+                        geom_features = future.result(timeout=60)
+                except RuntimeError:
+                    # No event loop running, safe to use asyncio.run
+                    geom_features = asyncio.run(
+                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                    )
+
+                if geom_features is not None:
+                    curvatures_list = [float(k) for k in geom_features.curvatures]
+                    # Store in state for later use
+                    self.state.curvatures_raw = curvatures_list
+        except Exception as e:
+            import sys
+            print(f"Geometry computation error: {e}", file=sys.stderr)
+
+        # Get document at cursor (if real grid data available)
+        document_title = None
+        document_path = None
+        if grid_data:
+            point_idx = grid_data.grid_to_embedding.get((cx, cy))
+            if point_idx is not None and point_idx < len(grid_data.points):
+                point = grid_data.points[point_idx]
+                document_title = point.title
+                document_path = point.path
+
+        # Extract geometric features from state
+        curvature = None
+        gradient_x, gradient_y = None, None
+        divergence = None
+
+        if self.state.curvature_map:
+            curvature = self.state.curvature_map.get((cx, cy))
+        if self.state.gradient_field:
+            grad = self.state.gradient_field.get((cx, cy))
+            if grad:
+                gradient_x, gradient_y = grad
+
+        # Get nearby documents
+        nearby_documents = []
+        if grid_data:
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < 19 and 0 <= ny < 19:
+                        neighbor_idx = grid_data.grid_to_embedding.get((nx, ny))
+                        if neighbor_idx is not None and neighbor_idx < len(grid_data.points):
+                            nearby_documents.append(grid_data.points[neighbor_idx].title)
+
+        # Get mini-grid data for visual descriptions
+        embed_grid = None
+        iso_grid = None
+        if grid_data:
+            embed_data = get_embed_view(grid_data, cx, cy)
+            embed_grid = embed_data.grid
+
+            # Use computed curvatures for iso view
+            iso_data = get_iso_view(grid_data, curvatures_list, cx, cy)
+            iso_grid = iso_data.grid
+
+        # Build explanation context
+        ctx = ExplanationContext(
+            cursor_x=cx,
+            cursor_y=cy,
+            document_title=document_title,
+            document_path=document_path,
+            curvature=curvature,
+            gradient_x=gradient_x,
+            gradient_y=gradient_y,
+            divergence=divergence,
+            tda_entropy=self.state.tda_entropy,
+            h0_count=len(getattr(self.state, 'h0_components', [])),
+            h1_count=len(self.state.h1_cycles),
+            h2_count=len(self.state.h2_voids),
+            risk_score=self.state.risk_scores.get((cx, cy)) if getattr(self.state, 'risk_scores', None) else None,
+            grid_coverage=len(grid_data.points) / 361 if grid_data else 0.0,
+            total_documents=len(grid_data.points) if grid_data else 0,
+            nearby_documents=nearby_documents[:5],
+            embed_grid=embed_grid,
+            iso_grid=iso_grid,
+        )
+
+        # Generate explanation
+        from .inference.client import InferenceClient
+        client = InferenceClient()
+
+        # Discover vLLM model
+        await client._discover_vllm_model()
+
+        explanation = await explain_position(ctx, client=client, max_tokens=800)
+
+        # Strip thinking tags if present
+        if '<think>' in explanation and '</think>' in explanation:
+            explanation = explanation.split('</think>')[-1].strip()
+
+        elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+        model_name = getattr(client, '_vllm_model', 'unknown')
+
+        result = {
+            "position": self._coord_string(cx, cy),
+            "x": cx,
+            "y": cy,
+            "document": document_title,
+            "curvature": curvature,
+            "explanation": explanation,
+            "model": model_name,
+            "elapsed_ms": elapsed_ms,
+        }
+
+        # Save to KB if requested
+        if save_to_kb:
+            from .core.kb_capture import ExplainCapture
+
+            capture = ExplainCapture(
+                position=self._coord_string(cx, cy),
+                x=cx,
+                y=cy,
+                document_title=document_title,
+                document_path=document_path,
+                nearby_documents=nearby_documents[:8],
+                curvature=curvature,
+                gradient=(gradient_x, gradient_y) if gradient_x is not None else None,
+                risk_score=self.state.risk_scores.get((cx, cy)) if getattr(self.state, 'risk_scores', None) else None,
+                h0_count=len(getattr(self.state, 'h0_components', [])),
+                h1_count=len(self.state.h1_cycles),
+                h2_count=len(self.state.h2_voids),
+                tda_entropy=self.state.tda_entropy or 0.0,
+                embed_grid=embed_grid,
+                iso_grid=iso_grid,
+                grid_coverage=len(grid_data.points) / 361 if grid_data else 0.0,
+                total_documents=len(grid_data.points) if grid_data else 0,
+                view_mode=self.state.view_mode.name if hasattr(self.state, 'view_mode') else "Go",
+                overlay_mode=self.state.overlay_mode.name if hasattr(self.state, 'overlay_mode') else "none",
+                explanation=explanation,
+                model=model_name,
+                elapsed_ms=elapsed_ms,
+            )
+
+            # Determine KB scratch root
+            scratch_root = Path("build/dev/scratch")
+            kb_path = capture.save_to_kb(scratch_root)
+            result["saved_to"] = str(kb_path)
+
+        return result
 
     def _cmd_kb(self, args: str) -> dict:
         """KB operations."""
