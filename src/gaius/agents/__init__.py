@@ -1,4 +1,10 @@
-"""Agent definitions and swarm management."""
+"""Agent definitions and swarm management.
+
+Includes:
+- Role definitions and swarm orchestration
+- LatentMAS-style latent collaboration (latent/)
+- Agent0-style self-evolution (evolution/)
+"""
 
 from .roles import (
     AgentRole,
@@ -14,6 +20,9 @@ from .swarm import (
     AgentResponse,
     get_swarm_manager,
     run_swarm_round,
+    LatentSwarmManager,
+    get_latent_swarm_manager,
+    run_latent_swarm_round,
 )
 from .daily_summary import (
     DailySummaryAgent,
@@ -21,6 +30,17 @@ from .daily_summary import (
     get_daily_summary_agent,
     generate_daily_summary,
 )
+
+# Lazy imports for optional modules
+def get_latent_memory():
+    """Get latent working memory singleton."""
+    from .latent import get_latent_memory as _get
+    return _get()
+
+def get_evolution_daemon():
+    """Get evolution daemon singleton."""
+    from .evolution import get_evolution_daemon as _get
+    return _get()
 
 __all__ = [
     # Roles
@@ -36,6 +56,13 @@ __all__ = [
     "AgentResponse",
     "get_swarm_manager",
     "run_swarm_round",
+    # Latent Swarm
+    "LatentSwarmManager",
+    "get_latent_swarm_manager",
+    "run_latent_swarm_round",
+    "get_latent_memory",
+    # Evolution
+    "get_evolution_daemon",
     # Daily Summary
     "DailySummaryAgent",
     "DailySummaryNote",
