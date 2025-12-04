@@ -132,6 +132,9 @@ class GaiusCLI:
                 result["data"] = self._run_async(self._cmd_inference(args))
             elif command == "explain":
                 result["data"] = self._run_async(self._cmd_explain(args))
+            # Evolution daemon commands
+            elif command == "evolve" or command == "evo":
+                result["data"] = self._run_async(self._cmd_evolve(args))
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -1025,6 +1028,116 @@ class GaiusCLI:
 
         except ImportError as e:
             raise RuntimeError(f"Inference manager not available: {e}")
+
+    async def _cmd_evolve(self, args: str) -> dict:
+        """Evolution daemon operations.
+
+        Usage:
+            /evolve start        - Clean start: cleanup stale procs, start reasoning, start daemon
+            /evolve stop         - Stop the evolution daemon
+            /evolve status       - Show daemon status and recent cycles
+            /evolve trigger      - Manually trigger an evolution cycle
+            /evolve budget       - Show XAI evaluation budget status
+
+        This is the primary way to run continuous agent evolution overnight.
+        """
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+        subargs = parts[1] if len(parts) > 1 else ""
+
+        if subcmd == "start":
+            # Clean start: cleanup GPU, start reasoning endpoint, start daemon
+            from .inference.orchestrator import get_orchestrator
+            from .agents.evolution import get_evolution_daemon
+
+            orchestrator = get_orchestrator()
+
+            # Parse optional endpoint list
+            endpoints = ["reasoning"]
+            if subargs:
+                endpoints = [e.strip() for e in subargs.split(",")]
+
+            # Phase 1: Clean start GPU
+            print("Phase 1: Cleaning up stale processes...", file=sys.stderr)
+            clean_result = await orchestrator.clean_start(endpoints)
+
+            if not clean_result["success"]:
+                return {
+                    "action": "start",
+                    "success": False,
+                    "error": "Failed to start GPU endpoints",
+                    "cleanup": clean_result["cleanup"],
+                    "startup": clean_result["startup"],
+                }
+
+            # Phase 2: Start evolution daemon
+            print("Phase 2: Starting evolution daemon...", file=sys.stderr)
+            daemon = get_evolution_daemon()
+            await daemon.start()
+
+            return {
+                "action": "start",
+                "success": True,
+                "gpu_cleanup": clean_result["cleanup"],
+                "gpu_startup": clean_result["startup"],
+                "daemon_running": daemon.running,
+                "message": "Evolution running. Use '/evolve status' to monitor.",
+            }
+
+        elif subcmd == "stop":
+            from .agents.evolution import get_evolution_daemon
+
+            daemon = get_evolution_daemon()
+            await daemon.stop()
+
+            return {
+                "action": "stop",
+                "success": True,
+                "daemon_running": daemon.running,
+            }
+
+        elif subcmd == "status":
+            from .agents.evolution import get_evolution_daemon
+
+            daemon = get_evolution_daemon()
+            status = daemon.get_status()
+
+            return {
+                "running": status["running"],
+                "enabled": status["enabled"],
+                "cycles_completed": status["cycles_completed"],
+                "total_improvement": status.get("total_improvement_percent", 0),
+                "next_agent": status.get("next_agent", "unknown"),
+                "config": status.get("config", {}),
+            }
+
+        elif subcmd == "trigger":
+            from .agents.evolution import get_evolution_daemon
+
+            daemon = get_evolution_daemon()
+
+            if not daemon.running:
+                return {"error": "Daemon not running. Use '/evolve start' first."}
+
+            # Trigger manual cycle
+            agent_id = subargs if subargs else None
+            result = await daemon.force_evolution_cycle(agent_id)
+
+            return {
+                "action": "trigger",
+                "agent_id": result.agent_id if result else None,
+                "success": result.success if result else False,
+                "improvement": result.improvement_percent if result else 0,
+            }
+
+        elif subcmd == "budget":
+            from .models.tiered_evaluation import get_tiered_evaluator
+
+            evaluator = get_tiered_evaluator()
+            return evaluator.get_budget_status()
+
+        else:
+            return {"error": f"Unknown evolve command: {subcmd}"}
 
     async def _cmd_explain(self, args: str) -> dict:
         """Explain a grid position using local LLM with differential geometry.
