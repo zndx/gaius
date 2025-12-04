@@ -460,7 +460,7 @@ class EvolutionDaemon:
             baseline_score=result.baseline_score,
             best_score=result.best_candidate_score,
             examples_used=len(examples),
-            candidates_evaluated=result.candidates_evaluated,
+            candidates_evaluated=result.num_candidates,
         )
 
     async def _notify_cycle_complete(self, result: EvolutionCycleResult) -> None:
@@ -495,14 +495,25 @@ class EvolutionDaemon:
 
             conn = await asyncpg.connect(url)
             try:
+                import json
+
+                # Build training_scores JSON with details
+                training_scores = {
+                    "baseline_score": result.baseline_score,
+                    "best_score": result.best_score,
+                    "examples_used": result.examples_used,
+                    "candidates_evaluated": result.candidates_evaluated,
+                }
+                if result.error:
+                    training_scores["error"] = result.error
+
                 await conn.execute(
                     """
                     INSERT INTO evolution_cycles
                     (agent_id, version_before, version_after, strategy, trigger_type,
-                     success, improvement_percent, baseline_score, final_score,
-                     training_examples_used, candidates_evaluated, duration_ms,
-                     preempted, error, completed_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+                     success, improvement_percent, duration_ms, preempted,
+                     training_scores, completed_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
                     """,
                     result.agent_id,
                     version_before,
@@ -511,13 +522,9 @@ class EvolutionDaemon:
                     trigger_type,
                     result.success,
                     result.improvement_percent,
-                    result.baseline_score,
-                    result.best_score,
-                    result.examples_used,
-                    result.candidates_evaluated,
                     result.duration_ms,
                     result.preempted,
-                    result.error,
+                    json.dumps(training_scores),
                 )
                 logger.debug(f"Logged evolution cycle to DB: {result.agent_id}")
             finally:

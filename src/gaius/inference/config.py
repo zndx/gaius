@@ -112,12 +112,17 @@ class InferenceConfig:
         except ValueError:
             technique = OptillmTechnique.NONE
 
+        # Determine vLLM URL - check env, then try to find a running endpoint
+        vllm_url = os.getenv("GAIUS_VLLM_URL")
+        if not vllm_url:
+            vllm_url = cls._discover_vllm_endpoint()
+
         return cls(
             backend=backend,
             optillm_technique=technique,
             optillm_url=os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8080/v1"),
             optillm_api_key=os.getenv("GAIUS_OPTILLM_API_KEY") or os.getenv("OPTILLM_API_KEY", "sk-optillm"),
-            vllm_url=os.getenv("GAIUS_VLLM_URL", "http://localhost:8084/v1"),
+            vllm_url=vllm_url,
             xai_url=os.getenv("XAI_API_URL", "https://api.x.ai/v1"),
             xai_model=os.getenv("XAI_MODEL", "grok-3-latest"),
             model=os.getenv("GAIUS_MODEL", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
@@ -126,6 +131,50 @@ class InferenceConfig:
             timeout=float(os.getenv("GAIUS_TIMEOUT", "60")),
             max_tokens=int(os.getenv("GAIUS_MAX_TOKENS", "2048")),
         )
+
+    @staticmethod
+    def _discover_vllm_endpoint() -> str:
+        """Discover an available vLLM endpoint.
+
+        Checks configured endpoints in order of preference:
+        1. fast (Mistral-7B) - lightweight, quick responses
+        2. orchestration (Orchestrator-8B) - general purpose
+        3. coding (Qwen3-Coder) - structured tasks
+        4. reasoning (QwQ-32B) - complex reasoning
+
+        Returns first responding endpoint, or default if none available.
+        """
+        import socket
+
+        # Endpoint preference order
+        endpoints = [
+            ("fast", "http://localhost:8083/v1"),
+            ("orchestration", "http://localhost:8084/v1"),
+            ("coding", "http://localhost:8082/v1"),
+            ("reasoning", "http://localhost:8081/v1"),
+        ]
+
+        for name, url in endpoints:
+            # Extract host and port
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                host = parsed.hostname or "localhost"
+                port = parsed.port or 80
+
+                # Quick socket check
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.5)
+                result = sock.connect_ex((host, port))
+                sock.close()
+
+                if result == 0:
+                    return url
+            except Exception:
+                continue
+
+        # Default fallback
+        return "http://localhost:8084/v1"
 
     def with_technique(self, technique: OptillmTechnique | str) -> "InferenceConfig":
         """Return a new config with the specified technique."""

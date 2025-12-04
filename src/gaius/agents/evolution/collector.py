@@ -106,6 +106,15 @@ class TrainingCollector:
         examples.extend(research_examples)
         logger.debug(f"Collected {len(research_examples)} research examples")
 
+        # 4. If no examples found, use held-out queries as bootstrap
+        if not examples:
+            bootstrap_examples = await self._get_bootstrap_examples(
+                max_examples=max_examples,
+            )
+            examples.extend(bootstrap_examples)
+            if bootstrap_examples:
+                logger.info(f"Using {len(bootstrap_examples)} bootstrap examples (no organic data)")
+
         # Shuffle to avoid ordering bias
         import random
         random.shuffle(examples)
@@ -398,6 +407,86 @@ class TrainingCollector:
             return []
         except Exception as e:
             logger.warning(f"Failed to get reflection examples: {e}")
+            return []
+
+    async def _get_bootstrap_examples(
+        self,
+        max_examples: int,
+    ) -> list[TaskExample]:
+        """Get bootstrap examples from held-out queries when no organic data exists.
+
+        This is a fallback for cold-start scenarios where no swarm/research/cognition
+        data is available yet. Uses held-out queries as training examples to bootstrap
+        the evolution process.
+
+        Args:
+            max_examples: Maximum to return
+
+        Returns:
+            List of TaskExamples
+        """
+        try:
+            if not self.db_url:
+                return []
+
+            import asyncpg
+
+            conn = await asyncpg.connect(self.db_url)
+            try:
+                # Get held-out queries that haven't been used recently
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        h.input_prompt,
+                        h.expected_output,
+                        h.context,
+                        h.domain,
+                        h.category,
+                        h.id
+                    FROM held_out_queries h
+                    WHERE h.input_prompt IS NOT NULL
+                      AND LENGTH(h.input_prompt) > 10
+                    ORDER BY h.last_used_at NULLS FIRST, RANDOM()
+                    LIMIT $1
+                    """,
+                    max_examples,
+                )
+
+                examples = []
+                for row in rows:
+                    input_prompt = row["input_prompt"]
+                    domain = row["domain"] or ""
+                    category = row["category"] or "general"
+
+                    # Build evaluation criteria based on category
+                    if category == "reasoning":
+                        criteria = "Provide clear, logical analysis with well-supported conclusions"
+                    elif category == "synthesis":
+                        criteria = "Synthesize information into a coherent, comprehensive response"
+                    elif category == "analysis":
+                        criteria = "Perform thorough analysis with specific, actionable insights"
+                    else:
+                        criteria = "Provide accurate, helpful, and well-structured response"
+
+                    examples.append(TaskExample(
+                        input_prompt=input_prompt,
+                        expected_output=row["expected_output"],
+                        context=row["context"] or f"Domain: {domain}" if domain else "",
+                        evaluation_criteria=criteria,
+                        source_type="bootstrap",
+                        source_id=str(row["id"]),
+                    ))
+
+                return examples
+
+            finally:
+                await conn.close()
+
+        except ImportError:
+            logger.debug("asyncpg not available for bootstrap examples")
+            return []
+        except Exception as e:
+            logger.warning(f"Failed to get bootstrap examples: {e}")
             return []
 
 
