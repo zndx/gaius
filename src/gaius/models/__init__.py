@@ -30,6 +30,14 @@ from .evaluation import (
     get_evaluator,
     evaluate_output,
 )
+from .tiered_evaluation import (
+    TieredEvaluator,
+    TieredEvalConfig,
+    LocalEvaluator,
+    EvalBudget,
+    get_tiered_evaluator,
+    evaluate_with_budget,
+)
 from .versioning import (
     AgentVersion,
     AgentConfig,
@@ -66,6 +74,13 @@ __all__ = [
     "EvaluationDimension",
     "get_evaluator",
     "evaluate_output",
+    # Tiered Evaluation (budget-aware)
+    "TieredEvaluator",
+    "TieredEvalConfig",
+    "LocalEvaluator",
+    "EvalBudget",
+    "get_tiered_evaluator",
+    "evaluate_with_budget",
     # Versioning
     "AgentVersion",
     "AgentConfig",

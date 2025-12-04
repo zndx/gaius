@@ -345,21 +345,29 @@ class DailyEvaluator:
         self,
         agents: Optional[list[str]] = None,
         sample_size: int = 50,
+        xai_spot_checks: int = 5,
     ) -> DailyEvalSummary:
-        """Run comprehensive daily evaluation.
+        """Run comprehensive daily evaluation with tiered strategy.
+
+        Uses local model for all queries, XAI only for spot checks
+        to conserve API credits while maintaining evaluation quality.
 
         Args:
             agents: Agents to evaluate (None = all active)
             sample_size: Number of held-out queries to use
+            xai_spot_checks: How many to verify with XAI (budget-aware)
 
         Returns:
             DailyEvalSummary with results
         """
         from .daemon import get_evolution_daemon
-        from ..optimization import evaluate_agent_output
+        from ...models.tiered_evaluation import get_tiered_evaluator
 
         pool = await self._get_pool()
         eval_date = date.today()
+
+        # Get tiered evaluator (local + XAI with budget)
+        evaluator = get_tiered_evaluator()
 
         # Get agents to evaluate
         if agents is None:
@@ -398,26 +406,56 @@ class DailyEvaluator:
         # Evaluate each agent on held-out set
         agent_summaries = {}
         all_scores = []
+        xai_comparisons = []
 
         for agent_id, version_id in agent_versions.items():
             scores = []
             category_scores = {}
 
+            # Prepare batch for tiered evaluation
+            eval_batch = []
             for query in queries:
                 try:
                     # Generate agent output
                     output = await self._generate_agent_output(
                         agent_id, version_id, query
                     )
+                    eval_batch.append({
+                        "agent_output": output,
+                        "task_prompt": query.input_prompt,
+                        "context": query.context or "",
+                        "query": query,
+                    })
+                except Exception as e:
+                    logger.warning(f"Output generation failed for {agent_id}: {e}")
 
-                    # Evaluate with frontier model
-                    eval_result = await evaluate_agent_output(
-                        output=output,
-                        task_prompt=query.input_prompt,
-                        context=query.context or "",
-                    )
+            # Run tiered evaluation with spot checks
+            if eval_batch:
+                results = await evaluator.spot_check_batch(
+                    [{"agent_output": e["agent_output"],
+                      "task_prompt": e["task_prompt"],
+                      "context": e["context"]}
+                     for e in eval_batch],
+                    sample_size=xai_spot_checks,
+                )
 
-                    score = eval_result.get("overall_score", 0.0)
+                for i, (local_result, xai_result) in enumerate(results):
+                    query = eval_batch[i]["query"]
+                    output = eval_batch[i]["agent_output"]
+
+                    # Use XAI score if available, else local
+                    if xai_result:
+                        score = xai_result.overall_score
+                        eval_result = xai_result.to_dict()
+                        xai_comparisons.append({
+                            "local": local_result.overall_score,
+                            "xai": xai_result.overall_score,
+                            "diff": abs(local_result.overall_score - xai_result.overall_score),
+                        })
+                    else:
+                        score = local_result.overall_score
+                        eval_result = local_result.to_dict()
+
                     scores.append(score)
                     all_scores.append(score)
 
@@ -435,9 +473,6 @@ class DailyEvaluator:
                         eval_result=eval_result,
                         eval_type="held_out",
                     )
-
-                except Exception as e:
-                    logger.warning(f"Eval failed for {agent_id} on query {query.id}: {e}")
 
             # Compute agent summary
             if scores:

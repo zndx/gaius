@@ -2442,6 +2442,157 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- XAI Budget Monitoring ---
+
+    @server.tool()
+    async def get_xai_budget() -> str:
+        """Get XAI evaluation budget status.
+
+        Returns current usage against daily/weekly limits,
+        remaining budget, and usage history.
+        """
+        try:
+            from .models.tiered_evaluation import get_tiered_evaluator
+
+            evaluator = get_tiered_evaluator()
+            status = evaluator.get_budget_status()
+
+            return json.dumps(status, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def reset_xai_budget(reset_daily: bool = True, reset_weekly: bool = False) -> str:
+        """Reset XAI budget counters (use sparingly).
+
+        Args:
+            reset_daily: Reset daily usage counter
+            reset_weekly: Reset weekly usage counter (requires confirmation)
+        """
+        try:
+            from .models.tiered_evaluation import get_tiered_evaluator
+
+            evaluator = get_tiered_evaluator()
+
+            if reset_daily:
+                evaluator.budget.daily_used = 0
+            if reset_weekly:
+                evaluator.budget.weekly_used = 0
+
+            return json.dumps(
+                {
+                    "reset_daily": reset_daily,
+                    "reset_weekly": reset_weekly,
+                    "new_status": evaluator.get_budget_status(),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def evaluate_with_xai(
+        agent_output: str,
+        task_prompt: str,
+        context: str = "",
+        force_xai: bool = False,
+    ) -> str:
+        """Evaluate agent output using tiered strategy.
+
+        Uses local model by default, XAI only if budget allows
+        and force_xai=True or for promotion decisions.
+
+        Args:
+            agent_output: The output to evaluate
+            task_prompt: The original task/prompt
+            context: Additional context
+            force_xai: Force XAI evaluation (budget-permitting)
+        """
+        try:
+            from .models.tiered_evaluation import get_tiered_evaluator
+
+            evaluator = get_tiered_evaluator()
+
+            tier = "xai" if force_xai else "auto"
+            result = await evaluator.evaluate(
+                agent_output=agent_output,
+                task_prompt=task_prompt,
+                context=context,
+                use_tier=tier,
+            )
+
+            return json.dumps(
+                {
+                    "overall_score": result.overall_score,
+                    "dimension_scores": result.dimension_scores,
+                    "summary": result.summary,
+                    "evaluator_model": result.evaluator_model,
+                    "tier_used": "xai" if "grok" in result.evaluator_model else "local",
+                    "budget_after": evaluator.get_budget_status(),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_eval_comparison() -> str:
+        """Get local vs XAI evaluation comparison stats.
+
+        Shows how well the local model correlates with XAI
+        evaluations, helping calibrate confidence in local evals.
+        """
+        try:
+            import asyncpg
+            import os
+
+            url = os.getenv(
+                "DATABASE_URL",
+                "postgresql://gaius:gaius@localhost:5432/gaius"
+            )
+
+            conn = await asyncpg.connect(url)
+            try:
+                # Get comparison data from spot checks
+                stats = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) as total_comparisons,
+                        AVG(ABS(
+                            (metadata->>'local_score')::float -
+                            (metadata->>'xai_score')::float
+                        )) as avg_diff,
+                        CORR(
+                            (metadata->>'local_score')::float,
+                            (metadata->>'xai_score')::float
+                        ) as correlation
+                    FROM agent_evaluations
+                    WHERE metadata ? 'local_score'
+                    AND metadata ? 'xai_score'
+                    """
+                )
+
+                return json.dumps(
+                    {
+                        "total_comparisons": stats["total_comparisons"] or 0,
+                        "avg_score_difference": round(stats["avg_diff"] or 0, 3),
+                        "correlation": round(stats["correlation"] or 0, 3),
+                        "interpretation": (
+                            "Strong alignment"
+                            if (stats["correlation"] or 0) > 0.8
+                            else "Moderate alignment"
+                            if (stats["correlation"] or 0) > 0.5
+                            else "Weak alignment - consider more XAI spot checks"
+                        ),
+                    },
+                    indent=2,
+                )
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing
 
