@@ -26,6 +26,15 @@ from .daemon import (
 )
 from .curriculum import CurriculumAgent, EvolutionTask
 from .collector import TrainingCollector
+from .evaluation import (
+    HeldOutManager,
+    DailyEvaluator,
+    ReportGenerator,
+    DailyEvalSummary,
+    get_held_out_manager,
+    get_daily_evaluator,
+    get_report_generator,
+)
 
 __all__ = [
     "PreemptedError",
@@ -37,4 +46,12 @@ __all__ = [
     "CurriculumAgent",
     "EvolutionTask",
     "TrainingCollector",
+    # Evaluation
+    "HeldOutManager",
+    "DailyEvaluator",
+    "ReportGenerator",
+    "DailyEvalSummary",
+    "get_held_out_manager",
+    "get_daily_evaluator",
+    "get_report_generator",
 ]

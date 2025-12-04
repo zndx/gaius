@@ -393,6 +393,10 @@ class EvolutionDaemon:
                 )
 
             result.duration_ms = duration_ms
+
+            # Log to database for tracking
+            await self._log_cycle_to_db(result, trigger_type="idle")
+
             return result
 
         except PreemptedError:
@@ -466,6 +470,62 @@ class EvolutionDaemon:
                 await callback(result)
             except Exception as e:
                 logger.warning(f"Cycle callback error: {e}")
+
+    async def _log_cycle_to_db(
+        self,
+        result: EvolutionCycleResult,
+        trigger_type: str = "idle",
+        version_before: str | None = None,
+    ) -> None:
+        """Log evolution cycle to database for tracking.
+
+        Args:
+            result: Cycle result
+            trigger_type: What triggered this cycle
+            version_before: Version ID before optimization
+        """
+        try:
+            import asyncpg
+            import os
+
+            url = os.getenv(
+                "DATABASE_URL",
+                "postgresql://gaius:gaius@localhost:5432/gaius"
+            )
+
+            conn = await asyncpg.connect(url)
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO evolution_cycles
+                    (agent_id, version_before, version_after, strategy, trigger_type,
+                     success, improvement_percent, baseline_score, final_score,
+                     training_examples_used, candidates_evaluated, duration_ms,
+                     preempted, error, completed_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+                    """,
+                    result.agent_id,
+                    version_before,
+                    result.new_version_id,
+                    self.config.strategy,
+                    trigger_type,
+                    result.success,
+                    result.improvement_percent,
+                    result.baseline_score,
+                    result.best_score,
+                    result.examples_used,
+                    result.candidates_evaluated,
+                    result.duration_ms,
+                    result.preempted,
+                    result.error,
+                )
+                logger.debug(f"Logged evolution cycle to DB: {result.agent_id}")
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            # Don't fail the cycle just because logging failed
+            logger.warning(f"Failed to log cycle to DB: {e}")
 
 
 # Module-level singleton

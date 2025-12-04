@@ -2260,6 +2260,188 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- Evaluation & Tracking ---
+
+    @server.tool()
+    async def run_daily_evaluation(sample_size: int = 50) -> str:
+        """Run comprehensive daily evaluation against held-out set.
+
+        Evaluates all active agents against a sample of held-out queries
+        that were not used for training. Generates a report and stores
+        results in the database.
+
+        Args:
+            sample_size: Number of held-out queries to evaluate
+        """
+        try:
+            from .agents.evolution import (
+                get_daily_evaluator,
+                get_report_generator,
+            )
+
+            evaluator = get_daily_evaluator()
+            report_gen = get_report_generator()
+
+            # Run evaluation
+            summary = await evaluator.run_daily_evaluation(sample_size=sample_size)
+
+            # Generate report
+            report_path = report_gen.generate_daily_report(summary)
+
+            return json.dumps(
+                {
+                    "eval_date": summary.eval_date.isoformat(),
+                    "total_cycles": summary.total_cycles,
+                    "successful_cycles": summary.successful_cycles,
+                    "total_improvement_percent": round(summary.total_improvement_percent, 2),
+                    "trend": summary.trend_direction,
+                    "trend_confidence": summary.trend_confidence,
+                    "agents_evaluated": len(summary.agent_summaries),
+                    "held_out_results": summary.held_out_results,
+                    "report_path": str(report_path),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_held_out_stats() -> str:
+        """Get statistics about the held-out query pool.
+
+        Returns information about the queries available for
+        objective evaluation.
+        """
+        try:
+            from .agents.evolution import get_held_out_manager
+
+            manager = get_held_out_manager()
+            stats = await manager.get_stats()
+
+            return json.dumps(stats, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def add_held_out_query(
+        input_prompt: str,
+        domain: str = "",
+        category: str = "",
+        expected_output: str = "",
+    ) -> str:
+        """Add a query to the held-out evaluation pool.
+
+        Held-out queries are used for objective evaluation and
+        never used for training.
+
+        Args:
+            input_prompt: The query/prompt to add
+            domain: Domain classification (e.g., 'pension', 'kudu')
+            category: Task category (e.g., 'reasoning', 'synthesis')
+            expected_output: Optional gold standard output
+        """
+        try:
+            from .agents.evolution import get_held_out_manager
+
+            manager = get_held_out_manager()
+            query_id = await manager.add_query(
+                input_prompt=input_prompt,
+                expected_output=expected_output if expected_output else None,
+                domain=domain,
+                category=category,
+                source_type="manual",
+            )
+
+            if query_id:
+                return json.dumps(
+                    {"success": True, "query_id": query_id},
+                    indent=2,
+                )
+            else:
+                return json.dumps(
+                    {"success": False, "reason": "duplicate or error"},
+                    indent=2,
+                )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_evolution_trend(days: int = 7) -> str:
+        """Get evolution performance trend over recent days.
+
+        Shows improvement trends, cycle counts, and score comparisons
+        between training and held-out evaluations.
+
+        Args:
+            days: Number of days to analyze
+        """
+        try:
+            import asyncpg
+            import os
+            from datetime import datetime, timedelta
+
+            url = os.getenv(
+                "DATABASE_URL",
+                "postgresql://gaius:gaius@localhost:5432/gaius"
+            )
+
+            conn = await asyncpg.connect(url)
+            try:
+                # Get daily summaries
+                summaries = await conn.fetch(
+                    """
+                    SELECT eval_date, total_cycles, successful_cycles,
+                           total_improvement_percent, trend_direction,
+                           trend_confidence, agent_summaries, held_out_results
+                    FROM daily_eval_summaries
+                    WHERE eval_date > $1
+                    ORDER BY eval_date DESC
+                    """,
+                    datetime.now().date() - timedelta(days=days)
+                )
+
+                # Get overfit comparison
+                overfit = await conn.fetch(
+                    """
+                    SELECT * FROM eval_score_comparison
+                    ORDER BY overfit_gap DESC
+                    LIMIT 10
+                    """
+                )
+
+                return json.dumps(
+                    {
+                        "days_analyzed": days,
+                        "daily_summaries": [
+                            {
+                                "date": r["eval_date"].isoformat(),
+                                "cycles": r["total_cycles"],
+                                "successful": r["successful_cycles"],
+                                "improvement": round(r["total_improvement_percent"], 2),
+                                "trend": r["trend_direction"],
+                            }
+                            for r in summaries
+                        ],
+                        "overfit_warnings": [
+                            {
+                                "agent_id": r["agent_id"],
+                                "version_id": r["version_id"][:8],
+                                "training_score": round(r["training_score"], 3),
+                                "held_out_score": round(r["held_out_score"], 3),
+                                "gap": round(r["overfit_gap"], 3),
+                            }
+                            for r in overfit
+                            if r["overfit_gap"] and r["overfit_gap"] > 0.05
+                        ],
+                    },
+                    indent=2,
+                )
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing
 
