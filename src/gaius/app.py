@@ -36,6 +36,7 @@ from .widgets.location import LocationIndicator
 from .widgets.note_editor import NoteEditor
 from .widgets.graph_view import GraphView
 from .widgets.think_panel import ThinkPanel
+from .widgets.evolution_panel import EvolutionPanel
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -314,8 +315,11 @@ class GaiusApp(App):
         # Notes
         Binding("ctrl+n", "new_note", "New Note"),
 
-        # Graph view (wiki-links)
+        # Graph view (wiki-links) - 'g' cycles modes
         Binding("g", "toggle_graph", "Graph"),
+
+        # Evolution panel - direct access
+        Binding("e", "show_evolution", "Evolution"),
 
         # Quit hint (actual quit via /q or /exit command)
         Binding("q", "quit_hint", "Quit", show=False),
@@ -2091,6 +2095,9 @@ Domain: {domain}
                         # Think panel (reasoning traces) - hidden by default, 'g' cycles modes
                         yield ThinkPanel(self.state, id="think-panel", classes="hidden")
 
+                        # Evolution panel (daemon monitoring) - hidden by default, 'g' cycles modes
+                        yield EvolutionPanel(self.state, id="evolution-panel", classes="hidden")
+
                     # Note editor below the grids (hidden by default, Ctrl-N to show)
                     yield NoteEditor(id="note-editor", classes="hidden")
 
@@ -2114,7 +2121,8 @@ Domain: {domain}
         center_mode = self.state.center_panel_mode.value.upper()
         center_style = {
             "GRAPH": "blue",
-            "THINK": "magenta",
+            "THINK": "cyan",
+            "EVOLUTION": "magenta",
             "NONE": "dim",
         }.get(center_mode, "white")
 
@@ -2455,33 +2463,60 @@ Domain: {domain}
         content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
 
     def action_toggle_graph(self) -> None:
-        """Cycle center panel mode: GRAPH → THINK → NONE → GRAPH."""
+        """Cycle center panel mode: GRAPH → THINK → EVOLUTION → NONE → GRAPH."""
         graph = self.query_one("#graph-view", GraphView)
         think = self.query_one("#think-panel", ThinkPanel)
+        evolution = self.query_one("#evolution-panel", EvolutionPanel)
 
         # Cycle to next mode
         new_mode = self.state.cycle_center_panel_mode()
 
+        # Hide all first
+        graph.add_class("hidden")
+        think.add_class("hidden")
+        evolution.add_class("hidden")
+
         # Update visibility based on mode
         if new_mode == CenterPanelMode.GRAPH:
             graph.remove_class("hidden")
-            think.add_class("hidden")
             # Refresh graph content
             graph.scan_kb()
             editor = self.query_one("#note-editor", NoteEditor)
             if editor.current_file:
                 graph.update_for_file(editor.current_file)
         elif new_mode == CenterPanelMode.THINK:
-            graph.add_class("hidden")
             think.remove_class("hidden")
             think.refresh()
+        elif new_mode == CenterPanelMode.EVOLUTION:
+            evolution.remove_class("hidden")
+            # Trigger data refresh
+            import asyncio
+            asyncio.create_task(evolution.refresh_data())
         else:  # NONE
-            graph.add_class("hidden")
-            think.add_class("hidden")
-            # Force layout refresh when hiding both panels
+            # Force layout refresh when hiding all panels
             self.query_one("#grid-row").refresh(layout=True)
 
         # Update status to show current mode
+        self._update_status()
+
+    def action_show_evolution(self) -> None:
+        """Show evolution panel directly."""
+        graph = self.query_one("#graph-view", GraphView)
+        think = self.query_one("#think-panel", ThinkPanel)
+        evolution = self.query_one("#evolution-panel", EvolutionPanel)
+
+        # Set mode directly to EVOLUTION
+        self.state.center_panel_mode = CenterPanelMode.EVOLUTION
+
+        # Hide others, show evolution
+        graph.add_class("hidden")
+        think.add_class("hidden")
+        evolution.remove_class("hidden")
+
+        # Trigger data refresh
+        import asyncio
+        asyncio.create_task(evolution.refresh_data())
+
         self._update_status()
 
     def action_quit_hint(self) -> None:

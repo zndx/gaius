@@ -9,6 +9,7 @@ from .location import LocationIndicator
 from .note_editor import NoteEditor
 from .graph_view import GraphView
 from .think_panel import ThinkPanel
+from .evolution_panel import EvolutionPanel
 
 __all__ = [
     "MainGrid",
@@ -21,4 +22,5 @@ __all__ = [
     "NoteEditor",
     "GraphView",
     "ThinkPanel",
+    "EvolutionPanel",
 ]
