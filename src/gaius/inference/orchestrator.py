@@ -800,6 +800,128 @@ class GPUOrchestrator:
                    list(proc.stderr_buffer)[-lines//2:]
         return combined[-lines:]
 
+    async def cleanup_stale_processes(self) -> dict[str, Any]:
+        """Kill stale vLLM processes to free GPU memory.
+
+        Finds and terminates any orphaned vLLM processes from previous
+        sessions that may be holding GPU memory without being tracked.
+
+        Returns:
+            Dict with cleanup results
+        """
+        import subprocess
+
+        results = {
+            "processes_found": 0,
+            "processes_killed": 0,
+            "pids_killed": [],
+            "errors": [],
+        }
+
+        try:
+            # Find all vLLM processes
+            ps_result = subprocess.run(
+                ["pgrep", "-f", "vllm.entrypoints|vllm serve"],
+                capture_output=True,
+                text=True,
+            )
+
+            if ps_result.returncode == 0 and ps_result.stdout.strip():
+                pids = ps_result.stdout.strip().split("\n")
+                results["processes_found"] = len(pids)
+
+                for pid_str in pids:
+                    pid = int(pid_str.strip())
+
+                    # Check if this is a tracked process
+                    tracked = any(
+                        p.pid == pid
+                        for p in self._processes.values()
+                        if p.process is not None
+                    )
+
+                    if not tracked:
+                        try:
+                            # Kill the orphaned process
+                            os.kill(pid, 9)  # SIGKILL
+                            results["processes_killed"] += 1
+                            results["pids_killed"].append(pid)
+                            logger.info(f"Killed stale vLLM process: {pid}")
+                        except ProcessLookupError:
+                            pass  # Already dead
+                        except PermissionError as e:
+                            results["errors"].append(f"Permission denied for PID {pid}")
+
+            # Also clear any CUDA memory caches
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.info("Cleared CUDA cache")
+            except ImportError:
+                pass
+
+            # Clear our internal state for failed processes
+            for endpoint, proc in list(self._processes.items()):
+                if proc.status in (ProcessStatus.FAILED, ProcessStatus.STOPPED):
+                    del self._processes[endpoint]
+
+            # Brief wait for GPU memory to be freed
+            await asyncio.sleep(2)
+
+            logger.info(
+                f"Cleanup complete: found {results['processes_found']}, "
+                f"killed {results['processes_killed']}"
+            )
+
+        except Exception as e:
+            results["errors"].append(str(e))
+            logger.error(f"Cleanup error: {e}")
+
+        return results
+
+    async def clean_start(self, endpoints: list[str] | None = None) -> dict[str, Any]:
+        """Perform cleanup and start endpoints from clean slate.
+
+        This is the recommended way to start Gaius for overnight runs.
+
+        Args:
+            endpoints: Specific endpoints to start (None = all)
+
+        Returns:
+            Dict with cleanup and startup results
+        """
+        results = {
+            "cleanup": {},
+            "startup": {},
+            "success": False,
+        }
+
+        # Step 1: Cleanup stale processes
+        results["cleanup"] = await self.cleanup_stale_processes()
+
+        # Step 2: Start orchestrator
+        await self.start()
+
+        # Step 3: Start requested endpoints
+        if endpoints is None:
+            # Default to reasoning (for evolution) if none specified
+            endpoints = ["reasoning"]
+
+        for endpoint in endpoints:
+            if endpoint in self._endpoints_config:
+                try:
+                    success = await self.start_endpoint(endpoint)
+                    results["startup"][endpoint] = success
+                except Exception as e:
+                    results["startup"][endpoint] = False
+                    logger.error(f"Failed to start {endpoint}: {e}")
+
+        # Determine overall success
+        results["success"] = any(results["startup"].values())
+
+        return results
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Module-level Singleton

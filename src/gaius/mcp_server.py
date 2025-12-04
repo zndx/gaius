@@ -1483,6 +1483,28 @@ Domain: {domain or 'general'}
             return json.dumps({"error": str(e)}, indent=2)
 
     @server.tool()
+    async def orchestrator_clean_start(endpoints: str = "reasoning") -> str:
+        """Clean start: kill stale processes and start from fresh.
+
+        This is the recommended way to start Gaius for overnight evolution runs.
+        Cleans up orphaned vLLM processes, frees GPU memory, then starts endpoints.
+
+        Args:
+            endpoints: Comma-separated endpoint names to start (default: reasoning)
+        """
+        try:
+            from .inference.orchestrator import get_orchestrator
+
+            orchestrator = get_orchestrator()
+
+            endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
+            results = await orchestrator.clean_start(endpoint_list or None)
+
+            return json.dumps(results, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
     async def orchestrator_start(endpoint: str = "") -> str:
         """Start vLLM endpoint(s).
 
