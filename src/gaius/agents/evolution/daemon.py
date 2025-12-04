@@ -1,0 +1,487 @@
+"""Background evolution daemon for Agent0-style self-improvement.
+
+Monitors GPU utilization and runs agent optimization cycles
+when resources are idle. Preempts for interactive requests.
+
+Usage:
+    daemon = get_evolution_daemon()
+    await daemon.start()
+
+    # Runs in background, checking GPU every poll_interval seconds
+    # When idle: runs optimization cycle for next agent in rotation
+
+    await daemon.stop()  # Graceful shutdown
+"""
+
+import asyncio
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Callable, Awaitable
+
+from .preemption import PreemptedError, get_preemption_manager
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EvolutionConfig:
+    """Configuration for evolution daemon."""
+
+    # Enable/disable daemon
+    enabled: bool = True
+
+    # GPU utilization threshold to consider idle (percent)
+    idle_threshold: float = 20.0
+
+    # Minimum idle duration before starting (seconds)
+    min_idle_duration: float = 30.0
+
+    # How often to check GPU idle status (seconds)
+    poll_interval: float = 5.0
+
+    # Number of candidates to evaluate per cycle
+    candidates_per_cycle: int = 3
+
+    # Maximum cycles per hour (rate limiting)
+    max_cycles_per_hour: int = 10
+
+    # Minimum training examples required
+    min_examples: int = 5
+
+    # Optimization strategy: apo, gepa, or hybrid
+    strategy: str = "gepa"
+
+    # Minimum improvement threshold to save new version (percent)
+    min_improvement: float = 5.0
+
+    # Agents to optimize (in rotation)
+    agents: list[str] = field(default_factory=lambda: [
+        "leader", "risk", "optimizer", "critic", "synthesizer"
+    ])
+
+
+@dataclass
+class EvolutionCycleResult:
+    """Result from a single evolution cycle."""
+
+    agent_id: str
+    success: bool
+    improvement_percent: float = 0.0
+    new_version_id: str | None = None
+    baseline_score: float = 0.0
+    best_score: float = 0.0
+    examples_used: int = 0
+    candidates_evaluated: int = 0
+    preempted: bool = False
+    error: str | None = None
+    duration_ms: int = 0
+
+
+class EvolutionDaemon:
+    """Background daemon for autonomous agent improvement.
+
+    Implements Agent0-style self-evolution:
+    - Monitors GPU utilization via health module
+    - Runs optimization cycles when GPUs are idle
+    - Preempts immediately for interactive requests
+    - Rotates through configured agents
+
+    The daemon uses existing APO/GEPA optimization infrastructure
+    with training examples collected from successful interactions.
+    """
+
+    def __init__(self, config: EvolutionConfig | None = None):
+        """Initialize evolution daemon.
+
+        Args:
+            config: Evolution configuration (uses defaults if None)
+        """
+        self.config = config or EvolutionConfig()
+
+        # State
+        self._running = False
+        self._task: asyncio.Task | None = None
+        self._preemption_manager = get_preemption_manager()
+
+        # Metrics
+        self._cycles_completed = 0
+        self._total_improvement = 0.0
+        self._last_cycle_at: datetime | None = None
+        self._agent_index = 0  # Current position in rotation
+
+        # Callbacks
+        self._on_cycle_complete: list[Callable[[EvolutionCycleResult], Awaitable[None]]] = []
+
+    @property
+    def running(self) -> bool:
+        """Check if daemon is running."""
+        return self._running
+
+    @property
+    def cycles_completed(self) -> int:
+        """Total evolution cycles completed."""
+        return self._cycles_completed
+
+    @property
+    def total_improvement(self) -> float:
+        """Total improvement percentage across all cycles."""
+        return self._total_improvement
+
+    @property
+    def next_agent(self) -> str:
+        """Next agent in rotation."""
+        if not self.config.agents:
+            return ""
+        return self.config.agents[self._agent_index % len(self.config.agents)]
+
+    async def start(self) -> None:
+        """Start the evolution daemon.
+
+        Begins background monitoring of GPU utilization
+        and runs optimization cycles when idle.
+        """
+        if self._running:
+            logger.warning("Evolution daemon already running")
+            return
+
+        if not self.config.enabled:
+            logger.info("Evolution daemon disabled by config")
+            return
+
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("Evolution daemon started")
+
+    async def stop(self) -> None:
+        """Stop the evolution daemon gracefully.
+
+        Waits for current cycle to complete or preempt.
+        """
+        if not self._running:
+            return
+
+        self._running = False
+
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+        logger.info("Evolution daemon stopped")
+
+    async def force_evolution_cycle(
+        self,
+        agent_id: str | None = None,
+    ) -> EvolutionCycleResult:
+        """Force an immediate evolution cycle.
+
+        Bypasses idle check and rate limiting.
+
+        Args:
+            agent_id: Specific agent to optimize (None = next in rotation)
+
+        Returns:
+            EvolutionCycleResult with optimization outcome
+        """
+        target_agent = agent_id or self.next_agent
+
+        if not target_agent:
+            return EvolutionCycleResult(
+                agent_id="",
+                success=False,
+                error="No agents configured",
+            )
+
+        logger.info(f"Forcing evolution cycle for {target_agent}")
+        return await self._run_evolution_cycle(target_agent)
+
+    def on_cycle_complete(
+        self,
+        callback: Callable[[EvolutionCycleResult], Awaitable[None]],
+    ) -> None:
+        """Register callback for cycle completion.
+
+        Args:
+            callback: Async function called after each cycle
+        """
+        self._on_cycle_complete.append(callback)
+
+    def get_status(self) -> dict:
+        """Get daemon status for monitoring.
+
+        Returns:
+            Status dict with running state, metrics, etc.
+        """
+        return {
+            "running": self._running,
+            "enabled": self.config.enabled,
+            "cycles_completed": self._cycles_completed,
+            "total_improvement_percent": round(self._total_improvement, 2),
+            "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
+            "next_agent": self.next_agent,
+            "config": {
+                "idle_threshold": self.config.idle_threshold,
+                "poll_interval": self.config.poll_interval,
+                "max_cycles_per_hour": self.config.max_cycles_per_hour,
+                "strategy": self.config.strategy,
+                "agents": self.config.agents,
+            },
+        }
+
+    async def _run_loop(self) -> None:
+        """Main daemon loop."""
+        idle_start: datetime | None = None
+
+        while self._running:
+            try:
+                # Check rate limiting
+                if self._is_rate_limited():
+                    await asyncio.sleep(self.config.poll_interval)
+                    continue
+
+                # Check GPU idle status
+                is_idle = await self._gpus_are_idle()
+
+                if is_idle:
+                    if idle_start is None:
+                        idle_start = datetime.now()
+                        logger.debug("GPUs became idle")
+
+                    # Check if idle long enough
+                    idle_duration = (datetime.now() - idle_start).total_seconds()
+                    if idle_duration >= self.config.min_idle_duration:
+                        # Run evolution cycle
+                        try:
+                            result = await self._run_evolution_cycle(self.next_agent)
+                            await self._notify_cycle_complete(result)
+
+                            # Advance rotation
+                            self._agent_index = (self._agent_index + 1) % len(self.config.agents)
+
+                        except PreemptedError as e:
+                            logger.info(f"Evolution preempted: {e.reason}")
+                            result = EvolutionCycleResult(
+                                agent_id=self.next_agent,
+                                success=False,
+                                preempted=True,
+                            )
+                            await self._notify_cycle_complete(result)
+
+                        # Reset idle timer after cycle
+                        idle_start = None
+                else:
+                    # Reset idle timer
+                    idle_start = None
+
+                await asyncio.sleep(self.config.poll_interval)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Evolution loop error: {e}")
+                await asyncio.sleep(30)  # Back off on errors
+
+    async def _gpus_are_idle(self) -> bool:
+        """Check if GPUs are idle enough for evolution.
+
+        Returns:
+            True if all GPUs below threshold and no pending jobs
+        """
+        try:
+            # Try to use health monitor
+            from ..inference.health import get_health_monitor
+
+            monitor = get_health_monitor()
+            gpu_status = monitor.get_gpu_status()
+
+            for gpu in gpu_status:
+                if gpu.utilization_percent > self.config.idle_threshold:
+                    return False
+
+            # Also check scheduler queue
+            try:
+                from ..inference.scheduler import get_scheduler_service
+
+                scheduler = get_scheduler_service()
+                status = scheduler.get_status()
+                if status.get("pending_jobs", 0) > 0:
+                    return False
+            except Exception:
+                pass  # Scheduler not available
+
+            return True
+
+        except ImportError:
+            # Health monitor not available - assume idle
+            logger.debug("Health monitor not available, assuming idle")
+            return True
+        except Exception as e:
+            logger.debug(f"GPU idle check failed: {e}")
+            return False
+
+    def _is_rate_limited(self) -> bool:
+        """Check if we've hit the rate limit.
+
+        Returns:
+            True if should wait before next cycle
+        """
+        if self._last_cycle_at is None:
+            return False
+
+        # Compute minimum interval between cycles
+        min_interval = 3600 / self.config.max_cycles_per_hour
+        elapsed = (datetime.now() - self._last_cycle_at).total_seconds()
+
+        return elapsed < min_interval
+
+    async def _run_evolution_cycle(self, agent_id: str) -> EvolutionCycleResult:
+        """Run one evolution cycle for an agent.
+
+        Args:
+            agent_id: Agent to optimize
+
+        Returns:
+            EvolutionCycleResult with outcome
+        """
+        start_time = datetime.now()
+
+        try:
+            # Collect training examples
+            from .collector import get_training_collector
+
+            collector = get_training_collector()
+            examples = await collector.collect_examples(
+                agent_id=agent_id,
+                max_examples=20,
+            )
+
+            if len(examples) < self.config.min_examples:
+                logger.info(
+                    f"Insufficient examples for {agent_id}: "
+                    f"{len(examples)} < {self.config.min_examples}"
+                )
+                return EvolutionCycleResult(
+                    agent_id=agent_id,
+                    success=False,
+                    error=f"Only {len(examples)} examples available",
+                    examples_used=len(examples),
+                )
+
+            # Run optimization with preemption support
+            result = await self._optimize_with_preemption(agent_id, examples)
+
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            if result.success and result.improvement_percent >= self.config.min_improvement:
+                self._cycles_completed += 1
+                self._total_improvement += result.improvement_percent
+                self._last_cycle_at = datetime.now()
+
+                logger.info(
+                    f"Evolution improved {agent_id}: "
+                    f"{result.improvement_percent:.1f}% "
+                    f"(version: {result.new_version_id})"
+                )
+            else:
+                logger.info(
+                    f"Evolution cycle for {agent_id}: no improvement "
+                    f"({result.improvement_percent:.1f}%)"
+                )
+
+            result.duration_ms = duration_ms
+            return result
+
+        except PreemptedError:
+            raise  # Re-raise for loop to handle
+        except Exception as e:
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            logger.error(f"Evolution cycle failed for {agent_id}: {e}")
+            return EvolutionCycleResult(
+                agent_id=agent_id,
+                success=False,
+                error=str(e),
+                duration_ms=duration_ms,
+            )
+
+    async def _optimize_with_preemption(
+        self,
+        agent_id: str,
+        examples: list,
+    ) -> EvolutionCycleResult:
+        """Run optimization with preemption support.
+
+        Args:
+            agent_id: Agent to optimize
+            examples: Training examples
+
+        Returns:
+            EvolutionCycleResult
+
+        Raises:
+            PreemptedError: If preempted by high-priority job
+        """
+        from ...models.optimization import get_optimizer, OptimizationStrategy
+
+        # Get strategy
+        try:
+            strategy = OptimizationStrategy[self.config.strategy.upper()]
+        except KeyError:
+            strategy = OptimizationStrategy.APO
+
+        optimizer = get_optimizer(strategy)
+
+        # Run with preemption wrapper
+        async def optimize():
+            return await optimizer.optimize(
+                agent_id=agent_id,
+                task_examples=examples,
+                num_candidates=self.config.candidates_per_cycle,
+                num_iterations=1,  # Single iteration per cycle
+            )
+
+        result = await self._preemption_manager.run_with_preemption(
+            optimize(),
+            timeout=300,  # 5 minute timeout
+        )
+
+        return EvolutionCycleResult(
+            agent_id=agent_id,
+            success=result.success,
+            improvement_percent=result.improvement_percent,
+            new_version_id=result.new_version_id,
+            baseline_score=result.baseline_score,
+            best_score=result.best_candidate_score,
+            examples_used=len(examples),
+            candidates_evaluated=result.candidates_evaluated,
+        )
+
+    async def _notify_cycle_complete(self, result: EvolutionCycleResult) -> None:
+        """Notify callbacks of cycle completion."""
+        for callback in self._on_cycle_complete:
+            try:
+                await callback(result)
+            except Exception as e:
+                logger.warning(f"Cycle callback error: {e}")
+
+
+# Module-level singleton
+_evolution_daemon: EvolutionDaemon | None = None
+
+
+def get_evolution_daemon(config: EvolutionConfig | None = None) -> EvolutionDaemon:
+    """Get or create evolution daemon singleton.
+
+    Args:
+        config: Optional config (only used on first call)
+
+    Returns:
+        EvolutionDaemon instance
+    """
+    global _evolution_daemon
+    if _evolution_daemon is None:
+        _evolution_daemon = EvolutionDaemon(config)
+    return _evolution_daemon
