@@ -32,11 +32,12 @@ class OverlayMode(Enum):
 class CenterPanelMode(Enum):
     """Mode for the center auxiliary panel (graph area).
 
-    Cycles: GRAPH → THINK → NONE → GRAPH
+    Cycles: GRAPH → THINK → EVOLUTION → NONE → GRAPH
     """
-    GRAPH = "graph"   # Wiki-link graph visualization
-    THINK = "think"   # Reasoning traces and agent thinking
-    NONE = "none"     # Hidden (more space for main grid)
+    GRAPH = "graph"       # Wiki-link graph visualization
+    THINK = "think"       # Reasoning traces and agent thinking
+    EVOLUTION = "evolution"  # Evolution daemon monitoring
+    NONE = "none"         # Hidden (more space for main grid)
 
 
 @dataclass
@@ -172,8 +173,8 @@ class AppState:
         return self.show_candidates
 
     def cycle_center_panel_mode(self) -> CenterPanelMode:
-        """Cycle through center panel modes: GRAPH → THINK → NONE → GRAPH."""
-        modes = [CenterPanelMode.GRAPH, CenterPanelMode.THINK, CenterPanelMode.NONE]
+        """Cycle through center panel modes: GRAPH → THINK → EVOLUTION → NONE → GRAPH."""
+        modes = [CenterPanelMode.GRAPH, CenterPanelMode.THINK, CenterPanelMode.EVOLUTION, CenterPanelMode.NONE]
         idx = modes.index(self.center_panel_mode)
         self.center_panel_mode = modes[(idx + 1) % len(modes)]
         return self.center_panel_mode
