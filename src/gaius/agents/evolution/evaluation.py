@@ -547,17 +547,25 @@ class DailyEvaluator:
 
         # Call inference
         try:
-            from ..inference.scheduler import get_scheduler_service
+            from ..inference.scheduler import get_scheduler_service, Job, JobPriority
 
             scheduler = get_scheduler_service()
-            result = await scheduler.submit_job(
-                prompt=query.input_prompt,
-                system_prompt=config.get("system_prompt", ""),
+
+            # Build message with system prompt
+            messages = []
+            system_prompt = config.get("system_prompt", "")
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": query.input_prompt})
+
+            job = Job(
+                messages=messages,
                 model=config.get("model", ""),
                 max_tokens=config.get("max_tokens", 1024),
-                priority="low",  # Don't preempt interactive work
+                priority=JobPriority.LOW,  # Don't preempt interactive work
             )
-            return result.get("output", "")
+            result = await scheduler.submit(job)
+            return result.content
 
         except Exception as e:
             logger.warning(f"Inference failed: {e}")
