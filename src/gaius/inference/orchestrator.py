@@ -819,9 +819,10 @@ class GPUOrchestrator:
         }
 
         try:
-            # Find all vLLM processes
+            # Find all vLLM processes (multiple patterns)
+            # vLLM spawns workers with names like "VLLM::Worker", "VLLM::EngineCore"
             ps_result = subprocess.run(
-                ["pgrep", "-f", "vllm.entrypoints|vllm serve"],
+                ["pgrep", "-f", "vllm|VLLM"],
                 capture_output=True,
                 text=True,
             )

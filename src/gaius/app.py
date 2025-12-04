@@ -1817,6 +1817,184 @@ Use `/inference stop <endpoint>` to stop an endpoint.
         else:
             content.show_file("error.txt", f"Unknown inference subcommand: {args}\n\nUsage:\n  /inference status\n  /inference start <endpoint>\n  /inference stop <endpoint>\n  /inference restart <endpoint>\n  /inference ensure")
 
+    def _handle_evolve_command(self, args: str) -> None:
+        """Handle /evolve subcommands for evolution daemon.
+
+        Usage:
+            /evolve start [endpoint]  - Clean start GPU + daemon (default: fast)
+            /evolve stop              - Stop the daemon
+            /evolve status            - Show daemon status
+            /evolve trigger [agent]   - Force an evolution cycle
+            /evolve budget            - Show XAI evaluation budget
+        """
+        import asyncio
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower() if parts else "status"
+        subargs = parts[1] if len(parts) > 1 else ""
+
+        if subcmd == "start":
+            endpoint = subargs or "fast"
+            content.show_file("evolve.md", f"# Evolution Daemon\n\nStarting clean start with endpoint **{endpoint}**...\n\nPhase 1: Cleaning stale GPU processes...")
+
+            async def start():
+                try:
+                    from .inference.orchestrator import get_orchestrator
+                    from .agents.evolution import get_evolution_daemon
+
+                    orchestrator = get_orchestrator()
+
+                    # Phase 1: Clean start GPU
+                    result = await orchestrator.clean_start([endpoint])
+
+                    if not result["success"]:
+                        content.show_file("error.txt", f"Failed to start GPU endpoint: {result['startup']}")
+                        return
+
+                    # Phase 2: Start daemon
+                    content.show_file("evolve.md", f"# Evolution Daemon\n\nPhase 1: ✓ GPU ready\nPhase 2: Starting daemon...")
+
+                    daemon = get_evolution_daemon()
+                    await daemon.start()
+
+                    status = daemon.get_status()
+                    content.show_file("evolve.md", f"""# Evolution Daemon
+
+**Status**: Running ✓
+**Next Agent**: {status.get('next_agent', 'unknown')}
+**Strategy**: {status.get('config', {}).get('strategy', 'unknown')}
+
+## GPU Cleanup
+- Processes found: {result['cleanup']['processes_found']}
+- Processes killed: {result['cleanup']['processes_killed']}
+
+## Endpoints Started
+- {endpoint}: ✓
+
+Press `e` to view the Evolution panel for monitoring.
+""")
+
+                    # Show evolution panel
+                    self.action_show_evolution()
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error starting evolution: {e}")
+
+            asyncio.create_task(start())
+
+        elif subcmd == "stop":
+            async def stop():
+                try:
+                    from .agents.evolution import get_evolution_daemon
+
+                    daemon = get_evolution_daemon()
+                    await daemon.stop()
+
+                    content.show_file("evolve.md", "# Evolution Daemon\n\n**Status**: Stopped")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error stopping evolution: {e}")
+
+            asyncio.create_task(stop())
+
+        elif subcmd == "status":
+            try:
+                from .agents.evolution import get_evolution_daemon
+
+                daemon = get_evolution_daemon()
+                status = daemon.get_status()
+
+                config = status.get("config", {})
+                content.show_file("evolve.md", f"""# Evolution Daemon Status
+
+**Running**: {'✓ Yes' if status['running'] else '✗ No'}
+**Enabled**: {'Yes' if status['enabled'] else 'No'}
+**Cycles Completed**: {status['cycles_completed']}
+**Total Improvement**: {status.get('total_improvement_percent', 0):.1f}%
+**Next Agent**: {status.get('next_agent', 'unknown')}
+
+## Configuration
+
+- **Strategy**: {config.get('strategy', 'unknown')}
+- **Idle Threshold**: {config.get('idle_threshold', 0)}%
+- **Max Cycles/Hour**: {config.get('max_cycles_per_hour', 0)}
+- **Agents**: {', '.join(config.get('agents', []))}
+
+---
+
+Use `/evolve start` to start the daemon.
+Use `/evolve stop` to stop the daemon.
+Press `e` to view the Evolution panel.
+""")
+
+            except Exception as e:
+                content.show_file("error.txt", f"Error getting status: {e}")
+
+        elif subcmd == "trigger":
+            async def trigger():
+                try:
+                    from .agents.evolution import get_evolution_daemon
+
+                    daemon = get_evolution_daemon()
+
+                    if not daemon.running:
+                        content.show_file("error.txt", "Daemon not running. Use `/evolve start` first.")
+                        return
+
+                    agent_id = subargs if subargs else None
+                    content.show_file("evolve.md", f"# Evolution Daemon\n\nTriggering cycle for {agent_id or 'next agent'}...")
+
+                    result = await daemon.force_evolution_cycle(agent_id)
+
+                    content.show_file("evolve.md", f"""# Evolution Cycle Result
+
+**Agent**: {result.agent_id}
+**Success**: {'✓' if result.success else '✗'}
+**Improvement**: {result.improvement_percent:.1f}%
+
+{f'**Error**: {result.error}' if result.error else ''}
+""")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Error triggering cycle: {e}")
+
+            asyncio.create_task(trigger())
+
+        elif subcmd == "budget":
+            try:
+                from .models.tiered_evaluation import get_tiered_evaluator
+
+                evaluator = get_tiered_evaluator()
+                budget = evaluator.get_budget_status()
+
+                content.show_file("evolve.md", f"""# XAI Evaluation Budget
+
+## Daily Usage
+- **Used**: {budget['daily_used']} / {budget['daily_limit']}
+- **Remaining**: {budget['daily_remaining']}
+
+## Weekly Usage
+- **Used**: {budget['weekly_used']} / {budget['weekly_limit']}
+- **Remaining**: {budget['weekly_remaining']}
+
+## Status
+- **XAI Available**: {'✓ Yes' if budget['xai_available'] else '✗ No (budget exhausted)'}
+- **Total Tokens**: {budget['total_tokens']}
+
+---
+
+Budget resets daily at midnight UTC.
+Use local evaluation for routine checks to conserve budget.
+""")
+
+            except Exception as e:
+                content.show_file("error.txt", f"Error getting budget: {e}")
+
+        else:
+            content.show_file("error.txt", f"Unknown evolve subcommand: {subcmd}\n\nUsage:\n  /evolve start [endpoint]\n  /evolve stop\n  /evolve status\n  /evolve trigger [agent]\n  /evolve budget")
+
     def _run_search(self, query: str) -> None:
         """Search KB and optionally web for a query."""
         import asyncio
@@ -2313,7 +2491,15 @@ Domain: {domain}
 - `/tda`: Show topological features
 - `/info`: Show cursor position info
 - `/inference [status|start|stop|restart]`: Manage inference stack
+- `/evolve [start|stop|status|trigger|budget]`: Evolution daemon
 - `/q` or `/exit`: Quit Gaius
+
+## Evolution (press `e` for panel)
+- `/evolve start [endpoint]`: Clean start GPU + daemon (default: fast)
+- `/evolve stop`: Stop evolution daemon
+- `/evolve status`: Show daemon status
+- `/evolve trigger [agent]`: Force evolution cycle
+- `/evolve budget`: Show XAI evaluation budget
 """
         content.show_file("help.md", help_text)
 
@@ -3182,6 +3368,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "inference":
             # Manage inference stack (orchestrator, endpoints, models)
             self._handle_inference_command(args)
+        elif command in ("evolve", "evo"):
+            # Manage evolution daemon
+            self._handle_evolve_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
