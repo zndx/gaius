@@ -56,8 +56,17 @@ class EvolutionConfig:
     min_improvement: float = 5.0
 
     # Agents to optimize (in rotation)
+    # NOTE: Must match agents with active versions in agent_versions table
     agents: list[str] = field(default_factory=lambda: [
-        "leader", "risk", "optimizer", "critic", "synthesizer"
+        "leader", "risk", "critic", "opportunity", "domain"
+    ])
+
+    # Parallel mode: use 6 vLLM instances for faster evolution
+    parallel: bool = False
+
+    # Endpoint names for parallel mode
+    parallel_endpoints: list[str] = field(default_factory=lambda: [
+        "evo0", "evo1", "evo2", "evo3", "evo4", "evo5"
     ])
 
 
@@ -103,6 +112,7 @@ class EvolutionDaemon:
         self._running = False
         self._task: asyncio.Task | None = None
         self._preemption_manager = get_preemption_manager()
+        self._parallel_client = None  # Lazy-loaded when parallel=True
 
         # Metrics
         self._cycles_completed = 0
@@ -135,11 +145,15 @@ class EvolutionDaemon:
             return ""
         return self.config.agents[self._agent_index % len(self.config.agents)]
 
-    async def start(self) -> None:
+    async def start(self, parallel: bool | None = None) -> None:
         """Start the evolution daemon.
 
         Begins background monitoring of GPU utilization
         and runs optimization cycles when idle.
+
+        Args:
+            parallel: Override config.parallel if specified.
+                      If True, starts 6 parallel vLLM endpoints.
         """
         if self._running:
             logger.warning("Evolution daemon already running")
@@ -149,9 +163,39 @@ class EvolutionDaemon:
             logger.info("Evolution daemon disabled by config")
             return
 
+        # Override parallel setting if specified
+        if parallel is not None:
+            self.config.parallel = parallel
+
+        # Start parallel endpoints if enabled
+        if self.config.parallel:
+            await self._start_parallel_endpoints()
+
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("Evolution daemon started")
+        logger.info(
+            f"Evolution daemon started (parallel={self.config.parallel}, "
+            f"endpoints={len(self.config.parallel_endpoints) if self.config.parallel else 1})"
+        )
+
+    async def _start_parallel_endpoints(self) -> dict[str, bool]:
+        """Start all parallel vLLM endpoints for evolution.
+
+        Returns:
+            Dict of endpoint name -> success status
+        """
+        from ...inference.parallel import get_parallel_client
+
+        client = get_parallel_client()
+        self._parallel_client = client
+
+        logger.info(f"Starting {len(self.config.parallel_endpoints)} parallel endpoints...")
+        results = await client.start(self.config.parallel_endpoints)
+
+        successful = sum(1 for v in results.values() if v)
+        logger.info(f"Started {successful}/{len(self.config.parallel_endpoints)} endpoints")
+
+        return results
 
     async def stop(self) -> None:
         """Stop the evolution daemon gracefully.
@@ -170,6 +214,12 @@ class EvolutionDaemon:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+        # Stop parallel endpoints if they were started
+        if self._parallel_client is not None:
+            logger.info("Stopping parallel endpoints...")
+            await self._parallel_client.stop()
+            self._parallel_client = None
 
         logger.info("Evolution daemon stopped")
 
@@ -216,6 +266,11 @@ class EvolutionDaemon:
         Returns:
             Status dict with running state, metrics, etc.
         """
+        # Get parallel endpoint count if active
+        parallel_endpoints = 0
+        if self._parallel_client is not None:
+            parallel_endpoints = self._parallel_client.num_endpoints
+
         return {
             "running": self._running,
             "enabled": self.config.enabled,
@@ -223,6 +278,8 @@ class EvolutionDaemon:
             "total_improvement_percent": round(self._total_improvement, 2),
             "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
             "next_agent": self.next_agent,
+            "parallel": self.config.parallel,
+            "parallel_endpoints": parallel_endpoints,
             "config": {
                 "idle_threshold": self.config.idle_threshold,
                 "poll_interval": self.config.poll_interval,
@@ -293,18 +350,18 @@ class EvolutionDaemon:
         """
         try:
             # Try to use health monitor
-            from ..inference.health import get_health_monitor
+            from ...inference.health import get_health_monitor
 
             monitor = get_health_monitor()
-            gpu_status = monitor.get_gpu_status()
+            gpu_status = monitor.get_all_gpu_health()
 
             for gpu in gpu_status:
-                if gpu.utilization_percent > self.config.idle_threshold:
+                if gpu.gpu_utilization_percent > self.config.idle_threshold:
                     return False
 
             # Also check scheduler queue
             try:
-                from ..inference.scheduler import get_scheduler_service
+                from ...inference.scheduler import get_scheduler_service
 
                 scheduler = get_scheduler_service()
                 status = scheduler.get_status()
@@ -436,7 +493,11 @@ class EvolutionDaemon:
         except KeyError:
             strategy = OptimizationStrategy.APO
 
-        optimizer = get_optimizer(strategy)
+        # Use parallel optimizer if parallel mode is enabled
+        optimizer = get_optimizer(strategy, parallel=self.config.parallel)
+
+        # Increase timeout for parallel mode (more work done per cycle)
+        timeout = 600 if self.config.parallel else 300
 
         # Run with preemption wrapper
         async def optimize():
@@ -449,7 +510,7 @@ class EvolutionDaemon:
 
         result = await self._preemption_manager.run_with_preemption(
             optimize(),
-            timeout=300,  # 5 minute timeout
+            timeout=timeout,
         )
 
         return EvolutionCycleResult(

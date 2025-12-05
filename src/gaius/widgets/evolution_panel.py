@@ -5,6 +5,7 @@ including daemon status, recent cycles, agent performance, and trends.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -18,6 +19,8 @@ from textual.widget import Widget
 from textual.reactive import reactive
 
 from ..core.state import AppState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +70,10 @@ class EvolutionPanel(Widget):
         height: 21;
         overflow: hidden;
     }
+
+    EvolutionPanel.hidden {
+        display: none;
+    }
     """
 
     # Reactive to trigger refresh
@@ -82,13 +89,14 @@ class EvolutionPanel(Widget):
         super().__init__(name=name, id=id, classes=classes)
         self.state = state
 
-        # Cached data
-        self._daemon_status: dict = {}
+        # Cached data - initialize with "loading" state
+        self._daemon_status: dict = {"running": None, "loading": True}
         self._recent_cycles: list[EvolutionCycleDisplay] = []
         self._agent_statuses: list[AgentStatus] = []
         self._trend: str = "unknown"
         self._trend_confidence: float = 0.0
         self._held_out_stats: dict = {}
+        self._last_refresh: Optional[datetime] = None
 
     def render(self) -> RenderableType:
         """Render the evolution panel content."""
@@ -109,6 +117,12 @@ class EvolutionPanel(Widget):
         lines.append(Text(""))
         lines.extend(self._render_trend())
 
+        # Debug: show last refresh time
+        if self._last_refresh:
+            lines.append(Text(""))
+            refresh_str = self._last_refresh.strftime("%H:%M:%S")
+            lines.append(Text(f"Last refresh: {refresh_str}", style="dim"))
+
         content = Text("\n").join(lines)
         return Panel(
             content,
@@ -123,14 +137,19 @@ class EvolutionPanel(Widget):
         lines = []
 
         status = self._daemon_status
-        running = status.get("running", False)
+        running = status.get("running")
+        loading = status.get("loading", False)
         cycles = status.get("cycles_completed", 0)
         improvement = status.get("total_improvement_percent", 0.0)
         next_agent = status.get("next_agent", "?")
+        parallel = status.get("parallel", False)
+        parallel_endpoints = status.get("parallel_endpoints", 0)
 
         # Line 1: Status and cycles
         line1 = Text()
-        if running:
+        if loading or running is None:
+            line1.append("◌ LOADING...", style="bold yellow")
+        elif running:
             line1.append("● RUNNING", style="bold green")
         else:
             line1.append("○ STOPPED", style="bold red")
@@ -139,14 +158,16 @@ class EvolutionPanel(Widget):
             line1.append(f"  +{improvement:.1f}%", style="green")
         lines.append(line1)
 
-        # Line 2: Next agent and config
+        # Line 2: Mode and next agent
         line2 = Text()
+        if parallel and parallel_endpoints > 0:
+            line2.append(f"⚡ {parallel_endpoints}x ", style="bold magenta")
         line2.append(f"Next: ", style="dim")
         line2.append(next_agent, style="cyan bold")
         config = status.get("config", {})
         if config:
             strategy = config.get("strategy", "?")
-            line2.append(f"  Strategy: {strategy}", style="dim")
+            line2.append(f"  {strategy}", style="dim")
         lines.append(line2)
 
         return lines
@@ -275,10 +296,13 @@ class EvolutionPanel(Widget):
     async def refresh_data(self) -> None:
         """Fetch fresh data from evolution daemon and database."""
         try:
-            # Get daemon status
+            # Get daemon status from the singleton (works if daemon runs in same process)
             from ..agents.evolution import get_evolution_daemon
             daemon = get_evolution_daemon()
             self._daemon_status = daemon.get_status()
+            self._daemon_status["loading"] = False  # Clear loading state
+            self._last_refresh = datetime.now()
+            logger.debug(f"Daemon status: running={self._daemon_status.get('running')}, cycles={self._daemon_status.get('cycles_completed')}")
 
             # Get recent cycles from DB
             await self._fetch_recent_cycles()
@@ -296,8 +320,11 @@ class EvolutionPanel(Widget):
             self.refresh()
 
         except Exception as e:
-            # Don't crash on fetch errors
-            pass
+            # Log errors but don't crash
+            logger.warning(f"Evolution panel refresh failed: {e}")
+            # Update status to show error state
+            self._daemon_status = {"running": False, "loading": False, "error": str(e)}
+            self.refresh()
 
     async def _fetch_recent_cycles(self) -> None:
         """Fetch recent evolution cycles from database."""
@@ -333,11 +360,12 @@ class EvolutionPanel(Widget):
                     )
                     for r in rows
                 ]
+                logger.debug(f"Fetched {len(self._recent_cycles)} recent cycles")
             finally:
                 await conn.close()
 
-        except Exception:
-            pass  # Keep existing data
+        except Exception as e:
+            logger.debug(f"Failed to fetch cycles: {e}")
 
     async def _fetch_agent_scores(self) -> None:
         """Fetch agent training vs held-out scores."""
@@ -372,11 +400,12 @@ class EvolutionPanel(Widget):
                     )
                     for r in rows
                 ]
+                logger.debug(f"Fetched {len(self._agent_statuses)} agent scores")
             finally:
                 await conn.close()
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to fetch agent scores: {e}")
 
     async def _fetch_held_out_stats(self) -> None:
         """Fetch held-out pool statistics."""
@@ -384,8 +413,9 @@ class EvolutionPanel(Widget):
             from ..agents.evolution import get_held_out_manager
             manager = get_held_out_manager()
             self._held_out_stats = await manager.get_stats()
-        except Exception:
-            pass
+            logger.debug(f"Fetched held-out stats: {self._held_out_stats}")
+        except Exception as e:
+            logger.debug(f"Failed to fetch held-out stats: {e}")
 
     async def _fetch_trend(self) -> None:
         """Fetch trend from daily summaries."""
@@ -411,14 +441,16 @@ class EvolutionPanel(Widget):
                 if row:
                     self._trend = row["trend_direction"] or "unknown"
                     self._trend_confidence = float(row["trend_confidence"] or 0)
+                    logger.debug(f"Fetched trend: {self._trend}")
             finally:
                 await conn.close()
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to fetch trend: {e}")
 
     def on_mount(self) -> None:
         """Set up periodic refresh."""
+        logger.info("Evolution panel mounted, starting 2s refresh interval")
         # Refresh every 2 seconds
         self.set_interval(2.0, self._periodic_refresh)
         # Initial fetch
@@ -426,6 +458,13 @@ class EvolutionPanel(Widget):
 
     def _periodic_refresh(self) -> None:
         """Periodic data refresh."""
+        # Only refresh if visible (optimization)
+        if not self.has_class("hidden"):
+            asyncio.create_task(self.refresh_data())
+
+    def on_show(self) -> None:
+        """React to becoming visible - refresh data immediately."""
+        logger.debug("Evolution panel became visible, refreshing")
         asyncio.create_task(self.refresh_data())
 
     def update_state(self, state: AppState) -> None:
