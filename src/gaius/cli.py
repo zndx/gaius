@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-from .core.state import AppState, ViewMode, OverlayMode
+from .core.state import AppState, ViewMode, OverlayMode, IsoMode
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -90,6 +90,8 @@ class GaiusCLI:
                 result["data"] = self._cmd_domain(args)
             elif command == "overlay":
                 result["data"] = self._cmd_overlay(args)
+            elif command == "iso":
+                result["data"] = self._cmd_iso(args)
             elif command == "view":
                 result["data"] = self._cmd_view(args)
             elif command == "state":
@@ -135,6 +137,15 @@ class GaiusCLI:
             # Evolution daemon commands
             elif command == "evolve" or command == "evo":
                 result["data"] = self._run_async(self._cmd_evolve(args))
+            # Mini-grid data
+            elif command == "minigrid" or command == "mg":
+                result["data"] = self._cmd_minigrid(args)
+            # Reindex KB to Qdrant
+            elif command == "reindex":
+                result["data"] = self._cmd_reindex()
+            # Tenuki - find strategic jump point
+            elif command == "tenuki":
+                result["data"] = self._cmd_tenuki(args)
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -187,6 +198,80 @@ class GaiusCLI:
             self.state.cycle_overlay_mode()
         return {"overlay": self.state.overlay_mode.value}
 
+    def _cmd_iso(self, args: str) -> dict:
+        """Get or set Iso view mode.
+
+        Usage:
+            /iso              - Get current mode
+            /iso <mode>       - Set mode (curvature, persistence, complexity, boundary)
+            /iso cycle        - Cycle to next mode
+            /iso info         - Get detailed feature info
+        """
+        from .core.iso_features import ISO_MODE_SYMBOLS
+
+        if not args:
+            symbol = ISO_MODE_SYMBOLS.get(self.state.iso_mode, "?")
+            return {
+                "mode": self.state.iso_mode.value,
+                "symbol": symbol,
+                "has_features": self.state.iso_features is not None,
+            }
+
+        parts = args.split()
+        subcmd = parts[0].lower()
+
+        if subcmd == "cycle":
+            new_mode = self.state.cycle_iso_mode()
+            symbol = ISO_MODE_SYMBOLS.get(new_mode, "?")
+            return {"mode": new_mode.value, "symbol": symbol, "cycled": True}
+
+        elif subcmd == "info":
+            features = self.state.iso_features
+            if features is None:
+                return {
+                    "mode": self.state.iso_mode.value,
+                    "has_features": False,
+                    "message": "IsoFeatures not computed. Run /reindex to compute.",
+                }
+
+            return {
+                "mode": self.state.iso_mode.value,
+                "has_features": True,
+                "n_documents": features.n_documents,
+                "embedding_type": features.embedding_type,
+                "computation_time": features.computation_time,
+                "n_diagrams": len(features.diagrams),
+                "curvature_stats": {
+                    "min": float(features.curvatures.min()),
+                    "max": float(features.curvatures.max()),
+                    "mean": float(features.curvatures.mean()),
+                },
+                "persistence_stats": {
+                    "min": float(features.persistence.min()),
+                    "max": float(features.persistence.max()),
+                    "mean": float(features.persistence.mean()),
+                },
+                "complexity_stats": {
+                    "min": float(features.complexity.min()),
+                    "max": float(features.complexity.max()),
+                    "mean": float(features.complexity.mean()),
+                },
+                "boundary_stats": {
+                    "min": float(features.boundary.min()),
+                    "max": float(features.boundary.max()),
+                    "mean": float(features.boundary.mean()),
+                },
+            }
+
+        else:
+            # Try to set mode directly
+            try:
+                self.state.iso_mode = IsoMode(subcmd)
+                symbol = ISO_MODE_SYMBOLS.get(self.state.iso_mode, "?")
+                return {"mode": self.state.iso_mode.value, "symbol": symbol, "set": True}
+            except ValueError:
+                return {"error": f"Unknown Iso mode: {subcmd}", "valid_modes": [m.value for m in IsoMode]}
+
     def _cmd_view(self, args: str) -> dict:
         """Set or cycle view mode."""
         if args:
@@ -230,6 +315,246 @@ class GaiusCLI:
         grid_str = self._render_grid_ascii()
         return {"grid": grid_str}
 
+    def _cmd_minigrid(self, args: str) -> dict:
+        """Get mini-grid data for a position.
+
+        Usage:
+            /minigrid [pos]  - Get Embed and Iso mini-grid data (default: cursor)
+
+        Returns:
+            embed_grid: 9x9 embedding similarity around position
+            iso_grid: 9x9 curvature-based elevation map
+            grid_data_status: info about underlying data
+        """
+        from .core.projection import get_grid_manager
+        from .core.minigrids import get_embed_view, get_iso_view, get_real_minigrid_data
+
+        # Parse position
+        if args:
+            cx, cy = self._parse_coord(args)
+        else:
+            cx, cy = self.state.cursor_x, self.state.cursor_y
+
+        # Get grid data
+        grid_data = None
+        grid_data_status = {}
+        try:
+            grid_manager = get_grid_manager()
+            grid_data = grid_manager.get_grid_data()
+            grid_data_status = {
+                "n_documents": grid_data.n_documents,
+                "coverage": grid_data.coverage,
+                "method": grid_data.method,
+                "has_embeddings": grid_data.raw_embeddings is not None,
+                "embedding_count": len(grid_data.raw_embeddings) if grid_data.raw_embeddings is not None else 0,
+                "grid_mappings": len(grid_data.grid_to_embedding),
+            }
+        except Exception as e:
+            grid_data_status["error"] = str(e)
+
+        # Get curvatures from state
+        curvatures = self.state.curvatures_raw if self.state.curvatures_raw else None
+
+        # Get mini-grid data
+        data = get_real_minigrid_data(
+            grid_data=grid_data,
+            curvatures=curvatures,
+            cursor_x=cx,
+            cursor_y=cy,
+        )
+
+        # Check if grids have any non-zero values
+        def grid_has_data(grid: list[list[float]]) -> bool:
+            return any(v > 0 for row in grid for v in row)
+
+        return {
+            "position": self._coord_string(cx, cy),
+            "x": cx,
+            "y": cy,
+            "embed_grid": data.get("right", []),
+            "embed_has_data": grid_has_data(data.get("right", [])),
+            "iso_grid": data.get("top", []),
+            "iso_has_data": grid_has_data(data.get("top", [])),
+            "grid_data_status": grid_data_status,
+            "curvatures_available": curvatures is not None,
+        }
+
+    def _cmd_reindex(self) -> dict:
+        """Reindex KB documents to Qdrant and refresh grid projection.
+
+        Usage:
+            /reindex  - Index all KB documents and project to grid
+
+        Returns:
+            n_documents: Number of documents indexed
+            coverage: Grid coverage percentage
+            grid_mappings: Number of grid positions with documents
+        """
+        from .core.projection import get_grid_manager
+
+        grid_manager = get_grid_manager()
+        grid_data = grid_manager.reindex_and_project()
+
+        return {
+            "n_documents": grid_data.n_documents,
+            "coverage": grid_data.coverage,
+            "method": grid_data.method,
+            "grid_mappings": len(grid_data.grid_to_embedding),
+            "has_embeddings": grid_data.raw_embeddings is not None,
+            "embedding_count": len(grid_data.raw_embeddings) if grid_data.raw_embeddings is not None else 0,
+        }
+
+    def _cmd_tenuki(self, args: str) -> dict:
+        """Find strategic jump point (tenuki) from current position.
+
+        In Go, tenuki means 'playing elsewhere' - ignoring the local
+        situation for a bigger play. This finds high-curvature regions
+        (semantic boundaries) while avoiding recently visited areas.
+
+        Usage:
+            /tenuki [pos]  - Find tenuki from position (default: cursor)
+
+        Returns:
+            target: Recommended position to jump to
+            score: Strategic interest score
+            curvature: Curvature at target
+            distance: Manhattan distance from current position
+        """
+        from .core.projection import get_grid_manager
+
+        # Parse current position
+        if args:
+            cx, cy = self._parse_coord(args)
+        else:
+            cx, cy = self.state.cursor_x, self.state.cursor_y
+
+        # Get grid data with embeddings
+        grid_manager = get_grid_manager()
+        grid_data = grid_manager.get_grid_data()
+
+        if grid_data.n_documents == 0:
+            return {
+                "from_position": self._coord_string(cx, cy),
+                "target": None,
+                "error": "No documents indexed. Run /reindex first.",
+            }
+
+        # Compute curvatures if we have embeddings
+        curvature_map = [[0.0] * 19 for _ in range(19)]
+        if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
+            try:
+                import asyncio
+                import numpy as np
+                from .core.geometry import GeometryComputer
+
+                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+
+                # Run geometry computation
+                try:
+                    loop = asyncio.get_running_loop()
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                        )
+                        geom_features = future.result(timeout=60)
+                except RuntimeError:
+                    geom_features = asyncio.run(
+                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                    )
+
+                # Map curvatures to grid
+                if geom_features and geom_features.curvatures is not None:
+                    for i, point in enumerate(grid_data.points):
+                        if i < len(geom_features.curvatures):
+                            curvature_map[point.y][point.x] = geom_features.curvatures[i]
+            except Exception:
+                pass  # Continue without curvatures
+
+        # Find best tenuki target using curvature-based scoring
+        best_score = 0.0
+        best_pos = None
+        best_curvature = 0.0
+
+        # Track visited positions (from state if available)
+        visited = getattr(self.state, 'tenuki_visited', set())
+
+        for y in range(19):
+            for x in range(19):
+                # Skip positions without data
+                if curvature_map[y][x] == 0:
+                    # Check if there's a document at this position (fallback)
+                    if (x, y) not in grid_data.grid_to_embedding:
+                        continue
+
+                curvature = abs(curvature_map[y][x])
+
+                # Distance from current position
+                dist = abs(x - cx) + abs(y - cy)
+
+                # Distance factor: prefer moderate distances
+                if dist < 3:
+                    dist_factor = 0.1  # Too close
+                elif dist < 7:
+                    dist_factor = 1.0  # Ideal
+                elif dist < 12:
+                    dist_factor = 0.7  # Moderate
+                else:
+                    dist_factor = 0.4  # Far
+
+                # Novelty factor: avoid recently visited
+                min_visited_dist = 999
+                for vx, vy in visited:
+                    visited_dist = abs(x - vx) + abs(y - vy)
+                    min_visited_dist = min(min_visited_dist, visited_dist)
+
+                if min_visited_dist < 3:
+                    novelty_factor = 0.3
+                elif min_visited_dist < 6:
+                    novelty_factor = 0.7
+                else:
+                    novelty_factor = 1.0
+
+                # Score with fallback for zero curvature (use distance only)
+                if curvature > 0:
+                    score = curvature * dist_factor * novelty_factor
+                else:
+                    # Fallback: just use distance/novelty for positions with documents
+                    score = dist_factor * novelty_factor * 0.1
+
+                if score > best_score:
+                    best_score = score
+                    best_pos = (x, y)
+                    best_curvature = curvature_map[y][x]
+
+        if best_pos is None:
+            return {
+                "from_position": self._coord_string(cx, cy),
+                "target": None,
+                "error": "No suitable tenuki target found",
+            }
+
+        # Get document info at target
+        target_doc = None
+        target_idx = grid_data.grid_to_embedding.get(best_pos)
+        if target_idx is not None and target_idx < len(grid_data.points):
+            target_doc = grid_data.points[target_idx].title
+
+        return {
+            "from_position": self._coord_string(cx, cy),
+            "from_x": cx,
+            "from_y": cy,
+            "target": self._coord_string(best_pos[0], best_pos[1]),
+            "target_x": best_pos[0],
+            "target_y": best_pos[1],
+            "score": round(best_score, 4),
+            "curvature": round(best_curvature, 4),
+            "distance": abs(best_pos[0] - cx) + abs(best_pos[1] - cy),
+            "document": target_doc,
+        }
+
     def _cmd_help(self) -> dict:
         """Get help text."""
         return {
@@ -242,6 +567,9 @@ class GaiusCLI:
                 "state": "Get full application state",
                 "agents": "List all agents",
                 "grid": "Get ASCII grid representation",
+                "minigrid [pos]": "Get 9x9 Embed/Iso mini-grid data for position",
+                "reindex": "Reindex KB documents to Qdrant and refresh grid",
+                "tenuki [pos]": "Find strategic jump point (high-curvature region)",
                 "help": "Show this help",
                 # Inference commands
                 "ask <question>": "Query local LLM (optillm)",

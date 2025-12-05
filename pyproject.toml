@@ -24,6 +24,7 @@ dependencies = [
     "cuml-cu12>=25.6.0", # Updated for numba 0.61.2 compatibility (required by vLLM 0.9+)
     "vllm>=0.9.0", # Qwen3 support requires vLLM 0.9.0+
     "graphriccicurvature>=0.5.3.2",
+    "ripser>=0.6.12",
 ]
 
 [project.optional-dependencies]

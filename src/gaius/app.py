@@ -298,6 +298,7 @@ class GaiusApp(App):
         # View controls
         Binding("v", "cycle_view", "View"),
         Binding("o", "cycle_overlay", "Overlay"),
+        Binding("i", "cycle_iso", "Iso Mode"),
         Binding("c", "toggle_candidates", "Candidates"),
 
         # Panel controls
@@ -1418,6 +1419,8 @@ class GaiusApp(App):
 
         content = self.query_one("#content-panel", ContentPanel)
         think = self.query_one("#think-panel", ThinkPanel)
+        editor = self.query_one("#note-editor", NoteEditor)
+        file_tree = self.query_one("#file-tree", FileTree)
 
         # Parse args - save by default, --no-save to disable
         save_to_kb = "--no-save" not in args
@@ -1629,6 +1632,13 @@ class GaiusApp(App):
                         f"*Saved to: {kb_path}*",
                     ])
 
+                    # Open the saved note in the editor
+                    editor.remove_class("hidden")
+                    editor.open_note(str(kb_path))
+
+                    # Refresh file tree to show the new note
+                    file_tree.refresh_tree()
+
                 content.show_file("explain.md", "\n".join(output))
 
                 # Record trace
@@ -1821,23 +1831,35 @@ Use `/inference stop <endpoint>` to stop an endpoint.
         """Handle /evolve subcommands for evolution daemon.
 
         Usage:
-            /evolve start [endpoint]  - Clean start GPU + daemon (default: fast)
-            /evolve stop              - Stop the daemon
-            /evolve status            - Show daemon status
-            /evolve trigger [agent]   - Force an evolution cycle
-            /evolve budget            - Show XAI evaluation budget
+            /evolve start [--parallel]  - Clean start GPU + daemon
+            /evolve stop                - Stop the daemon
+            /evolve status              - Show daemon status
+            /evolve trigger [agent]     - Force an evolution cycle
+            /evolve budget              - Show XAI evaluation budget
+
+        Options:
+            --parallel: Start 6 parallel vLLM instances for faster evolution
         """
         import asyncio
 
         content = self.query_one("#content-panel", ContentPanel)
 
-        parts = args.split(maxsplit=1) if args else ["status"]
+        parts = args.split() if args else ["status"]
         subcmd = parts[0].lower() if parts else "status"
-        subargs = parts[1] if len(parts) > 1 else ""
+        subargs = parts[1:] if len(parts) > 1 else []
 
         if subcmd == "start":
-            endpoint = subargs or "fast"
-            content.show_file("evolve.md", f"# Evolution Daemon\n\nStarting clean start with endpoint **{endpoint}**...\n\nPhase 1: Cleaning stale GPU processes...")
+            # Parse options
+            parallel = "--parallel" in subargs or "-p" in subargs
+
+            if parallel:
+                endpoints = ["evo0", "evo1", "evo2", "evo3", "evo4", "evo5"]
+                mode_text = "**6 parallel GPUs**"
+            else:
+                endpoints = ["fast"]
+                mode_text = "single endpoint"
+
+            content.show_file("evolve.md", f"# Evolution Daemon\n\nStarting clean start with {mode_text}...\n\nPhase 1: Cleaning stale GPU processes...")
 
             async def start():
                 try:
@@ -1846,23 +1868,25 @@ Use `/inference stop <endpoint>` to stop an endpoint.
 
                     orchestrator = get_orchestrator()
 
-                    # Phase 1: Clean start GPU
-                    result = await orchestrator.clean_start([endpoint])
+                    # Phase 1: Clean start GPUs
+                    result = await orchestrator.clean_start(endpoints)
 
                     if not result["success"]:
-                        content.show_file("error.txt", f"Failed to start GPU endpoint: {result['startup']}")
+                        content.show_file("error.txt", f"Failed to start GPU endpoints: {result['startup']}")
                         return
 
-                    # Phase 2: Start daemon
-                    content.show_file("evolve.md", f"# Evolution Daemon\n\nPhase 1: ✓ GPU ready\nPhase 2: Starting daemon...")
+                    # Phase 2: Start daemon with parallel mode
+                    content.show_file("evolve.md", f"# Evolution Daemon\n\nPhase 1: ✓ GPUs ready ({len(endpoints)} endpoints)\nPhase 2: Starting daemon...")
 
                     daemon = get_evolution_daemon()
-                    await daemon.start()
+                    await daemon.start(parallel=parallel)
 
                     status = daemon.get_status()
+                    endpoints_text = '\n'.join(f"- {ep}: ✓" for ep in endpoints)
                     content.show_file("evolve.md", f"""# Evolution Daemon
 
 **Status**: Running ✓
+**Mode**: {'Parallel (6 GPUs)' if parallel else 'Single GPU'}
 **Next Agent**: {status.get('next_agent', 'unknown')}
 **Strategy**: {status.get('config', {}).get('strategy', 'unknown')}
 
@@ -1871,7 +1895,7 @@ Use `/inference stop <endpoint>` to stop an endpoint.
 - Processes killed: {result['cleanup']['processes_killed']}
 
 ## Endpoints Started
-- {endpoint}: ✓
+{endpoints_text}
 
 Press `e` to view the Evolution panel for monitoring.
 """)
@@ -1907,10 +1931,13 @@ Press `e` to view the Evolution panel for monitoring.
                 status = daemon.get_status()
 
                 config = status.get("config", {})
+                parallel_info = ""
+                if status.get("parallel"):
+                    parallel_info = f"\n**Parallel Mode**: ✓ ({status.get('parallel_endpoints', 0)} endpoints)"
                 content.show_file("evolve.md", f"""# Evolution Daemon Status
 
 **Running**: {'✓ Yes' if status['running'] else '✗ No'}
-**Enabled**: {'Yes' if status['enabled'] else 'No'}
+**Enabled**: {'Yes' if status['enabled'] else 'No'}{parallel_info}
 **Cycles Completed**: {status['cycles_completed']}
 **Total Improvement**: {status.get('total_improvement_percent', 0):.1f}%
 **Next Agent**: {status.get('next_agent', 'unknown')}
@@ -1924,7 +1951,8 @@ Press `e` to view the Evolution panel for monitoring.
 
 ---
 
-Use `/evolve start` to start the daemon.
+Use `/evolve start` to start the daemon (single GPU).
+Use `/evolve start --parallel` to start with 6 parallel GPUs.
 Use `/evolve stop` to stop the daemon.
 Press `e` to view the Evolution panel.
 """)
@@ -1994,6 +2022,131 @@ Use local evaluation for routine checks to conserve budget.
 
         else:
             content.show_file("error.txt", f"Unknown evolve subcommand: {subcmd}\n\nUsage:\n  /evolve start [endpoint]\n  /evolve stop\n  /evolve status\n  /evolve trigger [agent]\n  /evolve budget")
+
+    def _handle_iso_command(self, args: str, content: "ContentPanel") -> None:
+        """Handle /iso command for Iso view mode control.
+
+        Usage:
+            /iso              - Show current mode and available modes
+            /iso <mode>       - Set Iso mode (curvature, persistence, complexity, boundary)
+            /iso cycle        - Cycle to next mode
+            /iso info         - Show detailed info about current mode
+        """
+        from .core.state import IsoMode
+        from .core.iso_features import ISO_MODE_SYMBOLS
+
+        if not args:
+            # Show current mode and options
+            symbol = ISO_MODE_SYMBOLS.get(self.state.iso_mode, "?")
+            has_features = self.state.iso_features is not None
+
+            modes_list = "\n".join([
+                f"- **{mode.value}** ({ISO_MODE_SYMBOLS[mode]}): {self._iso_mode_description(mode)}"
+                for mode in IsoMode
+            ])
+
+            content.show_file("iso.md", f"""# Iso View Mode
+
+**Current**: {self.state.iso_mode.value} ({symbol})
+**Features**: {'✓ Loaded' if has_features else '○ Using fallback'}
+
+## Available Modes
+
+{modes_list}
+
+---
+
+**Usage**:
+- Press `i` to cycle modes
+- `/iso <mode>` to set directly
+- `/iso cycle` to cycle to next
+- `/iso info` for detailed information
+""")
+            return
+
+        parts = args.split()
+        subcmd = parts[0].lower()
+
+        if subcmd == "cycle":
+            self.action_cycle_iso()
+        elif subcmd == "info":
+            self._show_iso_info(content)
+        else:
+            # Try to set mode directly
+            try:
+                self.state.iso_mode = IsoMode(subcmd)
+                self._update_minigrids()
+                symbol = ISO_MODE_SYMBOLS.get(self.state.iso_mode, "?")
+                self.notify(f"Iso: {self.state.iso_mode.value} ({symbol})")
+            except ValueError:
+                content.show_file("error.txt", f"Unknown Iso mode: {subcmd}\n\nValid modes: curvature, persistence, complexity, boundary")
+
+    def _iso_mode_description(self, mode: "IsoMode") -> str:
+        """Get human-readable description for an Iso mode."""
+        from .core.state import IsoMode
+        descriptions = {
+            IsoMode.CURVATURE: "Semantic boundaries via Ricci curvature",
+            IsoMode.PERSISTENCE: "Topological complexity from H0+H1+H2",
+            IsoMode.COMPLEXITY: "Semantic diversity within documents",
+            IsoMode.BOUNDARY: "Documents forming semantic loops",
+        }
+        return descriptions.get(mode, mode.value)
+
+    def _show_iso_info(self, content: "ContentPanel") -> None:
+        """Show detailed information about current Iso mode and features."""
+        from .core.state import IsoMode
+        from .core.iso_features import ISO_MODE_SYMBOLS
+
+        mode = self.state.iso_mode
+        symbol = ISO_MODE_SYMBOLS.get(mode, "?")
+        features = self.state.iso_features
+
+        if features is None:
+            content.show_file("iso.md", f"""# Iso View: {mode.value} ({symbol})
+
+## Status
+
+**IsoFeatures**: Not computed
+
+The Iso view is using density fallback visualization.
+Run `/reindex` to compute full IsoFeatures including:
+- Per-document persistent homology (H0+H1+H2)
+- Multi-vector complexity analysis
+- Cocycle-based boundary attribution
+
+---
+
+Press `i` to cycle modes or `/iso <mode>` to switch.
+""")
+            return
+
+        # Show detailed feature info
+        content.show_file("iso.md", f"""# Iso View: {mode.value} ({symbol})
+
+## IsoFeatures
+
+- **Documents**: {features.n_documents}
+- **Embedding Type**: {features.embedding_type}
+- **Computation Time**: {features.computation_time:.2f}s
+- **Diagrams**: {len(features.diagrams)} persistence diagrams
+
+## Feature Arrays
+
+| Mode | Symbol | Min | Max | Mean | Std |
+|------|--------|-----|-----|------|-----|
+| Curvature | κ | {features.curvatures.min():.3f} | {features.curvatures.max():.3f} | {features.curvatures.mean():.3f} | {features.curvatures.std():.3f} |
+| Persistence | π | {features.persistence.min():.3f} | {features.persistence.max():.3f} | {features.persistence.mean():.3f} | {features.persistence.std():.3f} |
+| Complexity | σ | {features.complexity.min():.3f} | {features.complexity.max():.3f} | {features.complexity.mean():.3f} | {features.complexity.std():.3f} |
+| Boundary | β | {features.boundary.min():.3f} | {features.boundary.max():.3f} | {features.boundary.mean():.3f} | {features.boundary.std():.3f} |
+
+## Mode Description
+
+**{mode.value}**: {self._iso_mode_description(mode)}
+
+---
+
+Press `i` to cycle modes or `/iso <mode>` to switch.
+""")
 
     def _run_search(self, query: str) -> None:
         """Search KB and optionally web for a query."""
@@ -2330,27 +2483,34 @@ Domain: {domain}
         from .core.tda import get_tda_manager
 
         # Get grid data and TDA features from managers
+        grid_data = None
+        tda_features = None
         try:
             grid_manager = get_grid_manager()
             grid_data = grid_manager.get_grid_data()
             tda_manager = get_tda_manager()
             tda_features = tda_manager._cached_features  # May be None if not computed yet
 
-            # Debug: Check if we have data
+            # Debug logging
+            if grid_data:
+                self.log.debug(
+                    f"Mini-grid data: n_docs={grid_data.n_documents}, "
+                    f"embeddings={'yes' if grid_data.raw_embeddings is not None else 'no'}, "
+                    f"grid_to_emb={len(grid_data.grid_to_embedding)} mappings"
+                )
+
+            # Check if we have data
             if grid_data and grid_data.n_documents == 0:
-                # No documents loaded yet, use empty grids
+                # No documents loaded yet
                 grid_data = None
 
         except Exception as e:
-            # If grid data not available, fall back to empty mini-grids
-            # But log the error so we know what went wrong
+            # If grid data not available, mini-grids will be empty
             import traceback
             self.log.error(f"Failed to get grid data: {e}")
             self.log.error(traceback.format_exc())
-            grid_data = None
-            tda_features = None
 
-        # Get curvatures for Iso view
+        # Get curvatures for Iso view (legacy fallback)
         curvatures = self.state.curvatures_raw if self.state.curvatures_raw else None
 
         # Use real data from grid projection and geometry
@@ -2359,6 +2519,8 @@ Domain: {domain}
             curvatures=curvatures,
             cursor_x=self.state.cursor_x,
             cursor_y=self.state.cursor_y,
+            iso_mode=self.state.iso_mode,
+            iso_features=self.state.iso_features,
         )
 
         # Update each mini-grid (right column: top and bottom)
@@ -2413,6 +2575,14 @@ Domain: {domain}
         self._update_status()
         self._update_explanation()
 
+    def action_cycle_iso(self) -> None:
+        """Cycle through Iso view modes: κ → π → σ → β → κ."""
+        from .core.iso_features import ISO_MODE_SYMBOLS
+        new_mode = self.state.cycle_iso_mode()
+        symbol = ISO_MODE_SYMBOLS.get(new_mode, "?")
+        self._update_minigrids()
+        self.notify(f"Iso: {new_mode.value} ({symbol})")
+
     def action_toggle_candidates(self) -> None:
         """Toggle candidate markers."""
         self.state.toggle_candidates()
@@ -2457,6 +2627,10 @@ Domain: {domain}
 - **]**: Toggle right panel (content)
 - **\\\\**: Toggle both panels
 
+## Center Panel
+- **g**: Cycle center modes (Graph → Think → Evolution → None)
+- **e**: Jump directly to Evolution panel
+
 ## Notes (Zettelkasten)
 - **Ctrl-N**: Create new scratch note
 - Vim-style editing (i/I/A/o/O to insert, ESC for normal)
@@ -2467,8 +2641,7 @@ Domain: {domain}
 - Notes: build/dev/scratch/{date}/{timestamp}.md
 - Wiki-links: [[path/to/note]]
 
-## Graph View
-- **g**: Toggle wiki-link graph
+## Graph View (center panel)
 - **Arrow keys**: Navigate between nodes (when graph focused)
 - **Enter**: Open selected node's file
 - Shows backlinks (what links here)
@@ -2490,9 +2663,16 @@ Domain: {domain}
 - `/activity`: View activity log
 - `/tda`: Show topological features
 - `/info`: Show cursor position info
+- `/explain [position] [--no-save]`: Explain grid position with LLM
 - `/inference [status|start|stop|restart]`: Manage inference stack
 - `/evolve [start|stop|status|trigger|budget]`: Evolution daemon
 - `/q` or `/exit`: Quit Gaius
+
+## Explain Command
+- `/explain`: Explain current cursor position
+- `/explain K10`: Explain specific Go position
+- `/explain --no-save`: Don't save to KB
+- Opens generated note in editor for review/editing
 
 ## Evolution (press `e` for panel)
 - `/evolve start [endpoint]`: Clean start GPU + daemon (default: fast)
@@ -3285,6 +3465,8 @@ Domain: {domain}
                     content.show_file("error.txt", f"Unknown overlay: {args}")
             else:
                 self.action_cycle_overlay()
+        elif command == "iso":
+            self._handle_iso_command(args, content)
         elif command == "view":
             if args:
                 try:
