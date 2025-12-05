@@ -1831,8 +1831,10 @@ Use `/inference stop <endpoint>` to stop an endpoint.
         """Handle /evolve subcommands for evolution daemon.
 
         Usage:
-            /evolve start [--parallel]  - Clean start GPU + daemon
-            /evolve stop                - Stop the daemon
+            /evolve                     - Start orchestrator-managed evolution (default)
+            /evolve orchestrated        - Start orchestrator-managed evolution
+            /evolve start [--parallel]  - Start simple daemon (legacy)
+            /evolve stop                - Stop evolution
             /evolve status              - Show daemon status
             /evolve trigger [agent]     - Force an evolution cycle
             /evolve budget              - Show XAI evaluation budget
@@ -1844,8 +1846,8 @@ Use `/inference stop <endpoint>` to stop an endpoint.
 
         content = self.query_one("#content-panel", ContentPanel)
 
-        parts = args.split() if args else ["status"]
-        subcmd = parts[0].lower() if parts else "status"
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "orchestrated"  # Default to orchestrated
         subargs = parts[1:] if len(parts) > 1 else []
 
         if subcmd == "start":
@@ -1913,10 +1915,20 @@ Press `e` to view the Evolution panel for monitoring.
                 try:
                     from .agents.evolution import get_evolution_daemon
 
+                    # Stop simple daemon
                     daemon = get_evolution_daemon()
                     await daemon.stop()
 
-                    content.show_file("evolve.md", "# Evolution Daemon\n\n**Status**: Stopped")
+                    # Also stop orchestrated evolution if running
+                    try:
+                        from .agents.evolution.orchestrated import get_orchestrated_evolution
+                        orch_evo = get_orchestrated_evolution()
+                        if orch_evo.running:
+                            await orch_evo.stop()
+                    except Exception:
+                        pass  # Orchestrated evolution not available
+
+                    content.show_file("evolve.md", "# Evolution\n\n**Status**: Stopped\n\nBoth simple and orchestrated evolution have been stopped.")
 
                 except Exception as e:
                     content.show_file("error.txt", f"Error stopping evolution: {e}")
@@ -2020,8 +2032,83 @@ Use local evaluation for routine checks to conserve budget.
             except Exception as e:
                 content.show_file("error.txt", f"Error getting budget: {e}")
 
+        elif subcmd == "orchestrated" or subcmd == "orch":
+            # Start orchestrator-managed evolution
+            content.show_file("evolve.md", """# Orchestrated Evolution
+
+Starting **orchestrator-managed** evolution...
+
+The Orchestrator model will:
+- Observe GPU health, agent state, and cycle history
+- Diagnose failures and adapt strategy
+- Coordinate resources intelligently
+- Maintain system health overnight
+
+Phase 1: Starting orchestration endpoint...
+""")
+
+            async def start_orchestrated():
+                try:
+                    from .inference.orchestrator import get_orchestrator
+                    from .agents.evolution.orchestrated import get_orchestrated_evolution
+
+                    # Ensure orchestration endpoint is running
+                    orchestrator = get_orchestrator()
+                    status = orchestrator.get_status()
+
+                    orch_endpoint = status.get("endpoints", {}).get("orchestration", {})
+                    if orch_endpoint.get("status") != "healthy":
+                        content.show_file("evolve.md", """# Orchestrated Evolution
+
+Phase 1: Starting orchestration endpoint...
+""")
+                        await orchestrator.start_endpoint("orchestration")
+                        await asyncio.sleep(10)  # Wait for startup
+
+                    # Start orchestrated evolution
+                    content.show_file("evolve.md", """# Orchestrated Evolution
+
+Phase 1: ✓ Orchestration endpoint ready
+Phase 2: Starting orchestrator-managed evolution...
+""")
+
+                    orch_evo = get_orchestrated_evolution()
+                    await orch_evo.start()
+
+                    orch_status = orch_evo.get_status()
+
+                    content.show_file("evolve.md", f"""# Orchestrated Evolution
+
+**Status**: Running ✓
+**Mode**: Orchestrator-managed (meta-cognitive)
+
+The Orchestrator model is now managing evolution autonomously.
+It will:
+- Select which agents to optimize based on available examples
+- Skip agents that fail repeatedly
+- Adapt strategy based on outcomes
+- Handle failures gracefully
+
+## Session Info
+- Started: {orch_status.get('session_start', 'now')}
+- Cycles: {orch_status.get('cycles_completed', 0)}
+- Improvement: {orch_status.get('total_improvement', 0):.1f}%
+
+Press `e` to view the Evolution panel for monitoring.
+Use `/evolve stop` to stop orchestrated evolution.
+""")
+
+                    # Show evolution panel
+                    self.action_show_evolution()
+
+                except Exception as e:
+                    import traceback
+                    content.show_file("error.txt", f"Error starting orchestrated evolution: {e}\n\n{traceback.format_exc()}")
+
+            asyncio.create_task(start_orchestrated())
+
         else:
-            content.show_file("error.txt", f"Unknown evolve subcommand: {subcmd}\n\nUsage:\n  /evolve start [endpoint]\n  /evolve stop\n  /evolve status\n  /evolve trigger [agent]\n  /evolve budget")
+            content.show_file("error.txt", f"Unknown evolve subcommand: {subcmd}\n\nUsage:\n  /evolve                     - Start orchestrator-managed (default)\n  /evolve start [--parallel]  - Start simple daemon\n  /evolve stop\n  /evolve status\n  /evolve trigger [agent]\n  /evolve budget")
 
     def _handle_iso_command(self, args: str, content: "ContentPanel") -> None:
         """Handle /iso command for Iso view mode control.

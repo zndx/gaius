@@ -1361,19 +1361,98 @@ class GaiusCLI:
         """Evolution daemon operations.
 
         Usage:
-            /evolve start        - Clean start: cleanup stale procs, start reasoning, start daemon
-            /evolve stop         - Stop the evolution daemon
-            /evolve status       - Show daemon status and recent cycles
-            /evolve trigger      - Manually trigger an evolution cycle
-            /evolve budget       - Show XAI evaluation budget status
+            /evolve                   - Start orchestrator-managed evolution (default)
+            /evolve orchestrated      - Start orchestrator-managed evolution
+            /evolve start [--parallel] - Start simple daemon (legacy)
+            /evolve stop              - Stop evolution
+            /evolve status            - Show daemon status and recent cycles
+            /evolve trigger [agent]   - Manually trigger an evolution cycle
+            /evolve budget            - Show XAI evaluation budget status
 
-        This is the primary way to run continuous agent evolution overnight.
+        Orchestrator-managed evolution uses the Orchestrator model to make
+        intelligent decisions about the evolution process, adapting to failures
+        and optimizing resource usage automatically.
         """
-        parts = args.split(maxsplit=1) if args else ["status"]
-        subcmd = parts[0].lower()
+        parts = args.split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else "orchestrated"  # Default to orchestrated
         subargs = parts[1] if len(parts) > 1 else ""
 
-        if subcmd == "start":
+        if subcmd == "orchestrated" or subcmd == "orch":
+            # Start orchestrator-managed evolution
+            # This runs in a blocking loop until stopped (Ctrl+C)
+            # Usage: /evolve orchestrated [endpoint]
+            #   endpoint: Optional endpoint to use for orchestration (default: orchestration)
+            #             Use 'fast' or 'reasoning' if orchestration endpoint not available.
+            #             If no endpoint specified and none running, uses fallback heuristics.
+            from .inference.orchestrator import get_orchestrator
+            from .agents.evolution.orchestrated import get_orchestrated_evolution
+
+            endpoint_to_use = subargs.strip() if subargs else "orchestration"
+
+            print("Starting orchestrator-managed evolution...", file=sys.stderr)
+            print("Press Ctrl+C to stop", file=sys.stderr)
+
+            # Check endpoint status
+            orchestrator = get_orchestrator()
+            status = orchestrator.get_status()
+
+            endpoint_info = status.get("endpoints", {}).get(endpoint_to_use, {})
+            if endpoint_info.get("status") != "healthy":
+                # Try to start the specified endpoint
+                print(f"Phase 1: Starting {endpoint_to_use} endpoint...", file=sys.stderr)
+                await orchestrator.start_endpoint(endpoint_to_use)
+                print("Waiting for endpoint to become healthy...", file=sys.stderr)
+                # Wait for endpoint to be healthy (with timeout)
+                for i in range(90):  # 90 second timeout for model loading
+                    await asyncio.sleep(1)
+                    status = orchestrator.get_status()
+                    endpoint_info = status.get("endpoints", {}).get(endpoint_to_use, {})
+                    if endpoint_info.get("status") == "healthy":
+                        print(f"{endpoint_to_use} endpoint ready", file=sys.stderr)
+                        break
+                    if i % 10 == 0:
+                        print(f"  Still waiting... ({i}s)", file=sys.stderr)
+                else:
+                    print(f"Warning: Endpoint not healthy after 90s, will use fallback heuristics", file=sys.stderr)
+
+            # Start orchestrated evolution with specified endpoint
+            print("Phase 2: Starting orchestrator-managed evolution loop...", file=sys.stderr)
+            orch_evo = get_orchestrated_evolution()
+            orch_evo.orchestrator_endpoint = endpoint_to_use  # Configure endpoint
+            await orch_evo.start()
+
+            # Keep the process alive until evolution stops or interrupted
+            # This is necessary because evolution runs as an asyncio task
+            try:
+                while orch_evo.running:
+                    await asyncio.sleep(5)
+                    # Print periodic status updates
+                    orch_status = orch_evo.get_status()
+                    cycles = orch_status.get("cycles_completed", 0)
+                    improvement = orch_status.get("total_improvement", 0)
+                    last = orch_status.get("last_decision")
+                    if last:
+                        action = last.get("action", "?")
+                        target = last.get("target", "?")
+                        print(f"  Cycle {cycles}: {action} -> {target} (+{improvement:.1f}%)", file=sys.stderr)
+            except asyncio.CancelledError:
+                print("\nStopping evolution...", file=sys.stderr)
+            finally:
+                await orch_evo.stop()
+
+            orch_status = orch_evo.get_status()
+
+            return {
+                "action": "orchestrated",
+                "success": True,
+                "mode": "orchestrator-managed",
+                "cycles_completed": orch_status["cycles_completed"],
+                "total_improvement": orch_status["total_improvement"],
+                "session_start": orch_status["session_start"],
+                "message": "Orchestrator-managed evolution completed.",
+            }
+
+        elif subcmd == "start":
             # Clean start: cleanup GPU, start reasoning endpoint, start daemon
             from .inference.orchestrator import get_orchestrator
             from .agents.evolution import get_evolution_daemon
@@ -1415,13 +1494,26 @@ class GaiusCLI:
         elif subcmd == "stop":
             from .agents.evolution import get_evolution_daemon
 
+            # Stop simple daemon
             daemon = get_evolution_daemon()
             await daemon.stop()
+
+            # Also stop orchestrated evolution if running
+            orch_stopped = False
+            try:
+                from .agents.evolution.orchestrated import get_orchestrated_evolution
+                orch_evo = get_orchestrated_evolution()
+                if orch_evo.running:
+                    await orch_evo.stop()
+                    orch_stopped = True
+            except Exception:
+                pass  # Orchestrated evolution not available
 
             return {
                 "action": "stop",
                 "success": True,
                 "daemon_running": daemon.running,
+                "orchestrated_stopped": orch_stopped,
             }
 
         elif subcmd == "status":
