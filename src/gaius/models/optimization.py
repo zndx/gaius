@@ -254,6 +254,9 @@ class AgentOptimizer:
 
     Supports APO (mutation-based) and GEPA (bootstrap-based) strategies,
     both running entirely on local models.
+
+    For parallel execution during overnight runs, set parallel=True to
+    distribute evaluations across multiple GPU endpoints.
     """
 
     def __init__(
@@ -262,6 +265,7 @@ class AgentOptimizer:
         reasoning_model: str = "Qwen/QwQ-32B",
         evaluation_model: str = "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         use_frontier_eval: bool = False,
+        parallel: bool = False,
     ):
         """Initialize optimizer.
 
@@ -270,11 +274,14 @@ class AgentOptimizer:
             reasoning_model: Model for generating prompt variations
             evaluation_model: Model for evaluating candidates
             use_frontier_eval: If True, use xAI for final evaluation
+            parallel: If True, use parallel inference across multiple GPUs
         """
         self.strategy = strategy
         self.reasoning_model = reasoning_model
         self.evaluation_model = evaluation_model
         self.use_frontier_eval = use_frontier_eval
+        self.parallel = parallel
+        self._parallel_client = None
 
     async def optimize(
         self,
@@ -316,8 +323,11 @@ class AgentOptimizer:
             model=current_version.config.model,
         )
 
+        # Choose evaluation method based on parallel setting
+        evaluate = self._evaluate_config_parallel if self.parallel else self._evaluate_config
+
         # Evaluate baseline
-        baseline_scores = await self._evaluate_config(baseline_config, task_examples)
+        baseline_scores = await evaluate(baseline_config, task_examples)
         baseline_config.scores = baseline_scores
         baseline_config.avg_score = sum(baseline_scores) / len(baseline_scores)
 
@@ -347,7 +357,7 @@ class AgentOptimizer:
 
             # Evaluate candidates
             for candidate in candidates:
-                scores = await self._evaluate_config(candidate, task_examples)
+                scores = await evaluate(candidate, task_examples)
                 candidate.scores = scores
                 candidate.avg_score = sum(scores) / len(scores)
                 total_evals += len(task_examples)
@@ -648,6 +658,93 @@ Respond with ONLY a number between 0 and 1."""
 
         return scores
 
+    async def _evaluate_config_parallel(
+        self,
+        config: CandidateConfig,
+        examples: list[TaskExample],
+    ) -> list[float]:
+        """Evaluate a config in parallel across multiple endpoints.
+
+        Uses the parallel inference client to distribute evaluations
+        across all available GPU endpoints for ~6x speedup.
+        """
+        from ..inference.parallel import get_parallel_client
+
+        client = get_parallel_client()
+        if client.num_endpoints == 0:
+            # Fall back to sequential
+            return await self._evaluate_config(config, examples)
+
+        # Phase 1: Generate outputs for all examples in parallel
+        generate_messages = []
+        for example in examples:
+            generate_messages.append([
+                {"role": "system", "content": config.system_prompt},
+                {"role": "user", "content": example.input_prompt},
+            ])
+
+        generate_results = await client.parallel_complete(
+            generate_messages,
+            temperature=config.temperature,
+            max_tokens=1024,
+        )
+
+        # Phase 2: Evaluate all outputs in parallel
+        eval_messages = []
+        for i, (example, gen_result) in enumerate(zip(examples, generate_results)):
+            if not gen_result.success:
+                # Will use 0.5 as default score
+                eval_messages.append([{"role": "user", "content": "Rate: 0.5"}])
+                continue
+
+            output = gen_result.content
+
+            if example.expected_output:
+                eval_prompt = f"""Rate this output on a scale of 0-1.
+
+Task: {example.input_prompt[:500]}
+
+Expected output: {example.expected_output[:500]}
+
+Actual output: {output[:500]}
+
+{f"Evaluation criteria: {example.evaluation_criteria}" if example.evaluation_criteria else ""}
+
+Respond with ONLY a number between 0 and 1."""
+            else:
+                eval_prompt = f"""Rate the quality of this output on a scale of 0-1.
+
+Task: {example.input_prompt[:500]}
+
+Output: {output[:500]}
+
+{f"Evaluation criteria: {example.evaluation_criteria}" if example.evaluation_criteria else "Consider: accuracy, completeness, clarity, relevance."}
+
+Respond with ONLY a number between 0 and 1."""
+
+            eval_messages.append([{"role": "user", "content": eval_prompt}])
+
+        eval_results = await client.parallel_complete(
+            eval_messages,
+            temperature=0.1,
+            max_tokens=10,
+        )
+
+        # Parse scores
+        scores = []
+        for eval_result in eval_results:
+            if eval_result.success:
+                try:
+                    score = float(eval_result.content.strip())
+                    score = max(0.0, min(1.0, score))
+                except ValueError:
+                    score = 0.5
+            else:
+                score = 0.5
+            scores.append(score)
+
+        return scores
+
     async def _frontier_evaluate(
         self,
         config: CandidateConfig,
@@ -751,23 +848,40 @@ class ScheduledOptimizer:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _optimizer: AgentOptimizer | None = None
+_parallel_optimizer: AgentOptimizer | None = None
 
 
 def get_optimizer(
     strategy: OptimizationStrategy = OptimizationStrategy.APO,
+    parallel: bool = False,
 ) -> AgentOptimizer:
-    """Get or create the agent optimizer singleton."""
-    global _optimizer
-    if _optimizer is None:
-        _optimizer = AgentOptimizer(strategy=strategy)
-    return _optimizer
+    """Get or create the agent optimizer singleton.
+
+    Args:
+        strategy: Optimization strategy (APO, GEPA, or HYBRID)
+        parallel: If True, use parallel inference across multiple GPUs
+
+    Returns:
+        AgentOptimizer instance (creates new one if parallel mode changes)
+    """
+    global _optimizer, _parallel_optimizer
+
+    if parallel:
+        if _parallel_optimizer is None:
+            _parallel_optimizer = AgentOptimizer(strategy=strategy, parallel=True)
+        return _parallel_optimizer
+    else:
+        if _optimizer is None:
+            _optimizer = AgentOptimizer(strategy=strategy, parallel=False)
+        return _optimizer
 
 
 async def optimize_agent(
     agent_id: str,
     task_examples: list[TaskExample],
     strategy: OptimizationStrategy = OptimizationStrategy.APO,
+    parallel: bool = False,
 ) -> OptimizationResult:
     """Convenience function to optimize an agent."""
-    optimizer = get_optimizer(strategy)
+    optimizer = get_optimizer(strategy, parallel=parallel)
     return await optimizer.optimize(agent_id, task_examples)
