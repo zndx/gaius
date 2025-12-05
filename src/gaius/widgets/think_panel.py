@@ -42,6 +42,10 @@ class ThinkPanel(Widget):
         height: 21;
         overflow: hidden;
     }
+
+    ThinkPanel.hidden {
+        display: none;
+    }
     """
 
     # Reactive to trigger refresh when traces change
