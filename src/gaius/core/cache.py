@@ -1,7 +1,7 @@
 """State caching for fast TUI startup.
 
-Caches computed grid projections and TDA features to avoid expensive
-recomputation on every startup. The cache is invalidated when:
+Caches computed grid projections, TDA features, and IsoFeatures to avoid
+expensive recomputation on every startup. The cache is invalidated when:
 - Embedding model changes
 - KB content changes significantly
 - User runs /reindex or /init commands
@@ -12,13 +12,17 @@ import pickle
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .projection import GridData
 from .tda import TDAFeatures
 
+if TYPE_CHECKING:
+    from .iso_features import IsoFeatures
+
 # Cache schema version (increment when format changes)
-CACHE_VERSION = 1
+# v2: Added iso.pkl for IsoFeatures
+CACHE_VERSION = 2
 
 
 def get_cache_dir(kb_root: Path | str) -> Path:
@@ -44,6 +48,11 @@ def get_cache_tda_path(kb_root: Path | str) -> Path:
     return get_cache_dir(kb_root) / "tda.pkl"
 
 
+def get_cache_iso_path(kb_root: Path | str) -> Path:
+    """Get path to cached IsoFeatures."""
+    return get_cache_dir(kb_root) / "iso.pkl"
+
+
 def save_cached_state(
     kb_root: Path | str,
     grid_data: GridData,
@@ -51,6 +60,7 @@ def save_cached_state(
     embedding_model: str,
     projection_method: str,
     embedding_type: str = "single",
+    iso_features: "IsoFeatures | None" = None,
 ) -> None:
     """Save computed state to cache.
 
@@ -61,6 +71,7 @@ def save_cached_state(
         embedding_model: Model used for embeddings
         projection_method: Projection method (umap/pca)
         embedding_type: Embedding type ("single" or "multi")
+        iso_features: Pre-computed IsoFeatures from TDA on multi-vectors
     """
     cache_dir = get_cache_dir(kb_root)
 
@@ -77,6 +88,7 @@ def save_cached_state(
         "tda_h1": tda_features.h1_count,
         "tda_h2": tda_features.h2_count,
         "tda_entropy": tda_features.entropy,
+        "has_iso_features": iso_features is not None,
     }
 
     with open(get_cache_metadata_path(kb_root), "w") as f:
@@ -90,23 +102,30 @@ def save_cached_state(
     with open(get_cache_tda_path(kb_root), "wb") as f:
         pickle.dump(tda_features, f)
 
+    # Save IsoFeatures if available
+    if iso_features is not None:
+        with open(get_cache_iso_path(kb_root), "wb") as f:
+            pickle.dump(iso_features, f)
+
 
 def load_cached_state(
     kb_root: Path | str,
-) -> tuple[GridData | None, TDAFeatures | None, dict | None]:
+) -> tuple[GridData | None, TDAFeatures | None, dict | None, "IsoFeatures | None"]:
     """Load cached state if available.
 
     Returns:
-        Tuple of (grid_data, tda_features, metadata) or (None, None, None) if cache invalid
+        Tuple of (grid_data, tda_features, metadata, iso_features).
+        Returns (None, None, None, None) if cache invalid.
     """
     try:
         metadata_path = get_cache_metadata_path(kb_root)
         grid_path = get_cache_grid_path(kb_root)
         tda_path = get_cache_tda_path(kb_root)
+        iso_path = get_cache_iso_path(kb_root)
 
-        # Check all files exist
+        # Check required files exist
         if not (metadata_path.exists() and grid_path.exists() and tda_path.exists()):
-            return None, None, None
+            return None, None, None, None
 
         # Load metadata
         with open(metadata_path) as f:
@@ -114,7 +133,7 @@ def load_cached_state(
 
         # Check version
         if metadata.get("version") != CACHE_VERSION:
-            return None, None, None
+            return None, None, None, None
 
         # Load pickled data
         with open(grid_path, "rb") as f:
@@ -123,11 +142,20 @@ def load_cached_state(
         with open(tda_path, "rb") as f:
             tda_features = pickle.load(f)
 
-        return grid_data, tda_features, metadata
+        # Load IsoFeatures if available
+        iso_features = None
+        if iso_path.exists():
+            try:
+                with open(iso_path, "rb") as f:
+                    iso_features = pickle.load(f)
+            except Exception:
+                pass  # IsoFeatures optional, continue without
+
+        return grid_data, tda_features, metadata, iso_features
 
     except Exception:
         # Any error loading cache -> invalidate
-        return None, None, None
+        return None, None, None, None
 
 
 def invalidate_cache(kb_root: Path | str) -> None:

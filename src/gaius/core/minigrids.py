@@ -2,18 +2,30 @@
 
 Generates orthographic projections for the 9×9 mini-grids:
 - Embed: Local embedding neighborhood (high-dim → 2D)
-- Iso: Isometric projection with TDA-derived elevation
+- Iso: Isometric projection with TDA-derived elevation (toggleable modes)
 - Temporal: Not yet implemented (future: time-series of grid states)
 
 These views provide CAD-style orthographic projections of the knowledge space,
 helping users understand the topological structure and semantic neighborhoods.
+
+Iso Modes (toggled via 'i' key):
+- Curvature (κ): Semantic boundaries via Ricci curvature
+- Persistence (π): Topological complexity from H0+H1+H2
+- Complexity (σ): Semantic diversity within documents
+- Boundary (β): Documents forming semantic loops
 """
 
-import numpy as np
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import numpy as np
 
 from .projection import GridData
+from .state import IsoMode
 from .tda import TDAFeatures
+
+if TYPE_CHECKING:
+    from .iso_features import IsoFeatures
 
 
 @dataclass
@@ -111,77 +123,245 @@ def get_iso_view(
     cursor_x: int,
     cursor_y: int,
     radius: int = 4,
+    iso_mode: IsoMode = IsoMode.CURVATURE,
+    iso_features: "IsoFeatures | None" = None,
 ) -> MiniGridData:
-    """Generate Iso view: curvature-based elevation map (biomorphic landscape).
+    """Generate Iso view based on current mode.
 
-    Shows a 3D isometric view where elevation is Ricci curvature:
-    - Negative κ (boundaries) → high peaks (turbulent stream = complex colonies)
-    - Positive κ (interiors) → low valleys (calm water = simple cells)
-    - Flat κ ≈ 0 → plains (uniform regions)
+    Shows a 3D isometric view where elevation reveals topological structure:
 
-    This reveals the "turbulence" in the semantic manifold, inspired by
-    how environmental randomness drives morphological complexity in diatoms.
+    Modes (toggled via 'i' key):
+    - Curvature (κ): Ricci curvature - semantic boundaries
+    - Persistence (π): Total persistence - topological complexity
+    - Complexity (σ): Token variance - semantic diversity
+    - Boundary (β): Cocycle contribution - loop participation
+
+    Uses inverse-distance weighted interpolation to fill gaps between sparse
+    data points, creating a continuous elevation surface.
 
     Args:
         grid_data: Grid projection data
-        curvatures: Per-point Ricci curvature values (from GeometricFeatures)
+        curvatures: Per-point Ricci curvature values (legacy, used for CURVATURE mode)
         cursor_x: Cursor X position (0-18)
         cursor_y: Cursor Y position (0-18)
         radius: Radius around cursor to show (default 4 = 9×9)
+        iso_mode: Which visualization mode to use
+        iso_features: Pre-computed IsoFeatures (from TDA on multi-vectors)
 
     Returns:
-        MiniGridData with curvature elevation map
+        MiniGridData with mode-specific elevation map
     """
-    # Initialize empty grid
     iso_grid = [[0.0] * 9 for _ in range(9)]
+
+    # Mode symbols for display
+    mode_symbols = {
+        IsoMode.CURVATURE: "κ",
+        IsoMode.PERSISTENCE: "π",
+        IsoMode.COMPLEXITY: "σ",
+        IsoMode.BOUNDARY: "β",
+    }
+    symbol = mode_symbols.get(iso_mode, "?")
 
     if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) == 0:
         return MiniGridData(
             grid=iso_grid,
-            title="Iso (κ)",
+            title=f"Iso ({symbol})",
             description="No projection data available",
         )
 
-    # Compute curvature-based elevation for each mini-grid cell
+    # Select feature array based on mode
+    values = None
+
+    if iso_features is not None:
+        # Use pre-computed IsoFeatures
+        mode_to_array = {
+            IsoMode.CURVATURE: iso_features.curvatures,
+            IsoMode.PERSISTENCE: iso_features.persistence,
+            IsoMode.COMPLEXITY: iso_features.complexity,
+            IsoMode.BOUNDARY: iso_features.boundary,
+        }
+        values = mode_to_array.get(iso_mode)
+
+    # Fallback to legacy curvatures for CURVATURE mode
+    if values is None and iso_mode == IsoMode.CURVATURE and curvatures is not None:
+        values = curvatures
+
+    # If still no values, fall back to density visualization
+    if values is None or len(values) == 0:
+        return _iso_from_density(grid_data, cursor_x, cursor_y, symbol)
+
+    # Collect known values in the 9x9 neighborhood
+    # Format: [(mx, my, value), ...]
+    known_points = []
+
     for mx in range(9):
         for my in range(9):
-            # Map mini-grid coords back to main grid coords
             gx = cursor_x + (mx - 4)
             gy = cursor_y + (my - 4)
 
             if 0 <= gx < 19 and 0 <= gy < 19:
-                # Get point at this grid position
                 point_idx = grid_data.grid_to_embedding.get((gx, gy))
 
-                if point_idx is not None and curvatures and point_idx < len(curvatures):
-                    # Map curvature to elevation
-                    # Negative κ → high (boundaries, "turbulence")
-                    # Positive κ → low (interiors, "calm")
-                    κ = curvatures[point_idx]
+                if point_idx is not None and point_idx < len(values):
+                    val = values[point_idx]
+                    known_points.append((mx, my, float(val)))
 
-                    if κ < -0.3:
-                        elevation = 0.9  # High peaks (strong boundaries)
-                    elif κ < 0:
-                        # Linear map [-0.3, 0] → [0.5, 0.9]
-                        elevation = 0.5 + (-κ * 1.33)
-                    elif κ > 0.3:
-                        elevation = 0.1  # Deep valleys (strong interiors)
-                    else:
-                        # Linear map [0, 0.3] → [0.5, 0.1]
-                        elevation = 0.5 - (κ * 1.33)
+    # If no data points, fall back to density visualization
+    if not known_points:
+        return _iso_from_density(grid_data, cursor_x, cursor_y, symbol)
 
-                    iso_grid[my][mx] = elevation
-                else:
-                    # Empty space or no curvature data
-                    iso_grid[my][mx] = 0.0
+    # Compute elevation for each cell using IDW interpolation
+    # For curvature mode, invert (negative κ = high elevation)
+    invert = (iso_mode == IsoMode.CURVATURE)
+
+    for mx in range(9):
+        for my in range(9):
+            # Check if we have exact data at this point
+            exact_val = None
+            for kx, ky, val in known_points:
+                if kx == mx and ky == my:
+                    exact_val = val
+                    break
+
+            if exact_val is not None:
+                val = exact_val
             else:
-                # Out of bounds
-                iso_grid[my][mx] = 0.0
+                # Inverse Distance Weighted interpolation
+                val = _idw_interpolate(mx, my, known_points)
+
+            # Map value to elevation
+            if iso_mode == IsoMode.CURVATURE:
+                elevation = _curvature_to_elevation(val)
+            else:
+                # For normalized [0,1] values, use directly as elevation
+                elevation = float(val)
+                if invert:
+                    elevation = 1.0 - elevation
+
+            iso_grid[my][mx] = elevation
+
+    # Mode-specific descriptions
+    descriptions = {
+        IsoMode.CURVATURE: "Ricci curvature (boundaries)",
+        IsoMode.PERSISTENCE: "Topological complexity",
+        IsoMode.COMPLEXITY: "Semantic diversity",
+        IsoMode.BOUNDARY: "Loop participation",
+    }
+    desc = descriptions.get(iso_mode, iso_mode.value)
 
     return MiniGridData(
         grid=iso_grid,
-        title="Iso (κ)",
-        description=f"Curvature elevation (κ) around ({cursor_x}, {cursor_y})",
+        title=f"Iso ({symbol})",
+        description=f"{desc} around ({cursor_x}, {cursor_y})",
+    )
+
+
+def _idw_interpolate(
+    x: int, y: int, known_points: list[tuple[int, int, float]], power: float = 2.0
+) -> float:
+    """Inverse Distance Weighted interpolation.
+
+    Args:
+        x, y: Target coordinates
+        known_points: List of (x, y, value) tuples
+        power: Distance weighting power (higher = more local)
+
+    Returns:
+        Interpolated value
+    """
+    if not known_points:
+        return 0.0
+
+    numerator = 0.0
+    denominator = 0.0
+
+    for kx, ky, value in known_points:
+        dist = ((x - kx) ** 2 + (y - ky) ** 2) ** 0.5
+
+        if dist < 0.001:  # Essentially zero distance
+            return value
+
+        weight = 1.0 / (dist ** power)
+        numerator += weight * value
+        denominator += weight
+
+    if denominator > 0:
+        return numerator / denominator
+    return 0.0
+
+
+def _curvature_to_elevation(κ: float) -> float:
+    """Map curvature value to elevation [0, 1].
+
+    Negative κ (boundaries) → high elevation
+    Positive κ (interiors) → low elevation
+    """
+    if κ < -0.3:
+        return 0.9  # High peaks (strong boundaries)
+    elif κ < 0:
+        # Linear map [-0.3, 0] → [0.5, 0.9]
+        return 0.5 + (-κ * 1.33)
+    elif κ > 0.3:
+        return 0.1  # Deep valleys (strong interiors)
+    else:
+        # Linear map [0, 0.3] → [0.5, 0.1]
+        return 0.5 - (κ * 1.33)
+
+
+def _iso_from_density(
+    grid_data: GridData, cursor_x: int, cursor_y: int, symbol: str = "ρ"
+) -> MiniGridData:
+    """Fallback Iso view using document density when feature data unavailable.
+
+    Uses distance from cursor to nearest documents to create a density-based
+    elevation map.
+
+    Args:
+        grid_data: Grid projection data
+        cursor_x: Cursor X position
+        cursor_y: Cursor Y position
+        symbol: Mode symbol to display in title (default ρ for density)
+    """
+    iso_grid = [[0.0] * 9 for _ in range(9)]
+
+    # Collect document positions in neighborhood
+    doc_positions = []
+    for (gx, gy) in grid_data.grid_to_embedding.keys():
+        # Convert to mini-grid coordinates
+        mx = 4 + (gx - cursor_x)
+        my = 4 + (gy - cursor_y)
+        if 0 <= mx < 9 and 0 <= my < 9:
+            doc_positions.append((mx, my))
+
+    if not doc_positions:
+        return MiniGridData(
+            grid=iso_grid,
+            title=f"Iso ({symbol})",
+            description="No documents in neighborhood",
+        )
+
+    # Compute density-based elevation for each cell
+    for mx in range(9):
+        for my in range(9):
+            # Distance to nearest document
+            min_dist = 999.0
+            for dx, dy in doc_positions:
+                dist = ((mx - dx) ** 2 + (my - dy) ** 2) ** 0.5
+                min_dist = min(min_dist, dist)
+
+            # Closer to documents = higher elevation
+            # Max distance in 9x9 grid is ~11.3
+            if min_dist < 0.001:
+                elevation = 1.0  # On a document
+            else:
+                elevation = max(0.0, 1.0 - (min_dist / 6.0))
+
+            iso_grid[my][mx] = elevation
+
+    return MiniGridData(
+        grid=iso_grid,
+        title=f"Iso ({symbol})",
+        description=f"Density fallback around ({cursor_x}, {cursor_y})",
     )
 
 
@@ -285,6 +465,8 @@ def get_real_minigrid_data(
     curvatures: list[float] | None,
     cursor_x: int,
     cursor_y: int,
+    iso_mode: IsoMode = IsoMode.CURVATURE,
+    iso_features: "IsoFeatures | None" = None,
 ) -> dict[str, list[list[float]]]:
     """Get real mini-grid data from curvature and UMAP projections.
 
@@ -295,6 +477,8 @@ def get_real_minigrid_data(
         curvatures: Per-point Ricci curvature values (from GeometryComputer)
         cursor_x: Cursor X (0-18)
         cursor_y: Cursor Y (0-18)
+        iso_mode: Current Iso visualization mode
+        iso_features: Pre-computed IsoFeatures from TDA
 
     Returns:
         Dict with "top" (Iso) and "right" (Embed) grids
@@ -306,7 +490,10 @@ def get_real_minigrid_data(
 
     # Generate real views
     embed_data = get_embed_view(grid_data, cursor_x, cursor_y)
-    iso_data = get_iso_view(grid_data, curvatures, cursor_x, cursor_y)
+    iso_data = get_iso_view(
+        grid_data, curvatures, cursor_x, cursor_y,
+        iso_mode=iso_mode, iso_features=iso_features
+    )
 
     return {
         "right": embed_data.grid,  # Right mini-grid = Embed

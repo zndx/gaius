@@ -3,7 +3,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .iso_features import IsoFeatures
 
 
 class ViewMode(Enum):
@@ -27,6 +30,21 @@ class OverlayMode(Enum):
     GEOMETRY = "geometry"  # Curvature (boundaries vs interiors)
     DYNAMICS = "dynamics"  # Gradient field + divergence
     AGENTS = "agents"
+
+
+class IsoMode(Enum):
+    """Iso view visualization modes.
+
+    Each mode reveals different aspects of the topological structure:
+    - CURVATURE: Semantic boundaries via Ricci curvature (κ)
+    - PERSISTENCE: Topological complexity of each document (π)
+    - COMPLEXITY: Semantic diversity within documents (σ)
+    - BOUNDARY: Documents forming semantic loops (β)
+    """
+    CURVATURE = "curvature"     # κ: Ricci curvature (semantic boundaries)
+    PERSISTENCE = "persistence"  # π: Total persistence (topological complexity)
+    COMPLEXITY = "complexity"    # σ: Token embedding variance (semantic diversity)
+    BOUNDARY = "boundary"        # β: H1 cycle contribution (loop participation)
 
 
 class CenterPanelMode(Enum):
@@ -84,6 +102,7 @@ class AppState:
     # View state
     view_mode: ViewMode = ViewMode.PENSION
     overlay_mode: OverlayMode = OverlayMode.NONE
+    iso_mode: IsoMode = IsoMode.CURVATURE
 
     # Panel visibility
     left_panel_visible: bool = True
@@ -133,6 +152,9 @@ class AppState:
     reasoning_traces: list = field(default_factory=list)  # History of ReasoningTrace
     background_tasks: list = field(default_factory=list)  # BackgroundTask instances
 
+    # Iso features (computed from TDA on multi-vector embeddings)
+    iso_features: Optional["IsoFeatures"] = None  # Forward reference to avoid circular import
+
     def move_cursor(self, dx: int, dy: int) -> bool:
         """Move cursor by delta, return True if moved."""
         new_x = max(0, min(18, self.cursor_x + dx))
@@ -156,6 +178,13 @@ class AppState:
         idx = modes.index(self.overlay_mode)
         self.overlay_mode = modes[(idx + 1) % len(modes)]
         return self.overlay_mode
+
+    def cycle_iso_mode(self) -> IsoMode:
+        """Cycle through Iso view modes: κ → π → σ → β → κ."""
+        modes = list(IsoMode)
+        idx = modes.index(self.iso_mode)
+        self.iso_mode = modes[(idx + 1) % len(modes)]
+        return self.iso_mode
 
     def toggle_left_panel(self) -> bool:
         """Toggle left panel visibility."""
