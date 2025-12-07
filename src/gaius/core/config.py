@@ -248,6 +248,75 @@ class SessionConfig:
 
 
 @dataclass
+class IcebergConfig:
+    """Apache Iceberg table format configuration."""
+
+    catalog: str = "gaius_hx"
+    namespace: str = "raw"
+    use_minio: bool = True
+
+
+@dataclass
+class MinioConfig:
+    """MinIO S3-compatible storage configuration."""
+
+    endpoint: str = "localhost:9010"
+    bucket: str = "zndx-gaius"
+    prefix: str = "hx/"              # Subfolder within bucket
+    access_key: str = ""             # Set via env var
+    secret_key: str = ""             # Set via env var
+
+
+@dataclass
+class FilesystemConfig:
+    """Filesystem storage fallback configuration."""
+
+    warehouse: str = ".iceberg"      # Hidden dir at KB root
+
+
+@dataclass
+class LineageConfig:
+    """OpenLineage and AGE graph configuration."""
+
+    enabled: bool = True
+    graph_name: str = "gaius_hx"
+    materialize_graph: bool = True   # Write to AGE graph when available
+
+
+@dataclass
+class HxConfig:
+    """Gaius HX - Raw content data lake configuration.
+
+    HX (history) stores high-volume raw fetched content in Apache Iceberg
+    tables, separate from curated KB summaries. Supports MinIO primary
+    storage with filesystem fallback.
+    """
+
+    enabled: bool = True
+    iceberg: IcebergConfig = field(default_factory=IcebergConfig)
+    minio: MinioConfig = field(default_factory=MinioConfig)
+    filesystem: FilesystemConfig = field(default_factory=FilesystemConfig)
+    lineage: LineageConfig = field(default_factory=LineageConfig)
+
+
+@dataclass
+class SummarizationConfig:
+    """Content summarization pipeline configuration.
+
+    Controls LLM-based summarization of raw content from HX to KB.
+    Only high-value sources and compelling content are summarized;
+    excluded content is tracked in lineage.
+    """
+
+    enabled: bool = True
+    batch_size: int = 20                 # Items per summarization batch
+    min_quality_score: float = 0.5       # Quality threshold for KB inclusion
+    daily_token_limit: int = 500000      # Token budget per day
+    model: str = ""                      # Override inference model (empty = use default)
+    schedule_cron: str = "15 */2 * * *"  # Run every 2 hours at :15
+
+
+@dataclass
 class ThemeConfig:
     """UI theme configuration.
 
@@ -306,6 +375,8 @@ class GaiusConfig:
     theme: ThemeConfig = field(default_factory=ThemeConfig)
     cognition: CognitionConfig = field(default_factory=CognitionConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
+    hx: HxConfig = field(default_factory=HxConfig)
+    summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
 
     # Raw HOCON tree for accessing custom settings
     _raw: ConfigTree | None = field(default=None, repr=False)
@@ -485,6 +556,48 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         max_threads=int(g.get("session.max_threads", 10)),
     )
 
+    # Gaius HX - Raw content data lake
+    hx_iceberg = IcebergConfig(
+        catalog=g.get("hx.iceberg.catalog", "gaius_hx"),
+        namespace=g.get("hx.iceberg.namespace", "raw"),
+        use_minio=g.get("hx.iceberg.use_minio", True),
+    )
+
+    hx_minio = MinioConfig(
+        endpoint=g.get("hx.minio.endpoint", "localhost:9010"),
+        bucket=g.get("hx.minio.bucket", "zndx-gaius"),
+        prefix=g.get("hx.minio.prefix", "hx/"),
+        access_key=g.get("hx.minio.access_key", ""),
+        secret_key=g.get("hx.minio.secret_key", ""),
+    )
+
+    hx_filesystem = FilesystemConfig(
+        warehouse=g.get("hx.filesystem.warehouse", ".iceberg"),
+    )
+
+    hx_lineage = LineageConfig(
+        enabled=g.get("hx.lineage.enabled", True),
+        graph_name=g.get("hx.lineage.graph_name", "gaius_hx"),
+        materialize_graph=g.get("hx.lineage.materialize_graph", True),
+    )
+
+    hx = HxConfig(
+        enabled=g.get("hx.enabled", True),
+        iceberg=hx_iceberg,
+        minio=hx_minio,
+        filesystem=hx_filesystem,
+        lineage=hx_lineage,
+    )
+
+    summarization = SummarizationConfig(
+        enabled=g.get("summarization.enabled", True),
+        batch_size=int(g.get("summarization.batch_size", 20)),
+        min_quality_score=float(g.get("summarization.min_quality_score", 0.5)),
+        daily_token_limit=int(g.get("summarization.daily_token_limit", 500000)),
+        model=g.get("summarization.model", ""),
+        schedule_cron=g.get("summarization.schedule_cron", "15 */2 * * *"),
+    )
+
     return GaiusConfig(
         profile=g.get("profile", "default"),
         app=app,
@@ -503,6 +616,8 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         theme=theme,
         cognition=cognition,
         session=session,
+        hx=hx,
+        summarization=summarization,
         _raw=tree,
     )
 
