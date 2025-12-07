@@ -110,6 +110,40 @@
       # Test that MCP server can start (useful for debugging)
       PYTHONPATH="" .devenv/state/venv/bin/python -c "from gaius.mcp_server import create_server; print('MCP server OK')"
     '';
+
+    # GPU cleanup task - kills stale vLLM processes and frees GPU memory
+    "gpu:cleanup".exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  GPU CLEANUP - Killing stale vLLM processes                  ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Find and kill any stale vLLM processes
+      VLLM_PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
+      if [ -n "$VLLM_PIDS" ]; then
+        echo "Found GPU processes: $VLLM_PIDS"
+        for pid in $VLLM_PIDS; do
+          if [ -n "$pid" ]; then
+            echo "  Killing PID $pid..."
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+        done
+        sleep 2
+        echo "✓ GPU processes terminated"
+      else
+        echo "✓ No stale GPU processes found"
+      fi
+
+      # Also kill any orphaned Python vllm processes
+      pkill -9 -f "vllm serve" 2>/dev/null || true
+      pkill -9 -f "gaius.engine.server" 2>/dev/null || true
+
+      # Show GPU memory status
+      echo ""
+      echo "GPU Memory Status:"
+      nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader 2>/dev/null || echo "  (nvidia-smi not available)"
+      echo ""
+    '';
   };
 
   # MCP server as an optional process (for debugging - Claude Code manages its own)
@@ -173,7 +207,40 @@
       echo "╚══════════════════════════════════════════════════════════════╝"
       echo ""
 
-      # Wait for Aeron cnc.dat
+      # ========================================================================
+      # GPU CLEANUP - Ensure clean start by killing any stale vLLM processes
+      # ========================================================================
+      echo "Cleaning up stale GPU processes..."
+
+      # Find and kill any processes using GPU memory
+      VLLM_PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
+      if [ -n "$VLLM_PIDS" ]; then
+        echo "  Found GPU processes: $VLLM_PIDS"
+        for pid in $VLLM_PIDS; do
+          if [ -n "$pid" ]; then
+            echo "    Killing PID $pid..."
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+        done
+        sleep 2
+        echo "  ✓ GPU processes terminated"
+      else
+        echo "  ✓ No stale GPU processes found"
+      fi
+
+      # Also kill any orphaned Python vllm/engine processes (not using GPU yet)
+      pkill -9 -f "vllm serve" 2>/dev/null || true
+      pkill -9 -f "gaius.engine.server" 2>/dev/null || true
+
+      # Show GPU memory status
+      echo ""
+      echo "GPU Memory Status:"
+      nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader 2>/dev/null | sed 's/^/  /' || echo "  (nvidia-smi not available)"
+      echo ""
+
+      # ========================================================================
+      # WAIT FOR AERON
+      # ========================================================================
       AERON_DIR="/dev/shm/gaius-aeron"
       echo "Waiting for Aeron media driver..."
       for i in $(seq 1 30); do
