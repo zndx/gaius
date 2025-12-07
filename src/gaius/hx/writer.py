@@ -234,23 +234,24 @@ class IcebergContentStore:
         import pyarrow as pa
 
         # Build schema matching Iceberg types
+        # Mark required fields as non-nullable (nullable=False)
         schema = pa.schema([
-            ("id", pa.string()),
-            ("source_id", pa.int64()),
-            ("external_id", pa.string()),
-            ("title", pa.string()),
-            ("url", pa.string()),
-            ("authors", pa.list_(pa.string())),
-            ("raw_content", pa.string()),
-            ("content_type", pa.string()),
-            ("metadata", pa.string()),
-            ("published_at", pa.timestamp("us", tz="UTC")),
-            ("fetched_at", pa.timestamp("us", tz="UTC")),
-            ("source_type", pa.string()),
-            ("processed", pa.bool_()),
-            ("summary_excluded", pa.bool_()),
-            ("exclusion_reason", pa.string()),
-            ("quality_score", pa.int64()),
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("source_id", pa.int64(), nullable=False),
+            pa.field("external_id", pa.string(), nullable=False),
+            pa.field("title", pa.string(), nullable=False),
+            pa.field("url", pa.string(), nullable=True),
+            pa.field("authors", pa.list_(pa.field("element", pa.string(), nullable=False)), nullable=True),
+            pa.field("raw_content", pa.string(), nullable=True),
+            pa.field("content_type", pa.string(), nullable=True),
+            pa.field("metadata", pa.string(), nullable=True),
+            pa.field("published_at", pa.timestamp("us", tz="UTC"), nullable=True),
+            pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=False),
+            pa.field("source_type", pa.string(), nullable=False),
+            pa.field("processed", pa.bool_(), nullable=False),
+            pa.field("summary_excluded", pa.bool_(), nullable=True),
+            pa.field("exclusion_reason", pa.string(), nullable=True),
+            pa.field("quality_score", pa.int64(), nullable=True),
         ])
 
         # Convert datetime objects to timezone-aware
