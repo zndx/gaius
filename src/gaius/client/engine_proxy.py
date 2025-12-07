@@ -1,7 +1,7 @@
 """Engine proxy that duck-types existing interfaces.
 
 Provides drop-in replacements for GPUOrchestrator, InferenceScheduler,
-and other components that delegate to gaius-engine via IPC.
+and other components that delegate to gaius-engine via gRPC.
 
 This enables the "dead code elimination" strategy where TUI/CLI/MCP
 can be simplified to thin clients that communicate with the engine.
@@ -13,9 +13,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
-from .aeron_client import EngineClient, get_client
+from .grpc_client import GrpcEngineClient, get_grpc_client
 
 logger = logging.getLogger(__name__)
+
+# Type alias for backwards compatibility
+EngineClient = GrpcEngineClient
+
+
+async def get_client() -> GrpcEngineClient:
+    """Get or create the gRPC engine client."""
+    return await get_grpc_client()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -43,11 +51,11 @@ class OrchestratorProxy:
         status = orch.get_status()
     """
 
-    def __init__(self, client: EngineClient):
+    def __init__(self, client: GrpcEngineClient):
         """Initialize proxy.
 
         Args:
-            client: Connected engine client
+            client: Connected gRPC engine client
         """
         self._client = client
         self._running = False
@@ -179,7 +187,7 @@ class SchedulerProxy:
     Duck-types the InferenceScheduler interface for drop-in replacement.
     """
 
-    def __init__(self, client: EngineClient):
+    def __init__(self, client: GrpcEngineClient):
         """Initialize proxy."""
         self._client = client
 
@@ -303,7 +311,7 @@ class EvolutionProxy:
     - View agent scores
     """
 
-    def __init__(self, client: EngineClient):
+    def __init__(self, client: GrpcEngineClient):
         """Initialize proxy."""
         self._client = client
 
@@ -392,7 +400,7 @@ class HealthProxy:
     - Health broadcast subscriptions
     """
 
-    def __init__(self, client: EngineClient):
+    def __init__(self, client: GrpcEngineClient):
         """Initialize proxy."""
         self._client = client
         self._health_callback = None
@@ -440,7 +448,7 @@ class HealthProxy:
 class TDAProxy:
     """Proxy for TDA computation service."""
 
-    def __init__(self, client: EngineClient):
+    def __init__(self, client: GrpcEngineClient):
         """Initialize proxy."""
         self._client = client
         self._request_counter = 0
@@ -484,7 +492,7 @@ class TDAProxy:
 class GridProxy:
     """Proxy for grid projection service."""
 
-    def __init__(self, client: EngineClient):
+    def __init__(self, client: GrpcEngineClient):
         """Initialize proxy."""
         self._client = client
         self._request_counter = 0

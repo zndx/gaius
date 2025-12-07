@@ -3,8 +3,7 @@
 This widget shows real-time status of the Agent0-style evolution process,
 including daemon status, recent cycles, agent performance, and trends.
 
-When gaius-engine is running and GAIUS_ENABLE_FALLBACKS=true, fetches data
-via the engine proxy for better separation of concerns.
+Uses gRPC to connect to gaius-engine for real-time data.
 """
 
 import asyncio
@@ -32,10 +31,14 @@ _engine_connected: bool = False
 
 
 async def _get_engine_client():
-    """Get engine client if available (with fallbacks enabled)."""
+    """Get gRPC engine client if available.
+
+    Uses gRPC client by default for production use.
+    Set GAIUS_DISABLE_ENGINE=true to skip engine connection.
+    """
     global _engine_client, _engine_connected
 
-    if os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() != "true":
+    if os.environ.get("GAIUS_DISABLE_ENGINE", "").lower() == "true":
         return None
 
     if _engine_client is not None:
@@ -51,11 +54,11 @@ async def _get_engine_client():
         return None
 
     try:
-        from ..client.aeron_client import EngineClient
-        _engine_client = EngineClient()
+        from ..client.grpc_client import GrpcEngineClient
+        _engine_client = GrpcEngineClient()
         if await _engine_client.connect():
             _engine_connected = True
-            logger.info("TUI connected to gaius-engine")
+            logger.info("TUI connected to gaius-engine via gRPC")
             return _engine_client
     except Exception as e:
         logger.debug(f"Engine not available for TUI: {e}")

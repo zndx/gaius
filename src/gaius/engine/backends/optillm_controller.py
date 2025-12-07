@@ -178,18 +178,25 @@ class OptillmController:
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
 
-        # Get Python from venv or current interpreter
-        python = sys.executable
+        # Find optillm executable in same directory as Python interpreter
+        python_dir = os.path.dirname(sys.executable)
+        optillm_bin = os.path.join(python_dir, "optillm")
 
-        cmd = [
-            python,
-            "-m",
-            "optillm",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(self._port),
-        ]
+        # Fall back to direct function call if binary not found
+        # Note: optillm doesn't accept --host, it binds to 0.0.0.0 by default
+        if os.path.exists(optillm_bin):
+            cmd = [
+                optillm_bin,
+                "--port",
+                str(self._port),
+            ]
+        else:
+            # Use -c with sys.argv injection for argument handling
+            cmd = [
+                sys.executable,
+                "-c",
+                f"import sys; sys.argv = ['optillm', '--port', '{self._port}']; from optillm import main; main()",
+            ]
 
         logger.info(f"Starting optillm: {' '.join(cmd)}")
 

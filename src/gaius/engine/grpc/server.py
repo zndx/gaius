@@ -60,6 +60,9 @@ class ServiceRegistry:
     # Backend router for inference
     backend_router: Any = None
 
+    # Orchestrator service for endpoint management
+    orchestrator_service: Any = None
+
     # Engine config
     config: Any = None
 
@@ -90,6 +93,7 @@ class GrpcServer:
     def set_services(
         self,
         backend_router: Any = None,
+        orchestrator_service: Any = None,
         config: Any = None,
         start_time: Optional[float] = None,
         get_health_metrics: Optional[Callable] = None,
@@ -102,6 +106,7 @@ class GrpcServer:
 
         Args:
             backend_router: BackendRouter instance for inference
+            orchestrator_service: OrchestratorService for endpoint management
             config: EngineConfig instance
             start_time: Engine start timestamp
             get_health_metrics: Callback to get current health metrics
@@ -111,6 +116,7 @@ class GrpcServer:
             stop_evolution: Callback to stop evolution daemon
         """
         self._services.backend_router = backend_router
+        self._services.orchestrator_service = orchestrator_service
         self._services.config = config
         self._services.start_time = start_time
         self._services.get_health_metrics = get_health_metrics
