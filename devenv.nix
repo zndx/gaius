@@ -227,5 +227,46 @@
     # Disabled by default - engine manages optillm dynamically
     process-compose.disabled = true;
   };
+
+  # ============================================================================
+  # Gaius Fetch Worker - Content gathering daemon
+  # ============================================================================
+
+  processes.gaius-worker = {
+    exec = ''
+      if [ "''${DISABLE_WORKER:-false}" == "true" ]; then
+        echo "Gaius Worker disabled (DISABLE_WORKER=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  GAIUS WORKER - Content Gathering Daemon                     ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Wait for postgres to be ready
+      echo "Waiting for PostgreSQL..."
+      for i in $(seq 1 30); do
+        if pg_isready -h 127.0.0.1 -p 5438 -U postgres >/dev/null 2>&1; then
+          echo "✓ PostgreSQL ready"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: PostgreSQL not ready after 30s"
+          exit 1
+        fi
+        sleep 1
+      done
+
+      echo ""
+      echo "Starting gaius-worker daemon (pool-size=2, poll-interval=60)..."
+      export PYTHONPATH=""
+      exec .devenv/state/venv/bin/python -m gaius.workers.cli --pool-size 2 --poll-interval 60 -v
+    '';
+    # Auto-start by default, depends on postgres
+    process-compose = {
+      depends_on.postgres.condition = "process_healthy";
+    };
+  };
 }
 
