@@ -4,22 +4,29 @@ Manages the optillm proxy server for prompt optimization techniques.
 optillm provides various optimization strategies (COT, MOA, BON, etc.)
 and routes requests to underlying vLLM endpoints.
 
-The engine manages the optillm subprocess lifecycle, starting it on demand
-and monitoring health.
+The engine manages the optillm subprocess lifecycle via gunicorn WSGI server,
+providing production-ready features:
+- Graceful worker reload via SIGHUP
+- Dynamic worker scaling for GPU reclamation
+- Runtime technique reconfiguration
 """
 
 import asyncio
 import logging
 import os
+import signal
 import sys
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
 
 from ..config import EngineConfig, OptillmConfig
+from .gunicorn_config import GunicornConfigGenerator, GunicornSettings
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +39,8 @@ class OptillmStatus(Enum):
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
     STOPPING = "stopping"
+    RELOADING = "reloading"  # During SIGHUP reload
+    SCALING = "scaling"  # During worker count change
     FAILED = "failed"
 
 
@@ -102,8 +111,13 @@ class OptillmResponse:
 class OptillmController:
     """Controller for optillm prompt optimization backend.
 
-    Manages the optillm subprocess lifecycle, health checking, request routing,
-    and technique configuration. The engine starts optillm on demand.
+    Manages the optillm subprocess lifecycle via gunicorn WSGI server,
+    providing production-ready features:
+    - Graceful worker reload via SIGHUP
+    - Dynamic worker scaling for GPU reclamation
+    - Runtime technique reconfiguration
+
+    The engine starts optillm on demand using gunicorn as the WSGI server.
     """
 
     def __init__(self, config: EngineConfig):
@@ -138,9 +152,24 @@ class OptillmController:
         self._max_recovery_attempts = 3
         self._recovery_attempts = 0
 
+        # Gunicorn-specific settings
+        self._use_gunicorn = getattr(self.optillm_config, "use_gunicorn", True)
+        self._gunicorn_config: Optional[GunicornConfigGenerator] = None
+        self._configured_workers = getattr(
+            getattr(self.optillm_config, "gunicorn", None), "workers", 4
+        )
+        self._last_reload: Optional[datetime] = None
+        self._reload_count = 0
+
+        # Log buffers for progress detection
+        self._stdout_buffer: deque = deque(maxlen=500)
+        self._stderr_buffer: deque = deque(maxlen=500)
+        self._log_reader_task: Optional[asyncio.Task] = None
+
         logger.info(
             f"OptillmController initialized: {self._base_url}, "
-            f"default technique: {self._default_technique.value}"
+            f"default technique: {self._default_technique.value}, "
+            f"gunicorn: {self._use_gunicorn}"
         )
 
     async def start(self) -> None:
@@ -159,8 +188,11 @@ class OptillmController:
             logger.info("optillm already running externally")
             return
 
-        # Start optillm subprocess
-        await self._start_optillm_process()
+        # Start optillm subprocess (gunicorn or Flask dev server)
+        if self._use_gunicorn:
+            await self._start_gunicorn_process()
+        else:
+            await self._start_optillm_process()
         logger.info("OptillmController started")
 
     async def _start_optillm_process(self) -> bool:
@@ -224,13 +256,134 @@ class OptillmController:
                 return False
 
         except FileNotFoundError:
-            logger.error(f"Python not found: {python}")
+            logger.error(f"Python not found: {sys.executable}")
             self._status = OptillmStatus.FAILED
             return False
         except Exception as e:
             logger.error(f"Failed to start optillm: {e}")
             self._status = OptillmStatus.FAILED
             return False
+
+    async def _start_gunicorn_process(self) -> bool:
+        """Start optillm via gunicorn WSGI server.
+
+        Returns:
+            True if started successfully
+        """
+        self._status = OptillmStatus.STARTING
+
+        # Build environment
+        env = os.environ.copy()
+        env["OPTILLM_API_KEY"] = self._api_key
+        env["OPENAI_API_KEY"] = self._api_key
+        # Clear PYTHONPATH to avoid Nix store conflicts
+        env["PYTHONPATH"] = ""
+
+        # Get gunicorn settings from config
+        gunicorn_cfg = getattr(self.optillm_config, "gunicorn", None)
+        workers = getattr(gunicorn_cfg, "workers", 4) if gunicorn_cfg else 4
+        threads = getattr(gunicorn_cfg, "threads", 2) if gunicorn_cfg else 2
+        timeout = getattr(gunicorn_cfg, "timeout", 120) if gunicorn_cfg else 120
+        config_dir = getattr(gunicorn_cfg, "config_dir", "/tmp/gaius") if gunicorn_cfg else "/tmp/gaius"
+
+        # Create gunicorn config generator
+        settings = GunicornSettings(
+            bind=f"127.0.0.1:{self._port}",
+            workers=workers,
+            threads=threads,
+            timeout=timeout,
+            graceful_timeout=30,
+            optillm_api_key=self._api_key,
+            optillm_approach=self._default_technique.value,
+            config_dir=config_dir,
+        )
+        self._gunicorn_config = GunicornConfigGenerator(settings, config_dir)
+        self._configured_workers = workers
+
+        # Generate config file
+        config_path = self._gunicorn_config.generate()
+
+        # Find gunicorn executable
+        python_dir = os.path.dirname(sys.executable)
+        gunicorn_bin = os.path.join(python_dir, "gunicorn")
+
+        if not os.path.exists(gunicorn_bin):
+            logger.error(f"gunicorn not found at {gunicorn_bin}")
+            self._status = OptillmStatus.FAILED
+            return False
+
+        # Build command
+        cmd = [gunicorn_bin] + self._gunicorn_config.get_command_args()
+
+        logger.info(f"Starting optillm via gunicorn: {' '.join(cmd)}")
+
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                *cmd,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            self._pid = self._process.pid
+            self._started_at = datetime.now()
+
+            # Start log reader task
+            self._log_reader_task = asyncio.create_task(self._read_logs())
+
+            # Wait for healthy
+            healthy = await self._wait_for_healthy()
+
+            if healthy:
+                self._status = OptillmStatus.HEALTHY
+                self._recovery_attempts = 0
+                logger.info(
+                    f"optillm-gunicorn started successfully "
+                    f"(PID: {self._pid}, workers: {workers})"
+                )
+                return True
+            else:
+                self._status = OptillmStatus.FAILED
+                logger.error("optillm-gunicorn failed to become healthy")
+                # Log last few stderr lines for debugging
+                if self._stderr_buffer:
+                    logger.error("Last stderr lines:")
+                    for line in list(self._stderr_buffer)[-10:]:
+                        logger.error(f"  {line}")
+                return False
+
+        except FileNotFoundError:
+            logger.error(f"gunicorn not found: {gunicorn_bin}")
+            self._status = OptillmStatus.FAILED
+            return False
+        except Exception as e:
+            logger.error(f"Failed to start optillm-gunicorn: {e}")
+            self._status = OptillmStatus.FAILED
+            return False
+
+    async def _read_logs(self) -> None:
+        """Read stdout/stderr from process into buffers."""
+        if not self._process:
+            return
+
+        async def read_stream(stream, buffer: deque, prefix: str):
+            """Read from stream and store in buffer."""
+            try:
+                async for line in stream:
+                    decoded = line.decode("utf-8", errors="replace").rstrip()
+                    buffer.append(decoded)
+                    logger.debug(f"[optillm-{prefix}] {decoded}")
+            except Exception as e:
+                logger.debug(f"Log reader {prefix} error: {e}")
+
+        # Read both streams concurrently
+        try:
+            await asyncio.gather(
+                read_stream(self._process.stdout, self._stdout_buffer, "stdout"),
+                read_stream(self._process.stderr, self._stderr_buffer, "stderr"),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            logger.debug(f"Log reader error: {e}")
 
     async def _wait_for_healthy(self) -> bool:
         """Wait for optillm to become healthy."""
@@ -254,6 +407,15 @@ class OptillmController:
 
     async def stop(self) -> None:
         """Stop the controller and optillm subprocess."""
+        # Cancel log reader task
+        if self._log_reader_task and not self._log_reader_task.done():
+            self._log_reader_task.cancel()
+            try:
+                await self._log_reader_task
+            except asyncio.CancelledError:
+                pass
+            self._log_reader_task = None
+
         if self._process:
             self._status = OptillmStatus.STOPPING
             logger.info(f"Stopping optillm (PID: {self._pid})")
@@ -277,6 +439,11 @@ class OptillmController:
             self._pid = None
             self._status = OptillmStatus.STOPPED
 
+        # Cleanup gunicorn config
+        if self._gunicorn_config:
+            self._gunicorn_config.cleanup()
+            self._gunicorn_config = None
+
         if self._client:
             await self._client.aclose()
             self._client = None
@@ -298,7 +465,149 @@ class OptillmController:
         logger.info(f"Restarting optillm (attempt {self._recovery_attempts})")
 
         await self.stop()
-        return await self._start_optillm_process()
+
+        if self._use_gunicorn:
+            return await self._start_gunicorn_process()
+        else:
+            return await self._start_optillm_process()
+
+    async def reload(self) -> bool:
+        """Graceful reload via SIGHUP signal (gunicorn only).
+
+        Reloads configuration and gracefully restarts workers.
+        In-flight requests are allowed to complete.
+
+        Returns:
+            True if reload successful
+        """
+        if not self._use_gunicorn:
+            logger.warning("reload() only works with gunicorn mode, using restart()")
+            return await self.restart()
+
+        if self._status != OptillmStatus.HEALTHY or not self._pid:
+            logger.warning("Cannot reload: optillm not healthy")
+            return False
+
+        self._status = OptillmStatus.RELOADING
+        logger.info(f"Sending SIGHUP to optillm-gunicorn (PID: {self._pid})")
+
+        try:
+            os.kill(self._pid, signal.SIGHUP)
+            self._last_reload = datetime.now()
+            self._reload_count += 1
+
+            # Brief wait then verify health
+            await asyncio.sleep(2)
+            healthy = await self._wait_for_healthy()
+
+            if healthy:
+                self._status = OptillmStatus.HEALTHY
+                logger.info("optillm-gunicorn reload successful")
+                return True
+            else:
+                self._status = OptillmStatus.UNHEALTHY
+                logger.error("optillm-gunicorn failed health check after reload")
+                return False
+
+        except ProcessLookupError:
+            logger.error("optillm-gunicorn process not found for reload")
+            self._status = OptillmStatus.FAILED
+            return False
+        except Exception as e:
+            logger.error(f"Reload failed: {e}")
+            self._status = OptillmStatus.UNHEALTHY
+            return False
+
+    async def scale_workers(self, count: int) -> bool:
+        """Scale worker count (requires restart for gunicorn).
+
+        Gunicorn SIGHUP does not change worker count - requires full restart.
+
+        Args:
+            count: New worker count
+
+        Returns:
+            True if scaling successful
+        """
+        if count < 1:
+            logger.error(f"Invalid worker count: {count}")
+            return False
+
+        if not self._use_gunicorn:
+            logger.warning("scale_workers() only works with gunicorn mode")
+            return False
+
+        if count == self._configured_workers:
+            logger.info(f"Worker count already at {count}")
+            return True
+
+        self._status = OptillmStatus.SCALING
+        logger.info(f"Scaling optillm-gunicorn workers: {self._configured_workers} -> {count}")
+
+        # Update config and restart
+        if self._gunicorn_config:
+            self._gunicorn_config.update_workers(count)
+            self._configured_workers = count
+
+        # Full restart required for worker count change
+        await self.stop()
+
+        # Recreate client
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        success = await self._start_gunicorn_process()
+
+        if success:
+            logger.info(f"Scaled to {count} workers successfully")
+        else:
+            logger.error(f"Failed to scale to {count} workers")
+
+        return success
+
+    async def update_technique(self, technique: str) -> bool:
+        """Update default technique and reload.
+
+        Args:
+            technique: New default technique (e.g., "cot_reflection", "bon")
+
+        Returns:
+            True if update successful
+        """
+        try:
+            new_technique = OptillmTechnique(technique)
+        except ValueError:
+            logger.error(f"Unknown technique: {technique}")
+            return False
+
+        self._default_technique = new_technique
+        logger.info(f"Updated default technique to: {technique}")
+
+        if self._use_gunicorn and self._gunicorn_config:
+            self._gunicorn_config.update_technique(technique)
+            return await self.reload()
+
+        return True
+
+    def get_recent_logs(self, lines: int = 50) -> dict[str, list[str]]:
+        """Get recent log lines from process.
+
+        Args:
+            lines: Number of lines to return
+
+        Returns:
+            Dict with stdout and stderr log lines
+        """
+        return {
+            "stdout": list(self._stdout_buffer)[-lines:],
+            "stderr": list(self._stderr_buffer)[-lines:],
+        }
 
     async def health_check(self) -> bool:
         """Check if optillm is healthy.
@@ -485,7 +794,7 @@ class OptillmController:
         Returns:
             Status dict with health and configuration
         """
-        return {
+        status = {
             "enabled": self.optillm_config.enabled,
             "healthy": self._healthy,
             "status": self._status.value,
@@ -504,6 +813,21 @@ class OptillmController:
             "max_recovery_attempts": self._max_recovery_attempts,
             "available_techniques": [t.value for t in OptillmTechnique if t.value],
         }
+
+        # Add gunicorn-specific status
+        status["gunicorn"] = {
+            "enabled": self._use_gunicorn,
+            "workers": self._configured_workers,
+            "reload_count": self._reload_count,
+            "last_reload": (
+                self._last_reload.isoformat() if self._last_reload else None
+            ),
+        }
+
+        if self._gunicorn_config:
+            status["gunicorn"]["config"] = self._gunicorn_config.get_status()
+
+        return status
 
     @property
     def is_healthy(self) -> bool:
