@@ -21,11 +21,27 @@ from gaius.hx.config import HxConfig, get_hx_config
 logger = logging.getLogger(__name__)
 
 
+def _compute_content_hash(content: str | None) -> str | None:
+    """Compute SHA-256 hash of content for duplicate detection.
+
+    Args:
+        content: Raw content string.
+
+    Returns:
+        Hex-encoded SHA-256 hash or None if no content.
+    """
+    if not content:
+        return None
+    import hashlib
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class ContentItem:
     """A content item to be stored in Iceberg.
 
-    This matches the schema in tables.py and the content_items DB table.
+    This is the canonical schema for raw content in the HX data lake.
+    PostgreSQL only stores metadata; raw content lives here.
     """
 
     source_id: int
@@ -46,10 +62,14 @@ class ContentItem:
     summary_excluded: bool = False
     exclusion_reason: str | None = None
     quality_score: int | None = None
+    content_hash: str | None = None  # SHA-256 for duplicate detection
 
     def __post_init__(self):
         if self.fetched_at is None:
             self.fetched_at = datetime.now(timezone.utc)
+        # Auto-compute content hash if not provided
+        if self.content_hash is None and self.raw_content:
+            self.content_hash = _compute_content_hash(self.raw_content)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for Iceberg append."""
@@ -70,6 +90,7 @@ class ContentItem:
             "summary_excluded": self.summary_excluded,
             "exclusion_reason": self.exclusion_reason,
             "quality_score": self.quality_score,
+            "content_hash": self.content_hash,
         }
 
 
@@ -252,6 +273,7 @@ class IcebergContentStore:
             pa.field("summary_excluded", pa.bool_(), nullable=True),
             pa.field("exclusion_reason", pa.string(), nullable=True),
             pa.field("quality_score", pa.int64(), nullable=True),
+            pa.field("content_hash", pa.string(), nullable=True),
         ])
 
         # Convert datetime objects to timezone-aware

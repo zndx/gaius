@@ -189,25 +189,41 @@ class Database:
     # Content Operations
     # -------------------------------------------------------------------------
 
-    async def insert_content_item(self, item: ContentItem) -> int:
-        """Insert a content item, returning its ID.
+    async def insert_content_item(
+        self,
+        item: ContentItem,
+        iceberg_id: str | None = None,
+        iceberg_snapshot_id: int | None = None,
+    ) -> int:
+        """Insert a content item metadata, returning its ID.
 
-        Uses ON CONFLICT to handle duplicates gracefully.
+        Raw content is stored in Iceberg (HX), not PostgreSQL.
+        Only metadata (title, authors, URLs, timestamps) goes to PostgreSQL.
+
+        Args:
+            item: ContentItem with metadata.
+            iceberg_id: UUID of the content in Iceberg raw.content table.
+            iceberg_snapshot_id: Iceberg snapshot ID for time-travel queries.
+
+        Returns:
+            PostgreSQL content_items.id
         """
         row = await self.pool.fetchrow(
             """
             INSERT INTO content_items (
                 source_id, external_id, url, title, authors,
-                summary, content, content_type, metadata,
-                published_at, fetched_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                summary, content_type, metadata,
+                published_at, fetched_at,
+                iceberg_id, iceberg_snapshot_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10, $11)
             ON CONFLICT (source_id, external_id) DO UPDATE
             SET title = EXCLUDED.title,
                 authors = EXCLUDED.authors,
                 summary = EXCLUDED.summary,
-                content = EXCLUDED.content,
                 metadata = EXCLUDED.metadata,
-                fetched_at = NOW()
+                fetched_at = NOW(),
+                iceberg_id = COALESCE(EXCLUDED.iceberg_id, content_items.iceberg_id),
+                iceberg_snapshot_id = COALESCE(EXCLUDED.iceberg_snapshot_id, content_items.iceberg_snapshot_id)
             RETURNING id
             """,
             item.source_id,
@@ -216,20 +232,38 @@ class Database:
             item.title,
             item.authors,
             item.summary,
-            item.content,
             item.content_type,
             item.metadata,  # asyncpg JSONB codec handles serialization
             item.published_at,
+            iceberg_id,
+            iceberg_snapshot_id,
         )
         return row["id"]
 
-    async def insert_content_items(self, items: list[ContentItem]) -> tuple[int, int]:
-        """Insert multiple content items.
+    async def insert_content_items(
+        self,
+        items: list[ContentItem],
+        iceberg_ids: dict[str, str] | None = None,
+        iceberg_snapshot_id: int | None = None,
+    ) -> tuple[int, int, list[ContentItem]]:
+        """Insert multiple content items metadata.
 
-        Returns (total_inserted, new_count).
+        Raw content goes to Iceberg (HX), metadata goes to PostgreSQL.
+
+        Args:
+            items: ContentItem objects with metadata.
+            iceberg_ids: Map of external_id -> iceberg_id (UUID in Iceberg).
+            iceberg_snapshot_id: Iceberg snapshot ID for all items in batch.
+
+        Returns:
+            Tuple of (total_inserted, new_count, new_items).
+            new_items contains only items that were newly inserted (for HX write).
         """
         total = 0
         new_count = 0
+        new_items: list[ContentItem] = []
+
+        iceberg_ids = iceberg_ids or {}
 
         for item in items:
             # Check if exists
@@ -242,12 +276,20 @@ class Database:
                 item.external_id,
             )
 
-            item_id = await self.insert_content_item(item)
+            # Get iceberg_id for this item if available
+            iceberg_id = iceberg_ids.get(item.external_id)
+
+            item_id = await self.insert_content_item(
+                item,
+                iceberg_id=iceberg_id,
+                iceberg_snapshot_id=iceberg_snapshot_id,
+            )
             total += 1
             if existing is None:
                 new_count += 1
+                new_items.append(item)
 
-        return total, new_count
+        return total, new_count, new_items
 
     async def get_content_by_external_id(
         self, source_id: int, external_id: str
