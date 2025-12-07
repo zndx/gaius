@@ -81,7 +81,7 @@ except ImportError:
 KB_ROOT = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
 ALLOWED_DIRS = ("archive", "current", "scratch")
 
-# Engine proxy cache
+# Engine proxy cache (gRPC client)
 _engine_client = None
 _engine_connected = False
 
@@ -91,23 +91,26 @@ _mcp_tda_features = None  # TDAFeatures | None
 
 
 async def _get_engine_client():
-    """Get engine client if available (with fallbacks enabled).
+    """Get gRPC engine client if available.
 
-    Returns None if engine not available or fallbacks disabled.
+    Uses the gRPC client by default for production use.
+    Set GAIUS_DISABLE_ENGINE=true to skip engine connection.
+
+    Returns None if engine not available.
     """
     global _engine_client, _engine_connected
 
-    # Check if fallbacks enabled (engine requires this currently)
-    if os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() != "true":
+    # Allow disabling engine connection
+    if os.environ.get("GAIUS_DISABLE_ENGINE", "").lower() == "true":
         return None
 
     if _engine_client is not None:
         return _engine_client if _engine_connected else None
 
     try:
-        from .client.aeron_client import EngineClient
+        from .client.grpc_client import GrpcEngineClient
 
-        _engine_client = EngineClient()
+        _engine_client = GrpcEngineClient()
         _engine_connected = await _engine_client.connect()
 
         if _engine_connected:

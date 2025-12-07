@@ -93,7 +93,7 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> OrchestratorStatusResponse:
         """Get orchestrator status including GPU allocations."""
         config = self._services.config
-        router = self._services.backend_router
+        orchestrator = self._services.orchestrator_service
 
         response = OrchestratorStatusResponse(
             total_gpus=0,
@@ -104,6 +104,21 @@ class GaiusServicer(GaiusServiceServicer):
             response.total_gpus = config.gpus.total
             response.available_gpus = config.gpus.total - len(config.gpus.reserved)
 
+        # Use OrchestratorService if available (preferred)
+        if orchestrator:
+            status = orchestrator.get_status()
+            for alias, ep in status.get("endpoints", {}).items():
+                endpoint = EndpointInfo(
+                    name=alias,
+                    model=ep.get("model", ""),
+                    status=ep.get("status", "stopped"),
+                    port=ep.get("port", 0),
+                )
+                response.endpoints.append(endpoint)
+            return response
+
+        # Fallback to backend router
+        router = self._services.backend_router
         if router:
             status = router.get_status()
             for name, backend in status.get("backends", {}).items():
@@ -125,20 +140,26 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> EndpointResponse:
         """Start an inference endpoint."""
         endpoint_name = request.endpoint_name
+        orchestrator = self._services.orchestrator_service
 
-        if not self._services.backend_router:
+        if not orchestrator:
             return EndpointResponse(
                 success=False,
-                message="Backend router not initialized",
+                message="OrchestratorService not initialized",
             )
 
         try:
-            # TODO: Implement endpoint start via backend router
+            status = await orchestrator.start_endpoint(endpoint_name)
             return EndpointResponse(
-                success=True,
-                message=f"Endpoint '{endpoint_name}' start requested",
+                success=status.status in ("healthy", "starting", "optillm"),
+                message=f"Endpoint '{endpoint_name}' started (status: {status.status})",
+                endpoint_name=endpoint_name,
+                port=status.port or 0,
             )
+        except ValueError as e:
+            return EndpointResponse(success=False, message=str(e))
         except Exception as e:
+            logger.error(f"Failed to start endpoint {endpoint_name}: {e}")
             return EndpointResponse(success=False, message=str(e))
 
     async def StopEndpoint(
@@ -148,20 +169,23 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> EndpointResponse:
         """Stop an inference endpoint."""
         endpoint_name = request.endpoint_name
+        orchestrator = self._services.orchestrator_service
 
-        if not self._services.backend_router:
+        if not orchestrator:
             return EndpointResponse(
                 success=False,
-                message="Backend router not initialized",
+                message="OrchestratorService not initialized",
             )
 
         try:
-            # TODO: Implement endpoint stop via backend router
+            success = await orchestrator.stop_endpoint(endpoint_name)
             return EndpointResponse(
-                success=True,
-                message=f"Endpoint '{endpoint_name}' stop requested",
+                success=success,
+                message=f"Endpoint '{endpoint_name}' stopped" if success else f"Failed to stop '{endpoint_name}'",
+                endpoint_name=endpoint_name,
             )
         except Exception as e:
+            logger.error(f"Failed to stop endpoint {endpoint_name}: {e}")
             return EndpointResponse(success=False, message=str(e))
 
     async def RestartEndpoint(
@@ -171,20 +195,24 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> EndpointResponse:
         """Restart an inference endpoint."""
         endpoint_name = request.endpoint_name
+        orchestrator = self._services.orchestrator_service
 
-        if not self._services.backend_router:
+        if not orchestrator:
             return EndpointResponse(
                 success=False,
-                message="Backend router not initialized",
+                message="OrchestratorService not initialized",
             )
 
         try:
-            # TODO: Implement endpoint restart via backend router
+            status = await orchestrator.restart_endpoint(endpoint_name)
             return EndpointResponse(
-                success=True,
-                message=f"Endpoint '{endpoint_name}' restart requested",
+                success=status.status in ("healthy", "starting"),
+                message=f"Endpoint '{endpoint_name}' restarted (status: {status.status})",
+                endpoint_name=endpoint_name,
+                port=status.port or 0,
             )
         except Exception as e:
+            logger.error(f"Failed to restart endpoint {endpoint_name}: {e}")
             return EndpointResponse(success=False, message=str(e))
 
     # =========================================================================

@@ -258,6 +258,7 @@ class GaiusEngine:
             # Register backend services
             self._grpc_server.set_services(
                 backend_router=self._backend_router,
+                orchestrator_service=self._orchestrator_service,
                 config=self.config,
                 start_time=self._start_time.timestamp() if self._start_time else None,
                 get_health_metrics=self._collect_health_metrics,
@@ -597,45 +598,136 @@ class GaiusEngine:
     # =========================================================================
 
     async def _handle_orchestrator(self, request: Request) -> Response:
-        """Handle orchestrator service requests."""
-        from .services.orchestrator_service import OrchestratorService
+        """Handle orchestrator service requests.
 
+        Delegates to the actual OrchestratorService for authentic operations.
+        """
         action = request.action
 
-        if action == "status":
-            # Return orchestrator status with GPU info
-            return Response.success(
-                request.id,
-                {
-                    "total_gpus": self.config.gpus.total,
-                    "available_gpus": self.config.gpus.total
-                    - len(self.config.gpus.reserved),
-                    "allocated": [],
-                    "evolution_enabled": self.config.evolution.enabled,
-                },
-            )
-        elif action == "list_agents":
-            agents = [
-                {
-                    "name": a.name,
-                    "alias": a.alias,
-                    "model": a.model,
-                    "backend": a.backend,
-                }
-                for a in self.config.agents.values()
-            ]
-            return Response.success(request.id, {"agents": agents})
-        elif action == "start":
-            # Start endpoints
-            endpoint = request.payload.get("endpoint", "")
-            return Response.success(request.id, {"started": endpoint or "all"})
-        elif action == "stop":
-            endpoint = request.payload.get("endpoint", "")
-            return Response.success(request.id, {"stopped": endpoint or "all"})
-        else:
+        # Ensure orchestrator service is initialized
+        if not self._orchestrator_service:
             return Response.failure(
-                request.id, code=400, message=f"Unknown action: {action}"
+                request.id,
+                code=503,
+                message="OrchestratorService not initialized",
             )
+
+        try:
+            if action == "status":
+                # Delegate to OrchestratorService.get_status()
+                status = self._orchestrator_service.get_status()
+                # Add config info not in service status
+                status["total_gpus"] = self.config.gpus.total
+                status["available_gpus"] = (
+                    self.config.gpus.total - len(self.config.gpus.reserved)
+                )
+                status["evolution_enabled"] = self.config.evolution.enabled
+                return Response.success(request.id, status)
+
+            elif action == "list_agents":
+                agents = [
+                    {
+                        "name": a.name,
+                        "alias": a.alias,
+                        "model": a.model,
+                        "backend": a.backend,
+                    }
+                    for a in self.config.agents.values()
+                ]
+                return Response.success(request.id, {"agents": agents})
+
+            elif action == "start":
+                endpoint = request.payload.get("endpoint", "")
+                if not endpoint:
+                    return Response.failure(
+                        request.id,
+                        code=400,
+                        message="endpoint parameter required",
+                    )
+                status = await self._orchestrator_service.start_endpoint(endpoint)
+                return Response.success(
+                    request.id,
+                    {
+                        "started": endpoint,
+                        "status": status.status,
+                        "port": status.port,
+                        "gpu_ids": status.gpu_ids,
+                        "pid": status.pid,
+                    },
+                )
+
+            elif action == "stop":
+                endpoint = request.payload.get("endpoint", "")
+                if not endpoint:
+                    return Response.failure(
+                        request.id,
+                        code=400,
+                        message="endpoint parameter required",
+                    )
+                success = await self._orchestrator_service.stop_endpoint(endpoint)
+                return Response.success(
+                    request.id,
+                    {"stopped": endpoint, "success": success},
+                )
+
+            elif action == "restart":
+                endpoint = request.payload.get("endpoint", "")
+                if not endpoint:
+                    return Response.failure(
+                        request.id,
+                        code=400,
+                        message="endpoint parameter required",
+                    )
+                status = await self._orchestrator_service.restart_endpoint(endpoint)
+                return Response.success(
+                    request.id,
+                    {
+                        "restarted": endpoint,
+                        "status": status.status,
+                        "port": status.port,
+                        "gpu_ids": status.gpu_ids,
+                        "pid": status.pid,
+                    },
+                )
+
+            elif action == "logs":
+                endpoint = request.payload.get("endpoint", "")
+                lines = request.payload.get("lines", 50)
+                if not endpoint:
+                    return Response.failure(
+                        request.id,
+                        code=400,
+                        message="endpoint parameter required",
+                    )
+                logs = self._orchestrator_service.get_endpoint_logs(endpoint, lines)
+                return Response.success(
+                    request.id,
+                    {"endpoint": endpoint, "lines": logs},
+                )
+
+            elif action == "clean_start":
+                endpoints = request.payload.get("endpoints", ["reasoning"])
+                result = await self._orchestrator_service.clean_start(endpoints)
+                return Response.success(request.id, result)
+
+            elif action == "health_check":
+                # Force a health check cycle
+                await self._orchestrator_service._check_endpoint_health()
+                return Response.success(
+                    request.id,
+                    {"checked": True, "status": self._orchestrator_service.get_status()},
+                )
+
+            else:
+                return Response.failure(
+                    request.id, code=400, message=f"Unknown action: {action}"
+                )
+
+        except ValueError as e:
+            return Response.failure(request.id, code=400, message=str(e))
+        except Exception as e:
+            logger.error(f"Orchestrator handler error: {e}")
+            return Response.failure(request.id, code=500, message=str(e))
 
     async def _handle_scheduler(self, request: Request) -> Response:
         """Handle scheduler service requests."""
