@@ -25,6 +25,13 @@ dependencies = [
     "vllm>=0.9.0", # Qwen3 support requires vLLM 0.9.0+
     "graphriccicurvature>=0.5.3.2",
     "ripser>=0.6.12",
+    "deepagents>=0.2.8",
+    "opentelemetry-api>=1.39.0",
+    "opentelemetry-sdk>=1.39.0",
+    "opentelemetry-instrumentation-logging>=0.60b0",
+    "bm25s>=0.2.14",
+    "stemming>=1.0.1",
+    "colpali-engine[interpretability]>=0.3.2",
 ]
 
 [project.optional-dependencies]
@@ -113,12 +120,51 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
 ]
+# Engine daemon (gaius-engine)
+engine = [
+    "flatbuffers>=24.3.25",  # FlatBuffers serialization (future upgrade from JSON)
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
+]
+# Gaius HX - Raw content data lake (Iceberg + lineage)
+hx = [
+    "pyiceberg[sql-postgres,s3fs]>=0.7.0",  # Iceberg with Postgres catalog and S3
+    "pyarrow>=14.0.0",                       # Parquet support
+    "s3fs>=2024.2.0",                        # S3/MinIO filesystem
+    "fsspec>=2024.2.0",                      # Abstract filesystem
+]
+# Full engine with Aeron IPC (requires aeron-cpp native package)
+engine-aeron = [
+    "gaius[engine]",
+    # Note: aeron-python requires native aeron-cpp library
+    # Install via: pip install aeron-python (after installing aeron-cpp)
+]
+# gRPC transport (KServe OIP + Gaius extensions)
+grpc = [
+    "grpcio>=1.59.0",
+    "grpcio-tools>=1.59.0",
+    "grpcio-status>=1.59.0",
+    "grpcio-health-checking>=1.59.0",
+    "protobuf>=4.25.0",
+]
+# Full engine with gRPC (primary transport)
+engine-grpc = [
+    "gaius[engine]",
+    "gaius[grpc]",
+]
 
 [project.scripts]
 gaius = "gaius.app:main"
 gaius-cli = "gaius.cli:main"
 gaius-mcp = "gaius.mcp_server:main"
 gaius-worker = "gaius.workers.cli:main"
+gaius-engine = "gaius.engine:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gaius"]
+
+[dependency-groups]
+dev = [
+    "textual-dev>=1.8.0",
+]

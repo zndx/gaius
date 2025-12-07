@@ -31,8 +31,7 @@
 
   # https://devenv.sh/packages/
   packages = with pkgs; [
-    # ansible  # Commented out - conflicts with Python 3.12 venv (brings Python 3.13)
-              # Install via pip/uv if needed: uv pip install ansible
+    aeron
     cmake
     conftest
     d2
@@ -46,10 +45,15 @@
     mdbook-katex
     mdbook-mermaid
     opentofu
+    protobuf
     presenterm
     qdrant
     wrangler
     zlib  # Required for numpy C extensions
+
+    # Gaius Engine dependencies
+    aeron-cpp      # Aeron C++ library and aeronmd media driver
+    flatbuffers    # FlatBuffers compiler for schema generation
   ];
 
   services.minio = {
@@ -62,18 +66,22 @@
   services.postgres = {
     enable = true;
     package = pkgs.postgresql_16;
-    extensions = ext: [ ext.pg_cron ];
+    extensions = ext: [
+      ext.pg_cron  # Scheduled tasks
+      ext.age      # Apache AGE - Graph database extension for lineage
+    ];
     initialDatabases = [{
       name = "zndx_gaius";
     }];
     port = 5438;
     listen_addresses = "127.0.0.1";  # Enable TCP for dbmate/asyncpg
     settings = {
-      shared_preload_libraries = "pg_cron";
+      shared_preload_libraries = "pg_cron,age";
       "cron.database_name" = "zndx_gaius";
     };
     initialScript = ''
       CREATE EXTENSION IF NOT EXISTS pg_cron;
+      -- AGE extension is created per-database in migrations
     '';
   };
 
@@ -112,6 +120,111 @@
       exec .devenv/state/venv/bin/python -m gaius.mcp_server
     '';
     # Not started by default - use `devenv up gaius-mcp` to start manually
+    process-compose.disabled = true;
+  };
+
+  # ============================================================================
+  # Gaius Engine processes (disable with DISABLE_ENGINE=true in .env)
+  # ============================================================================
+
+  # Aeron Media Driver (C++ native) - must start first
+  processes.aeron-driver = {
+    exec = ''
+      if [ "''${DISABLE_ENGINE:-false}" == "true" ]; then
+        echo "Aeron Media Driver disabled (DISABLE_ENGINE=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  AERON MEDIA DRIVER - Ultra-Low-Latency IPC Transport        ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Clean up stale Aeron directories
+      AERON_DIR="/dev/shm/gaius-aeron"
+      if [ -d "$AERON_DIR" ]; then
+        echo "Cleaning up stale Aeron directory: $AERON_DIR"
+        rm -rf "$AERON_DIR"
+      fi
+
+      echo "Starting Aeron Media Driver (C++ native)..."
+      echo "  IPC Channel: aeron:ipc"
+      echo "  Shared Memory: $AERON_DIR"
+      echo ""
+
+      # Set Aeron directory and run native driver
+      export AERON_DIR="$AERON_DIR"
+      exec aeronmd
+    '';
+    # Auto-start by default (use DISABLE_ENGINE=true to opt out)
+  };
+
+  # Gaius Engine - the central daemon
+  # NOTE: Engine manages optillm/vLLM processes dynamically, not devenv
+  processes.gaius-engine = {
+    exec = ''
+      if [ "''${DISABLE_ENGINE:-false}" == "true" ]; then
+        echo "Gaius Engine disabled (DISABLE_ENGINE=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  GAIUS ENGINE - Centralized Inference & Evolution Daemon     ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Wait for Aeron cnc.dat
+      AERON_DIR="/dev/shm/gaius-aeron"
+      echo "Waiting for Aeron media driver..."
+      for i in $(seq 1 30); do
+        if [ -f "$AERON_DIR/cnc.dat" ]; then
+          echo "✓ Aeron media driver ready"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: Aeron media driver not ready after 30s"
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Enable OpenTelemetry tracing if configured
+      export OTEL_SERVICE_NAME="gaius-engine"
+      export OTEL_EXPORTER_OTLP_ENDPOINT="''${OTEL_ENDPOINT:-http://localhost:4317}"
+
+      # Set API keys for inference backends
+      export OPTILLM_API_KEY="''${OPTILLM_API_KEY:-gaius-local-key}"
+      export OPENAI_API_KEY="''${OPTILLM_API_KEY:-gaius-local-key}"
+
+      echo ""
+      echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
+      export PYTHONPATH=""
+      exec .devenv/state/venv/bin/python -m gaius.engine --config config/agents.conf -v
+    '';
+    # Auto-start by default, depends on aeron-driver
+    process-compose = {
+      depends_on.aeron-driver.condition = "process_started";
+    };
+  };
+
+  # optillm server - standalone for debugging (engine normally manages this)
+  processes.optillm = {
+    exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  OPTILLM - Standalone Mode (for debugging)                   ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+      echo "NOTE: Normally gaius-engine manages optillm. Use this only for debugging."
+      echo ""
+
+      export OPTILLM_API_KEY="''${OPTILLM_API_KEY:-gaius-local-key}"
+      export OPENAI_API_KEY="''${OPTILLM_API_KEY:-gaius-local-key}"
+
+      echo "Starting optillm on port 8000..."
+      export PYTHONPATH=""
+      exec .devenv/state/venv/bin/python -m optillm --host 0.0.0.0 --port 8000
+    '';
+    # Disabled by default - engine manages optillm dynamically
     process-compose.disabled = true;
   };
 }
