@@ -23,6 +23,8 @@ import asyncio
 import logging
 import os
 import re
+import signal
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,8 @@ class EndpointConfig:
     models: list[str] = field(default_factory=list)
     gpus: list[int] = field(default_factory=list)
     tensor_parallel: int = 1
+    context_length: int = 32768  # Per-endpoint context length
+    max_num_seqs: int = 256  # Per-endpoint max concurrent sequences
 
 
 @dataclass
@@ -129,12 +133,13 @@ class GPUOrchestrator:
             orchestrator_cfg = inference.get("orchestrator", {})
 
             # Load orchestrator settings
-            self._vllm_binary = orchestrator_cfg.get("vllm", {}).get("binary", "vllm")
-            self._gpu_memory_util = orchestrator_cfg.get("vllm", {}).get(
-                "gpu_memory_utilization", 0.9
-            )
+            vllm_cfg = orchestrator_cfg.get("vllm", {})
+            self._vllm_binary = vllm_cfg.get("binary", "vllm")
+            self._gpu_memory_util = vllm_cfg.get("gpu_memory_utilization", 0.90)
+            self._max_model_len = vllm_cfg.get("max_model_len", 65536)
+            self._max_num_seqs = vllm_cfg.get("max_num_seqs", 32)
             self._health_interval = orchestrator_cfg.get("health_check_interval", 15)
-            self._startup_timeout = orchestrator_cfg.get("startup_timeout", 120)
+            self._startup_timeout = orchestrator_cfg.get("startup_timeout", 180)  # 3 min for large models
             self._max_failures = orchestrator_cfg.get("max_consecutive_failures", 3)
             self._max_recovery = orchestrator_cfg.get("max_recovery_attempts", 3)
 
@@ -147,6 +152,9 @@ class GPUOrchestrator:
                         models=ep.get("models", []),
                         gpus=ep.get("gpus", []),
                         tensor_parallel=ep.get("tensor_parallel", 1),
+                        # Per-endpoint context and sequence limits (defaults from global vllm config)
+                        context_length=ep.get("context_length", self._max_model_len),
+                        max_num_seqs=ep.get("max_num_seqs", self._max_num_seqs),
                     )
 
             logger.info(f"Loaded {len(self._endpoints_config)} endpoint configs")
@@ -160,9 +168,11 @@ class GPUOrchestrator:
                 gpus=[0],
             )
             self._vllm_binary = "vllm"
-            self._gpu_memory_util = 0.9
+            self._gpu_memory_util = 0.90
+            self._max_model_len = 65536
+            self._max_num_seqs = 32
             self._health_interval = 15
-            self._startup_timeout = 120
+            self._startup_timeout = 180
             self._max_failures = 3
             self._max_recovery = 3
 
@@ -359,11 +369,21 @@ class GPUOrchestrator:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_str
 
-        # Build vLLM command
+        # Ensure HF_HOME is set for model cache
+        if "HF_HOME" not in env:
+            # Common model cache locations
+            for hf_path in ["/raid/cache/huggingface", os.path.expanduser("~/.cache/huggingface")]:
+                if os.path.exists(hf_path):
+                    env["HF_HOME"] = hf_path
+                    break
+
+        # Build vLLM command - use per-endpoint context and sequence limits
         cmd = [
             self._vllm_binary, "serve", proc.model,
             "--port", str(proc.port),
             "--gpu-memory-utilization", str(self._gpu_memory_util),
+            "--max-model-len", str(config.context_length),
+            "--max-num-seqs", str(config.max_num_seqs),
         ]
 
         # Add tensor parallelism if needed
@@ -490,7 +510,10 @@ class GPUOrchestrator:
         return False
 
     async def stop_endpoint(self, endpoint: str, timeout: float = 30.0) -> bool:
-        """Gracefully stop a vLLM instance.
+        """Gracefully stop a vLLM instance and all its child processes.
+
+        Uses process group killing to ensure tensor-parallel workers are
+        also terminated, preventing GPU memory leaks from orphaned processes.
 
         Args:
             endpoint: Endpoint name
@@ -507,15 +530,39 @@ class GPUOrchestrator:
             proc.status = ProcessStatus.STOPPING
             logger.info(f"Stopping endpoint {endpoint} (PID: {proc.pid})")
 
-        # Send SIGTERM
-        proc.process.terminate()
+        pid = proc.pid
+        pgid = None
+
+        # Try to get process group ID for killing child processes (tensor-parallel workers)
+        try:
+            if pid:
+                pgid = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+        # Send SIGTERM to process group if available, otherwise just parent
+        if pgid:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+                logger.debug(f"Sent SIGTERM to process group {pgid}")
+            except (ProcessLookupError, PermissionError):
+                proc.process.terminate()
+        else:
+            proc.process.terminate()
 
         try:
             await asyncio.wait_for(proc.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            # Force kill
+            # Force kill the entire process group
             logger.warning(f"Force killing endpoint {endpoint}")
-            proc.process.kill()
+            if pgid:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                    logger.debug(f"Sent SIGKILL to process group {pgid}")
+                except (ProcessLookupError, PermissionError):
+                    proc.process.kill()
+            else:
+                proc.process.kill()
             await proc.process.wait()
 
         async with self._lock:
@@ -800,79 +847,181 @@ class GPUOrchestrator:
                    list(proc.stderr_buffer)[-lines//2:]
         return combined[-lines:]
 
+    async def wait_for_gpu_free(
+        self, gpus: list[int] | None = None, timeout: float = 30.0, threshold_mb: int = 500
+    ) -> bool:
+        """Wait until specified GPUs have minimal memory usage.
+
+        This is critical for tier-4 tests where tensor-parallel vLLM instances
+        require all assigned GPUs to be free before starting.
+
+        Args:
+            gpus: List of GPU indices to check (None = all GPUs)
+            timeout: Maximum time to wait in seconds
+            threshold_mb: Consider GPU free if using less than this many MB
+
+        Returns:
+            True if all GPUs are free within timeout
+        """
+        import time
+
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=index,memory.used",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+
+                if result.returncode != 0:
+                    logger.warning("nvidia-smi failed, assuming GPUs busy")
+                    await asyncio.sleep(1.0)
+                    continue
+
+                all_free = True
+                for line in result.stdout.strip().split("\n"):
+                    if not line.strip():
+                        continue
+                    parts = line.split(",")
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        gpu_idx = int(parts[0].strip())
+                        mem_used = float(parts[1].strip())
+
+                        # Check if this GPU is in our target list
+                        if gpus is None or gpu_idx in gpus:
+                            if mem_used > threshold_mb:
+                                logger.debug(
+                                    f"GPU {gpu_idx} still has {mem_used:.0f} MiB in use"
+                                )
+                                all_free = False
+                                break
+                    except (ValueError, IndexError):
+                        continue
+
+                if all_free:
+                    logger.info("All target GPUs are free")
+                    return True
+
+            except subprocess.TimeoutExpired:
+                logger.warning("nvidia-smi timed out")
+            except Exception as e:
+                logger.warning(f"GPU check error: {e}")
+
+            await asyncio.sleep(1.0)
+
+        logger.warning(f"GPUs not free after {timeout}s timeout")
+        return False
+
     async def cleanup_stale_processes(self) -> dict[str, Any]:
         """Kill stale vLLM processes to free GPU memory.
 
-        Finds and terminates any orphaned vLLM processes from previous
-        sessions that may be holding GPU memory without being tracked.
+        Uses comprehensive process detection including tensor-parallel workers
+        (VLLM::Worker, VLLM::EngineCore) and process group killing to ensure
+        complete cleanup.
 
         Returns:
             Dict with cleanup results
         """
-        import subprocess
-
         results = {
             "processes_found": 0,
             "processes_killed": 0,
             "pids_killed": [],
+            "process_groups_killed": [],
             "errors": [],
         }
 
+        # Comprehensive patterns for vLLM processes
+        # vLLM spawns various worker types for tensor-parallel execution
+        patterns = [
+            r"python.*vllm",         # Main vLLM server
+            r"vllm\.entrypoints",    # Entry point modules
+            r"VLLM::Worker",         # Tensor-parallel workers
+            r"VLLM::EngineCore",     # Engine core processes
+            r"ray::IDLE",            # Ray workers (used by some vLLM configs)
+        ]
+
         try:
-            # Find all vLLM processes (multiple patterns)
-            # vLLM spawns workers with names like "VLLM::Worker", "VLLM::EngineCore"
-            ps_result = subprocess.run(
-                ["pgrep", "-f", "vllm|VLLM"],
-                capture_output=True,
-                text=True,
-            )
+            pids_found = set()
 
-            if ps_result.returncode == 0 and ps_result.stdout.strip():
-                pids = ps_result.stdout.strip().split("\n")
-                results["processes_found"] = len(pids)
-
-                for pid_str in pids:
-                    pid = int(pid_str.strip())
-
-                    # Check if this is a tracked process
-                    tracked = any(
-                        p.pid == pid
-                        for p in self._processes.values()
-                        if p.process is not None
+            # Collect all matching PIDs
+            for pattern in patterns:
+                try:
+                    ps_result = subprocess.run(
+                        ["pgrep", "-f", pattern],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
                     )
+                    if ps_result.returncode == 0 and ps_result.stdout.strip():
+                        for pid_str in ps_result.stdout.strip().split("\n"):
+                            if pid_str.strip():
+                                pids_found.add(int(pid_str.strip()))
+                except subprocess.TimeoutExpired:
+                    pass
 
-                    if not tracked:
+            results["processes_found"] = len(pids_found)
+
+            # Kill each process (try process group first)
+            for pid in pids_found:
+                # Check if this is a tracked process we manage
+                tracked = any(
+                    p.pid == pid
+                    for p in self._processes.values()
+                    if p.process is not None
+                )
+
+                if not tracked:
+                    try:
+                        # Try to kill process group
                         try:
-                            # Kill the orphaned process
-                            os.kill(pid, 9)  # SIGKILL
-                            results["processes_killed"] += 1
-                            results["pids_killed"].append(pid)
+                            pgid = os.getpgid(pid)
+                            os.killpg(pgid, signal.SIGKILL)
+                            results["process_groups_killed"].append(pgid)
+                            logger.info(f"Killed process group {pgid} (from pid {pid})")
+                        except (ProcessLookupError, PermissionError):
+                            # Fallback to killing just the process
+                            os.kill(pid, signal.SIGKILL)
                             logger.info(f"Killed stale vLLM process: {pid}")
-                        except ProcessLookupError:
-                            pass  # Already dead
-                        except PermissionError as e:
-                            results["errors"].append(f"Permission denied for PID {pid}")
 
-            # Also clear any CUDA memory caches
+                        results["processes_killed"] += 1
+                        results["pids_killed"].append(pid)
+
+                    except ProcessLookupError:
+                        pass  # Already dead
+                    except PermissionError:
+                        results["errors"].append(f"Permission denied for PID {pid}")
+
+            # Clear CUDA memory caches
             try:
                 import torch
                 if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    logger.info("Cleared CUDA cache")
+                    for i in range(torch.cuda.device_count()):
+                        with torch.cuda.device(i):
+                            torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    logger.info("Cleared CUDA cache on all devices")
             except ImportError:
-                pass
+                logger.debug("torch not available for CUDA cache clearing")
+            except Exception as e:
+                logger.debug(f"CUDA cache clear error: {e}")
 
-            # Clear our internal state for failed processes
+            # Clear our internal state for failed/stopped processes
             for endpoint, proc in list(self._processes.items()):
                 if proc.status in (ProcessStatus.FAILED, ProcessStatus.STOPPED):
                     del self._processes[endpoint]
 
-            # Brief wait for GPU memory to be freed
+            # Wait for GPU memory to be freed
             await asyncio.sleep(2)
 
             logger.info(
                 f"Cleanup complete: found {results['processes_found']}, "
-                f"killed {results['processes_killed']}"
+                f"killed {results['processes_killed']}, "
+                f"groups killed {len(results['process_groups_killed'])}"
             )
 
         except Exception as e:
@@ -881,19 +1030,28 @@ class GPUOrchestrator:
 
         return results
 
-    async def clean_start(self, endpoints: list[str] | None = None) -> dict[str, Any]:
+    async def clean_start(
+        self,
+        endpoints: list[str] | None = None,
+        verify_gpu_free: bool = True,
+        gpu_wait_timeout: float = 30.0,
+    ) -> dict[str, Any]:
         """Perform cleanup and start endpoints from clean slate.
 
-        This is the recommended way to start Gaius for overnight runs.
+        This is the recommended way to start Gaius for overnight runs or
+        tier-4+ tests that require guaranteed GPU availability.
 
         Args:
-            endpoints: Specific endpoints to start (None = all)
+            endpoints: Specific endpoints to start (None = reasoning)
+            verify_gpu_free: Wait for GPUs to be free before starting
+            gpu_wait_timeout: Max seconds to wait for GPUs to free
 
         Returns:
             Dict with cleanup and startup results
         """
         results = {
             "cleanup": {},
+            "gpu_verification": {},
             "startup": {},
             "success": False,
         }
@@ -901,10 +1059,50 @@ class GPUOrchestrator:
         # Step 1: Cleanup stale processes
         results["cleanup"] = await self.cleanup_stale_processes()
 
-        # Step 2: Start orchestrator
+        # Step 2: Verify GPU memory is actually free
+        if verify_gpu_free:
+            # Determine which GPUs we need
+            target_gpus = set()
+            target_endpoints = endpoints or ["reasoning"]
+            for ep in target_endpoints:
+                if ep in self._endpoints_config:
+                    target_gpus.update(self._endpoints_config[ep].gpus)
+
+            if target_gpus:
+                gpu_free = await self.wait_for_gpu_free(
+                    list(target_gpus), timeout=gpu_wait_timeout
+                )
+                results["gpu_verification"] = {
+                    "gpus_checked": list(target_gpus),
+                    "all_free": gpu_free,
+                }
+
+                if not gpu_free:
+                    # Last resort: try nvidia-smi reset (may require root)
+                    logger.warning(
+                        "GPUs not free after timeout, attempting nvidia-smi reset"
+                    )
+                    try:
+                        reset_result = subprocess.run(
+                            ["nvidia-smi", "--gpu-reset"],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        results["gpu_verification"]["reset_attempted"] = True
+                        results["gpu_verification"]["reset_success"] = (
+                            reset_result.returncode == 0
+                        )
+                        if reset_result.returncode == 0:
+                            await asyncio.sleep(5)  # Wait for reset
+                    except Exception as e:
+                        results["gpu_verification"]["reset_error"] = str(e)
+                        logger.warning(f"GPU reset failed: {e}")
+
+        # Step 3: Start orchestrator
         await self.start()
 
-        # Step 3: Start requested endpoints
+        # Step 4: Start requested endpoints
         if endpoints is None:
             # Default to reasoning (for evolution) if none specified
             endpoints = ["reasoning"]

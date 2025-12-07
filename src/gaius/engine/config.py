@@ -29,6 +29,7 @@ class EndpointConfig:
 
     port: int = 8080
     tensor_parallel: int = 1
+    max_num_seqs: int = 256  # Max concurrent sequences for vLLM
 
 
 @dataclass
@@ -78,6 +79,20 @@ class TelemetryConfig:
 
 
 @dataclass
+class GunicornConfig:
+    """Gunicorn WSGI server configuration for optillm."""
+
+    workers: int = 4
+    worker_class: str = "gthread"
+    threads: int = 2
+    timeout: int = 120
+    graceful_timeout: int = 30
+    max_requests: int = 1000
+    max_requests_jitter: int = 50
+    config_dir: str = "/tmp/gaius"
+
+
+@dataclass
 class OptillmConfig:
     """optillm backend configuration."""
 
@@ -86,6 +101,8 @@ class OptillmConfig:
     base_url: str = "http://localhost:8000"
     default_technique: str = "cot_reflection"
     timeout: int = 120
+    use_gunicorn: bool = True
+    gunicorn: GunicornConfig = field(default_factory=GunicornConfig)
 
 
 @dataclass
@@ -281,6 +298,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
                 endpoint = EndpointConfig(
                     port=safe_get(endpoint_conf, "port", 8080),
                     tensor_parallel=safe_get(endpoint_conf, "tensor-parallel", 1),
+                    max_num_seqs=safe_get(endpoint_conf, "max-num-seqs", 256),
                 )
 
             agents[name] = AgentConfig(
@@ -296,6 +314,40 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
 
     # Parse backends
     optillm_conf = get("gaius.inference.backends.optillm", {})
+
+    # Parse gunicorn sub-config
+    gunicorn_conf = (
+        optillm_conf.get("gunicorn", {})
+        if hasattr(optillm_conf, "get")
+        else {}
+    )
+    gunicorn = GunicornConfig(
+        workers=gunicorn_conf.get("workers", 4)
+        if hasattr(gunicorn_conf, "get")
+        else 4,
+        worker_class=gunicorn_conf.get("worker-class", "gthread")
+        if hasattr(gunicorn_conf, "get")
+        else "gthread",
+        threads=gunicorn_conf.get("threads", 2)
+        if hasattr(gunicorn_conf, "get")
+        else 2,
+        timeout=gunicorn_conf.get("timeout", 120)
+        if hasattr(gunicorn_conf, "get")
+        else 120,
+        graceful_timeout=gunicorn_conf.get("graceful-timeout", 30)
+        if hasattr(gunicorn_conf, "get")
+        else 30,
+        max_requests=gunicorn_conf.get("max-requests", 1000)
+        if hasattr(gunicorn_conf, "get")
+        else 1000,
+        max_requests_jitter=gunicorn_conf.get("max-requests-jitter", 50)
+        if hasattr(gunicorn_conf, "get")
+        else 50,
+        config_dir=gunicorn_conf.get("config-dir", "/tmp/gaius")
+        if hasattr(gunicorn_conf, "get")
+        else "/tmp/gaius",
+    )
+
     optillm = OptillmConfig(
         enabled=optillm_conf.get("enabled", True) if hasattr(optillm_conf, "get") else True,
         api_key=optillm_conf.get("api-key") if hasattr(optillm_conf, "get") else None,
@@ -306,6 +358,10 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         if hasattr(optillm_conf, "get")
         else "cot_reflection",
         timeout=optillm_conf.get("timeout", 120) if hasattr(optillm_conf, "get") else 120,
+        use_gunicorn=optillm_conf.get("use-gunicorn", True)
+        if hasattr(optillm_conf, "get")
+        else True,
+        gunicorn=gunicorn,
     )
 
     vllm_conf = get("gaius.inference.backends.vllm", {})

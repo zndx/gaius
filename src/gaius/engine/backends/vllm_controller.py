@@ -70,6 +70,8 @@ class VLLMProcess:
     port: int
     gpu_ids: list[int]
     tensor_parallel: int = 1
+    context_length: int = 32768  # Per-endpoint context length
+    max_num_seqs: int = 256  # Max concurrent sequences
 
     # Process state
     process: Optional[asyncio.subprocess.Process] = None
@@ -257,12 +259,19 @@ class VLLMController:
             port = self._allocate_port()
 
             # Create process state
+            # Get max_num_seqs from endpoint config if available
+            max_num_seqs = 256  # Default
+            if agent_config.endpoint and agent_config.endpoint.max_num_seqs:
+                max_num_seqs = agent_config.endpoint.max_num_seqs
+
             proc = VLLMProcess(
                 agent_alias=agent_alias,
                 model=agent_config.model,
                 port=port,
                 gpu_ids=allocation.gpu_ids,
                 tensor_parallel=agent_config.resources.gpus,
+                context_length=agent_config.resources.context_length,
+                max_num_seqs=max_num_seqs,
                 status=ProcessStatus.STARTING,
             )
             self._processes[agent_alias] = proc
@@ -299,7 +308,9 @@ class VLLMController:
             "--gpu-memory-utilization",
             str(self._gpu_memory_util),
             "--max-model-len",
-            str(self._max_model_len),
+            str(proc.context_length),  # Use per-endpoint context length
+            "--max-num-seqs",
+            str(proc.max_num_seqs),  # Use per-endpoint max concurrent sequences
             "--dtype",
             self._dtype,
         ]
