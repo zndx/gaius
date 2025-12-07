@@ -1918,6 +1918,7 @@ dependencies = [
     { name = "docling" },
     { name = "einops" },
     { name = "graphriccicurvature" },
+    { name = "gunicorn" },
     { name = "math-verify" },
     { name = "nvidia-ml-py" },
     { name = "opentelemetry-api" },
@@ -2099,6 +2100,7 @@ requires-dist = [
     { name = "grpcio-health-checking", marker = "extra == 'grpc'", specifier = ">=1.59.0" },
     { name = "grpcio-status", marker = "extra == 'grpc'", specifier = ">=1.59.0" },
     { name = "grpcio-tools", marker = "extra == 'grpc'", specifier = ">=1.59.0" },
+    { name = "gunicorn", specifier = ">=21.0.0" },
     { name = "httpx", marker = "extra == 'inference'", specifier = ">=0.25.0" },
     { name = "httpx", marker = "extra == 'workers'", specifier = ">=0.25.0" },
     { name = "langchain", marker = "extra == 'swarm'", specifier = ">=0.1.0" },
@@ -2546,6 +2548,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/84/47/dcf8380df4bd7931ffba32fc6adc2de635b6569ca27fdec7121733797062/grpcio_tools-1.76.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:479ce02dff684046f909a487d452a83a96b4231f7c70a3b218a075d54e951f56", size = 3325144, upload-time = "2025-10-21T16:25:30.863Z" },
     { url = "https://files.pythonhosted.org/packages/04/88/ea3e5fdb874d8c2d04488e4b9d05056537fba70915593f0c283ac77df188/grpcio_tools-1.76.0-cp312-cp312-win32.whl", hash = "sha256:9ba4bb539936642a44418b38ee6c3e8823c037699e2cb282bd8a44d76a4be833", size = 993523, upload-time = "2025-10-21T16:25:32.594Z" },
     { url = "https://files.pythonhosted.org/packages/de/b1/ce7d59d147675ec191a55816be46bc47a343b5ff07279eef5817c09cc53e/grpcio_tools-1.76.0-cp312-cp312-win_amd64.whl", hash = "sha256:0cd489016766b05f9ed8a6b6596004b62c57d323f49593eac84add032a6d43f7", size = 1158493, upload-time = "2025-10-21T16:25:34.5Z" },
+]
+
+[[package]]
+name = "gunicorn"
+version = "23.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/72/9614c465dc206155d93eff0ca20d42e1e35afc533971379482de953521a4/gunicorn-23.0.0.tar.gz", hash = "sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec", size = 375031, upload-time = "2024-08-10T20:25:27.378Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/7d/6dac2a6e1eba33ee43f318edbed4ff29151a49b5d37f080aad1e6469bca4/gunicorn-23.0.0-py3-none-any.whl", hash = "sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d", size = 85029, upload-time = "2024-08-10T20:25:24.996Z" },
 ]
 
 [[package]]
