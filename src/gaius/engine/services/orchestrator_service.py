@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
-from ..backends import BackendRouter, ProcessStatus, VLLMController
+from ..backends import BackendRouter, OptillmController, ProcessStatus, VLLMController
 from ..config import EngineConfig
 from ..resources import ResourceManager
 
@@ -107,8 +107,9 @@ class OrchestratorService:
         self.resource_manager = resource_manager
         self.backend_router = backend_router
 
-        # Access vLLM controller through backend router
+        # Access controllers through backend router
         self._vllm = backend_router.vllm
+        self._optillm: Optional[OptillmController] = backend_router.optillm
 
         # Health monitoring
         self._health_task: Optional[asyncio.Task] = None
@@ -568,6 +569,178 @@ class OrchestratorService:
             for gpu_id, util in self._gpu_utilization.items()
             if util < threshold
         ]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # GPU Reclamation (for large model deployment)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def prepare_for_large_model(self, target_gpus: list[int]) -> dict[str, Any]:
+        """Scale down optillm workers to free resources for large model.
+
+        When deploying a large reasoning model (e.g., QwQ-32B across 4 GPUs),
+        we reduce optillm workers to minimize resource contention.
+
+        Args:
+            target_gpus: GPU IDs that will be used for the large model
+
+        Returns:
+            Dict with scaling results and previous state for restoration
+        """
+        result = {
+            "success": True,
+            "previous_workers": None,
+            "current_workers": None,
+            "optillm_scaled": False,
+            "errors": [],
+        }
+
+        if self._optillm:
+            try:
+                # Save current worker count for later restoration
+                result["previous_workers"] = self._optillm._configured_workers
+
+                # Scale to 1 worker during large model loading
+                success = await self._optillm.scale_workers(1)
+                result["optillm_scaled"] = success
+                result["current_workers"] = 1 if success else result["previous_workers"]
+
+                if success:
+                    logger.info(
+                        f"Scaled optillm workers from {result['previous_workers']} to 1 "
+                        f"for large model deployment on GPUs {target_gpus}"
+                    )
+                else:
+                    result["errors"].append("Failed to scale optillm workers")
+                    result["success"] = False
+
+            except Exception as e:
+                logger.error(f"Error scaling optillm for large model: {e}")
+                result["errors"].append(str(e))
+                result["success"] = False
+
+        return result
+
+    async def restore_normal_operations(self, previous_workers: int = 4) -> dict[str, Any]:
+        """Restore full worker count after large model finishes.
+
+        Call this after the large model task completes to restore
+        normal optillm throughput.
+
+        Args:
+            previous_workers: Worker count to restore (default 4)
+
+        Returns:
+            Dict with restoration results
+        """
+        result = {
+            "success": True,
+            "previous_workers": 1,
+            "current_workers": previous_workers,
+            "optillm_scaled": False,
+            "errors": [],
+        }
+
+        if self._optillm:
+            try:
+                result["previous_workers"] = self._optillm._configured_workers
+                success = await self._optillm.scale_workers(previous_workers)
+                result["optillm_scaled"] = success
+                result["current_workers"] = (
+                    previous_workers if success else result["previous_workers"]
+                )
+
+                if success:
+                    logger.info(f"Restored optillm workers to {previous_workers}")
+                else:
+                    result["errors"].append("Failed to restore optillm workers")
+                    result["success"] = False
+
+            except Exception as e:
+                logger.error(f"Error restoring optillm workers: {e}")
+                result["errors"].append(str(e))
+                result["success"] = False
+
+        return result
+
+    async def reload_optillm(self) -> dict[str, Any]:
+        """Reload optillm configuration via SIGHUP.
+
+        Gracefully restarts workers to pick up configuration changes
+        without losing in-flight requests.
+
+        Returns:
+            Dict with reload result
+        """
+        result = {
+            "success": False,
+            "reload_count": 0,
+            "error": None,
+        }
+
+        if not self._optillm:
+            result["error"] = "optillm controller not available"
+            return result
+
+        try:
+            success = await self._optillm.reload()
+            result["success"] = success
+            result["reload_count"] = self._optillm._reload_count
+
+            if success:
+                logger.info("optillm configuration reloaded")
+            else:
+                result["error"] = "reload returned false"
+
+        except Exception as e:
+            logger.error(f"Error reloading optillm: {e}")
+            result["error"] = str(e)
+
+        return result
+
+    async def update_optillm_technique(self, technique: str) -> dict[str, Any]:
+        """Update optillm default technique and reload.
+
+        Args:
+            technique: New technique (e.g., "cot_reflection", "bon", "moa")
+
+        Returns:
+            Dict with update result
+        """
+        result = {
+            "success": False,
+            "previous_technique": None,
+            "current_technique": technique,
+            "error": None,
+        }
+
+        if not self._optillm:
+            result["error"] = "optillm controller not available"
+            return result
+
+        try:
+            result["previous_technique"] = self._optillm._default_technique.value
+            success = await self._optillm.update_technique(technique)
+            result["success"] = success
+
+            if not success:
+                result["error"] = "technique update failed"
+                result["current_technique"] = result["previous_technique"]
+
+        except Exception as e:
+            logger.error(f"Error updating optillm technique: {e}")
+            result["error"] = str(e)
+
+        return result
+
+    def get_optillm_status(self) -> Optional[dict[str, Any]]:
+        """Get optillm controller status.
+
+        Returns:
+            Status dict or None if optillm not available
+        """
+        if not self._optillm:
+            return None
+        return self._optillm.get_status()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status
