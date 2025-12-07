@@ -296,37 +296,38 @@ class IcebergContentReader:
         """
         import json
 
-        for record_batch in scan.to_arrow():
-            for i in range(record_batch.num_rows):
-                row = {col: record_batch.column(col)[i].as_py()
-                       for col in record_batch.column_names}
+        # Convert scan to a single Arrow table
+        arrow_table = scan.to_arrow()
+        for i in range(arrow_table.num_rows):
+            row = {col: arrow_table.column(col)[i].as_py()
+                   for col in arrow_table.column_names}
 
-                # Parse metadata JSON if present
-                metadata = None
-                if row.get("metadata"):
-                    try:
-                        metadata = json.loads(row["metadata"])
-                    except (json.JSONDecodeError, TypeError):
-                        metadata = None
+            # Parse metadata JSON if present
+            metadata = None
+            if row.get("metadata"):
+                try:
+                    metadata = json.loads(row["metadata"])
+                except (json.JSONDecodeError, TypeError):
+                    metadata = None
 
-                yield ContentItem(
-                    id=row["id"],
-                    source_id=row["source_id"],
-                    external_id=row["external_id"],
-                    title=row["title"],
-                    url=row.get("url"),
-                    authors=row.get("authors"),
-                    raw_content=row.get("raw_content"),
-                    content_type=row.get("content_type"),
-                    metadata=metadata,
-                    published_at=row.get("published_at"),
-                    fetched_at=row.get("fetched_at"),
-                    source_type=row["source_type"],
-                    processed=row.get("processed", False),
-                    summary_excluded=row.get("summary_excluded", False),
-                    exclusion_reason=row.get("exclusion_reason"),
-                    quality_score=row.get("quality_score"),
-                )
+            yield ContentItem(
+                id=row["id"],
+                source_id=row["source_id"],
+                external_id=row["external_id"],
+                title=row["title"],
+                url=row.get("url"),
+                authors=row.get("authors"),
+                raw_content=row.get("raw_content"),
+                content_type=row.get("content_type"),
+                metadata=metadata,
+                published_at=row.get("published_at"),
+                fetched_at=row.get("fetched_at"),
+                source_type=row["source_type"],
+                processed=row.get("processed", False),
+                summary_excluded=row.get("summary_excluded", False),
+                exclusion_reason=row.get("exclusion_reason"),
+                quality_score=row.get("quality_score"),
+            )
 
     def _get_snapshot_id(self) -> int | None:
         """Get current snapshot ID."""
