@@ -68,6 +68,12 @@ class GaiusEngine:
         # Backend router for inference (manages optillm and vLLM)
         self._backend_router = None
 
+        # Orchestrator service for endpoint management
+        self._orchestrator_service = None
+
+        # Evolution daemon
+        self._evolution_daemon = None
+
         # Service handlers (to be implemented in later phases)
         self._handlers: dict[Service, callable] = {
             Service.ORCHESTRATOR: self._handle_orchestrator,
@@ -93,6 +99,13 @@ class GaiusEngine:
 
         # Initialize backend router (manages optillm and vLLM)
         await self._init_backends()
+
+        # Initialize orchestrator service for endpoint management
+        await self._init_orchestrator()
+
+        # Autonomous startup: clean start if configured
+        if self.config.startup.clean_start:
+            await self._autonomous_clean_start()
 
         # Start gRPC server (PRIMARY transport)
         await self._start_grpc_server()
@@ -120,6 +133,10 @@ class GaiusEngine:
         self._health_task = asyncio.create_task(self._health_broadcast_loop())
         self._request_task = asyncio.create_task(self._request_loop())
 
+        # Autonomous startup: start evolution daemon if configured
+        if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
+            await self._autonomous_start_evolution()
+
         logger.info(
             f"Gaius Engine started with {len(self.config.agents)} agents configured"
         )
@@ -134,14 +151,83 @@ class GaiusEngine:
         from .resources import ResourceManager
 
         # Create resource manager for GPU allocation
-        resource_manager = ResourceManager(self.config)
+        self._resource_manager = ResourceManager(self.config)
 
         # Create backend router
-        self._backend_router = BackendRouter(self.config, resource_manager)
+        self._backend_router = BackendRouter(self.config, self._resource_manager)
 
         # Start backends (this will start optillm if not already running)
         await self._backend_router.start()
         logger.info("Backend router initialized")
+
+    async def _init_orchestrator(self) -> None:
+        """Initialize orchestrator service for endpoint management."""
+        from .services.orchestrator_service import OrchestratorService
+
+        self._orchestrator_service = OrchestratorService(
+            config=self.config,
+            resource_manager=self._resource_manager,
+            backend_router=self._backend_router,
+        )
+        await self._orchestrator_service.start()
+        logger.info("Orchestrator service initialized")
+
+    async def _autonomous_clean_start(self) -> None:
+        """Perform autonomous clean start: cleanup stale processes and preload endpoints."""
+        logger.info("Performing autonomous clean start...")
+
+        # Step 1: Cleanup stale vLLM processes
+        cleanup_result = await self._orchestrator_service.cleanup_stale_processes()
+        if cleanup_result.processes_killed > 0:
+            logger.info(
+                f"Cleaned up {cleanup_result.processes_killed} stale processes: {cleanup_result.pids_killed}"
+            )
+
+        # Step 2: Preload configured endpoints
+        preload = self.config.startup.preload_endpoints
+        if preload:
+            logger.info(f"Preloading endpoints: {preload}")
+            for endpoint_alias in preload:
+                if endpoint_alias in self.config.agents:
+                    try:
+                        status = await self._orchestrator_service.start_endpoint(endpoint_alias)
+                        logger.info(
+                            f"  {endpoint_alias}: {status.status} (port={status.port}, GPUs={status.gpu_ids})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"  {endpoint_alias}: failed to start - {e}")
+                else:
+                    logger.warning(f"  {endpoint_alias}: not found in agent config")
+
+    async def _autonomous_start_evolution(self) -> None:
+        """Start the evolution daemon automatically."""
+        try:
+            from ..agents.evolution.daemon import EvolutionDaemon, EvolutionConfig as EvoDaemonConfig
+
+            logger.info("Starting evolution daemon automatically...")
+
+            # Create evolution daemon config
+            evo_config = EvoDaemonConfig(
+                idle_threshold=0.2,  # 20% GPU utilization
+                poll_interval=self.config.evolution.idle_timeout_seconds / 60,  # Convert to minutes
+                max_cycles_per_hour=10,
+                strategy=self.config.evolution.strategy,
+                agents=self.config.evolution.rotation,
+            )
+
+            # Create and start daemon
+            self._evolution_daemon = EvolutionDaemon(
+                config=evo_config,
+                get_gpu_utilization=self._orchestrator_service.get_gpu_utilization,
+                is_gpu_idle=self._orchestrator_service.is_gpu_idle,
+            )
+            await self._evolution_daemon.start()
+            logger.info("Evolution daemon started")
+
+        except ImportError as e:
+            logger.warning(f"Evolution daemon not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to start evolution daemon: {e}")
 
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).
@@ -234,6 +320,17 @@ class GaiusEngine:
                 await self._request_task
             except asyncio.CancelledError:
                 pass
+
+        # Stop evolution daemon
+        if self._evolution_daemon:
+            try:
+                await self._evolution_daemon.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping evolution daemon: {e}")
+
+        # Stop orchestrator service
+        if self._orchestrator_service:
+            await self._orchestrator_service.stop()
 
         # Stop gRPC server (PRIMARY transport)
         if self._grpc_server:

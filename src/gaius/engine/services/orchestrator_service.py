@@ -119,6 +119,16 @@ class OrchestratorService:
         self._gpu_utilization: dict[int, float] = {}
         self._last_health_check: Optional[datetime] = None
 
+        # Auto-restart configuration
+        self._auto_restart_enabled = getattr(
+            config.startup, "auto_restart_failed", True
+        )
+        self._max_restart_attempts = getattr(
+            config.startup, "max_restart_attempts", 3
+        )
+        # Track restart attempts per endpoint
+        self._restart_attempts: dict[str, int] = {}
+
         logger.info("OrchestratorService initialized")
 
     async def start(self) -> None:
@@ -446,9 +456,9 @@ class OrchestratorService:
             logger.debug(f"GPU health update failed: {e}")
 
     async def _check_endpoint_health(self) -> None:
-        """Check health of all running endpoints."""
+        """Check health of all running endpoints and auto-restart if configured."""
         for alias, proc in list(self._vllm._processes.items()):
-            if proc.status not in (ProcessStatus.HEALTHY, ProcessStatus.UNHEALTHY):
+            if proc.status not in (ProcessStatus.HEALTHY, ProcessStatus.UNHEALTHY, ProcessStatus.FAILED):
                 continue
 
             # Check if process is still running
@@ -457,6 +467,8 @@ class OrchestratorService:
                     f"Process for {alias} exited with code {proc.process.returncode}"
                 )
                 proc.status = ProcessStatus.FAILED
+                # Attempt auto-restart if enabled
+                await self._maybe_restart_endpoint(alias)
                 continue
 
             # HTTP health check
@@ -464,10 +476,57 @@ class OrchestratorService:
             if healthy:
                 proc.status = ProcessStatus.HEALTHY
                 proc.consecutive_failures = 0
+                # Reset restart attempts on successful health check
+                self._restart_attempts[alias] = 0
             else:
                 proc.consecutive_failures += 1
                 if proc.consecutive_failures >= 3:
                     proc.status = ProcessStatus.UNHEALTHY
+                    # Attempt auto-restart if enabled
+                    await self._maybe_restart_endpoint(alias)
+
+    async def _maybe_restart_endpoint(self, alias: str) -> None:
+        """Attempt to restart a failed endpoint if auto-restart is enabled.
+
+        Args:
+            alias: Endpoint alias to restart
+        """
+        if not self._auto_restart_enabled:
+            return
+
+        # Check restart attempts
+        attempts = self._restart_attempts.get(alias, 0)
+        if attempts >= self._max_restart_attempts:
+            logger.warning(
+                f"Endpoint {alias} exceeded max restart attempts ({self._max_restart_attempts}), "
+                "giving up. Manual intervention required."
+            )
+            return
+
+        # Increment attempts before trying
+        self._restart_attempts[alias] = attempts + 1
+
+        logger.info(
+            f"Auto-restarting endpoint {alias} (attempt {attempts + 1}/{self._max_restart_attempts})"
+        )
+
+        try:
+            # Brief cooldown before restart
+            await asyncio.sleep(5)
+
+            # Restart the endpoint
+            status = await self.restart_endpoint(alias)
+
+            if status.status == "healthy":
+                logger.info(f"Successfully restarted endpoint {alias}")
+                self._restart_attempts[alias] = 0  # Reset on success
+            else:
+                logger.warning(
+                    f"Restart of {alias} returned status: {status.status}"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to restart endpoint {alias}: {e}")
 
     def get_gpu_utilization(self) -> dict[int, float]:
         """Get current GPU utilization.
