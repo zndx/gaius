@@ -137,6 +137,10 @@ class GaiusEngine:
         if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
             await self._autonomous_start_evolution()
 
+        # Autonomous startup: start cognition daemon if configured
+        if self.config.startup.auto_start_cognition:
+            await self._autonomous_start_cognition()
+
         logger.info(
             f"Gaius Engine started with {len(self.config.agents)} agents configured"
         )
@@ -228,6 +232,38 @@ class GaiusEngine:
             logger.warning(f"Evolution daemon not available: {e}")
         except Exception as e:
             logger.error(f"Failed to start evolution daemon: {e}")
+
+    async def _autonomous_start_cognition(self) -> None:
+        """Start the cognition daemon automatically.
+
+        The cognition daemon polls scheduled_tasks for cognition_cycle,
+        engine_audit, and delta_check tasks inserted by pg_cron.
+        """
+        try:
+            from .services.cognition_service import CognitionService, CognitionConfig
+
+            logger.info("Starting cognition daemon automatically...")
+
+            # Create cognition config
+            config = CognitionConfig(
+                max_thoughts_per_cycle=self.config.evolution.parallel_max_concurrent
+                if hasattr(self.config.evolution, "parallel_max_concurrent")
+                else 4,
+                poll_interval_seconds=30.0,
+            )
+
+            # Create and start service
+            self._cognition_service = CognitionService(
+                config,
+                get_gpu_idle=lambda: True,  # TODO: wire up to health service
+            )
+            await self._cognition_service.start()
+            logger.info("Cognition daemon started")
+
+        except ImportError as e:
+            logger.warning(f"Cognition service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to start cognition daemon: {e}")
 
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).

@@ -148,6 +148,7 @@ class StartupConfig:
     clean_start: bool = True  # Kill stale processes on boot
     preload_endpoints: list[str] = field(default_factory=lambda: ["fast"])
     auto_start_evolution: bool = True  # Start evolution daemon if enabled
+    auto_start_cognition: bool = True  # Start cognition daemon for scheduled tasks
     auto_restart_failed: bool = True  # Auto-restart failed endpoints
     max_restart_attempts: int = 3
 
@@ -380,6 +381,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         if hasattr(startup_conf, "get")
         else ["fast"],
         auto_start_evolution=startup_conf.get("auto-start-evolution", True)
+        if hasattr(startup_conf, "get")
+        else True,
+        auto_start_cognition=startup_conf.get("auto-start-cognition", True)
         if hasattr(startup_conf, "get")
         else True,
         auto_restart_failed=startup_conf.get("auto-restart-failed", True)
