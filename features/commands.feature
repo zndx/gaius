@@ -89,6 +89,140 @@ Feature: Command System
     Then the content panel should show "Unknown view: invalid"
 
   # ─────────────────────────────────────────────────────────────────────
+  # Ask Command - Primary Agentic Interface
+  # /ask away! - General-purpose query routing with auto-detection
+  # ─────────────────────────────────────────────────────────────────────
+
+  Scenario: Ask simple question auto-routes to reasoning
+    When I enter command "/ask what is 2+2?"
+    Then the query should be processed in "reasoning" mode
+    And the response should include chain-of-thought analysis
+    And the content panel should show the answer
+
+  Scenario: Ask with --reason flag forces reasoning mode
+    When I enter command "/ask --reason explain the CAP theorem"
+    Then the query should be processed in "reasoning" mode
+    And the response should use cot_reflection technique
+
+  Scenario: Ask research question auto-routes to search
+    When I enter command "/ask what is distributed consensus?"
+    Then the query should be processed in "search" mode
+    And hybrid search should be performed (KB + web)
+    And the response should cite sources
+
+  Scenario: Ask with --search flag forces search mode
+    When I enter command "/ask --search byzantine fault tolerance"
+    Then the query should be processed in "search" mode
+    And results should include KB and web sources
+
+  Scenario: Ask with --search --save creates Zettelkasten note
+    When I enter command "/ask --search --save raft consensus algorithm"
+    Then the query should be processed in "research" mode
+    And a Zettelkasten note should be created
+    And wiki-links should be generated
+    And citations should be verified
+
+  Scenario: Ask domain question auto-routes to swarm
+    When I enter command "/ask analyze pension fund risk exposure"
+    Then the query should be processed in "swarm" mode
+    And multiple specialist agents should be invoked
+    And the response should synthesize agent perspectives
+
+  Scenario: Ask with --swarm flag forces swarm mode
+    Given the domain is set to "kudu"
+    When I enter command "/ask --swarm evaluate consistency guarantees"
+    Then the query should be processed in "swarm" mode
+    And domain context should be included
+
+  Scenario: Ask platform error auto-routes to platform mode
+    When I enter command "/ask no documents found when running /reindex"
+    Then the query should be processed in "platform" mode
+    And platform diagnostics should be gathered
+    And remediation steps should be provided
+
+  Scenario: Ask with --platform flag diagnoses issues
+    When I enter command "/ask --platform connection refused to Qdrant"
+    Then the query should be processed in "platform" mode
+    And diagnostics should check Qdrant connectivity
+    And suggestions should include how to start Qdrant
+
+  Scenario: Ask platform with --save captures heuristic
+    When I enter command "/ask --platform --save bm25s module not found"
+    Then diagnostics should be gathered
+    And remediation should be generated
+    And a platform heuristic should be saved to KB
+
+  Scenario: Ask without query shows error
+    When I enter command "/ask"
+    Then an error should be shown: "ask requires a question"
+    And the tagline "/ask away!" should be displayed
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Watch Command - OTel Telemetry Observability
+  # ─────────────────────────────────────────────────────────────────────
+
+  Scenario: Watch status shows OTel configuration
+    When I enter command "/watch status"
+    Then the content panel should show OTel status
+    And status should include endpoint configuration
+    And status should include tracer provider info
+    And status should include engine telemetry status
+
+  Scenario: Watch traces shows recent operations
+    Given inference operations have been performed
+    When I enter command "/watch traces"
+    Then the content panel should show recent traces
+    And traces should include operation type
+    And traces should include timestamps and duration
+
+  Scenario: Watch traces with filter
+    Given inference operations have been performed
+    When I enter command "/watch traces operation:search"
+    Then only traces matching "search" operation should be shown
+
+  Scenario: Watch spans shows span details
+    When I enter command "/watch spans"
+    Then the content panel should show span information
+    And spans should include service and operation names
+
+  Scenario: Watch metrics shows platform metrics
+    When I enter command "/watch metrics"
+    Then the content panel should show metrics
+    And metrics should include GPU utilization
+    And metrics should include evolution cycle count
+
+  Scenario: Watch metrics with filter
+    When I enter command "/watch metrics gpu"
+    Then only metrics containing "gpu" should be shown
+
+  Scenario: Watch logs shows recent log entries
+    When I enter command "/watch logs"
+    Then the content panel should show log entries
+    And logs should include level and message
+
+  Scenario: Watch logs with level filter
+    When I enter command "/watch logs level:error"
+    Then only error-level logs should be shown
+
+  Scenario: Watch service filters by service name
+    When I enter command "/watch service gaius-engine"
+    Then traces should be filtered to gaius-engine service
+
+  Scenario: Watch operation filters by operation name
+    When I enter command "/watch operation ask"
+    Then spans should be filtered to "ask" operation
+
+  Scenario: Watch clear clears buffers
+    Given reasoning traces exist
+    When I enter command "/watch clear"
+    Then watch buffers should be cleared
+    And subsequent "/watch traces" should show empty
+
+  Scenario: Watch default shows traces
+    When I enter command "/watch"
+    Then the default behavior should show traces
+
+  # ─────────────────────────────────────────────────────────────────────
   # Search and Research Commands
   # ─────────────────────────────────────────────────────────────────────
 

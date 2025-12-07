@@ -225,7 +225,19 @@ def step_kb_notes_containing(context, text):
 @when('I enter command "{command}"')
 @async_run_until_complete
 async def step_enter_command(context, command):
-    """Enter a command in command input."""
+    """Enter a command - via CLI if available, otherwise TUI."""
+    # If CLI is available, use it (for @cli tagged tests)
+    if hasattr(context, 'cli') and context.cli is not None:
+        result = context.cli.execute(command)
+        context.last_result = result
+        if hasattr(context, 'cli_results'):
+            context.cli_results.append(result)
+        return
+
+    # Otherwise use TUI via Pilot
+    if context.pilot is None:
+        raise RuntimeError("Neither CLI nor Pilot available for command execution")
+
     await context.pilot.press("/")
     await context.pilot.pause()
 
