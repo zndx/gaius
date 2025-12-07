@@ -103,7 +103,12 @@ class FetchJob:
 class ContentItem:
     """A fetched content item.
 
-    Maps to: content_items table
+    Maps to: content_items table (metadata) + Iceberg raw.content (raw content)
+
+    Architecture:
+    - PostgreSQL stores metadata for fast queries (title, authors, URLs, timestamps)
+    - Iceberg stores raw content for long-term storage (full text, abstracts)
+    - iceberg_id links PostgreSQL metadata to Iceberg raw content
     """
 
     # Required fields
@@ -115,10 +120,10 @@ class ContentItem:
     external_id: str | None = None  # arxiv ID, DOI, URL hash
     url: str | None = None
 
-    # Content
+    # Content - raw content stored in Iceberg, only summary in PostgreSQL
     authors: list[str] = field(default_factory=list)
-    summary: str | None = None
-    content: str | None = None
+    summary: str | None = None  # Brief summary (stored in PostgreSQL)
+    content: str | None = None  # Raw content (stored in Iceberg only, not PostgreSQL)
     content_type: str = "text/plain"
 
     # Metadata
@@ -131,6 +136,10 @@ class ContentItem:
     kb_path: str | None = None  # Path in build/dev/ if written
     embedding_id: str | None = None  # Qdrant point ID
 
+    # HX (Iceberg) integration
+    iceberg_id: str | None = None  # UUID linking to raw.content in Iceberg
+    iceberg_snapshot_id: int | None = None  # Iceberg snapshot for time-travel
+
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "ContentItem":
         """Create from database row."""
@@ -142,7 +151,7 @@ class ContentItem:
             title=row["title"],
             authors=row.get("authors", []),
             summary=row.get("summary"),
-            content=row.get("content"),
+            content=row.get("content"),  # May be None after migration
             content_type=row.get("content_type", "text/plain"),
             metadata=row.get("metadata", {}),
             published_at=row.get("published_at"),
@@ -150,6 +159,8 @@ class ContentItem:
             processed_at=row.get("processed_at"),
             kb_path=row.get("kb_path"),
             embedding_id=row.get("embedding_id"),
+            iceberg_id=row.get("iceberg_id"),
+            iceberg_snapshot_id=row.get("iceberg_snapshot_id"),
         )
 
 

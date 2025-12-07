@@ -1,4 +1,4 @@
-\restrict 4P643ORK22sRxExcPYBt85str14EPIdWFkKhklk6K7ExxYIuflXdt70l52Q3P8U
+\restrict VeqUVve2QuRreabvgFyZlthYCic89CTdH7UWmZit0L9HYYRH5saB48MkpTbQlLA
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -15,6 +15,13 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
+-- Name: ag_catalog; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA ag_catalog;
+
+
+--
 -- Name: pg_cron; Type: EXTENSION; Schema: -; Owner: -
 --
 
@@ -26,6 +33,27 @@ CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog;
 --
 
 COMMENT ON EXTENSION pg_cron IS 'Job scheduler for PostgreSQL';
+
+
+--
+-- Name: gaius_hx; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA gaius_hx;
+
+
+--
+-- Name: age; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS age WITH SCHEMA ag_catalog;
+
+
+--
+-- Name: EXTENSION age; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION age IS 'AGE database extension';
 
 
 --
@@ -586,6 +614,276 @@ $$;
 
 
 --
+-- Name: _ag_label_vertex; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx._ag_label_vertex (
+    id ag_catalog.graphid NOT NULL,
+    properties ag_catalog.agtype DEFAULT ag_catalog.agtype_build_map() NOT NULL
+);
+
+
+--
+-- Name: Dataset; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."Dataset" (
+)
+INHERITS (gaius_hx._ag_label_vertex);
+
+
+--
+-- Name: Dataset_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."Dataset_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: Dataset_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."Dataset_id_seq" OWNED BY gaius_hx."Dataset".id;
+
+
+--
+-- Name: _ag_label_edge; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx._ag_label_edge (
+    id ag_catalog.graphid NOT NULL,
+    start_id ag_catalog.graphid NOT NULL,
+    end_id ag_catalog.graphid NOT NULL,
+    properties ag_catalog.agtype DEFAULT ag_catalog.agtype_build_map() NOT NULL
+);
+
+
+--
+-- Name: EXECUTES; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."EXECUTES" (
+)
+INHERITS (gaius_hx._ag_label_edge);
+
+
+--
+-- Name: EXECUTES_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."EXECUTES_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: EXECUTES_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."EXECUTES_id_seq" OWNED BY gaius_hx."EXECUTES".id;
+
+
+--
+-- Name: INPUT_TO; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."INPUT_TO" (
+)
+INHERITS (gaius_hx._ag_label_edge);
+
+
+--
+-- Name: INPUT_TO_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."INPUT_TO_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: INPUT_TO_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."INPUT_TO_id_seq" OWNED BY gaius_hx."INPUT_TO".id;
+
+
+--
+-- Name: Job; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."Job" (
+)
+INHERITS (gaius_hx._ag_label_vertex);
+
+
+--
+-- Name: Job_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."Job_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: Job_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."Job_id_seq" OWNED BY gaius_hx."Job".id;
+
+
+--
+-- Name: OUTPUTS; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."OUTPUTS" (
+)
+INHERITS (gaius_hx._ag_label_edge);
+
+
+--
+-- Name: OUTPUTS_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."OUTPUTS_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: OUTPUTS_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."OUTPUTS_id_seq" OWNED BY gaius_hx."OUTPUTS".id;
+
+
+--
+-- Name: PARENT; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."PARENT" (
+)
+INHERITS (gaius_hx._ag_label_edge);
+
+
+--
+-- Name: PARENT_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."PARENT_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: PARENT_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."PARENT_id_seq" OWNED BY gaius_hx."PARENT".id;
+
+
+--
+-- Name: Run; Type: TABLE; Schema: gaius_hx; Owner: -
+--
+
+CREATE TABLE gaius_hx."Run" (
+)
+INHERITS (gaius_hx._ag_label_vertex);
+
+
+--
+-- Name: Run_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx."Run_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: Run_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx."Run_id_seq" OWNED BY gaius_hx."Run".id;
+
+
+--
+-- Name: _ag_label_edge_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx._ag_label_edge_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: _ag_label_edge_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx._ag_label_edge_id_seq OWNED BY gaius_hx._ag_label_edge.id;
+
+
+--
+-- Name: _ag_label_vertex_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx._ag_label_vertex_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 281474976710655
+    CACHE 1;
+
+
+--
+-- Name: _ag_label_vertex_id_seq; Type: SEQUENCE OWNED BY; Schema: gaius_hx; Owner: -
+--
+
+ALTER SEQUENCE gaius_hx._ag_label_vertex_id_seq OWNED BY gaius_hx._ag_label_vertex.id;
+
+
+--
+-- Name: _label_id_seq; Type: SEQUENCE; Schema: gaius_hx; Owner: -
+--
+
+CREATE SEQUENCE gaius_hx._label_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    MAXVALUE 65535
+    CACHE 1
+    CYCLE;
+
+
+--
 -- Name: agent_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -886,7 +1184,6 @@ CREATE TABLE public.content_items (
     title text NOT NULL,
     authors text[],
     summary text,
-    content text,
     content_type text DEFAULT 'text/plain'::text,
     metadata jsonb DEFAULT '{}'::jsonb,
     published_at timestamp with time zone,
@@ -904,17 +1201,25 @@ CREATE TABLE public.content_items (
 
 
 --
+-- Name: TABLE content_items; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.content_items IS 'Content metadata (PostgreSQL) - raw content stored in Iceberg via iceberg_id link.
+See gaius.hx module for Iceberg access.';
+
+
+--
 -- Name: COLUMN content_items.iceberg_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.content_items.iceberg_id IS 'UUID of record in Iceberg raw_content table';
+COMMENT ON COLUMN public.content_items.iceberg_id IS 'UUID linking to raw.content table in Iceberg data lake (gaius.hx)';
 
 
 --
 -- Name: COLUMN content_items.iceberg_snapshot_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.content_items.iceberg_snapshot_id IS 'Iceberg snapshot ID when content was written';
+COMMENT ON COLUMN public.content_items.iceberg_snapshot_id IS 'Iceberg snapshot ID when content was written, for time-travel queries';
 
 
 --
@@ -1507,6 +1812,31 @@ CREATE TABLE public.iceberg_config (
 
 
 --
+-- Name: iceberg_namespace_properties; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.iceberg_namespace_properties (
+    catalog_name character varying(255) NOT NULL,
+    namespace character varying(255) NOT NULL,
+    property_key character varying(255) NOT NULL,
+    property_value character varying(1000) NOT NULL
+);
+
+
+--
+-- Name: iceberg_tables; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.iceberg_tables (
+    catalog_name character varying(255) NOT NULL,
+    table_namespace character varying(255) NOT NULL,
+    table_name character varying(255) NOT NULL,
+    metadata_location character varying(1000),
+    previous_metadata_location character varying(1000)
+);
+
+
+--
 -- Name: lineage_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1942,6 +2272,118 @@ SELECT
 
 
 --
+-- Name: Dataset id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."Dataset" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'Dataset'::name))::integer, nextval('gaius_hx."Dataset_id_seq"'::regclass));
+
+
+--
+-- Name: Dataset properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."Dataset" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: EXECUTES id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."EXECUTES" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'EXECUTES'::name))::integer, nextval('gaius_hx."EXECUTES_id_seq"'::regclass));
+
+
+--
+-- Name: EXECUTES properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."EXECUTES" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: INPUT_TO id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."INPUT_TO" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'INPUT_TO'::name))::integer, nextval('gaius_hx."INPUT_TO_id_seq"'::regclass));
+
+
+--
+-- Name: INPUT_TO properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."INPUT_TO" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: Job id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."Job" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'Job'::name))::integer, nextval('gaius_hx."Job_id_seq"'::regclass));
+
+
+--
+-- Name: Job properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."Job" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: OUTPUTS id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."OUTPUTS" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'OUTPUTS'::name))::integer, nextval('gaius_hx."OUTPUTS_id_seq"'::regclass));
+
+
+--
+-- Name: OUTPUTS properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."OUTPUTS" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: PARENT id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."PARENT" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'PARENT'::name))::integer, nextval('gaius_hx."PARENT_id_seq"'::regclass));
+
+
+--
+-- Name: PARENT properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."PARENT" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: Run id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."Run" ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, 'Run'::name))::integer, nextval('gaius_hx."Run_id_seq"'::regclass));
+
+
+--
+-- Name: Run properties; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx."Run" ALTER COLUMN properties SET DEFAULT ag_catalog.agtype_build_map();
+
+
+--
+-- Name: _ag_label_edge id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx._ag_label_edge ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, '_ag_label_edge'::name))::integer, nextval('gaius_hx._ag_label_edge_id_seq'::regclass));
+
+
+--
+-- Name: _ag_label_vertex id; Type: DEFAULT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx._ag_label_vertex ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, '_ag_label_vertex'::name))::integer, nextval('gaius_hx._ag_label_vertex_id_seq'::regclass));
+
+
+--
 -- Name: activity_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2100,6 +2542,22 @@ ALTER TABLE ONLY public.summary_lineage ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public.user_interests ALTER COLUMN id SET DEFAULT nextval('public.user_interests_id_seq'::regclass);
+
+
+--
+-- Name: _ag_label_edge _ag_label_edge_pkey; Type: CONSTRAINT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx._ag_label_edge
+    ADD CONSTRAINT _ag_label_edge_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: _ag_label_vertex _ag_label_vertex_pkey; Type: CONSTRAINT; Schema: gaius_hx; Owner: -
+--
+
+ALTER TABLE ONLY gaius_hx._ag_label_vertex
+    ADD CONSTRAINT _ag_label_vertex_pkey PRIMARY KEY (id);
 
 
 --
@@ -2332,6 +2790,22 @@ ALTER TABLE ONLY public.held_out_queries
 
 ALTER TABLE ONLY public.iceberg_config
     ADD CONSTRAINT iceberg_config_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: iceberg_namespace_properties iceberg_namespace_properties_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iceberg_namespace_properties
+    ADD CONSTRAINT iceberg_namespace_properties_pkey PRIMARY KEY (catalog_name, namespace, property_key);
+
+
+--
+-- Name: iceberg_tables iceberg_tables_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.iceberg_tables
+    ADD CONSTRAINT iceberg_tables_pkey PRIMARY KEY (catalog_name, table_namespace, table_name);
 
 
 --
@@ -2571,6 +3045,13 @@ CREATE INDEX idx_content_excluded ON public.content_items USING btree (source_id
 --
 
 CREATE INDEX idx_content_items_fetched ON public.content_items USING btree (fetched_at DESC);
+
+
+--
+-- Name: idx_content_items_iceberg_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_content_items_iceberg_id ON public.content_items USING btree (iceberg_id) WHERE (iceberg_id IS NOT NULL);
 
 
 --
@@ -3237,7 +3718,7 @@ ALTER TABLE ONLY public.summary_lineage
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4P643ORK22sRxExcPYBt85str14EPIdWFkKhklk6K7ExxYIuflXdt70l52Q3P8U
+\unrestrict VeqUVve2QuRreabvgFyZlthYCic89CTdH7UWmZit0L9HYYRH5saB48MkpTbQlLA
 
 
 --
@@ -3256,4 +3737,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251204000001'),
     ('20251204000002'),
     ('20251207000001'),
-    ('20251208000001');
+    ('20251208000001'),
+    ('20251208000002');

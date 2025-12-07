@@ -118,24 +118,34 @@ class WorkerPool:
         self,
         items: list[WorkerContentItem],
         source_type: str,
-    ) -> int:
+    ) -> tuple[dict[str, str], int | None]:
         """Write content items to HX Iceberg storage asynchronously.
 
         Runs the sync Iceberg write in a thread pool to avoid blocking.
+        Raw content is stored in Iceberg; PostgreSQL only stores metadata.
 
         Args:
             items: Worker ContentItem objects to store.
             source_type: Source type string for the items.
 
         Returns:
-            Number of items written to Iceberg.
+            Tuple of (iceberg_ids, snapshot_id):
+            - iceberg_ids: Map of external_id -> iceberg UUID
+            - snapshot_id: Iceberg snapshot ID for time-travel queries
         """
         store = self._get_hx_store()
         if store is None:
-            return 0
+            return {}, None
 
-        # Convert worker items to HX items
-        hx_items = [_convert_to_hx_item(item, source_type) for item in items]
+        # Convert worker items to HX items and track their UUIDs
+        hx_items = []
+        iceberg_ids: dict[str, str] = {}
+        for item in items:
+            hx_item = _convert_to_hx_item(item, source_type)
+            hx_items.append(hx_item)
+            # Map external_id -> iceberg UUID for linking
+            if item.external_id:
+                iceberg_ids[item.external_id] = hx_item.id
 
         # Run sync Iceberg write in thread pool
         loop = asyncio.get_running_loop()
@@ -150,13 +160,13 @@ class WorkerPool:
                     f"Wrote {result.items_written} items to HX Iceberg "
                     f"(snapshot: {result.snapshot_id})"
                 )
-                return result.items_written
+                return iceberg_ids, result.snapshot_id
             else:
                 logger.warning(f"HX write failed: {result.errors}")
-                return 0
+                return {}, None
         except Exception as e:
             logger.warning(f"HX write error: {e}")
-            return 0
+            return {}, None
 
     @asynccontextmanager
     async def _resources(self) -> AsyncIterator[None]:
@@ -293,18 +303,37 @@ class WorkerPool:
                 )
                 return
 
-            # Insert content items to PostgreSQL (quick access)
-            total, new_count = await self.db.insert_content_items(result.items)
+            # Architecture: Raw content -> Iceberg, Metadata -> PostgreSQL
+            #
+            # 1. First check which items are new (not in PostgreSQL)
+            # 2. Write new items' raw content to Iceberg (HX)
+            # 3. Insert metadata to PostgreSQL with iceberg_id links
+            #
+            # This avoids storing large raw content in PostgreSQL.
 
-            # Write to HX Iceberg data lake (long-term storage)
-            # Only write new items to avoid duplicates in Iceberg
+            # Check for new items and insert metadata (without content)
+            total, new_count, new_items = await self.db.insert_content_items(
+                result.items
+            )
+
+            # Write raw content to HX Iceberg for new items only
+            iceberg_ids: dict[str, str] = {}
+            iceberg_snapshot_id: int | None = None
+
             if new_count > 0 and self.enable_hx:
-                hx_written = await self._write_to_hx(
-                    result.items,
+                iceberg_ids, iceberg_snapshot_id = await self._write_to_hx(
+                    new_items,
                     source.source_type.value,
                 )
-                if hx_written > 0:
-                    logger.debug(f"Job {job.id}: wrote {hx_written} items to HX")
+                if iceberg_ids:
+                    # Update PostgreSQL with iceberg_id links
+                    await self._update_iceberg_links(
+                        new_items, iceberg_ids, iceberg_snapshot_id
+                    )
+                    logger.debug(
+                        f"Job {job.id}: wrote {len(iceberg_ids)} items to HX "
+                        f"(snapshot: {iceberg_snapshot_id})"
+                    )
 
             # Update source last_fetch_at
             await self.db.update_source_last_fetch(source.id)
@@ -324,6 +353,30 @@ class WorkerPool:
         except Exception as e:
             logger.exception(f"Job {job.id} failed: {e}")
             await self.db.fail_job(job.id, str(e))
+
+    async def _update_iceberg_links(
+        self,
+        items: list[WorkerContentItem],
+        iceberg_ids: dict[str, str],
+        snapshot_id: int | None,
+    ) -> None:
+        """Update PostgreSQL content_items with iceberg_id links.
+
+        Called after successful HX write to link metadata to raw content.
+        """
+        for item in items:
+            if item.external_id and item.external_id in iceberg_ids:
+                await self.db.pool.execute(
+                    """
+                    UPDATE content_items
+                    SET iceberg_id = $1, iceberg_snapshot_id = $2
+                    WHERE source_id = $3 AND external_id = $4
+                    """,
+                    iceberg_ids[item.external_id],
+                    snapshot_id,
+                    item.source_id,
+                    item.external_id,
+                )
 
 
 def setup_signal_handlers(pool: WorkerPool) -> None:

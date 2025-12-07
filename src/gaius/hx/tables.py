@@ -50,6 +50,7 @@ def get_raw_content_schema():
         NestedField(14, "summary_excluded", BooleanType(), required=False, doc="Excluded from summarization"),
         NestedField(15, "exclusion_reason", StringType(), required=False, doc="Why content was excluded"),
         NestedField(16, "quality_score", LongType(), required=False, doc="Quality assessment (0-100)"),
+        NestedField(17, "content_hash", StringType(), required=False, doc="SHA-256 hash for duplicate detection"),
     )
 
 
