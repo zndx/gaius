@@ -1,0 +1,230 @@
+// Gaius Engine FlatBuffers Schema
+// ================================
+// Message protocol for Aeron IPC communication between gaius-engine daemon
+// and client applications (TUI, CLI, MCP).
+//
+// Compile with: flatc --python -o src/gaius/engine/generated config/gaius.fbs
+
+namespace gaius.engine;
+
+// ============================================================================
+// Service Enumeration
+// ============================================================================
+
+enum Service : byte {
+  Orchestrator = 0,   // GPU orchestration and vLLM management
+  Scheduler = 1,      // Inference job scheduling
+  Evolution = 2,      // Agent evolution daemon
+  Grid = 3,           // Grid projection
+  Tda = 4,            // Topological data analysis
+  Health = 5,         // System health monitoring
+}
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+table Error {
+  code:int32;
+  message:string;
+  details:string;        // Optional structured error context
+}
+
+// ============================================================================
+// OpenTelemetry Trace Context (W3C Trace Context propagation)
+// ============================================================================
+
+table TraceContext {
+  trace_id:string;       // 32 hex chars (128-bit)
+  span_id:string;        // 16 hex chars (64-bit)
+  trace_flags:uint8;     // Sampling flags
+}
+
+// ============================================================================
+// Request/Response Envelope
+// ============================================================================
+
+table Request {
+  id:string (required);              // UUID for request correlation
+  service:Service;                   // Target service
+  action:string (required);          // Action name (e.g., "status", "start", "stop")
+  params:[ubyte] (flexbuffer);       // Action-specific parameters as FlexBuffer
+  trace_context:TraceContext;        // OpenTelemetry context for distributed tracing
+}
+
+table Response {
+  id:string (required);              // Correlates with Request.id
+  result:[ubyte] (flexbuffer);       // Service-specific result as FlexBuffer
+  error:Error;                       // Present if request failed
+}
+
+// ============================================================================
+// Event Types (for stream 102)
+// ============================================================================
+
+enum EventType : byte {
+  EvolutionProgress = 0,   // Evolution cycle started/completed
+  GridUpdated = 1,         // Grid projection changed
+  EndpointChanged = 2,     // vLLM endpoint started/stopped
+  HealthUpdate = 3,        // Health metrics update
+  AgentScoreChanged = 4,   // Agent evaluation score changed
+  ModelLoaded = 5,         // Model loaded into VRAM
+  ModelUnloaded = 6,       // Model unloaded from VRAM
+}
+
+table Event {
+  event_type:EventType;
+  timestamp_ms:int64;
+  data:[ubyte] (flexbuffer);         // Event-specific data
+  trace_context:TraceContext;        // For correlating events with requests
+}
+
+// ============================================================================
+// Health Metrics (for stream 103, high-frequency broadcast)
+// ============================================================================
+
+table GPUMetrics {
+  gpu_id:int32;
+  utilization:float32;        // 0.0-1.0
+  memory_used_gb:float32;
+  memory_total_gb:float32;
+  temperature_c:int16;
+  power_watts:int16;
+}
+
+table EndpointStatus {
+  name:string;
+  model:string;
+  healthy:bool;
+  requests_served:int64;
+  avg_latency_ms:float32;
+  gpu_ids:[int32];             // Which GPUs this endpoint uses
+}
+
+table HealthMetrics {
+  timestamp_ms:int64;
+  gpus:[GPUMetrics];
+  endpoints:[EndpointStatus];
+  queue_depth:int32;
+  evolution_running:bool;
+  evolution_agent:string;      // Current agent being optimized (if any)
+}
+
+// ============================================================================
+// Service-Specific Message Types
+// ============================================================================
+
+// --- Orchestrator Service ---
+
+table OrchestratorStatus {
+  total_gpus:int32;
+  available_gpus:int32;
+  allocated:[GPUAllocation];
+}
+
+table GPUAllocation {
+  agent_alias:string;
+  model:string;
+  gpu_ids:[int32];
+  vram_reserved_gb:float32;
+  started_at_ms:int64;
+}
+
+table StartEndpointRequest {
+  endpoint_name:string;
+}
+
+table StopEndpointRequest {
+  endpoint_name:string;
+  force:bool;                   // Force stop even with active requests
+}
+
+// --- Scheduler Service ---
+
+table InferenceRequest {
+  agent_alias:string;           // Target agent (routes to correct backend)
+  prompt:string;
+  system_prompt:string;
+  max_tokens:int32;
+  temperature:float32;
+  stop_sequences:[string];
+}
+
+table InferenceResponse {
+  text:string;
+  tokens_used:int32;
+  latency_ms:float32;
+  model:string;
+  backend:string;               // "vllm" or "optillm"
+}
+
+// --- Evolution Service ---
+
+table EvolutionStatus {
+  running:bool;
+  cycles_completed:int32;
+  total_improvement_pct:float32;
+  current_agent:string;
+  next_agent:string;
+  last_cycle_at_ms:int64;
+}
+
+table TriggerEvolutionRequest {
+  agent_id:string;              // Empty for next in rotation
+}
+
+table EvolutionCycleEvent {
+  agent_id:string;
+  success:bool;
+  improvement_pct:float32;
+  duration_ms:int32;
+  preempted:bool;
+}
+
+// --- Grid Service ---
+
+table GridProjectionRequest {
+  embedding_ids:[string];       // KB entry IDs to project
+  method:string;                // "umap", "tsne", etc.
+}
+
+table GridPosition {
+  id:string;
+  x:int32;                      // 0-18 (19x19 grid)
+  y:int32;
+  cluster:int32;                // Cluster assignment (-1 if none)
+}
+
+table GridProjectionResult {
+  positions:[GridPosition];
+  clusters:int32;
+}
+
+// --- TDA Service ---
+
+table TDARequest {
+  embedding_ids:[string];
+  method:string;                // "persistent_homology", "mapper"
+  max_dimension:int32;
+}
+
+table PersistenceInterval {
+  dimension:int32;
+  birth:float32;
+  death:float32;
+}
+
+table TDAResult {
+  intervals:[PersistenceInterval];
+  betti_numbers:[int32];        // Betti numbers b0, b1, b2, ...
+}
+
+// ============================================================================
+// Root Types
+// ============================================================================
+
+root_type Request;
+
+// For direct access to other types:
+// file_identifier "GAUS";      // Optional 4-byte identifier
+// file_extension "gfb";        // Optional file extension

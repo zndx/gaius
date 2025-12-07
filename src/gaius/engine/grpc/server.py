@@ -1,0 +1,202 @@
+"""gRPC server for Gaius Engine.
+
+Provides the main gRPC server that hosts:
+- KServe Open Inference Protocol (GRPCInferenceService)
+- Gaius custom extensions (GaiusService)
+
+This is the primary transport for gaius-engine, designed to:
+- Be OIP-compliant for Cloudera/KServe compatibility
+- Support streaming for health metrics and events
+- Handle high-throughput inference requests
+- Scale from local tinybox to HPC clusters
+"""
+
+import asyncio
+import logging
+from concurrent import futures
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+import grpc
+from grpc import aio
+
+from ..generated import (
+    add_GRPCInferenceServiceServicer_to_server,
+    add_GaiusServiceServicer_to_server,
+)
+from .servicers import InferenceServicer, GaiusServicer
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GrpcConfig:
+    """Configuration for the gRPC server."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 50051
+    max_workers: int = 10
+    max_message_size: int = 100 * 1024 * 1024  # 100MB for large tensors
+    reflection_enabled: bool = True  # Enable gRPC reflection for debugging
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "GrpcConfig":
+        """Create config from dictionary."""
+        return cls(
+            enabled=d.get("enabled", True),
+            host=d.get("host", "0.0.0.0"),
+            port=d.get("port", 50051),
+            max_workers=d.get("max_workers", 10),
+            max_message_size=d.get("max_message_size", 100 * 1024 * 1024),
+            reflection_enabled=d.get("reflection_enabled", True),
+        )
+
+
+@dataclass
+class ServiceRegistry:
+    """Registry of backend services for gRPC handlers to use."""
+
+    # Backend router for inference
+    backend_router: Any = None
+
+    # Engine config
+    config: Any = None
+
+    # Service state
+    start_time: Optional[float] = None
+
+    # Callbacks for state access
+    get_health_metrics: Optional[Callable] = None
+    get_evolution_status: Optional[Callable] = None
+    trigger_evolution: Optional[Callable] = None
+    start_evolution: Optional[Callable] = None
+    stop_evolution: Optional[Callable] = None
+
+
+class GrpcServer:
+    """gRPC server for Gaius Engine.
+
+    Hosts both the KServe OIP inference service and custom Gaius extensions.
+    Uses async gRPC (grpc.aio) for high-performance concurrent request handling.
+    """
+
+    def __init__(self, config: GrpcConfig):
+        self._config = config
+        self._server: Optional[aio.Server] = None
+        self._services = ServiceRegistry()
+        self._running = False
+
+    def set_services(
+        self,
+        backend_router: Any = None,
+        config: Any = None,
+        start_time: Optional[float] = None,
+        get_health_metrics: Optional[Callable] = None,
+        get_evolution_status: Optional[Callable] = None,
+        trigger_evolution: Optional[Callable] = None,
+        start_evolution: Optional[Callable] = None,
+        stop_evolution: Optional[Callable] = None,
+    ) -> None:
+        """Set the backend services for gRPC handlers to use.
+
+        Args:
+            backend_router: BackendRouter instance for inference
+            config: EngineConfig instance
+            start_time: Engine start timestamp
+            get_health_metrics: Callback to get current health metrics
+            get_evolution_status: Callback to get evolution daemon status
+            trigger_evolution: Callback to trigger evolution cycle
+            start_evolution: Callback to start evolution daemon
+            stop_evolution: Callback to stop evolution daemon
+        """
+        self._services.backend_router = backend_router
+        self._services.config = config
+        self._services.start_time = start_time
+        self._services.get_health_metrics = get_health_metrics
+        self._services.get_evolution_status = get_evolution_status
+        self._services.trigger_evolution = trigger_evolution
+        self._services.start_evolution = start_evolution
+        self._services.stop_evolution = stop_evolution
+
+    async def start(self) -> None:
+        """Start the gRPC server."""
+        if not self._config.enabled:
+            logger.info("gRPC server disabled by configuration")
+            return
+
+        # Configure server options
+        options = [
+            ("grpc.max_receive_message_length", self._config.max_message_size),
+            ("grpc.max_send_message_length", self._config.max_message_size),
+        ]
+
+        # Create async gRPC server
+        self._server = aio.server(
+            futures.ThreadPoolExecutor(max_workers=self._config.max_workers),
+            options=options,
+        )
+
+        # Register OIP inference servicer
+        inference_servicer = InferenceServicer(self._services)
+        add_GRPCInferenceServiceServicer_to_server(inference_servicer, self._server)
+        logger.debug("Registered GRPCInferenceService (KServe OIP)")
+
+        # Register Gaius servicer
+        gaius_servicer = GaiusServicer(self._services)
+        add_GaiusServiceServicer_to_server(gaius_servicer, self._server)
+        logger.debug("Registered GaiusService (custom extensions)")
+
+        # Enable reflection for debugging (grpcurl, etc.)
+        if self._config.reflection_enabled:
+            try:
+                from grpc_reflection.v1alpha import reflection
+
+                service_names = (
+                    "inference.GRPCInferenceService",
+                    "gaius.engine.GaiusService",
+                    reflection.SERVICE_NAME,
+                )
+                reflection.enable_server_reflection(service_names, self._server)
+                logger.debug("gRPC reflection enabled")
+            except ImportError:
+                logger.debug("grpcio-reflection not installed, reflection disabled")
+
+        # Bind to port
+        listen_addr = f"{self._config.host}:{self._config.port}"
+        self._server.add_insecure_port(listen_addr)
+
+        # Start server
+        await self._server.start()
+        self._running = True
+
+        logger.info(f"gRPC server listening on {listen_addr}")
+        logger.info("  - GRPCInferenceService (KServe OIP v2)")
+        logger.info("  - GaiusService (custom extensions)")
+
+    async def stop(self, grace: float = 5.0) -> None:
+        """Stop the gRPC server gracefully.
+
+        Args:
+            grace: Grace period in seconds for in-flight requests
+        """
+        if self._server:
+            logger.info(f"Stopping gRPC server (grace={grace}s)...")
+            await self._server.stop(grace)
+            self._running = False
+            logger.info("gRPC server stopped")
+
+    async def wait_for_termination(self) -> None:
+        """Wait for the server to terminate."""
+        if self._server:
+            await self._server.wait_for_termination()
+
+    @property
+    def is_running(self) -> bool:
+        """Check if server is running."""
+        return self._running
+
+    @property
+    def address(self) -> str:
+        """Get the server listen address."""
+        return f"{self._config.host}:{self._config.port}"

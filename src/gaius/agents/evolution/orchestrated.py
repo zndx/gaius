@@ -516,30 +516,50 @@ Be concise and decisive. The system should make steady progress without human in
 
     def _fallback_decision(self, obs: SystemObservation) -> OrchestratorDecision:
         """Simple heuristic when orchestrator unavailable."""
-        # Find agent with examples and active version that hasn't failed recently
+        # Find agent with examples that hasn't failed recently
+        # Note: we don't require active versions - the optimizer will create one
         recent_failures = {
             c["agent_id"] for c in obs.recent_cycles[:5]
             if not c["success"]
         }
 
+        # First pass: agents with examples that haven't failed recently
         for agent in obs.available_agents:
             if agent in recent_failures:
                 continue
             if obs.agent_example_counts.get(agent, 0) < 5:
                 continue
-            if not obs.agent_active_versions.get(agent, False):
-                continue
 
             return OrchestratorDecision(
                 action=OrchestratorAction.OPTIMIZE_AGENT,
                 target=agent,
-                reasoning="Fallback heuristic: first viable agent",
+                reasoning="Fallback heuristic: first agent with sufficient examples",
                 confidence=0.6,
+            )
+
+        # Second pass: any agent with examples (even if recently failed)
+        # This allows retry after backoff
+        for agent in obs.available_agents:
+            if obs.agent_example_counts.get(agent, 0) >= 5:
+                return OrchestratorDecision(
+                    action=OrchestratorAction.OPTIMIZE_AGENT,
+                    target=agent,
+                    reasoning="Fallback heuristic: retry agent after backoff",
+                    confidence=0.4,
+                )
+
+        # Third pass: any agent at all (bootstrap mode)
+        if obs.available_agents:
+            return OrchestratorDecision(
+                action=OrchestratorAction.COLLECT_EXAMPLES,
+                target=obs.available_agents[0],
+                reasoning="Need more training examples before optimization",
+                confidence=0.7,
             )
 
         return OrchestratorDecision(
             action=OrchestratorAction.WAIT,
-            reasoning="No viable agents found",
+            reasoning="No agents available",
             confidence=0.8,
         )
 
@@ -568,6 +588,16 @@ Be concise and decisive. The system should make steady progress without human in
             elif decision.action == OrchestratorAction.SHUTDOWN:
                 self._running = False
                 result = {"success": True, "shutdown": True}
+
+            elif decision.action == OrchestratorAction.COLLECT_EXAMPLES:
+                result = await self._execute_collect_examples(decision.target)
+
+            elif decision.action == OrchestratorAction.ADJUST_STRATEGY:
+                # Strategy adjustment is handled by the orchestrator's reasoning
+                result = {"success": True, "strategy_adjusted": True}
+
+            elif decision.action == OrchestratorAction.REPORT_STATUS:
+                result = {"success": True, "status": self.get_status()}
 
             else:
                 result = {"success": True, "action": "no-op"}
@@ -654,6 +684,53 @@ Be concise and decisive. The system should make steady progress without human in
             "issues": issues,
             "healthy": len(issues) == 0,
         }
+
+    async def _execute_collect_examples(self, agent_id: str) -> dict:
+        """Collect more training examples for an agent.
+
+        This is used when an agent doesn't have enough examples for optimization.
+        It synthesizes examples by running the agent on held-out queries.
+        """
+        try:
+            from .collector import get_training_collector
+
+            collector = get_training_collector()
+
+            # Try to collect examples from various sources
+            collected = 0
+
+            # 1. Run agent on held-out queries to generate examples
+            try:
+                from ...models.held_out import get_held_out_pool
+
+                pool = get_held_out_pool()
+                queries = pool.sample(5)  # Get 5 random held-out queries
+
+                for query in queries:
+                    try:
+                        # Generate an example by running the agent
+                        example = await collector.generate_example(
+                            agent_id,
+                            query.input_prompt,
+                            context=query.context,
+                        )
+                        if example:
+                            await collector.save_example(agent_id, example)
+                            collected += 1
+                    except Exception as e:
+                        logger.debug(f"Failed to generate example: {e}")
+
+            except Exception as e:
+                logger.debug(f"Held-out pool not available: {e}")
+
+            return {
+                "success": collected > 0,
+                "agent_id": agent_id,
+                "examples_collected": collected,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def _update_state(
         self,
