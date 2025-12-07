@@ -142,6 +142,17 @@ class EvolutionConfig:
 
 
 @dataclass
+class StartupConfig:
+    """Autonomous startup configuration."""
+
+    clean_start: bool = True  # Kill stale processes on boot
+    preload_endpoints: list[str] = field(default_factory=lambda: ["fast"])
+    auto_start_evolution: bool = True  # Start evolution daemon if enabled
+    auto_restart_failed: bool = True  # Auto-restart failed endpoints
+    max_restart_attempts: int = 3
+
+
+@dataclass
 class EngineConfig:
     """Complete engine configuration."""
 
@@ -155,6 +166,7 @@ class EngineConfig:
     gpus: GPUInventory = field(default_factory=GPUInventory)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
+    startup: StartupConfig = field(default_factory=StartupConfig)
 
 
 def load_config(config_path: Optional[str] = None) -> EngineConfig:
@@ -358,6 +370,26 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         else 6,
     )
 
+    # Parse startup config
+    startup_conf = get("gaius.startup", {})
+    startup = StartupConfig(
+        clean_start=startup_conf.get("clean-start", True)
+        if hasattr(startup_conf, "get")
+        else True,
+        preload_endpoints=list(startup_conf.get("preload-endpoints", ["fast"]))
+        if hasattr(startup_conf, "get")
+        else ["fast"],
+        auto_start_evolution=startup_conf.get("auto-start-evolution", True)
+        if hasattr(startup_conf, "get")
+        else True,
+        auto_restart_failed=startup_conf.get("auto-restart-failed", True)
+        if hasattr(startup_conf, "get")
+        else True,
+        max_restart_attempts=startup_conf.get("max-restart-attempts", 3)
+        if hasattr(startup_conf, "get")
+        else 3,
+    )
+
     return EngineConfig(
         grpc=grpc,
         aeron=aeron,
@@ -369,6 +401,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         gpus=gpus,
         scheduling=scheduling,
         evolution=evolution,
+        startup=startup,
     )
 
 
