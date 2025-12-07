@@ -174,6 +174,61 @@ def _check_grpc_available() -> bool:
         return False
 
 
+def _cleanup_gpu_processes(context) -> None:
+    """Aggressively cleanup vLLM processes and GPU memory.
+
+    This is critical for tier-4+ tests where tensor-parallel vLLM instances
+    can leave orphaned workers that hold GPU memory.
+    """
+    import subprocess
+    import time
+
+    # Kill all vLLM processes aggressively
+    # Using multiple patterns to catch all variants
+    patterns = ["vllm", "VLLM"]
+    for pattern in patterns:
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", pattern],
+                capture_output=True,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
+    # Wait for processes to die and GPU memory to be released
+    time.sleep(2)
+
+    # Verify GPU memory is free (with timeout)
+    for attempt in range(10):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                mem_values = []
+                for line in result.stdout.strip().split("\n"):
+                    if line.strip():
+                        try:
+                            mem_values.append(float(line.strip()))
+                        except ValueError:
+                            pass
+                # Check if all GPUs have less than 500 MiB in use
+                if mem_values and all(m < 500 for m in mem_values):
+                    break
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        time.sleep(2)
+
+
 def after_scenario(context, scenario):
     """Clean up after each scenario."""
     # Close TUI app properly using context manager if available
@@ -187,6 +242,41 @@ def after_scenario(context, scenario):
             context.loop.run_until_complete(context.pilot.exit_app())
         except Exception:
             pass
+
+    # Content pipeline cleanup
+    if hasattr(context, 'service_manager') and context.service_manager:
+        try:
+            context.loop.run_until_complete(context.service_manager.stop_all())
+        except Exception:
+            pass
+
+    if hasattr(context, 'db_manager') and context.db_manager:
+        try:
+            context.loop.run_until_complete(context.db_manager.cleanup())
+            context.loop.run_until_complete(context.db_manager.disconnect())
+        except Exception:
+            pass
+
+    if hasattr(context, 'inference_manager') and context.inference_manager:
+        try:
+            context.loop.run_until_complete(context.inference_manager.close())
+        except Exception:
+            pass
+
+    if hasattr(context, 'kb_manager') and context.kb_manager:
+        try:
+            context.kb_manager.cleanup()
+        except Exception:
+            pass
+
+    # GPU-intensive test cleanup (tier-4, tier-5, QwQ tests)
+    # This ensures vLLM tensor-parallel workers are killed and GPU memory is freed
+    gpu_tags = {'tier-4', 'tier-5', 'qwq', 'llm-reflection', 'engine-integration'}
+    if context.scenario_tags & gpu_tags:
+        _cleanup_gpu_processes(context)
+
+    # Note: We don't stop infrastructure_manager here to allow
+    # postgres to keep running between test scenarios
 
     # Clean up gRPC clients (must be before loop close)
     if context.loop and not context.loop.is_closed():
