@@ -40,12 +40,18 @@ logger = logging.getLogger(__name__)
 class ThoughtType(str, Enum):
     """Types of thoughts the cognition agent can generate."""
 
+    # Standard thought types
     PATTERN = "pattern"
     CONNECTION = "connection"
     CURIOSITY = "curiosity"
     MOMENTUM = "momentum"
     OBSERVATION = "observation"
     SYNTHESIS = "synthesis"
+
+    # Self-aware thought types (new)
+    SELF_OBSERVATION = "self_observation"  # Thoughts about own thought patterns
+    ENGINE_AUDIT = "engine_audit"          # Observations about engine health
+    META_REFLECTION = "meta_reflection"    # Higher-order pattern recognition
 
 
 class ThoughtStatus(str, Enum):
@@ -82,6 +88,13 @@ class Thought:
     id: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
 
+    # Lineage tracking (for recursive self-observation)
+    predecessor_id: str | None = None    # Direct parent thought
+    generation: int = 0                   # Depth in chain (0 = root)
+    thought_chain_id: str | None = None  # Groups related thoughts
+    note_path: str | None = None         # Path to saved markdown note
+    content_hash: str | None = None      # For duplicate detection
+
     def to_markdown(self) -> str:
         """Format thought as markdown section."""
         emoji = {
@@ -91,6 +104,9 @@ class Thought:
             ThoughtType.MOMENTUM: "📈",
             ThoughtType.OBSERVATION: "👁️",
             ThoughtType.SYNTHESIS: "🧩",
+            ThoughtType.SELF_OBSERVATION: "🪞",
+            ThoughtType.ENGINE_AUDIT: "⚙️",
+            ThoughtType.META_REFLECTION: "🔮",
         }.get(self.thought_type, "💭")
 
         lines = [f"### {emoji} {self.title}"]
@@ -125,6 +141,11 @@ class Thought:
             "novelty": self.novelty,
             "status": self.status.value,
             "created_at": self.created_at.isoformat(),
+            # Lineage tracking
+            "predecessor_id": self.predecessor_id,
+            "generation": self.generation,
+            "thought_chain_id": self.thought_chain_id,
+            "note_path": self.note_path,
         }
 
 
@@ -149,6 +170,13 @@ class CognitionContext:
     # Existing thoughts (to avoid duplicates)
     active_thoughts: list[Thought] = field(default_factory=list)
 
+    # Engine observations (for auditing)
+    engine_observations: list[dict] = field(default_factory=list)
+    evolution_cycles: list[dict] = field(default_factory=list)
+
+    # Thought chains (for recursive self-observation)
+    thought_chains: list[dict] = field(default_factory=list)
+
 
 @dataclass
 class CognitionResult:
@@ -161,6 +189,8 @@ class CognitionResult:
     patterns_detected: int = 0
     connections_found: int = 0
     curiosities_generated: int = 0
+    self_observations: int = 0
+    engine_audits: int = 0
 
     # Resources
     model_used: str = ""
@@ -179,6 +209,8 @@ class CognitionResult:
             "patterns_detected": self.patterns_detected,
             "connections_found": self.connections_found,
             "curiosities_generated": self.curiosities_generated,
+            "self_observations": self.self_observations,
+            "engine_audits": self.engine_audits,
             "model_used": self.model_used,
             "tokens_used": self.tokens_used,
             "duration_ms": self.duration_ms,
@@ -244,6 +276,14 @@ class CognitionAgent:
         momentum_thoughts = await self._track_momentum(context)
         thoughts.extend(momentum_thoughts)
 
+        # 5. Self-observation (recursive thinking about thoughts)
+        self_observation_thoughts = await self._observe_own_thoughts(context)
+        thoughts.extend(self_observation_thoughts)
+
+        # 6. Engine auditing (if enabled)
+        engine_audit_thoughts = await self._audit_engine_health(context)
+        thoughts.extend(engine_audit_thoughts)
+
         # Filter for novelty (don't repeat existing thoughts)
         thoughts = self._filter_for_novelty(thoughts, context.active_thoughts)
 
@@ -263,6 +303,8 @@ class CognitionAgent:
             patterns_detected=len([t for t in thoughts if t.thought_type == ThoughtType.PATTERN]),
             connections_found=len([t for t in thoughts if t.thought_type == ThoughtType.CONNECTION]),
             curiosities_generated=len([t for t in thoughts if t.thought_type == ThoughtType.CURIOSITY]),
+            self_observations=len([t for t in thoughts if t.thought_type == ThoughtType.SELF_OBSERVATION]),
+            engine_audits=len([t for t in thoughts if t.thought_type == ThoughtType.ENGINE_AUDIT]),
             content_analyzed=len(context.recent_content_items),
             kb_entries_scanned=len(context.recent_kb_entries),
             duration_ms=duration_ms,
@@ -776,6 +818,271 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
 
         return thoughts[:1]  # At most 1 momentum thought
 
+    async def _observe_own_thoughts(self, context: CognitionContext) -> list[Thought]:
+        """Generate SELF_OBSERVATION thoughts by analyzing recent thought patterns.
+
+        This is the core of recursive self-observation - thoughts about thoughts.
+        Leaning into the recursion: we intentionally allow thoughts to observe
+        and build on previous thoughts, including self-observations.
+        """
+        if len(context.active_thoughts) < 3:
+            return []
+
+        from ..inference import get_client, Message
+
+        # Analyze thought patterns
+        thought_types = {}
+        domains_covered = set()
+        total_salience = 0.0
+        generations = []
+
+        for t in context.active_thoughts:
+            thought_types[t.thought_type.value] = thought_types.get(t.thought_type.value, 0) + 1
+            domains_covered.update(t.domains)
+            total_salience += t.salience
+            generations.append(t.generation)
+
+        avg_salience = total_salience / len(context.active_thoughts) if context.active_thoughts else 0.5
+        max_generation = max(generations) if generations else 0
+
+        # Format recent thoughts for LLM
+        thought_summaries = []
+        for t in context.active_thoughts[:10]:
+            gen_marker = f" [gen {t.generation}]" if t.generation > 0 else ""
+            thought_summaries.append(
+                f"- [{t.thought_type.value}]{gen_marker} {t.title}: {t.summary or t.content[:100]}..."
+            )
+
+        prompt = f"""You are observing your own thought patterns. Reflect on these recent thoughts:
+
+Recent thoughts ({len(context.active_thoughts)} total):
+{chr(10).join(thought_summaries)}
+
+Thought type distribution: {thought_types}
+Domains covered: {list(domains_covered)[:5]}
+Average salience: {avg_salience:.2f}
+Deepest generation: {max_generation}
+
+Generate 1-2 SELF_OBSERVATION thoughts about:
+1. What patterns are emerging in your thinking?
+2. Are there blind spots or gaps in your observations?
+3. How is your understanding evolving over time?
+4. Any meta-cognitive observations about the thinking process itself?
+
+Be introspective and specific. Reference actual thoughts when relevant.
+
+Format as JSON array: [{{"title": "...", "observation": "...", "insight": "...", "salience": 0.7}}]"""
+
+        try:
+            client = get_client()
+            result = await client.complete(
+                [Message(role="user", content=prompt)],
+                max_tokens=600,
+                temperature=0.7,
+            )
+
+            # Parse response
+            import json
+
+            content = result.content.strip()
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            observations = json.loads(content)
+
+            thoughts = []
+            for obs in observations[:2]:
+                # Find a predecessor thought to link to (for chain building)
+                predecessor = None
+                predecessor_id = None
+                chain_id = None
+
+                # Link to the most recent SELF_OBSERVATION if one exists
+                for t in context.active_thoughts:
+                    if t.thought_type == ThoughtType.SELF_OBSERVATION:
+                        predecessor = t
+                        predecessor_id = t.id
+                        chain_id = t.thought_chain_id or t.id
+                        break
+
+                thoughts.append(Thought(
+                    thought_type=ThoughtType.SELF_OBSERVATION,
+                    title=obs.get("title", "Self-observation"),
+                    content=f"{obs.get('observation', '')}\n\n{obs.get('insight', '')}",
+                    summary=obs.get("observation", "")[:100],
+                    salience=float(obs.get("salience", 0.6)),
+                    confidence=0.7,
+                    novelty=0.8,
+                    domains=list(domains_covered)[:3],
+                    predecessor_id=predecessor_id,
+                    generation=(predecessor.generation + 1) if predecessor else 0,
+                    thought_chain_id=chain_id,
+                ))
+
+            return thoughts
+
+        except Exception as e:
+            logger.warning(f"Self-observation failed: {e}")
+            return []
+
+    async def _audit_engine_health(self, context: CognitionContext) -> list[Thought]:
+        """Generate ENGINE_AUDIT thoughts by observing engine processes.
+
+        Monitors evolution cycles, GPU health, scheduler metrics, and detects anomalies.
+        """
+        thoughts = []
+
+        # Gather engine metrics from database
+        try:
+            import asyncpg
+
+            conn = await asyncpg.connect(self.config.database.url)
+            try:
+                # Get recent evolution cycles
+                evolution_rows = await conn.fetch(
+                    """
+                    SELECT agent_id, success, improvement_percent, duration_ms, error,
+                           started_at, preempted
+                    FROM evolution_cycles
+                    ORDER BY started_at DESC
+                    LIMIT 20
+                    """,
+                )
+                evolution_cycles = [dict(r) for r in evolution_rows]
+
+                # Get recent engine observations
+                obs_rows = await conn.fetch(
+                    """
+                    SELECT source, observation_type, metrics, anomalies, observed_at
+                    FROM engine_observations
+                    WHERE observed_at > NOW() - INTERVAL '24 hours'
+                    ORDER BY observed_at DESC
+                    LIMIT 50
+                    """,
+                )
+                observations = [dict(r) for r in obs_rows]
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            logger.debug(f"Could not fetch engine metrics: {e}")
+            evolution_cycles = []
+            observations = []
+
+        # Analyze evolution patterns
+        if evolution_cycles:
+            recent_failures = [c for c in evolution_cycles[:10] if not c.get("success", True)]
+            consecutive_failures = 0
+            for c in evolution_cycles:
+                if not c.get("success", True):
+                    consecutive_failures += 1
+                else:
+                    break
+
+            if consecutive_failures >= 3:
+                # Identify which agents are failing
+                failing_agents = list(set(c.get("agent_id", "unknown") for c in recent_failures))
+                thoughts.append(Thought(
+                    thought_type=ThoughtType.ENGINE_AUDIT,
+                    title=f"Evolution struggling: {consecutive_failures} consecutive failures",
+                    content=f"The evolution daemon has failed {consecutive_failures} cycles in a row. "
+                           f"Affected agents: {', '.join(failing_agents)}. "
+                           f"Recent errors: {recent_failures[0].get('error', 'unknown') if recent_failures else 'none'}",
+                    summary=f"{consecutive_failures} evolution failures for {', '.join(failing_agents[:2])}",
+                    salience=min(0.5 + consecutive_failures * 0.1, 0.9),
+                    confidence=0.9,
+                    novelty=0.7,
+                    domains=["evolution", "engine"],
+                ))
+
+            # Check for improvement stagnation
+            recent_improvements = [
+                c.get("improvement_percent", 0)
+                for c in evolution_cycles[:10]
+                if c.get("success", False) and c.get("improvement_percent") is not None
+            ]
+            if len(recent_improvements) >= 5 and all(i <= 0 for i in recent_improvements):
+                thoughts.append(Thought(
+                    thought_type=ThoughtType.ENGINE_AUDIT,
+                    title="Evolution stagnating: no improvements detected",
+                    content=f"The last {len(recent_improvements)} successful evolution cycles "
+                           f"showed no improvement. This may indicate that agents have reached "
+                           f"a local optimum or that training examples need refreshing.",
+                    summary="No evolution improvement in recent cycles",
+                    salience=0.7,
+                    confidence=0.8,
+                    novelty=0.6,
+                    domains=["evolution", "engine"],
+                ))
+
+        # Analyze anomalies from observations
+        anomaly_count = sum(
+            len(obs.get("anomalies", []))
+            for obs in observations
+        )
+        if anomaly_count > 0:
+            anomaly_summary = []
+            for obs in observations[:10]:
+                for anomaly in obs.get("anomalies", []):
+                    anomaly_summary.append(f"- [{obs.get('source')}] {anomaly}")
+
+            if anomaly_summary:
+                thoughts.append(Thought(
+                    thought_type=ThoughtType.ENGINE_AUDIT,
+                    title=f"Engine anomalies detected: {anomaly_count} issues",
+                    content=f"Recent anomalies observed:\n\n{chr(10).join(anomaly_summary[:10])}",
+                    summary=f"{anomaly_count} anomalies across engine components",
+                    salience=min(0.5 + anomaly_count * 0.05, 0.85),
+                    confidence=0.85,
+                    novelty=0.75,
+                    domains=["engine"],
+                ))
+
+        return thoughts[:2]  # At most 2 audit thoughts
+
+    async def _generate_interesting_title(self, content: str, thought_type: ThoughtType) -> str:
+        """Generate an evocative, content-specific title using LLM.
+
+        Avoids generic titles like "Pattern Detected" in favor of
+        specific, intriguing titles that reference the actual content.
+        """
+        from ..inference import get_client, Message
+
+        prompt = f"""Generate an interesting, specific title for this {thought_type.value} thought.
+
+Content: {content[:500]}...
+
+The title should be:
+- Specific and evocative (NOT generic like "Pattern Detected" or "Interesting Connection")
+- Reference actual concepts from the content
+- Be intriguing, hint at the insight
+- 5-12 words typically
+
+Examples of GOOD titles:
+- "Raft mentions triple this week - consensus fatigue?"
+- "LDI frameworks echo climate risk models"
+- "Byzantine fault tolerance resurges post-outage"
+- "The engine dreams while we sleep"
+- "Evolution stalls when examples stale"
+
+Return ONLY the title, no quotes or explanation."""
+
+        try:
+            client = get_client()
+            result = await client.complete(
+                [Message(role="user", content=prompt)],
+                max_tokens=30,
+                temperature=0.7,
+            )
+            return result.content.strip().strip('"').strip("'")
+
+        except Exception as e:
+            logger.warning(f"Title generation failed: {e}")
+            return f"{thought_type.value.replace('_', ' ').title()}"
+
     def _filter_for_novelty(
         self,
         new_thoughts: list[Thought],
@@ -815,19 +1122,60 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _save_thought(self, thought: Thought) -> str | None:
-        """Save thought to database, return ID."""
+        """Save thought to database, Qdrant, and optionally as project note."""
+        import hashlib
+
+        # Generate content hash for exact duplicate detection
+        content_hash = hashlib.sha256(
+            (thought.title + thought.content).encode()
+        ).hexdigest()[:32]
+        thought.content_hash = content_hash
+
         try:
             import asyncpg
 
+            # Check for semantic duplicates using KB VectorSearch
+            try:
+                from ..inference.search.vector import get_vector_search
+
+                vector_search = get_vector_search(self.config.kb.root)
+                is_dup, similar = vector_search.is_duplicate_thought(
+                    content=f"{thought.title}\n\n{thought.content}",
+                    threshold=0.95,  # Very high = nearly identical
+                )
+                if is_dup and similar:
+                    logger.debug(
+                        f"Rejecting near-duplicate thought (similarity={similar.score:.2f}): {thought.title}"
+                    )
+                    return None
+            except Exception as e:
+                logger.debug(f"Vector search duplicate check unavailable: {e}")
+
             conn = await asyncpg.connect(self.config.database.url)
             try:
+                # Check for exact hash duplicates (fallback/belt-and-suspenders)
+                duplicate_count = await conn.fetchval(
+                    """
+                    SELECT count_exact_duplicates($1, $2, 7)
+                    """,
+                    content_hash,
+                    self.profile,
+                )
+
+                # Allow some repetition but reject spam (>= 3 identical thoughts)
+                if duplicate_count >= 3:
+                    logger.debug(f"Rejecting exact duplicate thought: {thought.title}")
+                    return None
+
                 result = await conn.fetchval(
                     """
                     INSERT INTO cognition_thoughts
                         (thought_type, status, title, content, summary,
                          domains, kb_paths, source_entries,
-                         salience, confidence, novelty, profile_name)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                         salience, confidence, novelty, profile_name,
+                         predecessor_id, generation, thought_chain_id, content_hash)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                            $13::uuid, $14, $15::uuid, $16)
                     RETURNING id
                     """,
                     thought.thought_type.value,
@@ -842,8 +1190,27 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
                     thought.confidence,
                     thought.novelty,
                     self.profile,
+                    thought.predecessor_id,
+                    thought.generation,
+                    thought.thought_chain_id,
+                    content_hash,
                 )
                 thought.id = str(result)
+
+                # Save as project note with prev:/next: linking
+                note_path = await self._save_thought_as_note(thought)
+                if note_path:
+                    thought.note_path = note_path
+                    # Update the DB with the note path
+                    await conn.execute(
+                        "UPDATE cognition_thoughts SET note_path = $1 WHERE id = $2",
+                        note_path,
+                        result,
+                    )
+
+                # Note: Thought will be indexed in Qdrant when KB is re-indexed
+                # The note file is saved with doc_type metadata for filtering
+
                 return thought.id
 
             finally:
@@ -851,6 +1218,80 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
 
         except Exception as e:
             logger.warning(f"Failed to save thought: {e}")
+            return None
+
+    async def _save_thought_as_note(self, thought: Thought) -> str | None:
+        """Save thought as a project note with bidirectional prev:/next: linking."""
+        try:
+            from ..core.project_notes import find_previous_project_note, _update_next_link
+
+            kb_root = Path(self.config.kb.root)
+            note_type = f"thought_{thought.thought_type.value}"
+
+            # Find previous note of this type
+            prev_note = find_previous_project_note(kb_root, note_type)
+
+            # Create today's scratch directory
+            now = datetime.now()
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H%M%S")
+            scratch_dir = kb_root / "scratch" / date_str
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+
+            # Build prev: link
+            prev_link = ""
+            if prev_note:
+                try:
+                    prev_rel = prev_note.relative_to(kb_root)
+                    prev_link = f"[[{prev_rel}]]"
+                except ValueError:
+                    prev_link = f"[[{prev_note}]]"
+
+            # Build note content
+            note_content = f"""[[current/agents/cognition]]
+prev: {prev_link}
+next:
+
+# {thought.title}
+
+---
+created: {now.isoformat()}
+type: {thought.thought_type.value}
+thought_id: {thought.id}
+salience: {thought.salience:.2f}
+generation: {thought.generation}
+---
+
+{thought.content}
+
+## Metadata
+
+- **Domains:** {', '.join(thought.domains) if thought.domains else 'general'}
+- **Confidence:** {thought.confidence:.2f}
+- **Novelty:** {thought.novelty:.2f}
+"""
+            if thought.predecessor_id:
+                note_content += f"- **Predecessor:** {thought.predecessor_id}\n"
+
+            if thought.kb_paths:
+                note_content += "\n## Related\n\n"
+                for path in thought.kb_paths[:5]:
+                    note_content += f"- [[{path}]]\n"
+
+            note_content += "\n---\n\n*This note is part of the knowledge base. Edit, link, or dismiss as you wish.*\n"
+
+            # Write the note
+            note_path = scratch_dir / f"{time_str}_{note_type}.md"
+            note_path.write_text(note_content)
+
+            # Update previous note's next: field
+            if prev_note and prev_note.exists():
+                _update_next_link(prev_note, kb_root, note_path)
+
+            return str(note_path.relative_to(kb_root))
+
+        except Exception as e:
+            logger.warning(f"Failed to save thought as note: {e}")
             return None
 
     async def _record_cycle(self, result: CognitionResult) -> None:
