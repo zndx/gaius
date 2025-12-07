@@ -42,6 +42,9 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 **Swarm**
 - run_swarm: Execute swarm analysis
 
+**Development**
+- reload_modules: Hot-reload Python modules without restart
+
 Usage:
     # Start the server
     uv run gaius-mcp
@@ -78,9 +81,41 @@ except ImportError:
 KB_ROOT = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
 ALLOWED_DIRS = ("archive", "current", "scratch")
 
+# Engine proxy cache
+_engine_client = None
+_engine_connected = False
+
 # Module-level geometry cache for MCP context
 _mcp_curvatures: list[float] | None = None
 _mcp_tda_features = None  # TDAFeatures | None
+
+
+async def _get_engine_client():
+    """Get engine client if available (with fallbacks enabled).
+
+    Returns None if engine not available or fallbacks disabled.
+    """
+    global _engine_client, _engine_connected
+
+    # Check if fallbacks enabled (engine requires this currently)
+    if os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() != "true":
+        return None
+
+    if _engine_client is not None:
+        return _engine_client if _engine_connected else None
+
+    try:
+        from .client.aeron_client import EngineClient
+
+        _engine_client = EngineClient()
+        _engine_connected = await _engine_client.connect()
+
+        if _engine_connected:
+            return _engine_client
+        else:
+            return None
+    except Exception:
+        return None
 
 
 async def _ensure_geometry_computed() -> tuple[list[float] | None, object]:
@@ -193,7 +228,7 @@ def create_server() -> "FastMCP":
 
     server = FastMCP("gaius")
 
-    # --- KB Operations ---
+    # --- KB Operations (via storage abstraction) ---
 
     @server.tool()
     async def search_kb(query: str, max_results: int = 10) -> str:
@@ -205,58 +240,16 @@ def create_server() -> "FastMCP":
             query: Search query
             max_results: Maximum number of results to return
         """
-        kb_root = get_kb_root()
-        results = []
+        from .storage.kb_ops import search_kb as _search_kb
 
-        for allowed_dir in ALLOWED_DIRS:
-            dir_path = kb_root / allowed_dir
-            if not dir_path.exists():
-                continue
-
-            for md_file in dir_path.rglob("*.md"):
-                # Check filename
-                if query.lower() in md_file.name.lower():
-                    rel_path = md_file.relative_to(kb_root)
-                    results.append(
-                        {
-                            "path": str(rel_path),
-                            "match": "filename",
-                            "preview": md_file.name,
-                        }
-                    )
-                    continue
-
-                # Check content
-                try:
-                    content = md_file.read_text()
-                    if query.lower() in content.lower():
-                        # Get preview around match
-                        idx = content.lower().find(query.lower())
-                        start = max(0, idx - 50)
-                        end = min(len(content), idx + len(query) + 50)
-                        preview = content[start:end].replace("\n", " ")
-                        if start > 0:
-                            preview = "..." + preview
-                        if end < len(content):
-                            preview = preview + "..."
-
-                        rel_path = md_file.relative_to(kb_root)
-                        results.append(
-                            {
-                                "path": str(rel_path),
-                                "match": "content",
-                                "preview": preview,
-                            }
-                        )
-                except Exception:
-                    continue
-
-                if len(results) >= max_results:
-                    break
-            if len(results) >= max_results:
-                break
-
-        return json.dumps({"results": results, "total": len(results)}, indent=2)
+        results = await _search_kb(query, max_results)
+        return json.dumps({
+            "results": [
+                {"path": r.path, "match": r.match_type, "preview": r.preview}
+                for r in results
+            ],
+            "total": len(results),
+        }, indent=2)
 
     @server.tool()
     async def read_kb(path: str) -> str:
@@ -265,20 +258,18 @@ def create_server() -> "FastMCP":
         Args:
             path: Relative path like "current/topics/kudu.md"
         """
-        full_path = validate_kb_path(path)
-        if not full_path.exists():
+        from .storage.kb_ops import read_kb as _read_kb
+
+        entry = await _read_kb(path)
+        if entry is None:
             return json.dumps({"error": f"File not found: {path}"})
 
-        content = full_path.read_text()
-        return json.dumps(
-            {
-                "path": path,
-                "content": content,
-                "size": len(content),
-                "modified": full_path.stat().st_mtime,
-            },
-            indent=2,
-        )
+        return json.dumps({
+            "path": entry.path,
+            "content": entry.content,
+            "size": entry.size,
+            "modified": entry.modified,
+        }, indent=2)
 
     @server.tool()
     async def create_kb(path: str, content: str) -> str:
@@ -288,40 +279,33 @@ def create_server() -> "FastMCP":
             path: Relative path like "current/topics/new_topic.md"
             content: Markdown content for the entry
         """
-        full_path = validate_kb_path(path)
-
-        if full_path.exists():
-            return json.dumps({"error": f"File already exists: {path}"})
-
-        # Ensure parent directory exists
-        full_path.parent.mkdir(parents=True, exist_ok=True)
+        from .storage.kb_ops import create_kb as _create_kb
 
         # Ensure .md extension
-        if not str(full_path).endswith(".md"):
-            full_path = Path(str(full_path) + ".md")
+        if not path.endswith(".md"):
+            path = path + ".md"
 
-        full_path.write_text(content)
+        result = await _create_kb(path, content)
+
+        if "error" in result:
+            return json.dumps(result)
 
         # Log activity
         try:
             from .core.activity import get_activity_tracker, ActivityType
 
             tracker = get_activity_tracker()
-            rel_path = str(full_path.relative_to(get_kb_root()))
             await tracker.log_event(
                 event_type=ActivityType.KB_CREATE,
-                details={"path": rel_path, "size": len(content)},
+                details={"path": path, "size": len(content)},
             )
         except Exception:
             pass  # Don't fail on logging errors
 
-        return json.dumps(
-            {
-                "created": str(full_path.relative_to(get_kb_root())),
-                "size": len(content),
-            },
-            indent=2,
-        )
+        return json.dumps({
+            "created": result["path"],
+            "size": result["size"],
+        }, indent=2)
 
     @server.tool()
     async def update_kb(path: str, content: str) -> str:
@@ -331,13 +315,12 @@ def create_server() -> "FastMCP":
             path: Relative path to the entry
             content: New markdown content
         """
-        full_path = validate_kb_path(path)
+        from .storage.kb_ops import update_kb as _update_kb
 
-        if not full_path.exists():
-            return json.dumps({"error": f"File not found: {path}"})
+        result = await _update_kb(path, content)
 
-        old_size = len(full_path.read_text())
-        full_path.write_text(content)
+        if "error" in result:
+            return json.dumps(result)
 
         # Log activity
         try:
@@ -346,19 +329,16 @@ def create_server() -> "FastMCP":
             tracker = get_activity_tracker()
             await tracker.log_event(
                 event_type=ActivityType.KB_UPDATE,
-                details={"path": path, "old_size": old_size, "new_size": len(content)},
+                details={"path": path, "old_size": result["old_size"], "new_size": result["new_size"]},
             )
         except Exception:
             pass  # Don't fail on logging errors
 
-        return json.dumps(
-            {
-                "updated": path,
-                "old_size": old_size,
-                "new_size": len(content),
-            },
-            indent=2,
-        )
+        return json.dumps({
+            "updated": path,
+            "old_size": result["old_size"],
+            "new_size": result["new_size"],
+        }, indent=2)
 
     @server.tool()
     async def delete_kb(path: str) -> str:
@@ -367,12 +347,12 @@ def create_server() -> "FastMCP":
         Args:
             path: Relative path to delete
         """
-        full_path = validate_kb_path(path)
+        from .storage.kb_ops import delete_kb as _delete_kb
 
-        if not full_path.exists():
-            return json.dumps({"error": f"File not found: {path}"})
+        result = await _delete_kb(path)
 
-        full_path.unlink()
+        if "error" in result:
+            return json.dumps(result)
 
         return json.dumps({"deleted": path}, indent=2)
 
@@ -383,29 +363,17 @@ def create_server() -> "FastMCP":
         Args:
             directory: Subdirectory to list (default: list all allowed dirs)
         """
-        kb_root = get_kb_root()
+        from .storage.kb_ops import list_kb as _list_kb
 
-        if directory:
-            full_path = validate_kb_path(directory)
-            if not full_path.is_dir():
-                return json.dumps({"error": f"Not a directory: {directory}"})
-            dirs_to_list = [full_path]
-        else:
-            dirs_to_list = [kb_root / d for d in ALLOWED_DIRS if (kb_root / d).exists()]
+        result = await _list_kb(directory)
 
-        entries = []
-        for dir_path in dirs_to_list:
-            for item in sorted(dir_path.rglob("*.md")):
-                rel_path = item.relative_to(kb_root)
-                entries.append(
-                    {
-                        "path": str(rel_path),
-                        "size": item.stat().st_size,
-                        "modified": item.stat().st_mtime,
-                    }
-                )
+        if "error" in result:
+            return json.dumps(result)
 
-        return json.dumps({"entries": entries, "total": len(entries)}, indent=2)
+        return json.dumps({
+            "entries": result["entries"],
+            "total": len(result["entries"]),
+        }, indent=2)
 
     # --- Inference Operations ---
 
@@ -1208,8 +1176,16 @@ Domain: {domain or 'general'}
         """Get scheduler status including endpoints, queue, and metrics.
 
         Returns comprehensive status of the inference scheduler.
+        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
         """
         try:
+            # Try engine proxy first
+            client = await _get_engine_client()
+            if client:
+                status = await client.call("Scheduler", "status", {})
+                return json.dumps(status, indent=2, default=str)
+
+            # Fall back to direct access
             from .inference.scheduler import get_scheduler_service
 
             service = get_scheduler_service()
@@ -1471,8 +1447,16 @@ Domain: {domain or 'general'}
         """Get GPU orchestrator status including all vLLM processes and GPU health.
 
         Returns comprehensive status of GPU resources, process health, and scheduling metrics.
+        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
         """
         try:
+            # Try engine proxy first
+            client = await _get_engine_client()
+            if client:
+                status = await client.call("Orchestrator", "status", {})
+                return json.dumps(status, indent=2, default=str)
+
+            # Fall back to direct access
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1629,8 +1613,16 @@ Domain: {domain or 'general'}
         """Get detailed GPU health metrics (VRAM, temp, power, utilization).
 
         Uses pynvml for real-time GPU monitoring.
+        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
         """
         try:
+            # Try engine proxy first
+            client = await _get_engine_client()
+            if client:
+                health = await client.call("Health", "gpu_detailed", {})
+                return json.dumps(health, indent=2, default=str)
+
+            # Fall back to direct access
             from .inference.health import get_health_monitor
 
             monitor = get_health_monitor()
@@ -1679,11 +1671,154 @@ Domain: {domain or 'general'}
                     "patterns_detected": result.patterns_detected,
                     "connections_found": result.connections_found,
                     "curiosities_generated": result.curiosities_generated,
+                    "self_observations": result.self_observations,
+                    "engine_audits": result.engine_audits,
                     "duration_ms": result.duration_ms,
                     "trigger_reason": result.trigger_reason,
                 },
                 indent=2,
             )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def trigger_self_observation() -> str:
+        """Trigger a self-observation cognition cycle.
+
+        Generates SELF_OBSERVATION thoughts that analyze recent thought patterns,
+        identify recurring themes, and reflect on the thinking process itself.
+        This is the core of recursive self-awareness - thoughts about thoughts.
+        """
+        try:
+            from .agents.cognition import get_cognition_agent, CognitionContext
+
+            agent = get_cognition_agent()
+
+            # Gather context focused on existing thoughts
+            context = CognitionContext()
+            context.active_thoughts = await agent.get_active_thoughts(limit=20)
+            context.recent_kb_entries = await agent._get_recent_kb_entries()
+
+            # Generate self-observations
+            thoughts = await agent._observe_own_thoughts(context)
+
+            # Save the thoughts
+            for thought in thoughts:
+                await agent._save_thought(thought)
+
+            return json.dumps(
+                {
+                    "self_observations": len(thoughts),
+                    "thoughts": [t.to_dict() for t in thoughts],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def trigger_engine_audit() -> str:
+        """Trigger an engine audit to generate ENGINE_AUDIT thoughts.
+
+        Examines evolution cycles, GPU health, scheduler metrics, and other
+        engine processes to detect anomalies and generate audit thoughts.
+        """
+        try:
+            from .agents.cognition import get_cognition_agent, CognitionContext
+
+            agent = get_cognition_agent()
+
+            # Create minimal context for auditing
+            context = CognitionContext()
+
+            # Generate audit thoughts
+            thoughts = await agent._audit_engine_health(context)
+
+            # Save the thoughts
+            for thought in thoughts:
+                await agent._save_thought(thought)
+
+            return json.dumps(
+                {
+                    "audit_thoughts": len(thoughts),
+                    "thoughts": [t.to_dict() for t in thoughts],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_thought_chain(thought_id: str = "") -> str:
+        """Get the chain of thoughts leading to a specific thought.
+
+        Traces predecessor relationships to show how thoughts evolved.
+
+        Args:
+            thought_id: UUID of the thought to trace (empty = latest thought)
+        """
+        try:
+            import asyncpg
+            from .core.config import get_config
+
+            config = get_config()
+            conn = await asyncpg.connect(config.database.url)
+
+            try:
+                # If no thought_id, get the latest thought with a chain
+                if not thought_id:
+                    thought_id = await conn.fetchval(
+                        """
+                        SELECT id FROM cognition_thoughts
+                        WHERE thought_chain_id IS NOT NULL
+                        ORDER BY created_at DESC LIMIT 1
+                        """
+                    )
+                    if not thought_id:
+                        return json.dumps({"error": "No thought chains found"}, indent=2)
+
+                # Get all thoughts in the chain
+                rows = await conn.fetch(
+                    """
+                    WITH RECURSIVE chain AS (
+                        SELECT id, title, thought_type, generation, predecessor_id,
+                               thought_chain_id, content, salience, created_at
+                        FROM cognition_thoughts WHERE id = $1::uuid
+                        UNION ALL
+                        SELECT t.id, t.title, t.thought_type, t.generation, t.predecessor_id,
+                               t.thought_chain_id, t.content, t.salience, t.created_at
+                        FROM cognition_thoughts t
+                        JOIN chain c ON t.id = c.predecessor_id
+                    )
+                    SELECT * FROM chain ORDER BY generation, created_at
+                    """,
+                    str(thought_id),
+                )
+
+                chain = [
+                    {
+                        "id": str(r["id"]),
+                        "title": r["title"],
+                        "type": r["thought_type"],
+                        "generation": r["generation"],
+                        "content_preview": r["content"][:200] if r["content"] else "",
+                        "salience": r["salience"],
+                        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                    }
+                    for r in rows
+                ]
+
+                return json.dumps(
+                    {
+                        "chain_length": len(chain),
+                        "chain": chain,
+                    },
+                    indent=2,
+                )
+
+            finally:
+                await conn.close()
+
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -1742,6 +1877,8 @@ Domain: {domain or 'general'}
                     "title": t.title,
                     "summary": t.summary or t.content[:100],
                     "salience": t.salience,
+                    "generation": t.generation,
+                    "note_path": t.note_path,
                 })
 
             return json.dumps(
@@ -2103,8 +2240,16 @@ Domain: {domain or 'general'}
 
         Returns status of the Agent0-style self-improvement daemon,
         including cycles completed, improvement metrics, and next agent.
+        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
         """
         try:
+            # Try engine proxy first
+            client = await _get_engine_client()
+            if client:
+                status = await client.call("Evolution", "status", {})
+                return json.dumps(status, indent=2, default=str)
+
+            # Fall back to direct access
             from .agents.evolution import get_evolution_daemon
 
             daemon = get_evolution_daemon()
@@ -2398,68 +2543,21 @@ Domain: {domain or 'general'}
             days: Number of days to analyze
         """
         try:
-            import asyncpg
-            import os
-            from datetime import datetime, timedelta
+            from .storage.database import get_evolution_trend as _get_evolution_trend
 
-            url = os.getenv(
-                "DATABASE_URL",
-                "postgresql://gaius:gaius@localhost:5432/gaius"
+            result = await _get_evolution_trend(days)
+
+            if "error" in result:
+                return json.dumps(result, indent=2)
+
+            return json.dumps(
+                {
+                    "days_analyzed": result.get("days", days),
+                    "daily_summaries": result.get("daily_summaries", []),
+                    "score_comparisons": result.get("score_comparisons", []),
+                },
+                indent=2,
             )
-
-            conn = await asyncpg.connect(url)
-            try:
-                # Get daily summaries
-                summaries = await conn.fetch(
-                    """
-                    SELECT eval_date, total_cycles, successful_cycles,
-                           total_improvement_percent, trend_direction,
-                           trend_confidence, agent_summaries, held_out_results
-                    FROM daily_eval_summaries
-                    WHERE eval_date > $1
-                    ORDER BY eval_date DESC
-                    """,
-                    datetime.now().date() - timedelta(days=days)
-                )
-
-                # Get overfit comparison
-                overfit = await conn.fetch(
-                    """
-                    SELECT * FROM eval_score_comparison
-                    ORDER BY overfit_gap DESC
-                    LIMIT 10
-                    """
-                )
-
-                return json.dumps(
-                    {
-                        "days_analyzed": days,
-                        "daily_summaries": [
-                            {
-                                "date": r["eval_date"].isoformat(),
-                                "cycles": r["total_cycles"],
-                                "successful": r["successful_cycles"],
-                                "improvement": round(r["total_improvement_percent"], 2),
-                                "trend": r["trend_direction"],
-                            }
-                            for r in summaries
-                        ],
-                        "overfit_warnings": [
-                            {
-                                "agent_id": r["agent_id"],
-                                "version_id": r["version_id"][:8],
-                                "training_score": round(r["training_score"], 3),
-                                "held_out_score": round(r["held_out_score"], 3),
-                                "gap": round(r["overfit_gap"], 3),
-                            }
-                            for r in overfit
-                            if r["overfit_gap"] and r["overfit_gap"] > 0.05
-                        ],
-                    },
-                    indent=2,
-                )
-            finally:
-                await conn.close()
 
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
@@ -2565,53 +2663,191 @@ Domain: {domain or 'general'}
         evaluations, helping calibrate confidence in local evals.
         """
         try:
-            import asyncpg
-            import os
+            from .storage.database import get_eval_comparison as _get_eval_comparison
 
-            url = os.getenv(
-                "DATABASE_URL",
-                "postgresql://gaius:gaius@localhost:5432/gaius"
+            result = await _get_eval_comparison()
+
+            if "error" in result:
+                return json.dumps(result, indent=2)
+
+            correlation = result.get("overall_correlation", 0)
+            return json.dumps(
+                {
+                    "total_agents": result.get("total_agents", 0),
+                    "comparisons": result.get("comparisons", []),
+                    "overall_correlation": round(correlation, 3),
+                    "interpretation": (
+                        "Strong alignment"
+                        if correlation > 0.8
+                        else "Moderate alignment"
+                        if correlation > 0.5
+                        else "Weak alignment - consider more XAI spot checks"
+                    ),
+                },
+                indent=2,
             )
 
-            conn = await asyncpg.connect(url)
-            try:
-                # Get comparison data from spot checks
-                stats = await conn.fetchrow(
-                    """
-                    SELECT
-                        COUNT(*) as total_comparisons,
-                        AVG(ABS(
-                            (metadata->>'local_score')::float -
-                            (metadata->>'xai_score')::float
-                        )) as avg_diff,
-                        CORR(
-                            (metadata->>'local_score')::float,
-                            (metadata->>'xai_score')::float
-                        ) as correlation
-                    FROM agent_evaluations
-                    WHERE metadata ? 'local_score'
-                    AND metadata ? 'xai_score'
-                    """
-                )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
 
-                return json.dumps(
-                    {
-                        "total_comparisons": stats["total_comparisons"] or 0,
-                        "avg_score_difference": round(stats["avg_diff"] or 0, 3),
-                        "correlation": round(stats["correlation"] or 0, 3),
-                        "interpretation": (
-                            "Strong alignment"
-                            if (stats["correlation"] or 0) > 0.8
-                            else "Moderate alignment"
-                            if (stats["correlation"] or 0) > 0.5
-                            else "Weak alignment - consider more XAI spot checks"
-                        ),
+    # --- Development Tools ---
+
+    @server.tool()
+    async def reload_modules(modules: str = "") -> str:
+        """Hot-reload Python modules for development.
+
+        Reloads specified modules (or common ones) without restarting
+        the MCP server. Useful for testing code changes immediately.
+
+        Args:
+            modules: Comma-separated module names to reload.
+                     Empty = reload common modules (kb_ops, factory, etc.)
+
+        Note: This clears cached singletons and reloads module code.
+        Some state may be lost. Use during development only.
+        """
+        import importlib
+        import sys
+
+        reloaded = []
+        errors = []
+
+        # Default modules to reload if none specified
+        default_modules = [
+            "gaius.storage.kb_ops",
+            "gaius.storage.factory",
+            "gaius.storage.filesystem",
+            "gaius.storage.grid_state",
+            "gaius.core.cache",
+            "gaius.agents.cognition",
+            "gaius.agents.reflection",
+            "gaius.core.session",
+        ]
+
+        # Parse requested modules
+        if modules.strip():
+            target_modules = [m.strip() for m in modules.split(",")]
+        else:
+            target_modules = default_modules
+
+        # Reset storage singleton first
+        try:
+            from .storage.factory import reset_storage
+            reset_storage()
+            reloaded.append("storage_singleton_reset")
+        except Exception as e:
+            errors.append(f"reset_storage: {e}")
+
+        # Reload each module
+        for mod_name in target_modules:
+            # Ensure full module path
+            if not mod_name.startswith("gaius."):
+                mod_name = f"gaius.{mod_name}"
+
+            if mod_name in sys.modules:
+                try:
+                    module = sys.modules[mod_name]
+                    importlib.reload(module)
+                    reloaded.append(mod_name)
+                except Exception as e:
+                    errors.append(f"{mod_name}: {e}")
+            else:
+                # Module not yet imported, just note it
+                errors.append(f"{mod_name}: not loaded")
+
+        return json.dumps(
+            {
+                "reloaded": reloaded,
+                "errors": errors if errors else None,
+                "hint": "Changes should take effect on next tool call",
+            },
+            indent=2,
+        )
+
+    # --- Grid State History ---
+
+    @server.tool()
+    async def list_grid_snapshots(kb_root: str = "build/dev", limit: int = 10) -> str:
+        """List grid state snapshots with history.
+
+        Shows previous grid projections stored in Postgres,
+        allowing you to see how the KB evolved over time.
+
+        Args:
+            kb_root: KB root directory
+            limit: Maximum snapshots to return
+        """
+        try:
+            from .storage.grid_state import list_snapshots
+
+            snapshots = await list_snapshots(kb_root, limit)
+
+            return json.dumps(
+                {
+                    "kb_root": kb_root,
+                    "total": len(snapshots),
+                    "snapshots": [
+                        {
+                            "id": s.id,
+                            "created_at": s.created_at.isoformat(),
+                            "n_documents": s.n_documents,
+                            "coverage": round(s.coverage, 3),
+                            "h0_count": s.h0_count,
+                            "h1_count": s.h1_count,
+                            "h2_count": s.h2_count,
+                            "entropy": round(s.entropy, 3),
+                            "is_current": s.is_current,
+                            "embedding_model": s.embedding_model,
+                            "projection_method": s.projection_method,
+                        }
+                        for s in snapshots
+                    ],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_grid_stats(kb_root: str = "build/dev") -> str:
+        """Get current grid state statistics.
+
+        Returns information about the current grid projection
+        including document count, TDA features, and coverage.
+
+        Args:
+            kb_root: KB root directory
+        """
+        try:
+            from .storage.grid_state import load_current_grid_state
+
+            grid_data, tda_features, metadata = await load_current_grid_state(kb_root)
+
+            if grid_data is None:
+                return json.dumps({
+                    "error": "No grid state found",
+                    "hint": "Run /init in the TUI to create initial state",
+                })
+
+            return json.dumps(
+                {
+                    "snapshot_id": metadata.get("snapshot_id") if metadata else None,
+                    "created_at": metadata.get("created_at") if metadata else None,
+                    "n_documents": grid_data.n_documents,
+                    "coverage": round(grid_data.coverage, 3),
+                    "method": grid_data.method,
+                    "tda": {
+                        "h0_count": tda_features.h0_count,
+                        "h1_count": tda_features.h1_count,
+                        "h2_count": tda_features.h2_count,
+                        "entropy": round(tda_features.entropy, 3),
+                        "h1_cycles": len(tda_features.h1_cycles),
+                        "h2_voids": len(tda_features.h2_voids),
                     },
-                    indent=2,
-                )
-            finally:
-                await conn.close()
-
+                    "embedding_model": metadata.get("embedding_model") if metadata else None,
+                },
+                indent=2,
+            )
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
