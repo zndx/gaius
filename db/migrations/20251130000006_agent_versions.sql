@@ -1,7 +1,7 @@
 -- migrate:up
 
 -- Agent versions table for configuration management and rollback
-CREATE TABLE agent_versions (
+CREATE TABLE IF NOT EXISTS agent_versions (
     version_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
     config JSONB NOT NULL,
@@ -41,19 +41,19 @@ CREATE TABLE agent_versions (
     change_notes TEXT DEFAULT ''
 );
 
-CREATE INDEX idx_agent_versions_agent ON agent_versions(agent_id);
-CREATE INDEX idx_agent_versions_active ON agent_versions(agent_id, is_active) WHERE is_active = TRUE;
-CREATE INDEX idx_agent_versions_created ON agent_versions(created_at DESC);
-CREATE INDEX idx_agent_versions_score ON agent_versions(avg_overall_score DESC);
-CREATE INDEX idx_agent_versions_parent ON agent_versions(parent_version) WHERE parent_version IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_versions_agent ON agent_versions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_versions_active ON agent_versions(agent_id, is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_agent_versions_created ON agent_versions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_versions_score ON agent_versions(avg_overall_score DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_versions_parent ON agent_versions(parent_version) WHERE parent_version IS NOT NULL;
 
 -- Ensure only one active version per agent
-CREATE UNIQUE INDEX idx_agent_versions_single_active
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_versions_single_active
 ON agent_versions(agent_id)
 WHERE is_active = TRUE;
 
 -- Evaluation history for detailed tracking
-CREATE TABLE agent_evaluations (
+CREATE TABLE IF NOT EXISTS agent_evaluations (
     id SERIAL PRIMARY KEY,
     version_id TEXT NOT NULL REFERENCES agent_versions(version_id),
     overall_score FLOAT NOT NULL,
@@ -80,12 +80,12 @@ CREATE TABLE agent_evaluations (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_agent_evaluations_version ON agent_evaluations(version_id);
-CREATE INDEX idx_agent_evaluations_created ON agent_evaluations(created_at DESC);
-CREATE INDEX idx_agent_evaluations_score ON agent_evaluations(overall_score DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_evaluations_version ON agent_evaluations(version_id);
+CREATE INDEX IF NOT EXISTS idx_agent_evaluations_created ON agent_evaluations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_evaluations_score ON agent_evaluations(overall_score DESC);
 
 -- Optimization runs for tracking GEPA/APO experiments
-CREATE TABLE optimization_runs (
+CREATE TABLE IF NOT EXISTS optimization_runs (
     id SERIAL PRIMARY KEY,
     agent_id TEXT NOT NULL,
     strategy TEXT NOT NULL,  -- 'apo', 'gepa', 'hybrid'
@@ -118,12 +118,12 @@ CREATE TABLE optimization_runs (
     notes TEXT
 );
 
-CREATE INDEX idx_optimization_runs_agent ON optimization_runs(agent_id);
-CREATE INDEX idx_optimization_runs_status ON optimization_runs(status);
-CREATE INDEX idx_optimization_runs_started ON optimization_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_optimization_runs_agent ON optimization_runs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_optimization_runs_status ON optimization_runs(status);
+CREATE INDEX IF NOT EXISTS idx_optimization_runs_started ON optimization_runs(started_at DESC);
 
 -- View: Active agent configurations
-CREATE VIEW active_agent_configs AS
+CREATE OR REPLACE VIEW active_agent_configs AS
 SELECT
     agent_id,
     version_id,
@@ -135,7 +135,7 @@ FROM agent_versions
 WHERE is_active = TRUE;
 
 -- View: Agent version history with parent chain
-CREATE VIEW agent_version_history AS
+CREATE OR REPLACE VIEW agent_version_history AS
 SELECT
     v.agent_id,
     v.version_id,
@@ -151,7 +151,7 @@ LEFT JOIN agent_versions p ON v.parent_version = p.version_id
 ORDER BY v.agent_id, v.created_at DESC;
 
 -- View: Best performing versions per agent
-CREATE VIEW best_agent_versions AS
+CREATE OR REPLACE VIEW best_agent_versions AS
 SELECT DISTINCT ON (agent_id)
     agent_id,
     version_id,

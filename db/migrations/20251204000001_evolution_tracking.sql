@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_evaluations_category
 ON agent_evaluations(task_category);
 
 -- Held-out query pool (rolling window of recent queries not used for training)
-CREATE TABLE held_out_queries (
+CREATE TABLE IF NOT EXISTS held_out_queries (
     id SERIAL PRIMARY KEY,
     query_hash TEXT UNIQUE NOT NULL,  -- SHA256 of query for dedup
     input_prompt TEXT NOT NULL,
@@ -42,13 +42,13 @@ CREATE TABLE held_out_queries (
     exclusion_reason TEXT DEFAULT 'held_out_pool'
 );
 
-CREATE INDEX idx_held_out_domain ON held_out_queries(domain);
-CREATE INDEX idx_held_out_category ON held_out_queries(category);
-CREATE INDEX idx_held_out_created ON held_out_queries(created_at DESC);
-CREATE INDEX idx_held_out_unused ON held_out_queries(last_used_at NULLS FIRST);
+CREATE INDEX IF NOT EXISTS idx_held_out_domain ON held_out_queries(domain);
+CREATE INDEX IF NOT EXISTS idx_held_out_category ON held_out_queries(category);
+CREATE INDEX IF NOT EXISTS idx_held_out_created ON held_out_queries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_held_out_unused ON held_out_queries(last_used_at NULLS FIRST);
 
 -- Evolution cycle history
-CREATE TABLE evolution_cycles (
+CREATE TABLE IF NOT EXISTS evolution_cycles (
     id SERIAL PRIMARY KEY,
     agent_id TEXT NOT NULL,
     version_before TEXT REFERENCES agent_versions(version_id),
@@ -83,13 +83,13 @@ CREATE TABLE evolution_cycles (
     error TEXT
 );
 
-CREATE INDEX idx_evolution_cycles_agent ON evolution_cycles(agent_id);
-CREATE INDEX idx_evolution_cycles_success ON evolution_cycles(success);
-CREATE INDEX idx_evolution_cycles_started ON evolution_cycles(started_at DESC);
-CREATE INDEX idx_evolution_cycles_improvement ON evolution_cycles(improvement_percent DESC);
+CREATE INDEX IF NOT EXISTS idx_evolution_cycles_agent ON evolution_cycles(agent_id);
+CREATE INDEX IF NOT EXISTS idx_evolution_cycles_success ON evolution_cycles(success);
+CREATE INDEX IF NOT EXISTS idx_evolution_cycles_started ON evolution_cycles(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evolution_cycles_improvement ON evolution_cycles(improvement_percent DESC);
 
 -- Daily evaluation summaries
-CREATE TABLE daily_eval_summaries (
+CREATE TABLE IF NOT EXISTS daily_eval_summaries (
     id SERIAL PRIMARY KEY,
     eval_date DATE NOT NULL,
 
@@ -130,10 +130,10 @@ CREATE TABLE daily_eval_summaries (
     UNIQUE(eval_date)
 );
 
-CREATE INDEX idx_daily_summaries_date ON daily_eval_summaries(eval_date DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_summaries_date ON daily_eval_summaries(eval_date DESC);
 
 -- View: Recent evolution performance
-CREATE VIEW evolution_performance AS
+CREATE OR REPLACE VIEW evolution_performance AS
 SELECT
     agent_id,
     COUNT(*) as total_cycles,
@@ -147,7 +147,7 @@ WHERE started_at > NOW() - INTERVAL '7 days'
 GROUP BY agent_id;
 
 -- View: Held-out vs training score comparison (overfitting detection)
-CREATE VIEW eval_score_comparison AS
+CREATE OR REPLACE VIEW eval_score_comparison AS
 SELECT
     e.version_id,
     v.agent_id,

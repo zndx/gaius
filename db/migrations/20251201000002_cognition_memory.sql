@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- Cognition Memory: Thoughts, Sessions, and Research Threads
 -- Enables Gaius to answer "What have you been thinking about?"
 
@@ -263,3 +265,13 @@ BEGIN
     RETURN archived_count;
 END;
 $$ LANGUAGE plpgsql;
+
+-- migrate:down
+DROP FUNCTION IF EXISTS archive_stale_thoughts;
+DROP FUNCTION IF EXISTS time_since_last_session;
+DROP FUNCTION IF EXISTS time_since_last_cognition;
+DROP TABLE IF EXISTS cognition_cycles;
+DROP TABLE IF EXISTS user_interests;
+DROP TABLE IF EXISTS research_threads;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS cognition_thoughts;

@@ -105,3 +105,20 @@ mdbook documentation in `docs/`. Save work summaries and notes to `docs/notes/$(
 - **CAD orthographic views**: Multiple projection views updating together
 - Do not rely on fallbacks nor workarounds when testing; all functional aspects of new features must be verified directly.
 - We do _not_ fall back to static test data in this application.
+- Before making a commit ensure that all new functionality is available on the CLI and use the CLI to verify that everything is working.
+
+
+## Testing Methodology
+
+After every code change, re-test via CLI before declaring success.
+ 
+The CLI is the product. Previous test outputs are invalidated by code changes. Don't reason from stale context - run the command again.
+ 
+# After editing orchestrated.py:
+# BAD: "The fix should work based on my analysis"
+# GOOD: Actually run it
+uv run gaius-cli --cmd "/evolve status" --format json
+ 
+This isn't redundant tool use - it's verifying the product works.
+
+

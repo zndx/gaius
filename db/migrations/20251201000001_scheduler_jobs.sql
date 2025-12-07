@@ -1,3 +1,5 @@
+-- migrate:up
+
 -- Scheduler Jobs Table
 -- ======================
 -- Persistent storage for inference jobs enabling:
@@ -6,13 +8,19 @@
 -- - Complete audit trail
 
 -- Job priority levels
-CREATE TYPE job_priority AS ENUM ('critical', 'high', 'normal', 'low');
+DO $$ BEGIN
+    CREATE TYPE job_priority AS ENUM ('critical', 'high', 'normal', 'low');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Job execution status
-CREATE TYPE job_status AS ENUM ('pending', 'scheduled', 'running', 'completed', 'failed', 'cancelled');
+DO $$ BEGIN
+    CREATE TYPE job_status AS ENUM ('pending', 'scheduled', 'running', 'completed', 'failed', 'cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Main jobs table
-CREATE TABLE scheduler_jobs (
+CREATE TABLE IF NOT EXISTS scheduler_jobs (
     -- Primary key (UUID for distributed generation)
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
@@ -53,22 +61,22 @@ CREATE TABLE scheduler_jobs (
 -- Indexes for common queries
 
 -- Find pending jobs by priority (for scheduler)
-CREATE INDEX idx_scheduler_jobs_pending ON scheduler_jobs(priority, created_at)
+CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_pending ON scheduler_jobs(priority, created_at)
     WHERE status = 'pending';
 
 -- Find jobs by status (for monitoring)
-CREATE INDEX idx_scheduler_jobs_status ON scheduler_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_status ON scheduler_jobs(status);
 
 -- Find failed jobs eligible for retry
-CREATE INDEX idx_scheduler_jobs_retry ON scheduler_jobs(created_at)
+CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_retry ON scheduler_jobs(created_at)
     WHERE status = 'failed' AND retry_count < max_retries;
 
 -- Find jobs by endpoint (for endpoint-specific queries)
-CREATE INDEX idx_scheduler_jobs_endpoint ON scheduler_jobs(assigned_endpoint)
+CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_endpoint ON scheduler_jobs(assigned_endpoint)
     WHERE assigned_endpoint IS NOT NULL;
 
 -- Find recent completed jobs (for metrics)
-CREATE INDEX idx_scheduler_jobs_completed ON scheduler_jobs(completed_at DESC)
+CREATE INDEX IF NOT EXISTS idx_scheduler_jobs_completed ON scheduler_jobs(completed_at DESC)
     WHERE status IN ('completed', 'failed');
 
 -- Comments
@@ -78,3 +86,8 @@ COMMENT ON COLUMN scheduler_jobs.messages IS 'OpenAI-format messages array';
 COMMENT ON COLUMN scheduler_jobs.preferred_endpoint IS 'User-requested endpoint preference';
 COMMENT ON COLUMN scheduler_jobs.assigned_endpoint IS 'Endpoint where job was actually scheduled';
 COMMENT ON COLUMN scheduler_jobs.role IS 'Swarm agent role if part of swarm execution';
+
+-- migrate:down
+DROP TABLE IF EXISTS scheduler_jobs;
+DROP TYPE IF EXISTS job_status;
+DROP TYPE IF EXISTS job_priority;
