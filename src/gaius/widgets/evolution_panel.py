@@ -2,13 +2,17 @@
 
 This widget shows real-time status of the Agent0-style evolution process,
 including daemon status, recent cycles, agent performance, and trends.
+
+When gaius-engine is running and GAIUS_ENABLE_FALLBACKS=true, fetches data
+via the engine proxy for better separation of concerns.
 """
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from rich.console import RenderableType
 from rich.panel import Panel
@@ -21,6 +25,42 @@ from textual.reactive import reactive
 from ..core.state import AppState
 
 logger = logging.getLogger(__name__)
+
+# Engine client cache for TUI widgets
+_engine_client: Optional[Any] = None
+_engine_connected: bool = False
+
+
+async def _get_engine_client():
+    """Get engine client if available (with fallbacks enabled)."""
+    global _engine_client, _engine_connected
+
+    if os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() != "true":
+        return None
+
+    if _engine_client is not None:
+        if _engine_connected:
+            return _engine_client
+        # Try reconnecting
+        try:
+            if await _engine_client.connect():
+                _engine_connected = True
+                return _engine_client
+        except Exception:
+            pass
+        return None
+
+    try:
+        from ..client.aeron_client import EngineClient
+        _engine_client = EngineClient()
+        if await _engine_client.connect():
+            _engine_connected = True
+            logger.info("TUI connected to gaius-engine")
+            return _engine_client
+    except Exception as e:
+        logger.debug(f"Engine not available for TUI: {e}")
+
+    return None
 
 
 @dataclass
@@ -160,14 +200,30 @@ class EvolutionPanel(Widget):
 
         # Line 2: Mode and next agent
         line2 = Text()
-        if parallel and parallel_endpoints > 0:
+        mode = status.get("mode", "daemon")
+        if mode == "orchestrated":
+            line2.append("🧠 ", style="bold magenta")
+        elif parallel and parallel_endpoints > 0:
             line2.append(f"⚡ {parallel_endpoints}x ", style="bold magenta")
-        line2.append(f"Next: ", style="dim")
-        line2.append(next_agent, style="cyan bold")
-        config = status.get("config", {})
-        if config:
-            strategy = config.get("strategy", "?")
-            line2.append(f"  {strategy}", style="dim")
+
+        # Show next agent or last decision for orchestrated
+        if mode == "orchestrated":
+            last_decision = status.get("last_decision")
+            if last_decision:
+                action = last_decision.get("action", "?")
+                target = last_decision.get("target", "")
+                line2.append(f"{action}", style="cyan bold")
+                if target:
+                    line2.append(f":{target}", style="white")
+            else:
+                line2.append("deciding...", style="yellow")
+        else:
+            line2.append(f"Next: ", style="dim")
+            line2.append(next_agent, style="cyan bold")
+            config = status.get("config", {})
+            if config:
+                strategy = config.get("strategy", "?")
+                line2.append(f"  {strategy}", style="dim")
         lines.append(line2)
 
         return lines
@@ -294,28 +350,21 @@ class EvolutionPanel(Widget):
         return lines
 
     async def refresh_data(self) -> None:
-        """Fetch fresh data from evolution daemon and database."""
+        """Fetch fresh data from evolution daemon and database.
+
+        Tries the engine proxy first if available, then falls back to
+        direct module access (useful when running in the same process).
+        """
         try:
-            # Get daemon status from the singleton (works if daemon runs in same process)
-            from ..agents.evolution import get_evolution_daemon
-            daemon = get_evolution_daemon()
-            self._daemon_status = daemon.get_status()
-            self._daemon_status["loading"] = False  # Clear loading state
+            # Try engine proxy first (when available)
+            client = await _get_engine_client()
+            if client:
+                await self._refresh_via_engine(client)
+            else:
+                await self._refresh_direct()
+
+            self._daemon_status["loading"] = False
             self._last_refresh = datetime.now()
-            logger.debug(f"Daemon status: running={self._daemon_status.get('running')}, cycles={self._daemon_status.get('cycles_completed')}")
-
-            # Get recent cycles from DB
-            await self._fetch_recent_cycles()
-
-            # Get agent scores
-            await self._fetch_agent_scores()
-
-            # Get held-out stats
-            await self._fetch_held_out_stats()
-
-            # Get trend
-            await self._fetch_trend()
-
             self.cycle_count = self._daemon_status.get("cycles_completed", 0)
             self.refresh()
 
@@ -325,6 +374,68 @@ class EvolutionPanel(Widget):
             # Update status to show error state
             self._daemon_status = {"running": False, "loading": False, "error": str(e)}
             self.refresh()
+
+    async def _refresh_via_engine(self, client) -> None:
+        """Fetch data via gaius-engine proxy."""
+        try:
+            # Get evolution status from engine
+            result = await client.call("Evolution", "status", {})
+            if "error" not in result:
+                self._daemon_status = result
+                self._daemon_status["via_engine"] = True
+                logger.debug(f"Evolution status via engine: running={result.get('running')}")
+            else:
+                logger.warning(f"Engine evolution status error: {result.get('error')}")
+                # Fall back to direct access
+                await self._refresh_direct()
+
+        except Exception as e:
+            logger.debug(f"Engine call failed, falling back: {e}")
+            await self._refresh_direct()
+
+        # Database queries still go direct for now (TODO: add to engine protocol)
+        await self._fetch_recent_cycles()
+        await self._fetch_agent_scores()
+        await self._fetch_held_out_stats()
+        await self._fetch_trend()
+
+    async def _refresh_direct(self) -> None:
+        """Fetch data directly from in-process modules."""
+        # Check orchestrated evolution first (takes priority when running)
+        try:
+            from ..agents.evolution.orchestrated import get_orchestrated_evolution
+            orch_evo = get_orchestrated_evolution()
+            if orch_evo.running:
+                self._daemon_status = orch_evo.get_status()
+                self._daemon_status["mode"] = "orchestrated"
+                self._daemon_status["total_improvement_percent"] = self._daemon_status.get("total_improvement", 0.0)
+                logger.debug(f"Orchestrated evolution status: running={self._daemon_status.get('running')}, cycles={self._daemon_status.get('cycles_completed')}")
+                # Get recent cycles from DB
+                await self._fetch_recent_cycles()
+                await self._fetch_agent_scores()
+                await self._fetch_held_out_stats()
+                await self._fetch_trend()
+                return
+        except Exception as e:
+            logger.debug(f"Orchestrated evolution not available: {e}")
+
+        # Fall back to simple daemon status
+        from ..agents.evolution import get_evolution_daemon
+        daemon = get_evolution_daemon()
+        self._daemon_status = daemon.get_status()
+        logger.debug(f"Daemon status (direct): running={self._daemon_status.get('running')}, cycles={self._daemon_status.get('cycles_completed')}")
+
+        # Get recent cycles from DB
+        await self._fetch_recent_cycles()
+
+        # Get agent scores
+        await self._fetch_agent_scores()
+
+        # Get held-out stats
+        await self._fetch_held_out_stats()
+
+        # Get trend
+        await self._fetch_trend()
 
     async def _fetch_recent_cycles(self) -> None:
         """Fetch recent evolution cycles from database."""

@@ -8,6 +8,11 @@ Usage:
     uv run gaius-cli --cmd "/state" # CLI mode
 """
 
+# Suppress huggingface tokenizers parallelism warnings BEFORE any imports
+# These warnings occur when tokenizers are used after process forking
+import os
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -24,8 +29,7 @@ from .core.tda import get_tda_manager
 from .core.activity import get_activity_tracker, log_activity, ActivityType
 from .core.session import get_session_manager, SessionHandoff
 from .agents import get_swarm_manager
-from .agents.cognition import get_cognition_agent, Thought
-from .agents.reflection import get_reflection_agent, ReflectionDepth
+from .agents.cognition import get_cognition_agent
 from .awareness import generate_startup_report
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
@@ -364,14 +368,27 @@ class GaiusApp(App):
     def _load_test_data(self) -> None:
         """Initialize grid state on startup.
 
-        Loads from cache if available, otherwise uses static fallback.
-        Run /init to populate cache from real KB data.
+        Priority:
+        1. Load from cache (instant)
+        2. If KB has content but no cache, schedule auto-init
+        3. Fall back to static test data (fresh install)
         """
         # Try to load from cache first (fast)
         if self._try_load_cached_state():
             return
 
-        # Fall back to static test data
+        # Check if KB has real content - if so, schedule auto-init
+        if self._kb_has_content():
+            self._schedule_auto_init()
+            # Use minimal placeholder until init completes
+            self.state.black_stones = []
+            self.state.white_stones = []
+            self.state.allocations = {}
+            self.state.h1_cycles = []
+            self.state.tda_entropy = 0.0
+            return
+
+        # Fall back to static test data (fresh install with empty KB)
         self.state.black_stones = GRID_DATA["black"]
         self.state.white_stones = GRID_DATA["white"]
         self.state.allocations = GRID_DATA["alloc"]
@@ -390,6 +407,49 @@ class GaiusApp(App):
         # Set some candidates
         self.state.candidates = [(3, 3), (15, 15), (10, 10), (5, 14), (14, 5)]
 
+    def _kb_has_content(self) -> bool:
+        """Check if KB has real content worth indexing."""
+        try:
+            kb_root = Path(self.config.kb.root)
+            # Check for markdown files in allowed directories
+            for allowed_dir in ("current", "scratch", "archive"):
+                dir_path = kb_root / allowed_dir
+                if dir_path.exists():
+                    md_files = list(dir_path.rglob("*.md"))
+                    if len(md_files) >= 3:  # At least 3 docs to make init worthwhile
+                        return True
+            return False
+        except Exception:
+            return False
+
+    def _schedule_auto_init(self) -> None:
+        """Schedule auto-initialization after app mount.
+
+        Uses call_later to run init after the UI is fully rendered,
+        keeping the app responsive during startup.
+        """
+        import asyncio
+
+        async def run_auto_init():
+            # Brief delay to let UI render first
+            await asyncio.sleep(0.5)
+
+            # Show notification
+            content = self.query_one("#content-panel", ContentPanel)
+            content.show_file(
+                "auto-init.txt",
+                "# Auto-Initializing\n\n"
+                "KB content detected but no cache found.\n"
+                "Running initialization in background...\n\n"
+                "Press 'g' to toggle ThinkPanel for progress."
+            )
+
+            # Run the init
+            await self._async_full_init()
+
+        # Schedule to run after mount
+        self.call_later(lambda: asyncio.create_task(run_auto_init()))
+
     def _try_load_cached_state(self) -> bool:
         """Try to load cached grid/TDA state.
 
@@ -407,8 +467,8 @@ class GaiusApp(App):
             ):
                 return False
 
-            # Load cached data
-            grid_data, tda_features, metadata = load_cached_state(self.config.kb.root)
+            # Load cached data (returns 4 values: grid_data, tda_features, metadata, iso_features)
+            grid_data, tda_features, metadata, iso_features = load_cached_state(self.config.kb.root)
 
             if grid_data is None or tda_features is None:
                 return False
@@ -679,10 +739,17 @@ class GaiusApp(App):
         except Exception:
             pass
 
-        # Run in thread pool
+        # Run in thread pool with stderr suppression
         import asyncio
+        import sys
+        import io
 
         def run_init():
+            # Suppress stderr to prevent warnings from flooding the TUI
+            # (tokenizers, transformers, etc. write warnings to stderr)
+            old_stderr = sys.stderr
+            sys.stderr = io.StringIO()
+
             try:
                 from .inference.search import get_vector_search
                 from .core.cache import save_cached_state
@@ -800,6 +867,9 @@ class GaiusApp(App):
                 task.error = str(e)
                 task.completed_at = datetime.now()
                 return False
+            finally:
+                # Restore stderr
+                sys.stderr = old_stderr
 
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(None, run_init)
@@ -2110,6 +2180,203 @@ Use `/evolve stop` to stop orchestrated evolution.
         else:
             content.show_file("error.txt", f"Unknown evolve subcommand: {subcmd}\n\nUsage:\n  /evolve                     - Start orchestrator-managed (default)\n  /evolve start [--parallel]  - Start simple daemon\n  /evolve stop\n  /evolve status\n  /evolve trigger [agent]\n  /evolve budget")
 
+    def _handle_thoughts_command(self, args: str) -> None:
+        """Handle /thoughts command for cognition.
+
+        Usage:
+            /thoughts           - Trigger cognition cycle and open new thought note
+            /thoughts recent    - Open most recent thought note (no generation)
+            /thoughts recent N  - Open Nth most recent thought note
+            /thoughts self      - Trigger self-observation
+            /thoughts audit     - Trigger engine audit
+        """
+        import asyncio
+
+        content = self.query_one("#content-panel", ContentPanel)
+        editor = self.query_one("#note-editor", NoteEditor)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        if subcmd == "recent" or subcmd == "":
+            # Open most recent thought note (or Nth recent)
+            scratch_path = Path(self.config.kb.scratch)
+            n = 0  # Default to most recent (0-indexed)
+
+            if subcmd == "recent" and len(parts) > 1:
+                try:
+                    n = int(parts[1]) - 1  # Convert 1-indexed to 0-indexed
+                except ValueError:
+                    pass
+
+            thought_files = self._get_sorted_thought_files(scratch_path)
+
+            if not thought_files:
+                content.show_file("thoughts.md", "# No Thoughts Found\n\n*No thought notes found in scratch/.*\n\n*Use `/thoughts trigger` to generate thoughts.*")
+                return
+
+            if n >= len(thought_files):
+                n = len(thought_files) - 1
+
+            recent_thought = thought_files[n]
+
+            try:
+                # If no subcmd, trigger generation first
+                if subcmd == "":
+                    self._trigger_cognition_and_show(content, editor)
+                else:
+                    # Just show the recent thought
+                    editor.remove_class("hidden")
+                    editor.open_note(str(recent_thought))
+
+                    rel_path = recent_thought.relative_to(scratch_path)
+                    content.show_file(
+                        "thoughts.md",
+                        f"# Recent Thought\n\n"
+                        f"**Showing:** `{rel_path}`\n"
+                        f"**Position:** {n + 1} of {len(thought_files)}\n\n"
+                        f"*Use `/thoughts recent N` to view older thoughts.*"
+                    )
+
+                    # Refresh file tree
+                    file_tree = self.query_one("#file-tree", FileTree)
+                    file_tree.refresh_tree()
+
+            except Exception as e:
+                content.show_file("error.txt", f"Error opening thought: {e}")
+
+        elif subcmd == "trigger":
+            # Explicitly trigger cognition
+            self._trigger_cognition_and_show(content, editor)
+
+        elif subcmd == "self":
+            # Trigger self-observation
+            content.show_file("thoughts.md", "# Self-Observation\n\n*Generating self-observation thoughts...*")
+
+            async def run_self_observation():
+                try:
+                    cognition = get_cognition_agent(self.config.profile)
+                    context = await cognition._gather_context()
+                    context.active_thoughts = await cognition.get_active_thoughts(limit=20)
+
+                    thoughts = await cognition._observe_own_thoughts(context)
+                    for thought in thoughts:
+                        await cognition._save_thought(thought)
+
+                    if thoughts:
+                        # Open the most recent thought note
+                        scratch_path = Path(self.config.kb.scratch)
+                        recent = self._find_most_recent_thought(scratch_path)
+                        if recent:
+                            editor.remove_class("hidden")
+                            editor.open_note(str(recent))
+
+                        content.show_file(
+                            "thoughts.md",
+                            f"# Self-Observation Complete\n\n"
+                            f"**Generated:** {len(thoughts)} self-observation thoughts\n\n"
+                            f"*Thoughts about own thought patterns have been recorded.*"
+                        )
+                    else:
+                        content.show_file("thoughts.md", "# Self-Observation\n\n*No new self-observations generated.*")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Self-observation failed: {e}")
+
+            asyncio.create_task(run_self_observation())
+
+        elif subcmd == "audit":
+            # Trigger engine audit
+            content.show_file("thoughts.md", "# Engine Audit\n\n*Auditing engine health...*")
+
+            async def run_audit():
+                try:
+                    cognition = get_cognition_agent(self.config.profile)
+                    context = await cognition._gather_context()
+
+                    thoughts = await cognition._audit_engine_health(context)
+                    for thought in thoughts:
+                        await cognition._save_thought(thought)
+
+                    if thoughts:
+                        # Open the most recent thought note
+                        scratch_path = Path(self.config.kb.scratch)
+                        recent = self._find_most_recent_thought(scratch_path)
+                        if recent:
+                            editor.remove_class("hidden")
+                            editor.open_note(str(recent))
+
+                        content.show_file(
+                            "thoughts.md",
+                            f"# Engine Audit Complete\n\n"
+                            f"**Generated:** {len(thoughts)} audit observations\n\n"
+                            f"*Engine health observations have been recorded.*"
+                        )
+                    else:
+                        content.show_file("thoughts.md", "# Engine Audit\n\n*No audit observations generated.*")
+
+                except Exception as e:
+                    content.show_file("error.txt", f"Engine audit failed: {e}")
+
+            asyncio.create_task(run_audit())
+
+        else:
+            content.show_file("error.txt", f"Unknown thoughts subcommand: {subcmd}\n\nUsage:\n  /thoughts          - Trigger cognition and show thoughts\n  /thoughts recent   - Show most recent thought\n  /thoughts self     - Trigger self-observation\n  /thoughts audit    - Trigger engine audit")
+
+    def _trigger_cognition_and_show(self, content: "ContentPanel", editor: "NoteEditor") -> None:
+        """Trigger a cognition cycle and show the resulting thought note."""
+        import asyncio
+
+        content.show_file("thoughts.md", "# Cognition\n\n*Generating thoughts...*")
+
+        async def run_cognition():
+            try:
+                cognition = get_cognition_agent(self.config.profile)
+                result = await cognition.think(
+                    max_thoughts=self.config.cognition.greeting_thoughts,
+                    trigger_reason="manual",
+                )
+
+                # Open the most recent thought note
+                scratch_path = Path(self.config.kb.scratch)
+                recent = self._find_most_recent_thought(scratch_path)
+
+                if recent:
+                    editor.remove_class("hidden")
+                    editor.open_note(str(recent))
+
+                    # Refresh file tree
+                    file_tree = self.query_one("#file-tree", FileTree)
+                    file_tree.refresh_tree()
+
+                content.show_file(
+                    "thoughts.md",
+                    f"# Cognition Complete\n\n"
+                    f"**Generated:** {len(result.thoughts)} thoughts\n"
+                    f"- Patterns: {result.patterns_detected}\n"
+                    f"- Connections: {result.connections_found}\n"
+                    f"- Curiosities: {result.curiosities_generated}\n"
+                    f"- Self-observations: {result.self_observations}\n\n"
+                    f"*Duration: {result.duration_ms}ms*"
+                )
+
+            except Exception as e:
+                content.show_file("error.txt", f"Cognition failed: {e}")
+
+        asyncio.create_task(run_cognition())
+
+    def _get_sorted_thought_files(self, scratch_path: Path) -> list[Path]:
+        """Get all thought files sorted by modification time (newest first)."""
+        if not scratch_path.exists():
+            return []
+
+        thought_files = []
+        thought_files.extend(scratch_path.rglob("*_thought_*.md"))
+        thought_files.extend(scratch_path.rglob("*_thoughts.md"))
+
+        thought_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return thought_files
+
     def _handle_iso_command(self, args: str, content: "ContentPanel") -> None:
         """Handle /iso command for Iso view mode control.
 
@@ -2468,6 +2735,254 @@ Domain: {domain}
                 content.show_file("error.txt", f"Research failed: {e}\n\nCheck that inference services are running.")
 
         asyncio.create_task(research())
+
+    def _run_ask(self, args: str) -> None:
+        """General-purpose agentic query - /ask away!
+
+        Routes queries to appropriate mode:
+        - --reason: Chain-of-thought reasoning
+        - --search: Hybrid search + synthesis
+        - --swarm: Multi-agent analysis
+        - --platform: Platform diagnostics
+        - --save: Save response to KB
+        """
+        import asyncio
+        import os
+        from datetime import datetime
+
+        content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        if not args:
+            content.show_file("ask.md", """# /ask away!
+
+The general-purpose agentic query interface.
+
+## Usage
+
+```
+/ask <question>              Auto-route based on query
+/ask --reason <question>     Force reasoning mode
+/ask --search <question>     Force search + synthesis
+/ask --swarm <question>      Force multi-agent analysis
+/ask --platform <error>      Diagnose platform issues
+/ask --save                  Save response to KB
+```
+
+## Examples
+
+```
+/ask what is 2+2?
+/ask --search distributed consensus
+/ask --platform no documents found
+/ask --reason --save explain CAP theorem
+```
+""")
+            return
+
+        # Parse flags
+        force_reason = "--reason" in args
+        force_search = "--search" in args
+        force_swarm = "--swarm" in args
+        is_platform = "--platform" in args
+        save_to_kb = "--save" in args
+
+        # Clean up flags from query
+        query = args
+        for flag in ["--reason", "--search", "--swarm", "--platform", "--save"]:
+            query = query.replace(flag, "").strip()
+
+        if not query:
+            content.show_file("error.txt", "Usage: /ask <question>\n\n/ask away!")
+            return
+
+        # Determine mode
+        if force_swarm:
+            mode = "swarm"
+        elif force_search:
+            mode = "search"
+        elif force_reason:
+            mode = "reasoning"
+        elif is_platform:
+            mode = "platform"
+        else:
+            # Auto-route based on query
+            query_lower = query.lower()
+            platform_patterns = ["error", "failed", "not found", "exception", "no documents", "timeout"]
+            research_patterns = ["what is", "how does", "explain", "compare", "difference"]
+            domain_patterns = ["analyze", "assess", "evaluate", "implications", "strategy"]
+
+            if any(p in query_lower for p in platform_patterns):
+                mode = "platform"
+            elif any(p in query_lower for p in research_patterns):
+                mode = "search"
+            elif any(p in query_lower for p in domain_patterns):
+                mode = "swarm"
+            else:
+                mode = "reasoning"
+
+        content.show_file("ask.md", f"# /ask\n\n**Query:** {query}\n**Mode:** {mode}\n\n*Processing...*")
+        think.start_trace("ask", query, model="auto")
+
+        async def run_ask():
+            start_time = datetime.now()
+            try:
+                from .cli import GaiusCLI
+
+                # Use CLI implementation for consistency
+                cli = GaiusCLI()
+                cli.state = self.state
+
+                # Call the appropriate CLI method
+                if mode == "platform":
+                    engine_client = await cli._get_engine_client_cached()
+                    result = await cli._ask_platform(query, engine_client, save_to_kb)
+                elif mode == "search":
+                    engine_client = await cli._get_engine_client_cached()
+                    result = await cli._ask_search(query, engine_client, save_to_kb)
+                elif mode == "swarm":
+                    engine_client = await cli._get_engine_client_cached()
+                    result = await cli._ask_swarm(query, engine_client, save_to_kb)
+                else:  # reasoning
+                    engine_client = await cli._get_engine_client_cached()
+                    result = await cli._ask_reason(query, engine_client, save_to_kb)
+
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+                # Format response for display
+                response = result.get("response", "No response")
+                model = result.get("model", "unknown")
+                tokens = result.get("tokens", "0+0")
+
+                result_text = f"""# /ask - {mode}
+
+**Query:** {query}
+**Model:** {model}
+**Tokens:** {tokens}
+**Duration:** {duration_ms}ms
+
+---
+
+{response}
+"""
+                if result.get("saved_to"):
+                    result_text += f"\n\n---\n**Saved to:** `{result.get('saved_to')}`"
+
+                if result.get("diagnostics"):
+                    import json
+                    diag_text = json.dumps(result["diagnostics"], indent=2)
+                    result_text += f"\n\n## Diagnostics\n```json\n{diag_text}\n```"
+
+                content.show_file("ask.md", result_text)
+
+                # Record trace
+                think.complete_trace(
+                    operation="ask",
+                    query=query,
+                    summary=f"{mode}: {response[:50]}...",
+                    tokens=int(tokens.split("+")[0]) + int(tokens.split("+")[1]) if "+" in tokens else 0,
+                    sources=result.get("kb_sources", 0) + result.get("web_sources", 0),
+                    duration_ms=duration_ms,
+                )
+
+                # Refresh file tree if saved
+                if result.get("saved_to"):
+                    file_tree = self.query_one("#file-tree", FileTree)
+                    file_tree.refresh_tree()
+
+            except Exception as e:
+                think.clear_active()
+                content.show_file("error.txt", f"Ask failed: {e}\n\nCheck that inference services are running.")
+
+        asyncio.create_task(run_ask())
+
+    def _run_watch(self, args: str) -> None:
+        """OTel telemetry observability."""
+        import asyncio
+        import os
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+        filter_arg = parts[1] if len(parts) > 1 else ""
+
+        async def run_watch():
+            try:
+                from .cli import GaiusCLI
+
+                cli = GaiusCLI()
+                cli.state = self.state
+
+                # Check OTel availability
+                otel_available = False
+                try:
+                    from opentelemetry import trace
+                    otel_available = True
+                except ImportError:
+                    pass
+
+                if subcmd == "status":
+                    result = await cli._watch_status(otel_available)
+                elif subcmd == "traces":
+                    result = await cli._watch_traces(filter_arg, otel_available)
+                elif subcmd == "spans":
+                    result = await cli._watch_spans(filter_arg, otel_available)
+                elif subcmd == "metrics":
+                    result = await cli._watch_metrics(filter_arg, otel_available)
+                elif subcmd == "logs":
+                    result = await cli._watch_logs(filter_arg, otel_available)
+                elif subcmd == "clear":
+                    result = cli._watch_clear()
+                else:
+                    result = await cli._watch_traces(args, otel_available)
+
+                # Format result for display
+                import json
+                result_text = f"""# /watch {subcmd}
+
+```json
+{json.dumps(result, indent=2, default=str)}
+```
+"""
+                content.show_file("watch.md", result_text)
+
+            except Exception as e:
+                content.show_file("error.txt", f"Watch failed: {e}")
+
+        asyncio.create_task(run_watch())
+
+    def _run_engine_command(self, args: str) -> None:
+        """Engine connectivity commands."""
+        import asyncio
+        import os
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+
+        async def run_engine():
+            try:
+                from .cli import GaiusCLI
+
+                cli = GaiusCLI()
+                result = await cli._cmd_engine(args if args else "status")
+
+                # Format result for display
+                import json
+                result_text = f"""# /engine {subcmd}
+
+```json
+{json.dumps(result, indent=2, default=str)}
+```
+"""
+                content.show_file("engine.md", result_text)
+
+            except Exception as e:
+                content.show_file("error.txt", f"Engine command failed: {e}")
+
+        asyncio.create_task(run_engine())
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -3111,14 +3626,11 @@ Domain: {domain}
     def _show_situational_summary(self, commands_run: list[str]) -> None:
         """Display situational awareness summary on startup.
 
-        Generates a Zettelkasten note with:
-        - Active thoughts from cognition agent
-        - Session handoff (where we left off)
-        - Quick reflection on current state
-        - Questions worth exploring
+        Loads and displays the most recent thought document from scratch/
+        instead of generating new thoughts (the engine generates thoughts
+        via scheduled cognition cycles).
 
-        The note is persisted to scratch/<iso-date>/<timestamp>_thoughts.md
-        and opened in the center content panel.
+        Falls back to a simple welcome message if no thought notes exist.
         """
         import asyncio
 
@@ -3135,165 +3647,86 @@ Domain: {domain}
             )
         )
 
-        # Generate and show startup thoughts asynchronously
-        async def generate_startup_thoughts():
+        # Load and display the most recent thought note
+        async def load_recent_thought():
             from datetime import datetime
 
-            now = datetime.now()
-
-            # Start session and get handoff
+            # Start session (for handoff tracking)
             session_manager = get_session_manager(self.config.profile)
-            session, handoff = await session_manager.start_session(
-                domain=self.state.domain
-            )
+            await session_manager.start_session(domain=self.state.domain)
 
-            # Get active thoughts from cognition
-            cognition = get_cognition_agent(self.config.profile)
-            thoughts = await cognition.get_active_thoughts(
-                limit=self.config.cognition.greeting_thoughts
-            )
+            # Find the most recent thought note in scratch/
+            scratch_path = Path(self.config.kb.scratch)
+            recent_thought = self._find_most_recent_thought(scratch_path)
 
-            # Generate quick reflection if enabled
-            reflection_text = ""
-            questions = []
-            think = self.query_one("#think-panel", ThinkPanel)
-
-            if self.config.cognition.use_llm:
+            if recent_thought:
                 try:
-                    # Stream to think panel
-                    think.stream_reasoning("Generating startup reflection...")
+                    # Open in editor (center panel)
+                    editor.remove_class("hidden")
+                    editor.open_note(str(recent_thought))
 
-                    reflection = get_reflection_agent(self.config.profile)
-                    result = await reflection.reflect(
-                        depth=ReflectionDepth.QUICK,
-                        focus_topic=self.state.domain if self.state.domain != "General Analysis" else None,
-                    )
-                    reflection_text = result.synthesis
-                    questions = result.questions
+                    # Refresh file tree
+                    file_tree = self.query_one("#file-tree", FileTree)
+                    file_tree.refresh_tree()
 
-                    # Record trace
-                    think.complete_trace(
-                        operation="synthesis",
-                        query=f"startup: {self.state.domain}",
-                        summary=f"Reflection ({len(reflection_text)} chars)",
-                        tokens=result.tokens_used,
-                        sources=result.entries_considered,
-                        duration_ms=result.duration_ms,
+                    # Show brief info in content panel
+                    rel_path = recent_thought.relative_to(scratch_path)
+                    content.show_file(
+                        "startup.md",
+                        f"# Session Started\n\n"
+                        f"**Recent thought:** `{rel_path}`\n\n"
+                        f"*Thoughts are generated by the engine. Use `/thoughts` to trigger manually.*"
                     )
                 except Exception:
-                    think.clear_active()
-                    pass  # Reflection is optional
-
-            # Build the Zettelkasten note
-            lines = [
-                f"# Thoughts: {now.strftime('%Y-%m-%d %H:%M')}",
-                "",
-                "---",
-                f"created: {now.isoformat()}",
-                "type: thoughts",
-                f"profile: {self.config.profile}",
-            ]
-
-            # Add session gap if we have handoff info
-            if handoff.time_since_last:
-                hours = handoff.time_since_last.total_seconds() / 3600
-                if hours < 1:
-                    gap_str = f"{int(hours * 60)}m"
-                elif hours < 24:
-                    gap_str = f"{hours:.1f}h"
-                else:
-                    gap_str = f"{hours / 24:.1f}d"
-                lines.append(f"session_gap: {gap_str}")
-
-            lines.extend(["---", ""])
-
-            # Section: What I've Been Thinking About
-            if thoughts:
-                lines.append("## What I've Been Thinking About")
-                lines.append("")
-
-                for thought in thoughts:
-                    lines.append(thought.to_markdown())
-                    lines.append("")
-
-            # Section: Where We Left Off (session handoff)
-            if handoff.has_content():
-                lines.append(handoff.to_markdown())
-                lines.append("")
-
-            # Section: Quick Reflection
-            if reflection_text:
-                lines.append("## Current State")
-                lines.append(reflection_text)
-                lines.append("")
-
-            # Section: Questions I'm Curious About
-            if questions:
-                lines.append("## Questions Worth Exploring")
-                lines.append("")
-                for i, q in enumerate(questions, 1):
-                    lines.append(f"{i}. {q}")
-                lines.append("")
-
-            # Fallback: If nothing substantive, show basic startup info
-            if not thoughts and not handoff.has_content() and not reflection_text:
-                lines.extend([
-                    "## Welcome",
-                    "",
-                    f"**Profile:** {self.config.profile}",
-                    f"**Domain:** {self.state.domain}",
-                    "",
-                    "*No recent thoughts or sessions to report.*",
-                    "*Start exploring to build context.*",
-                    "",
-                ])
-
-            # Footer
-            lines.extend([
-                "---",
-                "",
-                "*This note is part of the knowledge base. Edit, link, or dismiss as you wish.*",
-            ])
-
-            note_content = "\n".join(lines)
-
-            # Persist the note to scratch/<iso-date>/<timestamp>_thoughts.md
-            scratch_path = Path(self.config.kb.scratch)
-            date_dir = scratch_path / now.strftime("%Y-%m-%d")
-            date_dir.mkdir(parents=True, exist_ok=True)
-
-            timestamp = now.strftime("%H%M%S")
-            note_path = date_dir / f"{timestamp}_thoughts.md"
-
-            try:
-                note_path.write_text(note_content)
-
-                # Open in editor (center panel)
-                editor.remove_class("hidden")
-                editor.open_note(str(note_path))
-
-                # Refresh file tree
-                file_tree = self.query_one("#file-tree", FileTree)
-                file_tree.refresh_tree()
-
-                # Show brief summary in info panel (not full duplicate)
+                    # Fallback: show in content panel
+                    note_content = recent_thought.read_text()
+                    content.show_file(recent_thought.name, note_content)
+            else:
+                # No thought notes exist yet - show welcome
+                now = datetime.now()
                 content.show_file(
                     "startup.md",
-                    f"# Session Started\n\n"
-                    f"**Thoughts note:** `{note_path.name}`\n\n"
-                    f"*Edit in center panel or dismiss with `[`*"
+                    f"# Welcome to Gaius\n\n"
+                    f"**Profile:** {self.config.profile}\n"
+                    f"**Domain:** {self.state.domain}\n"
+                    f"**Time:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"*No thought notes found. The engine will generate thoughts periodically.*\n"
+                    f"*Use `/thoughts` to trigger cognition manually.*"
                 )
 
-                # Mark thoughts as surfaced
-                if thoughts:
-                    thought_ids = [t.id for t in thoughts if t.id]
-                    await cognition.mark_surfaced(thought_ids)
+        asyncio.create_task(load_recent_thought())
 
-            except Exception as e:
-                # Fallback: just show in content panel
-                content.show_file("startup.md", note_content)
+    def _find_most_recent_thought(self, scratch_path: Path) -> Path | None:
+        """Find the most recent thought note in scratch/.
 
-        asyncio.create_task(generate_startup_thoughts())
+        Searches for files matching *_thought_*.md or *_thoughts.md patterns,
+        sorted by modification time (most recent first).
+
+        Args:
+            scratch_path: Path to scratch/ directory
+
+        Returns:
+            Path to most recent thought note, or None if none found
+        """
+        if not scratch_path.exists():
+            return None
+
+        # Find all thought notes
+        thought_files = []
+
+        # Pattern 1: *_thought_*.md (new style with type suffix)
+        thought_files.extend(scratch_path.rglob("*_thought_*.md"))
+
+        # Pattern 2: *_thoughts.md (legacy style)
+        thought_files.extend(scratch_path.rglob("*_thoughts.md"))
+
+        if not thought_files:
+            return None
+
+        # Sort by modification time (newest first)
+        thought_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        return thought_files[0]
 
     def on_command_submitted(self, event: CommandSubmitted) -> None:
         """Handle command submission."""
@@ -3631,6 +4064,15 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "research":
             # Research topic (web search + LLM synthesis)
             self._run_research(args)
+        elif command == "ask":
+            # General-purpose agentic query - /ask away!
+            self._run_ask(args)
+        elif command == "watch":
+            # OTel telemetry observability
+            self._run_watch(args)
+        elif command == "engine":
+            # Engine connectivity
+            self._run_engine_command(args)
         elif command == "explain":
             # Explain grid view using local LLM
             self._explain_grid_view(args)
@@ -3640,6 +4082,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command in ("evolve", "evo"):
             # Manage evolution daemon
             self._handle_evolve_command(args)
+        elif command == "thoughts":
+            # Trigger cognition or show recent thoughts
+            self._handle_thoughts_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:

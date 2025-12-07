@@ -43,16 +43,67 @@ from .static import (
 class GaiusCLI:
     """Non-interactive command executor."""
 
-    def __init__(self, output: TextIO = sys.stdout, error: TextIO = sys.stderr):
+    def __init__(
+        self,
+        output: TextIO = sys.stdout,
+        error: TextIO = sys.stderr,
+        kb_root: Path | None = None,
+    ):
         self.state = AppState()
         self.output = output
         self.error = error
         self.format = "text"
+        self._load_config()
+        # Allow overriding KB root (used for testing)
+        if kb_root is not None:
+            self.config.kb.root = str(kb_root)
         self._load_test_data()
 
+    def _load_config(self) -> None:
+        """Load configuration."""
+        try:
+            from .core.config import load_config
+            self.config = load_config()
+        except Exception:
+            # Fallback minimal config
+            from dataclasses import dataclass, field
+            from typing import List
+
+            @dataclass
+            class StartupConfig:
+                commands: List[str] = field(default_factory=list)
+
+            @dataclass
+            class KBConfig:
+                root: str = "build/dev"
+
+            @dataclass
+            class MinimalConfig:
+                profile: str = "default"
+                startup: StartupConfig = field(default_factory=StartupConfig)
+                kb: KBConfig = field(default_factory=KBConfig)
+
+            self.config = MinimalConfig()
+
     def _run_async(self, coro):
-        """Run an async coroutine synchronously."""
-        return asyncio.run(coro)
+        """Run an async coroutine synchronously.
+
+        Handles both cases:
+        - No event loop running: uses asyncio.run()
+        - Event loop already running (e.g., in behave tests): uses run_until_complete()
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            # We're inside an existing event loop - use nest_asyncio pattern
+            # or create a new thread. For simplicity, use run_until_complete
+            # on a new loop in a thread.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result(timeout=30)
+        except RuntimeError:
+            # No running event loop, safe to use asyncio.run
+            return asyncio.run(coro)
 
     def _load_test_data(self) -> None:
         """Initialize with static test data."""
@@ -146,6 +197,21 @@ class GaiusCLI:
             # Tenuki - find strategic jump point
             elif command == "tenuki":
                 result["data"] = self._cmd_tenuki(args)
+            # Engine connectivity commands
+            elif command == "engine":
+                result["data"] = self._run_async(self._cmd_engine(args))
+            # OTel telemetry watching
+            elif command == "watch":
+                result["data"] = self._run_async(self._cmd_watch(args))
+            # Profile management
+            elif command == "profile":
+                result["data"] = self._cmd_profile(args)
+            # Project notes with bidirectional linking
+            elif command == "project":
+                result["data"] = self._cmd_project(args)
+            # Thoughts - cognition and pattern detection
+            elif command == "thoughts":
+                result["data"] = self._run_async(self._cmd_thoughts(args))
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -571,8 +637,11 @@ class GaiusCLI:
                 "reindex": "Reindex KB documents to Qdrant and refresh grid",
                 "tenuki [pos]": "Find strategic jump point (high-curvature region)",
                 "help": "Show this help",
-                # Inference commands
-                "ask <question>": "Query local LLM (optillm)",
+                # Primary agentic interface
+                "ask [flags] <question>": "/ask away! Agentic query (--reason, --search, --swarm, --platform, --save)",
+                # Telemetry observability
+                "watch [cmd] [filter]": "OTel telemetry (status, traces, spans, metrics, logs)",
+                # Search and research
                 "search <query>": "Hybrid search (BM25 + Vector + Web)",
                 "research <topic>": "Hybrid search + LLM → Zettelkasten note",
                 "research-eval <topic>": "Research + evaluate with frontier model",
@@ -590,32 +659,531 @@ class GaiusCLI:
                 "inference [cmd] [args]": "Inference stack (status, start, stop, restart, ensure)",
                 # Explain command
                 "explain [pos]": "Explain grid position using local LLM (default: K10)",
-            }
+                # Engine connectivity
+                "engine [cmd]": "Engine connection (status, reconnect, test)",
+            },
+            "tagline": "/ask away! Use /ask for general queries, /watch for telemetry, /search for research.",
         }
 
     # --- Inference Commands ---
 
     async def _cmd_ask(self, args: str) -> dict:
-        """Query local LLM via optillm."""
-        if not args:
-            raise ValueError("ask requires a question")
+        """General-purpose agentic query interface.
 
+        /ask away! - the primary way to leverage gaius-engine for problem solving.
+
+        Capabilities:
+        - Reasoning: Uses chain-of-thought for complex analysis
+        - Search: Hybrid KB + web search for research queries
+        - Swarm: Multi-agent analysis for domain questions
+        - Platform: Diagnoses and captures remediation heuristics
+
+        Usage:
+            /ask <question>              - Auto-route based on query analysis
+            /ask --reason <question>     - Force reasoning mode
+            /ask --search <question>     - Force search + synthesis
+            /ask --swarm <question>      - Force multi-agent analysis
+            /ask --platform <error>      - Diagnose platform issues
+            /ask --save                  - Save response to KB as heuristic
+        """
+        if not args:
+            raise ValueError("ask requires a question. /ask away!")
+
+        # Parse flags
+        force_reason = "--reason" in args
+        force_search = "--search" in args
+        force_swarm = "--swarm" in args
+        is_platform = "--platform" in args
+        save_to_kb = "--save" in args
+
+        # Clean up flags from query
+        query = args
+        for flag in ["--reason", "--search", "--swarm", "--platform", "--save"]:
+            query = query.replace(flag, "").strip()
+
+        if not query:
+            raise ValueError("ask requires a question after flags")
+
+        # Try engine first if available
+        engine_client = await self._get_engine_client_cached()
+
+        # Determine routing strategy
+        if force_swarm:
+            return await self._ask_swarm(query, engine_client, save_to_kb)
+        elif force_search:
+            return await self._ask_search(query, engine_client, save_to_kb)
+        elif force_reason:
+            return await self._ask_reason(query, engine_client, save_to_kb)
+        elif is_platform:
+            return await self._ask_platform(query, engine_client, save_to_kb)
+        else:
+            # Auto-route based on query analysis
+            return await self._ask_auto(query, engine_client, save_to_kb)
+
+    async def _get_engine_client_cached(self):
+        """Get cached engine client if available.
+
+        Uses gRPC as the only transport. Connection is attempted once
+        and cached for the lifetime of the CLI instance.
+        """
+        if not hasattr(self, "_engine_client"):
+            self._engine_client = None
+
+        if self._engine_client is not None:
+            return self._engine_client
+
+        try:
+            from .client.grpc_client import GrpcEngineClient
+            client = GrpcEngineClient()
+            if await client.connect():
+                self._engine_client = client
+                return client
+        except Exception:
+            pass
+        return None
+
+    async def _ask_auto(self, query: str, engine_client, save_to_kb: bool) -> dict:
+        """Auto-route query based on content analysis."""
+        query_lower = query.lower()
+
+        # Platform error patterns
+        platform_patterns = [
+            "error", "failed", "not found", "exception", "traceback",
+            "no documents", "reindex", "connection refused", "timeout",
+        ]
+        if any(p in query_lower for p in platform_patterns):
+            return await self._ask_platform(query, engine_client, save_to_kb)
+
+        # Research patterns (need search + synthesis)
+        research_patterns = [
+            "what is", "how does", "explain", "compare", "difference between",
+            "pros and cons", "best practice", "documentation",
+        ]
+        if any(p in query_lower for p in research_patterns):
+            return await self._ask_search(query, engine_client, save_to_kb)
+
+        # Domain analysis patterns (benefit from swarm)
+        domain_patterns = [
+            "analyze", "assess", "evaluate", "implications", "strategy",
+            "pension", "kudu", "risk", "investment",
+        ]
+        if any(p in query_lower for p in domain_patterns):
+            return await self._ask_swarm(query, engine_client, save_to_kb)
+
+        # Default to reasoning
+        return await self._ask_reason(query, engine_client, save_to_kb)
+
+    async def _ask_reason(self, query: str, engine_client, save_to_kb: bool) -> dict:
+        """Use reasoning model for complex analysis."""
+        try:
+            from .inference import get_client, Message
+            from .models import get_model_for_task, TaskType
+
+            # Get reasoning model preference
+            try:
+                model_info = get_model_for_task(TaskType.REASONING)
+                model_hint = model_info.model_id if model_info else None
+            except Exception:
+                model_hint = None
+
+            client = get_client()
+
+            # Build system prompt for reasoning
+            system = """You are a helpful assistant with strong reasoning capabilities.
+Think step-by-step when solving problems. If you're unsure, say so.
+When discussing technical topics, be precise and cite sources when possible."""
+
+            result = await client.complete(
+                messages=[
+                    Message(role="system", content=system),
+                    Message(role="user", content=query),
+                ],
+                technique="cot_reflection",  # Chain of thought with reflection
+            )
+
+            response_data = {
+                "mode": "reasoning",
+                "query": query,
+                "response": result.content,
+                "model": result.model,
+                "technique": result.technique or "cot_reflection",
+                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+            }
+
+            # Save to KB if requested
+            if save_to_kb:
+                saved_path = await self._save_to_kb(query, result.content, "reasoning")
+                response_data["saved_to"] = str(saved_path)
+
+            return response_data
+
+        except ImportError:
+            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+
+    async def _ask_search(self, query: str, engine_client, save_to_kb: bool) -> dict:
+        """Search + synthesis mode.
+
+        When --save is specified, leverages /research to create a full
+        Zettelkasten document with proper citations and wiki-links.
+        Otherwise, provides a quick synthesis from search results.
+        """
+        # If saving, delegate to /research for full document creation
+        if save_to_kb:
+            return await self._ask_research(query, engine_client)
+
+        # Quick synthesis mode (no save)
+        try:
+            # Run hybrid search
+            search_result = await self._cmd_search(query)
+
+            kb_results = search_result.get("kb_results", [])
+            web_results = search_result.get("web_results", [])
+
+            if not kb_results and not web_results:
+                # Fall back to web search only
+                try:
+                    from .inference.search import get_web_search
+                    web_search = get_web_search()
+                    web_hits = await web_search.search(query, count=5)
+                    web_results = [
+                        {"title": r.title, "snippet": r.snippet, "url": r.url}
+                        for r in web_hits
+                    ]
+                except Exception:
+                    pass
+
+            # Synthesize response
+            from .inference import get_client, Message
+
+            client = get_client()
+
+            # Build context from search results
+            context_parts = []
+            if kb_results:
+                context_parts.append("**From Knowledge Base:**")
+                for r in kb_results[:5]:
+                    context_parts.append(f"- [{r.get('title', 'Untitled')}]: {r.get('snippet', '')[:200]}")
+
+            if web_results:
+                context_parts.append("\n**From Web:**")
+                for r in web_results[:5]:
+                    context_parts.append(f"- [{r.get('title', 'Untitled')}]({r.get('url', '')}): {r.get('snippet', '')[:200]}")
+
+            context = "\n".join(context_parts) if context_parts else "No search results found."
+
+            prompt = f"""Based on the following search results, answer the question.
+Cite sources using [source] notation.
+
+{context}
+
+Question: {query}
+
+Answer:"""
+
+            result = await client.complete(
+                messages=[Message(role="user", content=prompt)],
+            )
+
+            return {
+                "mode": "search",
+                "query": query,
+                "response": result.content,
+                "model": result.model,
+                "kb_sources": len(kb_results),
+                "web_sources": len(web_results),
+                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+            }
+
+        except ImportError:
+            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+
+    async def _ask_research(self, query: str, engine_client) -> dict:
+        """Delegate to /research for full Zettelkasten document creation.
+
+        This provides:
+        - Proper citation extraction and verification
+        - Wiki-link generation
+        - Domain context awareness
+        - Saved to KB automatically
+        """
+        try:
+            # Use the existing research command with additional context
+            research_result = await self._cmd_research(query)
+
+            if "error" in research_result:
+                # Fall back to simple save if research fails
+                return {
+                    "mode": "search",
+                    "query": query,
+                    "error": research_result.get("error"),
+                    "fallback": "Research failed, try /ask --reason --save instead",
+                }
+
+            return {
+                "mode": "research",
+                "query": query,
+                "saved_to": research_result.get("saved_to"),
+                "kb_sources": research_result.get("kb_sources", 0),
+                "web_sources": research_result.get("web_sources", 0),
+                "wiki_links": research_result.get("wiki_links", []),
+                "citations_verified": research_result.get("citations_verified"),
+                "model": research_result.get("model"),
+                "technique": research_result.get("technique"),
+            }
+
+        except Exception as e:
+            # If research not available, fall back to simple synthesis
+            return {
+                "mode": "search",
+                "query": query,
+                "error": str(e),
+                "suggestion": "Research module unavailable. Install with: uv sync --extra search",
+            }
+
+    async def _ask_swarm(self, query: str, engine_client, save_to_kb: bool) -> dict:
+        """Multi-agent swarm analysis."""
+        try:
+            # Use existing swarm command
+            swarm_result = await self._cmd_swarm(query)
+
+            response_data = {
+                "mode": "swarm",
+                "query": query,
+                **swarm_result,
+            }
+
+            if save_to_kb:
+                synthesis = swarm_result.get("synthesis", str(swarm_result))
+                saved_path = await self._save_to_kb(query, synthesis, "swarm")
+                response_data["saved_to"] = str(saved_path)
+
+            return response_data
+
+        except Exception as e:
+            # Fall back to reasoning if swarm not available
+            return await self._ask_reason(
+                f"[Swarm unavailable: {e}] {query}",
+                engine_client,
+                save_to_kb
+            )
+
+    async def _ask_platform(self, query: str, engine_client, save_to_kb: bool) -> dict:
+        """Diagnose platform issues and capture remediations.
+
+        This mode is specifically for:
+        - Error diagnosis
+        - Configuration issues
+        - Platform health checks
+        - Remediation capture to KB
+        """
+        diagnostics = []
+        suggestions = []
+
+        # Gather platform diagnostics
+        try:
+            # Check engine status
+            if engine_client:
+                health = await engine_client.call("Health", "status", {}, timeout=5.0)
+                diagnostics.append({
+                    "component": "gaius-engine",
+                    "status": "healthy" if health.get("healthy") else "unhealthy",
+                    "details": health,
+                })
+            else:
+                diagnostics.append({
+                    "component": "gaius-engine",
+                    "status": "not connected",
+                    "suggestion": "Set GAIUS_ENABLE_FALLBACKS=true and start engine",
+                })
+        except Exception as e:
+            diagnostics.append({
+                "component": "gaius-engine",
+                "status": "error",
+                "error": str(e),
+            })
+
+        # Check KB status
+        try:
+            from .inference.search import get_kb_search
+            kb_search = get_kb_search()
+            kb_status = {
+                "component": "kb_search",
+                "index_size": kb_search.index_size,
+                "kb_path": str(kb_search.kb_path),
+            }
+            if kb_search.index_size == 0:
+                kb_status["status"] = "empty"
+                kb_status["suggestion"] = "Run /reindex to build the search index"
+            else:
+                kb_status["status"] = "healthy"
+            diagnostics.append(kb_status)
+        except ImportError as e:
+            # Specific remediation for common import errors
+            error_msg = str(e)
+            if "Stemmer" in error_msg or "bm25" in error_msg.lower():
+                suggestion = "Run: uv sync --extra search (installs PyStemmer, bm25s)"
+            elif "qdrant" in error_msg.lower():
+                suggestion = "Run: uv sync --extra search (installs qdrant-client)"
+            elif "sentence_transformers" in error_msg.lower():
+                suggestion = "Run: uv sync --extra search (installs sentence-transformers)"
+            else:
+                suggestion = "Check dependencies: uv sync --extra search"
+            diagnostics.append({
+                "component": "kb_search",
+                "status": "import_error",
+                "error": error_msg,
+                "suggestion": suggestion,
+            })
+        except Exception as e:
+            diagnostics.append({
+                "component": "kb_search",
+                "status": "error",
+                "error": str(e),
+            })
+
+        # Check vector search (Qdrant)
+        try:
+            from .inference.search import get_vector_search
+            vector_search = get_vector_search()
+            diagnostics.append({
+                "component": "vector_search",
+                "status": "available",
+                "qdrant_url": vector_search.qdrant_url if hasattr(vector_search, 'qdrant_url') else "default",
+            })
+        except ImportError as e:
+            error_msg = str(e)
+            if "Stemmer" in error_msg:
+                suggestion = "Run: uv sync --extra search (installs PyStemmer)"
+            else:
+                suggestion = "Run: uv sync --extra search"
+            diagnostics.append({
+                "component": "vector_search",
+                "status": "import_error",
+                "error": error_msg,
+                "suggestion": suggestion,
+            })
+        except Exception as e:
+            diagnostics.append({
+                "component": "vector_search",
+                "status": "error",
+                "error": str(e),
+                "suggestion": "Ensure Qdrant is running (qdrant or docker run qdrant/qdrant)",
+            })
+
+        # Check web search
+        try:
+            from .inference.search import get_web_search
+            web_search = get_web_search()
+            has_api_key = bool(os.environ.get("BRAVE_API_KEY"))
+            diagnostics.append({
+                "component": "web_search",
+                "status": "available" if has_api_key else "no_api_key",
+                "suggestion": None if has_api_key else "Set BRAVE_API_KEY for web search",
+            })
+        except Exception as e:
+            diagnostics.append({
+                "component": "web_search",
+                "status": "error",
+                "error": str(e),
+            })
+
+        # Now use LLM to analyze the issue with diagnostics context
         try:
             from .inference import get_client, Message
 
             client = get_client()
+
+            diag_text = json.dumps(diagnostics, indent=2)
+            prompt = f"""You are a platform diagnostics assistant for Gaius.
+Analyze the following issue and provide actionable remediation steps.
+
+**User's Issue:**
+{query}
+
+**Platform Diagnostics:**
+{diag_text}
+
+**Instructions:**
+1. Identify the root cause based on diagnostics
+2. Provide specific remediation steps
+3. If this is a common issue, suggest it be saved as a heuristic
+
+Respond with:
+- **Diagnosis**: What's wrong
+- **Remediation**: Step-by-step fix
+- **Heuristic**: (if applicable) A reusable pattern for this issue
+"""
+
             result = await client.complete(
-                messages=[Message(role="user", content=args)],
+                messages=[Message(role="user", content=prompt)],
+                technique="cot_reflection",
             )
 
-            return {
+            response_data = {
+                "mode": "platform",
+                "query": query,
+                "diagnostics": diagnostics,
                 "response": result.content,
                 "model": result.model,
-                "technique": result.technique,
                 "tokens": f"{result.input_tokens}+{result.output_tokens}",
             }
+
+            # Always save platform remediations if save flag set
+            if save_to_kb:
+                saved_path = await self._save_to_kb(
+                    f"Platform: {query[:50]}",
+                    f"## Diagnostics\n```json\n{diag_text}\n```\n\n## Remediation\n{result.content}",
+                    "platform_heuristic"
+                )
+                response_data["saved_to"] = str(saved_path)
+
+            return response_data
+
         except ImportError:
-            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+            # Return diagnostics even without LLM
+            return {
+                "mode": "platform",
+                "query": query,
+                "diagnostics": diagnostics,
+                "response": "LLM not available. See diagnostics above.",
+                "suggestion": "Run: uv sync --extra inference",
+            }
+
+    async def _save_to_kb(self, query: str, content: str, category: str) -> Path:
+        """Save response to KB as a Zettelkasten note."""
+        from datetime import datetime
+
+        # Create path based on category
+        today = datetime.now().strftime("%Y-%m-%d")
+        timestamp = datetime.now().strftime("%H%M%S")
+
+        # Sanitize query for filename
+        safe_query = "".join(c if c.isalnum() or c in " -_" else "_" for c in query[:30])
+        safe_query = safe_query.strip().replace(" ", "_")
+
+        kb_base = Path(os.environ.get("GAIUS_KB_PATH", "build/dev/scratch"))
+        save_dir = kb_base / today
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{timestamp}_{category}_{safe_query}.md"
+        filepath = save_dir / filename
+
+        # Create Zettelkasten-style note
+        note_content = f"""# {query}
+
+**Category**: {category}
+**Created**: {datetime.now().isoformat()}
+**Domain**: {self.state.domain or "general"}
+
+## Response
+
+{content}
+
+---
+*Generated by /ask command*
+"""
+        filepath.write_text(note_content)
+        return filepath
 
     async def _cmd_search(self, args: str) -> dict:
         """Hybrid search: BM25 + Vector (Qdrant) + Brave web search.
@@ -1559,6 +2127,400 @@ class GaiusCLI:
         else:
             return {"error": f"Unknown evolve command: {subcmd}"}
 
+    async def _cmd_engine(self, args: str) -> dict:
+        """Engine connectivity operations.
+
+        Usage:
+            /engine              - Show engine connection status (default)
+            /engine status       - Show engine status and health
+            /engine reconnect    - Reconnect to engine
+            /engine test         - Test engine round-trip
+
+        The engine is required for inference, evolution, and orchestration.
+        Uses gRPC for communication with gaius-engine on port 50051.
+        """
+        parts = args.split(maxsplit=1) if args else ["status"]
+        subcmd = parts[0].lower()
+
+        from .client.grpc_client import GrpcEngineClient, GrpcClientConfig
+
+        if subcmd == "status":
+            config = GrpcClientConfig.from_env()
+            result = {
+                "grpc_host": config.host,
+                "grpc_port": config.port,
+            }
+
+            # Try to connect
+            try:
+                client = GrpcEngineClient(config)
+                connected = await client.connect()
+
+                if connected:
+                    result["connected"] = True
+                    result["transport"] = "grpc"
+
+                    # Get health status
+                    try:
+                        health = await client.call("Health", "status", {})
+                        result["engine_health"] = health
+                    except Exception as e:
+                        result["engine_health"] = {"error": str(e)}
+
+                    await client.disconnect()
+                else:
+                    result["connected"] = False
+                    result["error"] = "Engine not running. Start with: devenv up"
+            except Exception as e:
+                result["connected"] = False
+                result["error"] = str(e)
+
+            return result
+
+        elif subcmd == "reconnect":
+            # Force reconnection
+            try:
+                from .client import grpc_client
+
+                # Clear cached client
+                if grpc_client._grpc_client:
+                    await grpc_client._grpc_client.disconnect()
+                    grpc_client._grpc_client = None
+
+                # Also clear instance cache
+                if hasattr(self, "_engine_client") and self._engine_client:
+                    await self._engine_client.disconnect()
+                    self._engine_client = None
+
+                # Reconnect
+                client = await grpc_client.get_grpc_client()
+                if client.is_connected:
+                    return {
+                        "reconnected": True,
+                        "transport": "grpc",
+                    }
+                else:
+                    return {
+                        "reconnected": False,
+                        "error": "Failed to reconnect",
+                    }
+            except Exception as e:
+                return {"reconnected": False, "error": str(e)}
+
+        elif subcmd == "test":
+            # Test round-trip to engine
+            try:
+                config = GrpcClientConfig.from_env()
+                client = GrpcEngineClient(config)
+
+                if not await client.connect():
+                    return {"test": "failed", "error": "Could not connect"}
+
+                import time
+                start = time.time()
+
+                # Call health status as a test
+                result = await client.call("Health", "status", {})
+                elapsed_ms = int((time.time() - start) * 1000)
+
+                await client.disconnect()
+
+                return {
+                    "test": "passed",
+                    "latency_ms": elapsed_ms,
+                    "transport": "grpc",
+                    "response": result,
+                }
+            except Exception as e:
+                return {"test": "failed", "error": str(e)}
+
+        else:
+            return {"error": f"Unknown engine command: {subcmd}"}
+
+    async def _cmd_watch(self, args: str) -> dict:
+        """Watch OpenTelemetry telemetry streams with filtering.
+
+        /watch provides observability into agent and inference operations
+        by subscribing to and filtering OTel telemetry data.
+
+        Usage:
+            /watch                     - Show recent traces (default)
+            /watch status              - Show OTel collector status
+            /watch traces [filter]     - Watch traces with optional filter
+            /watch spans [filter]      - Watch spans with optional filter
+            /watch metrics [name]      - Watch specific metric
+            /watch logs [filter]       - Watch logs with optional filter
+            /watch service <name>      - Filter by service name
+            /watch operation <name>    - Filter by operation name
+            /watch clear               - Clear watch buffers
+
+        Filters:
+            /watch traces service:gaius-engine
+            /watch spans operation:ask
+            /watch logs level:error
+
+        This command is designed to be used by agents (via /ask) to
+        diagnose issues by examining telemetry data.
+        """
+        parts = args.split(maxsplit=1) if args else ["traces"]
+        subcmd = parts[0].lower()
+        filter_arg = parts[1] if len(parts) > 1 else ""
+
+        # Check if OTel is available
+        otel_available = False
+        try:
+            from opentelemetry import trace
+            otel_available = True
+        except ImportError:
+            pass
+
+        if subcmd == "status":
+            return await self._watch_status(otel_available)
+        elif subcmd == "traces":
+            return await self._watch_traces(filter_arg, otel_available)
+        elif subcmd == "spans":
+            return await self._watch_spans(filter_arg, otel_available)
+        elif subcmd == "metrics":
+            return await self._watch_metrics(filter_arg, otel_available)
+        elif subcmd == "logs":
+            return await self._watch_logs(filter_arg, otel_available)
+        elif subcmd == "service":
+            return await self._watch_traces(f"service:{filter_arg}", otel_available)
+        elif subcmd == "operation":
+            return await self._watch_spans(f"operation:{filter_arg}", otel_available)
+        elif subcmd == "clear":
+            return self._watch_clear()
+        else:
+            # Treat as filter on default traces
+            return await self._watch_traces(args, otel_available)
+
+    async def _watch_status(self, otel_available: bool) -> dict:
+        """Get OTel collector status."""
+        status = {
+            "otel_available": otel_available,
+            "otel_endpoint": os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "not set"),
+            "otel_service_name": os.environ.get("OTEL_SERVICE_NAME", "gaius"),
+        }
+
+        if not otel_available:
+            status["error"] = "OpenTelemetry not installed. Run: uv sync --extra telemetry"
+            return status
+
+        # Check if we can reach the collector
+        try:
+            from opentelemetry import trace
+            tracer = trace.get_tracer(__name__)
+            status["tracer_provider"] = str(type(trace.get_tracer_provider()).__name__)
+
+            # Check if exporter is configured
+            provider = trace.get_tracer_provider()
+            if hasattr(provider, '_active_span_processor'):
+                status["span_processor"] = "configured"
+            else:
+                status["span_processor"] = "default (no export)"
+
+        except Exception as e:
+            status["error"] = str(e)
+
+        # Check engine telemetry status
+        engine_client = await self._get_engine_client_cached()
+        if engine_client:
+            try:
+                health = await engine_client.call("Health", "status", {}, timeout=5.0)
+                services = health.get("services", {})
+                status["engine_telemetry"] = {
+                    "connected": True,
+                    "services_reporting": list(services.keys()),
+                }
+            except Exception as e:
+                status["engine_telemetry"] = {"connected": False, "error": str(e)}
+        else:
+            status["engine_telemetry"] = {"connected": False, "reason": "engine not available"}
+
+        return status
+
+    async def _watch_traces(self, filter_arg: str, otel_available: bool) -> dict:
+        """Watch recent traces with optional filtering."""
+        if not otel_available:
+            return {
+                "traces": [],
+                "error": "OpenTelemetry not available",
+                "suggestion": "Install with: uv sync --extra telemetry",
+            }
+
+        # Parse filter
+        filters = self._parse_watch_filter(filter_arg)
+
+        # For now, return traces from our in-memory buffer
+        # In a full implementation, this would query the OTel collector
+        traces = []
+
+        # Check if we have reasoning traces in state
+        if hasattr(self.state, 'reasoning_traces'):
+            for t in self.state.reasoning_traces[-20:]:
+                trace_entry = {
+                    "timestamp": t.timestamp.isoformat() if hasattr(t, 'timestamp') else None,
+                    "operation": t.operation if hasattr(t, 'operation') else "unknown",
+                    "query": t.query[:50] if hasattr(t, 'query') else "",
+                    "tokens": t.tokens if hasattr(t, 'tokens') else 0,
+                    "sources": t.sources if hasattr(t, 'sources') else 0,
+                    "duration_ms": t.duration_ms if hasattr(t, 'duration_ms') else 0,
+                }
+
+                # Apply filters
+                if self._matches_filter(trace_entry, filters):
+                    traces.append(trace_entry)
+
+        # Also try to get traces from engine
+        engine_client = await self._get_engine_client_cached()
+        if engine_client:
+            try:
+                # Query engine for recent operations
+                # This is a placeholder - real impl would use OTel collector API
+                pass
+            except Exception:
+                pass
+
+        return {
+            "traces": traces,
+            "count": len(traces),
+            "filter": filters if filters else "none",
+        }
+
+    async def _watch_spans(self, filter_arg: str, otel_available: bool) -> dict:
+        """Watch recent spans with optional filtering."""
+        if not otel_available:
+            return {"spans": [], "error": "OpenTelemetry not available"}
+
+        filters = self._parse_watch_filter(filter_arg)
+
+        # Placeholder - real impl would query OTel collector
+        return {
+            "spans": [],
+            "count": 0,
+            "filter": filters if filters else "none",
+            "note": "Span streaming requires OTel collector API access",
+        }
+
+    async def _watch_metrics(self, metric_name: str, otel_available: bool) -> dict:
+        """Watch specific metrics."""
+        if not otel_available:
+            return {"metrics": {}, "error": "OpenTelemetry not available"}
+
+        # Get common metrics
+        metrics = {}
+
+        # Try to get GPU metrics
+        try:
+            from .inference.orchestrator import get_orchestrator
+            orch = get_orchestrator()
+            status = orch.get_status()
+            metrics["gpu_utilization"] = status.get("gpu_utilization", [])
+            metrics["endpoints_healthy"] = status.get("healthy_endpoints", 0)
+        except Exception:
+            pass
+
+        # Try to get evolution metrics
+        try:
+            from .agents.evolution import get_evolution_daemon
+            daemon = get_evolution_daemon()
+            evo_status = daemon.get_status()
+            metrics["evolution_cycles"] = evo_status.get("cycles_completed", 0)
+            metrics["total_improvement"] = evo_status.get("total_improvement_percent", 0)
+        except Exception:
+            pass
+
+        # Filter by name if specified
+        if metric_name:
+            metrics = {k: v for k, v in metrics.items() if metric_name.lower() in k.lower()}
+
+        return {"metrics": metrics, "count": len(metrics)}
+
+    async def _watch_logs(self, filter_arg: str, otel_available: bool) -> dict:
+        """Watch logs with optional filtering."""
+        filters = self._parse_watch_filter(filter_arg)
+
+        # Read recent logs from Python logging
+        import logging
+        logs = []
+
+        # Get root logger's handlers
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers:
+            if hasattr(handler, 'buffer'):
+                # Memory handler
+                for record in handler.buffer[-50:]:
+                    log_entry = {
+                        "timestamp": record.created,
+                        "level": record.levelname,
+                        "logger": record.name,
+                        "message": record.getMessage()[:200],
+                    }
+                    if self._matches_filter(log_entry, filters):
+                        logs.append(log_entry)
+
+        return {
+            "logs": logs,
+            "count": len(logs),
+            "filter": filters if filters else "none",
+            "note": "Full log streaming requires log aggregator",
+        }
+
+    def _watch_clear(self) -> dict:
+        """Clear watch buffers."""
+        # Clear reasoning traces if present
+        if hasattr(self.state, 'reasoning_traces'):
+            self.state.reasoning_traces.clear()
+
+        return {"cleared": True, "message": "Watch buffers cleared"}
+
+    def _parse_watch_filter(self, filter_arg: str) -> dict:
+        """Parse filter string into dict."""
+        if not filter_arg:
+            return {}
+
+        filters = {}
+        for part in filter_arg.split():
+            if ":" in part:
+                key, value = part.split(":", 1)
+                filters[key.lower()] = value
+            else:
+                # Treat as text search
+                filters["text"] = part
+
+        return filters
+
+    def _matches_filter(self, entry: dict, filters: dict) -> bool:
+        """Check if entry matches filters."""
+        if not filters:
+            return True
+
+        for key, value in filters.items():
+            if key == "text":
+                # Search all string values
+                found = False
+                for v in entry.values():
+                    if isinstance(v, str) and value.lower() in v.lower():
+                        found = True
+                        break
+                if not found:
+                    return False
+            elif key == "service":
+                if entry.get("service", "").lower() != value.lower():
+                    return False
+            elif key == "operation":
+                if entry.get("operation", "").lower() != value.lower():
+                    return False
+            elif key == "level":
+                if entry.get("level", "").lower() != value.lower():
+                    return False
+            else:
+                # Generic field match
+                if str(entry.get(key, "")).lower() != value.lower():
+                    return False
+
+        return True
+
     async def _cmd_explain(self, args: str) -> dict:
         """Explain a grid position using local LLM with differential geometry.
 
@@ -1769,48 +2731,47 @@ class GaiusCLI:
         return result
 
     def _cmd_kb(self, args: str) -> dict:
-        """KB operations."""
+        """KB operations using storage abstraction.
+
+        Subcommands:
+            list [directory] - List KB entries (optionally filter by directory)
+            read <path>      - Read a KB entry
+            search <query>   - Search KB by filename or content
+        """
+        import asyncio
         parts = args.split(maxsplit=1)
         subcmd = parts[0] if parts else "list"
         subargs = parts[1] if len(parts) > 1 else ""
 
-        kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
-        allowed_dirs = ("archive", "current", "scratch")
-
         if subcmd == "list":
-            entries = []
-            for d in allowed_dirs:
-                dir_path = kb_root / d
-                if dir_path.exists():
-                    for f in dir_path.rglob("*.md"):
-                        entries.append(str(f.relative_to(kb_root)))
-            return {"entries": entries, "total": len(entries)}
+            from .storage.kb_ops import list_kb
+            # subargs is optional directory filter (e.g., "scratch" or "current")
+            result = asyncio.get_event_loop().run_until_complete(list_kb(subargs.strip()))
+            if "error" in result:
+                return result
+            return {"entries": result.get("entries", []), "total": len(result.get("entries", []))}
 
         elif subcmd == "read":
             if not subargs:
                 raise ValueError("kb read requires a path")
-            path = kb_root / subargs
-            if not path.exists():
+            from .storage.kb_ops import read_kb
+            entry = asyncio.get_event_loop().run_until_complete(read_kb(subargs.strip()))
+            if entry is None:
                 return {"error": f"Not found: {subargs}"}
-            return {"path": subargs, "content": path.read_text()}
+            return {"path": entry.path, "content": entry.content}
 
         elif subcmd == "search":
             if not subargs:
                 raise ValueError("kb search requires a query")
-            results = []
-            for d in allowed_dirs:
-                dir_path = kb_root / d
-                if not dir_path.exists():
-                    continue
-                for f in dir_path.rglob("*.md"):
-                    if subargs.lower() in f.name.lower():
-                        results.append(str(f.relative_to(kb_root)))
-                    elif subargs.lower() in f.read_text().lower():
-                        results.append(str(f.relative_to(kb_root)))
-            return {"query": subargs, "results": results}
+            from .storage.kb_ops import search_kb
+            results = asyncio.get_event_loop().run_until_complete(search_kb(subargs.strip()))
+            return {
+                "query": subargs,
+                "results": [{"path": r.path, "match": r.match_type, "preview": r.preview} for r in results],
+            }
 
         else:
-            return {"error": f"Unknown kb subcommand: {subcmd}"}
+            return {"error": f"Unknown kb subcommand: {subcmd}. Use: list, read, search"}
 
     def _parse_coord(self, coord: str) -> tuple[int, int]:
         """Parse coordinate string like 'K10' to (x, y)."""
@@ -1864,6 +2825,312 @@ class GaiusCLI:
             lines.append(f"{19-y:2} " + " ".join(row))
         lines.append("   " + " ".join(chr(65+i) if i < 8 else chr(66+i) for i in range(19)))
         return "\n".join(lines)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Profile Management
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _cmd_profile(self, args: str) -> dict:
+        """Set or get active profile.
+
+        Usage:
+            /profile              - Show current profile
+            /profile cloudera     - Switch to cloudera profile
+            /profile weathership  - Switch to weathership profile
+        """
+        if args:
+            profile_name = args.strip().lower()
+            try:
+                from .core.config import load_config
+                self.config = load_config(profile=profile_name)
+
+                # Execute startup commands for the new profile
+                startup_results = []
+                for cmd in self.config.startup.commands:
+                    result = self.execute(cmd)
+                    startup_results.append({
+                        "command": cmd,
+                        "success": result.get("success", False),
+                    })
+
+                return {
+                    "profile": self.config.profile,
+                    "switched": True,
+                    "startup_commands": startup_results,
+                }
+            except Exception as e:
+                raise ValueError(f"Failed to load profile '{profile_name}': {e}")
+        else:
+            return {
+                "profile": self.config.profile,
+                "startup_commands": list(self.config.startup.commands),
+            }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Project Notes with Bidirectional Linking
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _cmd_project(self, args: str) -> dict:
+        """Create project note with bidirectional linking.
+
+        Creates a Zettelkasten-style project note in scratch with:
+        - Link to project agenda
+        - prev: link to most recent note of same type
+        - next: initially empty (filled when next note created)
+
+        Usage:
+            /project charter   - Create charter note
+            /project standup   - Create standup note
+            /project review    - Create review note
+
+        The prev/next links are automatically maintained across sessions.
+        """
+        if not args:
+            # List existing project types
+            from pathlib import Path
+            from .core.project_notes import list_project_types
+
+            kb_root = Path(self.config.kb.root)
+            types = list_project_types(kb_root)
+
+            raise ValueError(
+                f"project requires type (e.g., /project charter)\n"
+                f"Existing types: {', '.join(types) if types else 'none'}"
+            )
+
+        project_type = args.strip().lower().replace(" ", "_")
+
+        from pathlib import Path
+        from .core.project_notes import create_project_note, get_project_chain
+
+        kb_root = Path(self.config.kb.root)
+        note_path, content = create_project_note(kb_root, project_type)
+
+        # Get chain info for response
+        chain = get_project_chain(kb_root, project_type)
+
+        return {
+            "created": str(note_path),
+            "project_type": project_type,
+            "chain_length": len(chain),
+            "content_preview": content[:300],
+        }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Thoughts - Cognition and Pattern Detection
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_thoughts(self, args: str) -> dict:
+        """Trigger cognition and view thoughts.
+
+        Analyzes recent KB entries and activity to:
+        - Detect patterns across research areas
+        - Find cross-domain connections
+        - Generate curiosity-driven questions
+        - Self-observe (recursive thinking about thoughts)
+        - Audit engine health
+
+        Usage:
+            /thoughts           - Trigger cognition cycle, create thoughts note
+            /thoughts deep      - Run deeper analysis
+            /thoughts recent    - Show recent thoughts without triggering new cycle
+            /thoughts recent 5  - Show last 5 thoughts
+            /thoughts self      - Trigger self-observation (thoughts about thoughts)
+            /thoughts audit     - Trigger engine audit
+            /thoughts chain [id]- Show thought chain
+        """
+        try:
+            from .agents.cognition import (
+                trigger_cognition,
+                get_cognition_agent,
+                CognitionContext,
+            )
+        except ImportError:
+            return {
+                "error": "Cognition module not available",
+                "suggestion": "Ensure agents module is installed",
+                "thoughts": [],
+            }
+
+        args_lower = args.strip().lower() if args else ""
+
+        # /thoughts self - trigger self-observation
+        if args_lower == "self":
+            try:
+                agent = get_cognition_agent(profile=self.config.profile)
+                context = CognitionContext()
+                context.active_thoughts = await agent.get_active_thoughts(limit=20)
+                context.recent_kb_entries = await agent._get_recent_kb_entries()
+
+                thoughts = await agent._observe_own_thoughts(context)
+                for thought in thoughts:
+                    await agent._save_thought(thought)
+
+                return {
+                    "mode": "self_observation",
+                    "self_observations": len(thoughts),
+                    "thoughts": [
+                        {
+                            "title": t.title,
+                            "type": t.thought_type.value,
+                            "generation": t.generation,
+                            "note_path": t.note_path,
+                            "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
+                        }
+                        for t in thoughts
+                    ],
+                }
+            except Exception as e:
+                return {"error": str(e), "mode": "self_observation", "thoughts": []}
+
+        # /thoughts audit - trigger engine audit
+        if args_lower == "audit":
+            try:
+                agent = get_cognition_agent(profile=self.config.profile)
+                context = CognitionContext()
+
+                thoughts = await agent._audit_engine_health(context)
+                for thought in thoughts:
+                    await agent._save_thought(thought)
+
+                return {
+                    "mode": "engine_audit",
+                    "audit_thoughts": len(thoughts),
+                    "thoughts": [
+                        {
+                            "title": t.title,
+                            "type": t.thought_type.value,
+                            "note_path": t.note_path,
+                            "content": t.content[:200] + "..." if len(t.content) > 200 else t.content,
+                        }
+                        for t in thoughts
+                    ],
+                }
+            except Exception as e:
+                return {"error": str(e), "mode": "engine_audit", "thoughts": []}
+
+        # /thoughts chain [id] - show thought chain
+        if args_lower.startswith("chain"):
+            parts = args_lower.split()
+            thought_id = parts[1] if len(parts) > 1 else None
+
+            try:
+                import asyncpg
+
+                conn = await asyncpg.connect(self.config.database.url)
+                try:
+                    if not thought_id:
+                        thought_id = await conn.fetchval(
+                            """
+                            SELECT id FROM cognition_thoughts
+                            WHERE thought_chain_id IS NOT NULL
+                            ORDER BY created_at DESC LIMIT 1
+                            """
+                        )
+                        if not thought_id:
+                            return {"error": "No thought chains found", "mode": "chain"}
+
+                    rows = await conn.fetch(
+                        """
+                        WITH RECURSIVE chain AS (
+                            SELECT id, title, thought_type, generation, predecessor_id,
+                                   content, salience, created_at, note_path
+                            FROM cognition_thoughts WHERE id = $1::uuid
+                            UNION ALL
+                            SELECT t.id, t.title, t.thought_type, t.generation, t.predecessor_id,
+                                   t.content, t.salience, t.created_at, t.note_path
+                            FROM cognition_thoughts t
+                            JOIN chain c ON t.id = c.predecessor_id
+                        )
+                        SELECT * FROM chain ORDER BY generation, created_at
+                        """,
+                        str(thought_id),
+                    )
+
+                    return {
+                        "mode": "chain",
+                        "chain_length": len(rows),
+                        "chain": [
+                            {
+                                "id": str(r["id"]),
+                                "title": r["title"],
+                                "type": r["thought_type"],
+                                "generation": r["generation"],
+                                "note_path": r["note_path"],
+                                "content_preview": r["content"][:150] + "..." if r["content"] and len(r["content"]) > 150 else r["content"],
+                            }
+                            for r in rows
+                        ],
+                    }
+                finally:
+                    await conn.close()
+            except Exception as e:
+                return {"error": str(e), "mode": "chain"}
+
+        # /thoughts recent [n] - just show existing thoughts
+        if args_lower.startswith("recent"):
+            parts = args_lower.split()
+            try:
+                limit = int(parts[1]) if len(parts) > 1 else 10
+            except ValueError:
+                limit = 10
+
+            try:
+                agent = get_cognition_agent(profile=self.config.profile)
+                thoughts = await agent.get_active_thoughts(limit=limit)
+                return {
+                    "mode": "recent",
+                    "thoughts": [
+                        {
+                            "title": t.title,
+                            "content": t.content[:150] + "..." if len(t.content) > 150 else t.content,
+                            "type": t.thought_type.value,
+                            "generation": t.generation,
+                            "note_path": t.note_path,
+                            "confidence": t.confidence,
+                            "created_at": t.created_at.isoformat() if t.created_at else None,
+                        }
+                        for t in thoughts
+                    ],
+                    "count": len(thoughts),
+                }
+            except Exception as e:
+                return {"error": str(e), "mode": "recent", "thoughts": []}
+
+        # Default: trigger full cognition cycle
+        depth = "deep" if args_lower == "deep" else "moderate"
+
+        try:
+            result = await trigger_cognition(
+                reason="cli_thoughts",
+                max_thoughts=5 if depth != "deep" else 10,
+                profile=self.config.profile,
+            )
+
+            return {
+                "mode": "cognition",
+                "thoughts_generated": len(result.thoughts) if hasattr(result, 'thoughts') else 0,
+                "patterns_detected": result.patterns_detected,
+                "connections_found": result.connections_found,
+                "self_observations": result.self_observations,
+                "engine_audits": result.engine_audits,
+                "thoughts": [
+                    {
+                        "title": t.title,
+                        "content": t.content[:150] + "..." if len(t.content) > 150 else t.content,
+                        "type": t.thought_type.value,
+                        "generation": t.generation,
+                        "note_path": t.note_path,
+                    }
+                    for t in (result.thoughts if hasattr(result, 'thoughts') else [])
+                ][:5],  # Preview first 5
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "mode": "cognition",
+                "thoughts_generated": 0,
+            }
 
     def format_output(self, result: dict) -> str:
         """Format result based on output format."""
