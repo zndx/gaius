@@ -168,12 +168,50 @@ def create_raw_content_table(
         raise
 
 
+def evolve_table_schema(table: Table) -> bool:
+    """Evolve table schema to match current definition.
+
+    Adds any missing columns from the current schema definition.
+    Iceberg supports safe schema evolution for adding nullable columns.
+
+    Args:
+        table: PyIceberg Table instance.
+
+    Returns:
+        True if schema was updated, False if already current.
+    """
+    from pyiceberg.types import StringType
+
+    current_schema = table.schema()
+    target_schema = get_raw_content_schema()
+
+    # Find missing columns
+    current_names = {f.name for f in current_schema.fields}
+    missing_fields = [f for f in target_schema.fields if f.name not in current_names]
+
+    if not missing_fields:
+        return False
+
+    logger.info(f"Evolving schema: adding {[f.name for f in missing_fields]}")
+
+    # Add missing columns
+    with table.update_schema() as update:
+        for field in missing_fields:
+            logger.info(f"  Adding column: {field.name} ({field.field_type})")
+            update.add_column(field.name, field.field_type, doc=field.doc)
+
+    logger.info("Schema evolution complete")
+    return True
+
+
 def get_raw_content_table(
     catalog: Catalog,
     namespace: str = "raw",
     table_name: str = "content",
 ) -> Table:
     """Get the raw content table, creating if necessary.
+
+    Also evolves schema if new columns have been added to the definition.
 
     Args:
         catalog: PyIceberg catalog instance.
@@ -186,7 +224,10 @@ def get_raw_content_table(
     table_id = f"{namespace}.{table_name}"
 
     try:
-        return catalog.load_table(table_id)
+        table = catalog.load_table(table_id)
+        # Evolve schema if needed (adds missing columns)
+        evolve_table_schema(table)
+        return table
     except Exception:
         return create_raw_content_table(
             catalog,
