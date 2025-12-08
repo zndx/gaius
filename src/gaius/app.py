@@ -1745,7 +1745,7 @@ class GaiusApp(App):
             /inference start <endpoint>    - Start specific endpoint
             /inference stop <endpoint>     - Stop specific endpoint
             /inference restart <endpoint>  - Restart specific endpoint
-            /inference ensure              - Ensure default model (fast (Mistral-7B)) running
+            /inference ensure              - Ensure default model (nvidia/Orchestrator-8B) running
         """
         import asyncio
         from .inference.manager import get_inference_manager
@@ -1772,7 +1772,7 @@ class GaiusApp(App):
 
 **Orchestrator**: {'Running' if status.orchestrator_running else 'Stopped'}
 **Scheduler**: {'Healthy' if status.scheduler_healthy else 'Unhealthy'}
-**Default Model** (fast (Mistral-7B)): {'Ready' if status.default_model_ready else 'Not Ready'}
+**Default Model** (nvidia/Orchestrator-8B): {'Ready' if status.default_model_ready else 'Not Ready'}
 
 ## Endpoints
 
@@ -1785,7 +1785,7 @@ class GaiusApp(App):
 
 ---
 
-Use `/inference ensure` to start the default model (fast (Mistral-7B)).
+Use `/inference ensure` to start the default model (nvidia/Orchestrator-8B).
 Use `/inference start <endpoint>` to start an endpoint.
 Use `/inference stop <endpoint>` to stop an endpoint.
 """
@@ -1866,15 +1866,15 @@ Use `/inference stop <endpoint>` to stop an endpoint.
             asyncio.create_task(restart())
 
         elif args == "ensure":
-            # Ensure default model (fast (Mistral-7B)) is running
-            content.show_file("inference.txt", "Ensuring fast (Mistral-7B) is running...")
+            # Ensure default model (nvidia/Orchestrator-8B) is running
+            content.show_file("inference.txt", "Ensuring nvidia/Orchestrator-8B is running...")
 
             async def ensure():
                 try:
                     manager = get_inference_manager()
 
                     # Track progress in content panel
-                    progress_lines = ["# Starting fast (Mistral-7B)", ""]
+                    progress_lines = ["# Starting nvidia/Orchestrator-8B", ""]
 
                     def update_progress(task_name: str, progress: float, message: str):
                         progress_lines.append(f"[{progress:.0%}] {message}")
@@ -1884,7 +1884,7 @@ Use `/inference stop <endpoint>` to stop an endpoint.
 
                     if success:
                         progress_lines.append("")
-                        progress_lines.append("✓ fast (Mistral-7B) is ready")
+                        progress_lines.append("✓ nvidia/Orchestrator-8B is ready")
                         content.show_file("inference.md", "\n".join(progress_lines))
                     else:
                         content.show_file("error.txt", "Failed to ensure default model is running.")
@@ -3511,7 +3511,7 @@ The general-purpose agentic query interface.
         # Apply center panel mode from config
         self._apply_center_panel_mode()
 
-        # Start inference stack (orchestrator + fast (Mistral-7B))
+        # Start inference stack (orchestrator + nvidia/Orchestrator-8B)
         self._start_inference_stack()
 
         # Start scheduler service (background)
@@ -3521,7 +3521,7 @@ The general-purpose agentic query interface.
         self._run_startup_commands()
 
     def _start_inference_stack(self) -> None:
-        """Start inference orchestrator and default model (fast (Mistral-7B)).
+        """Start inference orchestrator and default model (nvidia/Orchestrator-8B).
 
         Creates background task with progress tracking.
         """
@@ -3533,7 +3533,7 @@ The general-purpose agentic query interface.
         # Create background task
         task = BackgroundTask(
             id="inference_startup",
-            name="Starting fast (Mistral-7B)",
+            name="Starting nvidia/Orchestrator-8B",
             status="running",
             started_at=datetime.now(),
         )
@@ -3560,7 +3560,7 @@ The general-purpose agentic query interface.
                 if success:
                     task.status = "completed"
                     task.progress = 1.0
-                    task.message = "fast (Mistral-7B) ready"
+                    task.message = "nvidia/Orchestrator-8B ready"
                     task.completed_at = datetime.now()
                 else:
                     task.status = "failed"
