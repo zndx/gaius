@@ -1,7 +1,7 @@
 """Inference Manager - High-level service lifecycle for models and orchestrator.
 
 Provides imperative control over the inference stack with progress tracking:
-- Startup sequence with fast endpoint (Mistral-7B) as default
+- Startup sequence with nvidia/Orchestrator-8B as default
 - Health monitoring and status reporting
 - Symmetric operations for TUI and CLI
 - Scale-to-zero management (future)
@@ -32,7 +32,7 @@ class InferenceStatus:
     orchestrator_running: bool
     endpoints_running: dict[str, ProcessStatus]  # endpoint_name -> status
     scheduler_healthy: bool
-    default_model_ready: bool  # fast endpoint (Mistral-7B)
+    default_model_ready: bool  # nvidia/Orchestrator-8B
     total_requests: int = 0
     queue_depth: int = 0
 
@@ -42,15 +42,15 @@ class InferenceManager:
 
     Responsible for:
     - Ensuring orchestrator and scheduler are running
-    - Starting default model endpoint (fast/Mistral-7B)
+    - Starting default models (nvidia/Orchestrator-8B)
     - Progress reporting during startup
     - Health monitoring
     """
 
     def __init__(self):
         self._orchestrator = get_orchestrator()
-        self._default_endpoint = "fast"  # Mistral-7B - always-on lightweight model
-        self._default_model = "mistralai/Mistral-7B-Instruct-v0.3"
+        self._default_endpoint = "orchestration"  # nvidia/Orchestrator-8B
+        self._default_model = "nvidia/Orchestrator-8B"
 
     async def get_status(self) -> InferenceStatus:
         """Get current inference stack status.
@@ -104,7 +104,7 @@ class InferenceManager:
         """Ensure orchestrator and default model are running.
 
         This is the main startup sequence:
-        1. Check if default model (fast/Mistral-7B) is already running
+        1. Check if nvidia/Orchestrator-8B is already running
         2. If not, start it with progress updates
         3. Wait for healthy status
 
@@ -114,7 +114,7 @@ class InferenceManager:
         Returns:
             True if successful, False otherwise
         """
-        task_name = f"Starting {self._default_endpoint}"
+        task_name = "Starting nvidia/Orchestrator-8B"
 
         def report(progress: float, message: str):
             if progress_callback:
