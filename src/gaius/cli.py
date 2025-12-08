@@ -1899,7 +1899,7 @@ Respond with:
                 }
 
             elif subcmd == "ensure":
-                # Ensure default model (nvidia/Orchestrator-8B) is running
+                # Ensure default model (fast (Mistral-7B)) is running
                 progress_messages = []
 
                 def track_progress(task_name: str, progress: float, message: str):
