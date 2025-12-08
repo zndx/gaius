@@ -3564,7 +3564,7 @@ The general-purpose agentic query interface.
                     task.completed_at = datetime.now()
                 else:
                     task.status = "failed"
-                    task.error = "Failed to start orchestrator"
+                    task.error = "Failed to start fast endpoint"
                     task.completed_at = datetime.now()
 
             except Exception as e:

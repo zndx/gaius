@@ -66,7 +66,7 @@ class InferenceManager:
         for endpoint_name, process in orch_status.get("processes", {}).items():
             endpoints_running[endpoint_name] = ProcessStatus[process["status"].upper()]
 
-        # Check if default model (nvidia/Orchestrator-8B) is ready
+        # Check if default model (fast/Mistral-7B) is ready
         # First check tracked processes, then do HTTP check for external processes
         default_ready = False
         if self._default_endpoint in endpoints_running:
@@ -75,9 +75,9 @@ class InferenceManager:
         # Also check via HTTP (catches external processes like MCP-started ones)
         if not default_ready:
             try:
-                # Get the endpoint URL from config
+                # Get the endpoint URL from config (fast=8080, reasoning=8081)
                 endpoint_cfg = orch_status.get("endpoints", {}).get(self._default_endpoint, {})
-                endpoint_url = endpoint_cfg.get("url", "http://localhost:8084/v1")
+                endpoint_url = endpoint_cfg.get("url", "http://localhost:8080/v1")
                 base_url = endpoint_url.rstrip("/v1")
 
                 async with httpx.AsyncClient() as client:
@@ -193,7 +193,7 @@ class InferenceManager:
 
         except Exception as e:
             report(0.0, f"Error: {e}")
-            logger.exception("Failed to start orchestrator")
+            logger.exception("Failed to start fast endpoint")
             return False
 
     async def start_endpoint(
