@@ -182,10 +182,12 @@ class InferenceScheduler:
                         current_model=ep.get("models", [None])[0] if ep.get("models") else None,
                     )
         except Exception:
-            # Fallback to single default endpoint
+            # LEGACY_FALLBACK: Single default endpoint when config loading fails
+            # In agent-first mode, engine manages endpoints; this is a last resort
+            logger.warning("LEGACY_FALLBACK: Using default endpoint - prefer engine proxy")
             self._endpoints["default"] = EndpointState(
                 name="default",
-                url="http://localhost:8088/v1",
+                url="http://localhost:8080/v1",  # orchestrator endpoint
             )
 
     def _estimate_duration(self, job: Job, endpoint: EndpointState) -> int:
@@ -566,8 +568,8 @@ class SchedulerService:
         try:
             # Try HOCON config first, fall back to env/defaults
             api_key = "sk-optillm"
-            optillm_url = "http://localhost:8080/v1"
-            model = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+            optillm_url = "http://localhost:8088/v1"  # optillm proxy when running
+            model = "mistralai/Mistral-7B-Instruct-v0.3"
 
             try:
                 from ..core.config import get_config
@@ -1037,12 +1039,25 @@ class SchedulerService:
         logger.info("Scheduler service started")
 
     async def _init_orchestrator_components(self) -> None:
-        """Initialize GPU orchestrator, health monitor, recovery manager, and persistence."""
+        """Initialize GPU orchestrator, health monitor, recovery manager, and persistence.
+
+        Prefers engine client (agent-first architecture) when available.
+        Falls back to legacy orchestrator for standalone mode.
+        """
         try:
-            from .orchestrator import get_orchestrator
-            self._orchestrator = get_orchestrator()
-            await self._orchestrator.start()
-            logger.info("GPU orchestrator initialized")
+            from ..client.engine_proxy import use_engine_proxy
+
+            if use_engine_proxy():
+                # Engine is running - it manages GPU orchestration
+                logger.info("Using engine for GPU orchestration (agent-first mode)")
+                self._orchestrator = None  # Engine handles this
+            else:
+                # Fallback to legacy standalone orchestrator
+                logger.warning("LEGACY_FALLBACK: InferenceScheduler using legacy orchestrator - tech debt")
+                from .orchestrator import get_orchestrator
+                self._orchestrator = get_orchestrator()
+                await self._orchestrator.start()
+                logger.info("GPU orchestrator initialized (standalone mode)")
         except Exception as e:
             logger.warning(f"GPU orchestrator not available: {e}")
 

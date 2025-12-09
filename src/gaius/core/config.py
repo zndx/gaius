@@ -101,7 +101,9 @@ class OptillmConfig:
 class VllmConfig:
     """vLLM-specific settings."""
 
-    url: str = "http://localhost:8088/v1"
+    # Default to coding endpoint (8082) per base.conf
+    # Engine manages endpoints; this is overridden by HOCON config
+    url: str = "http://localhost:8082/v1"
 
 
 @dataclass
@@ -447,7 +449,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     )
 
     vllm = VllmConfig(
-        url=g.get("inference.vllm.url", "http://localhost:8088/v1"),
+        url=g.get("inference.vllm.url", "http://localhost:8082/v1"),  # coding endpoint
     )
 
     phase_models = PhaseModels(

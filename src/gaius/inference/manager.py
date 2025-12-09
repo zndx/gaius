@@ -6,6 +6,10 @@ Provides imperative control over the inference stack with progress tracking:
 - Symmetric operations for TUI and CLI
 - Scale-to-zero management (future)
 
+Agent-First Architecture:
+- Uses engine client when gaius-engine is running
+- Falls back to legacy orchestrator for standalone mode
+
 Usage (TUI):
     manager = get_inference_manager()
     await manager.ensure_orchestrator_running(progress_callback)
@@ -21,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Any
 
-from .orchestrator import get_orchestrator, ProcessStatus
+from .orchestrator import ProcessStatus
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +46,109 @@ class InferenceManager:
 
     Responsible for:
     - Ensuring orchestrator and scheduler are running
-    - Starting default models (nvidia/Orchestrator-8B)
+    - Dynamic endpoint discovery
     - Progress reporting during startup
     - Health monitoring
     """
 
     def __init__(self):
-        self._orchestrator = get_orchestrator()
-        self._default_endpoint = "orchestration"  # nvidia/Orchestrator-8B
-        self._default_model = "nvidia/Orchestrator-8B"
+        self._orchestrator = None  # Lazily initialized
+        self._use_engine = False
+        self._engine_proxy = None
+        self._default_endpoint: str | None = None  # Discovered dynamically
+        self._endpoint_cache_time: datetime | None = None
+
+        # Check if engine is available
+        try:
+            from ..client.engine_proxy import use_engine_proxy
+            self._use_engine = use_engine_proxy()
+            if self._use_engine:
+                logger.info("InferenceManager using engine client (agent-first mode)")
+        except ImportError:
+            pass
+
+        # Fall back to legacy orchestrator if engine not available
+        if not self._use_engine:
+            logger.warning("LEGACY_FALLBACK: InferenceManager using legacy orchestrator - tech debt")
+            from .orchestrator import get_orchestrator
+            self._orchestrator = get_orchestrator()
+
+    async def _get_engine_proxy(self):
+        """Get or create engine orchestrator proxy."""
+        if self._engine_proxy is None:
+            from ..client.engine_proxy import get_orchestrator_proxy
+            self._engine_proxy = await get_orchestrator_proxy()
+        return self._engine_proxy
+
+    def _discover_default_endpoint(self) -> str | None:
+        """Discover the best available endpoint dynamically.
+
+        Priority order:
+        1. orchestrator (meta-cognitive routing)
+        2. fast (quick responses)
+        3. Any configured endpoint
+
+        Returns:
+            Endpoint name or None
+        """
+        priority = ["orchestrator", "fast", "fast-2", "coding"]
+
+        if self._use_engine:
+            # Engine mode - use priority order with known endpoints
+            return priority[0]  # orchestrator is default in engine mode
+        else:
+            # Legacy mode
+            default = self._orchestrator.get_default_endpoint()
+            if default:
+                return default
+
+            configured = self._orchestrator.get_configured_endpoints()
+
+            for name in priority:
+                if name in configured:
+                    return name
+
+            return configured[0] if configured else None
+
+    def get_default_endpoint(self) -> str | None:
+        """Get the default endpoint, with caching.
+
+        Returns:
+            Endpoint name to use for inference
+        """
+        # Check cache validity (1 minute)
+        if self._default_endpoint and self._endpoint_cache_time:
+            age = (datetime.now() - self._endpoint_cache_time).total_seconds()
+            if age < 60:
+                return self._default_endpoint
+
+        # Discover and cache
+        self._default_endpoint = self._discover_default_endpoint()
+        self._endpoint_cache_time = datetime.now()
+        return self._default_endpoint
+
+    def get_configured_endpoints(self) -> list[str]:
+        """Get all configured endpoints.
+
+        Returns:
+            List of endpoint names from config
+        """
+        if self._use_engine:
+            # Engine mode - return standard endpoints
+            return ["orchestrator", "fast", "fast-2", "coding", "reasoning"]
+        return self._orchestrator.get_configured_endpoints()
+
+    def get_running_endpoints(self) -> list[str]:
+        """Get currently running endpoints.
+
+        Returns:
+            List of healthy endpoint names
+        """
+        if self._use_engine:
+            # Engine mode - need async call, return cached if available
+            # For sync interface, return empty or use cached value
+            return []  # Caller should use async get_status() instead
+        return self._orchestrator.get_running_endpoints()
 
     async def get_status(self) -> InferenceStatus:
         """Get current inference stack status.
@@ -60,34 +158,89 @@ class InferenceManager:
         """
         import httpx
 
-        orch_status = self._orchestrator.get_status()
-
         endpoints_running = {}
-        for endpoint_name, process in orch_status.get("processes", {}).items():
-            endpoints_running[endpoint_name] = ProcessStatus[process["status"].upper()]
 
-        # Check if default model (fast/Mistral-7B) is ready
-        # First check tracked processes, then do HTTP check for external processes
-        default_ready = False
-        if self._default_endpoint in endpoints_running:
-            default_ready = endpoints_running[self._default_endpoint] == ProcessStatus.HEALTHY
+        if self._use_engine:
+            # Engine mode - get status from engine
+            proxy = await self._get_engine_proxy()
+            orch_status = await proxy._get_status_async()
 
-        # Also check via HTTP (catches external processes like MCP-started ones)
+            # gRPC returns endpoints as a list of dicts with 'name' key
+            endpoints_info = orch_status.get("endpoints", [])
+            if isinstance(endpoints_info, list):
+                for ep in endpoints_info:
+                    endpoint_name = ep.get("name", "")
+                    status_str = ep.get("status", "stopped")
+                    try:
+                        endpoints_running[endpoint_name] = ProcessStatus[status_str.upper()]
+                    except KeyError:
+                        endpoints_running[endpoint_name] = ProcessStatus.STOPPED
+            else:
+                # Legacy dict format
+                for endpoint_name, info in endpoints_info.items():
+                    status_str = info.get("status", "stopped")
+                    try:
+                        endpoints_running[endpoint_name] = ProcessStatus[status_str.upper()]
+                    except KeyError:
+                        endpoints_running[endpoint_name] = ProcessStatus.STOPPED
+        else:
+            # Legacy mode
+            orch_status = self._orchestrator.get_status()
+
+            endpoints_info = orch_status.get("endpoints", {})
+            for endpoint_name, info in endpoints_info.items():
+                status_str = info.get("status", "stopped")
+                try:
+                    endpoints_running[endpoint_name] = ProcessStatus[status_str.upper()]
+                except KeyError:
+                    endpoints_running[endpoint_name] = ProcessStatus.STOPPED
+
+            # Probe all configured endpoints via HTTP to detect external processes
+            async with httpx.AsyncClient() as client:
+                for endpoint_name in endpoints_running:
+                    if endpoints_running[endpoint_name] == ProcessStatus.HEALTHY:
+                        continue  # Already known healthy
+                    endpoint_cfg = self._orchestrator.get_endpoint_config(endpoint_name)
+                    if endpoint_cfg:
+                        base_url = endpoint_cfg.url.rstrip("/v1")
+                        try:
+                            r = await client.get(f"{base_url}/v1/models", timeout=2)
+                            if r.status_code == 200:
+                                endpoints_running[endpoint_name] = ProcessStatus.HEALTHY
+                        except Exception:
+                            pass
+
+        # Check if any usable endpoint is ready (check common ports for external processes)
+        default_ready = any(
+            status == ProcessStatus.HEALTHY
+            for status in endpoints_running.values()
+        )
+
+        # Also check common inference ports that might have external processes
+        # (e.g., from devenv, MCP server, or manual vLLM starts)
         if not default_ready:
-            try:
-                # Get the endpoint URL from config (fast=8080, reasoning=8081)
-                endpoint_cfg = orch_status.get("endpoints", {}).get(self._default_endpoint, {})
-                endpoint_url = endpoint_cfg.get("url", "http://localhost:8080/v1")
-                base_url = endpoint_url.rstrip("/v1")
-
-                async with httpx.AsyncClient() as client:
-                    r = await client.get(f"{base_url}/v1/models", timeout=3)
-                    if r.status_code == 200:
-                        default_ready = True
-                        # Update endpoints_running to reflect this
-                        endpoints_running[self._default_endpoint] = ProcessStatus.HEALTHY
-            except Exception:
-                pass
+            common_ports = [8080, 8081, 8082, 8083, 8084, 8085]
+            async with httpx.AsyncClient() as client:
+                for port in common_ports:
+                    try:
+                        r = await client.get(f"http://localhost:{port}/v1/models", timeout=2)
+                        if r.status_code == 200:
+                            default_ready = True
+                            # Try to identify which endpoint this is
+                            try:
+                                data = r.json()
+                                model_id = data.get("data", [{}])[0].get("id", "")
+                                # Map model to endpoint name
+                                for name, cfg in [(n, self._orchestrator.get_endpoint_config(n))
+                                                  for n in endpoints_running]:
+                                    if cfg and model_id in cfg.models:
+                                        endpoints_running[name] = ProcessStatus.HEALTHY
+                                        break
+                            except Exception:
+                                pass
+                            break
+                    except Exception:
+                        pass
 
         return InferenceStatus(
             orchestrator_running=True,  # If we got status, orchestrator is running
@@ -101,12 +254,15 @@ class InferenceManager:
         self,
         progress_callback: Callable[[str, float, str], None] | None = None
     ) -> bool:
-        """Ensure orchestrator and default model are running.
+        """Ensure default inference endpoint is running.
 
         This is the main startup sequence:
-        1. Check if nvidia/Orchestrator-8B is already running
-        2. If not, start it with progress updates
-        3. Wait for healthy status
+        1. Discover best available endpoint from config
+        2. Check if already running
+        3. If not, start it with progress updates
+        4. Wait for healthy status
+
+        Uses engine's ensure_endpoint in agent-first mode for proper resource management.
 
         Args:
             progress_callback: Optional callback(task_name, progress_0_1, message)
@@ -114,7 +270,13 @@ class InferenceManager:
         Returns:
             True if successful, False otherwise
         """
-        task_name = "Starting nvidia/Orchestrator-8B"
+        # Discover the default endpoint
+        default_endpoint = self.get_default_endpoint()
+        if not default_endpoint:
+            logger.error("No endpoints configured")
+            return False
+
+        task_name = f"Starting {default_endpoint}"
 
         def report(progress: float, message: str):
             if progress_callback:
@@ -122,7 +284,7 @@ class InferenceManager:
             logger.info(f"{task_name}: {message} ({progress:.0%})")
 
         try:
-            report(0.0, "Checking orchestrator status")
+            report(0.0, "Checking endpoint status")
 
             # Check if already running
             status = await self.get_status()
@@ -130,14 +292,26 @@ class InferenceManager:
                 report(1.0, "Already running")
                 return True
 
-            report(0.2, "Starting orchestrator endpoint")
+            report(0.2, f"Starting {default_endpoint} endpoint")
 
-            # Start the orchestration endpoint (model defined in endpoint config)
-            success = await self._orchestrator.start_endpoint(self._default_endpoint)
+            if self._use_engine:
+                # Engine mode - use ensure_endpoint for proper resource management
+                proxy = await self._get_engine_proxy()
+                result = await proxy.ensure_endpoint(default_endpoint)
+
+                if result.get("healthy"):
+                    report(1.0, "Ready")
+                    return True
+                else:
+                    error_msg = result.get("message", result.get("status", "Failed"))
+                    report(0.0, f"Failed: {error_msg}")
+                    return False
+
+            # Legacy mode
+            success = await self._orchestrator.start_endpoint(default_endpoint)
 
             if not success:
-                # Check if it's a binary not found issue
-                proc = self._orchestrator.get_endpoint_status(self._default_endpoint)
+                proc = self._orchestrator.get_endpoint_status(default_endpoint)
                 if proc and proc.status == ProcessStatus.FAILED:
                     report(0.0, "vLLM binary not found - install with: pip install vllm")
                 else:
@@ -159,7 +333,7 @@ class InferenceManager:
 
                 # Get detailed progress from vLLM output parsing
                 vllm_message, vllm_progress = self._orchestrator.get_startup_progress(
-                    self._default_endpoint
+                    default_endpoint
                 )
 
                 # Check for errors
@@ -177,7 +351,7 @@ class InferenceManager:
                     message = vllm_message
                 else:
                     progress = time_progress
-                    endpoint_status = status.endpoints_running.get(self._default_endpoint)
+                    endpoint_status = status.endpoints_running.get(default_endpoint)
                     if endpoint_status == ProcessStatus.STARTING:
                         message = "Loading model into VRAM"
                     elif endpoint_status == ProcessStatus.UNHEALTHY:
@@ -193,7 +367,7 @@ class InferenceManager:
 
         except Exception as e:
             report(0.0, f"Error: {e}")
-            logger.exception("Failed to start fast endpoint")
+            logger.exception(f"Failed to start {default_endpoint} endpoint")
             return False
 
     async def start_endpoint(
@@ -202,6 +376,8 @@ class InferenceManager:
         progress_callback: Callable[[str, float, str], None] | None = None
     ) -> bool:
         """Start a specific endpoint.
+
+        Uses engine's ensure_endpoint in agent-first mode for proper resource management.
 
         Args:
             endpoint_name: Name of endpoint (e.g., "reasoning", "coding")
@@ -222,7 +398,15 @@ class InferenceManager:
 
         try:
             report(0.2, "Starting endpoint")
-            success = await self._orchestrator.start_endpoint(endpoint_name)
+
+            if self._use_engine:
+                # Engine mode - use ensure_endpoint
+                proxy = await self._get_engine_proxy()
+                result = await proxy.ensure_endpoint(endpoint_name)
+                success = result.get("healthy", False)
+            else:
+                # Legacy mode
+                success = await self._orchestrator.start_endpoint(endpoint_name)
 
             if success:
                 report(1.0, "Started")
@@ -238,8 +422,10 @@ class InferenceManager:
     async def stop_endpoint(self, endpoint_name: str) -> bool:
         """Stop a specific endpoint."""
         try:
-            result = await self._orchestrator.stop_endpoint(endpoint_name)
-            return result.get("success", False)
+            if self._use_engine:
+                proxy = await self._get_engine_proxy()
+                return await proxy.stop_endpoint(endpoint_name)
+            return await self._orchestrator.stop_endpoint(endpoint_name)
         except Exception as e:
             logger.error(f"Failed to stop {endpoint_name}: {e}")
             return False

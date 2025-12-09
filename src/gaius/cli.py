@@ -835,11 +835,30 @@ class GaiusCLI:
             return self._run_async(self._cmd_model_add_note(model_id))
 
         elif subcmd == "add":
-            # AI-powered model registry addition
+            # Agent-orchestrated model registry addition
             if not subargs:
-                raise ValueError("Usage: /model add <model_id> (e.g., mistralai/Mistral-7B-Instruct-v0.3)")
-            model_id = subargs.strip()
-            return self._run_async(self._cmd_model_add(model_id))
+                raise ValueError("Usage: /model add <model_id> [--legacy]")
+
+            parts = subargs.split()
+            model_id = parts[0]
+            legacy_mode = "--legacy" in parts
+
+            # Agent-first: check engine availability first
+            if not legacy_mode:
+                from .client.engine_proxy import use_engine_proxy
+                if not use_engine_proxy():
+                    return {
+                        "error": "Gaius engine not running",
+                        "hint": "Start the engine with: gaius-engine start",
+                        "alternative": "Use --legacy flag for standalone mode: /model add <model_id> --legacy",
+                    }
+
+            if legacy_mode:
+                # Use existing hardcoded implementation
+                return self._run_async(self._cmd_model_add_legacy(model_id))
+            else:
+                # Use agent orchestration (default)
+                return self._run_async(self._cmd_model_add_agent(model_id))
 
         elif subcmd == "add-confirm":
             # Confirm pending model addition
@@ -1022,11 +1041,46 @@ MISTRAL_7B = ModelSpec(
 Use UPPERCASE_WITH_UNDERSCORES for the variable name.
 """
 
-    async def _cmd_model_add(self, model_id: str) -> dict:
+    async def _cmd_model_add_agent(self, model_id: str) -> dict:
+        """Agent-orchestrated model addition using Orchestrator-8B.
+
+        Uses a ReAct agent loop where Orchestrator-8B coordinates:
+        1. GPU management (launch/release coding model)
+        2. HuggingFace data fetching
+        3. AI code generation with retry logic
+        4. Validation in subprocess/devenv sandbox
+        5. Optional XAI critique for quality signal
+
+        Args:
+            model_id: HuggingFace model ID
+
+        Returns:
+            Dict with generated code and validation results for review
+        """
+        from .agents.modeladd import ModelAddOrchestrator
+
+        orchestrator = ModelAddOrchestrator()
+        result = await orchestrator.run(model_id)
+
+        # Save pending state if successful
+        if result.get("status") == "pending_review":
+            self._save_pending_model_add({
+                "model_id": model_id,
+                "code": result.get("generated_code", ""),
+                "validation": result.get("validation", {}),
+                "critique": result.get("critique", {}),
+            })
+
+        return result
+
+    async def _cmd_model_add_legacy(self, model_id: str) -> dict:
         """Generate and validate ModelSpec code for a HuggingFace model.
 
+        Legacy implementation - uses hardcoded workflow instead of agent orchestration.
+        Use --legacy flag to invoke this method.
+
         Uses AI code generation with tiered fallback:
-        1. Local coding model (Qwen3-Coder on port 8082)
+        1. Engine-managed coding endpoint
         2. Frontier model (xAI Grok)
 
         Args:
@@ -1118,7 +1172,7 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
     async def _get_coding_model(self) -> tuple[str, str]:
         """Get best available coding model endpoint.
 
-        Tries local coding model first, then falls back to Grok API.
+        Tries engine-managed coding endpoint first, then falls back to Grok API.
 
         Returns:
             Tuple of (model_id, endpoint_url)
@@ -1129,15 +1183,17 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
         import httpx
         import os
 
-        # Try local coding endpoint first (port 8082)
+        # Try engine-managed coding endpoint (agent-first)
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get("http://localhost:8082/v1/models")
-                if resp.status_code == 200:
-                    models = resp.json().get("data", [])
-                    if models:
-                        model_id = models[0].get("id", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
-                        return (model_id, "http://localhost:8082/v1")
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                result = await orch.ensure_endpoint("coding")
+                if result.get("healthy"):
+                    port = result.get("port", 8083)
+                    model_id = result.get("model", "coding")
+                    return (model_id, f"http://localhost:{port}/v1")
         except Exception:
             pass
 
@@ -1147,7 +1203,7 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
 
         raise RuntimeError(
             "No coding model available. Either:\n"
-            "  - Start vLLM coding endpoint on port 8082\n"
+            "  - Start the Gaius engine (gaius-engine start)\n"
             "  - Set XAI_API_KEY environment variable"
         )
 
@@ -2561,6 +2617,70 @@ Respond with:
         subargs = parts[1] if len(parts) > 1 else ""
 
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+
+                if subcmd == "status":
+                    return await orch._get_status_async()
+
+                elif subcmd == "start":
+                    if subargs:
+                        result = await orch.ensure_endpoint(subargs)
+                        return {
+                            "endpoint": subargs,
+                            "started": result.get("healthy", False),
+                            "status": result.get("status", "unknown"),
+                            "port": result.get("port"),
+                            "gpu_ids": result.get("gpu_ids", []),
+                            "message": result.get("message", ""),
+                        }
+                    else:
+                        success = await orch.start_endpoint("")
+                        return {"action": "start_all", "success": success}
+
+                elif subcmd == "stop":
+                    if subargs:
+                        success = await orch.stop_endpoint(subargs)
+                        return {"endpoint": subargs, "stopped": success}
+                    else:
+                        success = await orch.stop_endpoint("")
+                        return {"action": "stop_all", "stopped": success}
+
+                elif subcmd == "restart":
+                    if not subargs:
+                        return {"error": "restart requires an endpoint name"}
+                    success = await orch.restart_endpoint(subargs)
+                    status = await orch.get_endpoint_status(subargs)
+                    return {
+                        "endpoint": subargs,
+                        "restarted": success,
+                        "status": status.get("status", "unknown") if status else "unknown",
+                        "port": status.get("port") if status else None,
+                    }
+
+                elif subcmd == "logs":
+                    if not subargs:
+                        return {"error": "logs requires an endpoint name"}
+                    logs = await orch.get_logs_async(subargs, lines=50)
+                    return {
+                        "endpoint": subargs,
+                        "lines": len(logs),
+                        "logs": logs,
+                    }
+
+                elif subcmd == "health":
+                    from .inference.health import get_health_monitor
+                    monitor = get_health_monitor()
+                    return monitor.get_summary()
+
+                else:
+                    return {"error": f"Unknown gpu command: {subcmd}"}
+
+            # Fallback to legacy orchestrator
+            logger.warning("LEGACY_FALLBACK: /gpu command bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
