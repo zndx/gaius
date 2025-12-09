@@ -1,0 +1,352 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Navigation &amp; Modes - Gaius CLI</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gaius CLI</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="navigation--modes"><a class="header" href="#navigation--modes">Navigation &amp; Modes</a></h1>
+<p>Gaius draws inspiration from modal editors like Vim and compositional systems like Plan 9's Acme. Navigation is keyboard-driven, modes provide context, and every operation is reversible.</p>
+<h2 id="modal-philosophy"><a class="header" href="#modal-philosophy">Modal Philosophy</a></h2>
+<p>Unlike modeless interfaces where every key always does the same thing, Gaius uses modes to provide context-sensitive behavior. This isn't complexity—it's power through focus.</p>
+<p><strong>Normal Mode</strong> (default): Navigate, observe, toggle views
+<strong>Command Mode</strong> (planned): Enter slash commands
+<strong>Visual Mode</strong> (planned): Select regions for bulk operations</p>
+<h2 id="cursor-navigation"><a class="header" href="#cursor-navigation">Cursor Navigation</a></h2>
+<p>The cursor is your focus point on the grid. It determines:</p>
+<ul>
+<li>What position commands act upon</li>
+<li>The center of local context</li>
+<li>The reference point for relative addressing</li>
+</ul>
+<h3 id="basic-movement"><a class="header" href="#basic-movement">Basic Movement</a></h3>
+<pre><code>       k
+       ↑
+   h ← ✛ → l
+       ↓
+       j
+</code></pre>
+<p>Vim-style navigation: <code>h</code>/<code>j</code>/<code>k</code>/<code>l</code> for left/down/up/right.</p>
+<h3 id="why-hjkl"><a class="header" href="#why-hjkl">Why HJKL?</a></h3>
+<p>These keys are on the home row. Your fingers never leave typing position. This isn't a quirk—it's 50 years of refinement from vi to vim to modern modal interfaces.</p>
+<h3 id="planned-navigation-extensions"><a class="header" href="#planned-navigation-extensions">Planned Navigation Extensions</a></h3>
+<p><strong>Jump to position</strong>: <code>G</code> + coordinate (e.g., <code>GK10</code> jumps to K10)
+<strong>Edge navigation</strong>: <code>0</code> for column A, <code>$</code> for column T
+<strong>Star points</strong>: <code>*</code> cycles through star points (D4, D10, D16, K4, K10, etc.)
+<strong>Search</strong>: <code>/</code> enters search mode for semantic grid search</p>
+<h2 id="view-modes"><a class="header" href="#view-modes">View Modes</a></h2>
+<p>Press <code>v</code> to toggle between visualization modes:</p>
+<h3 id="pension-mode-default"><a class="header" href="#pension-mode-default">Pension Mode (Default)</a></h3>
+<p>The grid displays allocation intensity:</p>
+<div class="table-wrapper"><table><thead><tr><th>Symbol</th><th>Meaning</th><th>Value Range</th></tr></thead><tbody>
+<tr><td><code>▓</code></td><td>High density</td><td>&gt;75%</td></tr>
+<tr><td><code>▒</code></td><td>Medium density</td><td>50-75%</td></tr>
+<tr><td><code>░</code></td><td>Low density</td><td>20-50%</td></tr>
+<tr><td><code>·</code></td><td>Minimal</td><td>&lt;20%</td></tr>
+</tbody></table>
+</div>
+<p>This view reveals where capital concentrates.</p>
+<h3 id="go-mode"><a class="header" href="#go-mode">Go Mode</a></h3>
+<p>Traditional Go stones on intersections:</p>
+<div class="table-wrapper"><table><thead><tr><th>Symbol</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>●</code></td><td>Black stone</td></tr>
+<tr><td><code>○</code></td><td>White stone</td></tr>
+<tr><td><code>·</code></td><td>Empty intersection</td></tr>
+</tbody></table>
+</div>
+<p>Useful for understanding the underlying Go metaphor and for actual game analysis.</p>
+<h2 id="overlay-modes"><a class="header" href="#overlay-modes">Overlay Modes</a></h2>
+<p>Press <code>o</code> to cycle overlays. Overlays add visual information without changing the base view:</p>
+<h3 id="none"><a class="header" href="#none">None</a></h3>
+<p>Clean grid. No additional markers.</p>
+<h3 id="risk-planned"><a class="header" href="#risk-planned">Risk (Planned)</a></h3>
+<p>Heat map of risk surface. Red regions indicate elevated risk.</p>
+<h3 id="h1-requires---tda"><a class="header" href="#h1-requires---tda">H1 (Requires --tda)</a></h3>
+<p>Death loop markers (<code>⚠</code>) appear where persistent homology detects H1 features—topological loops in the point cloud.</p>
+<h3 id="swarm-requires---swarm"><a class="header" href="#swarm-requires---swarm">Swarm (Requires --swarm)</a></h3>
+<p>Agent positions rendered as colored stones:</p>
+<ul>
+<li>Red: Leader</li>
+<li>Green: Risk</li>
+<li>Blue: Optimizer</li>
+<li>Yellow: Planner</li>
+<li>Magenta: Critic</li>
+<li>Cyan: Executor</li>
+<li>White: Adversary</li>
+</ul>
+<h2 id="panel-management"><a class="header" href="#panel-management">Panel Management</a></h2>
+<p>Press <code>t</code> to toggle the side panel. The panel displays:</p>
+<ul>
+<li><strong>Log</strong>: Recent operations and messages</li>
+<li><strong>Swarm output</strong>: Agent responses during rounds</li>
+<li><strong>TDA metrics</strong>: Entropy and feature counts</li>
+</ul>
+<p>In complex sessions, toggle panels off to maximize grid visibility, then back on to review details.</p>
+<h2 id="pages"><a class="header" href="#pages">Pages</a></h2>
+<p>Numeric keys switch context pages:</p>
+<div class="table-wrapper"><table><thead><tr><th>Key</th><th>Page</th><th>Content</th></tr></thead><tbody>
+<tr><td><code>1</code></td><td>PORT</td><td>Portfolio/allocation view</td></tr>
+<tr><td><code>5</code></td><td>OPT</td><td>Optimizer recommendations</td></tr>
+<tr><td><code>0</code></td><td>TDA</td><td>Topological analysis display</td></tr>
+</tbody></table>
+</div>
+<p>Pages update the log panel with relevant information and may adjust the grid overlay.</p>
+<h2 id="status-line"><a class="header" href="#status-line">Status Line</a></h2>
+<p>The bottom status bar shows:</p>
+<ul>
+<li>Current mode</li>
+<li>Active features (TDA on, Swarm on)</li>
+<li>Current domain (if swarm enabled)</li>
+<li>Key hint for available actions</li>
+</ul>
+<p>Example:</p>
+<pre><code>Ready | TDA on | Swarm (pension asset allocation) | hjkl=move o=overlay
+</code></pre>
+<h2 id="flow-patterns"><a class="header" href="#flow-patterns">Flow Patterns</a></h2>
+<h3 id="exploration-flow"><a class="header" href="#exploration-flow">Exploration Flow</a></h3>
+<ol>
+<li>Navigate with <code>hjkl</code> to survey the grid</li>
+<li>Cycle overlays (<code>o</code>) to see different data layers</li>
+<li>Toggle candidates (<code>c</code>) to see suggested positions</li>
+<li>Use pages (<code>1</code>, <code>5</code>, <code>0</code>) to dive into specific analyses</li>
+</ol>
+<h3 id="analysis-flow"><a class="header" href="#analysis-flow">Analysis Flow</a></h3>
+<ol>
+<li>Set domain (<code>d</code>) if needed</li>
+<li>Run swarm round (<code>s</code>)</li>
+<li>Watch agent outputs in panel</li>
+<li>Observe agent positions on grid</li>
+<li>Cycle to H1 overlay to see topology</li>
+<li>Repeat rounds to deepen analysis</li>
+</ol>
+<h3 id="focused-flow"><a class="header" href="#focused-flow">Focused Flow</a></h3>
+<ol>
+<li>Hide panels (<code>t</code>)</li>
+<li>Navigate to region of interest</li>
+<li>Toggle to relevant overlay</li>
+<li>Study the concentrated view</li>
+<li>Restore panels for logging</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../guide/quickstart.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../guide/commands.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../guide/quickstart.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../guide/commands.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

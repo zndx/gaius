@@ -1,0 +1,340 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Getting Started - Gaius CLI</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Gaius CLI</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="getting-started"><a class="header" href="#getting-started">Getting Started</a></h1>
+<h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
+<p>Gaius requires Python 3.12+ and uses <code>uv</code> for dependency management.</p>
+<pre><code class="language-bash"># Clone the repository
+git clone https://github.com/zndx/gaius.git
+cd gaius
+
+# Install dependencies
+uv sync
+</code></pre>
+<h2 id="first-launch"><a class="header" href="#first-launch">First Launch</a></h2>
+<p>Start with the pure UI mode for instant feedback:</p>
+<pre><code class="language-bash">uv run python src/gaius/app.py
+</code></pre>
+<p>You should see:</p>
+<pre><code>Pure GoBoard TUI mode – no external deps, instant start
+</code></pre>
+<p>And a 19×19 grid with a cursor at the center.</p>
+<h2 id="basic-navigation"><a class="header" href="#basic-navigation">Basic Navigation</a></h2>
+<pre><code>┌─────────────────────────────────────────┐
+│  h ← left    l → right                   │
+│  j ↓ down    k ↑ up                      │
+│                                          │
+│  q   quit                                │
+│  ?   help (when implemented)             │
+└─────────────────────────────────────────┘
+</code></pre>
+<p>Try moving the cursor. The <code>✛</code> marker follows your navigation.</p>
+<h2 id="view-modes"><a class="header" href="#view-modes">View Modes</a></h2>
+<p>Press <code>v</code> to toggle between:</p>
+<ul>
+<li><strong>Pension Mode</strong>: Density heatmap (▓▒░·) showing allocation intensities</li>
+<li><strong>Go Mode</strong>: Black and white stones on intersections</li>
+</ul>
+<h2 id="overlays"><a class="header" href="#overlays">Overlays</a></h2>
+<p>Press <code>o</code> to cycle through overlay modes:</p>
+<ol>
+<li><strong>none</strong>: Clean grid, no overlays</li>
+<li><strong>risk</strong>: (Future) Risk surface visualization</li>
+<li><strong>h1</strong>: TDA death loops (requires <code>--tda</code>)</li>
+<li><strong>swarm</strong>: Agent positions (requires <code>--swarm</code>)</li>
+</ol>
+<h2 id="candidates"><a class="header" href="#candidates">Candidates</a></h2>
+<p>Press <code>c</code> to toggle candidate markers. These appear as lowercase letters (a-i) at suggested positions.</p>
+<h2 id="panels"><a class="header" href="#panels">Panels</a></h2>
+<p>Press <code>t</code> to toggle the side panel visibility. The panel shows:</p>
+<ul>
+<li>Log of recent operations</li>
+<li>Swarm agent outputs</li>
+<li>Status messages</li>
+</ul>
+<h2 id="enabling-features"><a class="header" href="#enabling-features">Enabling Features</a></h2>
+<h3 id="tda-mode"><a class="header" href="#tda-mode">TDA Mode</a></h3>
+<pre><code class="language-bash">uv run python src/gaius/app.py --tda
+</code></pre>
+<p>Enables topological data analysis. Requires <code>giotto-tda</code>:</p>
+<pre><code class="language-bash">uv add giotto-tda
+</code></pre>
+<h3 id="swarm-mode"><a class="header" href="#swarm-mode">Swarm Mode</a></h3>
+<pre><code class="language-bash">uv run python src/gaius/app.py --swarm
+</code></pre>
+<p>Enables multi-agent analysis. Requires:</p>
+<pre><code class="language-bash">uv add langchain langchain-openai deepagents agentlightning[apo]
+</code></pre>
+<p>And an OpenAI API key in your environment:</p>
+<pre><code class="language-bash">export OPENAI_API_KEY="sk-..."
+</code></pre>
+<h3 id="full-mode"><a class="header" href="#full-mode">Full Mode</a></h3>
+<pre><code class="language-bash">uv run python src/gaius/app.py --tda --swarm --domain "your domain here"
+</code></pre>
+<h2 id="running-a-swarm-round"><a class="header" href="#running-a-swarm-round">Running a Swarm Round</a></h2>
+<p>With <code>--swarm</code> enabled:</p>
+<ol>
+<li>Press <code>s</code> to trigger a swarm round</li>
+<li>Watch the log panel fill with agent responses</li>
+<li>Observe agent positions appear on the grid</li>
+<li>Press <code>o</code> to cycle to swarm overlay for clear visualization</li>
+</ol>
+<h2 id="changing-domain"><a class="header" href="#changing-domain">Changing Domain</a></h2>
+<p>With <code>--swarm</code> enabled:</p>
+<ol>
+<li>Press <code>d</code> to open the domain modal</li>
+<li>Type a new domain (e.g., "supply chain logistics")</li>
+<li>Press Enter</li>
+<li>The swarm rewires and runs an initial round</li>
+</ol>
+<h2 id="keyboard-reference"><a class="header" href="#keyboard-reference">Keyboard Reference</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td><code>h</code></td><td>Move cursor left</td></tr>
+<tr><td><code>j</code></td><td>Move cursor down</td></tr>
+<tr><td><code>k</code></td><td>Move cursor up</td></tr>
+<tr><td><code>l</code></td><td>Move cursor right</td></tr>
+<tr><td><code>o</code></td><td>Cycle overlay mode</td></tr>
+<tr><td><code>c</code></td><td>Toggle candidates</td></tr>
+<tr><td><code>t</code></td><td>Toggle panels</td></tr>
+<tr><td><code>v</code></td><td>Toggle Go/Pension mode</td></tr>
+<tr><td><code>s</code></td><td>Run swarm round</td></tr>
+<tr><td><code>d</code></td><td>Open domain modal</td></tr>
+<tr><td><code>1</code></td><td>PORT page</td></tr>
+<tr><td><code>5</code></td><td>OPT page</td></tr>
+<tr><td><code>0</code></td><td>TDA page</td></tr>
+<tr><td><code>q</code></td><td>Quit</td></tr>
+</tbody></table>
+</div>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li>Read <a href="./navigation.html">Navigation &amp; Modes</a> for detailed navigation patterns</li>
+<li>Learn about <a href="./commands.html">Slash Commands</a> for advanced interaction</li>
+<li>Explore <a href="./overlays.html">Overlays &amp; Visualization</a> for visual interpretation</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../architecture/memory.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../guide/navigation.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../architecture/memory.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../guide/navigation.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
