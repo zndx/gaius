@@ -4102,6 +4102,9 @@ Respond with:
             /health data      - Check database/KB health
             /health cognition - Check cognition daemon
             /health inference - Check inference endpoints
+            /health diagnose <service> - Deep diagnostics for a service
+            /health fix [service]      - Fix unhealthy services
+            /health fix --dry-run      - Show fix plan without executing
         """
         from pathlib import Path
 
@@ -4113,18 +4116,29 @@ Respond with:
                 "suggestion": "Ensure health module is installed",
             }
 
-        args_lower = args.strip().lower() if args else ""
-        kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
+        args_parts = args.strip().split() if args else []
+        subcmd = args_parts[0].lower() if args_parts else ""
+        subargs = args_parts[1:] if len(args_parts) > 1 else []
 
+        kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
         checker = HealthChecker(kb_root)
 
+        # Handle diagnose subcommand
+        if subcmd == "diagnose":
+            service = subargs[0] if subargs else None
+            return await self._health_diagnose(checker, service)
+
+        # Handle fix subcommand
+        if subcmd == "fix":
+            return await self._health_fix(checker, subargs)
+
         # Run appropriate checks
-        if args_lower == "quick":
+        if subcmd == "quick":
             report = await checker.run_quick()
             check_type = "quick"
-        elif args_lower in ("engine", "data", "cognition", "inference"):
-            report = await checker.run_category(args_lower)
-            check_type = args_lower
+        elif subcmd in ("engine", "data", "cognition", "inference"):
+            report = await checker.run_category(subcmd)
+            check_type = subcmd
         else:
             report = await checker.run_all()
             check_type = "full"
@@ -4159,6 +4173,206 @@ Respond with:
             "checks": checks,
             "interventions": report.interventions,
             "metrics": report.metrics if report.metrics else None,
+        }
+
+    async def _health_diagnose(self, checker, service: str | None) -> dict:
+        """Deep diagnostic for a specific service.
+
+        Args:
+            checker: HealthChecker instance
+            service: Service name to diagnose (None lists available services)
+        """
+        from .health.service_fixes import list_services, get_strategy
+
+        if not service:
+            return {
+                "error": "Missing service argument",
+                "available_services": list_services(),
+                "usage": "/health diagnose <service>",
+            }
+
+        # Map service name to health check category
+        service_to_category = {
+            "engine": "engine",
+            "grpc": "engine",
+            "postgres": "data",
+            "postgresql": "data",
+            "database": "data",
+            "qdrant": "data",
+            "minio": "data",
+            "s3": "data",
+            "endpoints": "inference",
+            "inference": "inference",
+        }
+
+        category = service_to_category.get(service.lower(), "engine")
+
+        # Run health check for this category
+        report = await checker.run_category(category)
+
+        # Find the relevant check result
+        relevant_checks = []
+        for check in report.checks:
+            check_name_lower = check.name.lower()
+            if service.lower() in check_name_lower or service.lower() in (check.heuristic_id or "").lower():
+                relevant_checks.append(check)
+
+        # If no specific check found, include all from category
+        if not relevant_checks:
+            relevant_checks = report.checks
+
+        # Load heuristic details if available
+        heuristic_info = None
+        for check in relevant_checks:
+            if check.heuristic_id:
+                heuristic = checker.loader.get(check.heuristic_id)
+                if heuristic:
+                    heuristic_info = {
+                        "id": heuristic.id,
+                        "name": heuristic.name,
+                        "symptom": heuristic.symptom,
+                        "cause": heuristic.cause,
+                        "observation_level": heuristic.observation_level,
+                        "solution_level": heuristic.solution_level,
+                    }
+                    break
+
+        # Get fix strategy info
+        strategy = get_strategy(service)
+        fix_available = strategy is not None
+
+        # Build diagnostic result
+        observations = []
+        for check in relevant_checks:
+            obs = {
+                "check": check.name,
+                "status": check.status.value,
+                "message": check.message,
+            }
+            if check.details:
+                obs["details"] = check.details
+            observations.append(obs)
+
+        return {
+            "service": service,
+            "category": category,
+            "healthy": all(c.status.value == "pass" for c in relevant_checks),
+            "observations": observations,
+            "heuristic": heuristic_info,
+            "fix_available": fix_available,
+            "fix_command": f"/health fix {service}" if fix_available else None,
+        }
+
+    async def _health_fix(self, checker, args: list[str]) -> dict:
+        """Fix unhealthy services.
+
+        Args:
+            checker: HealthChecker instance
+            args: Arguments like ['engine'] or ['--dry-run', 'engine']
+        """
+        from .health.remediation import RemediationExecutor, RemediationPlan
+        from .health.service_fixes import get_strategy, list_services
+
+        # Parse flags
+        dry_run = "--dry-run" in args
+        force = "--force" in args
+        args = [a for a in args if not a.startswith("--")]
+        service = args[0] if args else None
+
+        # List available services if requested
+        if service == "list" or service == "--list":
+            return {
+                "available_services": list_services(),
+                "usage": "/health fix <service> [--dry-run] [--force]",
+            }
+
+        # Get strategy for service (or all services if none specified)
+        if service:
+            strategy = get_strategy(service)
+            if not strategy:
+                return {
+                    "error": f"Unknown service: {service}",
+                    "available_services": list_services(),
+                    "usage": "/health fix <service>",
+                }
+            strategies = [(service, strategy)]
+        else:
+            # Fix all unhealthy services
+            report = await checker.run_quick()
+            strategies = []
+
+            # Map failed checks to services
+            check_to_service = {
+                "grpc connection": "engine",
+                "optillm": None,  # Can't fix optillm, it's managed externally
+                "vllm": None,  # Same
+                "database": "postgres",
+                "qdrant": "qdrant",
+                "s3/minio": "minio",
+            }
+
+            for check in report.checks:
+                if check.status.value in ("fail", "warn"):
+                    for pattern, svc in check_to_service.items():
+                        if pattern in check.name.lower() and svc:
+                            strat = get_strategy(svc)
+                            if strat:
+                                strategies.append((svc, strat))
+                                break
+
+            if not strategies:
+                return {
+                    "message": "No fixable issues found",
+                    "healthy": report.healthy,
+                    "summary": report.summary(),
+                }
+
+        # Create remediation plans
+        executor = RemediationExecutor()
+        results = []
+
+        for svc_name, strategy in strategies:
+            # Create plan from strategy
+            actions = strategy.create_fix_actions()
+            plan = RemediationPlan(service=svc_name, actions=actions)
+
+            # Execute plan
+            result = await executor.execute(plan, dry_run=dry_run, force=force)
+
+            results.append({
+                "service": svc_name,
+                "success": result.success,
+                "dry_run": result.dry_run,
+                "actions": [
+                    {
+                        "name": ar.action.name,
+                        "success": ar.success,
+                        "output": ar.output[:500] if ar.output else None,
+                        "error": ar.error[:500] if ar.error else None,
+                        "duration_ms": ar.duration_ms,
+                    }
+                    for ar in result.action_results
+                ],
+                "summary": result.summary,
+            })
+
+        # If not dry run, re-run health check to verify
+        if not dry_run:
+            verification = await checker.run_quick()
+            verification_summary = {
+                "healthy": verification.healthy,
+                "summary": verification.summary(),
+                "passed": verification.passed,
+                "failures": verification.failures,
+            }
+        else:
+            verification_summary = None
+
+        return {
+            "dry_run": dry_run,
+            "services_fixed": len(results),
+            "results": results,
+            "verification": verification_summary,
         }
 
     # ─────────────────────────────────────────────────────────────────────

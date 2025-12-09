@@ -936,7 +936,7 @@ class HealthChecker:
         try:
             import httpx
 
-            url = os.getenv("QDRANT_URL", "http://localhost:6333")
+            url = os.getenv("QDRANT_URL", "http://localhost:6339")
 
             async with httpx.AsyncClient(timeout=5.0) as client:
                 # Check health endpoint
@@ -988,7 +988,7 @@ class HealthChecker:
                 return CheckResult(
                     name="Qdrant",
                     status=CheckStatus.WARN,
-                    message="Not reachable at localhost:6333",
+                    message="Not reachable at localhost:6339",
                     details={"role": "primary"},
                     suggestion="Start Qdrant: devenv up qdrant",
                 )
@@ -1012,7 +1012,7 @@ class HealthChecker:
             import httpx
 
             # MinIO API endpoint (not console)
-            url = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+            url = os.getenv("MINIO_ENDPOINT", "http://localhost:9010")
 
             async with httpx.AsyncClient(timeout=5.0) as client:
                 # MinIO health check endpoint
@@ -1088,7 +1088,7 @@ class HealthChecker:
                 return CheckResult(
                     name="S3/MinIO",
                     status=CheckStatus.WARN,
-                    message="Not reachable at localhost:9000",
+                    message="Not reachable at localhost:9010",
                     details={"role": "primary"},
                     suggestion="Start MinIO: devenv up minio",
                 )
