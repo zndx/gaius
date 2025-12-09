@@ -391,12 +391,9 @@ class ThinkPanel(Widget):
             thoughts = await cog.get_recent_thoughts(limit=5)
             activity.thoughts = thoughts
 
-            activity.engine_healthy = True
-            activity.update_error = None
-
         except Exception as e:
             logger.debug(f"Cognition fetch failed: {e}")
-            # Try to continue with other services
+            # Continue with other services - cognition failure doesn't mean engine is down
 
         # Get evolution status
         try:
@@ -410,7 +407,7 @@ class ThinkPanel(Widget):
         except Exception as e:
             logger.debug(f"Evolution fetch failed: {e}")
 
-        # Get health status
+        # Get health status - this determines engine_healthy
         try:
             health = await get_health_proxy()
             status = await health.check()
@@ -421,6 +418,11 @@ class ThinkPanel(Widget):
                 if isinstance(e, dict) and e.get("status") == "healthy"
             )
 
+            # Engine is healthy if we have at least one running endpoint
+            if activity.endpoints_running > 0:
+                activity.engine_healthy = True
+                activity.update_error = None
+
             # Get GPU utilization
             gpu_util = await health.get_gpu_utilization()
             if gpu_util:
@@ -428,6 +430,8 @@ class ThinkPanel(Widget):
 
         except Exception as e:
             logger.debug(f"Health fetch failed: {e}")
+            activity.engine_healthy = False
+            activity.update_error = f"Health check failed: {e}"[:40]
 
         activity.last_update = datetime.now()
 
