@@ -8,7 +8,7 @@ from .allocations import (
     GPUStatus,
     ResourceUnavailable,
 )
-from .manager import ResourceManager
+from .manager import ResourceManager, SwapPlan
 
 __all__ = [
     "AllocationRequest",
@@ -18,4 +18,5 @@ __all__ = [
     "GPUStatus",
     "ResourceManager",
     "ResourceUnavailable",
+    "SwapPlan",
 ]

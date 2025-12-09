@@ -41,6 +41,7 @@ from .gaius_service_pb2 import (
     StopEndpointRequest,
     RestartEndpointRequest,
     EndpointResponse,
+    EnsureEndpointResponse,
     # Scheduler
     CompleteRequest,
     CompleteResponse,
@@ -106,6 +107,7 @@ __all__ = [
     "StopEndpointRequest",
     "RestartEndpointRequest",
     "EndpointResponse",
+    "EnsureEndpointResponse",
     "CompleteRequest",
     "CompleteResponse",
     "SubmitJobRequest",

@@ -133,6 +133,51 @@ class GaiusServicer(GaiusServiceServicer):
 
         return response
 
+    async def EnsureEndpoint(
+        self,
+        request: StartEndpointRequest,
+        context: aio.ServicerContext,
+    ):
+        """Ensure endpoint is running (agent-first architecture).
+
+        This is the primary method for agents to request endpoints.
+        It checks resource availability and starts the endpoint if needed.
+        """
+        from ...generated import EnsureEndpointResponse
+
+        endpoint_name = request.endpoint_name
+        orchestrator = self._services.orchestrator_service
+
+        if not orchestrator:
+            return EnsureEndpointResponse(
+                healthy=False,
+                status="error",
+                message="OrchestratorService not initialized",
+            )
+
+        try:
+            status = await orchestrator.ensure_endpoint(endpoint_name)
+            return EnsureEndpointResponse(
+                healthy=status.status in ("healthy", "optillm"),
+                status=status.status,
+                port=status.port or 0,
+                gpu_ids=list(status.gpu_ids) if status.gpu_ids else [],
+                message=status.message or "",
+            )
+        except ValueError as e:
+            return EnsureEndpointResponse(
+                healthy=False,
+                status="error",
+                message=str(e),
+            )
+        except Exception as e:
+            logger.error(f"Failed to ensure endpoint {endpoint_name}: {e}")
+            return EnsureEndpointResponse(
+                healthy=False,
+                status="error",
+                message=str(e),
+            )
+
     async def StartEndpoint(
         self,
         request: StartEndpointRequest,

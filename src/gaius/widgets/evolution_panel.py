@@ -187,17 +187,20 @@ class EvolutionPanel(Widget):
         next_agent = status.get("next_agent", "?")
         parallel = status.get("parallel", False)
         parallel_endpoints = status.get("parallel_endpoints", 0)
+        error = status.get("error")
 
         # Line 1: Status and cycles
         line1 = Text()
-        if loading or running is None:
-            line1.append("◌ LOADING...", style="bold yellow")
+        if error:
+            line1.append("⚠ ERROR", style="bold red")
+        elif loading or running is None:
+            line1.append("◌ CHECKING...", style="bold yellow")
         elif running:
             line1.append("● RUNNING", style="bold green")
         else:
-            line1.append("○ STOPPED", style="bold red")
-        line1.append(f"  Cycles: {cycles}", style="white")
-        if improvement > 0:
+            line1.append("○ IDLE", style="dim")
+        line1.append(f"  Cycles: {cycles}", style="white" if running else "dim")
+        if improvement > 0 and running:
             line1.append(f"  +{improvement:.1f}%", style="green")
         lines.append(line1)
 
@@ -234,7 +237,13 @@ class EvolutionPanel(Widget):
     def _render_recent_cycles(self) -> list[Text]:
         """Render recent cycles section."""
         lines = []
-        lines.append(Text("Recent Cycles", style="bold yellow"))
+        running = self._daemon_status.get("running", False)
+
+        header = Text()
+        header.append("Recent Cycles", style="bold yellow" if running else "yellow")
+        if not running and self._recent_cycles:
+            header.append(" (history)", style="dim")
+        lines.append(header)
         lines.append(Text("─" * 36, style="dim"))
 
         if not self._recent_cycles:
@@ -279,7 +288,13 @@ class EvolutionPanel(Widget):
     def _render_agent_scores(self) -> list[Text]:
         """Render agent scores comparison."""
         lines = []
-        lines.append(Text("Agent Scores", style="bold cyan"))
+        running = self._daemon_status.get("running", False)
+
+        header = Text()
+        header.append("Agent Scores", style="bold cyan" if running else "cyan")
+        if not running and self._agent_statuses:
+            header.append(" (last eval)", style="dim")
+        lines.append(header)
         lines.append(Text("─" * 36, style="dim"))
 
         if not self._agent_statuses:

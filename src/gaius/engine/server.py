@@ -314,7 +314,7 @@ class GaiusEngine:
             logger.error(f"Failed to start gRPC server: {e}")
             raise
 
-    def _get_evolution_status(self) -> dict:
+    async def _get_evolution_status(self) -> dict:
         """Get current evolution daemon status."""
         return {
             "running": False,
@@ -671,6 +671,31 @@ class GaiusEngine:
                     for a in self.config.agents.values()
                 ]
                 return Response.success(request.id, {"agents": agents})
+
+            elif action == "ensure":
+                # Agent-first: ensure endpoint is available, starting if needed
+                endpoint = request.payload.get("endpoint", "")
+                if not endpoint:
+                    return Response.failure(
+                        request.id,
+                        code=400,
+                        message="endpoint parameter required",
+                    )
+                status = await self._orchestrator_service.ensure_endpoint(endpoint)
+                is_healthy = status.status in ("healthy", "optillm")
+                return Response.success(
+                    request.id,
+                    {
+                        "endpoint": endpoint,
+                        "healthy": is_healthy,
+                        "status": status.status,
+                        "port": status.port,
+                        "gpu_ids": status.gpu_ids,
+                        "pid": status.pid,
+                        "model": status.model,
+                        "message": status.startup_message if not is_healthy else "",
+                    },
+                )
 
             elif action == "start":
                 endpoint = request.payload.get("endpoint", "")
@@ -1080,6 +1105,66 @@ class GaiusEngine:
             limit = request.payload.get("limit", 10)
             tasks = await self._cognition_service.get_recent_completed(limit)
             return Response.success(request.id, {"tasks": tasks})
+
+        elif action == "recent_thoughts":
+            # Get recent thoughts from the cognition agent
+            limit = request.payload.get("limit", 10)
+            try:
+                from ..agents.cognition import get_cognition_agent
+
+                agent = get_cognition_agent()
+                thoughts = await agent.get_active_thoughts(limit=limit)
+
+                thought_list = []
+                for t in thoughts:
+                    thought_list.append({
+                        "type": t.thought_type.value if hasattr(t.thought_type, "value") else str(t.thought_type),
+                        "title": t.title,
+                        "summary": t.summary or (t.content[:100] if t.content else ""),
+                        "salience": t.salience,
+                        "generation": t.generation,
+                        "timestamp": t.created_at.isoformat() if t.created_at else None,
+                        "note_path": t.note_path,
+                    })
+
+                return Response.success(request.id, {"thoughts": thought_list})
+
+            except Exception as e:
+                logger.debug(f"Failed to get recent thoughts: {e}")
+                return Response.success(request.id, {"thoughts": []})
+
+        elif action == "activity":
+            # Get comprehensive activity summary (signs of life)
+            activity = {
+                "cognition_running": False,
+                "cycles_completed": 0,
+                "last_cycle_at": None,
+                "current_task": None,
+                "thoughts_today": 0,
+            }
+
+            if self._cognition_service:
+                status = self._cognition_service.get_status()
+                activity["cognition_running"] = status.get("running", False)
+                activity["cycles_completed"] = status.get("cycles_completed", 0)
+                activity["last_cycle_at"] = status.get("last_cycle_at")
+                activity["current_task"] = (
+                    status.get("current_task", {}).get("task_type")
+                    if status.get("current_task")
+                    else None
+                )
+
+            # Try to get thought count for today
+            try:
+                from ..agents.cognition import get_cognition_agent
+
+                agent = get_cognition_agent()
+                thoughts = await agent.get_active_thoughts(limit=100)
+                activity["thoughts_today"] = len(thoughts)
+            except Exception:
+                pass
+
+            return Response.success(request.id, activity)
 
         else:
             return Response.failure(
