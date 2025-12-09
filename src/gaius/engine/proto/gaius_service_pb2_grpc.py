@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import gaius_service_pb2 as gaius__service__pb2
+import gaius_service_pb2 as gaius__service__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 GRPC_GENERATED_VERSION = '1.76.0'

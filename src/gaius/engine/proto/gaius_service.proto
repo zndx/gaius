@@ -145,6 +145,60 @@ message EvolutionCycleResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Cognition Service Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+message CognitionStatusResponse {
+  bool running = 1;
+  int32 cycles_completed = 2;
+  int64 last_cycle_timestamp_ms = 3;
+  string current_task = 4;
+}
+
+message ThoughtMessage {
+  string id = 1;
+  string thought_type = 2;  // "pattern", "connection", "curiosity", "self_observation"
+  string title = 3;
+  string summary = 4;
+  float salience = 5;
+  int32 generation = 6;
+  int64 timestamp_ms = 7;
+  string note_path = 8;
+}
+
+message GetRecentThoughtsRequest {
+  int32 limit = 1;  // Default: 10
+}
+
+message GetRecentThoughtsResponse {
+  repeated ThoughtMessage thoughts = 1;
+}
+
+message TriggerCognitionRequest {
+  int32 max_thoughts = 1;  // Default: 5
+  string trigger_reason = 2;  // "manual", "scheduled", "session_start"
+}
+
+message TriggerCognitionResponse {
+  bool success = 1;
+  int32 thoughts_generated = 2;
+  int32 patterns_detected = 3;
+  int32 connections_found = 4;
+  int32 curiosities_generated = 5;
+  int32 duration_ms = 6;
+  string error = 7;
+}
+
+message CognitionActivityResponse {
+  bool cognition_running = 1;
+  int32 cycles_completed = 2;
+  int64 last_cycle_timestamp_ms = 3;
+  string current_task = 4;
+  int32 thoughts_today = 5;
+  int32 active_thoughts = 6;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Health Streaming Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -288,6 +342,14 @@ service GaiusService {
   rpc TriggerEvolution(TriggerEvolutionRequest) returns (EvolutionCycleResponse);
   rpc StartEvolution(google.protobuf.Empty) returns (EvolutionStatusResponse);
   rpc StopEvolution(google.protobuf.Empty) returns (EvolutionStatusResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Cognition
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc CognitionStatus(google.protobuf.Empty) returns (CognitionStatusResponse);
+  rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
+  rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
+  rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Grid (Embedding Projection)

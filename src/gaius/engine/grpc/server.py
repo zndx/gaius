@@ -63,6 +63,9 @@ class ServiceRegistry:
     # Orchestrator service for endpoint management
     orchestrator_service: Any = None
 
+    # Cognition service for thought generation
+    cognition_service: Any = None
+
     # Engine config
     config: Any = None
 
@@ -94,6 +97,7 @@ class GrpcServer:
         self,
         backend_router: Any = None,
         orchestrator_service: Any = None,
+        cognition_service: Any = None,
         config: Any = None,
         start_time: Optional[float] = None,
         get_health_metrics: Optional[Callable] = None,
@@ -107,6 +111,7 @@ class GrpcServer:
         Args:
             backend_router: BackendRouter instance for inference
             orchestrator_service: OrchestratorService for endpoint management
+            cognition_service: CognitionService for thought generation
             config: EngineConfig instance
             start_time: Engine start timestamp
             get_health_metrics: Callback to get current health metrics
@@ -117,6 +122,7 @@ class GrpcServer:
         """
         self._services.backend_router = backend_router
         self._services.orchestrator_service = orchestrator_service
+        self._services.cognition_service = cognition_service
         self._services.config = config
         self._services.start_time = start_time
         self._services.get_health_metrics = get_health_metrics
@@ -124,6 +130,22 @@ class GrpcServer:
         self._services.trigger_evolution = trigger_evolution
         self._services.start_evolution = start_evolution
         self._services.stop_evolution = stop_evolution
+
+    def update_service(self, name: str, service: Any) -> None:
+        """Update a specific service after initial setup.
+
+        Useful for services that are initialized after gRPC server starts,
+        like cognition_service which starts after gRPC.
+
+        Args:
+            name: Service attribute name (e.g., 'cognition_service')
+            service: Service instance
+        """
+        if hasattr(self._services, name):
+            setattr(self._services, name, service)
+            logger.debug(f"Updated service: {name}")
+        else:
+            logger.warning(f"Unknown service: {name}")
 
     async def start(self) -> None:
         """Start the gRPC server."""
