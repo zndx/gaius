@@ -217,11 +217,14 @@ class GrpcEngineClient:
 
         Raises:
             TimeoutError: If request times out
-            ConnectionError: If not connected
+            ConnectionError: If not connected after retry
             RuntimeError: If request fails
         """
+        # Attempt reconnection if not connected
         if not self._connected:
-            raise ConnectionError("Not connected to engine")
+            connected = await self.connect()
+            if not connected:
+                raise ConnectionError("Not connected to engine (reconnection failed)")
 
         timeout = timeout or self.config.timeout
         params = params or {}
@@ -253,6 +256,8 @@ class GrpcEngineClient:
             if code == grpc.StatusCode.DEADLINE_EXCEEDED:
                 raise TimeoutError(f"Request {service}.{action} timed out")
             elif code == grpc.StatusCode.UNAVAILABLE:
+                # Mark as disconnected so next call triggers reconnection
+                self._connected = False
                 raise ConnectionError(f"Service unavailable: {details}")
             else:
                 raise RuntimeError(f"gRPC error ({code.name}): {details}")
@@ -502,32 +507,87 @@ class GrpcEngineClient:
             raise ValueError(f"Unknown Health action: {action}")
 
     async def _call_cognition(self, action: str, params: dict, timeout: float) -> dict:
-        """Handle Cognition service calls.
+        """Handle Cognition service calls via gRPC."""
+        from datetime import datetime
 
-        Note: Cognition service is not yet exposed via gRPC, so we use
-        the internal server handler via a generic request pattern.
-        For now, return minimal status until gRPC methods are added.
-        """
         if action == "status":
-            # Cognition daemon status - not yet via gRPC
+            response = await self._gaius_stub.CognitionStatus(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            last_cycle_at = None
+            if response.last_cycle_timestamp_ms > 0:
+                last_cycle_at = datetime.fromtimestamp(
+                    response.last_cycle_timestamp_ms / 1000
+                ).isoformat()
             return {
-                "running": False,
-                "cycles_completed": 0,
-                "last_cycle_at": None,
-                "current_task": None,
+                "running": response.running,
+                "cycles_completed": response.cycles_completed,
+                "last_cycle_at": last_cycle_at,
+                "current_task": response.current_task or None,
             }
 
         elif action == "recent_thoughts":
-            # Recent thoughts - not yet via gRPC
+            from ..engine.generated import GetRecentThoughtsRequest
+
             limit = params.get("limit", 10)
-            return {"thoughts": []}
+            response = await self._gaius_stub.GetRecentThoughts(
+                GetRecentThoughtsRequest(limit=limit),
+                timeout=timeout,
+            )
+            thoughts = []
+            for t in response.thoughts:
+                timestamp = None
+                if t.timestamp_ms > 0:
+                    timestamp = datetime.fromtimestamp(
+                        t.timestamp_ms / 1000
+                    ).isoformat()
+                thoughts.append({
+                    "id": t.id,
+                    "type": t.thought_type,
+                    "title": t.title,
+                    "summary": t.summary,
+                    "salience": t.salience,
+                    "generation": t.generation,
+                    "timestamp": timestamp,
+                    "note_path": t.note_path,
+                })
+            return {"thoughts": thoughts}
 
         elif action == "activity":
-            # Activity summary - not yet via gRPC
+            response = await self._gaius_stub.CognitionActivity(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
             return {
-                "cognition_running": False,
-                "cycles_completed": 0,
-                "thoughts_today": 0,
+                "cognition_running": response.cognition_running,
+                "cycles_completed": response.cycles_completed,
+                "last_cycle_at": None,  # TODO: convert timestamp
+                "current_task": response.current_task or None,
+                "thoughts_today": response.thoughts_today,
+                "active_thoughts": response.active_thoughts,
+            }
+
+        elif action == "trigger":
+            from ..engine.generated import TriggerCognitionRequest
+
+            max_thoughts = params.get("max_thoughts", 5)
+            trigger_reason = params.get("trigger_reason", "manual")
+            response = await self._gaius_stub.TriggerCognition(
+                TriggerCognitionRequest(
+                    max_thoughts=max_thoughts,
+                    trigger_reason=trigger_reason,
+                ),
+                timeout=timeout,
+            )
+            return {
+                "success": response.success,
+                "thoughts_generated": response.thoughts_generated,
+                "patterns_detected": response.patterns_detected,
+                "connections_found": response.connections_found,
+                "curiosities_generated": response.curiosities_generated,
+                "duration_ms": response.duration_ms,
+                "error": response.error or None,
             }
 
         else:
@@ -698,12 +758,33 @@ _grpc_client: Optional[GrpcEngineClient] = None
 
 
 async def get_grpc_client() -> GrpcEngineClient:
-    """Get or create the gRPC engine client singleton."""
+    """Get or create the gRPC engine client singleton.
+
+    If the client exists but is not connected, attempts to reconnect.
+    This handles the case where the engine wasn't running when TUI started.
+    """
     global _grpc_client
     if _grpc_client is None:
         _grpc_client = GrpcEngineClient()
-        await _grpc_client.connect()
+
+    # Always ensure we're connected (handles reconnection after failures)
+    if not _grpc_client.is_connected:
+        connected = await _grpc_client.connect()
+        if not connected:
+            logger.debug("gRPC client not connected, will retry on next call")
+
     return _grpc_client
+
+
+def reset_grpc_client() -> None:
+    """Reset the gRPC client singleton.
+
+    Call this to force a fresh connection on the next get_grpc_client() call.
+    """
+    global _grpc_client
+    if _grpc_client is not None:
+        # Don't await disconnect - just clear the reference
+        _grpc_client = None
 
 
 async def call_grpc(

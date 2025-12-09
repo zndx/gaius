@@ -340,6 +340,14 @@ class ThinkPanel(Widget):
         """Trigger engine poll from interval timer."""
         await self._do_poll()
 
+    async def refresh_now(self) -> None:
+        """Trigger immediate refresh of engine activity.
+
+        Call this after operations that generate new thoughts (like /thoughts)
+        to update the panel without waiting for the next poll interval.
+        """
+        await self._do_poll()
+
     async def _do_poll(self) -> None:
         """Poll engine for activity."""
         try:
@@ -370,30 +378,41 @@ class ThinkPanel(Widget):
 
         activity = self._engine_activity
 
-        # Get cognition status
+        # Get cognition proxy
         try:
             cog = await get_cognition_proxy()
-            status = await cog.get_status()
-
-            activity.cognition_running = status.get("running", False)
-            activity.cycles_completed = status.get("cycles_completed", 0)
-            activity.current_task = status.get("current_task")
-
-            if status.get("last_cycle_at"):
-                try:
-                    activity.last_cycle_at = datetime.fromisoformat(
-                        status["last_cycle_at"].replace("Z", "+00:00")
-                    )
-                except (ValueError, TypeError):
-                    pass
-
-            # Get recent thoughts
-            thoughts = await cog.get_recent_thoughts(limit=5)
-            activity.thoughts = thoughts
-
         except Exception as e:
-            logger.debug(f"Cognition fetch failed: {e}")
-            # Continue with other services - cognition failure doesn't mean engine is down
+            logger.debug(f"Failed to get cognition proxy: {e}")
+            cog = None
+
+        # Get cognition daemon status (may fail if daemon not started)
+        if cog:
+            try:
+                status = await cog.get_status()
+
+                activity.cognition_running = status.get("running", False)
+                activity.cycles_completed = status.get("cycles_completed", 0)
+                activity.current_task = status.get("current_task")
+
+                if status.get("last_cycle_at"):
+                    try:
+                        activity.last_cycle_at = datetime.fromisoformat(
+                            status["last_cycle_at"].replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+            except Exception as e:
+                logger.debug(f"Cognition status failed: {e}")
+                # Continue - status failure doesn't prevent thought retrieval
+
+        # Get recent thoughts (separate from status - should work even if status fails)
+        if cog:
+            try:
+                thoughts = await cog.get_recent_thoughts(limit=5)
+                activity.thoughts = thoughts
+            except Exception as e:
+                logger.debug(f"Failed to get recent thoughts: {e}")
 
         # Get evolution status
         try:

@@ -43,6 +43,14 @@ from ...generated import (
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
     EvolutionCycleResponse,
+    # Cognition
+    CognitionStatusResponse,
+    ThoughtMessage,
+    GetRecentThoughtsRequest,
+    GetRecentThoughtsResponse,
+    TriggerCognitionRequest,
+    TriggerCognitionResponse,
+    CognitionActivityResponse,
     # Health
     HealthStreamRequest,
     HealthMetrics,
@@ -445,6 +453,143 @@ class GaiusServicer(GaiusServiceServicer):
                 logger.warning(f"Failed to stop evolution: {e}")
 
         return EvolutionStatusResponse(running=False, mode="stopped")
+
+    # =========================================================================
+    # Cognition
+    # =========================================================================
+
+    async def CognitionStatus(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> CognitionStatusResponse:
+        """Get cognition daemon status."""
+        # Try to get daemon status from service if available
+        cognition = getattr(self._services, "cognition_service", None)
+
+        if cognition:
+            try:
+                status = cognition.get_status()
+                last_cycle_ms = 0
+                if status.get("last_cycle_at"):
+                    last_cycle_ms = int(status["last_cycle_at"].timestamp() * 1000)
+                return CognitionStatusResponse(
+                    running=status.get("running", False),
+                    cycles_completed=status.get("cycles_completed", 0),
+                    last_cycle_timestamp_ms=last_cycle_ms,
+                    current_task=status.get("current_task") or "",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to get cognition status: {e}")
+
+        # Fallback: check if we have thoughts (indicates cognition is working)
+        return CognitionStatusResponse(running=False)
+
+    async def GetRecentThoughts(
+        self,
+        request: GetRecentThoughtsRequest,
+        context: aio.ServicerContext,
+    ) -> GetRecentThoughtsResponse:
+        """Get recent thoughts from the cognition agent."""
+        from ....agents.cognition import get_cognition_agent
+
+        limit = request.limit or 10
+        response = GetRecentThoughtsResponse()
+
+        try:
+            agent = get_cognition_agent()
+            thoughts = await agent.get_active_thoughts(limit=limit)
+
+            for t in thoughts:
+                timestamp_ms = 0
+                if t.created_at:
+                    timestamp_ms = int(t.created_at.timestamp() * 1000)
+
+                thought = ThoughtMessage(
+                    id=t.id or "",
+                    thought_type=t.thought_type.value if hasattr(t.thought_type, "value") else str(t.thought_type),
+                    title=t.title or "",
+                    summary=t.summary or (t.content[:100] if t.content else ""),
+                    salience=t.salience or 0.0,
+                    generation=t.generation or 0,
+                    timestamp_ms=timestamp_ms,
+                    note_path=t.note_path or "",
+                )
+                response.thoughts.append(thought)
+
+        except Exception as e:
+            logger.debug(f"Failed to get recent thoughts: {e}")
+
+        return response
+
+    async def TriggerCognition(
+        self,
+        request: TriggerCognitionRequest,
+        context: aio.ServicerContext,
+    ) -> TriggerCognitionResponse:
+        """Trigger a cognition cycle."""
+        from ....agents.cognition import get_cognition_agent
+
+        max_thoughts = request.max_thoughts or 5
+        trigger_reason = request.trigger_reason or "manual"
+
+        try:
+            agent = get_cognition_agent()
+            result = await agent.think(
+                max_thoughts=max_thoughts,
+                trigger_reason=trigger_reason,
+            )
+
+            return TriggerCognitionResponse(
+                success=True,
+                thoughts_generated=len(result.thoughts),
+                patterns_detected=result.patterns_detected,
+                connections_found=result.connections_found,
+                curiosities_generated=result.curiosities_generated,
+                duration_ms=result.duration_ms,
+            )
+        except Exception as e:
+            logger.error(f"Cognition trigger failed: {e}")
+            return TriggerCognitionResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def CognitionActivity(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> CognitionActivityResponse:
+        """Get comprehensive cognition activity summary."""
+        from ....agents.cognition import get_cognition_agent
+
+        response = CognitionActivityResponse(
+            cognition_running=False,
+            cycles_completed=0,
+        )
+
+        # Get daemon status if available (may be None during startup)
+        cognition = getattr(self._services, "cognition_service", None)
+        if cognition:
+            try:
+                status = cognition.get_status()
+                response.cognition_running = status.get("running", False)
+                response.cycles_completed = status.get("cycles_completed", 0)
+                if status.get("last_cycle_at"):
+                    response.last_cycle_timestamp_ms = int(status["last_cycle_at"].timestamp() * 1000)
+                response.current_task = status.get("current_task") or ""
+            except Exception as e:
+                logger.debug(f"Failed to get cognition status: {e}")
+
+        # Get active thoughts count from agent
+        try:
+            agent = get_cognition_agent()
+            thoughts = await agent.get_active_thoughts(limit=100)
+            response.active_thoughts = len(thoughts)
+        except Exception as e:
+            logger.debug(f"Failed to get active thoughts: {e}")
+
+        return response
 
     # =========================================================================
     # Grid (Embedding Projection)

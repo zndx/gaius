@@ -2287,6 +2287,13 @@ Use `/evolve stop` to stop orchestrated evolution.
                             f"**Generated:** {len(thoughts)} self-observation thoughts\n\n"
                             f"*Thoughts about own thought patterns have been recorded.*"
                         )
+
+                        # Refresh ThinkPanel immediately
+                        try:
+                            think_panel = self.query_one("#think-panel", ThinkPanel)
+                            await think_panel.refresh_now()
+                        except Exception:
+                            pass
                     else:
                         content.show_file("thoughts.md", "# Self-Observation\n\n*No new self-observations generated.*")
 
@@ -2322,6 +2329,13 @@ Use `/evolve stop` to stop orchestrated evolution.
                             f"**Generated:** {len(thoughts)} audit observations\n\n"
                             f"*Engine health observations have been recorded.*"
                         )
+
+                        # Refresh ThinkPanel immediately
+                        try:
+                            think_panel = self.query_one("#think-panel", ThinkPanel)
+                            await think_panel.refresh_now()
+                        except Exception:
+                            pass
                     else:
                         content.show_file("thoughts.md", "# Engine Audit\n\n*No audit observations generated.*")
 
@@ -2369,6 +2383,13 @@ Use `/evolve stop` to stop orchestrated evolution.
                     f"- Self-observations: {result.self_observations}\n\n"
                     f"*Duration: {result.duration_ms}ms*"
                 )
+
+                # Refresh ThinkPanel immediately so new thoughts appear
+                try:
+                    think_panel = self.query_one("#think-panel", ThinkPanel)
+                    await think_panel.refresh_now()
+                except Exception:
+                    pass  # Panel may not exist in all layouts
 
             except Exception as e:
                 content.show_file("error.txt", f"Cognition failed: {e}")

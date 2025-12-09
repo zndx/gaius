@@ -260,6 +260,10 @@ class GaiusEngine:
             await self._cognition_service.start()
             logger.info("Cognition daemon started")
 
+            # Update gRPC service registry (cognition starts after gRPC)
+            if self._grpc_server:
+                self._grpc_server.update_service("cognition_service", self._cognition_service)
+
         except ImportError as e:
             logger.warning(f"Cognition service not available: {e}")
         except Exception as e:
@@ -295,6 +299,7 @@ class GaiusEngine:
             self._grpc_server.set_services(
                 backend_router=self._backend_router,
                 orchestrator_service=self._orchestrator_service,
+                cognition_service=self._cognition_service,
                 config=self.config,
                 start_time=self._start_time.timestamp() if self._start_time else None,
                 get_health_metrics=self._collect_health_metrics,
