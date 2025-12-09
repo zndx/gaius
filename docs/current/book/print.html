@@ -1092,6 +1092,203 @@ x_grid, y_grid = project_to_grid(memory.to_point_cloud())
 </tbody></table>
 </div>
 <p>For typical sessions (&lt; 1000 utterances), all operations are interactive-speed.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="inference-gateway-architecture"><a class="header" href="#inference-gateway-architecture">Inference Gateway Architecture</a></h1>
+<p>Gaius implements a secure inference gateway that mediates all LLM requests. This architecture aligns with industry standards while providing local extensions for single-node deployments.</p>
+<h2 id="why-a-gateway-layer"><a class="header" href="#why-a-gateway-layer">Why a Gateway Layer?</a></h2>
+<p>Direct HTTP access to inference endpoints (optillm, vLLM) creates operational and security challenges:</p>
+<ul>
+<li><strong>No authentication</strong>: Anyone with network access can invoke models</li>
+<li><strong>No authorization</strong>: Cannot enforce per-user or per-application quotas</li>
+<li><strong>No audit trail</strong>: Request/response logging requires application changes</li>
+<li><strong>No rate limiting</strong>: Runaway scripts can exhaust GPU resources</li>
+<li><strong>Credential sprawl</strong>: Each client needs provider API keys</li>
+</ul>
+<p>A gateway layer centralizes these concerns, allowing applications to authenticate once and rely on the gateway for policy enforcement.</p>
+<h2 id="industry-standards"><a class="header" href="#industry-standards">Industry Standards</a></h2>
+<h3 id="open-inference-protocol-oip"><a class="header" href="#open-inference-protocol-oip">Open Inference Protocol (OIP)</a></h3>
+<p>The <a href="https://github.com/kserve/open-inference-protocol">Open Inference Protocol</a> defines a standard wire format for ML inference:</p>
+<div class="table-wrapper"><table><thead><tr><th>Component</th><th>Description</th></tr></thead><tbody>
+<tr><td><strong>Health API</strong></td><td>Liveness and readiness probes</td></tr>
+<tr><td><strong>Metadata API</strong></td><td>Model name, version, inputs/outputs</td></tr>
+<tr><td><strong>Inference API</strong></td><td>Request/response for predictions</td></tr>
+</tbody></table>
+</div>
+<p>OIP provides both REST and gRPC specifications. Major adopters include:</p>
+<ul>
+<li>KServe (reference implementation)</li>
+<li>NVIDIA Triton Inference Server</li>
+<li>Seldon Core</li>
+<li>OpenVINO Model Server</li>
+<li>TorchServe</li>
+</ul>
+<p><strong>Key insight</strong>: OIP defines the <em>data plane</em> (how requests are formatted) but not the <em>control plane</em> (authentication, routing, rate limiting). These concerns are delegated to a gateway layer.</p>
+<h3 id="kserve--envoy-ai-gateway"><a class="header" href="#kserve--envoy-ai-gateway">KServe + Envoy AI Gateway</a></h3>
+<p><a href="https://www.cncf.io/blog/2025/06/18/announcing-kserve-v0-15-advancing-generative-ai-model-serving/">KServe v0.15</a> (June 2025) introduced integration with <a href="https://aigateway.envoyproxy.io/">Envoy AI Gateway</a>, a CNCF project built on Envoy Gateway specifically for generative AI traffic.</p>
+<h4 id="two-tier-architecture"><a class="header" href="#two-tier-architecture">Two-Tier Architecture</a></h4>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                    Tier One Gateway                          │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ • Unified API entry point                               ││
+│  │ • Authentication (internal tokens → provider creds)     ││
+│  │ • Global rate limiting                                  ││
+│  │ • Route to external providers OR self-hosted clusters   ││
+│  └─────────────────────────────────────────────────────────┘│
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+   ┌──────────┐     ┌──────────┐     ┌──────────────┐
+   │  OpenAI  │     │ Anthropic│     │ Self-Hosted  │
+   │   API    │     │   API    │     │   Cluster    │
+   └──────────┘     └──────────┘     └──────┬───────┘
+                                            │
+                           ┌────────────────┴────────────────┐
+                           │       Tier Two Gateway          │
+                           │ ┌────────────────────────────┐  │
+                           │ │ • Endpoint picker (vLLM)   │  │
+                           │ │ • Token-based autoscaling  │  │
+                           │ │ • Model routing            │  │
+                           │ │ • KV cache coordination    │  │
+                           │ └────────────────────────────┘  │
+                           └─────────────────────────────────┘
+</code></pre>
+<h4 id="key-capabilities"><a class="header" href="#key-capabilities">Key Capabilities</a></h4>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Description</th></tr></thead><tbody>
+<tr><td><strong>Token-based rate limiting</strong></td><td>Limits by tokens consumed, not just requests</td></tr>
+<tr><td><strong>Credential injection</strong></td><td>Apps authenticate with internal token; gateway injects provider keys</td></tr>
+<tr><td><strong>Dynamic routing</strong></td><td>Route based on request content, model metadata, or user context</td></tr>
+<tr><td><strong>Multi-tenant isolation</strong></td><td>Fine-grained access controls per tenant</td></tr>
+<tr><td><strong>Unified API</strong></td><td>Abstract whether models are third-party or self-hosted</td></tr>
+<tr><td><strong>Endpoint picker</strong></td><td>LLM-aware load balancing for vLLM backends</td></tr>
+</tbody></table>
+</div>
+<h2 id="gaius-architecture"><a class="header" href="#gaius-architecture">Gaius Architecture</a></h2>
+<p>Gaius implements a simplified two-tier pattern optimized for single-node deployments with local GPUs.</p>
+<h3 id="component-overview"><a class="header" href="#component-overview">Component Overview</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                    TUI / CLI / MCP                          │
+│                    (Applications)                           │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    gaius-engine                              │
+│                    (gRPC Gateway)                            │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ • Authentication boundary                               ││
+│  │ • Audit logging                                         ││
+│  │ • Resource management                                   ││
+│  │ • Scheduler with priority queues                        ││
+│  │ • Future: rate limiting, quotas                         ││
+│  └─────────────────────────────────────────────────────────┘│
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+   ┌──────────┐     ┌──────────┐     ┌──────────┐
+   │ optillm  │     │  vLLM    │     │   XAI    │
+   │(reasoning)│    │ (direct) │     │  (eval)  │
+   └──────────┘     └──────────┘     └──────────┘
+</code></pre>
+<h3 id="request-flow"><a class="header" href="#request-flow">Request Flow</a></h3>
+<ol>
+<li><strong>Application</strong> constructs inference request</li>
+<li><strong>InferenceClient</strong> checks if gRPC engine is available</li>
+<li>If available: route through gRPC gateway (authenticated, logged)</li>
+<li>If unavailable and <code>GAIUS_ALLOW_FALLBACKS=true</code>: direct HTTP (dev mode)</li>
+<li>If unavailable and fallbacks disabled: fail with error</li>
+</ol>
+<pre><code class="language-python"># From src/gaius/inference/client.py
+if self._is_grpc_available():
+    result = await self._complete_via_grpc(messages, ...)
+    if result:
+        return result
+
+if not self.config.allow_fallbacks:
+    raise RuntimeError(
+        "gRPC engine unavailable and fallbacks disabled (secure by default). "
+        "Either start the engine (gaius-engine) or enable fallbacks for "
+        "development/debugging: GAIUS_ALLOW_FALLBACKS=true"
+    )
+</code></pre>
+<h3 id="security-model"><a class="header" href="#security-model">Security Model</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>gRPC Engine</th><th>Direct HTTP</th><th>Use Case</th></tr></thead><tbody>
+<tr><td><strong>Production</strong> (default)</td><td>Required</td><td>Blocked</td><td>Enterprise deployments</td></tr>
+<tr><td><strong>Development</strong></td><td>Preferred</td><td>Allowed with warning</td><td>Local development</td></tr>
+</tbody></table>
+</div>
+<p><strong>Production</strong> (secure by default):</p>
+<ul>
+<li>gRPC engine must be running</li>
+<li>All requests authenticated and logged</li>
+<li>Direct HTTP blocked</li>
+</ul>
+<p><strong>Development</strong> (<code>GAIUS_ALLOW_FALLBACKS=true</code>):</p>
+<ul>
+<li>gRPC engine preferred if available</li>
+<li>Falls back to direct HTTP with warning</li>
+<li>Warning logged: <code>FALLBACK: Using direct HTTP to optillm/vLLM - bypasses gRPC auth/authz</code></li>
+</ul>
+<h2 id="feature-comparison"><a class="header" href="#feature-comparison">Feature Comparison</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>KServe/Envoy AI Gateway</th><th>Gaius gRPC Gateway</th></tr></thead><tbody>
+<tr><td><strong>Protocol</strong></td><td>HTTP/gRPC (OIP)</td><td>gRPC (custom proto)</td></tr>
+<tr><td><strong>Authentication</strong></td><td>OAuth, JWT, mTLS</td><td>Internal (planned: mTLS)</td></tr>
+<tr><td><strong>Rate limiting</strong></td><td>Token-based</td><td>Planned</td></tr>
+<tr><td><strong>Credential injection</strong></td><td>Yes</td><td>N/A (local models)</td></tr>
+<tr><td><strong>Multi-tenant</strong></td><td>Yes</td><td>Single tenant</td></tr>
+<tr><td><strong>Model routing</strong></td><td>Dynamic</td><td>Technique-based (optillm)</td></tr>
+<tr><td><strong>Autoscaling</strong></td><td>KEDA integration</td><td>Manual / devenv</td></tr>
+<tr><td><strong>Endpoint picker</strong></td><td>vLLM-aware</td><td>Round-robin</td></tr>
+<tr><td><strong>External providers</strong></td><td>OpenAI, Anthropic, etc.</td><td>XAI, OpenAI (fallback)</td></tr>
+<tr><td><strong>Deployment</strong></td><td>Kubernetes</td><td>Single node / devenv</td></tr>
+</tbody></table>
+</div>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<h3 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>GAIUS_ALLOW_FALLBACKS</code></td><td><code>false</code></td><td>Enable direct HTTP when gRPC unavailable</td></tr>
+</tbody></table>
+</div>
+<h3 id="hocon-configuration"><a class="header" href="#hocon-configuration">HOCON Configuration</a></h3>
+<pre><code class="language-hocon"># config/base.conf
+inference {
+    backend = "optillm"
+    optillm_url = "http://localhost:8090/v1"
+    vllm_url = "http://localhost:8000/v1"
+}
+</code></pre>
+<h2 id="health-checks"><a class="header" href="#health-checks">Health Checks</a></h2>
+<p>The <code>/health quick</code> command distinguishes gateway from fallback paths:</p>
+<pre><code>Service              Status    Details
+─────────────────────────────────────────────────
+gRPC Engine          healthy   PRIMARY - authenticated inference gateway
+optillm Service      healthy   DEV FALLBACK - direct HTTP (no auth)
+vLLM Direct          healthy   DEV FALLBACK - direct HTTP (no auth)
+</code></pre>
+<h2 id="future-alignment"><a class="header" href="#future-alignment">Future Alignment</a></h2>
+<h3 id="planned-enhancements"><a class="header" href="#planned-enhancements">Planned Enhancements</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Timeline</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Token-based rate limiting</td><td>v0.3</td><td>Align with Envoy AI Gateway</td></tr>
+<tr><td>mTLS authentication</td><td>v0.3</td><td>Service-to-service security</td></tr>
+<tr><td>Usage quotas</td><td>v0.4</td><td>Per-agent, per-domain limits</td></tr>
+<tr><td>OIP compatibility</td><td>v0.4</td><td>Standard health/metadata endpoints</td></tr>
+</tbody></table>
+</div>
+<h3 id="migration-path-to-kserve"><a class="header" href="#migration-path-to-kserve">Migration Path to KServe</a></h3>
+<p>For deployments that outgrow single-node:</p>
+<ol>
+<li><strong>Phase 1</strong>: Run gaius-engine alongside KServe InferenceService</li>
+<li><strong>Phase 2</strong>: Route external traffic through Envoy AI Gateway</li>
+<li><strong>Phase 3</strong>: Migrate internal traffic to KServe gRPC interface</li>
+</ol>
+<p>The gRPC gateway pattern ensures applications don't need modification during migration—only the gateway configuration changes.</p>
+<h2 id="references"><a class="header" href="#references">References</a></h2>
+<ul>
+<li><a href="https://github.com/kserve/open-inference-protocol">Open Inference Protocol</a> - Wire format specification</li>
+<li><a href="https://www.cncf.io/blog/2025/06/18/announcing-kserve-v0-15-advancing-generative-ai-model-serving/">KServe v0.15 Announcement</a> - Envoy AI Gateway integration</li>
+<li><a href="https://aigateway.envoyproxy.io/blog/envoy-ai-gateway-reference-architecture/">Envoy AI Gateway Reference Architecture</a> - Two-tier pattern</li>
+<li><a href="architecture/../../../README.html">Gaius README</a> - Security section on gRPC gateway</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="getting-started-1"><a class="header" href="#getting-started-1">Getting Started</a></h1>
 <h2 id="installation"><a class="header" href="#installation">Installation</a></h2>
 <p>Gaius requires Python 3.12+ and uses <code>uv</code> for dependency management.</p>

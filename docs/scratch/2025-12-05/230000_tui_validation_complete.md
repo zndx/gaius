@@ -26,7 +26,7 @@ Updated `src/gaius/widgets/evolution_panel.py`:
 
    async def _get_engine_client():
        """Get engine client if available (with fallbacks enabled)."""
-       # Requires GAIUS_ENABLE_FALLBACKS=true
+       # Requires GAIUS_ALLOW_FALLBACKS=true
        # Caches client for reuse across refresh cycles
    ```
 
@@ -76,7 +76,7 @@ Evolution status from engine: {
 │  └─────────────┘  └─────────────┘  └─────────────┘         │
 │                                                             │
 │  Unix Socket Server (/tmp/gaius-engine.sock)               │
-│  (enabled with GAIUS_ENABLE_FALLBACKS=true)                │
+│  (enabled with GAIUS_ALLOW_FALLBACKS=true)                │
 └──────────────────────────┬──────────────────────────────────┘
                            │
          ┌─────────────────┼─────────────────┐
@@ -98,7 +98,7 @@ Evolution status from engine: {
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `GAIUS_ENABLE_FALLBACKS` | false | Enables Unix socket transport and OTEL fallback |
+| `GAIUS_ALLOW_FALLBACKS` | false | Enables Unix socket transport and OTEL fallback |
 
 ## Next Steps
 

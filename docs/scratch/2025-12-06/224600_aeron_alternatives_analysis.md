@@ -8,7 +8,7 @@
 
 2. **Media Driver Dependency**: Requires `aeronmd` to be running separately - adds operational complexity and another failure point.
 
-3. **Testing Friction**: The BDD tests show constant issues with socket fallbacks, connection states, and the need for `GAIUS_ENABLE_FALLBACKS=true` everywhere.
+3. **Testing Friction**: The BDD tests show constant issues with socket fallbacks, connection states, and the need for `GAIUS_ALLOW_FALLBACKS=true` everywhere.
 
 4. **Over-Engineering for Use Case**: Aeron is designed for ultra-low-latency financial trading systems. We're doing LLM inference where network latency dwarfs IPC overhead.
 

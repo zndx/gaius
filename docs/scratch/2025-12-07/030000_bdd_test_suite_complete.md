@@ -19,7 +19,7 @@ Comprehensive BDD test coverage established with 45 scenarios passing across 4 t
 ### Transport Migration
 - Removed Aeron IPC transport completely
 - gRPC is now the only engine transport (port 50051)
-- Eliminated `GAIUS_ENABLE_FALLBACKS` environment variable
+- Eliminated `GAIUS_ALLOW_FALLBACKS` environment variable
 - Updated `src/gaius/client/__init__.py`, `engine_proxy.py`, `cli.py`
 
 ### Test Infrastructure
