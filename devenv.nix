@@ -144,6 +144,65 @@
       nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader 2>/dev/null || echo "  (nvidia-smi not available)"
       echo ""
     '';
+
+    # Deep cleanup - kills ALL inference-related processes including orphaned ones
+    "gpu:deep-cleanup".exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  DEEP CLEANUP - Killing ALL inference processes              ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # 1. Kill vLLM processes by name pattern
+      echo "Killing vLLM processes..."
+      pkill -9 -f "vllm serve" 2>/dev/null || true
+      pkill -9 -f "vllm.entrypoints" 2>/dev/null || true
+
+      # 2. Kill ray processes (vLLM uses ray internally)
+      echo "Killing ray processes..."
+      pkill -9 -f "ray::" 2>/dev/null || true
+      pkill -9 -f "raylet" 2>/dev/null || true
+      pkill -9 -f "gcs_server" 2>/dev/null || true
+
+      # 3. Kill gaius engine/MCP processes
+      echo "Killing gaius processes..."
+      pkill -9 -f "gaius.engine.server" 2>/dev/null || true
+      pkill -9 -f "gaius.mcp_server" 2>/dev/null || true
+
+      # 4. Kill optillm (gunicorn on port 8000)
+      echo "Killing optillm/gunicorn..."
+      pkill -9 -f "gunicorn.*optillm" 2>/dev/null || true
+      pkill -9 -f "optillm" 2>/dev/null || true
+      # Kill anything on port 8000 (default vLLM/optillm port)
+      fuser -k 8000/tcp 2>/dev/null || true
+
+      # 5. Kill any GPU processes via nvidia-smi
+      echo "Killing GPU processes..."
+      VLLM_PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
+      if [ -n "$VLLM_PIDS" ]; then
+        for pid in $VLLM_PIDS; do
+          if [ -n "$pid" ]; then
+            echo "  Killing GPU process PID $pid..."
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+        done
+      fi
+
+      sleep 2
+
+      # Verification
+      echo ""
+      echo "=== Verification ==="
+      echo ""
+      echo "Remaining vLLM/ray processes:"
+      ps aux | grep -E 'vllm|ray::' | grep -v grep || echo "  ✓ None"
+      echo ""
+      echo "Ports 8000, 808x-809x:"
+      ss -tlnp 2>/dev/null | grep -E ':8000|808[0-9]|809[0-9]' || echo "  ✓ All clear"
+      echo ""
+      echo "GPU Memory:"
+      nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv 2>/dev/null || echo "  (nvidia-smi not available)"
+      echo ""
+    '';
   };
 
   # MCP server as an optional process (for debugging - Claude Code manages its own)
