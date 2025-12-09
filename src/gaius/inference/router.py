@@ -19,11 +19,14 @@ Usage:
     result = await router.evaluate(prompt)
 """
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from .config import InferenceConfig, InferenceBackend, OptillmTechnique
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowPhase(Enum):
@@ -373,16 +376,89 @@ class EndpointRouter:
             )
 
         except Exception:
-            # Fallback to minimal config
-            return EndpointRouterConfig(
-                endpoints={
-                    "default": EndpointConfig(
-                        name="default",
-                        url="http://localhost:8088/v1",
-                    )
-                },
-                default_endpoint="default",
+            # Fallback: probe common ports to find running endpoints
+            return self._discover_endpoints()
+
+    def _discover_endpoints(self) -> EndpointRouterConfig:
+        """Discover running vLLM endpoints by probing common ports.
+
+        Queries each endpoint to get the actual model ID, then assigns
+        an appropriate endpoint name based on the model.
+        """
+        import httpx
+
+        # Model patterns to endpoint names
+        model_to_endpoint = {
+            "orchestrator": "orchestrator",
+            "nvidia/Orchestrator": "orchestrator",
+            "Mistral-7B": "fast",
+            "mistralai/Mistral": "fast",
+            "DeepSeek-R1": "reasoning",
+            "deepseek-ai/DeepSeek-R1": "reasoning",
+            "QwQ": "reasoning",
+            "Qwen2.5-Coder": "coding",
+            "Qwen/Qwen2.5-Coder": "coding",
+        }
+
+        def get_endpoint_name(model_id: str) -> str:
+            """Map model ID to endpoint name."""
+            for pattern, name in model_to_endpoint.items():
+                if pattern in model_id:
+                    return name
+            # Default based on model characteristics
+            if "coder" in model_id.lower() or "code" in model_id.lower():
+                return "coding"
+            if "reason" in model_id.lower() or "think" in model_id.lower():
+                return "reasoning"
+            return "default"
+
+        endpoints = {}
+        default_endpoint = None
+        # Common ports: main endpoints (8080-8085), evo workers (8090-8095)
+        common_ports = list(range(8080, 8086)) + list(range(8090, 8096))
+
+        for port in common_ports:
+            try:
+                # Query the endpoint to find what model is actually running
+                resp = httpx.get(
+                    f"http://localhost:{port}/v1/models",
+                    timeout=1.0,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = data.get("data", [])
+                    if models:
+                        model_id = models[0].get("id", "unknown")
+                        endpoint_name = get_endpoint_name(model_id)
+
+                        # Use unique name if collision
+                        if endpoint_name in endpoints:
+                            endpoint_name = f"{endpoint_name}_{port}"
+
+                        endpoints[endpoint_name] = EndpointConfig(
+                            name=endpoint_name,
+                            url=f"http://localhost:{port}/v1",
+                            models=[model_id],
+                        )
+                        if default_endpoint is None:
+                            default_endpoint = endpoint_name
+
+                        logger.debug(f"Discovered endpoint {endpoint_name} on port {port}: {model_id}")
+            except Exception:
+                pass
+
+        # Fallback if nothing found
+        if not endpoints:
+            endpoints["default"] = EndpointConfig(
+                name="default",
+                url="http://localhost:8080/v1",
             )
+            default_endpoint = "default"
+
+        return EndpointRouterConfig(
+            endpoints=endpoints,
+            default_endpoint=default_endpoint or "default",
+        )
 
     def _init_clients(self) -> None:
         """Initialize OpenAI clients for each endpoint."""
@@ -505,6 +581,144 @@ class EndpointRouter:
                 )
             raise
 
+    async def _try_start_endpoint_on_demand(self, endpoint: str) -> bool:
+        """Try to start an endpoint on-demand if resources are available.
+
+        Uses engine client (ensure_endpoint) when engine is running,
+        otherwise falls back to legacy direct orchestrator calls.
+
+        Args:
+            endpoint: Endpoint name to start (e.g., "orchestrator", "coding")
+
+        Returns:
+            True if endpoint was started successfully
+        """
+        # Try engine client first (preferred - proper resource management)
+        try:
+            from ..client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            if use_engine_proxy():
+                logger.debug(f"Using engine client to start {endpoint}")
+                orch = await get_orchestrator_proxy()
+                result = await orch.ensure_endpoint(endpoint)
+
+                if result.get("healthy"):
+                    # Engine started the endpoint - update our local state
+                    port = result.get("port")
+                    if port:
+                        new_endpoint = EndpointConfig(
+                            name=endpoint,
+                            url=f"http://localhost:{port}/v1",
+                            models=[result.get("model", "unknown")],
+                            gpus=result.get("gpu_ids", []),
+                            tensor_parallel=len(result.get("gpu_ids", [1])),
+                        )
+                        self.config.endpoints[endpoint] = new_endpoint
+                        self._clients[endpoint] = AsyncOpenAI(
+                            api_key=new_endpoint.api_key,
+                            base_url=new_endpoint.url,
+                            timeout=60,
+                        )
+                    logger.info(f"Successfully started {endpoint} via engine")
+                    return True
+                else:
+                    logger.info(
+                        f"Engine could not start {endpoint}: {result.get('message', result.get('status'))}"
+                    )
+                    return False
+
+        except (ConnectionError, ImportError) as e:
+            logger.debug(f"Engine client unavailable: {e}, falling back to legacy")
+        except Exception as e:
+            logger.debug(f"Engine client error: {e}, falling back to legacy")
+
+        # Fallback to legacy direct orchestrator (for backwards compatibility)
+        logger.warning("LEGACY_FALLBACK: _try_start_endpoint_on_demand bypassing engine - tech debt")
+        try:
+            from .orchestrator import get_orchestrator
+
+            orch = get_orchestrator()
+
+            # Check if endpoint config exists
+            if endpoint not in orch._endpoints_config:
+                logger.debug(f"Endpoint {endpoint} not in orchestrator config")
+                return False
+
+            config = orch._endpoints_config[endpoint]
+            required_gpus = config.tensor_parallel or 1
+
+            # Check for available GPUs using nvidia-smi directly
+            import subprocess
+
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if result.returncode != 0:
+                return False
+
+            # Find GPUs with minimal memory usage (<1GB = likely idle)
+            idle_gpus = []
+            for line in result.stdout.strip().split("\n"):
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    gpu_id = int(parts[0].strip())
+                    mem_used = int(parts[1].strip())
+                    if mem_used < 1000:  # Less than 1GB used
+                        idle_gpus.append(gpu_id)
+
+            # Check for consecutive idle GPUs if tensor_parallel > 1
+            if required_gpus > 1:
+                idle_gpus.sort()
+                found_contiguous = False
+                for i in range(len(idle_gpus) - required_gpus + 1):
+                    if all(idle_gpus[i + j] == idle_gpus[i] + j for j in range(required_gpus)):
+                        found_contiguous = True
+                        break
+
+                if not found_contiguous:
+                    logger.info(
+                        f"Cannot start {endpoint}: need {required_gpus} consecutive GPUs, "
+                        f"found {len(idle_gpus)} idle GPUs (non-contiguous)"
+                    )
+                    return False
+            elif len(idle_gpus) < required_gpus:
+                logger.info(
+                    f"Cannot start {endpoint}: need {required_gpus} GPUs, "
+                    f"only {len(idle_gpus)} idle"
+                )
+                return False
+
+            # Start the endpoint
+            logger.info(f"Starting {endpoint} endpoint on-demand (legacy mode)")
+            success = await orch.start_endpoint(endpoint)
+
+            if success:
+                ep_config = orch._endpoints_config[endpoint]
+                new_endpoint = EndpointConfig(
+                    name=endpoint,
+                    url=ep_config.url,
+                    models=ep_config.models,
+                    gpus=list(range(required_gpus)),
+                    tensor_parallel=ep_config.tensor_parallel,
+                )
+                self.config.endpoints[endpoint] = new_endpoint
+                self._clients[endpoint] = AsyncOpenAI(
+                    api_key=new_endpoint.api_key,
+                    base_url=new_endpoint.url,
+                    timeout=60,
+                )
+                logger.info(f"Successfully started {endpoint} endpoint (legacy mode)")
+
+            return success
+
+        except Exception as e:
+            logger.debug(f"Failed to start {endpoint} on-demand: {e}")
+            return False
+
     async def _failover_complete(
         self,
         messages: list,
@@ -520,6 +734,21 @@ class EndpointRouter:
         # Mark endpoint unhealthy
         if failed_endpoint in self.config.endpoints:
             self.config.endpoints[failed_endpoint].healthy = False
+
+        # First, try to start the failed endpoint on-demand if it's a known endpoint
+        if failed_endpoint in ("orchestrator", "coding", "reasoning", "fast"):
+            if await self._try_start_endpoint_on_demand(failed_endpoint):
+                # Endpoint started - retry the original request
+                try:
+                    return await self.complete(
+                        messages=messages,
+                        model=model,
+                        endpoint=failed_endpoint,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                except Exception:
+                    pass  # Fall through to other endpoints
 
         # Try other endpoints
         for name, ep in self.config.endpoints.items():
@@ -610,4 +839,14 @@ def get_endpoint_router() -> EndpointRouter:
     global _endpoint_router
     if _endpoint_router is None:
         _endpoint_router = EndpointRouter()
+    return _endpoint_router
+
+
+def refresh_endpoint_router() -> EndpointRouter:
+    """Force refresh of the endpoint router singleton.
+
+    Use when endpoints have changed (e.g., new vLLM processes started).
+    """
+    global _endpoint_router
+    _endpoint_router = EndpointRouter()
     return _endpoint_router
