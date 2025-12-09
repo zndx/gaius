@@ -46,6 +46,31 @@ export GAIUS_OFFLINE="false"
 
 See `config/base.conf` for full configuration options.
 
+### Security: gRPC Gateway Architecture
+
+Gaius enforces a **secure-by-default** inference architecture. All inference requests route through the gRPC engine, which serves as the control plane for:
+
+- Authentication and authorization
+- Audit logging
+- Resource management and rate limiting
+
+**Direct HTTP access to optillm/vLLM is disabled by default.** The TUI and CLI will fail to start if the gRPC engine is unavailable.
+
+For development and debugging, fallbacks can be explicitly enabled:
+
+```bash
+# Enable direct HTTP fallbacks (dev/debug only)
+export GAIUS_ALLOW_FALLBACKS=true
+```
+
+When fallbacks are enabled, a warning is logged:
+```
+FALLBACK: Using direct HTTP to optillm/vLLM - bypasses gRPC auth/authz.
+This is enabled via GAIUS_ALLOW_FALLBACKS=true (dev/debug mode).
+```
+
+**Production deployments should never set `GAIUS_ALLOW_FALLBACKS=true`**. The gRPC engine provides the security boundary for enterprise operations.
+
 ## Usage
 
 ```bash

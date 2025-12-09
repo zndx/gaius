@@ -91,7 +91,7 @@ class RealAeronBridge(AeronBridge):
 
     Status: NOT YET IMPLEMENTED
     The Python bindings for the official Aeron C API are planned.
-    Currently raises RuntimeError - use UnixSocketBridge with GAIUS_ENABLE_FALLBACKS=true.
+    Currently raises RuntimeError - use UnixSocketBridge with GAIUS_ALLOW_FALLBACKS=true.
     """
 
     def __init__(self, config: AeronConfig):
@@ -106,7 +106,7 @@ class RealAeronBridge(AeronBridge):
         """Connect to Aeron media driver.
 
         NOTE: Aeron C API bindings not yet implemented.
-        Use GAIUS_ENABLE_FALLBACKS=true for Unix socket transport.
+        Use GAIUS_ALLOW_FALLBACKS=true for Unix socket transport.
         """
         # TODO: Implement ctypes bindings for libaeron_client_shared.so
         # The official Aeron C API provides:
@@ -116,7 +116,7 @@ class RealAeronBridge(AeronBridge):
         # - aeron_publication_offer(), aeron_subscription_poll()
         raise RuntimeError(
             "Aeron C API bindings not yet implemented. "
-            "Use GAIUS_ENABLE_FALLBACKS=true for Unix socket transport, "
+            "Use GAIUS_ALLOW_FALLBACKS=true for Unix socket transport, "
             "or contribute the ctypes bindings at gaius/engine/transport/aeron_bridge.py"
         )
 
@@ -369,13 +369,13 @@ class UnixSocketBridge(AeronBridge):
 def create_bridge(config: AeronConfig) -> AeronBridge:
     """Create appropriate Aeron bridge based on environment.
 
-    Currently only UnixSocketBridge is implemented (requires GAIUS_ENABLE_FALLBACKS=true).
+    Currently only UnixSocketBridge is implemented (requires GAIUS_ALLOW_FALLBACKS=true).
     RealAeronBridge with ctypes bindings to libaeron is planned.
 
     Raises:
         RuntimeError: If Aeron bindings unavailable and fallbacks disabled
     """
-    fallbacks_enabled = os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() == "true"
+    fallbacks_enabled = os.environ.get("GAIUS_ALLOW_FALLBACKS", "").lower() == "true"
 
     # Check for Aeron media driver
     aeron_dir = Path(config.directory)
@@ -392,17 +392,17 @@ def create_bridge(config: AeronConfig) -> AeronBridge:
         else:
             raise RuntimeError(
                 "Aeron C API bindings not yet implemented. "
-                "Set GAIUS_ENABLE_FALLBACKS=true for Unix socket transport."
+                "Set GAIUS_ALLOW_FALLBACKS=true for Unix socket transport."
             )
 
     # aeronmd not running or bindings unavailable - use socket fallback
     if fallbacks_enabled:
-        logger.info("Using Unix socket bridge (GAIUS_ENABLE_FALLBACKS=true)")
+        logger.info("Using Unix socket bridge (GAIUS_ALLOW_FALLBACKS=true)")
         return UnixSocketBridge(config)
     else:
         raise RuntimeError(
             f"Aeron transport not available (bindings not implemented, aeronmd: {cnc_dat.exists()}). "
-            "Set GAIUS_ENABLE_FALLBACKS=true for Unix socket transport."
+            "Set GAIUS_ALLOW_FALLBACKS=true for Unix socket transport."
         )
 
 

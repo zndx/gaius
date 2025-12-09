@@ -254,12 +254,12 @@ def step_mcp_error_mentions(context, text):
 # Engine Proxy Environment Steps
 # ─────────────────────────────────────────────────────────────────────
 
-@given('GAIUS_ENABLE_FALLBACKS is set to "{value}"')
+@given('GAIUS_ALLOW_FALLBACKS is set to "{value}"')
 def step_set_fallbacks(context, value):
     """Set fallbacks environment variable."""
     # Backup current value for restoration
-    context._env_backup_fallbacks = os.environ.get("GAIUS_ENABLE_FALLBACKS")
-    os.environ["GAIUS_ENABLE_FALLBACKS"] = value
+    context._env_backup_fallbacks = os.environ.get("GAIUS_ALLOW_FALLBACKS")
+    os.environ["GAIUS_ALLOW_FALLBACKS"] = value
 
     # Reset engine client cache in MCP server
     try:
@@ -282,11 +282,11 @@ def step_set_fallbacks(context, value):
         pass
 
 
-@given("GAIUS_ENABLE_FALLBACKS is not set")
+@given("GAIUS_ALLOW_FALLBACKS is not set")
 def step_unset_fallbacks(context):
     """Unset fallbacks environment variable."""
-    context._env_backup_fallbacks = os.environ.get("GAIUS_ENABLE_FALLBACKS")
-    os.environ.pop("GAIUS_ENABLE_FALLBACKS", None)
+    context._env_backup_fallbacks = os.environ.get("GAIUS_ALLOW_FALLBACKS")
+    os.environ.pop("GAIUS_ALLOW_FALLBACKS", None)
 
     try:
         import gaius.mcp_server as mcp

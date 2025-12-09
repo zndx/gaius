@@ -324,9 +324,9 @@ def after_scenario(context, scenario):
     # Legacy environment backups (for backwards compatibility)
     if hasattr(context, '_env_backup_fallbacks'):
         if context._env_backup_fallbacks is None:
-            os.environ.pop("GAIUS_ENABLE_FALLBACKS", None)
+            os.environ.pop("GAIUS_ALLOW_FALLBACKS", None)
         else:
-            os.environ["GAIUS_ENABLE_FALLBACKS"] = context._env_backup_fallbacks
+            os.environ["GAIUS_ALLOW_FALLBACKS"] = context._env_backup_fallbacks
 
     if hasattr(context, '_env_backup_transport'):
         if context._env_backup_transport is None:

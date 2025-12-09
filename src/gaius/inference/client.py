@@ -17,6 +17,12 @@ from .config import InferenceConfig, InferenceBackend, OptillmTechnique
 
 logger = logging.getLogger(__name__)
 
+# Security boundary marker for direct HTTP access (fallback mode)
+_DIRECT_HTTP_WARNING = (
+    "FALLBACK: Using direct HTTP to %s - bypasses gRPC auth/authz. "
+    "This is enabled via GAIUS_ALLOW_FALLBACKS=true (dev/debug mode)."
+)
+
 try:
     from openai import AsyncOpenAI
 
@@ -112,6 +118,58 @@ class InferenceClient:
                 timeout=self.config.timeout,
             )
 
+    def _is_grpc_available(self) -> bool:
+        """Check if gRPC engine is available for inference gateway."""
+        try:
+            from ..client.engine_proxy import use_engine_proxy
+            return use_engine_proxy()
+        except ImportError:
+            return False
+
+    async def _complete_via_grpc(
+        self,
+        messages: list[Message],
+        max_tokens: int,
+        temperature: float,
+        model: str | None = None,
+    ) -> CompletionResult | None:
+        """Complete via gRPC Scheduler. Returns None if unavailable.
+
+        The gRPC engine is the secure gateway for inference, providing:
+        - Authentication and authorization
+        - Audit logging
+        - Resource management
+        - Rate limiting (future)
+        """
+        try:
+            from ..client.engine_proxy import get_scheduler_proxy
+
+            scheduler = await get_scheduler_proxy()
+
+            # Extract prompt and system prompt from messages
+            prompt = messages[-1].content if messages else ""
+            system_prompt = next(
+                (m.content for m in messages if m.role == "system"), None
+            )
+
+            result = await scheduler.complete(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+            return CompletionResult(
+                content=result.get("content", ""),
+                model=result.get("model", ""),
+                input_tokens=result.get("input_tokens", 0),
+                output_tokens=result.get("output_tokens", 0),
+                backend="grpc_engine",
+            )
+        except Exception as e:
+            logger.debug(f"gRPC completion failed: {e}")
+            return None
+
     def _get_primary_client(self) -> tuple[AsyncOpenAI | None, str]:
         """Get the primary client based on configured backend."""
         backend = self.config.backend.value
@@ -193,6 +251,31 @@ class InferenceClient:
             model_name = self._get_model_name(technique)
         max_tokens = max_tokens or self.config.max_tokens
 
+        # ═══════════════════════════════════════════════════════════════════
+        # gRPC-first: Try engine gateway for auth/authz enforcement
+        # ═══════════════════════════════════════════════════════════════════
+        if self._is_grpc_available():
+            result = await self._complete_via_grpc(
+                messages, max_tokens, temperature, model
+            )
+            if result:
+                return result
+            logger.debug("gRPC available but completion failed, trying direct HTTP")
+
+        # Secure by default: fail unless fallbacks explicitly allowed
+        if not self.config.allow_fallbacks:
+            raise RuntimeError(
+                "gRPC engine unavailable and fallbacks disabled (secure by default). "
+                "Either start the engine (gaius-engine) or enable fallbacks for "
+                "development/debugging: GAIUS_ALLOW_FALLBACKS=true"
+            )
+
+        # Warn about direct HTTP fallback (security boundary crossed)
+        logger.warning(_DIRECT_HTTP_WARNING % "optillm/vLLM")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Direct HTTP fallback (dev only - no auth/authz)
+        # ═══════════════════════════════════════════════════════════════════
         openai_messages = [{"role": m.role, "content": m.content} for m in messages]
 
         # Try primary client (optillm by default)
