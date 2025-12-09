@@ -2,10 +2,15 @@
 
 Manages GPU inventory, allocations, and scheduling for multi-GPU
 tensor-parallel configurations.
+
+Supports dynamic GPU swapping for transitioning between:
+- Default state: orchestrator + fast + fast-2 + coding (6 GPUs)
+- Reasoning state: orchestrator + reasoning (6 GPUs)
 """
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -20,6 +25,18 @@ from .allocations import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SwapPlan:
+    """Plan for swapping GPU allocations between endpoints."""
+
+    endpoints_to_stop: list[str] = field(default_factory=list)
+    endpoints_to_start: list[str] = field(default_factory=list)
+    gpus_to_free: list[int] = field(default_factory=list)
+    gpus_to_allocate: dict[str, list[int]] = field(default_factory=dict)
+    reason: str = ""
+    estimated_duration_s: int = 120  # Default 2 minutes for model loading
 
 
 class ResourceManager:
@@ -378,3 +395,129 @@ class ResourceManager:
                 for alias, alloc in self.allocations.items()
             },
         }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # GPU Swap Logic for Dynamic Model Transitions
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def plan_swap_for_reasoning(self) -> SwapPlan:
+        """Plan resource swap to enable 4-GPU reasoning model.
+
+        Default state: orchestrator(2) + fast(1) + fast-2(1) + coding(2) = 6 GPUs
+        Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
+
+        Returns:
+            SwapPlan with endpoints to stop/start
+        """
+        # Reasoning needs 4 GPUs; we keep orchestrator (2 GPUs)
+        # So we need to stop: coding (2) + fast (1) + fast-2 (1) = 4 GPUs
+
+        endpoints_to_stop = []
+        gpus_to_free = []
+
+        # Check which endpoints are currently allocated
+        for alias, alloc in self.allocations.items():
+            if alias in ("coding", "fast", "fast-2"):
+                endpoints_to_stop.append(alias)
+                gpus_to_free.extend(alloc.gpu_ids)
+
+        # If reasoning requires config, get the GPU count
+        reasoning_config = self.config.agents.get("reasoning")
+        reasoning_gpus = reasoning_config.resources.gpus if reasoning_config else 4
+
+        return SwapPlan(
+            endpoints_to_stop=endpoints_to_stop,
+            endpoints_to_start=["reasoning"],
+            gpus_to_free=gpus_to_free,
+            gpus_to_allocate={"reasoning": gpus_to_free[:reasoning_gpus]},
+            reason="Enable 4-GPU reasoning model",
+            estimated_duration_s=180,  # 3 minutes for 32B model
+        )
+
+    def plan_restore_default(self) -> SwapPlan:
+        """Plan restoration to default GPU state after reasoning completes.
+
+        Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
+        Default state: orchestrator(2) + fast(1) + fast-2(1) + coding(2) = 6 GPUs
+
+        Returns:
+            SwapPlan to restore default endpoints
+        """
+        endpoints_to_stop = []
+        gpus_to_free = []
+
+        # Check if reasoning is allocated
+        if "reasoning" in self.allocations:
+            endpoints_to_stop.append("reasoning")
+            gpus_to_free = list(self.allocations["reasoning"].gpu_ids)
+
+        # Plan GPU allocation for default endpoints
+        # coding: 2 GPUs, fast: 1 GPU, fast-2: 1 GPU
+        gpus_to_allocate = {}
+        if len(gpus_to_free) >= 4:
+            gpus_to_allocate = {
+                "coding": gpus_to_free[:2],
+                "fast": [gpus_to_free[2]],
+                "fast-2": [gpus_to_free[3]],
+            }
+
+        return SwapPlan(
+            endpoints_to_stop=endpoints_to_stop,
+            endpoints_to_start=["coding", "fast", "fast-2"],
+            gpus_to_free=gpus_to_free,
+            gpus_to_allocate=gpus_to_allocate,
+            reason="Restore default endpoint configuration",
+            estimated_duration_s=120,  # 2 minutes for smaller models
+        )
+
+    def can_execute_swap(self, plan: SwapPlan) -> tuple[bool, str]:
+        """Check if a swap plan can be executed.
+
+        Args:
+            plan: SwapPlan to validate
+
+        Returns:
+            Tuple of (can_execute, reason)
+        """
+        # Check that endpoints to stop are actually allocated
+        for endpoint in plan.endpoints_to_stop:
+            if endpoint not in self.allocations:
+                return (False, f"Endpoint {endpoint} not currently allocated")
+
+        # Check that target GPUs will be available after stopping
+        currently_used = set()
+        for alias, alloc in self.allocations.items():
+            if alias not in plan.endpoints_to_stop:
+                currently_used.update(alloc.gpu_ids)
+
+        gpus_after_stop = set(range(self.total_gpus)) - currently_used - self.reserved_gpus
+
+        # Verify enough GPUs for new endpoints
+        total_needed = sum(len(gpus) for gpus in plan.gpus_to_allocate.values())
+        if len(gpus_after_stop) < total_needed:
+            return (
+                False,
+                f"Need {total_needed} GPUs but only {len(gpus_after_stop)} available after stop",
+            )
+
+        return (True, "")
+
+    def get_current_mode(self) -> str:
+        """Determine current GPU allocation mode.
+
+        Returns:
+            "default" - fast/fast-2/coding endpoints active
+            "reasoning" - reasoning endpoint active
+            "mixed" - partial allocation
+            "idle" - nothing allocated
+        """
+        active_endpoints = set(self.allocations.keys())
+
+        if "reasoning" in active_endpoints:
+            return "reasoning"
+        elif {"fast", "fast-2", "coding"}.issubset(active_endpoints):
+            return "default"
+        elif active_endpoints:
+            return "mixed"
+        else:
+            return "idle"

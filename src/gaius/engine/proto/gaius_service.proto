@@ -53,6 +53,15 @@ message EndpointResponse {
   string message = 2;
 }
 
+// Response for EnsureEndpoint - includes full status for agent-first architecture
+message EnsureEndpointResponse {
+  bool healthy = 1;          // True if endpoint is ready to accept requests
+  string status = 2;         // "healthy", "starting", "stopping", "stopped", "error"
+  int32 port = 3;            // Port if running
+  repeated int32 gpu_ids = 4; // Allocated GPUs
+  string message = 5;        // Error message if not healthy
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Scheduler Service Messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -259,6 +268,7 @@ service GaiusService {
   // Orchestrator
   // ─────────────────────────────────────────────────────────────────────────
   rpc OrchestratorStatus(google.protobuf.Empty) returns (OrchestratorStatusResponse);
+  rpc EnsureEndpoint(StartEndpointRequest) returns (EnsureEndpointResponse);  // Agent-first: ensure ready
   rpc StartEndpoint(StartEndpointRequest) returns (EndpointResponse);
   rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);
   rpc RestartEndpoint(RestartEndpointRequest) returns (EndpointResponse);
