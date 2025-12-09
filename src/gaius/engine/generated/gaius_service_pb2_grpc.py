@@ -44,6 +44,11 @@ class GaiusServiceStub(object):
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.OrchestratorStatusResponse.FromString,
                 _registered_method=True)
+        self.EnsureEndpoint = channel.unary_unary(
+                '/gaius.engine.GaiusService/EnsureEndpoint',
+                request_serializer=gaius__service__pb2.StartEndpointRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EnsureEndpointResponse.FromString,
+                _registered_method=True)
         self.StartEndpoint = channel.unary_unary(
                 '/gaius.engine.GaiusService/StartEndpoint',
                 request_serializer=gaius__service__pb2.StartEndpointRequest.SerializeToString,
@@ -137,6 +142,13 @@ class GaiusServiceServicer(object):
         """─────────────────────────────────────────────────────────────────────────
         Orchestrator
         ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EnsureEndpoint(self, request, context):
+        """Agent-first: ensure ready
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -261,6 +273,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.OrchestratorStatusResponse.SerializeToString,
             ),
+            'EnsureEndpoint': grpc.unary_unary_rpc_method_handler(
+                    servicer.EnsureEndpoint,
+                    request_deserializer=gaius__service__pb2.StartEndpointRequest.FromString,
+                    response_serializer=gaius__service__pb2.EnsureEndpointResponse.SerializeToString,
+            ),
             'StartEndpoint': grpc.unary_unary_rpc_method_handler(
                     servicer.StartEndpoint,
                     request_deserializer=gaius__service__pb2.StartEndpointRequest.FromString,
@@ -373,6 +390,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/OrchestratorStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             gaius__service__pb2.OrchestratorStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EnsureEndpoint(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EnsureEndpoint',
+            gaius__service__pb2.StartEndpointRequest.SerializeToString,
+            gaius__service__pb2.EnsureEndpointResponse.FromString,
             options,
             channel_credentials,
             insecure,
