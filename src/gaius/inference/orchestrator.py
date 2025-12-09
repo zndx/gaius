@@ -123,58 +123,71 @@ class GPUOrchestrator:
         self._load_config()
 
     def _load_config(self) -> None:
-        """Load endpoint configuration from HOCON."""
+        """Load endpoint configuration from engine config (gaius.agents)."""
         try:
-            from ..core.config import get_config
+            from ..engine.config import load_config as load_engine_config
 
-            config = get_config()
-            inference = config._raw.get("gaius", {}).get("inference", {})
-            endpoints_raw = inference.get("endpoints", {})
-            orchestrator_cfg = inference.get("orchestrator", {})
+            engine_config = load_engine_config()
 
-            # Load orchestrator settings
-            vllm_cfg = orchestrator_cfg.get("vllm", {})
-            self._vllm_binary = vllm_cfg.get("binary", "vllm")
-            self._gpu_memory_util = vllm_cfg.get("gpu_memory_utilization", 0.90)
-            self._max_model_len = vllm_cfg.get("max_model_len", 65536)
-            self._max_num_seqs = vllm_cfg.get("max_num_seqs", 32)
-            self._health_interval = orchestrator_cfg.get("health_check_interval", 15)
-            self._startup_timeout = orchestrator_cfg.get("startup_timeout", 180)  # 3 min for large models
-            self._max_failures = orchestrator_cfg.get("max_consecutive_failures", 3)
-            self._max_recovery = orchestrator_cfg.get("max_recovery_attempts", 3)
+            # Load vLLM backend settings
+            self._vllm_binary = engine_config.vllm.binary
+            self._gpu_memory_util = engine_config.vllm.gpu_memory_utilization
+            self._max_model_len = engine_config.vllm.max_model_len
+            self._max_num_seqs = 256  # Default, overridden per-endpoint
+            self._health_interval = 15
+            self._startup_timeout = 180  # 3 min for large models
+            self._max_failures = 3
+            self._max_recovery = engine_config.startup.max_restart_attempts
 
-            # Load endpoint configs
-            for name, ep in endpoints_raw.items():
-                if isinstance(ep, dict):
-                    self._endpoints_config[name] = EndpointConfig(
-                        name=name,
-                        url=ep.get("url", ""),
-                        models=ep.get("models", []),
-                        gpus=ep.get("gpus", []),
-                        tensor_parallel=ep.get("tensor_parallel", 1),
-                        # Per-endpoint context and sequence limits (defaults from global vllm config)
-                        context_length=ep.get("context_length", self._max_model_len),
-                        max_num_seqs=ep.get("max_num_seqs", self._max_num_seqs),
-                    )
+            # Build endpoint configs from agents with vLLM backend
+            gpu_offset = 0  # Track GPU allocation
+            for name, agent in engine_config.agents.items():
+                if agent.backend != "vllm":
+                    continue  # Skip optillm-only agents
 
-            logger.info(f"Loaded {len(self._endpoints_config)} endpoint configs")
+                if agent.endpoint is None:
+                    continue  # Skip agents without endpoint config
+
+                # Calculate GPU assignment based on requirements
+                num_gpus = agent.resources.gpus
+                gpus = list(range(gpu_offset, gpu_offset + num_gpus))
+                # Don't advance offset for now - let dynamic allocation handle it
+
+                self._endpoints_config[name] = EndpointConfig(
+                    name=name,
+                    url=f"http://localhost:{agent.endpoint.port}/v1",
+                    models=[agent.model],
+                    gpus=gpus,
+                    tensor_parallel=agent.endpoint.tensor_parallel,
+                    context_length=agent.resources.context_length,
+                    max_num_seqs=agent.endpoint.max_num_seqs,
+                )
+
+            # Store preload endpoints for reference
+            self._preload_endpoints = engine_config.startup.preload_endpoints
+
+            logger.info(f"Loaded {len(self._endpoints_config)} endpoint configs from agents")
 
         except Exception as e:
             logger.warning(f"Failed to load orchestrator config: {e}")
+            import traceback
+            traceback.print_exc()
             # Create default endpoint
-            self._endpoints_config["default"] = EndpointConfig(
-                name="default",
-                url="http://localhost:8088/v1",
+            self._endpoints_config["fast"] = EndpointConfig(
+                name="fast",
+                url="http://localhost:8083/v1",
+                models=["mistralai/Mistral-7B-Instruct-v0.3"],
                 gpus=[0],
             )
             self._vllm_binary = "vllm"
             self._gpu_memory_util = 0.90
             self._max_model_len = 65536
-            self._max_num_seqs = 32
+            self._max_num_seqs = 256
             self._health_interval = 15
             self._startup_timeout = 180
             self._max_failures = 3
             self._max_recovery = 3
+            self._preload_endpoints = ["fast"]
 
     def _extract_port(self, url: str) -> int:
         """Extract port from URL."""
@@ -846,6 +859,114 @@ class GPUOrchestrator:
         combined = list(proc.stdout_buffer)[-lines//2:] + \
                    list(proc.stderr_buffer)[-lines//2:]
         return combined[-lines:]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Endpoint Discovery API
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_configured_endpoints(self) -> list[str]:
+        """Return all endpoint names from config.
+
+        Returns:
+            List of endpoint names that are configured (may not be running)
+        """
+        return list(self._endpoints_config.keys())
+
+    def get_preload_endpoints(self) -> list[str]:
+        """Return endpoints that should be preloaded on startup.
+
+        Returns:
+            List of endpoint names from startup.preload-endpoints config
+        """
+        return getattr(self, "_preload_endpoints", ["fast"])
+
+    def get_endpoint_config(self, endpoint: str) -> EndpointConfig | None:
+        """Get configuration for a specific endpoint.
+
+        Args:
+            endpoint: Endpoint name
+
+        Returns:
+            EndpointConfig if found, None otherwise
+        """
+        return self._endpoints_config.get(endpoint)
+
+    def get_running_endpoints(self) -> list[str]:
+        """Return currently running (healthy) endpoints.
+
+        Returns:
+            List of endpoint names that are currently healthy
+        """
+        return [
+            name for name, proc in self._processes.items()
+            if proc.status == ProcessStatus.HEALTHY
+        ]
+
+    async def discover_running_endpoints(self) -> list[dict[str, Any]]:
+        """Probe ports to find actually running endpoints.
+
+        Checks all configured endpoints by attempting HTTP health checks.
+        This can discover endpoints started by external processes (e.g., MCP).
+
+        Returns:
+            List of dicts with endpoint info for each responding endpoint
+        """
+        import httpx
+
+        discovered = []
+
+        for name, config in self._endpoints_config.items():
+            base_url = config.url.rstrip("/v1")
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(f"{base_url}/v1/models", timeout=3)
+                    if r.status_code == 200:
+                        # Try to parse model info
+                        try:
+                            data = r.json()
+                            models = [m.get("id", "unknown") for m in data.get("data", [])]
+                        except Exception:
+                            models = config.models
+
+                        discovered.append({
+                            "name": name,
+                            "url": config.url,
+                            "port": self._extract_port(config.url),
+                            "models": models,
+                            "status": "healthy",
+                            "tensor_parallel": config.tensor_parallel,
+                            "gpus": config.gpus,
+                        })
+            except Exception:
+                pass  # Endpoint not responding
+
+        return discovered
+
+    def get_default_endpoint(self) -> str | None:
+        """Get the best available endpoint for general inference.
+
+        Priority order:
+        1. orchestrator (if healthy) - meta-cognitive routing
+        2. fast (if healthy) - quick responses
+        3. Any healthy endpoint
+
+        Returns:
+            Endpoint name or None if none available
+        """
+        # Priority order
+        priority = ["orchestrator", "fast", "fast-2", "coding"]
+
+        for name in priority:
+            proc = self._processes.get(name)
+            if proc and proc.status == ProcessStatus.HEALTHY:
+                return name
+
+        # Fall back to any healthy endpoint
+        for name, proc in self._processes.items():
+            if proc.status == ProcessStatus.HEALTHY:
+                return name
+
+        return None
 
     async def wait_for_gpu_free(
         self, gpus: list[int] | None = None, timeout: float = 30.0, threshold_mb: int = 500

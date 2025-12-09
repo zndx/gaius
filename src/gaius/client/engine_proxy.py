@@ -68,6 +68,28 @@ class OrchestratorProxy:
         """Stop the orchestrator."""
         self._running = False
 
+    async def ensure_endpoint(self, endpoint: str) -> dict:
+        """Ensure endpoint is running, starting if needed and resources available.
+
+        This is the primary method for agent-first architecture. CLI and agents
+        call this to ensure an endpoint is available before making requests.
+
+        Args:
+            endpoint: Endpoint/agent name
+
+        Returns:
+            Dict with:
+                - healthy: bool - True if endpoint is ready
+                - status: str - Endpoint status
+                - port: int - Port if running
+                - gpu_ids: list - Allocated GPUs
+                - message: str - Error message if not healthy
+        """
+        result = await self._client.call(
+            "Orchestrator", "ensure", {"endpoint": endpoint}
+        )
+        return result
+
     async def start_endpoint(self, endpoint: str) -> bool:
         """Start a vLLM endpoint.
 
@@ -134,6 +156,19 @@ class OrchestratorProxy:
         """Get orchestrator status."""
         return await self._client.call("Orchestrator", "status", {})
 
+    async def get_endpoint_status(self, endpoint: str) -> Optional[dict[str, Any]]:
+        """Get status of a specific endpoint.
+
+        Args:
+            endpoint: Endpoint name
+
+        Returns:
+            Dict with status, port, gpu_ids, etc. or None if not found
+        """
+        status = await self._get_status_async()
+        endpoints = status.get("endpoints", {})
+        return endpoints.get(endpoint)
+
     def get_logs(self, endpoint: str, lines: int = 50) -> list[str]:
         """Get endpoint logs (sync wrapper)."""
         return asyncio.get_event_loop().run_until_complete(
@@ -146,6 +181,10 @@ class OrchestratorProxy:
             "Orchestrator", "logs", {"endpoint": endpoint, "lines": lines}
         )
         return result.get("logs", [])
+
+    async def get_logs_async(self, endpoint: str, lines: int = 50) -> list[str]:
+        """Get endpoint logs (async version)."""
+        return await self._get_logs_async(endpoint, lines)
 
     def get_startup_progress(self, endpoint: str) -> tuple[str, float]:
         """Get startup progress for an endpoint."""
@@ -554,6 +593,81 @@ class GridProxy:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Cognition Proxy
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class CognitionProxy:
+    """Proxy for cognition service.
+
+    Provides access to the engine's cognition daemon for:
+    - Recent thoughts and activity
+    - Cognition cycle status
+    - Engine "signs of life"
+    """
+
+    def __init__(self, client: GrpcEngineClient):
+        """Initialize proxy."""
+        self._client = client
+
+    async def get_recent_thoughts(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Get recent thoughts from cognition daemon.
+
+        Args:
+            limit: Maximum thoughts to return
+
+        Returns:
+            List of thought dicts with type, title, summary, salience, timestamp
+        """
+        result = await self._client.call(
+            "Cognition", "recent_thoughts", {"limit": limit}
+        )
+        return result.get("thoughts", [])
+
+    async def get_activity(self) -> dict[str, Any]:
+        """Get cognition daemon activity summary.
+
+        Returns comprehensive "signs of life" including:
+        - Recent thoughts count and types
+        - Cognition cycles completed
+        - Current task if any
+        - Last activity timestamp
+
+        Returns:
+            Activity summary dict
+        """
+        return await self._client.call("Cognition", "activity", {})
+
+    async def get_status(self) -> dict[str, Any]:
+        """Get cognition daemon status.
+
+        Returns:
+            Status dict with running state, cycles, etc.
+        """
+        return await self._client.call("Cognition", "status", {})
+
+    async def trigger_cycle(
+        self,
+        max_thoughts: int = 5,
+        trigger_reason: str = "manual",
+    ) -> dict[str, Any]:
+        """Manually trigger a cognition cycle.
+
+        Args:
+            max_thoughts: Maximum thoughts to generate
+            trigger_reason: Why this was triggered
+
+        Returns:
+            Cycle result with thoughts generated
+        """
+        return await self._client.call(
+            "Cognition",
+            "trigger",
+            {"max_thoughts": max_thoughts, "trigger_reason": trigger_reason},
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Factory Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -563,6 +677,7 @@ _evolution_proxy: Optional[EvolutionProxy] = None
 _health_proxy: Optional[HealthProxy] = None
 _tda_proxy: Optional[TDAProxy] = None
 _grid_proxy: Optional[GridProxy] = None
+_cognition_proxy: Optional[CognitionProxy] = None
 
 
 async def get_orchestrator_proxy() -> OrchestratorProxy:
@@ -617,6 +732,15 @@ async def get_grid_proxy() -> GridProxy:
         client = await get_client()
         _grid_proxy = GridProxy(client)
     return _grid_proxy
+
+
+async def get_cognition_proxy() -> CognitionProxy:
+    """Get or create cognition proxy singleton."""
+    global _cognition_proxy
+    if _cognition_proxy is None:
+        client = await get_client()
+        _cognition_proxy = CognitionProxy(client)
+    return _cognition_proxy
 
 
 # ─────────────────────────────────────────────────────────────────────────────

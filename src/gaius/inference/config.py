@@ -67,9 +67,9 @@ class InferenceConfig:
     optillm_technique: OptillmTechnique = OptillmTechnique.NONE
 
     # vLLM settings (direct local inference)
-    # Default to orchestration endpoint (8084) which supports general-purpose tasks
+    # Default to orchestrator endpoint (8080) which supports meta-cognitive routing
     # Other endpoints: reasoning=8081, coding=8082, fast=8083
-    vllm_url: str = "http://localhost:8084/v1"
+    vllm_url: str = "http://localhost:8080/v1"
 
     # XAI settings (outsider model for evaluation)
     xai_url: str = "https://api.x.ai/v1"
@@ -138,18 +138,18 @@ class InferenceConfig:
 
         Checks configured endpoints in order of preference:
         1. fast (Mistral-7B) - lightweight, quick responses
-        2. orchestration (Orchestrator-8B) - general purpose
-        3. coding (Qwen3-Coder) - structured tasks
-        4. reasoning (QwQ-32B) - complex reasoning
+        2. orchestrator (Orchestrator-8B) - meta-cognitive routing
+        3. coding (Qwen2.5-Coder-32B) - structured tasks
+        4. reasoning (DeepSeek-R1-32B) - complex reasoning
 
         Returns first responding endpoint, or default if none available.
         """
         import socket
 
-        # Endpoint preference order
+        # Endpoint preference order (ports from agents.conf)
         endpoints = [
             ("fast", "http://localhost:8083/v1"),
-            ("orchestration", "http://localhost:8084/v1"),
+            ("orchestrator", "http://localhost:8080/v1"),
             ("coding", "http://localhost:8082/v1"),
             ("reasoning", "http://localhost:8081/v1"),
         ]
@@ -173,8 +173,8 @@ class InferenceConfig:
             except Exception:
                 continue
 
-        # Default fallback
-        return "http://localhost:8084/v1"
+        # Default fallback (orchestrator on 8080)
+        return "http://localhost:8080/v1"
 
     def with_technique(self, technique: OptillmTechnique | str) -> "InferenceConfig":
         """Return a new config with the specified technique."""

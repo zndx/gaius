@@ -212,6 +212,9 @@ class GaiusCLI:
             # Thoughts - cognition and pattern detection
             elif command == "thoughts":
                 result["data"] = self._run_async(self._cmd_thoughts(args))
+            # Model registry commands
+            elif command == "model" or command == "models":
+                result["data"] = self._cmd_model(args)
             else:
                 result["success"] = False
                 result["error"] = f"Unknown command: {command}"
@@ -664,6 +667,890 @@ class GaiusCLI:
             },
             "tagline": "/ask away! Use /ask for general queries, /watch for telemetry, /search for research.",
         }
+
+    # --- Model Registry Commands ---
+
+    def _cmd_model(self, args: str) -> dict:
+        """Model registry operations.
+
+        Usage:
+            /model                  - List all registered models
+            /model list             - List all registered models
+            /model info <id>        - Show detailed info for a model
+            /model serve <id>       - Show vLLM serve command for a model
+            /model task <task>      - Find best model for task type
+        """
+        from .models.registry import (
+            get_model_registry,
+            ModelCapability,
+            TaskType,
+        )
+
+        registry = get_model_registry()
+
+        parts = args.split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+
+        if subcmd == "list" or subcmd == "":
+            # List all models
+            models = []
+            for model in registry.list_models():
+                models.append({
+                    "name": model.name,
+                    "model_id": model.model_id,
+                    "provider": model.provider,
+                    "parameters_b": model.parameters_b,
+                    "context_length": model.context_length,
+                    "capabilities": [c.name for c in model.capabilities],
+                    "has_vllm_config": model.vllm_config is not None,
+                    "default_port": model.default_port,
+                    "tags": model.tags,
+                })
+            return {"models": models, "count": len(models)}
+
+        elif subcmd == "info":
+            # Get detailed info for a model
+            if not subargs:
+                raise ValueError("model info requires a model ID")
+
+            # Try exact match first, then partial match
+            model = registry.get(subargs)
+            if not model:
+                # Try partial match on name or model_id
+                for m in registry.list_models():
+                    if subargs.lower() in m.name.lower() or subargs.lower() in m.model_id.lower():
+                        model = m
+                        break
+
+            if not model:
+                raise ValueError(f"Model not found: {subargs}")
+
+            info = {
+                "name": model.name,
+                "model_id": model.model_id,
+                "provider": model.provider,
+                "description": model.description,
+                "parameters_b": model.parameters_b,
+                "context_length": model.context_length,
+                "embedding_dim": model.embedding_dim,
+                "capabilities": [c.name for c in model.capabilities],
+                "task_scores": {t.value: s for t, s in model.task_scores.items()},
+                "default_temperature": model.default_temperature,
+                "default_max_tokens": model.default_max_tokens,
+                "default_port": model.default_port,
+                "tags": model.tags,
+            }
+
+            if model.vllm_config:
+                cfg = model.vllm_config
+                info["vllm_config"] = {
+                    "tensor_parallel_size": cfg.tensor_parallel_size,
+                    "gpu_memory_utilization": cfg.gpu_memory_utilization,
+                    "max_model_len": cfg.max_model_len,
+                    "max_num_seqs": cfg.max_num_seqs,
+                    "dtype": cfg.dtype,
+                    "trust_remote_code": cfg.trust_remote_code,
+                    "tool_call_parser": cfg.tool_call_parser,
+                    "reasoning_parser": cfg.reasoning_parser,
+                    "attention_backend": cfg.attention_backend,
+                }
+
+            return info
+
+        elif subcmd == "serve":
+            # Generate vLLM serve command
+            if not subargs:
+                raise ValueError("model serve requires a model ID")
+
+            # Parse optional flags: model serve <id> [--port=N] [--gpus=0,1,2,3]
+            model_id = subargs.split()[0]
+            port = None
+            gpus = None
+
+            for part in subargs.split()[1:]:
+                if part.startswith("--port="):
+                    port = int(part.split("=")[1])
+                elif part.startswith("--gpus="):
+                    gpus = [int(g) for g in part.split("=")[1].split(",")]
+
+            # Find model
+            model = registry.get(model_id)
+            if not model:
+                for m in registry.list_models():
+                    if model_id.lower() in m.name.lower() or model_id.lower() in m.model_id.lower():
+                        model = m
+                        break
+
+            if not model:
+                raise ValueError(f"Model not found: {model_id}")
+
+            if not model.vllm_config:
+                raise ValueError(f"Model {model.name} does not have vLLM configuration")
+
+            cmd, env = model.serve_command(port=port, gpus=gpus)
+
+            return {
+                "model": model.name,
+                "command": cmd,
+                "env_vars": env,
+                "full_command": " ".join(f"{k}={v}" for k, v in env.items()) + " " + cmd if env else cmd,
+            }
+
+        elif subcmd == "task":
+            # Find best model for a task
+            if not subargs:
+                # List available task types
+                return {
+                    "task_types": [t.value for t in TaskType],
+                    "hint": "Use: /model task <task_type> to find best model",
+                }
+
+            try:
+                task = TaskType(subargs.lower())
+            except ValueError:
+                raise ValueError(f"Unknown task type: {subargs}. Valid: {[t.value for t in TaskType]}")
+
+            model = registry.get_for_task(task, require_local=True)
+            if not model:
+                model = registry.get_for_task(task)
+
+            if not model:
+                return {"task": task.value, "model": None, "message": "No model found for task"}
+
+            return {
+                "task": task.value,
+                "model": model.name,
+                "model_id": model.model_id,
+                "score": model.score_for_task(task),
+                "provider": model.provider,
+            }
+
+        elif subcmd == "add-note":
+            # Fetch HuggingFace model card and create KB note
+            if not subargs:
+                raise ValueError("model add-note requires a model ID (e.g., mistralai/Mistral-7B-Instruct-v0.3)")
+
+            model_id = subargs.strip()
+            return self._run_async(self._cmd_model_add_note(model_id))
+
+        elif subcmd == "add":
+            # Agent-orchestrated model registry addition
+            if not subargs:
+                raise ValueError("Usage: /model add <model_id> [--legacy]")
+
+            parts = subargs.split()
+            model_id = parts[0]
+            legacy_mode = "--legacy" in parts
+
+            # Agent-first: check engine availability first
+            if not legacy_mode:
+                from .client.engine_proxy import use_engine_proxy
+                if not use_engine_proxy():
+                    return {
+                        "error": "Gaius engine not running",
+                        "hint": "Start the engine with: gaius-engine start",
+                        "alternative": "Use --legacy flag for standalone mode: /model add <model_id> --legacy",
+                    }
+
+            if legacy_mode:
+                # Use existing hardcoded implementation
+                return self._run_async(self._cmd_model_add_legacy(model_id))
+            else:
+                # Use agent orchestration (default)
+                return self._run_async(self._cmd_model_add_agent(model_id))
+
+        elif subcmd == "add-confirm":
+            # Confirm pending model addition
+            return self._run_async(self._cmd_model_add_confirm())
+
+        elif subcmd == "add-cancel":
+            # Cancel pending model addition
+            return self._cmd_model_add_cancel()
+
+        else:
+            raise ValueError(f"Unknown model subcommand: {subcmd}. Use: list, info, serve, task, add-note, add")
+
+    async def _cmd_model_add_note(self, model_id: str) -> dict:
+        """Fetch HuggingFace model card and create KB note.
+
+        Args:
+            model_id: HuggingFace model ID (e.g., mistralai/Mistral-7B-Instruct-v0.3)
+
+        Returns:
+            Dict with path to created note
+        """
+        import httpx
+        from pathlib import Path
+        from datetime import datetime
+
+        # Fetch model card from HuggingFace
+        hf_url = f"https://huggingface.co/{model_id}"
+        readme_url = f"https://huggingface.co/{model_id}/raw/main/README.md"
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            # Try to fetch README.md directly
+            try:
+                resp = await client.get(readme_url)
+                if resp.status_code == 200:
+                    readme_content = resp.text
+                else:
+                    readme_content = None
+            except Exception:
+                readme_content = None
+
+            # Also fetch model info from API
+            api_url = f"https://huggingface.co/api/models/{model_id}"
+            try:
+                resp = await client.get(api_url)
+                if resp.status_code == 200:
+                    model_info = resp.json()
+                else:
+                    model_info = {}
+            except Exception:
+                model_info = {}
+
+        # Extract useful info
+        model_name = model_id.split("/")[-1]
+        org_name = model_id.split("/")[0] if "/" in model_id else "unknown"
+
+        # Build the note content
+        lines = [
+            f"# {model_name}",
+            "",
+            f"**Model ID:** `{model_id}`",
+            f"**Organization:** {org_name}",
+            f"**HuggingFace:** [{model_id}]({hf_url})",
+            "",
+        ]
+
+        # Add model info from API if available
+        if model_info:
+            if model_info.get("pipeline_tag"):
+                lines.append(f"**Pipeline:** {model_info['pipeline_tag']}")
+            if model_info.get("library_name"):
+                lines.append(f"**Library:** {model_info['library_name']}")
+            if model_info.get("downloads"):
+                lines.append(f"**Downloads:** {model_info['downloads']:,}")
+            if model_info.get("likes"):
+                lines.append(f"**Likes:** {model_info['likes']:,}")
+            if model_info.get("tags"):
+                lines.append(f"**Tags:** {', '.join(model_info['tags'][:10])}")
+            lines.append("")
+
+        # Add the README content
+        if readme_content:
+            lines.append("## Model Card")
+            lines.append("")
+            lines.append(readme_content)
+        else:
+            lines.append("## Model Card")
+            lines.append("")
+            lines.append(f"*Could not fetch model card. Visit [{hf_url}]({hf_url}) for details.*")
+
+        # Add metadata footer
+        lines.extend([
+            "",
+            "---",
+            f"*Note created: {datetime.now().strftime('%Y-%m-%d %H:%M')}*",
+        ])
+
+        content = "\n".join(lines)
+
+        # Create the file in KB
+        kb_root = Path(self.config.kb.root)
+        models_dir = kb_root / "current" / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sanitize filename
+        safe_name = model_name.lower().replace(" ", "-")
+        note_path = models_dir / f"{safe_name}.md"
+
+        note_path.write_text(content)
+
+        return {
+            "model_id": model_id,
+            "path": str(note_path),
+            "size_bytes": len(content),
+            "has_readme": readme_content is not None,
+            "message": f"Created note at {note_path}",
+        }
+
+    # --- Model Add (AI-Powered) ---
+
+    # System prompt for AI code generation
+    _MODELSPEC_SYSTEM_PROMPT = """You are a Python code generator for the Gaius model registry.
+Generate a ModelSpec definition. Output ONLY valid Python code. No explanations, no markdown fences.
+
+## EXACT ModelSpec signature (use ONLY these fields):
+ModelSpec(
+    model_id: str,           # HuggingFace model ID
+    name: str,               # Human-readable name
+    provider: str,           # "vllm" for local models
+    capabilities: list,      # List of ModelCapability values
+    task_scores: dict,       # Dict mapping TaskType to float (0.0-1.0)
+    context_length: int,     # Max context window
+    parameters_b: float,     # Parameters in billions (optional)
+    default_temperature: float,  # Default 0.7
+    default_max_tokens: int,     # Default 2048
+    default_port: int,       # Default 8085
+    vllm_config: VLLMConfig, # vLLM serving config (optional)
+    description: str,        # Brief description
+    tags: list[str],         # Search tags
+)
+
+## EXACT VLLMConfig signature:
+VLLMConfig(
+    tensor_parallel_size: int,   # 1 for <10B, 2 for 10-30B, 4 for 30B+
+    max_model_len: int,          # Context length, cap at 65536
+    trust_remote_code: bool,     # True only for Qwen, GLM
+)
+
+## ModelCapability enum values (for capabilities list):
+##   CHAT, REASONING, CODING, FUNCTION_CALLING, LONG_CONTEXT, VISION_LANGUAGE,
+##   ORCHESTRATION, TEXT_EMBEDDING, VISION_EMBEDDING
+
+## TaskType enum values (for task_scores dict keys):
+##   CHAT, REASONING, CODING, SWARM_AGENT, SWARM_LEADER, EVALUATION,
+##   ORCHESTRATION, TEXT_EMBEDDING, VISION_EMBEDDING
+## NOTE: TaskType does NOT have FUNCTION_CALLING or LONG_CONTEXT - those are only ModelCapability!
+
+## Example:
+MISTRAL_7B = ModelSpec(
+    model_id="mistralai/Mistral-7B-Instruct-v0.3",
+    name="Mistral-7B",
+    provider="vllm",
+    capabilities=[ModelCapability.CHAT, ModelCapability.FUNCTION_CALLING],
+    task_scores={
+        TaskType.CHAT: 0.85,
+        TaskType.SWARM_AGENT: 0.80,
+    },
+    context_length=32768,
+    parameters_b=7.2,
+    default_temperature=0.7,
+    default_max_tokens=2048,
+    default_port=8085,
+    vllm_config=VLLMConfig(
+        tensor_parallel_size=1,
+        max_model_len=32768,
+    ),
+    description="Mistral 7B Instruct - fast chat model with function calling",
+    tags=["chat", "instruct", "fast"],
+)
+
+Use UPPERCASE_WITH_UNDERSCORES for the variable name.
+"""
+
+    async def _cmd_model_add_agent(self, model_id: str) -> dict:
+        """Agent-orchestrated model addition using Orchestrator-8B.
+
+        Uses a ReAct agent loop where Orchestrator-8B coordinates:
+        1. GPU management (launch/release coding model)
+        2. HuggingFace data fetching
+        3. AI code generation with retry logic
+        4. Validation in subprocess/devenv sandbox
+        5. Optional XAI critique for quality signal
+
+        Args:
+            model_id: HuggingFace model ID
+
+        Returns:
+            Dict with generated code and validation results for review
+        """
+        from .agents.modeladd import ModelAddOrchestrator
+
+        orchestrator = ModelAddOrchestrator()
+        result = await orchestrator.run(model_id)
+
+        # Save pending state if successful
+        if result.get("status") == "pending_review":
+            self._save_pending_model_add({
+                "model_id": model_id,
+                "code": result.get("generated_code", ""),
+                "validation": result.get("validation", {}),
+                "critique": result.get("critique", {}),
+            })
+
+        return result
+
+    async def _cmd_model_add_legacy(self, model_id: str) -> dict:
+        """Generate and validate ModelSpec code for a HuggingFace model.
+
+        Legacy implementation - uses hardcoded workflow instead of agent orchestration.
+        Use --legacy flag to invoke this method.
+
+        Uses AI code generation with tiered fallback:
+        1. Engine-managed coding endpoint
+        2. Frontier model (xAI Grok)
+
+        Args:
+            model_id: HuggingFace model ID (e.g., mistralai/Mistral-7B-Instruct-v0.3)
+
+        Returns:
+            Dict with generated code and validation results for review
+        """
+        # Phase 1: Fetch HuggingFace data
+        hf_data = await self._fetch_hf_comprehensive(model_id)
+        if not hf_data.get("api_info"):
+            return {"error": f"Could not fetch model info for {model_id}"}
+
+        # Phase 2: Generate code via AI
+        try:
+            generated_code = await self._generate_modelspec(hf_data)
+        except Exception as e:
+            return {
+                "error": f"Code generation failed: {e}",
+                "hint": "Ensure local coding model is running or XAI_API_KEY is set",
+            }
+
+        # Phase 3: Validate in subprocess
+        validation = self._validate_modelspec_code(generated_code)
+
+        # Store for confirmation (persist to file for CLI usage)
+        pending_data = {
+            "model_id": model_id,
+            "code": generated_code,
+            "validation": validation,
+        }
+        self._save_pending_model_add(pending_data)
+
+        return {
+            "status": "pending_review",
+            "model_id": model_id,
+            "generated_code": generated_code,
+            "validation": validation,
+            "next_steps": [
+                "/model add-confirm  - Write to registry",
+                "/model add-cancel   - Discard",
+            ],
+        }
+
+    async def _fetch_hf_comprehensive(self, model_id: str) -> dict:
+        """Fetch comprehensive model data from HuggingFace.
+
+        Args:
+            model_id: HuggingFace model ID
+
+        Returns:
+            Dict with api_info, config, and readme
+        """
+        import httpx
+
+        data = {"model_id": model_id, "api_info": {}, "config": {}, "readme": None}
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            # API metadata
+            api_url = f"https://huggingface.co/api/models/{model_id}"
+            try:
+                resp = await client.get(api_url)
+                if resp.status_code == 200:
+                    data["api_info"] = resp.json()
+            except Exception:
+                pass
+
+            # config.json for context_length, architecture
+            config_url = f"https://huggingface.co/{model_id}/raw/main/config.json"
+            try:
+                resp = await client.get(config_url)
+                if resp.status_code == 200:
+                    data["config"] = resp.json()
+            except Exception:
+                pass
+
+            # README.md (truncated for prompt)
+            readme_url = f"https://huggingface.co/{model_id}/raw/main/README.md"
+            try:
+                resp = await client.get(readme_url)
+                if resp.status_code == 200:
+                    # Truncate to avoid huge prompts
+                    data["readme"] = resp.text[:4000]
+            except Exception:
+                pass
+
+        return data
+
+    async def _get_coding_model(self) -> tuple[str, str]:
+        """Get best available coding model endpoint.
+
+        Tries engine-managed coding endpoint first, then falls back to Grok API.
+
+        Returns:
+            Tuple of (model_id, endpoint_url)
+
+        Raises:
+            RuntimeError: If no coding model is available
+        """
+        import httpx
+        import os
+
+        # Try engine-managed coding endpoint (agent-first)
+        try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                result = await orch.ensure_endpoint("coding")
+                if result.get("healthy"):
+                    port = result.get("port", 8083)
+                    model_id = result.get("model", "coding")
+                    return (model_id, f"http://localhost:{port}/v1")
+        except Exception:
+            pass
+
+        # Fallback to Grok via XAI API
+        if os.getenv("XAI_API_KEY"):
+            return ("grok-2-latest", "https://api.x.ai/v1")
+
+        raise RuntimeError(
+            "No coding model available. Either:\n"
+            "  - Start the Gaius engine (gaius-engine start)\n"
+            "  - Set XAI_API_KEY environment variable"
+        )
+
+    async def _generate_modelspec(self, hf_data: dict) -> str:
+        """Generate ModelSpec code via AI.
+
+        Args:
+            hf_data: HuggingFace data from _fetch_hf_comprehensive
+
+        Returns:
+            Generated Python code string
+
+        Raises:
+            RuntimeError: If no coding model available
+            httpx.HTTPError: If API request fails
+        """
+        import httpx
+        import os
+
+        model_id, endpoint = await self._get_coding_model()
+        prompt = self._build_ai_prompt(hf_data)
+
+        # Prepare headers
+        headers = {"Content-Type": "application/json"}
+        api_key = os.getenv("XAI_API_KEY", "")
+        if api_key and "x.ai" in endpoint:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{endpoint}/chat/completions",
+                headers=headers,
+                json={
+                    "model": model_id,
+                    "messages": [
+                        {"role": "system", "content": self._MODELSPEC_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2000,
+                },
+            )
+            resp.raise_for_status()
+
+        code = resp.json()["choices"][0]["message"]["content"]
+
+        # Strip markdown fences if present
+        if "```python" in code:
+            code = code.split("```python")[1].split("```")[0]
+        elif "```" in code:
+            code = code.split("```")[1].split("```")[0]
+
+        return code.strip()
+
+    def _build_ai_prompt(self, hf_data: dict) -> str:
+        """Build the user prompt for AI code generation.
+
+        Args:
+            hf_data: HuggingFace data
+
+        Returns:
+            Formatted prompt string
+        """
+        import re
+
+        model_id = hf_data["model_id"]
+        config = hf_data.get("config", {})
+        api = hf_data.get("api_info", {})
+        readme = hf_data.get("readme", "")
+
+        # Extract key info
+        name = model_id.split("/")[-1]
+        context_len = config.get("max_position_embeddings") or config.get("n_positions", 32768)
+        architectures = config.get("architectures", [])
+        model_type = config.get("model_type", "unknown")
+
+        # Estimate parameters
+        params_b = self._estimate_params(api, name)
+
+        # Build prompt
+        prompt = f"""Generate a ModelSpec for this model:
+
+Model ID: {model_id}
+Model Name: {name}
+Architecture: {architectures[0] if architectures else model_type}
+Context Length: {context_len}
+Parameters: ~{params_b}B
+Pipeline: {api.get('pipeline_tag', 'text-generation')}
+Tags: {', '.join(api.get('tags', [])[:15])}
+Downloads: {api.get('downloads', 0):,}
+
+"""
+        if readme:
+            # Add truncated README for context
+            prompt += f"Model Card (excerpt):\n{readme[:2000]}\n\n"
+
+        prompt += """Generate the ModelSpec Python code. Include appropriate:
+- capabilities list based on model type/tags
+- task_scores dict with relevant TaskType mappings
+- vllm_config with correct tensor_parallel_size for the parameter count
+"""
+        return prompt
+
+    def _estimate_params(self, api_info: dict, name: str) -> float:
+        """Estimate model parameters in billions.
+
+        Args:
+            api_info: HuggingFace API response
+            name: Model name
+
+        Returns:
+            Estimated parameter count in billions
+        """
+        import re
+
+        # Try safetensors metadata first
+        safetensors = api_info.get("safetensors", {})
+        if safetensors and safetensors.get("total"):
+            return round(safetensors["total"] / 1e9, 1)
+
+        # Parse from name (e.g., "Mistral-7B", "Qwen-32B", "14B", "30B-A3B")
+        match = re.search(r'(\d+(?:\.\d+)?)[Bb]', name)
+        if match:
+            return float(match.group(1))
+
+        # Check for MoE patterns (e.g., "30B-A3B" means 30B total, 3B active)
+        moe_match = re.search(r'(\d+)[Bb]-[Aa](\d+)[Bb]', name)
+        if moe_match:
+            return float(moe_match.group(1))
+
+        return 7.0  # Conservative default
+
+    def _validate_modelspec_code(self, code: str) -> dict:
+        """Validate generated ModelSpec code.
+
+        Args:
+            code: Generated Python code
+
+        Returns:
+            Validation results dict
+        """
+        import ast
+        import subprocess
+        from pathlib import Path
+
+        result = {
+            "syntax": False,
+            "imports": False,
+            "serve_cmd": False,
+            "warnings": [],
+            "variable_name": None,
+        }
+
+        # 1. Syntax check
+        try:
+            tree = ast.parse(code)
+            result["syntax"] = True
+        except SyntaxError as e:
+            result["warnings"].append(f"Syntax error at line {e.lineno}: {e.msg}")
+            return result
+
+        # 2. Find variable name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                if isinstance(node.value, ast.Call):
+                    func = node.value.func
+                    if hasattr(func, 'id') and func.id == 'ModelSpec':
+                        if node.targets and isinstance(node.targets[0], ast.Name):
+                            result["variable_name"] = node.targets[0].id
+
+        if not result["variable_name"]:
+            result["warnings"].append("No ModelSpec() assignment found")
+            return result
+
+        # 3. Import test in subprocess (isolated)
+        test_script = f'''
+import sys
+sys.path.insert(0, "src")
+from gaius.models.registry import ModelSpec, VLLMConfig, ModelCapability, TaskType
+{code}
+# Find and validate the ModelSpec
+for name, obj in list(locals().items()):
+    if isinstance(obj, ModelSpec):
+        print(f"MODEL_OK: {{name}}")
+        print(f"CAPABILITIES: {{[c.name for c in obj.capabilities]}}")
+        try:
+            cmd, env = obj.serve_command(port=8099, gpus=[0])
+            print(f"SERVE_CMD_OK")
+        except Exception as e:
+            print(f"SERVE_CMD_ERR: {{e}}")
+        break
+'''
+        try:
+            # Find project root
+            cli_path = Path(__file__).resolve()
+            project_root = cli_path.parent.parent.parent
+
+            proc = subprocess.run(
+                ["python", "-c", test_script],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                cwd=str(project_root),
+            )
+
+            result["imports"] = "MODEL_OK" in proc.stdout
+            result["serve_cmd"] = "SERVE_CMD_OK" in proc.stdout
+
+            if proc.returncode != 0 and proc.stderr:
+                # Truncate long error messages
+                err = proc.stderr[:500]
+                result["warnings"].append(f"Import error: {err}")
+
+            if "SERVE_CMD_ERR" in proc.stdout:
+                err_match = proc.stdout.split("SERVE_CMD_ERR:")
+                if len(err_match) > 1:
+                    result["warnings"].append(f"serve_command error: {err_match[1].strip()}")
+
+        except subprocess.TimeoutExpired:
+            result["warnings"].append("Validation timed out (15s)")
+        except Exception as e:
+            result["warnings"].append(f"Validation failed: {e}")
+
+        return result
+
+    async def _cmd_model_add_confirm(self) -> dict:
+        """Commit the pending ModelSpec to registry.
+
+        Returns:
+            Dict with commit status
+        """
+        import re
+        from pathlib import Path
+
+        pending = self._load_pending_model_add()
+        if not pending:
+            return {"error": "No pending model. Run /model add first."}
+
+        code = pending["code"]
+        model_id = pending["model_id"]
+        validation = pending["validation"]
+
+        # Check validation passed
+        if not validation.get("imports"):
+            return {
+                "error": "Cannot commit - validation failed",
+                "validation": validation,
+                "hint": "Fix the generated code or cancel with /model add-cancel",
+            }
+
+        var_name = validation.get("variable_name")
+        if not var_name:
+            return {"error": "Could not determine variable name from generated code"}
+
+        # Find registry.py
+        cli_path = Path(__file__).resolve()
+        registry_path = cli_path.parent / "models" / "registry.py"
+
+        if not registry_path.exists():
+            return {"error": f"Registry not found at {registry_path}"}
+
+        content = registry_path.read_text()
+
+        # Insert before Registry class definition
+        # Look for the marker comment before the Registry class
+        marker = "# " + "=" * 79 + "\n# Registry"
+        if marker not in content:
+            # Try alternative marker
+            marker = "class ModelRegistry:"
+            if marker not in content:
+                return {"error": "Could not find insertion point in registry.py"}
+
+        # Add the new model before the marker
+        new_content = content.replace(marker, f"{code}\n\n\n{marker}")
+
+        # Add to defaults list
+        defaults_pattern = r'(defaults\s*=\s*\[)'
+        if re.search(defaults_pattern, new_content):
+            new_content = re.sub(
+                defaults_pattern,
+                f'\\1\n            {var_name},',
+                new_content,
+            )
+        else:
+            return {"error": "Could not find defaults list in registry.py"}
+
+        # Write the updated registry
+        registry_path.write_text(new_content)
+
+        # Create KB note
+        try:
+            await self._cmd_model_add_note(model_id)
+        except Exception:
+            pass  # Non-fatal if KB note fails
+
+        # Clean up pending state
+        self._clear_pending_model_add()
+
+        return {
+            "status": "committed",
+            "model_id": model_id,
+            "variable": var_name,
+            "files_modified": [str(registry_path)],
+            "verify_with": f"/model info {var_name.replace('_', '-').lower()}",
+        }
+
+    def _cmd_model_add_cancel(self) -> dict:
+        """Cancel pending model add.
+
+        Returns:
+            Dict with cancel status
+        """
+        pending = self._load_pending_model_add()
+        if pending:
+            model_id = pending.get("model_id", "unknown")
+            self._clear_pending_model_add()
+            return {"status": "cancelled", "model_id": model_id}
+        return {"status": "nothing_pending"}
+
+    def _get_pending_file_path(self) -> "Path":
+        """Get path for pending model add state file."""
+        from pathlib import Path
+        return Path(self.config.kb.root) / ".pending_model_add.json"
+
+    def _save_pending_model_add(self, data: dict) -> None:
+        """Save pending model add state to file."""
+        import json
+        path = self._get_pending_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+
+    def _load_pending_model_add(self) -> dict | None:
+        """Load pending model add state from file."""
+        import json
+        path = self._get_pending_file_path()
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                return None
+        return None
+
+    def _clear_pending_model_add(self) -> None:
+        """Clear pending model add state."""
+        path = self._get_pending_file_path()
+        if path.exists():
+            path.unlink()
 
     # --- Inference Commands ---
 
@@ -1730,6 +2617,70 @@ Respond with:
         subargs = parts[1] if len(parts) > 1 else ""
 
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+
+                if subcmd == "status":
+                    return await orch._get_status_async()
+
+                elif subcmd == "start":
+                    if subargs:
+                        result = await orch.ensure_endpoint(subargs)
+                        return {
+                            "endpoint": subargs,
+                            "started": result.get("healthy", False),
+                            "status": result.get("status", "unknown"),
+                            "port": result.get("port"),
+                            "gpu_ids": result.get("gpu_ids", []),
+                            "message": result.get("message", ""),
+                        }
+                    else:
+                        success = await orch.start_endpoint("")
+                        return {"action": "start_all", "success": success}
+
+                elif subcmd == "stop":
+                    if subargs:
+                        success = await orch.stop_endpoint(subargs)
+                        return {"endpoint": subargs, "stopped": success}
+                    else:
+                        success = await orch.stop_endpoint("")
+                        return {"action": "stop_all", "stopped": success}
+
+                elif subcmd == "restart":
+                    if not subargs:
+                        return {"error": "restart requires an endpoint name"}
+                    success = await orch.restart_endpoint(subargs)
+                    status = await orch.get_endpoint_status(subargs)
+                    return {
+                        "endpoint": subargs,
+                        "restarted": success,
+                        "status": status.get("status", "unknown") if status else "unknown",
+                        "port": status.get("port") if status else None,
+                    }
+
+                elif subcmd == "logs":
+                    if not subargs:
+                        return {"error": "logs requires an endpoint name"}
+                    logs = await orch.get_logs_async(subargs, lines=50)
+                    return {
+                        "endpoint": subargs,
+                        "lines": len(logs),
+                        "logs": logs,
+                    }
+
+                elif subcmd == "health":
+                    from .inference.health import get_health_monitor
+                    monitor = get_health_monitor()
+                    return monitor.get_summary()
+
+                else:
+                    return {"error": f"Unknown gpu command: {subcmd}"}
+
+            # Fallback to legacy orchestrator
+            logger.warning("LEGACY_FALLBACK: /gpu command bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1949,39 +2900,35 @@ Respond with:
             # Start orchestrator-managed evolution
             # This runs in a blocking loop until stopped (Ctrl+C)
             # Usage: /evolve orchestrated [endpoint]
-            #   endpoint: Optional endpoint to use for orchestration (default: orchestration)
-            #             Use 'fast' or 'reasoning' if orchestration endpoint not available.
+            #   endpoint: Optional endpoint to use for orchestration (default: orchestrator)
+            #             Use 'fast' or 'reasoning' if orchestrator endpoint not available.
             #             If no endpoint specified and none running, uses fallback heuristics.
             from .inference.orchestrator import get_orchestrator
             from .agents.evolution.orchestrated import get_orchestrated_evolution
 
-            endpoint_to_use = subargs.strip() if subargs else "orchestration"
+            endpoint_to_use = subargs.strip() if subargs else "orchestrator"
 
             print("Starting orchestrator-managed evolution...", file=sys.stderr)
             print("Press Ctrl+C to stop", file=sys.stderr)
 
-            # Check endpoint status
-            orchestrator = get_orchestrator()
-            status = orchestrator.get_status()
+            # Use InferenceManager to check/discover endpoints (finds external processes)
+            from .inference.manager import get_inference_manager
+            manager = get_inference_manager()
+            status = await manager.get_status()
 
-            endpoint_info = status.get("endpoints", {}).get(endpoint_to_use, {})
-            if endpoint_info.get("status") != "healthy":
-                # Try to start the specified endpoint
-                print(f"Phase 1: Starting {endpoint_to_use} endpoint...", file=sys.stderr)
-                await orchestrator.start_endpoint(endpoint_to_use)
-                print("Waiting for endpoint to become healthy...", file=sys.stderr)
-                # Wait for endpoint to be healthy (with timeout)
-                for i in range(90):  # 90 second timeout for model loading
-                    await asyncio.sleep(1)
-                    status = orchestrator.get_status()
-                    endpoint_info = status.get("endpoints", {}).get(endpoint_to_use, {})
-                    if endpoint_info.get("status") == "healthy":
-                        print(f"{endpoint_to_use} endpoint ready", file=sys.stderr)
-                        break
-                    if i % 10 == 0:
-                        print(f"  Still waiting... ({i}s)", file=sys.stderr)
+            if not status.default_model_ready:
+                # No endpoint found, try to start one
+                print(f"Phase 1: Starting inference endpoint...", file=sys.stderr)
+                success = await manager.ensure_orchestrator_running()
+                if not success:
+                    print("Warning: Could not start inference endpoint, will use fallback heuristics", file=sys.stderr)
                 else:
-                    print(f"Warning: Endpoint not healthy after 90s, will use fallback heuristics", file=sys.stderr)
+                    print("Inference endpoint ready", file=sys.stderr)
+            else:
+                # Found existing endpoint
+                healthy_endpoints = [name for name, st in status.endpoints_running.items()
+                                    if st.value == "healthy"]
+                print(f"Phase 1: Found healthy endpoints: {healthy_endpoints}", file=sys.stderr)
 
             # Start orchestrated evolution with specified endpoint
             print("Phase 2: Starting orchestrator-managed evolution loop...", file=sys.stderr)

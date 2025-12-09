@@ -165,6 +165,96 @@ class OrchestratorService:
     # Endpoint Management
     # ─────────────────────────────────────────────────────────────────────────
 
+    async def ensure_endpoint(self, agent_alias: str) -> EndpointStatus:
+        """Ensure endpoint is running, starting if needed and resources available.
+
+        This is the primary method for agent-first architecture. CLI and agents
+        call this to ensure an endpoint is available before making requests.
+
+        Args:
+            agent_alias: Agent identifier
+
+        Returns:
+            EndpointStatus with healthy=True if ready, or error info if not
+
+        Raises:
+            ValueError: If agent not in config
+        """
+        if agent_alias not in self.config.agents:
+            raise ValueError(f"Unknown agent: {agent_alias}")
+
+        agent_config = self.config.agents[agent_alias]
+
+        # For optillm-backed agents, no dedicated endpoint needed
+        if agent_config.backend.lower() != "vllm":
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,
+                gpu_ids=[],
+                status="optillm",  # Uses shared optillm, always available
+            )
+
+        # Check if already healthy
+        existing = self.get_endpoint_status(agent_alias)
+        if existing and existing.status == "healthy":
+            logger.debug(f"Endpoint {agent_alias} already healthy")
+            return existing
+
+        # Check resource availability
+        required_gpus = agent_config.resources.gpus
+        free_gpus = self.resource_manager.get_free_gpus()
+
+        if len(free_gpus) < required_gpus:
+            # Not enough GPUs - return informative status
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,
+                gpu_ids=[],
+                status="insufficient_resources",
+                startup_message=f"Need {required_gpus} GPUs, only {len(free_gpus)} free",
+            )
+
+        # Check for contiguous GPUs if tensor_parallel > 1
+        if required_gpus > 1 and self.resource_manager.prefer_contiguous:
+            contiguous = self._find_contiguous_gpus(free_gpus, required_gpus)
+            if not contiguous:
+                return EndpointStatus(
+                    agent_alias=agent_alias,
+                    model=agent_config.model,
+                    port=None,
+                    gpu_ids=[],
+                    status="no_contiguous_gpus",
+                    startup_message=f"Need {required_gpus} contiguous GPUs for tensor parallel",
+                )
+
+        # Start the endpoint
+        logger.info(f"ensure_endpoint: starting {agent_alias} ({required_gpus} GPUs)")
+        return await self.start_endpoint(agent_alias)
+
+    def _find_contiguous_gpus(self, free_gpus: list[int], count: int) -> list[int]:
+        """Find contiguous GPUs from free list.
+
+        Args:
+            free_gpus: Available GPU IDs
+            count: Number needed
+
+        Returns:
+            List of contiguous GPU IDs, or empty if not found
+        """
+        free_set = set(free_gpus)
+        for start in free_gpus:
+            contiguous = []
+            for i in range(count):
+                if (start + i) in free_set:
+                    contiguous.append(start + i)
+                else:
+                    break
+            if len(contiguous) == count:
+                return contiguous
+        return []
+
     async def start_endpoint(self, agent_alias: str) -> EndpointStatus:
         """Start an inference endpoint for an agent.
 

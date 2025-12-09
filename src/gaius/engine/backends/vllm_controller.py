@@ -378,8 +378,8 @@ class VLLMController:
                     break
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 proc.stdout_buffer.append(decoded)
-                if "error" in decoded.lower():
-                    logger.warning(f"[{proc.agent_alias}] {decoded}")
+                # Only log at debug - vLLM is very verbose
+                logger.debug(f"[{proc.agent_alias}] {decoded}")
         except Exception:
             pass
 
@@ -395,8 +395,13 @@ class VLLMController:
                     break
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 proc.stderr_buffer.append(decoded)
-                if "error" in decoded.lower() or "exception" in decoded.lower():
-                    logger.warning(f"[{proc.agent_alias}] {decoded}")
+                # Only log critical errors, not vLLM's verbose tracebacks
+                lower = decoded.lower()
+                if "cuda out of memory" in lower or "runtimeerror" in lower:
+                    logger.error(f"[{proc.agent_alias}] {decoded}")
+                elif "error" in lower and "error 12-" not in lower:
+                    # Skip timestamped error lines (vLLM logging spam)
+                    logger.debug(f"[{proc.agent_alias}] {decoded}")
         except Exception:
             pass
 

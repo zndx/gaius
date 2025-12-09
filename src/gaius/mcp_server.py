@@ -613,6 +613,352 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- Model Addition Workflow Tools ---
+
+    @server.tool()
+    async def model_launch_coding(gpus: str = "0,1", timeout: int = 120) -> str:
+        """Launch coding model endpoint for code generation.
+
+        Uses engine's ensure_endpoint for proper resource management.
+        Called by orchestrator when coding model is needed.
+
+        Args:
+            gpus: Comma-separated GPU indices (default "0,1")
+            timeout: Seconds to wait for healthy endpoint
+        """
+        try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if not use_engine_proxy():
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": "Gaius engine not running",
+                        "hint": "Start the engine with: gaius-engine start",
+                    },
+                    indent=2,
+                )
+
+            orch = await get_orchestrator_proxy()
+            result = await orch.ensure_endpoint("coding")
+
+            if result.get("healthy"):
+                return json.dumps(
+                    {
+                        "status": "started",
+                        "model_id": result.get("model"),
+                        "port": result.get("port"),
+                        "gpu_ids": result.get("gpu_ids", []),
+                    },
+                    indent=2,
+                )
+            else:
+                return json.dumps(
+                    {
+                        "status": result.get("status", "failed"),
+                        "error": result.get("message", "Failed to start coding endpoint"),
+                    },
+                    indent=2,
+                )
+        except Exception as e:
+            return json.dumps({"status": "failed", "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_stop_coding() -> str:
+        """Stop coding model endpoint to free GPU resources.
+
+        Called by orchestrator after code generation complete.
+        Ensures system returns to healthy baseline state.
+        """
+        try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                return json.dumps(
+                    {"status": "skipped", "reason": "Engine not running"},
+                    indent=2,
+                )
+
+            orch = await get_orchestrator_proxy()
+            success = await orch.stop_endpoint("coding")
+            return json.dumps(
+                {"status": "stopped" if success else "failed"},
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"status": "failed", "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_fetch_hf(model_id: str) -> str:
+        """Fetch HuggingFace model metadata.
+
+        Returns API info, config.json, and README excerpt for code generation.
+
+        Args:
+            model_id: HuggingFace model ID (e.g., "mistralai/Mistral-7B-Instruct-v0.3")
+        """
+        try:
+            from .agents.modeladd.tools import fetch_hf_model_data
+
+            data = await fetch_hf_model_data(model_id)
+            return json.dumps(
+                {
+                    "model_id": data.model_id,
+                    "has_api_info": bool(data.api_info),
+                    "has_config": bool(data.config),
+                    "has_readme": bool(data.readme),
+                    "context_length": data.config.get("max_position_embeddings"),
+                    "architectures": data.config.get("architectures", []),
+                    "pipeline_tag": data.api_info.get("pipeline_tag"),
+                    "tags": data.api_info.get("tags", [])[:10],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_generate_code(
+        model_id: str,
+        hf_data_json: str = "",
+        critic_feedback: str = "",
+    ) -> str:
+        """Generate ModelSpec Python code via coding model.
+
+        Uses local coding endpoint (via engine) or XAI Grok fallback.
+        Optionally incorporates critic feedback for regeneration attempts.
+
+        Args:
+            model_id: HuggingFace model ID
+            hf_data_json: JSON string with HF data (from model_fetch_hf)
+            critic_feedback: Feedback from previous failed attempt
+        """
+        try:
+            from .agents.modeladd.tools import (
+                fetch_hf_model_data,
+                generate_modelspec_code,
+                HFModelData,
+            )
+            from .agents.modeladd.prompts import MODELSPEC_SYSTEM_PROMPT
+            import os
+
+            # Get or fetch HF data
+            if hf_data_json:
+                data = json.loads(hf_data_json)
+                hf_data = HFModelData(
+                    model_id=data.get("model_id", model_id),
+                    api_info=data.get("api_info", {}),
+                    config=data.get("config", {}),
+                    readme=data.get("readme"),
+                )
+            else:
+                hf_data = await fetch_hf_model_data(model_id)
+
+            # Get coding endpoint via engine (agent-first)
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                result = await orch.ensure_endpoint("coding")
+                if result.get("healthy"):
+                    port = result.get("port", 8082)
+                    endpoint_url = f"http://localhost:{port}/v1"
+                    coding_model = result.get("model", "coding")
+                elif os.getenv("XAI_API_KEY"):
+                    endpoint_url = "https://api.x.ai/v1"
+                    coding_model = "grok-2-latest"
+                else:
+                    return json.dumps(
+                        {"error": "Coding endpoint not healthy and XAI_API_KEY not set"},
+                        indent=2,
+                    )
+            elif os.getenv("XAI_API_KEY"):
+                endpoint_url = "https://api.x.ai/v1"
+                coding_model = "grok-2-latest"
+            else:
+                return json.dumps(
+                    {"error": "No coding endpoint available and XAI_API_KEY not set"},
+                    indent=2,
+                )
+
+            result = await generate_modelspec_code(
+                hf_data=hf_data,
+                endpoint_url=endpoint_url,
+                model_id=coding_model,
+                system_prompt=MODELSPEC_SYSTEM_PROMPT,
+                critic_feedback=critic_feedback or None,
+            )
+
+            return json.dumps(
+                {
+                    "code": result.code,
+                    "model_used": result.model_used,
+                    "endpoint_used": result.endpoint_used,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_validate_code(code: str, use_devenv: bool = False) -> str:
+        """Validate generated ModelSpec code in isolated environment.
+
+        Runs syntax check, import test, and serve_command validation.
+
+        Args:
+            code: The generated Python code to validate
+            use_devenv: If True, use devenv container for stronger isolation
+        """
+        try:
+            from .agents.modeladd.sandbox import validate_modelspec_code
+
+            result = validate_modelspec_code(code, use_devenv=use_devenv)
+            return json.dumps(
+                {
+                    "valid": result.is_valid,
+                    "syntax": result.syntax,
+                    "imports": result.imports,
+                    "serve_cmd": result.serve_cmd,
+                    "variable_name": result.variable_name,
+                    "warnings": result.warnings,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_xai_critique(code: str, model_id: str) -> str:
+        """Get XAI Grok critique of generated ModelSpec code.
+
+        Returns quality score, issues found, and suggestions.
+        Budget-limited - uses tiered evaluation tracking.
+
+        Args:
+            code: The generated Python code to critique
+            model_id: HuggingFace model ID for context
+        """
+        try:
+            from .agents.modeladd.tools import (
+                critique_modelspec_code,
+                fetch_hf_model_data,
+            )
+
+            hf_data = await fetch_hf_model_data(model_id)
+            result = await critique_modelspec_code(code, hf_data)
+
+            return json.dumps(
+                {
+                    "score": result.score,
+                    "issues": result.issues,
+                    "suggestions": result.suggestions,
+                    "approved": result.approved,
+                    "model_used": result.model_used,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_save_pending(
+        model_id: str,
+        code: str,
+        validation_json: str,
+        critique_json: str = "",
+    ) -> str:
+        """Save generated code for user confirmation.
+
+        Persists to .pending_model_add.json for /model add-confirm.
+
+        Args:
+            model_id: HuggingFace model ID
+            code: Validated Python code
+            validation_json: JSON validation results from model_validate_code
+            critique_json: Optional JSON critique results from model_xai_critique
+        """
+        try:
+            from pathlib import Path
+            from datetime import datetime
+
+            validation = json.loads(validation_json) if validation_json else {}
+            critique = json.loads(critique_json) if critique_json else {}
+
+            pending_data = {
+                "model_id": model_id,
+                "code": code,
+                "validation": validation,
+                "critique": critique,
+                "generated_at": datetime.now().isoformat(),
+            }
+
+            # Get KB root from config
+            try:
+                from .config import get_config
+
+                config = get_config()
+                pending_path = Path(config.kb.root) / ".pending_model_add.json"
+            except Exception:
+                pending_path = Path("build/dev/.pending_model_add.json")
+
+            pending_path.parent.mkdir(parents=True, exist_ok=True)
+            pending_path.write_text(json.dumps(pending_data, indent=2))
+
+            return json.dumps(
+                {
+                    "status": "saved",
+                    "path": str(pending_path),
+                    "model_id": model_id,
+                    "variable_name": validation.get("variable_name"),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def model_add_status() -> str:
+        """Get status of pending model addition.
+
+        Returns current state from .pending_model_add.json if exists.
+        """
+        try:
+            from pathlib import Path
+
+            # Get KB root from config
+            try:
+                from .config import get_config
+
+                config = get_config()
+                pending_path = Path(config.kb.root) / ".pending_model_add.json"
+            except Exception:
+                pending_path = Path("build/dev/.pending_model_add.json")
+
+            if not pending_path.exists():
+                return json.dumps({"pending": False}, indent=2)
+
+            data = json.loads(pending_path.read_text())
+            return json.dumps(
+                {
+                    "pending": True,
+                    "model_id": data.get("model_id"),
+                    "variable_name": data.get("validation", {}).get("variable_name"),
+                    "validation_passed": data.get("validation", {}).get("imports", False),
+                    "critique_score": data.get("critique", {}).get("score"),
+                    "next_steps": [
+                        "/model add-confirm  - Commit to registry",
+                        "/model add-cancel   - Discard",
+                    ],
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Reasoning Operations ---
+
     @server.tool()
     async def ask_reasoning(
         question: str,
@@ -1189,6 +1535,15 @@ Domain: {domain or 'general'}
                 return json.dumps(status, indent=2, default=str)
 
             # Fall back to direct access
+            import warnings
+            warnings.warn(
+                "LEGACY_FALLBACK: scheduler_status using direct scheduler access instead of engine. "
+                "Start gaius-engine for proper resource management.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            logger.warning("LEGACY_FALLBACK: scheduler_status bypassing engine - tech debt")
+
             from .inference.scheduler import get_scheduler_service
 
             service = get_scheduler_service()
@@ -1460,6 +1815,15 @@ Domain: {domain or 'general'}
                 return json.dumps(status, indent=2, default=str)
 
             # Fall back to direct access
+            import warnings
+            warnings.warn(
+                "LEGACY_FALLBACK: orchestrator_status using direct orchestrator instead of engine. "
+                "Start gaius-engine for proper resource management.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            logger.warning("LEGACY_FALLBACK: orchestrator_status bypassing engine - tech debt")
+
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1480,10 +1844,20 @@ Domain: {domain or 'general'}
             endpoints: Comma-separated endpoint names to start (default: reasoning)
         """
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
+                results = await orch.clean_start(endpoint_list or ["reasoning"])
+                return json.dumps(results, indent=2, default=str)
+
+            # Fallback to legacy
+            logger.warning("LEGACY_FALLBACK: orchestrator_clean_start bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
-
             endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
             results = await orchestrator.clean_start(endpoint_list or None)
 
@@ -1495,10 +1869,41 @@ Domain: {domain or 'general'}
     async def orchestrator_start(endpoint: str = "") -> str:
         """Start vLLM endpoint(s).
 
+        Uses engine's ensure_endpoint for proper resource management.
+
         Args:
             endpoint: Endpoint name to start (empty string starts all configured endpoints)
         """
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+
+                if endpoint:
+                    result = await orch.ensure_endpoint(endpoint)
+                    return json.dumps(
+                        {
+                            "endpoint": endpoint,
+                            "started": result.get("healthy", False),
+                            "status": result.get("status", "unknown"),
+                            "port": result.get("port"),
+                            "gpu_ids": result.get("gpu_ids", []),
+                            "message": result.get("message", ""),
+                        },
+                        indent=2,
+                    )
+                else:
+                    # Start all returns status for all endpoints
+                    success = await orch.start_endpoint("")
+                    return json.dumps(
+                        {"action": "start_all", "success": success},
+                        indent=2,
+                    )
+
+            # Fallback to legacy
+            logger.warning("LEGACY_FALLBACK: orchestrator_start bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1536,6 +1941,27 @@ Domain: {domain or 'general'}
             endpoint: Endpoint name to stop (empty string stops all)
         """
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+
+                if endpoint:
+                    success = await orch.stop_endpoint(endpoint)
+                    return json.dumps(
+                        {"endpoint": endpoint, "stopped": success},
+                        indent=2,
+                    )
+                else:
+                    success = await orch.stop_endpoint("")
+                    return json.dumps(
+                        {"action": "stop_all", "stopped": success},
+                        indent=2,
+                    )
+
+            # Fallback to legacy
+            logger.warning("LEGACY_FALLBACK: orchestrator_stop bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1568,6 +1994,26 @@ Domain: {domain or 'general'}
             endpoint: Endpoint name to restart
         """
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                success = await orch.restart_endpoint(endpoint)
+                # Get status after restart
+                status = await orch.get_endpoint_status(endpoint)
+                return json.dumps(
+                    {
+                        "endpoint": endpoint,
+                        "restarted": success,
+                        "status": status.get("status", "unknown") if status else "unknown",
+                        "port": status.get("port") if status else None,
+                    },
+                    indent=2,
+                )
+
+            # Fallback to legacy
+            logger.warning("LEGACY_FALLBACK: orchestrator_restart bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1595,6 +2041,23 @@ Domain: {domain or 'general'}
             lines: Number of lines to return (default: 50)
         """
         try:
+            from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                logs = await orch.get_logs_async(endpoint, lines=lines)
+                return json.dumps(
+                    {
+                        "endpoint": endpoint,
+                        "lines": len(logs) if logs else 0,
+                        "logs": logs or [],
+                    },
+                    indent=2,
+                )
+
+            # Fallback to legacy
+            logger.warning("LEGACY_FALLBACK: orchestrator_logs bypassing engine - tech debt")
             from .inference.orchestrator import get_orchestrator
 
             orchestrator = get_orchestrator()
@@ -1626,6 +2089,7 @@ Domain: {domain or 'general'}
                 return json.dumps(health, indent=2, default=str)
 
             # Fall back to direct access
+            logger.warning("LEGACY_FALLBACK: gpu_health bypassing engine - tech debt")
             from .inference.health import get_health_monitor
 
             monitor = get_health_monitor()

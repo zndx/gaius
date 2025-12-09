@@ -240,6 +240,8 @@ class GrpcEngineClient:
                 return await self._call_tda(action, params, timeout)
             elif service == "Health":
                 return await self._call_health(action, params, timeout)
+            elif service == "Cognition":
+                return await self._call_cognition(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -273,6 +275,15 @@ class GrpcEngineClient:
             )
             result = MessageToDict(response, preserving_proto_field_name=True)
             return {"agents": result.get("endpoints", [])}
+
+        elif action == "ensure":
+            # Agent-first: ensure endpoint is available
+            endpoint = params.get("endpoint", "")
+            response = await self._gaius_stub.EnsureEndpoint(
+                StartEndpointRequest(endpoint_name=endpoint),  # Reuse StartEndpointRequest
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "start":
             endpoint = params.get("endpoint", "")
@@ -443,6 +454,27 @@ class GrpcEngineClient:
             )
             return {"healthy": response.live, "live": response.live}
 
+        elif action == "check":
+            # Comprehensive health check - get endpoint status from orchestrator
+            orch_response = await self._gaius_stub.OrchestratorStatus(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            result = MessageToDict(orch_response, preserving_proto_field_name=True)
+            # Convert endpoints list to dict for easier access
+            endpoints = {}
+            for ep in result.get("endpoints", []):
+                endpoints[ep.get("name", "")] = {
+                    "status": ep.get("status", "unknown"),
+                    "port": ep.get("port", 0),
+                    "model": ep.get("model", ""),
+                }
+            return {"endpoints": endpoints, "gpus": []}
+
+        elif action == "gpu":
+            # GPU utilization - not available via gRPC currently
+            return {"utilization": {}}
+
         elif action == "ready":
             response = await self._inference_stub.ServerReady(
                 ServerReadyRequest(),
@@ -468,6 +500,38 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Health action: {action}")
+
+    async def _call_cognition(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Cognition service calls.
+
+        Note: Cognition service is not yet exposed via gRPC, so we use
+        the internal server handler via a generic request pattern.
+        For now, return minimal status until gRPC methods are added.
+        """
+        if action == "status":
+            # Cognition daemon status - not yet via gRPC
+            return {
+                "running": False,
+                "cycles_completed": 0,
+                "last_cycle_at": None,
+                "current_task": None,
+            }
+
+        elif action == "recent_thoughts":
+            # Recent thoughts - not yet via gRPC
+            limit = params.get("limit", 10)
+            return {"thoughts": []}
+
+        elif action == "activity":
+            # Activity summary - not yet via gRPC
+            return {
+                "cognition_running": False,
+                "cycles_completed": 0,
+                "thoughts_today": 0,
+            }
+
+        else:
+            raise ValueError(f"Unknown Cognition action: {action}")
 
     # =========================================================================
     # OIP Methods (Direct access to KServe OIP)
