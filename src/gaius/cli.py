@@ -2562,50 +2562,65 @@ Respond with:
         """Run a swarm analysis.
 
         Usage: /swarm <domain> [context...]
+
+        Routes through gRPC engine for proper capability-based model resolution.
+        Results are automatically saved to KB at current/agents/swarm/{date}/{timestamp}_{domain}.md
         """
         if not args:
             args = self.state.domain or "general analysis"
 
         try:
-            from .inference.scheduler import get_scheduler_service
+            from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
-            service = get_scheduler_service()
+            if not use_engine_proxy():
+                raise RuntimeError(
+                    "Gaius engine not running. Start with: devenv up -d"
+                )
+
+            scheduler = await get_scheduler_proxy()
 
             # Parse domain and context
             parts = args.split(maxsplit=1)
             domain = parts[0]
             context = parts[1] if len(parts) > 1 else ""
 
-            results = await service.run_swarm(
+            # run_swarm now returns (results, saved_path) tuple
+            # KB persistence happens automatically in SchedulerProxy
+            results, saved_path = await scheduler.run_swarm(
                 domain=domain,
                 context=context,
             )
 
-            # Format results
+            # Format results (engine returns dicts, not JobResult objects)
             output = {
                 "domain": domain,
                 "agents": {},
                 "summary": {
                     "total": len(results),
-                    "completed": sum(1 for r in results.values() if r.status.value == "completed"),
-                    "failed": sum(1 for r in results.values() if r.status.value == "failed"),
-                    "total_tokens": sum(r.input_tokens + r.output_tokens for r in results.values()),
-                    "total_latency_ms": sum(r.latency_ms for r in results.values()),
+                    "completed": sum(1 for r in results.values() if r.get("status") == "completed"),
+                    "failed": sum(1 for r in results.values() if r.get("status") == "failed"),
+                    "total_tokens": sum(
+                        r.get("input_tokens", 0) + r.get("output_tokens", 0)
+                        for r in results.values()
+                    ),
+                    "total_latency_ms": sum(r.get("latency_ms", 0) for r in results.values()),
                 },
+                "saved_to": saved_path,
             }
 
             for role_name, result in results.items():
+                content = result.get("content", "")
                 output["agents"][role_name] = {
-                    "status": result.status.value,
-                    "preview": result.content[:200] + "..." if len(result.content) > 200 else result.content,
-                    "endpoint": result.endpoint,
-                    "latency_ms": result.latency_ms,
+                    "status": result.get("status", "unknown"),
+                    "preview": content[:200] + "..." if len(content) > 200 else content,
+                    "endpoint": result.get("endpoint", ""),
+                    "latency_ms": result.get("latency_ms", 0),
                 }
 
             return output
 
         except ImportError as e:
-            raise RuntimeError(f"Scheduler not available: {e}")
+            raise RuntimeError(f"Engine proxy not available: {e}")
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.

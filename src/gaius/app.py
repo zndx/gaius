@@ -1223,35 +1223,77 @@ class GaiusApp(App):
         # Show starting message
         content.show_file("swarm.txt", f"Running swarm analysis on: {domain}\n\nAgents: Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary\n\nPlease wait...")
 
-        # Run swarm asynchronously
-        async def run_swarm():
-            from .agents import run_swarm_round
-            return await run_swarm_round(domain)
-
         try:
-            # Run in event loop
+            # Run in event loop - always use async gRPC path
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # Schedule as task
                 asyncio.create_task(self._complete_swarm_analysis(domain))
             else:
-                result = loop.run_until_complete(run_swarm())
-                self._apply_swarm_results(result)
+                # For non-running loop, use run_until_complete with the async method
+                loop.run_until_complete(self._complete_swarm_analysis(domain))
         except Exception as e:
             content.show_file("error.txt", f"Swarm error: {e}")
 
     async def _complete_swarm_analysis(self, domain: str) -> None:
-        """Complete swarm analysis asynchronously."""
-        from .agents import run_swarm_round
+        """Complete swarm analysis asynchronously via gRPC engine."""
+        from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
+        from .agents.swarm import SwarmRoundResult, AgentResponse
+        from .agents.roles import AgentRole
+        from datetime import datetime
 
         try:
-            result = await run_swarm_round(domain)
-            self._apply_swarm_results(result)
+            if not use_engine_proxy():
+                raise RuntimeError("Gaius engine not running. Start with: devenv up -d")
+
+            scheduler = await get_scheduler_proxy()
+            # run_swarm now returns (results, saved_path) tuple
+            # KB persistence happens automatically in SchedulerProxy
+            raw_results, saved_path = await scheduler.run_swarm(domain=domain)
+
+            # Convert engine response to SwarmRoundResult
+            responses = []
+            total_tokens = 0
+            total_latency = 0
+            consensus = ""
+
+            for role_name, data in raw_results.items():
+                try:
+                    role_enum = AgentRole(role_name)
+                except ValueError:
+                    role_enum = AgentRole.LEADER  # fallback
+
+                response = AgentResponse(
+                    role=role_enum,
+                    name=role_name,
+                    content=data.get("content", ""),
+                    tokens=data.get("input_tokens", 0) + data.get("output_tokens", 0),
+                    latency_ms=data.get("latency_ms", 0),
+                    model=data.get("model", ""),
+                    error=data.get("error") if data.get("status") == "failed" else None,
+                )
+                responses.append(response)
+                total_tokens += response.tokens
+                total_latency += response.latency_ms
+
+                # Extract consensus from Leader
+                if role_name == "Leader" and response.succeeded:
+                    consensus = response.content
+
+            result = SwarmRoundResult(
+                domain=domain,
+                timestamp=datetime.now(),
+                responses=responses,
+                total_tokens=total_tokens,
+                total_latency_ms=total_latency,
+                consensus=consensus,
+            )
+            self._apply_swarm_results(result, saved_path=saved_path)
         except Exception as e:
             content = self.query_one("#content-panel", ContentPanel)
             content.show_file("error.txt", f"Swarm error: {e}")
 
-    def _apply_swarm_results(self, result) -> None:
+    def _apply_swarm_results(self, result, saved_path: str = "") -> None:
         """Apply swarm results to state and UI."""
         import asyncio
 
@@ -1269,6 +1311,7 @@ class GaiusApp(App):
                     "tokens": result.total_tokens,
                     "latency_ms": result.total_latency_ms,
                     "success_rate": result.success_rate,
+                    "saved_to": saved_path,
                 },
             )
         )
@@ -1301,10 +1344,14 @@ class GaiusApp(App):
             f"**Success Rate:** {result.success_rate:.0%}",
             f"**Total Tokens:** {result.total_tokens}",
             f"**Latency:** {result.total_latency_ms}ms",
+        ]
+        if saved_path:
+            lines.append(f"**Saved to:** {saved_path}")
+        lines.extend([
             "",
             "## Agent Responses",
             "",
-        ]
+        ])
 
         for response in result.responses:
             status = "✓" if response.succeeded else "✗"
