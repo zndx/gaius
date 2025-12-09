@@ -144,7 +144,14 @@ class OrchestratorProxy:
     async def cleanup_stale_processes(self) -> dict[str, Any]:
         """Kill stale vLLM processes."""
         result = await self.clean_start([])
-        return result.get("cleanup", {})
+        # Handle both old and new response formats
+        if "cleanup" in result:
+            return result.get("cleanup", {})
+        # New format from CleanStartResponse
+        return {
+            "processes_found": result.get("processes_killed", 0),
+            "processes_killed": result.get("processes_killed", 0),
+        }
 
     def get_status(self) -> dict[str, Any]:
         """Get orchestrator status (sync wrapper)."""
@@ -166,7 +173,14 @@ class OrchestratorProxy:
             Dict with status, port, gpu_ids, etc. or None if not found
         """
         status = await self._get_status_async()
-        endpoints = status.get("endpoints", {})
+        endpoints = status.get("endpoints", [])
+        # Handle list format: [{"name": "reasoning", ...}, ...]
+        if isinstance(endpoints, list):
+            for ep in endpoints:
+                if isinstance(ep, dict) and ep.get("name") == endpoint:
+                    return ep
+            return None
+        # Handle dict format: {"reasoning": {...}, ...}
         return endpoints.get(endpoint)
 
     def get_logs(self, endpoint: str, lines: int = 50) -> list[str]:
@@ -189,7 +203,14 @@ class OrchestratorProxy:
     def get_startup_progress(self, endpoint: str) -> tuple[str, float]:
         """Get startup progress for an endpoint."""
         status = self.get_status()
-        endpoints = status.get("endpoints", {})
+        endpoints = status.get("endpoints", [])
+        # Handle list format: [{"name": "reasoning", ...}, ...]
+        if isinstance(endpoints, list):
+            for ep in endpoints:
+                if isinstance(ep, dict) and ep.get("name") == endpoint:
+                    return (ep.get("startup_message", ""), ep.get("startup_progress", 0.0))
+            return ("Not started", 0.0)
+        # Handle dict format: {"reasoning": {...}, ...}
         if endpoint in endpoints:
             ep = endpoints[endpoint]
             return (ep.get("startup_message", ""), ep.get("startup_progress", 0.0))
@@ -198,7 +219,14 @@ class OrchestratorProxy:
     async def health_check(self, endpoint: str) -> bool:
         """Check health of an endpoint."""
         status = await self._get_status_async()
-        endpoints = status.get("endpoints", {})
+        endpoints = status.get("endpoints", [])
+        # Handle list format: [{"name": "reasoning", ...}, ...]
+        if isinstance(endpoints, list):
+            for ep in endpoints:
+                if isinstance(ep, dict) and ep.get("name") == endpoint:
+                    return ep.get("status") == "healthy"
+            return False
+        # Handle dict format: {"reasoning": {...}, ...}
         return endpoints.get(endpoint, {}).get("status") == "healthy"
 
 

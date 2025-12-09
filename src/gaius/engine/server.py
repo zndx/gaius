@@ -442,13 +442,13 @@ class GaiusEngine:
     async def _start_socket_server(self) -> None:
         """Start Unix socket server for CLI/debugging fallback.
 
-        Only enabled when GAIUS_ENABLE_FALLBACKS=true environment variable is set.
+        Only enabled when GAIUS_ALLOW_FALLBACKS=true environment variable is set.
         This is a debugging/development feature.
         """
         # Check feature flag - fallbacks disabled by default
-        if os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() != "true":
+        if os.environ.get("GAIUS_ALLOW_FALLBACKS", "").lower() != "true":
             logger.debug(
-                "Unix socket fallback disabled (set GAIUS_ENABLE_FALLBACKS=true to enable)"
+                "Unix socket fallback disabled (set GAIUS_ALLOW_FALLBACKS=true to enable)"
             )
             return
 

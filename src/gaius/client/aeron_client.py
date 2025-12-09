@@ -109,7 +109,7 @@ class EngineClient:
         """Connect to the engine.
 
         Tries Aeron first. Falls back to Unix socket only if
-        GAIUS_ENABLE_FALLBACKS=true environment variable is set.
+        GAIUS_ALLOW_FALLBACKS=true environment variable is set.
 
         Returns:
             True if connected
@@ -124,7 +124,7 @@ class EngineClient:
             return True
 
         # Check feature flag for fallback
-        fallbacks_enabled = os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() == "true"
+        fallbacks_enabled = os.environ.get("GAIUS_ALLOW_FALLBACKS", "").lower() == "true"
 
         if fallbacks_enabled:
             # Fall back to Unix socket (only when enabled)
@@ -135,7 +135,7 @@ class EngineClient:
                 return True
         else:
             logger.debug(
-                "Unix socket fallback disabled (set GAIUS_ENABLE_FALLBACKS=true to enable)"
+                "Unix socket fallback disabled (set GAIUS_ALLOW_FALLBACKS=true to enable)"
             )
 
         logger.error("Failed to connect to engine")
@@ -274,12 +274,12 @@ class EngineClient:
         # Create trace context - OTEL is required unless fallbacks enabled
         if OTEL_AVAILABLE:
             trace_ctx = TraceContext.from_current()
-        elif os.environ.get("GAIUS_ENABLE_FALLBACKS", "").lower() == "true":
+        elif os.environ.get("GAIUS_ALLOW_FALLBACKS", "").lower() == "true":
             trace_ctx = TraceContext()  # Empty context fallback
         else:
             raise RuntimeError(
                 "OpenTelemetry not available. Install with: uv sync --extra telemetry "
-                "(or set GAIUS_ENABLE_FALLBACKS=true to disable tracing)"
+                "(or set GAIUS_ALLOW_FALLBACKS=true to disable tracing)"
             )
 
         request = Request(

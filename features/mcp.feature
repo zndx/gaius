@@ -306,30 +306,30 @@ Feature: MCP Server Integration
 
   # ═══════════════════════════════════════════════════════════════════════
   # TIER 4: Engine Proxy Tools
-  # These tools proxy to gaius-engine when GAIUS_ENABLE_FALLBACKS=true
+  # These tools proxy to gaius-engine when GAIUS_ALLOW_FALLBACKS=true
   # ═══════════════════════════════════════════════════════════════════════
 
   @mcp @tier4 @engine_proxy
   Scenario: Orchestrator status with fallbacks enabled
-    Given GAIUS_ENABLE_FALLBACKS is set to "true"
+    Given GAIUS_ALLOW_FALLBACKS is set to "true"
     When I call MCP tool "orchestrator_status" without arguments
     Then the MCP result should be successful
 
   @mcp @tier4 @engine_proxy
   Scenario: Scheduler status with fallbacks enabled
-    Given GAIUS_ENABLE_FALLBACKS is set to "true"
+    Given GAIUS_ALLOW_FALLBACKS is set to "true"
     When I call MCP tool "scheduler_status" without arguments
     Then the MCP result should be successful
 
   @mcp @tier4 @engine_proxy
   Scenario: Evolution status with fallbacks enabled
-    Given GAIUS_ENABLE_FALLBACKS is set to "true"
+    Given GAIUS_ALLOW_FALLBACKS is set to "true"
     When I call MCP tool "evolution_status" without arguments
     Then the MCP result should be successful
 
   @mcp @tier4 @engine_proxy @engine-integration
   Scenario: GPU health with fallbacks enabled
-    Given GAIUS_ENABLE_FALLBACKS is set to "true"
+    Given GAIUS_ALLOW_FALLBACKS is set to "true"
     When I call MCP tool "gpu_health" without arguments
     Then the MCP result should be successful
 

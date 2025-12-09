@@ -1525,7 +1525,7 @@ Domain: {domain or 'general'}
         """Get scheduler status including endpoints, queue, and metrics.
 
         Returns comprehensive status of the inference scheduler.
-        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
+        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
         """
         try:
             # Try engine proxy first
@@ -1805,7 +1805,7 @@ Domain: {domain or 'general'}
         """Get GPU orchestrator status including all vLLM processes and GPU health.
 
         Returns comprehensive status of GPU resources, process health, and scheduling metrics.
-        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
+        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
         """
         try:
             # Try engine proxy first
@@ -2079,7 +2079,7 @@ Domain: {domain or 'general'}
         """Get detailed GPU health metrics (VRAM, temp, power, utilization).
 
         Uses pynvml for real-time GPU monitoring.
-        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
+        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
         """
         try:
             # Try engine proxy first
@@ -2707,7 +2707,7 @@ Domain: {domain or 'general'}
 
         Returns status of the Agent0-style self-improvement daemon,
         including cycles completed, improvement metrics, and next agent.
-        Uses gaius-engine if available (GAIUS_ENABLE_FALLBACKS=true), otherwise direct access.
+        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
         """
         try:
             # Try engine proxy first

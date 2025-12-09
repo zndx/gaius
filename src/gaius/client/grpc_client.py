@@ -315,6 +315,15 @@ class GrpcEngineClient:
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
+        elif action == "clean_start":
+            from ..engine.generated import CleanStartRequest
+            endpoints = params.get("endpoints", [])
+            response = await self._gaius_stub.CleanStart(
+                CleanStartRequest(endpoints=endpoints),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
         else:
             raise ValueError(f"Unknown Orchestrator action: {action}")
 
