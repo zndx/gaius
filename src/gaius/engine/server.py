@@ -779,6 +779,16 @@ class GaiusEngine:
                     {"checked": True, "status": self._orchestrator_service.get_status()},
                 )
 
+            elif action == "reconcile":
+                # State reconciliation - compare desired vs actual and fix
+                result = await self._orchestrator_service.reconcile_state()
+                return Response.success(request.id, result)
+
+            elif action == "discover":
+                # Discover what's actually running (diagnostic)
+                actual = await self._orchestrator_service.discover_actual_state()
+                return Response.success(request.id, {"actual_state": actual})
+
             else:
                 return Response.failure(
                     request.id, code=400, message=f"Unknown action: {action}"

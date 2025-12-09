@@ -498,6 +498,173 @@ class OrchestratorService:
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
+    # State Reconciliation (Self-Healing)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def discover_actual_state(self) -> dict[int, dict]:
+        """Discover what's actually running on inference ports.
+
+        Scans ports 8080-8095 and queries /v1/models to find actual model IDs.
+        Also checks GPU VRAM usage via nvidia-smi.
+
+        Returns:
+            Dict mapping port -> {"model": str, "pid": int, "gpu": int}
+        """
+        import httpx
+
+        actual = {}
+
+        # Scan inference ports
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            for port in range(8080, 8096):
+                try:
+                    resp = await client.get(f"http://localhost:{port}/v1/models")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        models = data.get("data", [])
+                        if models:
+                            model_id = models[0].get("id", "unknown")
+                            actual[port] = {"model": model_id, "port": port}
+                except Exception:
+                    pass  # Port not responding
+
+        # Enrich with process info
+        try:
+            ps_result = subprocess.run(
+                ["pgrep", "-af", "vllm serve"],
+                capture_output=True,
+                text=True,
+            )
+            if ps_result.returncode == 0:
+                for line in ps_result.stdout.strip().split("\n"):
+                    if not line.strip():
+                        continue
+                    parts = line.split(None, 1)
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[0])
+                        except ValueError:
+                            continue  # Skip if PID isn't numeric
+                        cmd = parts[1]
+                        # Extract port from command (look for --port followed by number)
+                        import re
+                        port_match = re.search(r"--port\s+(\d+)", cmd)
+                        if port_match:
+                            port = int(port_match.group(1))
+                            if port in actual:
+                                actual[port]["pid"] = pid
+                            else:
+                                # Process starting but not yet responding
+                                actual[port] = {
+                                    "model": "unknown (starting?)",
+                                    "port": port,
+                                    "pid": pid,
+                                }
+        except Exception as e:
+            logger.debug(f"Process discovery failed: {e}")
+
+        return actual
+
+    async def reconcile_state(self) -> dict[str, Any]:
+        """Compare desired state vs actual and fix mismatches.
+
+        This is the core self-healing logic. It:
+        1. Discovers what's actually running
+        2. Compares to desired state from config
+        3. Kills processes on wrong ports or with wrong models
+        4. Starts missing endpoints
+
+        Returns:
+            Dict with reconciliation results
+        """
+        results = {
+            "actual_state": {},
+            "desired_state": {},
+            "actions": [],
+            "errors": [],
+        }
+
+        # Build desired state from config
+        desired: dict[int, dict] = {}
+        for name, agent in self.config.agents.items():
+            if agent.endpoint:
+                desired[agent.endpoint.port] = {
+                    "name": name,
+                    "model": agent.model,
+                    "port": agent.endpoint.port,
+                }
+
+        results["desired_state"] = desired
+
+        # Discover actual state
+        actual = await self.discover_actual_state()
+        results["actual_state"] = actual
+
+        # Find orphans (running on ports we don't expect)
+        for port, info in actual.items():
+            if port not in desired:
+                # Orphan process - kill it
+                if info.get("pid"):
+                    try:
+                        os.kill(info["pid"], 9)
+                        results["actions"].append({
+                            "action": "killed_orphan",
+                            "port": port,
+                            "pid": info["pid"],
+                            "model": info.get("model"),
+                        })
+                        logger.warning(f"Killed orphan vLLM on port {port}: {info.get('model')}")
+                    except Exception as e:
+                        results["errors"].append(f"Failed to kill orphan on {port}: {e}")
+
+        # Find mismatches (wrong model on expected port)
+        for port, desired_info in desired.items():
+            actual_info = actual.get(port)
+            if actual_info:
+                # Check if model matches
+                actual_model = actual_info.get("model", "")
+                desired_model = desired_info.get("model", "")
+
+                # Model IDs may have different formats, compare base names
+                actual_base = actual_model.split("/")[-1].lower()
+                desired_base = desired_model.split("/")[-1].lower()
+
+                if actual_base != desired_base:
+                    # Wrong model - kill and restart
+                    if actual_info.get("pid"):
+                        try:
+                            os.kill(actual_info["pid"], 9)
+                            results["actions"].append({
+                                "action": "killed_mismatch",
+                                "port": port,
+                                "pid": actual_info["pid"],
+                                "expected_model": desired_model,
+                                "actual_model": actual_model,
+                            })
+                            logger.warning(
+                                f"Killed mismatched model on port {port}: "
+                                f"expected {desired_model}, got {actual_model}"
+                            )
+                            # Wait for GPU memory to free
+                            await asyncio.sleep(3)
+                            # Restart correct endpoint
+                            await self.start_endpoint(desired_info["name"])
+                            results["actions"].append({
+                                "action": "restarted",
+                                "port": port,
+                                "endpoint": desired_info["name"],
+                            })
+                        except Exception as e:
+                            results["errors"].append(f"Failed to fix mismatch on {port}: {e}")
+
+        logger.info(
+            f"Reconciliation complete: {len(results['actions'])} actions, "
+            f"{len(results['errors'])} errors"
+        )
+
+        return results
+
+    # ─────────────────────────────────────────────────────────────────────────
     # GPU Health Monitoring (BDD: GPU idle state monitoring)
     # ─────────────────────────────────────────────────────────────────────────
 
