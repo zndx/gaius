@@ -2,7 +2,7 @@
 
 ## Summary
 
-Completed migration from Aeron/socket transport to gRPC-only transport for gaius-engine communication. The `GAIUS_ENABLE_FALLBACKS` feature flag is no longer needed.
+Completed migration from Aeron/socket transport to gRPC-only transport for gaius-engine communication. The `GAIUS_ALLOW_FALLBACKS` feature flag is no longer needed.
 
 ## Changes Made
 
@@ -63,7 +63,7 @@ Completed migration from Aeron/socket transport to gRPC-only transport for gaius
 
 ## Remaining Work
 
-1. Remove remaining `GAIUS_ENABLE_FALLBACKS` references in:
+1. Remove remaining `GAIUS_ALLOW_FALLBACKS` references in:
    - `src/gaius/mcp_server.py`
    - `src/gaius/client/engine_proxy.py`
    - `src/gaius/client/__init__.py`

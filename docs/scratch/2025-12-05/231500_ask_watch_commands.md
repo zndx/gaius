@@ -138,7 +138,7 @@ Agent internally:
 ### `features/engine.feature` (new)
 
 - 15 scenarios for engine connectivity
-- Feature flag behavior (GAIUS_ENABLE_FALLBACKS)
+- Feature flag behavior (GAIUS_ALLOW_FALLBACKS)
 - Service health queries via engine
 - Integration with `/ask`
 

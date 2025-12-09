@@ -16,6 +16,7 @@
 - [The Board Widget](./architecture/board.md)
 - [Multi-Agent Swarms](./architecture/swarms.md)
 - [Vector Memory](./architecture/memory.md)
+- [Inference Gateway](./architecture/inference-gateway.md)
 
 # User Guide
 

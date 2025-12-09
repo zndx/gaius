@@ -64,6 +64,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.RestartEndpointRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.EndpointResponse.FromString,
                 _registered_method=True)
+        self.CleanStart = channel.unary_unary(
+                '/gaius.engine.GaiusService/CleanStart',
+                request_serializer=gaius__service__pb2.CleanStartRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CleanStartResponse.FromString,
+                _registered_method=True)
         self.SchedulerStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/SchedulerStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -188,6 +193,13 @@ class GaiusServiceServicer(object):
 
     def RestartEndpoint(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CleanStart(self, request, context):
+        """Kill stale processes and optionally start endpoints
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -339,6 +351,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.RestartEndpoint,
                     request_deserializer=gaius__service__pb2.RestartEndpointRequest.FromString,
                     response_serializer=gaius__service__pb2.EndpointResponse.SerializeToString,
+            ),
+            'CleanStart': grpc.unary_unary_rpc_method_handler(
+                    servicer.CleanStart,
+                    request_deserializer=gaius__service__pb2.CleanStartRequest.FromString,
+                    response_serializer=gaius__service__pb2.CleanStartResponse.SerializeToString,
             ),
             'SchedulerStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.SchedulerStatus,
@@ -565,6 +582,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/RestartEndpoint',
             gaius__service__pb2.RestartEndpointRequest.SerializeToString,
             gaius__service__pb2.EndpointResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CleanStart(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CleanStart',
+            gaius__service__pb2.CleanStartRequest.SerializeToString,
+            gaius__service__pb2.CleanStartResponse.FromString,
             options,
             channel_credentials,
             insecure,

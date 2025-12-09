@@ -88,7 +88,7 @@ result = await client.call("Orchestrator", "status")
 
 ### Environment Variables
 - `GAIUS_TRANSPORT=grpc|socket` - Force specific transport
-- `GAIUS_ENABLE_FALLBACKS=true` - Enable socket fallback
+- `GAIUS_ALLOW_FALLBACKS=true` - Enable socket fallback
 - `GAIUS_GRPC_HOST`, `GAIUS_GRPC_PORT` - Override defaults
 
 ## Dependencies Added

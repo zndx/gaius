@@ -48,6 +48,17 @@ message RestartEndpointRequest {
   string endpoint_name = 1;
 }
 
+message CleanStartRequest {
+  repeated string endpoints = 1;  // Endpoints to start after cleanup (empty = cleanup only)
+}
+
+message CleanStartResponse {
+  bool success = 1;
+  string message = 2;
+  int32 processes_killed = 3;
+  int32 endpoints_started = 4;
+}
+
 message EndpointResponse {
   bool success = 1;
   string message = 2;
@@ -326,6 +337,7 @@ service GaiusService {
   rpc StartEndpoint(StartEndpointRequest) returns (EndpointResponse);
   rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);
   rpc RestartEndpoint(RestartEndpointRequest) returns (EndpointResponse);
+  rpc CleanStart(CleanStartRequest) returns (CleanStartResponse);  // Kill stale processes and optionally start endpoints
 
   // ─────────────────────────────────────────────────────────────────────────
   // Scheduler

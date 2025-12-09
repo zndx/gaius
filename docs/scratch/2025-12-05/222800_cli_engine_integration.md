@@ -19,7 +19,7 @@
 
 #### C1: Unix Socket Server (completed)
 - Added Unix socket server to `gaius-engine/server.py` as a fallback transport
-- Feature flag: `GAIUS_ENABLE_FALLBACKS=true` to enable socket fallback
+- Feature flag: `GAIUS_ALLOW_FALLBACKS=true` to enable socket fallback
 - Socket path: `/tmp/gaius-engine.sock`
 
 #### C2: `/engine` Command (completed)
@@ -56,7 +56,7 @@ Added new CLI command with subcommands:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `GAIUS_ENABLE_FALLBACKS` | false | Enable Unix socket fallback transport |
+| `GAIUS_ALLOW_FALLBACKS` | false | Enable Unix socket fallback transport |
 | `DISABLE_ENGINE` | false | Disable engine processes in devenv |
 
 ## Test Results

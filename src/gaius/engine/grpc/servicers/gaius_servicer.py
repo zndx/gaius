@@ -30,6 +30,8 @@ from ...generated import (
     StartEndpointRequest,
     StopEndpointRequest,
     RestartEndpointRequest,
+    CleanStartRequest,
+    CleanStartResponse,
     EndpointResponse,
     # Scheduler
     CompleteRequest,
@@ -267,6 +269,42 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.error(f"Failed to restart endpoint {endpoint_name}: {e}")
             return EndpointResponse(success=False, message=str(e))
+
+    async def CleanStart(
+        self,
+        request: CleanStartRequest,
+        context: aio.ServicerContext,
+    ) -> CleanStartResponse:
+        """Kill stale processes and optionally start endpoints."""
+        orchestrator = self._services.orchestrator_service
+
+        if not orchestrator:
+            return CleanStartResponse(
+                success=False,
+                message="OrchestratorService not initialized",
+            )
+
+        try:
+            endpoints = list(request.endpoints) if request.endpoints else []
+            result = await orchestrator.clean_start(endpoints)
+
+            # Extract counts from result
+            processes_killed = 0
+            endpoints_started = 0
+            if isinstance(result, dict):
+                cleanup = result.get("cleanup", {})
+                processes_killed = cleanup.get("processes_killed", 0)
+                endpoints_started = len(result.get("started", []))
+
+            return CleanStartResponse(
+                success=True,
+                message=f"Clean start completed: killed {processes_killed} processes, started {endpoints_started} endpoints",
+                processes_killed=processes_killed,
+                endpoints_started=endpoints_started,
+            )
+        except Exception as e:
+            logger.error(f"Failed to clean start: {e}")
+            return CleanStartResponse(success=False, message=str(e))
 
     # =========================================================================
     # Scheduler
