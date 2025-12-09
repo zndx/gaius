@@ -2408,6 +2408,120 @@ Use `/evolve stop` to stop orchestrated evolution.
         thought_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return thought_files
 
+    def _handle_health_command(self, args: str) -> None:
+        """Handle /health command for comprehensive system diagnostics.
+
+        Usage:
+            /health           - Run full health check
+            /health quick     - Run critical checks only
+            /health engine    - Check engine/gRPC health
+            /health data      - Check database/KB health
+            /health cognition - Check cognition daemon
+            /health inference - Check inference endpoints
+        """
+        import asyncio
+        from pathlib import Path
+
+        from .health import HealthChecker, CheckStatus
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        # Show initial status
+        content.show_file("health.md", "# Health Check\n\n*Running diagnostics...*")
+
+        async def run_health_check():
+            try:
+                kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
+                checker = HealthChecker(kb_root)
+
+                # Run appropriate checks
+                if subcmd == "quick":
+                    report = await checker.run_quick()
+                    title = "Quick Health Check"
+                elif subcmd in ("engine", "data", "cognition", "inference"):
+                    report = await checker.run_category(subcmd)
+                    title = f"{subcmd.title()} Health Check"
+                else:
+                    report = await checker.run_all()
+                    title = "System Health Check"
+
+                # Format report
+                lines = [
+                    f"# {title}",
+                    "",
+                    report.summary(),
+                    "",
+                    f"*Completed in {report.duration_ms}ms at {report.timestamp.strftime('%H:%M:%S')}*",
+                    "",
+                    "## Check Results",
+                    "",
+                ]
+
+                # Status icons
+                status_icons = {
+                    CheckStatus.PASS: "✅",
+                    CheckStatus.WARN: "⚠️",
+                    CheckStatus.FAIL: "❌",
+                    CheckStatus.SKIP: "⏭️",
+                }
+
+                for check in report.checks:
+                    icon = status_icons.get(check.status, "❓")
+                    line = f"{icon} **{check.name}**: {check.message}"
+                    lines.append(line)
+
+                    # Show details for non-passing checks
+                    if check.status != CheckStatus.PASS and check.details:
+                        for key, value in check.details.items():
+                            if not isinstance(value, (list, dict)) or len(str(value)) < 50:
+                                lines.append(f"   - {key}: `{value}`")
+
+                # Add interventions section
+                if report.interventions:
+                    lines.extend([
+                        "",
+                        "## Suggested Interventions",
+                        "",
+                    ])
+                    for i, intervention in enumerate(report.interventions, 1):
+                        lines.append(f"{i}. {intervention}")
+
+                # Add metrics if available
+                if report.metrics:
+                    lines.extend([
+                        "",
+                        "## Metrics",
+                        "",
+                    ])
+                    for key, value in report.metrics.items():
+                        lines.append(f"- **{key}**: {value}")
+
+                # Usage hint
+                lines.extend([
+                    "",
+                    "---",
+                    "*Commands: `/health`, `/health quick`, `/health <category>`*",
+                    "*Categories: engine, data, cognition, inference*",
+                ])
+
+                content.show_file("health.md", "\n".join(lines))
+
+                # Refresh ThinkPanel to show any updates
+                try:
+                    think_panel = self.query_one("#think-panel", ThinkPanel)
+                    await think_panel.refresh_now()
+                except Exception:
+                    pass
+
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Health check failed: {e}\n\n{traceback.format_exc()}")
+
+        asyncio.create_task(run_health_check())
+
     def _handle_iso_command(self, args: str, content: "ContentPanel") -> None:
         """Handle /iso command for Iso view mode control.
 
@@ -4116,6 +4230,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "thoughts":
             # Trigger cognition or show recent thoughts
             self._handle_thoughts_command(args)
+        elif command == "health":
+            # Run comprehensive health check
+            self._handle_health_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
