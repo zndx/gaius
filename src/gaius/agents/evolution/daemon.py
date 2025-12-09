@@ -359,14 +359,18 @@ class EvolutionDaemon:
                 if gpu.gpu_utilization_percent > self.config.idle_threshold:
                     return False
 
-            # Also check scheduler queue
+            # Also check scheduler queue via gRPC
             try:
-                from ...inference.scheduler import get_scheduler_service
+                from ...client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
-                scheduler = get_scheduler_service()
-                status = scheduler.get_status()
-                if status.get("pending_jobs", 0) > 0:
-                    return False
+                if use_engine_proxy():
+                    import asyncio
+                    scheduler = asyncio.get_event_loop().run_until_complete(
+                        get_scheduler_proxy()
+                    )
+                    status = scheduler.get_status()
+                    if status.get("pending_jobs", 0) > 0:
+                        return False
             except Exception:
                 pass  # Scheduler not available
 

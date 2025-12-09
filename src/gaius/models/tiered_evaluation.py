@@ -147,20 +147,21 @@ class LocalEvaluator:
         prompt = self._build_prompt(agent_output, task_prompt, context, dimensions)
 
         try:
-            # Try to use local inference
-            from ..inference.scheduler import get_scheduler_service
+            # Try to use gRPC engine for inference
+            from ..client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
-            scheduler = get_scheduler_service()
-            result = await scheduler.submit_job(
+            if not use_engine_proxy():
+                raise RuntimeError("Engine not available")
+
+            scheduler = await get_scheduler_proxy()
+            result = await scheduler.complete(
                 prompt=prompt,
                 system_prompt=self._system_prompt(),
-                model=self.model or "",  # Empty uses default
                 max_tokens=1024,
-                priority="low",
             )
 
-            content = result.get("output", "")
-            tokens = result.get("tokens", 0)
+            content = result.content
+            tokens = result.input_tokens + result.output_tokens
 
         except Exception as e:
             logger.warning(f"Local eval failed, using heuristic: {e}")

@@ -1,5 +1,20 @@
 """Intelligent inference scheduler using OR-Tools.
 
+.. deprecated::
+    This module is DEPRECATED. Use gRPC engine instead:
+
+        from gaius.client.engine_proxy import get_scheduler_proxy
+        scheduler = await get_scheduler_proxy()
+        result = await scheduler.complete(prompt="Hello")
+
+    The gRPC engine provides:
+    - Capability-based routing (not hardcoded model names)
+    - Centralized auth/authz
+    - Proper resource management via agents.conf
+
+    This client-side scheduler bypasses the gRPC security boundary and uses
+    hardcoded model names that may not exist on the current vLLM deployment.
+
 Core capability for Gaius that manages inference jobs across GPU endpoints.
 Provides:
 - Optimal job scheduling with OR-Tools CP-SAT
@@ -8,7 +23,7 @@ Provides:
 - Event-driven job lifecycle
 - Persistence for job history
 
-Usage:
+Usage (DEPRECATED):
     from gaius.inference.scheduler import get_scheduler, Job, JobPriority
 
     scheduler = get_scheduler()
@@ -1182,7 +1197,19 @@ def get_scheduler() -> InferenceScheduler:
 
 
 def get_scheduler_service() -> SchedulerService:
-    """Get or create the scheduler service singleton."""
+    """Get or create the scheduler service singleton.
+
+    .. deprecated::
+        Use gRPC engine instead: get_scheduler_proxy() from client.engine_proxy
+    """
+    import warnings
+    warnings.warn(
+        "get_scheduler_service() is deprecated. "
+        "Use get_scheduler_proxy() from gaius.client.engine_proxy instead. "
+        "The client-side scheduler bypasses gRPC and uses hardcoded model names.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     global _service
     if _service is None:
         _service = SchedulerService()

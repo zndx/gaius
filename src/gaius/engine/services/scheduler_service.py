@@ -584,6 +584,108 @@ class SchedulerService:
             self._xai_budget.weekly_used = 0
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Swarm Analysis
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def run_swarm(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Run multi-agent swarm analysis.
+
+        Routes each agent role to the appropriate endpoint via agents.conf,
+        NOT hardcoded model names.
+
+        Args:
+            domain: Domain to analyze (e.g., "pension", "kudu")
+            context: Additional context
+            roles: Agent roles to include (default: all core roles)
+
+        Returns:
+            Dict mapping role name to result dict with:
+            - status: "completed" or "failed"
+            - content: Response content
+            - model: Actual model used
+            - latency_ms: Response time
+            - input_tokens: Tokens in
+            - output_tokens: Tokens out
+            - error: Error message if failed
+        """
+        import asyncio
+        from gaius.agents.roles import AgentRole, get_role
+
+        # Map role capabilities to endpoints
+        CAPABILITY_TO_ENDPOINT = {
+            "reasoning": "reasoning",      # Strong reasoning models
+            "long_context": "reasoning",   # Same - needs context
+            "coding": "coding",            # Code generation
+            "adversarial": "reasoning",    # Needs reasoning
+            "synthesis": "fast",           # Synthesis is simpler
+        }
+
+        # Default to core swarm roles
+        if roles is None:
+            roles = ["Leader", "Risk", "Optimizer", "Planner", "Critic", "Executor", "Adversary"]
+
+        # Create tasks for each role
+        async def run_agent(role_name: str) -> tuple[str, dict[str, Any]]:
+            try:
+                role_enum = AgentRole(role_name)
+                role_def = get_role(role_enum)
+            except (ValueError, KeyError):
+                return role_name, {
+                    "status": "failed",
+                    "error": f"Unknown role: {role_name}",
+                }
+
+            # Determine endpoint from capabilities
+            endpoint = "fast"  # Default
+            for cap in role_def.model_capabilities:
+                if cap in CAPABILITY_TO_ENDPOINT:
+                    endpoint = CAPABILITY_TO_ENDPOINT[cap]
+                    break
+
+            # Generate prompt
+            prompt = role_def.get_prompt(domain, context)
+
+            try:
+                # Call through scheduler (uses agents.conf for model resolution)
+                response = await self.complete(
+                    prompt=prompt,
+                    agent_alias=endpoint,
+                    temperature=role_def.temperature,
+                    max_tokens=role_def.max_tokens,
+                    priority=JobPriority.HIGH,
+                )
+
+                return role_name, {
+                    "status": "completed" if not response.error else "failed",
+                    "content": response.content,
+                    "model": response.model,
+                    "endpoint": endpoint,
+                    "latency_ms": response.latency_ms,
+                    "input_tokens": response.input_tokens,
+                    "output_tokens": response.output_tokens,
+                    "error": response.error,
+                }
+            except Exception as e:
+                return role_name, {
+                    "status": "failed",
+                    "content": "",
+                    "endpoint": endpoint,
+                    "error": str(e),
+                }
+
+        # Run all agents concurrently
+        tasks = [run_agent(role) for role in roles]
+        results_list = await asyncio.gather(*tasks)
+
+        # Convert to dict
+        return {name: result for name, result in results_list}
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Status
     # ─────────────────────────────────────────────────────────────────────────
 

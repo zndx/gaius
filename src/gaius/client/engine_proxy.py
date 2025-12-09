@@ -332,6 +332,63 @@ class SchedulerProxy:
             raw_response=result,
         )
 
+    async def run_swarm(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], str]:
+        """Run multi-agent swarm analysis via engine and persist to KB.
+
+        All swarm invocations (CLI, TUI, MCP) go through this method,
+        ensuring consistent KB persistence.
+
+        Args:
+            domain: Domain to analyze
+            context: Additional context
+            roles: Agent roles to include (default: all core roles)
+
+        Returns:
+            Tuple of (results dict, saved KB path)
+        """
+        params = {
+            "domain": domain,
+            "context": context,
+        }
+        if roles is not None:
+            params["roles"] = roles
+
+        results = await self._client.call("Scheduler", "run_swarm", params)
+
+        # Calculate summary for KB persistence
+        summary = self._calculate_swarm_summary(results)
+
+        # Always save to KB (engine-centric persistence)
+        from ..storage.kb_ops import save_swarm_to_kb
+        saved_path = await save_swarm_to_kb(domain, context, results, summary)
+
+        return results, saved_path
+
+    def _calculate_swarm_summary(self, results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """Calculate summary statistics from swarm results."""
+        total = len(results)
+        completed = sum(1 for r in results.values() if r.get("status") == "completed")
+        failed = total - completed
+        # Engine returns input_tokens and output_tokens separately
+        total_tokens = sum(
+            r.get("input_tokens", 0) + r.get("output_tokens", 0)
+            for r in results.values()
+        )
+        total_latency = sum(r.get("latency_ms", 0) for r in results.values())
+
+        return {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "total_tokens": total_tokens,
+            "total_latency_ms": total_latency,
+        }
+
     def get_status(self) -> dict[str, Any]:
         """Get scheduler status."""
         return asyncio.get_event_loop().run_until_complete(

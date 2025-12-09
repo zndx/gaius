@@ -1484,34 +1484,62 @@ Domain: {domain or 'general'}
             num_agents: Number of specialist agents
         """
         try:
-            from .agents.swarm import get_swarm_manager
+            from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
             from .agents.roles import AgentRole
 
-            # Select subset of roles based on num_agents
-            all_roles = list(AgentRole)
-            roles = all_roles[:num_agents] if num_agents < len(all_roles) else all_roles
+            if not use_engine_proxy():
+                return json.dumps({"error": "Gaius engine not running. Start with: devenv up -d"}, indent=2)
 
-            manager = get_swarm_manager(roles=roles)
-            result = await manager.run_round(domain=domain or query, context=query)
+            # Select subset of roles based on num_agents
+            all_roles = [r.value for r in AgentRole]
+            roles = all_roles[:num_agents] if num_agents < len(all_roles) else None  # None = default roles
+
+            scheduler = await get_scheduler_proxy()
+            # run_swarm now returns (results, saved_path) tuple
+            raw_results, saved_path = await scheduler.run_swarm(
+                domain=domain or query,
+                context=query,
+                roles=roles,
+            )
+
+            # Convert engine response format
+            perspectives = []
+            total_tokens = 0
+            total_latency = 0
+            synthesis = ""
+
+            for role_name, data in raw_results.items():
+                tokens = data.get("input_tokens", 0) + data.get("output_tokens", 0)
+                succeeded = data.get("status") == "completed"
+                content = data.get("content", "")
+
+                perspectives.append({
+                    "agent": role_name,
+                    "role": role_name.lower(),
+                    "analysis": content[:500] + "..." if len(content) > 500 else content,
+                    "tokens": tokens,
+                    "succeeded": succeeded,
+                })
+                total_tokens += tokens
+                total_latency += data.get("latency_ms", 0)
+
+                # Extract synthesis from Leader
+                if role_name == "Leader" and succeeded:
+                    synthesis = content
+
+            success_count = sum(1 for p in perspectives if p["succeeded"])
+            success_rate = success_count / len(perspectives) if perspectives else 0.0
 
             return json.dumps(
                 {
                     "query": query,
                     "domain": domain or query,
-                    "synthesis": result.consensus,
-                    "perspectives": [
-                        {
-                            "agent": r.name,
-                            "role": r.role.value,
-                            "analysis": r.content[:500] + "..." if len(r.content) > 500 else r.content,
-                            "tokens": r.tokens,
-                            "succeeded": r.succeeded,
-                        }
-                        for r in result.responses
-                    ],
-                    "success_rate": result.success_rate,
-                    "tokens_used": result.total_tokens,
-                    "latency_ms": result.total_latency_ms,
+                    "synthesis": synthesis,
+                    "perspectives": perspectives,
+                    "success_rate": success_rate,
+                    "tokens_used": total_tokens,
+                    "latency_ms": total_latency,
+                    "saved_to": saved_path,
                 },
                 indent=2,
             )
@@ -1717,23 +1745,20 @@ Domain: {domain or 'general'}
             roles: Comma-separated role names (empty for all)
         """
         try:
-            from .inference.scheduler import get_scheduler_service
-            from .agents.roles import AgentRole
+            from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
-            service = get_scheduler_service()
+            if not use_engine_proxy():
+                return json.dumps({"error": "Gaius engine not running. Start with: devenv up -d"}, indent=2)
+
+            scheduler = await get_scheduler_proxy()
 
             # Parse roles
             role_list = None
             if roles:
-                role_names = [r.strip() for r in roles.split(",")]
-                role_list = []
-                for name in role_names:
-                    try:
-                        role_list.append(AgentRole(name))
-                    except ValueError:
-                        pass
+                role_list = [r.strip() for r in roles.split(",")]
 
-            results = await service.run_swarm(
+            # run_swarm now returns (results, saved_path) tuple
+            raw_results, saved_path = await scheduler.run_swarm(
                 domain=domain,
                 context=context,
                 roles=role_list,
@@ -1744,20 +1769,22 @@ Domain: {domain or 'general'}
                 "domain": domain,
                 "agents": {},
                 "summary": {
-                    "total": len(results),
-                    "completed": sum(1 for r in results.values() if r.status.value == "completed"),
-                    "failed": sum(1 for r in results.values() if r.status.value == "failed"),
+                    "total": len(raw_results),
+                    "completed": sum(1 for r in raw_results.values() if r.get("status") == "completed"),
+                    "failed": sum(1 for r in raw_results.values() if r.get("status") == "failed"),
                 },
+                "saved_to": saved_path,
             }
 
-            for role_name, result in results.items():
+            for role_name, result in raw_results.items():
+                content = result.get("content", "")
                 output["agents"][role_name] = {
-                    "status": result.status.value,
-                    "content": result.content[:500] + "..." if len(result.content) > 500 else result.content,
-                    "model": result.model,
-                    "endpoint": result.endpoint,
-                    "latency_ms": result.latency_ms,
-                    "error": result.error,
+                    "status": result.get("status", "unknown"),
+                    "content": content[:500] + "..." if len(content) > 500 else content,
+                    "model": result.get("model", ""),
+                    "endpoint": result.get("endpoint", ""),
+                    "latency_ms": result.get("latency_ms", 0),
+                    "error": result.get("error"),
                 }
 
             return json.dumps(output, indent=2)

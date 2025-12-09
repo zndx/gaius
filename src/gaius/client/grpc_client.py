@@ -368,6 +368,10 @@ class GrpcEngineClient:
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
+        elif action == "run_swarm":
+            # Run swarm by calling Complete for each agent role
+            return await self._run_swarm_via_grpc(params, timeout)
+
         else:
             raise ValueError(f"Unknown Scheduler action: {action}")
 
@@ -601,6 +605,100 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Cognition action: {action}")
+
+    # =========================================================================
+    # Swarm Operations
+    # =========================================================================
+
+    async def _run_swarm_via_grpc(
+        self, params: dict, timeout: float
+    ) -> dict[str, dict]:
+        """Run swarm analysis by calling Complete for each agent role.
+
+        Maps role capabilities to appropriate agent endpoints and runs
+        all agents in parallel.
+
+        Args:
+            params: {domain, context, roles}
+            timeout: Request timeout per agent
+
+        Returns:
+            Dict mapping role name to result dict
+        """
+        import time
+        from google.protobuf.json_format import MessageToDict
+
+        domain = params.get("domain", "")
+        context = params.get("context", "")
+        roles = params.get("roles")
+
+        # Default swarm roles
+        if roles is None:
+            roles = ["Leader", "Risk", "Optimizer", "Planner", "Critic", "Executor", "Adversary"]
+
+        # Map role capabilities to endpoints
+        # Capabilities: reasoning, coding, fast, long_context, adversarial, synthesis
+        ROLE_TO_ENDPOINT = {
+            "Leader": "orchestrator",      # reasoning/synthesis
+            "Risk": "fast",                # analysis
+            "Optimizer": "fast",           # analysis
+            "Planner": "orchestrator",     # reasoning
+            "Critic": "fast",              # adversarial/analysis
+            "Executor": "fast",            # execution
+            "Adversary": "fast",           # adversarial
+        }
+
+        # Get role prompts
+        try:
+            from ..agents.roles import AgentRole, get_role
+
+            async def run_agent(role_name: str) -> tuple[str, dict]:
+                start = time.perf_counter()
+                try:
+                    role_enum = AgentRole(role_name)
+                    role_def = get_role(role_enum)
+                    prompt = role_def.get_prompt(domain, context)
+                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "fast")
+
+                    request = CompleteRequest(
+                        agent_alias=endpoint,
+                        prompt=prompt,
+                        system_prompt=role_def.system_prompt or "",
+                        max_tokens=role_def.max_tokens,
+                        temperature=role_def.temperature,
+                        priority="high",
+                    )
+                    response = await self._gaius_stub.Complete(request, timeout=timeout)
+                    result = MessageToDict(response, preserving_proto_field_name=True)
+
+                    latency = int((time.perf_counter() - start) * 1000)
+                    # Proto field is 'text', not 'content'
+                    content = result.get("text", "") or result.get("content", "")
+                    return role_name, {
+                        "status": "completed",
+                        "content": content,
+                        "model": result.get("model", ""),
+                        "endpoint": endpoint,
+                        "latency_ms": latency,
+                        "input_tokens": result.get("input_tokens", 0),
+                        "output_tokens": result.get("tokens_used", 0),
+                    }
+                except Exception as e:
+                    latency = int((time.perf_counter() - start) * 1000)
+                    return role_name, {
+                        "status": "failed",
+                        "error": str(e),
+                        "latency_ms": latency,
+                    }
+
+            # Run all agents in parallel
+            tasks = [run_agent(role) for role in roles]
+            results = await asyncio.gather(*tasks)
+
+            return {name: result for name, result in results}
+
+        except ImportError:
+            return {"error": "agents.roles not available"}
 
     # =========================================================================
     # OIP Methods (Direct access to KServe OIP)
