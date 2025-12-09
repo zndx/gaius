@@ -212,6 +212,12 @@ class GaiusCLI:
             # Thoughts - cognition and pattern detection
             elif command == "thoughts":
                 result["data"] = self._run_async(self._cmd_thoughts(args))
+            # Health check - comprehensive diagnostics
+            elif command == "health":
+                result["data"] = self._run_async(self._cmd_health(args))
+            # Self-healing - tiered recovery system
+            elif command == "heal":
+                result["data"] = self._run_async(self._cmd_heal(args))
             # Model registry commands
             elif command == "model" or command == "models":
                 result["data"] = self._cmd_model(args)
@@ -1880,7 +1886,7 @@ Answer:"""
                 diagnostics.append({
                     "component": "gaius-engine",
                     "status": "not connected",
-                    "suggestion": "Set GAIUS_ENABLE_FALLBACKS=true and start engine",
+                    "suggestion": "Set GAIUS_ALLOW_FALLBACKS=true and start engine",
                 })
         except Exception as e:
             diagnostics.append({
@@ -4078,6 +4084,327 @@ Respond with:
                 "mode": "cognition",
                 "thoughts_generated": 0,
             }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Health - Comprehensive System Diagnostics
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_health(self, args: str) -> dict:
+        """Run comprehensive health diagnostics.
+
+        Applies heuristics from the KB to diagnose system state
+        and suggest interventions.
+
+        Usage:
+            /health           - Run full health check
+            /health quick     - Run critical checks only
+            /health engine    - Check engine/gRPC health
+            /health data      - Check database/KB health
+            /health cognition - Check cognition daemon
+            /health inference - Check inference endpoints
+        """
+        from pathlib import Path
+
+        try:
+            from .health import HealthChecker, CheckStatus
+        except ImportError:
+            return {
+                "error": "Health module not available",
+                "suggestion": "Ensure health module is installed",
+            }
+
+        args_lower = args.strip().lower() if args else ""
+        kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
+
+        checker = HealthChecker(kb_root)
+
+        # Run appropriate checks
+        if args_lower == "quick":
+            report = await checker.run_quick()
+            check_type = "quick"
+        elif args_lower in ("engine", "data", "cognition", "inference"):
+            report = await checker.run_category(args_lower)
+            check_type = args_lower
+        else:
+            report = await checker.run_all()
+            check_type = "full"
+
+        # Format results
+        checks = []
+        for check in report.checks:
+            check_dict = {
+                "name": check.name,
+                "status": check.status.value,
+                "message": check.message,
+                "duration_ms": check.duration_ms,
+            }
+            if check.details:
+                check_dict["details"] = check.details
+            if check.suggestion:
+                check_dict["suggestion"] = check.suggestion
+            if check.heuristic_id:
+                check_dict["heuristic"] = check.heuristic_id
+            checks.append(check_dict)
+
+        return {
+            "type": check_type,
+            "healthy": report.healthy,
+            "summary": report.summary(),
+            "timestamp": report.timestamp.isoformat(),
+            "duration_ms": report.duration_ms,
+            "passed": report.passed,
+            "warnings": report.warnings,
+            "failures": report.failures,
+            "skipped": report.skipped,
+            "checks": checks,
+            "interventions": report.interventions,
+            "metrics": report.metrics if report.metrics else None,
+        }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Heal - Self-Healing System
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_heal(self, args: str) -> dict:
+        """Tiered self-healing system for endpoint recovery.
+
+        Provides 3-tier approach:
+        - Tier 0: Procedural restart (code-only, no agents)
+        - Tier 1: Local agent intervention (using healthy endpoints)
+        - Tier 2: Remote API escalation (prepared remediation paths)
+
+        Usage:
+            /heal status           - Show self-healing status
+            /heal trigger <endpoint> - Manually trigger healing for endpoint
+            /heal history          - Show healing attempt history
+            /heal history <endpoint> - Show history for specific endpoint
+            /heal tiers            - Show tier availability
+        """
+        from pathlib import Path
+
+        args_parts = args.strip().split() if args else []
+        subcmd = args_parts[0].lower() if args_parts else "status"
+        subargs = args_parts[1:] if len(args_parts) > 1 else []
+
+        # Initialize coordinator (needs orchestrator service)
+        try:
+            from .client.engine_proxy import use_engine_proxy
+            if not use_engine_proxy():
+                return {
+                    "error": "Engine not reachable",
+                    "suggestion": "Start the engine with: gaius-engine",
+                }
+        except ImportError:
+            return {
+                "error": "Engine client not available",
+                "suggestion": "Self-healing requires the engine",
+            }
+
+        # Get or create coordinator
+        coordinator = await self._get_healing_coordinator()
+        if not coordinator:
+            return {
+                "error": "Could not initialize self-healing coordinator",
+                "suggestion": "Check engine connectivity",
+            }
+
+        if subcmd == "status":
+            return await self._heal_status(coordinator)
+
+        elif subcmd == "trigger":
+            if not subargs:
+                return {
+                    "error": "Missing endpoint argument",
+                    "usage": "/heal trigger <endpoint>",
+                }
+            endpoint = subargs[0]
+            return await self._heal_trigger(coordinator, endpoint)
+
+        elif subcmd == "history":
+            endpoint = subargs[0] if subargs else None
+            return self._heal_history(coordinator, endpoint)
+
+        elif subcmd == "tiers":
+            return self._heal_tiers(coordinator)
+
+        else:
+            return {
+                "error": f"Unknown subcommand: {subcmd}",
+                "usage": "/heal [status|trigger|history|tiers]",
+            }
+
+    async def _get_healing_coordinator(self):
+        """Get or create the self-healing coordinator."""
+        # Check if we have a cached coordinator
+        if hasattr(self, "_healing_coordinator") and self._healing_coordinator:
+            return self._healing_coordinator
+
+        try:
+            from .health import SelfHealingCoordinator
+            from .client.engine_proxy import get_orchestrator_proxy
+
+            # Get orchestrator proxy - this wraps the engine's orchestrator service
+            orchestrator = await get_orchestrator_proxy()
+
+            # Create coordinator with default config
+            self._healing_coordinator = SelfHealingCoordinator(
+                orchestrator_service=orchestrator,
+                tier0_config={"max_attempts": 3, "cooldown_seconds": 60},
+                tier1_config={"required_healthy_endpoints": 1},
+                tier2_config={"enabled": True, "budget_limit_daily": 50},
+            )
+
+            return self._healing_coordinator
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to create coordinator: {e}")
+            return None
+
+    async def _heal_status(self, coordinator) -> dict:
+        """Get self-healing status."""
+        status = coordinator.get_status()
+
+        # Also get tier availability info which may need async
+        tier_info = []
+        for tier in coordinator.tiers:
+            info = {
+                "type": tier.tier_type.name,
+                "available": tier.is_available(),
+            }
+            tier_info.append(info)
+
+        return {
+            "tiers": tier_info,
+            "endpoint_states": status["endpoint_states"],
+            "global_failures": status["global_failures"],
+            "global_cooldown": status["global_cooldown_until"],
+            "active_healings": len(status["endpoint_states"]),
+        }
+
+    async def _heal_trigger(self, coordinator, endpoint: str) -> dict:
+        """Manually trigger healing for an endpoint.
+
+        This command implements full escalation: it keeps trying healing
+        actions through all tiers until success or all options exhausted.
+        Cooldowns are shortened for interactive use.
+        """
+        import asyncio
+        from .health import HealthIssue
+
+        # For manual triggers, use shorter cooldowns
+        original_cooldowns = []
+        for tier in coordinator.tiers:
+            if hasattr(tier, 'COOLDOWN_SECONDS'):
+                original_cooldowns.append(tier.COOLDOWN_SECONDS)
+                tier.COOLDOWN_SECONDS = 2  # Short cooldown for manual
+
+        # Create a manual issue
+        issue = HealthIssue(
+            endpoint=endpoint,
+            issue_type="manual_trigger",
+            error_message="Manually triggered healing",
+            check_name="manual",
+            severity="warning",
+        )
+
+        # Track all attempts for reporting
+        attempts = []
+        max_total_attempts = 10  # Safety limit
+        attempt_count = 0
+
+        while attempt_count < max_total_attempts:
+            attempt_count += 1
+
+            # Clear any cooldowns for manual trigger
+            state = coordinator._get_or_create_state(endpoint)
+            state.cooldown_until = None
+
+            # Trigger healing
+            result = await coordinator.handle_health_issue(issue)
+
+            attempts.append({
+                "attempt": attempt_count,
+                "tier": result.tier.name if result.tier else None,
+                "action": result.action,
+                "success": result.success,
+                "reason": result.reason,
+                "deferred": result.deferred,
+            })
+
+            if result.success:
+                break
+
+            if result.deferred:
+                # Skip deferred results (cooldown active), wait briefly and continue
+                await asyncio.sleep(0.5)
+                continue
+
+            # Check if we've exhausted all tiers
+            current_state = coordinator._states.get(endpoint)
+            if current_state and current_state.current_tier >= 2:
+                # At tier 2 - check if it returned manual intervention
+                if result.action == "manual_intervention_required" or result.action == "FAILOVER_MANUAL":
+                    break
+
+            # Brief pause between attempts
+            await asyncio.sleep(1)
+
+        # Restore original cooldowns
+        idx = 0
+        for tier in coordinator.tiers:
+            if hasattr(tier, 'COOLDOWN_SECONDS') and idx < len(original_cooldowns):
+                tier.COOLDOWN_SECONDS = original_cooldowns[idx]
+                idx += 1
+
+        # Determine final result
+        final_result = attempts[-1] if attempts else {}
+
+        return {
+            "endpoint": endpoint,
+            "triggered": True,
+            "success": final_result.get("success", False),
+            "action": final_result.get("action"),
+            "tier": final_result.get("tier"),
+            "reason": final_result.get("reason"),
+            "deferred": final_result.get("deferred", False),
+            "total_attempts": len(attempts),
+            "attempts": attempts,
+        }
+
+    def _heal_history(self, coordinator, endpoint: str | None = None) -> dict:
+        """Get healing attempt history."""
+        history = coordinator.get_healing_history(endpoint=endpoint, limit=20)
+
+        return {
+            "endpoint": endpoint or "all",
+            "count": len(history),
+            "history": history,
+        }
+
+    def _heal_tiers(self, coordinator) -> dict:
+        """Get tier availability information."""
+        tiers = []
+        for tier in coordinator.tiers:
+            tier_info = {
+                "type": tier.tier_type.name,
+                "tier_num": tier.tier_type.value,
+                "available": tier.is_available(),
+            }
+
+            # Add tier-specific info
+            if hasattr(tier, "MAX_ATTEMPTS"):
+                tier_info["max_attempts"] = tier.MAX_ATTEMPTS
+            if hasattr(tier, "COOLDOWN_SECONDS"):
+                tier_info["cooldown_seconds"] = tier.COOLDOWN_SECONDS
+            if hasattr(tier, "ALLOWED_ACTIONS"):
+                tier_info["allowed_actions"] = tier.ALLOWED_ACTIONS
+            if hasattr(tier, "REMEDIATION_PATHS"):
+                tier_info["remediation_codes"] = list(tier.REMEDIATION_PATHS.keys())
+
+            tiers.append(tier_info)
+
+        return {"tiers": tiers}
 
     def format_output(self, result: dict) -> str:
         """Format result based on output format."""
