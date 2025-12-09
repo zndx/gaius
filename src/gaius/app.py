@@ -1935,13 +1935,19 @@ Use `/inference stop <endpoint>` to stop an endpoint.
 
             async def start():
                 try:
-                    from .inference.orchestrator import get_orchestrator
+                    from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
                     from .agents.evolution import get_evolution_daemon
 
-                    orchestrator = get_orchestrator()
-
-                    # Phase 1: Clean start GPUs
-                    result = await orchestrator.clean_start(endpoints)
+                    # Use engine client (agent-first architecture)
+                    if use_engine_proxy():
+                        orch = await get_orchestrator_proxy()
+                        result = await orch.clean_start(endpoints)
+                    else:
+                        import logging
+                        logging.getLogger(__name__).warning("LEGACY_FALLBACK: /evolve start bypassing engine - tech debt")
+                        from .inference.orchestrator import get_orchestrator
+                        orchestrator = get_orchestrator()
+                        result = await orchestrator.clean_start(endpoints)
 
                     if not result["success"]:
                         content.show_file("error.txt", f"Failed to start GPU endpoints: {result['startup']}")
@@ -2119,26 +2125,30 @@ Phase 1: Starting orchestration endpoint...
 
             async def start_orchestrated():
                 try:
-                    from .inference.orchestrator import get_orchestrator
+                    from .inference.manager import get_inference_manager
                     from .agents.evolution.orchestrated import get_orchestrated_evolution
 
-                    # Ensure orchestration endpoint is running
-                    orchestrator = get_orchestrator()
-                    status = orchestrator.get_status()
+                    # Use InferenceManager to check/ensure endpoint is available
+                    # This discovers external processes (devenv, MCP, etc.)
+                    manager = get_inference_manager()
+                    status = await manager.get_status()
 
-                    orch_endpoint = status.get("endpoints", {}).get("orchestration", {})
-                    if orch_endpoint.get("status") != "healthy":
+                    if not status.default_model_ready:
                         content.show_file("evolve.md", """# Orchestrated Evolution
 
-Phase 1: Starting orchestration endpoint...
+Phase 1: Starting inference endpoint...
 """)
-                        await orchestrator.start_endpoint("orchestration")
-                        await asyncio.sleep(10)  # Wait for startup
+                        # Try to ensure an endpoint is running
+                        success = await manager.ensure_orchestrator_running()
+                        if not success:
+                            content.show_file("error.txt", "Failed to start inference endpoint for evolution.")
+                            return
+                        await asyncio.sleep(2)  # Brief wait for stability
 
                     # Start orchestrated evolution
                     content.show_file("evolve.md", """# Orchestrated Evolution
 
-Phase 1: ✓ Orchestration endpoint ready
+Phase 1: ✓ Inference endpoint ready
 Phase 2: Starting orchestrator-managed evolution...
 """)
 

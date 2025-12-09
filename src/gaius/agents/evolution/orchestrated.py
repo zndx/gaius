@@ -143,7 +143,7 @@ Be concise and decisive. The system should make steady progress without human in
 
     def __init__(
         self,
-        orchestrator_endpoint: str = "orchestration",
+        orchestrator_endpoint: str = "orchestrator",
         max_consecutive_failures: int = 5,
         session_timeout_hours: float = 12.0,
     ):
@@ -300,14 +300,42 @@ Be concise and decisive. The system should make steady progress without human in
             logger.debug(f"Failed to get GPU health: {e}")
 
         try:
-            from ...inference.orchestrator import get_orchestrator
-            orch = get_orchestrator()
-            status = orch.get_status()
+            from ...client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            for name, info in status.get("endpoints", {}).items():
-                endpoints_running[name] = info.get("status") == "healthy"
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                status = await orch._get_status_async()
+
+                for name, info in status.get("endpoints", {}).items():
+                    endpoints_running[name] = info.get("status") == "healthy"
+            else:
+                # Fallback to legacy
+                logger.warning("LEGACY_FALLBACK: _observe_system endpoint status bypassing engine - tech debt")
+                from ...inference.orchestrator import get_orchestrator
+                orch = get_orchestrator()
+                status = orch.get_status()
+
+                for name, info in status.get("endpoints", {}).items():
+                    endpoints_running[name] = info.get("status") == "healthy"
         except Exception as e:
             logger.debug(f"Failed to get endpoint status: {e}")
+
+        # Also probe endpoints via HTTP to detect externally running processes
+        import httpx
+        from ...inference.router import get_endpoint_router
+        try:
+            router = get_endpoint_router()
+            for name, endpoint in router.config.endpoints.items():
+                if name not in endpoints_running or not endpoints_running[name]:
+                    try:
+                        resp = httpx.get(f"{endpoint.url}/models", timeout=1.0)
+                        endpoints_running[name] = resp.status_code == 200
+                    except Exception:
+                        if name not in endpoints_running:
+                            endpoints_running[name] = False
+        except Exception as e:
+            logger.debug(f"Failed to probe endpoints via HTTP: {e}")
 
         # Agent state
         available_agents = []
@@ -332,11 +360,11 @@ Be concise and decisive. The system should make steady progress without human in
 
         # Check for active versions
         try:
-            from ...models.agent_store import get_agent_store
-            store = get_agent_store()
+            from ...models.versioning import get_version_manager
+            manager = get_version_manager()
 
             for agent in available_agents:
-                version = store.get_active_version(agent)
+                version = await manager.get_active_version(agent)
                 agent_active_versions[agent] = version is not None
         except Exception as e:
             logger.debug(f"Failed to check agent versions: {e}")
@@ -409,7 +437,7 @@ Be concise and decisive. The system should make steady progress without human in
             result = await router.complete(
                 messages=messages,
                 endpoint=self.orchestrator_endpoint,
-                max_tokens=500,
+                max_tokens=1500,  # Enough for thinking + JSON response
                 temperature=0.3,  # More deterministic for operational decisions
             )
 
@@ -489,11 +517,24 @@ Be concise and decisive. The system should make steady progress without human in
     def _parse_decision(self, response: str) -> OrchestratorDecision:
         """Parse orchestrator response into decision."""
         try:
-            # Extract JSON from response
-            import re
-            json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
+            # Extract JSON from response - find balanced braces
+            # First try to find JSON by looking for opening brace after any thinking tags
+            start_idx = response.find('{')
+            if start_idx != -1:
+                # Find matching closing brace (handle nested braces)
+                brace_count = 0
+                end_idx = start_idx
+                for i, c in enumerate(response[start_idx:], start_idx):
+                    if c == '{':
+                        brace_count += 1
+                    elif c == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            end_idx = i + 1
+                            break
+
+                json_str = response[start_idx:end_idx]
+                data = json.loads(json_str)
 
                 action = OrchestratorAction(data.get("action", "wait"))
 
@@ -638,8 +679,18 @@ Be concise and decisive. The system should make steady progress without human in
         }
 
     async def _execute_restart_endpoint(self, endpoint: str) -> dict:
-        """Restart a vLLM endpoint."""
+        """Restart a vLLM endpoint via engine."""
         try:
+            from ...client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+            # Use engine client (agent-first architecture)
+            if use_engine_proxy():
+                orch = await get_orchestrator_proxy()
+                success = await orch.restart_endpoint(endpoint)
+                return {"success": success, "restarted": endpoint}
+
+            # Fallback to legacy
+            logger.warning("LEGACY_FALLBACK: _execute_restart_endpoint bypassing engine - tech debt")
             from ...inference.orchestrator import get_orchestrator
 
             orch = get_orchestrator()
@@ -670,11 +721,12 @@ Be concise and decisive. The system should make steady progress without human in
 
         # Check agent versions
         try:
-            from ...models.agent_store import get_agent_store
-            store = get_agent_store()
+            from ...models.versioning import get_version_manager
+            manager = get_version_manager()
 
             for agent in ["leader", "risk", "critic", "opportunity", "domain"]:
-                if not store.get_active_version(agent):
+                version = await manager.get_active_version(agent)
+                if not version:
                     issues.append(f"Agent '{agent}' has no active version")
         except Exception as e:
             issues.append(f"Agent version check failed: {e}")
