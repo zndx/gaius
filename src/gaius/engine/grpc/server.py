@@ -79,6 +79,10 @@ class ServiceRegistry:
     start_evolution: Optional[Callable] = None
     stop_evolution: Optional[Callable] = None
 
+    # Init controller for bidirectional initialization streaming
+    # Available immediately when gRPC starts, before other services
+    init_controller: Any = None
+
 
 class GrpcServer:
     """gRPC server for Gaius Engine.
@@ -105,6 +109,7 @@ class GrpcServer:
         trigger_evolution: Optional[Callable] = None,
         start_evolution: Optional[Callable] = None,
         stop_evolution: Optional[Callable] = None,
+        init_controller: Any = None,
     ) -> None:
         """Set the backend services for gRPC handlers to use.
 
@@ -119,6 +124,7 @@ class GrpcServer:
             trigger_evolution: Callback to trigger evolution cycle
             start_evolution: Callback to start evolution daemon
             stop_evolution: Callback to stop evolution daemon
+            init_controller: InitController for bidirectional init streaming
         """
         self._services.backend_router = backend_router
         self._services.orchestrator_service = orchestrator_service
@@ -130,6 +136,7 @@ class GrpcServer:
         self._services.trigger_evolution = trigger_evolution
         self._services.start_evolution = start_evolution
         self._services.stop_evolution = stop_evolution
+        self._services.init_controller = init_controller
 
     def update_service(self, name: str, service: Any) -> None:
         """Update a specific service after initial setup.

@@ -375,7 +375,15 @@ class SchedulerService:
             return job
 
     async def _process_queue(self) -> None:
-        """Background queue processor."""
+        """Background queue processor.
+
+        Waits for backends to be ready before processing jobs.
+        This implements the command queue pattern where inference
+        requests are held until initialization completes.
+        """
+        # Wait for at least one backend to be ready
+        await self._wait_for_backends()
+
         while self._running:
             job = None
 
@@ -387,6 +395,57 @@ class SchedulerService:
                 await self._process_job(job)
             else:
                 await asyncio.sleep(0.01)
+
+    async def _wait_for_backends(self, timeout: float = 300.0) -> None:
+        """Wait for at least one backend to be ready.
+
+        Args:
+            timeout: Maximum time to wait in seconds (default 5 minutes)
+
+        During engine initialization (~240s), this holds inference
+        requests until endpoints are available. Uses exponential
+        backoff to avoid hammering health checks.
+        """
+        start = asyncio.get_event_loop().time()
+        wait_time = 1.0  # Start with 1s, increase exponentially
+
+        while self._running:
+            elapsed = asyncio.get_event_loop().time() - start
+            if elapsed > timeout:
+                logger.warning("Backend wait timeout - proceeding anyway")
+                return
+
+            # Check if any backends are available
+            if await self._any_backend_ready():
+                logger.info(f"Backends ready after {elapsed:.1f}s")
+                return
+
+            logger.debug(f"Waiting for backends... ({elapsed:.0f}s elapsed)")
+            await asyncio.sleep(wait_time)
+            wait_time = min(wait_time * 1.5, 10.0)  # Cap at 10s
+
+    async def _any_backend_ready(self) -> bool:
+        """Check if any inference backend is ready.
+
+        Returns:
+            True if at least one backend can accept requests
+        """
+        try:
+            # Get backend status (sync method, wrap for async context)
+            status = self.backend_router.get_status()
+
+            # Check vLLM endpoints
+            vllm_status = status.get("vllm", {})
+            vllm_running = vllm_status.get("total_running", 0)
+
+            # Check optillm
+            optillm_status = status.get("optillm", {})
+            optillm_healthy = optillm_status.get("healthy", False)
+
+            return vllm_running > 0 or optillm_healthy
+        except Exception as e:
+            logger.debug(f"Backend status check failed: {e}")
+            return False
 
     async def _process_job(self, job: InferenceJob) -> None:
         """Process a single job."""

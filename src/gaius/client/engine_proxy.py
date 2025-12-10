@@ -11,7 +11,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
 from .grpc_client import GrpcEngineClient, get_grpc_client
 
@@ -252,11 +252,60 @@ class SchedulerProxy:
     """Proxy for InferenceScheduler that delegates to engine.
 
     Duck-types the InferenceScheduler interface for drop-in replacement.
+    Includes client-side wait for endpoints during engine initialization.
     """
 
     def __init__(self, client: GrpcEngineClient):
         """Initialize proxy."""
         self._client = client
+        self._endpoints_ready = False
+
+    async def _wait_for_endpoints(self, timeout: float = 300.0) -> bool:
+        """Wait for at least one inference endpoint to be ready.
+
+        Called before inference requests to ensure engine has completed
+        initialization (~240s for vLLM preload).
+
+        Args:
+            timeout: Maximum wait time in seconds (default 5 minutes)
+
+        Returns:
+            True if endpoints are ready, False if timeout
+        """
+        if self._endpoints_ready:
+            return True
+
+        import asyncio
+        import logging
+        logger = logging.getLogger(__name__)
+
+        start = asyncio.get_event_loop().time()
+        wait_time = 1.0
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start
+            if elapsed > timeout:
+                logger.warning(f"Endpoint wait timeout after {elapsed:.0f}s")
+                return False
+
+            try:
+                # Check orchestrator status for healthy endpoints
+                status = await self._client.call("Orchestrator", "status", {})
+                endpoints = status.get("endpoints", [])
+                healthy = sum(1 for ep in endpoints if ep.get("status") == "healthy")
+
+                if healthy > 0:
+                    logger.info(f"Endpoints ready after {elapsed:.1f}s ({healthy} healthy)")
+                    self._endpoints_ready = True
+                    return True
+
+                logger.debug(f"Waiting for endpoints... ({elapsed:.0f}s, {len(endpoints)} found, 0 healthy)")
+
+            except Exception as e:
+                logger.debug(f"Endpoint check failed: {e}")
+
+            await asyncio.sleep(wait_time)
+            wait_time = min(wait_time * 1.5, 10.0)  # Exponential backoff, cap at 10s
 
     async def complete(
         self,
@@ -332,40 +381,103 @@ class SchedulerProxy:
             raw_response=result,
         )
 
+    async def run_swarm_stream(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream swarm analysis with real-time progress updates.
+
+        Uses gRPC SwarmStream which handles backend wait internally,
+        streaming QUEUED/WAITING_FOR_BACKENDS status while endpoints
+        initialize. This prevents client timeouts during the ~240s
+        engine startup phase.
+
+        Args:
+            domain: Domain to analyze
+            context: Additional context
+            roles: Agent roles to include (default: all core roles)
+            on_event: Optional callback for each event
+
+        Yields:
+            SwarmEvent dicts with:
+                - type: Event type (QUEUED, WAITING_FOR_BACKENDS, STARTED,
+                        AGENT_STARTED, AGENT_COMPLETED, AGENT_FAILED, COMPLETED)
+                - timestamp_ms: Event timestamp
+                - agent: Agent name (for AGENT_* events)
+                - progress: 0.0-1.0 overall progress
+                - message: Human-readable status message
+                - data: JSON payload (results on COMPLETED)
+        """
+        from .grpc_client import get_grpc_client
+
+        client = await get_grpc_client()
+        async for event in client.swarm_stream(domain, context, roles):
+            if on_event:
+                on_event(event)
+            yield event
+
     async def run_swarm(
         self,
         domain: str,
         context: str = "",
         roles: list[str] | None = None,
+        on_progress: Callable[[str, float], None] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], str]:
         """Run multi-agent swarm analysis via engine and persist to KB.
 
         All swarm invocations (CLI, TUI, MCP) go through this method,
         ensuring consistent KB persistence.
 
+        Uses streaming internally to handle backend initialization gracefully,
+        preventing timeouts during the ~240s engine startup phase.
+
         Args:
             domain: Domain to analyze
             context: Additional context
             roles: Agent roles to include (default: all core roles)
+            on_progress: Optional callback (message, progress_0_to_1)
 
         Returns:
             Tuple of (results dict, saved KB path)
         """
-        params = {
-            "domain": domain,
-            "context": context,
-        }
-        if roles is not None:
-            params["roles"] = roles
+        import json
 
-        results = await self._client.call("Scheduler", "run_swarm", params)
+        results: dict[str, dict[str, Any]] = {}
+        saved_path = ""
 
-        # Calculate summary for KB persistence
-        summary = self._calculate_swarm_summary(results)
+        async for event in self.run_swarm_stream(domain, context, roles):
+            event_type = event.get("type", "")
 
-        # Always save to KB (engine-centric persistence)
-        from ..storage.kb_ops import save_swarm_to_kb
-        saved_path = await save_swarm_to_kb(domain, context, results, summary)
+            # Call progress callback if provided
+            if on_progress:
+                on_progress(event.get("message", ""), event.get("progress", 0.0))
+
+            # Collect agent results as they come in
+            if event_type == "AGENT_COMPLETED":
+                agent = event.get("agent", "")
+                if agent and event.get("data"):
+                    try:
+                        results[agent] = json.loads(event["data"])
+                    except json.JSONDecodeError:
+                        pass
+
+            # Final event contains all results
+            elif event_type == "COMPLETED":
+                if event.get("data"):
+                    try:
+                        final_data = json.loads(event["data"])
+                        results = final_data.get("results", results)
+                        saved_path = final_data.get("saved_path", "")
+                    except json.JSONDecodeError:
+                        pass
+
+            elif event_type == "FAILED":
+                # Return empty results on failure
+                logger.error(f"Swarm failed: {event.get('message', 'unknown error')}")
+                return {}, ""
 
         return results, saved_path
 

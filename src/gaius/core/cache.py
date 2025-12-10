@@ -1,27 +1,17 @@
 """State caching for fast TUI startup.
 
-Supports two backends:
-1. **Postgres** (preferred): Full history, queryable, shared across instances
-2. **Pickle** (fallback): Local files, no external dependencies
+Uses Postgres for persistent, queryable grid state storage.
+Requires DATABASE_URL to be set - cache is disabled if not configured.
 
 The cache is invalidated when:
 - Embedding model changes
 - KB content changes significantly
 - User runs /reindex or /init commands
-
-Configuration:
-    Set DATABASE_URL to enable Postgres backend.
-    Falls back to pickle if Postgres unavailable.
 """
 
-import asyncio
-import json
+import logging
 import os
-import pickle
-from dataclasses import asdict
-from datetime import datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .projection import GridData
 from .tda import TDAFeatures
@@ -29,60 +19,33 @@ from .tda import TDAFeatures
 if TYPE_CHECKING:
     from .iso_features import IsoFeatures
 
+logger = logging.getLogger(__name__)
+
 # Cache schema version (increment when format changes)
-# v2: Added iso.pkl for IsoFeatures
-# v3: Added Postgres backend
-CACHE_VERSION = 3
+CACHE_VERSION = 4  # v4: Postgres-only, removed pickle
 
 
-def _use_postgres() -> bool:
-    """Check if Postgres backend should be used."""
-    # Use Postgres if DATABASE_URL is set and not explicitly disabled
-    if os.getenv("GAIUS_CACHE_BACKEND", "auto") == "pickle":
+def _use_cache() -> bool:
+    """Check if caching is enabled.
+
+    Requires DATABASE_URL to be set.
+    """
+    if not os.getenv("DATABASE_URL"):
+        logger.debug("Cache disabled - DATABASE_URL not set")
         return False
-    return bool(os.getenv("DATABASE_URL"))
+    return True
 
 
-def get_cache_dir(kb_root: Path | str) -> Path:
-    """Get cache directory for a KB root."""
-    kb_path = Path(kb_root)
-    cache_dir = kb_path / ".cache"
-    cache_dir.mkdir(exist_ok=True)
-    return cache_dir
-
-
-def get_cache_metadata_path(kb_root: Path | str) -> Path:
-    """Get path to cache metadata file."""
-    return get_cache_dir(kb_root) / "state.json"
-
-
-def get_cache_grid_path(kb_root: Path | str) -> Path:
-    """Get path to cached grid data (pickle for numpy arrays)."""
-    return get_cache_dir(kb_root) / "grid.pkl"
-
-
-def get_cache_tda_path(kb_root: Path | str) -> Path:
-    """Get path to cached TDA features."""
-    return get_cache_dir(kb_root) / "tda.pkl"
-
-
-def get_cache_iso_path(kb_root: Path | str) -> Path:
-    """Get path to cached IsoFeatures."""
-    return get_cache_dir(kb_root) / "iso.pkl"
-
-
-def save_cached_state(
-    kb_root: Path | str,
+async def save_cached_state_async(
+    kb_root: str,
     grid_data: GridData,
     tda_features: TDAFeatures,
     embedding_model: str,
     projection_method: str,
     embedding_type: str = "single",
     iso_features: "IsoFeatures | None" = None,
-) -> None:
-    """Save computed state to cache.
-
-    Uses Postgres if DATABASE_URL is set, otherwise falls back to pickle files.
+) -> str | None:
+    """Save computed state to Postgres cache (async).
 
     Args:
         kb_root: KB root directory
@@ -91,245 +54,66 @@ def save_cached_state(
         embedding_model: Model used for embeddings
         projection_method: Projection method (umap/pca)
         embedding_type: Embedding type ("single" or "multi")
-        iso_features: Pre-computed IsoFeatures from TDA on multi-vectors
+        iso_features: Pre-computed IsoFeatures (not yet stored in Postgres)
+
+    Returns:
+        Snapshot ID if saved successfully, None otherwise.
     """
-    kb_root_str = str(kb_root)
+    if not _use_cache():
+        return None
 
-    # Try Postgres first
-    if _use_postgres():
-        try:
-            from ..storage.grid_state import save_grid_state, ensure_schema
+    try:
+        from ..storage.grid_state import save_grid_state, ensure_schema
 
-            # Run async save
-            loop = asyncio.new_event_loop()
-            try:
-                # Ensure schema exists
-                loop.run_until_complete(ensure_schema())
-                # Save to Postgres
-                snapshot_id = loop.run_until_complete(
-                    save_grid_state(
-                        kb_root=kb_root_str,
-                        grid_data=grid_data,
-                        tda_features=tda_features,
-                        embedding_model=embedding_model,
-                        projection_method=projection_method,
-                        embedding_type=embedding_type,
-                    )
-                )
-                if snapshot_id:
-                    # Success - also save minimal pickle for offline fallback
-                    _save_pickle_fallback(kb_root, grid_data, tda_features,
-                                         embedding_model, projection_method,
-                                         embedding_type, iso_features)
-                    return
-            finally:
-                loop.close()
-        except Exception as e:
-            print(f"Postgres save failed, falling back to pickle: {e}")
-
-    # Fallback to pickle
-    _save_pickle_cache(kb_root, grid_data, tda_features,
-                       embedding_model, projection_method,
-                       embedding_type, iso_features)
+        await ensure_schema()
+        snapshot_id = await save_grid_state(
+            kb_root=kb_root,
+            grid_data=grid_data,
+            tda_features=tda_features,
+            embedding_model=embedding_model,
+            projection_method=projection_method,
+            embedding_type=embedding_type,
+        )
+        logger.debug(f"Saved grid state to Postgres: {snapshot_id}")
+        return snapshot_id
+    except Exception as e:
+        logger.warning(f"Failed to save cache to Postgres: {e}")
+        return None
 
 
-def _save_pickle_cache(
-    kb_root: Path | str,
-    grid_data: GridData,
-    tda_features: TDAFeatures,
-    embedding_model: str,
-    projection_method: str,
-    embedding_type: str = "single",
-    iso_features: "IsoFeatures | None" = None,
-) -> None:
-    """Save state to pickle files (original implementation)."""
-    cache_dir = get_cache_dir(kb_root)
-
-    # Save metadata (JSON for readability)
-    metadata = {
-        "version": CACHE_VERSION,
-        "timestamp": datetime.now().isoformat(),
-        "embedding_model": embedding_model,
-        "embedding_type": embedding_type,
-        "projection_method": projection_method,
-        "n_documents": grid_data.n_documents,
-        "coverage": grid_data.coverage,
-        "tda_h0": tda_features.h0_count,
-        "tda_h1": tda_features.h1_count,
-        "tda_h2": tda_features.h2_count,
-        "tda_entropy": tda_features.entropy,
-        "has_iso_features": iso_features is not None,
-        "backend": "pickle",
-    }
-
-    with open(get_cache_metadata_path(kb_root), "w") as f:
-        json.dump(metadata, f, indent=2)
-
-    # Save grid data (pickle for numpy arrays)
-    with open(get_cache_grid_path(kb_root), "wb") as f:
-        pickle.dump(grid_data, f)
-
-    # Save TDA features
-    with open(get_cache_tda_path(kb_root), "wb") as f:
-        pickle.dump(tda_features, f)
-
-    # Save IsoFeatures if available
-    if iso_features is not None:
-        with open(get_cache_iso_path(kb_root), "wb") as f:
-            pickle.dump(iso_features, f)
-
-
-def _save_pickle_fallback(
-    kb_root: Path | str,
-    grid_data: GridData,
-    tda_features: TDAFeatures,
-    embedding_model: str,
-    projection_method: str,
-    embedding_type: str = "single",
-    iso_features: "IsoFeatures | None" = None,
-) -> None:
-    """Save minimal pickle cache as offline fallback after Postgres save."""
-    # Just save metadata indicating Postgres is primary
-    cache_dir = get_cache_dir(kb_root)
-    metadata = {
-        "version": CACHE_VERSION,
-        "timestamp": datetime.now().isoformat(),
-        "embedding_model": embedding_model,
-        "embedding_type": embedding_type,
-        "projection_method": projection_method,
-        "n_documents": grid_data.n_documents,
-        "coverage": grid_data.coverage,
-        "tda_h0": tda_features.h0_count,
-        "tda_h1": tda_features.h1_count,
-        "tda_h2": tda_features.h2_count,
-        "tda_entropy": tda_features.entropy,
-        "has_iso_features": iso_features is not None,
-        "backend": "postgres",  # Mark that Postgres is primary
-    }
-
-    with open(get_cache_metadata_path(kb_root), "w") as f:
-        json.dump(metadata, f, indent=2)
-
-    # Also save full pickle as fallback for offline use
-    _save_pickle_cache(kb_root, grid_data, tda_features,
-                       embedding_model, projection_method,
-                       embedding_type, iso_features)
-
-
-def load_cached_state(
-    kb_root: Path | str,
+async def load_cached_state_async(
+    kb_root: str,
 ) -> tuple[GridData | None, TDAFeatures | None, dict | None, "IsoFeatures | None"]:
-    """Load cached state if available.
-
-    Tries Postgres first if DATABASE_URL is set, then falls back to pickle.
+    """Load cached state from Postgres (async).
 
     Returns:
         Tuple of (grid_data, tda_features, metadata, iso_features).
-        Returns (None, None, None, None) if cache invalid.
+        Returns (None, None, None, None) if cache unavailable.
     """
-    kb_root_str = str(kb_root)
+    if not _use_cache():
+        return None, None, None, None
 
-    # Try Postgres first
-    if _use_postgres():
-        try:
-            from ..storage.grid_state import load_current_grid_state
-
-            loop = asyncio.new_event_loop()
-            try:
-                grid_data, tda_features, metadata = loop.run_until_complete(
-                    load_current_grid_state(kb_root_str)
-                )
-                if grid_data is not None and tda_features is not None:
-                    # Postgres doesn't store IsoFeatures yet, try loading from pickle
-                    iso_features = _load_iso_features(kb_root)
-                    return grid_data, tda_features, metadata, iso_features
-            finally:
-                loop.close()
-        except Exception as e:
-            print(f"Postgres load failed, falling back to pickle: {e}")
-
-    # Fallback to pickle
-    return _load_pickle_cache(kb_root)
-
-
-def _load_iso_features(kb_root: Path | str) -> "IsoFeatures | None":
-    """Load IsoFeatures from pickle if available."""
-    iso_path = get_cache_iso_path(kb_root)
-    if iso_path.exists():
-        try:
-            with open(iso_path, "rb") as f:
-                return pickle.load(f)
-        except Exception:
-            pass
-    return None
-
-
-def _load_pickle_cache(
-    kb_root: Path | str,
-) -> tuple[GridData | None, TDAFeatures | None, dict | None, "IsoFeatures | None"]:
-    """Load state from pickle files (original implementation)."""
     try:
-        metadata_path = get_cache_metadata_path(kb_root)
-        grid_path = get_cache_grid_path(kb_root)
-        tda_path = get_cache_tda_path(kb_root)
-        iso_path = get_cache_iso_path(kb_root)
+        from ..storage.grid_state import load_current_grid_state
 
-        # Check required files exist
-        if not (metadata_path.exists() and grid_path.exists() and tda_path.exists()):
-            return None, None, None, None
-
-        # Load metadata
-        with open(metadata_path) as f:
-            metadata = json.load(f)
-
-        # Check version (accept both v2 pickle and v3 postgres-backed pickle)
-        version = metadata.get("version", 0)
-        if version < 2:  # Too old
-            return None, None, None, None
-
-        # Load pickled data
-        with open(grid_path, "rb") as f:
-            grid_data = pickle.load(f)
-
-        with open(tda_path, "rb") as f:
-            tda_features = pickle.load(f)
-
-        # Load IsoFeatures if available
-        iso_features = None
-        if iso_path.exists():
-            try:
-                with open(iso_path, "rb") as f:
-                    iso_features = pickle.load(f)
-            except Exception:
-                pass  # IsoFeatures optional, continue without
-
-        return grid_data, tda_features, metadata, iso_features
-
-    except Exception:
-        # Any error loading cache -> invalidate
+        grid_data, tda_features, metadata = await load_current_grid_state(kb_root)
+        if grid_data is not None and tda_features is not None:
+            logger.debug(f"Loaded grid state from Postgres: {metadata.get('snapshot_id', 'unknown')}")
+            # IsoFeatures not yet stored in Postgres
+            return grid_data, tda_features, metadata, None
+        return None, None, None, None
+    except Exception as e:
+        logger.warning(f"Failed to load cache from Postgres: {e}")
         return None, None, None, None
 
 
-def invalidate_cache(kb_root: Path | str) -> None:
-    """Delete cached state files."""
-    try:
-        cache_dir = get_cache_dir(kb_root)
-        for path in cache_dir.glob("*"):
-            if path.is_file():
-                path.unlink()
-    except Exception:
-        pass  # Best effort
-
-
-def check_cache_validity(
-    kb_root: Path | str,
+async def check_cache_validity_async(
+    kb_root: str,
     current_embedding_model: str,
     current_projection_method: str,
     current_embedding_type: str = "single",
 ) -> bool:
-    """Check if cache is valid for current config.
-
-    Checks Postgres first if available, then falls back to pickle metadata.
+    """Check if cache is valid for current config (async).
 
     Args:
         kb_root: KB root directory
@@ -340,55 +124,146 @@ def check_cache_validity(
     Returns:
         True if cache matches current config
     """
-    kb_root_str = str(kb_root)
-
-    # Check Postgres first
-    if _use_postgres():
-        try:
-            from ..storage.grid_state import check_state_exists
-
-            loop = asyncio.new_event_loop()
-            try:
-                exists = loop.run_until_complete(
-                    check_state_exists(
-                        kb_root_str,
-                        current_embedding_model,
-                        current_projection_method,
-                    )
-                )
-                if exists:
-                    return True
-            finally:
-                loop.close()
-        except Exception:
-            pass  # Fall through to pickle check
-
-    # Fallback: check pickle metadata
-    try:
-        metadata_path = get_cache_metadata_path(kb_root)
-        if not metadata_path.exists():
-            return False
-
-        with open(metadata_path) as f:
-            metadata = json.load(f)
-
-        # Check version (accept v2 and v3)
-        version = metadata.get("version", 0)
-        if version < 2:
-            return False
-
-        # Check config matches
-        if metadata.get("embedding_model") != current_embedding_model:
-            return False
-
-        if metadata.get("projection_method") != current_projection_method:
-            return False
-
-        # Check embedding type (critical for single vs multi)
-        if metadata.get("embedding_type", "single") != current_embedding_type:
-            return False
-
-        return True
-
-    except Exception:
+    if not _use_cache():
         return False
+
+    try:
+        from ..storage.grid_state import check_state_exists
+
+        exists = await check_state_exists(
+            kb_root,
+            current_embedding_model,
+            current_projection_method,
+        )
+        return exists
+    except Exception as e:
+        logger.debug(f"Cache validity check failed: {e}")
+        return False
+
+
+async def invalidate_cache_async(kb_root: str) -> None:
+    """Invalidate cached state for a KB root (async).
+
+    This marks the current snapshot as not current, so it won't be loaded
+    on next startup.
+    """
+    if not _use_cache():
+        return
+
+    try:
+        from ..storage.grid_state import invalidate_state
+
+        await invalidate_state(kb_root)
+        logger.debug(f"Invalidated cache for {kb_root}")
+    except Exception as e:
+        logger.warning(f"Failed to invalidate cache: {e}")
+
+
+# Synchronous wrappers for backwards compatibility
+# These only work when NOT inside an existing event loop
+
+def save_cached_state(
+    kb_root: str,
+    grid_data: GridData,
+    tda_features: TDAFeatures,
+    embedding_model: str,
+    projection_method: str,
+    embedding_type: str = "single",
+    iso_features: "IsoFeatures | None" = None,
+) -> str | None:
+    """Save computed state (sync wrapper).
+
+    Note: This creates a new event loop. Do not call from within an async context.
+    Use save_cached_state_async() instead.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        logger.warning("save_cached_state called from async context - use save_cached_state_async()")
+        return None
+    except RuntimeError:
+        pass  # No running loop, safe to proceed
+
+    try:
+        return asyncio.run(save_cached_state_async(
+            kb_root, grid_data, tda_features,
+            embedding_model, projection_method, embedding_type, iso_features
+        ))
+    except Exception as e:
+        logger.warning(f"save_cached_state failed: {e}")
+        return None
+
+
+def load_cached_state(
+    kb_root: str,
+) -> tuple[GridData | None, TDAFeatures | None, dict | None, "IsoFeatures | None"]:
+    """Load cached state (sync wrapper).
+
+    Note: This creates a new event loop. Do not call from within an async context.
+    Use load_cached_state_async() instead.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        logger.warning("load_cached_state called from async context - use load_cached_state_async()")
+        return None, None, None, None
+    except RuntimeError:
+        pass  # No running loop, safe to proceed
+
+    try:
+        return asyncio.run(load_cached_state_async(kb_root))
+    except Exception as e:
+        logger.warning(f"load_cached_state failed: {e}")
+        return None, None, None, None
+
+
+def check_cache_validity(
+    kb_root: str,
+    current_embedding_model: str,
+    current_projection_method: str,
+    current_embedding_type: str = "single",
+) -> bool:
+    """Check if cache is valid (sync wrapper).
+
+    Note: This creates a new event loop. Do not call from within an async context.
+    Use check_cache_validity_async() instead.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        logger.warning("check_cache_validity called from async context - use check_cache_validity_async()")
+        return False
+    except RuntimeError:
+        pass  # No running loop, safe to proceed
+
+    try:
+        return asyncio.run(check_cache_validity_async(
+            kb_root, current_embedding_model, current_projection_method, current_embedding_type
+        ))
+    except Exception as e:
+        logger.warning(f"check_cache_validity failed: {e}")
+        return False
+
+
+def invalidate_cache(kb_root: str) -> None:
+    """Invalidate cached state (sync wrapper).
+
+    Note: This creates a new event loop. Do not call from within an async context.
+    Use invalidate_cache_async() instead.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        logger.warning("invalidate_cache called from async context - use invalidate_cache_async()")
+        return
+    except RuntimeError:
+        pass  # No running loop, safe to proceed
+
+    try:
+        asyncio.run(invalidate_cache_async(kb_root))
+    except Exception as e:
+        logger.warning(f"invalidate_cache failed: {e}")

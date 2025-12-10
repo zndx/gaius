@@ -50,8 +50,10 @@ class IsoMode(Enum):
 class CenterPanelMode(Enum):
     """Mode for the center auxiliary panel (graph area).
 
-    Cycles: GRAPH → THINK → EVOLUTION → NONE → GRAPH
+    During init: INIT → GRAPH → THINK → EVOLUTION → NONE → INIT
+    After ready: GRAPH → THINK → EVOLUTION → NONE → GRAPH (skips INIT)
     """
+    INIT = "init"         # Initialization progress (shown during startup)
     GRAPH = "graph"       # Wiki-link graph visualization
     THINK = "think"       # Reasoning traces and agent thinking
     EVOLUTION = "evolution"  # Evolution daemon monitoring
@@ -89,6 +91,35 @@ class ReasoningTrace:
     technique: str = "" # optillm technique used (e.g., "cot_reflection")
     duration_ms: int = 0  # Operation duration
     full_trace: str = ""  # Full reasoning text (may be truncated)
+
+
+@dataclass
+class EndpointInitProgress:
+    """Progress tracking for a single endpoint during initialization."""
+    name: str
+    status: str = "pending"  # pending, starting, ready, failed, cancelled
+    progress: float = 0.0    # 0.0 to 1.0
+    message: str = ""
+
+
+@dataclass
+class InitializationState:
+    """State for engine initialization progress.
+
+    Used by InitPanel to display real-time progress during the ~240s
+    startup phase when vLLM endpoints are preloading.
+
+    Note: Command queueing is handled server-side via gRPC SwarmStream,
+    which waits for backends internally while streaming status updates.
+    """
+    phase: str = "not_started"  # not_started, connecting, backends, orchestrator, preload, ready
+    overall_progress: float = 0.0  # 0.0 to 1.0
+    message: str = ""
+    is_ready: bool = False
+    is_paused: bool = False
+    endpoints: dict[str, EndpointInitProgress] = field(default_factory=dict)
+    error: Optional[str] = None
+    connected: bool = False  # True when gRPC connection established
 
 
 @dataclass
@@ -152,6 +183,9 @@ class AppState:
     reasoning_traces: list = field(default_factory=list)  # History of ReasoningTrace
     background_tasks: list = field(default_factory=list)  # BackgroundTask instances
 
+    # Initialization state (for InitPanel during ~240s startup)
+    initialization_state: InitializationState = field(default_factory=InitializationState)
+
     # Iso features (computed from TDA on multi-vector embeddings)
     iso_features: Optional["IsoFeatures"] = None  # Forward reference to avoid circular import
 
@@ -202,10 +236,35 @@ class AppState:
         return self.show_candidates
 
     def cycle_center_panel_mode(self) -> CenterPanelMode:
-        """Cycle through center panel modes: GRAPH → THINK → EVOLUTION → NONE → GRAPH."""
-        modes = [CenterPanelMode.GRAPH, CenterPanelMode.THINK, CenterPanelMode.EVOLUTION, CenterPanelMode.NONE]
-        idx = modes.index(self.center_panel_mode)
-        self.center_panel_mode = modes[(idx + 1) % len(modes)]
+        """Cycle through center panel modes.
+
+        During init: INIT → GRAPH → THINK → EVOLUTION → NONE → INIT
+        After ready: GRAPH → THINK → EVOLUTION → NONE → GRAPH (skips INIT)
+        """
+        # Include INIT panel during initialization, skip it after ready
+        if not self.initialization_state.is_ready:
+            modes = [
+                CenterPanelMode.INIT,
+                CenterPanelMode.GRAPH,
+                CenterPanelMode.THINK,
+                CenterPanelMode.EVOLUTION,
+                CenterPanelMode.NONE,
+            ]
+        else:
+            modes = [
+                CenterPanelMode.GRAPH,
+                CenterPanelMode.THINK,
+                CenterPanelMode.EVOLUTION,
+                CenterPanelMode.NONE,
+            ]
+
+        # Handle case where current mode not in available modes (e.g., INIT after ready)
+        if self.center_panel_mode not in modes:
+            self.center_panel_mode = modes[0]
+        else:
+            idx = modes.index(self.center_panel_mode)
+            self.center_panel_mode = modes[(idx + 1) % len(modes)]
+
         return self.center_panel_mode
 
     def add_reasoning_trace(self, trace: ReasoningTrace) -> None:

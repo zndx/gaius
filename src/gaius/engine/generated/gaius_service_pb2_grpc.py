@@ -89,6 +89,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.GetJobResultRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.GetJobResultResponse.FromString,
                 _registered_method=True)
+        self.SwarmStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/SwarmStream',
+                request_serializer=gaius__service__pb2.SwarmStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SwarmEvent.FromString,
+                _registered_method=True)
         self.EvolutionStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/EvolutionStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -153,6 +158,11 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/EventStream',
                 request_serializer=gaius__service__pb2.EventStreamRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.Event.FromString,
+                _registered_method=True)
+        self.InitStream = channel.stream_stream(
+                '/gaius.engine.GaiusService/InitStream',
+                request_serializer=gaius__service__pb2.InitCommand.SerializeToString,
+                response_deserializer=gaius__service__pb2.InitEvent.FromString,
                 _registered_method=True)
 
 
@@ -227,6 +237,14 @@ class GaiusServiceServicer(object):
 
     def GetJobResult(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SwarmStream(self, request, context):
+        """Streaming swarm analysis - returns progress events then final result
+        Handles backend wait internally, streaming QUEUED status while waiting
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -324,6 +342,15 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def InitStream(self, request_iterator, context):
+        """Bidirectional initialization stream - allows TUI/MCP to connect immediately
+        during engine startup and receive real-time progress, while also sending
+        control commands (pause, cancel, health checks) back to the engine.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -376,6 +403,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.GetJobResult,
                     request_deserializer=gaius__service__pb2.GetJobResultRequest.FromString,
                     response_serializer=gaius__service__pb2.GetJobResultResponse.SerializeToString,
+            ),
+            'SwarmStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.SwarmStream,
+                    request_deserializer=gaius__service__pb2.SwarmStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.SwarmEvent.SerializeToString,
             ),
             'EvolutionStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.EvolutionStatus,
@@ -441,6 +473,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.EventStream,
                     request_deserializer=gaius__service__pb2.EventStreamRequest.FromString,
                     response_serializer=gaius__service__pb2.Event.SerializeToString,
+            ),
+            'InitStream': grpc.stream_stream_rpc_method_handler(
+                    servicer.InitStream,
+                    request_deserializer=gaius__service__pb2.InitCommand.FromString,
+                    response_serializer=gaius__service__pb2.InitEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -717,6 +754,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/GetJobResult',
             gaius__service__pb2.GetJobResultRequest.SerializeToString,
             gaius__service__pb2.GetJobResultResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SwarmStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SwarmStream',
+            gaius__service__pb2.SwarmStreamRequest.SerializeToString,
+            gaius__service__pb2.SwarmEvent.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1068,6 +1132,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/EventStream',
             gaius__service__pb2.EventStreamRequest.SerializeToString,
             gaius__service__pb2.Event.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InitStream(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/gaius.engine.GaiusService/InitStream',
+            gaius__service__pb2.InitCommand.SerializeToString,
+            gaius__service__pb2.InitEvent.FromString,
             options,
             channel_credentials,
             insecure,

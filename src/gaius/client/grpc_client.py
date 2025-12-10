@@ -14,6 +14,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Optional
 
+# Suppress gRPC fork warnings before importing grpc
+# These messages spam stdout when gRPC is used with asyncio
+os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
+
 import grpc
 from grpc import aio
 from google.protobuf import empty_pb2
@@ -44,6 +49,12 @@ from ..engine.generated import (
     ProjectEmbeddingsRequest,
     ProjectQueryRequest,
     ComputeTDARequest,
+    # Init streaming
+    InitCommand,
+    InitEvent,
+    # Swarm streaming
+    SwarmStreamRequest,
+    SwarmEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -845,6 +856,160 @@ class GrpcEngineClient:
         request = EventStreamRequest(event_types=event_types or [])
         async for event in self._gaius_stub.EventStream(request):
             yield MessageToDict(event, preserving_proto_field_name=True)
+
+    async def init_stream(self) -> AsyncIterator[dict]:
+        """Stream initialization events (bidirectional).
+
+        Connects to the InitStream RPC which provides real-time updates
+        during engine initialization (~240s startup phase).
+
+        Yields:
+            InitEvent dicts with:
+                - type: Event type (PHASE_STARTED, PROGRESS, ENDPOINT_READY, etc.)
+                - phase: Current init phase
+                - progress: 0.0-1.0 overall progress
+                - endpoint: Endpoint name (for endpoint-specific events)
+                - message: Human-readable status message
+        """
+        async def command_generator():
+            """Generate commands to send to InitStream."""
+            # Send initial SUBSCRIBE command
+            yield InitCommand(
+                type=InitCommand.Type.SUBSCRIBE,
+                client_id="grpc_client",
+            )
+            # Keep connection alive (server handles command processing)
+            # Additional commands would be sent here for pause/cancel/etc.
+
+        try:
+            # Bidirectional streaming - send commands, receive events
+            call = self._gaius_stub.InitStream(command_generator())
+            async for event in call:
+                event_dict = {
+                    "type": InitEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "phase": event.phase,
+                    "progress": event.progress,
+                    "endpoint": event.endpoint,
+                    "message": event.message,
+                }
+                # Parse data payload if present (contains full status on SUBSCRIBE)
+                if event.data:
+                    try:
+                        import json
+                        event_dict["data"] = json.loads(event.data.decode())
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+                yield event_dict
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.debug(f"InitStream error: {e}")
+            # Don't re-raise - let caller handle stream end gracefully
+
+    async def send_init_command(
+        self,
+        command_type: str,
+        endpoint: str = "",
+    ) -> None:
+        """Send a command to the init stream.
+
+        Args:
+            command_type: Command type (PAUSE, RESUME, CANCEL, SKIP)
+            endpoint: Target endpoint for CANCEL/SKIP commands
+        """
+        # Map string to enum
+        type_map = {
+            "SUBSCRIBE": InitCommand.Type.SUBSCRIBE,
+            "HEALTH": InitCommand.Type.HEALTH,
+            "STATUS": InitCommand.Type.STATUS,
+            "CANCEL": InitCommand.Type.CANCEL,
+            "SKIP": InitCommand.Type.SKIP,
+            "PAUSE": InitCommand.Type.PAUSE,
+            "RESUME": InitCommand.Type.RESUME,
+        }
+        cmd_type = type_map.get(command_type.upper(), InitCommand.Type.STATUS)
+
+        # Create one-shot command stream
+        async def single_command():
+            yield InitCommand(
+                type=cmd_type,
+                client_id="grpc_client",
+                endpoint=endpoint,
+            )
+
+        try:
+            # Send command (don't wait for response stream)
+            call = self._gaius_stub.InitStream(single_command())
+            # Read one response to confirm receipt
+            async for event in call:
+                logger.debug(f"Init command response: {event.type}")
+                break
+        except grpc.RpcError as e:
+            logger.debug(f"Init command error: {e}")
+
+    async def swarm_stream(
+        self,
+        domain: str,
+        context: str = "",
+        roles: Optional[list[str]] = None,
+    ) -> AsyncIterator[dict]:
+        """Stream swarm analysis with real-time progress updates.
+
+        Unlike the blocking run_swarm, this streams status updates during
+        execution, handling backend wait internally. The stream continues
+        even while waiting for backends to initialize, preventing timeouts.
+
+        Args:
+            domain: Domain to analyze (e.g., "pension", "kudu")
+            context: Additional context for the analysis
+            roles: Agent roles to include (default: all core roles)
+
+        Yields:
+            SwarmEvent dicts with:
+                - type: Event type (QUEUED, WAITING_FOR_BACKENDS, STARTED,
+                        AGENT_STARTED, AGENT_COMPLETED, AGENT_FAILED, COMPLETED)
+                - timestamp_ms: Event timestamp
+                - agent: Agent name (for AGENT_* events)
+                - progress: 0.0-1.0 overall progress
+                - message: Human-readable status message
+                - data: JSON payload (agent result on AGENT_COMPLETED,
+                        final results on COMPLETED)
+
+        Example:
+            async for event in client.swarm_stream("pension"):
+                print(f"{event['type']}: {event['message']} ({event['progress']:.0%})")
+                if event['type'] == 'COMPLETED':
+                    final = json.loads(event['data'])
+                    print(f"Saved to: {final['saved_path']}")
+        """
+        request = SwarmStreamRequest(
+            domain=domain,
+            context=context,
+            roles=roles or [],
+        )
+
+        try:
+            async for event in self._gaius_stub.SwarmStream(request):
+                yield {
+                    "type": SwarmEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "agent": event.agent,
+                    "progress": event.progress,
+                    "message": event.message,
+                    "data": event.data.decode() if event.data else "",
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SwarmStream error: {e}")
+                # Yield a failure event
+                yield {
+                    "type": "FAILED",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "agent": "",
+                    "progress": 0.0,
+                    "message": f"Stream error: {e.details()}",
+                    "data": "",
+                }
 
     @property
     def is_connected(self) -> bool:

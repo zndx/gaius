@@ -13,12 +13,15 @@ Schema:
 """
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..core.projection import GridData, GridPoint
@@ -157,7 +160,7 @@ async def ensure_schema() -> bool:
         finally:
             await conn.close()
     except Exception as e:
-        print(f"Schema creation failed: {e}")
+        logger.warning(f"Schema creation failed: {e}")
         return False
 
 
@@ -343,7 +346,7 @@ async def save_grid_state(
             await conn.close()
 
     except Exception as e:
-        print(f"Save grid state failed: {e}")
+        logger.warning(f"Save grid state failed: {e}")
         return None
 
 
@@ -534,7 +537,7 @@ async def load_current_grid_state(
             await conn.close()
 
     except Exception as e:
-        print(f"Load grid state failed: {e}")
+        logger.warning(f"Load grid state failed: {e}")
         return None, None, None
 
 
@@ -634,6 +637,38 @@ async def delete_old_snapshots(
             await conn.close()
     except Exception:
         return 0
+
+
+async def invalidate_state(kb_root: str) -> bool:
+    """Invalidate (mark as not current) all snapshots for a KB root.
+
+    Args:
+        kb_root: KB root directory
+
+    Returns:
+        True if any snapshots were invalidated
+    """
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url)
+        try:
+            result = await conn.execute(
+                """
+                UPDATE grid_snapshots
+                SET is_current = FALSE
+                WHERE kb_root = $1 AND is_current = TRUE
+                """,
+                kb_root,
+            )
+            # Parse "UPDATE N" result
+            count = int(result.split()[-1]) if result else 0
+            return count > 0
+        finally:
+            await conn.close()
+    except Exception:
+        return False
 
 
 async def check_state_exists(

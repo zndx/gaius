@@ -434,43 +434,104 @@ class OrchestratorService:
 
         BDD: "Orphaned vLLM processes should be cleaned up"
 
+        Uses two detection methods:
+        1. pgrep for vLLM/python processes with GPU-related args
+        2. nvidia-smi to find ANY process using significant GPU memory
+
         Returns:
             CleanupResult with details
         """
         result = CleanupResult()
 
         try:
-            # Find all vLLM processes
+            # Get tracked PIDs from the vLLM controller
+            tracked_pids = {
+                p.pid
+                for p in self._vllm._processes.values()
+                if p.process is not None and p.pid is not None
+            }
+
+            # Also track our own PID and parent PIDs
+            my_pid = os.getpid()
+            tracked_pids.add(my_pid)
+            try:
+                ppid = os.getppid()
+                tracked_pids.add(ppid)
+            except Exception:
+                pass
+
+            # Method 1: Find vLLM processes via pgrep
             ps_result = subprocess.run(
                 ["pgrep", "-f", "vllm|VLLM"],
                 capture_output=True,
                 text=True,
             )
 
+            vllm_pids = set()
             if ps_result.returncode == 0 and ps_result.stdout.strip():
-                pids = ps_result.stdout.strip().split("\n")
-                result.processes_found = len(pids)
+                for pid_str in ps_result.stdout.strip().split("\n"):
+                    try:
+                        vllm_pids.add(int(pid_str.strip()))
+                    except ValueError:
+                        continue
 
-                # Get tracked PIDs
-                tracked_pids = {
-                    p.pid
-                    for p in self._vllm._processes.values()
-                    if p.process is not None and p.pid is not None
-                }
+            # Method 2: Find GPU-hogging processes via nvidia-smi
+            # This catches zombies that pgrep might miss
+            gpu_pids = set()
+            try:
+                nvidia_result = subprocess.run(
+                    ["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if nvidia_result.returncode == 0 and nvidia_result.stdout.strip():
+                    for line in nvidia_result.stdout.strip().split("\n"):
+                        parts = line.strip().split(", ")
+                        if len(parts) >= 2:
+                            try:
+                                pid = int(parts[0])
+                                mem_mb = int(parts[1])
+                                # Only target processes using >100MB GPU memory
+                                if mem_mb > 100:
+                                    gpu_pids.add(pid)
+                            except ValueError:
+                                continue
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                logger.debug("nvidia-smi not available for GPU process detection")
 
-                for pid_str in pids:
-                    pid = int(pid_str.strip())
+            # Combine both detection methods
+            candidate_pids = vllm_pids | gpu_pids
+            result.processes_found = len(candidate_pids)
 
-                    if pid not in tracked_pids:
-                        try:
-                            os.kill(pid, 9)  # SIGKILL
-                            result.processes_killed += 1
-                            result.pids_killed.append(pid)
-                            logger.info(f"Killed stale vLLM process: {pid}")
-                        except ProcessLookupError:
-                            pass
-                        except PermissionError:
-                            result.errors.append(f"Permission denied for PID {pid}")
+            # Kill untracked processes
+            for pid in candidate_pids:
+                if pid in tracked_pids:
+                    continue
+
+                try:
+                    # Double-check it's a GPU/vLLM process before killing
+                    # Read /proc/pid/cmdline to verify
+                    try:
+                        with open(f"/proc/{pid}/cmdline", "r") as f:
+                            cmdline = f.read()
+                            # Only kill if it looks like a GPU workload
+                            if not any(pattern in cmdline.lower() for pattern in
+                                       ["vllm", "torch", "cuda", "python", "gpu"]):
+                                logger.debug(f"Skipping PID {pid} - doesn't look like GPU workload")
+                                continue
+                    except (FileNotFoundError, PermissionError):
+                        # Process may have died or we can't read - skip
+                        continue
+
+                    os.kill(pid, 9)  # SIGKILL
+                    result.processes_killed += 1
+                    result.pids_killed.append(pid)
+                    logger.info(f"Killed stale GPU process: {pid}")
+                except ProcessLookupError:
+                    pass  # Already dead
+                except PermissionError:
+                    result.errors.append(f"Permission denied for PID {pid}")
 
             # Clear CUDA cache if available
             try:

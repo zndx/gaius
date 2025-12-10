@@ -89,28 +89,61 @@ class GaiusEngine:
         self._cognition_service = None
 
     async def start(self) -> None:
-        """Start the engine daemon."""
+        """Start the engine daemon.
+
+        Startup sequence reordered so gRPC is available FIRST, allowing
+        TUI/MCP clients to connect immediately and receive real-time
+        initialization progress during the ~240s vLLM preload phase.
+
+        New order:
+        1. Create InitController (for bidirectional streaming)
+        2. Start gRPC server EARLY (clients can connect immediately)
+        3. Initialize telemetry
+        4. Initialize backends (broadcasts progress)
+        5. Initialize orchestrator (broadcasts progress)
+        6. Preload endpoints (broadcasts progress)
+        7. Start other transports (Aeron, socket)
+        8. Start background services
+        9. Mark initialization complete
+        """
+        from .init_controller import get_init_controller, InitPhase
+
         logger.info("Starting Gaius Engine...")
         self._start_time = datetime.now()
 
-        # Initialize telemetry if enabled
+        # 1. Create init controller for bidirectional streaming
+        self._init_controller = get_init_controller()
+        await self._init_controller.start_phase(InitPhase.TELEMETRY, "Starting initialization")
+
+        # 2. Start gRPC server EARLY so clients can connect immediately
+        #    InitController is available, other services will be added as they're ready
+        await self._start_grpc_server_early()
+
+        # 3. Initialize telemetry if enabled
         if self.config.telemetry.enabled:
             await self._init_telemetry()
 
-        # Initialize backend router (manages optillm and vLLM)
+        # 4. Initialize backend router (manages optillm and vLLM)
+        await self._init_controller.start_phase(InitPhase.BACKENDS, "Initializing backends")
         await self._init_backends()
+        # Update gRPC with backend router
+        if self._grpc_server:
+            self._grpc_server.update_service("backend_router", self._backend_router)
 
-        # Initialize orchestrator service for endpoint management
+        # 5. Initialize orchestrator service for endpoint management
+        await self._init_controller.start_phase(InitPhase.ORCHESTRATOR, "Initializing orchestrator")
         await self._init_orchestrator()
+        # Update gRPC with orchestrator
+        if self._grpc_server:
+            self._grpc_server.update_service("orchestrator_service", self._orchestrator_service)
 
-        # Autonomous startup: clean start if configured
+        # 6. Autonomous startup: clean start and preload if configured
         if self.config.startup.clean_start:
-            await self._autonomous_clean_start()
+            await self._init_controller.start_phase(InitPhase.PRELOAD, "Starting endpoint preload")
+            await self._autonomous_clean_start_with_progress()
 
-        # Start gRPC server (PRIMARY transport)
-        await self._start_grpc_server()
-
-        # Create and start Aeron bridge (optional/legacy)
+        # 7. Start other transports
+        await self._init_controller.start_phase(InitPhase.AERON, "Starting Aeron bridge")
         try:
             self._bridge = create_bridge(self.config.aeron)
             await self._bridge.start()
@@ -125,21 +158,27 @@ class GaiusEngine:
             self._bridge = None
 
         # Start Unix socket server (fallback for debugging/CLI)
+        await self._init_controller.start_phase(InitPhase.SOCKET, "Starting socket server")
         await self._start_socket_server()
 
         self._running = True
 
-        # Start background tasks
+        # 8. Start background tasks
         self._health_task = asyncio.create_task(self._health_broadcast_loop())
         self._request_task = asyncio.create_task(self._request_loop())
 
         # Autonomous startup: start evolution daemon if configured
         if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
+            await self._init_controller.start_phase(InitPhase.EVOLUTION, "Starting evolution daemon")
             await self._autonomous_start_evolution()
 
         # Autonomous startup: start cognition daemon if configured
         if self.config.startup.auto_start_cognition:
+            await self._init_controller.start_phase(InitPhase.COGNITION, "Starting cognition daemon")
             await self._autonomous_start_cognition()
+
+        # 9. Mark initialization complete
+        await self._init_controller.complete_init()
 
         logger.info(
             f"Gaius Engine started with {len(self.config.agents)} agents configured"
@@ -202,6 +241,123 @@ class GaiusEngine:
                         logger.warning(f"  {endpoint_alias}: failed to start - {e}")
                 else:
                     logger.warning(f"  {endpoint_alias}: not found in agent config")
+
+    async def _autonomous_clean_start_with_progress(self) -> None:
+        """Perform autonomous clean start with progress broadcasting.
+
+        Similar to _autonomous_clean_start but broadcasts progress events
+        via InitController for real-time TUI/MCP updates.
+        """
+        from .init_controller import InitPhase
+        from .generated.gaius_service_pb2 import InitEvent
+
+        logger.info("Performing autonomous clean start with progress...")
+
+        # Step 1: Cleanup stale vLLM processes
+        cleanup_result = await self._orchestrator_service.cleanup_stale_processes()
+        if cleanup_result.processes_killed > 0:
+            logger.info(
+                f"Cleaned up {cleanup_result.processes_killed} stale processes: {cleanup_result.pids_killed}"
+            )
+
+        # Step 2: Preload configured endpoints with progress
+        preload = self.config.startup.preload_endpoints
+        if not preload:
+            logger.info("No endpoints configured for preload")
+            return
+
+        logger.info(f"Preloading endpoints: {preload}")
+
+        async def start_endpoint_with_progress(endpoint_alias: str):
+            """Start an endpoint and yield progress updates."""
+            if endpoint_alias not in self.config.agents:
+                yield ("not found", 0.0)
+                raise ValueError(f"Endpoint {endpoint_alias} not found in agent config")
+
+            # Yield starting status
+            yield ("starting vLLM process", 0.1)
+
+            try:
+                # Start the endpoint
+                status = await self._orchestrator_service.start_endpoint(endpoint_alias)
+                logger.info(
+                    f"  {endpoint_alias}: {status.status} (port={status.port}, GPUs={status.gpu_ids})"
+                )
+
+                # Yield completion
+                if status.status == "healthy":
+                    yield ("ready", 1.0)
+                else:
+                    yield (status.status, 1.0)
+
+            except Exception as e:
+                logger.warning(f"  {endpoint_alias}: failed to start - {e}")
+                yield (f"failed: {e}", 1.0)
+                raise
+
+        # Use InitController's preload_with_control for cancellation support
+        results = await self._init_controller.preload_with_control(
+            preload,
+            start_endpoint_with_progress,
+        )
+
+        # Log results
+        succeeded = sum(1 for v in results.values() if v)
+        failed = sum(1 for v in results.values() if not v)
+        logger.info(f"Preload complete: {succeeded} succeeded, {failed} failed")
+
+    async def _start_grpc_server_early(self) -> None:
+        """Start gRPC server EARLY with minimal services.
+
+        This enables TUI/MCP clients to connect immediately during
+        the ~240s initialization phase and receive progress updates
+        via InitStream.
+
+        Only init_controller is available. Other services (backend_router,
+        orchestrator_service) will be added via update_service() as they
+        become ready.
+        """
+        if not self.config.grpc.enabled:
+            logger.info("gRPC server disabled by configuration")
+            return
+
+        try:
+            from .grpc import GrpcServer, GrpcConfig
+
+            # Convert engine config to gRPC config
+            grpc_config = GrpcConfig(
+                enabled=self.config.grpc.enabled,
+                host=self.config.grpc.host,
+                port=self.config.grpc.port,
+                max_workers=self.config.grpc.max_workers,
+                max_message_size=self.config.grpc.max_message_size,
+            )
+
+            # Create gRPC server
+            self._grpc_server = GrpcServer(grpc_config)
+
+            # Register ONLY init_controller initially
+            # Other services will be added via update_service() as they're ready
+            self._grpc_server.set_services(
+                init_controller=self._init_controller,
+                config=self.config,
+                start_time=self._start_time.timestamp() if self._start_time else None,
+                get_health_metrics=self._collect_health_metrics,
+                get_evolution_status=self._get_evolution_status,
+                trigger_evolution=self._trigger_evolution,
+                start_evolution=self._start_evolution,
+                stop_evolution=self._stop_evolution,
+            )
+
+            # Start the server
+            await self._grpc_server.start()
+            logger.info("gRPC server started early (InitStream available)")
+
+        except ImportError as e:
+            logger.warning(f"gRPC dependencies not installed: {e}")
+            logger.warning("Install with: uv sync --extra grpc")
+        except Exception as e:
+            logger.error(f"Failed to start gRPC server: {e}")
 
     async def _autonomous_start_evolution(self) -> None:
         """Start the evolution daemon automatically."""
