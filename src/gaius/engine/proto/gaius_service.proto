@@ -130,6 +130,47 @@ message SchedulerStatusResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Swarm Streaming Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+message SwarmStreamRequest {
+  string domain = 1;            // Domain to analyze (e.g., "pension", "kudu")
+  string context = 2;           // Additional context
+  repeated string roles = 3;    // Agent roles (empty = all core roles)
+}
+
+// Streaming events for swarm execution progress
+message SwarmEvent {
+  enum Type {
+    QUEUED = 0;              // Request queued, waiting for backends
+    WAITING_FOR_BACKENDS = 1; // Actively waiting for endpoints to be ready
+    STARTED = 2;             // Swarm analysis started
+    AGENT_STARTED = 3;       // Individual agent started
+    AGENT_COMPLETED = 4;     // Individual agent completed
+    AGENT_FAILED = 5;        // Individual agent failed
+    SYNTHESIS = 6;           // Synthesis phase started
+    COMPLETED = 7;           // All agents completed
+    FAILED = 8;              // Swarm failed entirely
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;     // Event timestamp
+  string agent = 3;           // Agent name (for AGENT_* events)
+  float progress = 4;         // Overall progress 0.0-1.0
+  string message = 5;         // Human-readable status message
+  bytes data = 6;             // JSON payload (agent result on AGENT_COMPLETED)
+}
+
+// Final swarm result (sent after all COMPLETED events)
+message SwarmResult {
+  map<string, bytes> results = 1;  // Role name -> JSON result data
+  string saved_path = 2;           // Path where results were saved
+  int32 total_agents = 3;
+  int32 completed_agents = 4;
+  int32 failed_agents = 5;
+  int32 total_duration_ms = 6;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Evolution Service Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -267,6 +308,52 @@ message Event {
 // - GPU_THRESHOLD_WARNING, GPU_THRESHOLD_CRITICAL
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Initialization Streaming Messages (Bidirectional)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Commands sent from TUI/MCP client to engine during initialization
+message InitCommand {
+  enum Type {
+    SUBSCRIBE = 0;   // Start receiving events
+    HEALTH = 1;      // Immediate: basic health check (no endpoints needed)
+    STATUS = 2;      // Immediate: current initialization state
+    CANCEL = 3;      // Immediate: cancel current endpoint preload
+    SKIP = 4;        // Immediate: skip to next endpoint
+    PAUSE = 5;       // Immediate: pause preloading
+    RESUME = 6;      // Immediate: resume preloading
+  }
+  Type type = 1;
+  string client_id = 2;     // Client identifier for tracking
+  string endpoint = 3;      // Target endpoint for CANCEL/SKIP
+  bytes payload = 4;        // JSON for complex command data
+}
+
+// Events sent from engine to TUI/MCP client during initialization
+message InitEvent {
+  enum Type {
+    PHASE_STARTED = 0;      // New initialization phase began
+    PROGRESS = 1;           // Progress update (overall or per-endpoint)
+    ENDPOINT_STARTING = 2;  // Endpoint is starting to load
+    ENDPOINT_READY = 3;     // Endpoint finished loading successfully
+    ENDPOINT_FAILED = 4;    // Endpoint failed to load
+    CANCELLED = 5;          // Endpoint preload was cancelled
+    PAUSED = 6;             // Preloading paused by user
+    RESUMED = 7;            // Preloading resumed
+    READY = 8;              // All endpoints ready, init complete
+    HEALTH_OK = 9;          // Response to HEALTH command
+    QUEUED = 10;            // Command queued (needs endpoint to execute)
+    ERROR = 11;             // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;   // Event timestamp
+  string phase = 3;         // Current phase name (e.g., "backends", "orchestrator", "preload")
+  float progress = 4;       // Progress 0.0-1.0
+  string endpoint = 5;      // Related endpoint name
+  string message = 6;       // Human-readable message
+  bytes data = 7;           // JSON for complex payloads (health data, etc.)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Grid Service Messages (Embedding Projection)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -347,6 +434,10 @@ service GaiusService {
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
   rpc GetJobResult(GetJobResultRequest) returns (GetJobResultResponse);
 
+  // Streaming swarm analysis - returns progress events then final result
+  // Handles backend wait internally, streaming QUEUED status while waiting
+  rpc SwarmStream(SwarmStreamRequest) returns (stream SwarmEvent);
+
   // ─────────────────────────────────────────────────────────────────────────
   // Evolution
   // ─────────────────────────────────────────────────────────────────────────
@@ -379,4 +470,9 @@ service GaiusService {
   // ─────────────────────────────────────────────────────────────────────────
   rpc HealthStream(HealthStreamRequest) returns (stream HealthMetrics);
   rpc EventStream(EventStreamRequest) returns (stream Event);
+
+  // Bidirectional initialization stream - allows TUI/MCP to connect immediately
+  // during engine startup and receive real-time progress, while also sending
+  // control commands (pause, cancel, health checks) back to the engine.
+  rpc InitStream(stream InitCommand) returns (stream InitEvent);
 }

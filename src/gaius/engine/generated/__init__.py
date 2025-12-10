@@ -52,6 +52,10 @@ from .gaius_service_pb2 import (
     GetJobResultRequest,
     GetJobResultResponse,
     SchedulerStatusResponse,
+    # Swarm streaming
+    SwarmStreamRequest,
+    SwarmEvent,
+    SwarmResult,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
@@ -72,6 +76,9 @@ from .gaius_service_pb2 import (
     # Events
     EventStreamRequest,
     Event,
+    # Init streaming
+    InitCommand,
+    InitEvent,
     # Grid
     ProjectEmbeddingsRequest,
     GridPosition,
@@ -109,7 +116,7 @@ __all__ = [
     "GRPCInferenceServiceStub",
     "GRPCInferenceServiceServicer",
     "add_GRPCInferenceServiceServicer_to_server",
-    # Gaius
+    # Gaius - Orchestrator
     "OrchestratorStatusResponse",
     "GPUAllocation",
     "EndpointInfo",
@@ -120,6 +127,7 @@ __all__ = [
     "CleanStartResponse",
     "EndpointResponse",
     "EnsureEndpointResponse",
+    # Gaius - Scheduler
     "CompleteRequest",
     "CompleteResponse",
     "SubmitJobRequest",
@@ -127,9 +135,15 @@ __all__ = [
     "GetJobResultRequest",
     "GetJobResultResponse",
     "SchedulerStatusResponse",
+    # Gaius - Swarm
+    "SwarmStreamRequest",
+    "SwarmEvent",
+    "SwarmResult",
+    # Gaius - Evolution
     "EvolutionStatusResponse",
     "TriggerEvolutionRequest",
     "EvolutionCycleResponse",
+    # Gaius - Cognition
     "CognitionStatusResponse",
     "ThoughtMessage",
     "GetRecentThoughtsRequest",
@@ -137,20 +151,28 @@ __all__ = [
     "TriggerCognitionRequest",
     "TriggerCognitionResponse",
     "CognitionActivityResponse",
+    # Gaius - Health
     "HealthStreamRequest",
     "HealthMetrics",
     "GPUMetrics",
     "EndpointHealth",
+    # Gaius - Events
     "EventStreamRequest",
     "Event",
+    # Gaius - Init
+    "InitCommand",
+    "InitEvent",
+    # Gaius - Grid
     "ProjectEmbeddingsRequest",
     "GridPosition",
     "ProjectEmbeddingsResponse",
     "ProjectQueryRequest",
     "ProjectQueryResponse",
+    # Gaius - TDA
     "ComputeTDARequest",
     "PersistenceInterval",
     "TDAResponse",
+    # Gaius service
     "GaiusServiceStub",
     "GaiusServiceServicer",
     "add_GaiusServiceServicer_to_server",

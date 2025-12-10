@@ -41,6 +41,7 @@ from .widgets.note_editor import NoteEditor
 from .widgets.graph_view import GraphView
 from .widgets.think_panel import ThinkPanel
 from .widgets.evolution_panel import EvolutionPanel
+from .widgets.init_panel import InitPanel
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -457,6 +458,16 @@ class GaiusApp(App):
             True if cache was loaded successfully
         """
         try:
+            # Check if we're inside a running event loop (e.g., Textual tests)
+            # The sync cache functions create new event loops, which fails in async context
+            try:
+                asyncio.get_running_loop()
+                # Running inside event loop - skip cache loading
+                # Auto-init will handle it via async path
+                return False
+            except RuntimeError:
+                pass  # No running loop, safe to proceed
+
             from .core.cache import load_cached_state, check_cache_validity
 
             # Check if cache is valid for current config
@@ -488,28 +499,34 @@ class GaiusApp(App):
                 self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
 
             # Compute geometry from cached embeddings (for Iso view)
+            # Skip if running inside event loop (e.g., Textual tests) - can't create nested loops
             if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
                 try:
-                    import asyncio
-                    import numpy as np
-                    from .core.geometry import GeometryComputer
+                    asyncio.get_running_loop()
+                    # Running inside event loop - skip sync geometry computation
+                    # Geometry will be computed later via async path
+                except RuntimeError:
+                    # No running loop - safe to create one for sync computation
+                    try:
+                        import numpy as np
+                        from .core.geometry import GeometryComputer
 
-                    grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                    gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+                        grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                        gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
 
-                    # Run async geometry computation
-                    loop = asyncio.new_event_loop()
-                    geom_features = loop.run_until_complete(
-                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                    )
-                    loop.close()
+                        # Run async geometry computation
+                        loop = asyncio.new_event_loop()
+                        geom_features = loop.run_until_complete(
+                            gc.compute_features(grid_data.raw_embeddings, grid_coords)
+                        )
+                        loop.close()
 
-                    # Populate geometry state
-                    if geom_features:
-                        self._populate_geometry_state(geom_features, grid_data)
-                except Exception as e:
-                    # Geometry failed - Iso view will be empty but app still works
-                    pass
+                        # Populate geometry state
+                        if geom_features:
+                            self._populate_geometry_state(geom_features, grid_data)
+                    except Exception:
+                        # Geometry failed - Iso view will be empty but app still works
+                        pass
 
             # Load agent positions from static data for now
             for agent in AGENT_DATA:
@@ -1236,20 +1253,44 @@ class GaiusApp(App):
             content.show_file("error.txt", f"Swarm error: {e}")
 
     async def _complete_swarm_analysis(self, domain: str) -> None:
-        """Complete swarm analysis asynchronously via gRPC engine."""
+        """Complete swarm analysis asynchronously via gRPC engine.
+
+        Uses streaming to show real-time progress updates. The stream
+        handles backend wait internally, so commands submitted during
+        engine initialization will wait with status updates rather than
+        timing out.
+        """
         from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
         from .agents.swarm import SwarmRoundResult, AgentResponse
         from .agents.roles import AgentRole
         from datetime import datetime
+
+        content = self.query_one("#content-panel", ContentPanel)
+
+        def on_progress(message: str, progress: float) -> None:
+            """Update content panel with streaming progress."""
+            pct = int(progress * 100)
+            status_text = f"Swarm Analysis: {domain}\n\n"
+            status_text += f"Progress: {pct}%\n"
+            status_text += f"Status: {message}\n"
+            # Show progress bar
+            bar_width = 30
+            filled = int(progress * bar_width)
+            bar = "[" + "=" * filled + ">" + " " * (bar_width - filled - 1) + "]"
+            status_text += f"\n{bar}\n"
+            content.show_file("swarm.txt", status_text)
 
         try:
             if not use_engine_proxy():
                 raise RuntimeError("Gaius engine not running. Start with: devenv up -d")
 
             scheduler = await get_scheduler_proxy()
-            # run_swarm now returns (results, saved_path) tuple
+            # run_swarm now uses streaming internally with progress callback
             # KB persistence happens automatically in SchedulerProxy
-            raw_results, saved_path = await scheduler.run_swarm(domain=domain)
+            raw_results, saved_path = await scheduler.run_swarm(
+                domain=domain,
+                on_progress=on_progress,
+            )
 
             # Convert engine response to SwarmRoundResult
             responses = []
@@ -3223,6 +3264,9 @@ The general-purpose agentic query interface.
                         # Evolution panel (daemon monitoring) - hidden by default, 'g' cycles modes
                         yield EvolutionPanel(self.state, id="evolution-panel", classes="hidden")
 
+                        # Init panel (engine initialization progress) - shown during startup, 'g' cycles modes
+                        yield InitPanel(self.state, id="init-panel", classes="hidden")
+
                     # Note editor below the grids (hidden by default, Ctrl-N to show)
                     yield NoteEditor(id="note-editor", classes="hidden")
 
@@ -3245,6 +3289,7 @@ The general-purpose agentic query interface.
         # Center panel mode indicator
         center_mode = self.state.center_panel_mode.value.upper()
         center_style = {
+            "INIT": "yellow",
             "GRAPH": "blue",
             "THINK": "cyan",
             "EVOLUTION": "magenta",
@@ -3623,21 +3668,30 @@ The general-purpose agentic query interface.
         content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
 
     def action_toggle_graph(self) -> None:
-        """Cycle center panel mode: GRAPH → THINK → EVOLUTION → NONE → GRAPH."""
+        """Cycle center panel mode.
+
+        During init: INIT → GRAPH → THINK → EVOLUTION → NONE → INIT
+        After ready: GRAPH → THINK → EVOLUTION → NONE → GRAPH (skips INIT)
+        """
         graph = self.query_one("#graph-view", GraphView)
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
+        init_panel = self.query_one("#init-panel", InitPanel)
 
-        # Cycle to next mode
+        # Cycle to next mode (state.py handles init-aware cycling)
         new_mode = self.state.cycle_center_panel_mode()
 
         # Hide all first
         graph.add_class("hidden")
         think.add_class("hidden")
         evolution.add_class("hidden")
+        init_panel.add_class("hidden")
 
         # Update visibility based on mode
-        if new_mode == CenterPanelMode.GRAPH:
+        if new_mode == CenterPanelMode.INIT:
+            init_panel.remove_class("hidden")
+            init_panel.refresh()
+        elif new_mode == CenterPanelMode.GRAPH:
             graph.remove_class("hidden")
             # Refresh graph content
             graph.scan_kb()
@@ -3664,6 +3718,7 @@ The general-purpose agentic query interface.
         graph = self.query_one("#graph-view", GraphView)
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
+        init_panel = self.query_one("#init-panel", InitPanel)
 
         # Set mode directly to EVOLUTION
         self.state.center_panel_mode = CenterPanelMode.EVOLUTION
@@ -3671,6 +3726,7 @@ The general-purpose agentic query interface.
         # Hide others, show evolution
         graph.add_class("hidden")
         think.add_class("hidden")
+        init_panel.add_class("hidden")
         evolution.remove_class("hidden")
 
         # Trigger data refresh
@@ -3779,20 +3835,38 @@ The general-purpose agentic query interface.
             pass  # Scheduler not available
 
     def _apply_center_panel_mode(self) -> None:
-        """Apply center panel mode visibility from state."""
+        """Apply center panel mode visibility from state.
+
+        During engine initialization, automatically shows InitPanel.
+        After initialization completes, respects the configured mode.
+        """
         graph = self.query_one("#graph-view", GraphView)
         think = self.query_one("#think-panel", ThinkPanel)
+        evolution = self.query_one("#evolution-panel", EvolutionPanel)
+        init_panel = self.query_one("#init-panel", InitPanel)
+
+        # During initialization, override to show InitPanel
+        if not self.state.initialization_state.is_ready:
+            self.state.center_panel_mode = CenterPanelMode.INIT
 
         mode = self.state.center_panel_mode
-        if mode == CenterPanelMode.GRAPH:
+
+        # Hide all first
+        graph.add_class("hidden")
+        think.add_class("hidden")
+        evolution.add_class("hidden")
+        init_panel.add_class("hidden")
+
+        # Show the active one
+        if mode == CenterPanelMode.INIT:
+            init_panel.remove_class("hidden")
+        elif mode == CenterPanelMode.GRAPH:
             graph.remove_class("hidden")
-            think.add_class("hidden")
         elif mode == CenterPanelMode.THINK:
-            graph.add_class("hidden")
             think.remove_class("hidden")
-        else:  # NONE
-            graph.add_class("hidden")
-            think.add_class("hidden")
+        elif mode == CenterPanelMode.EVOLUTION:
+            evolution.remove_class("hidden")
+        # else: NONE - all stay hidden
 
     def _run_startup_commands(self) -> None:
         """Execute startup commands from HOCON config.
@@ -4289,6 +4363,24 @@ Use `/reindex` to refresh TDA from current KB.
 def main():
     """Entry point for the Gaius TUI."""
     import argparse
+    import logging
+    import os
+    import sys
+
+    # Suppress noisy startup logs for TUI (they corrupt the display)
+    # Only show ERROR level by default, use GAIUS_LOG_LEVEL to override
+    log_level = os.getenv("GAIUS_LOG_LEVEL", "ERROR")
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.ERROR),
+        format="%(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+    # Suppress specific noisy loggers
+    logging.getLogger("asyncpg").setLevel(logging.ERROR)
+    logging.getLogger("grpc").setLevel(logging.ERROR)
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.ERROR)
 
     parser = argparse.ArgumentParser(description="Gaius - Spatial Intelligence Interface")
     parser.add_argument(
@@ -4296,7 +4388,15 @@ def main():
         help="Configuration profile to load (default, cloudera, weathership)",
         default=None,
     )
+    parser.add_argument(
+        "--debug", "-d",
+        action="store_true",
+        help="Enable debug logging",
+    )
     args = parser.parse_args()
+
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
 
     app = GaiusApp(profile=args.profile)
     app.run()
