@@ -9,6 +9,7 @@
   - [The Grid Metaphor](./concepts/grid.md)
   - [Embeddings & Point Clouds](./concepts/embeddings.md)
   - [Persistent Homology](./concepts/homology.md)
+  - [Epistemology of Augmented Cognition](./concepts/epistemology.md)
 
 # Architecture
 
