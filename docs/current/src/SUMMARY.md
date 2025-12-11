@@ -30,6 +30,7 @@
 # Design
 
 - [Design Philosophy](./design.md)
+- [Co-Creation with Code Agents](./design/co-creation.md)
 - [Inspirations](./design/inspirations.md)
   - [Bloomberg Terminal](./design/bloomberg.md)
   - [Gödel Terminal](./design/godel.md)
