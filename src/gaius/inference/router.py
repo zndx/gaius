@@ -19,6 +19,7 @@ Usage:
     result = await router.evaluate(prompt)
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -484,22 +485,61 @@ class EndpointRouter:
 
     def get_endpoint_for_role(self, role) -> str:
         """Get the best endpoint for an agent role."""
+        endpoint, _ = self.get_endpoint_for_role_with_outcome(role)
+        return endpoint
+
+    def get_endpoint_for_role_with_outcome(self, role) -> tuple[str, dict]:
+        """Get endpoint for role with routing outcome metadata.
+
+        Returns:
+            Tuple of (endpoint_name, outcome_dict) where outcome_dict contains:
+            - outcome: "optimal", "capability_match", "capability_fallback", "default_fallback"
+            - requested_capabilities: list of capabilities
+            - preferred_model: model requested
+            - mismatched_capabilities: capabilities that couldn't be satisfied
+            - fallback_reason: why fallback was used
+        """
         from ..agents.roles import get_role
 
         role_def = get_role(role)
+        outcome = {
+            "outcome": "optimal",
+            "requested_capabilities": list(role_def.model_capabilities),
+            "preferred_model": role_def.preferred_model_id,
+            "mismatched_capabilities": [],
+            "fallback_reason": None,
+        }
 
         # Use role's preferred model
         if role_def.preferred_model_id:
-            return self.get_endpoint_for_model(role_def.preferred_model_id)
+            endpoint = self.get_endpoint_for_model(role_def.preferred_model_id)
+
+            # Check if we actually got the preferred model
+            ep_config = self.config.endpoints.get(endpoint)
+            if ep_config and role_def.preferred_model_id in ep_config.models:
+                outcome["outcome"] = "optimal"
+            else:
+                # We got a fallback endpoint
+                outcome["outcome"] = "capability_fallback"
+                outcome["mismatched_capabilities"] = [role_def.preferred_model_id]
+                outcome["fallback_reason"] = f"Preferred model {role_def.preferred_model_id} not available"
+
+            return endpoint, outcome
 
         # Match by capabilities
-        for name, endpoint in self.config.endpoints.items():
+        for name, ep in self.config.endpoints.items():
             if "reasoning" in role_def.model_capabilities and "reasoning" in name:
-                return name
+                outcome["outcome"] = "capability_match"
+                return name, outcome
             if "coding" in role_def.model_capabilities and "coding" in name:
-                return name
+                outcome["outcome"] = "capability_match"
+                return name, outcome
 
-        return self.config.default_endpoint
+        # Default fallback
+        outcome["outcome"] = "default_fallback"
+        outcome["mismatched_capabilities"] = list(role_def.model_capabilities)
+        outcome["fallback_reason"] = "No endpoint matches requested capabilities"
+        return self.config.default_endpoint, outcome
 
     async def complete(
         self,
@@ -777,22 +817,93 @@ class EndpointRouter:
         self,
         messages: list,
         role,
+        agent_alias: str | None = None,
+        track_routing: bool = True,
         **kwargs,
     ):
-        """Complete using the best endpoint for an agent role."""
+        """Complete using the best endpoint for an agent role.
+
+        Args:
+            messages: Chat messages
+            role: Agent role
+            agent_alias: Optional alias for routing analytics (defaults to role name)
+            track_routing: Whether to record routing decision (default True)
+            **kwargs: Additional arguments for complete()
+        """
+        import time
         from ..agents.roles import get_role
 
         role_def = get_role(role)
-        endpoint = self.get_endpoint_for_role(role)
+        endpoint, routing_outcome = self.get_endpoint_for_role_with_outcome(role)
 
-        return await self.complete(
-            messages=messages,
-            model=role_def.preferred_model_id,
-            endpoint=endpoint,
-            temperature=role_def.temperature,
-            max_tokens=role_def.max_tokens,
-            **kwargs,
-        )
+        start_time = time.monotonic()
+        success = True
+        actual_model = role_def.preferred_model_id or "unknown"
+
+        try:
+            result = await self.complete(
+                messages=messages,
+                model=role_def.preferred_model_id,
+                endpoint=endpoint,
+                temperature=role_def.temperature,
+                max_tokens=role_def.max_tokens,
+                **kwargs,
+            )
+
+            # Get actual model from response
+            if hasattr(result, "model") and result.model:
+                actual_model = result.model
+
+            return result
+
+        except Exception as e:
+            success = False
+            raise
+
+        finally:
+            # Record routing decision (fire-and-forget)
+            if track_routing:
+                latency_ms = int((time.monotonic() - start_time) * 1000)
+                try:
+                    from .routing_analytics import (
+                        RoutingOutcome,
+                        record_routing_decision,
+                        get_routing_collector,
+                    )
+
+                    # Map outcome string to enum
+                    outcome_map = {
+                        "optimal": RoutingOutcome.OPTIMAL,
+                        "capability_match": RoutingOutcome.CAPABILITY_MATCH,
+                        "capability_fallback": RoutingOutcome.CAPABILITY_FALLBACK,
+                        "default_fallback": RoutingOutcome.DEFAULT_FALLBACK,
+                    }
+                    outcome_enum = outcome_map.get(
+                        routing_outcome["outcome"], RoutingOutcome.DEFAULT_FALLBACK
+                    )
+
+                    # Ensure collector is started (lazy init)
+                    collector = get_routing_collector()
+                    if not collector._running:
+                        asyncio.create_task(collector.start())
+
+                    asyncio.create_task(
+                        record_routing_decision(
+                            agent_alias=agent_alias or str(role),
+                            requested_capabilities=routing_outcome["requested_capabilities"],
+                            preferred_model=routing_outcome["preferred_model"],
+                            actual_endpoint=endpoint,
+                            actual_model=actual_model,
+                            outcome=outcome_enum,
+                            mismatched_capabilities=routing_outcome["mismatched_capabilities"],
+                            success=success,
+                            latency_ms=latency_ms,
+                            agent_role=str(role),
+                            fallback_reason=routing_outcome["fallback_reason"],
+                        )
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to record routing decision: {e}")
 
     async def health_check(self) -> dict[str, bool]:
         """Check health of all endpoints."""

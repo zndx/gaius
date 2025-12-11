@@ -9,10 +9,21 @@ The engine server:
 6. Provides Unix socket fallback for debugging
 """
 
+# Configure parallelism BEFORE any imports
+import os
+
+# Configure joblib to use threading instead of multiprocessing
+# This avoids fork() conflicts with gRPC while preserving parallelism.
+# Threading works well for NumPy/sklearn/UMAP since they release the GIL.
+try:
+    from joblib import parallel_config
+    parallel_config(backend="threading", n_jobs=-1)
+except ImportError:
+    pass  # joblib not available yet
+
 import argparse
 import asyncio
 import logging
-import os
 import signal
 import sys
 from datetime import datetime
@@ -119,9 +130,8 @@ class GaiusEngine:
         #    InitController is available, other services will be added as they're ready
         await self._start_grpc_server_early()
 
-        # 3. Initialize telemetry if enabled
-        if self.config.telemetry.enabled:
-            await self._init_telemetry()
+        # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
+        await self._init_telemetry()
 
         # 4. Initialize backend router (manages optillm and vLLM)
         await self._init_controller.start_phase(InitPhase.BACKENDS, "Initializing backends")
@@ -565,30 +575,22 @@ class GaiusEngine:
         await self.stop()
 
     async def _init_telemetry(self) -> None:
-        """Initialize OpenTelemetry if configured."""
+        """Initialize OpenTelemetry if configured.
+
+        Uses the core telemetry module with engine entry point for proper
+        service.name distinction in observability platforms.
+        """
         try:
-            from opentelemetry import trace
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.resources import Resource
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,
-            )
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from ..core.telemetry import init_from_config
 
-            resource = Resource.create(
-                {
-                    "service.name": self.config.telemetry.service_name,
-                    "service.version": "0.2.0",
-                }
-            )
+            # Create a minimal config wrapper if needed
+            class ConfigWrapper:
+                def __init__(self, telemetry_config):
+                    self.telemetry = telemetry_config
 
-            tracer_provider = TracerProvider(resource=resource)
-            exporter = OTLPSpanExporter(endpoint=self.config.telemetry.endpoint)
-            tracer_provider.add_span_processor(BatchSpanProcessor(exporter))
-            trace.set_tracer_provider(tracer_provider)
-
+            init_from_config(ConfigWrapper(self.config.telemetry), entry_point="engine")
             logger.info(
-                f"OpenTelemetry initialized: {self.config.telemetry.endpoint}"
+                f"OpenTelemetry initialized with entry_point=engine: {self.config.telemetry.endpoint}"
             )
         except ImportError:
             logger.warning("OpenTelemetry packages not installed, tracing disabled")

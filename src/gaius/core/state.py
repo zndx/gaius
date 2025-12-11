@@ -50,13 +50,14 @@ class IsoMode(Enum):
 class CenterPanelMode(Enum):
     """Mode for the center auxiliary panel (graph area).
 
-    During init: INIT → GRAPH → THINK → EVOLUTION → NONE → INIT
-    After ready: GRAPH → THINK → EVOLUTION → NONE → GRAPH (skips INIT)
+    During init: INIT → GRAPH → THINK → EVOLUTION → OBSERVE → NONE → INIT
+    After ready: GRAPH → THINK → EVOLUTION → OBSERVE → NONE → GRAPH (skips INIT)
     """
     INIT = "init"         # Initialization progress (shown during startup)
     GRAPH = "graph"       # Wiki-link graph visualization
     THINK = "think"       # Reasoning traces and agent thinking
     EVOLUTION = "evolution"  # Evolution daemon monitoring
+    OBSERVE = "observe"   # Operational health metrics (Prometheus/engine)
     NONE = "none"         # Hidden (more space for main grid)
 
 
@@ -178,6 +179,9 @@ class AppState:
     # Center panel mode (graph/think/none)
     center_panel_mode: CenterPanelMode = CenterPanelMode.GRAPH
 
+    # Editor zoom state (Ctrl+z toggle)
+    editor_zoomed: bool = False
+
     # Think mode state
     active_reasoning: Optional[str] = None  # Current reasoning being displayed
     reasoning_traces: list = field(default_factory=list)  # History of ReasoningTrace
@@ -238,25 +242,17 @@ class AppState:
     def cycle_center_panel_mode(self) -> CenterPanelMode:
         """Cycle through center panel modes.
 
-        During init: INIT → GRAPH → THINK → EVOLUTION → NONE → INIT
-        After ready: GRAPH → THINK → EVOLUTION → NONE → GRAPH (skips INIT)
+        INIT → GRAPH → THINK → EVOLUTION → OBSERVE → NONE → INIT
+        InitPanel is always available - shows endpoint status and gRPC connection.
         """
-        # Include INIT panel during initialization, skip it after ready
-        if not self.initialization_state.is_ready:
-            modes = [
-                CenterPanelMode.INIT,
-                CenterPanelMode.GRAPH,
-                CenterPanelMode.THINK,
-                CenterPanelMode.EVOLUTION,
-                CenterPanelMode.NONE,
-            ]
-        else:
-            modes = [
-                CenterPanelMode.GRAPH,
-                CenterPanelMode.THINK,
-                CenterPanelMode.EVOLUTION,
-                CenterPanelMode.NONE,
-            ]
+        modes = [
+            CenterPanelMode.INIT,
+            CenterPanelMode.GRAPH,
+            CenterPanelMode.THINK,
+            CenterPanelMode.EVOLUTION,
+            CenterPanelMode.OBSERVE,
+            CenterPanelMode.NONE,
+        ]
 
         # Handle case where current mode not in available modes (e.g., INIT after ready)
         if self.center_panel_mode not in modes:

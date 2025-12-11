@@ -447,3 +447,175 @@ async def add_held_out_query(
             await conn.close()
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# =============================================================================
+# Routing Analytics Queries
+# =============================================================================
+
+async def get_routing_summary(hours: int = 24) -> dict[str, Any]:
+    """Get routing analytics summary for health checks.
+
+    Args:
+        hours: Number of hours to look back
+
+    Returns:
+        Dict with routing metrics including mismatch_rate, fallback_rate,
+        starved_agents, and capability_gaps
+    """
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url)
+        try:
+            # Get aggregate stats
+            stats = await conn.fetchrow(
+                """
+                SELECT
+                    COUNT(*) as total_requests,
+                    SUM(CASE WHEN fallback_used THEN 1 ELSE 0 END) as fallback_count,
+                    SUM(CASE WHEN capability_mismatch THEN 1 ELSE 0 END) as mismatch_count
+                FROM routing_decisions
+                WHERE created_at > NOW() - $1 * INTERVAL '1 hour'
+                """,
+                hours,
+            )
+
+            total = stats["total_requests"] or 0
+            if total == 0:
+                return {
+                    "total_requests": 0,
+                    "fallback_rate": 0.0,
+                    "mismatch_rate": 0.0,
+                    "starved_agents": [],
+                    "capability_gaps": [],
+                }
+
+            fallback_rate = (stats["fallback_count"] or 0) / total
+            mismatch_rate = (stats["mismatch_count"] or 0) / total
+
+            # Get starved agents (>50% suboptimal routing)
+            starved = await conn.fetch(
+                """
+                SELECT
+                    agent_alias,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN capability_mismatch THEN 1 ELSE 0 END) as mismatches
+                FROM routing_decisions
+                WHERE created_at > NOW() - $1 * INTERVAL '1 hour'
+                GROUP BY agent_alias
+                HAVING SUM(CASE WHEN capability_mismatch THEN 1 ELSE 0 END)::float /
+                       COUNT(*) > 0.5
+                """,
+                hours,
+            )
+            starved_agents = [r["agent_alias"] for r in starved]
+
+            # Get capability gaps
+            gaps = await conn.fetch(
+                """
+                SELECT
+                    unnest(mismatched_capabilities) as capability,
+                    COUNT(*) as count
+                FROM routing_decisions
+                WHERE capability_mismatch = TRUE
+                  AND created_at > NOW() - $1 * INTERVAL '1 hour'
+                GROUP BY 1
+                ORDER BY count DESC
+                LIMIT 10
+                """,
+                hours,
+            )
+            capability_gaps = [
+                {"capability": r["capability"], "count": r["count"]}
+                for r in gaps
+            ]
+
+            return {
+                "total_requests": total,
+                "fallback_rate": fallback_rate,
+                "mismatch_rate": mismatch_rate,
+                "starved_agents": starved_agents,
+                "capability_gaps": capability_gaps,
+            }
+        finally:
+            await conn.close()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def get_capability_gaps(days: int = 7) -> list[dict[str, Any]]:
+    """Get which capabilities are most frequently missing.
+
+    Args:
+        days: Number of days to look back
+
+    Returns:
+        List of dicts with capability name and mismatch count
+    """
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    unnest(mismatched_capabilities) as capability,
+                    COUNT(*) as count,
+                    COUNT(DISTINCT agent_alias) as affected_agents
+                FROM routing_decisions
+                WHERE capability_mismatch = TRUE
+                  AND created_at > NOW() - $1 * INTERVAL '1 day'
+                GROUP BY 1
+                ORDER BY count DESC
+                """,
+                days,
+            )
+            return [
+                {
+                    "capability": r["capability"],
+                    "count": r["count"],
+                    "affected_agents": r["affected_agents"],
+                }
+                for r in rows
+            ]
+        finally:
+            await conn.close()
+    except Exception as e:
+        return []
+
+
+async def get_starved_agents(days: int = 7) -> list[str]:
+    """Get agents with >50% suboptimal routing.
+
+    Args:
+        days: Number of days to look back
+
+    Returns:
+        List of agent aliases that are being starved of optimal models
+    """
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT agent_alias
+                FROM routing_decisions
+                WHERE created_at > NOW() - $1 * INTERVAL '1 day'
+                GROUP BY agent_alias
+                HAVING SUM(CASE WHEN capability_mismatch THEN 1 ELSE 0 END)::float /
+                       COUNT(*) > 0.5
+                """,
+                days,
+            )
+            return [r["agent_alias"] for r in rows]
+        finally:
+            await conn.close()
+    except Exception as e:
+        return []

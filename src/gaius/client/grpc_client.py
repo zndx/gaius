@@ -1027,6 +1027,15 @@ class GrpcEngineClient:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _grpc_client: Optional[GrpcEngineClient] = None
+_grpc_connect_lock: asyncio.Lock | None = None
+
+
+def _get_connect_lock() -> asyncio.Lock:
+    """Get or create the connection lock (lazy init for event loop compatibility)."""
+    global _grpc_connect_lock
+    if _grpc_connect_lock is None:
+        _grpc_connect_lock = asyncio.Lock()
+    return _grpc_connect_lock
 
 
 async def get_grpc_client() -> GrpcEngineClient:
@@ -1034,16 +1043,23 @@ async def get_grpc_client() -> GrpcEngineClient:
 
     If the client exists but is not connected, attempts to reconnect.
     This handles the case where the engine wasn't running when TUI started.
+
+    Uses a lock to prevent concurrent connection attempts (which cause
+    ENHANCE_YOUR_CALM errors from the server).
     """
     global _grpc_client
+
     if _grpc_client is None:
         _grpc_client = GrpcEngineClient()
 
-    # Always ensure we're connected (handles reconnection after failures)
+    # Use lock to prevent concurrent connect attempts
     if not _grpc_client.is_connected:
-        connected = await _grpc_client.connect()
-        if not connected:
-            logger.debug("gRPC client not connected, will retry on next call")
+        async with _get_connect_lock():
+            # Re-check after acquiring lock (another coroutine may have connected)
+            if not _grpc_client.is_connected:
+                connected = await _grpc_client.connect()
+                if not connected:
+                    logger.debug("gRPC client not connected, will retry on next call")
 
     return _grpc_client
 
@@ -1053,10 +1069,12 @@ def reset_grpc_client() -> None:
 
     Call this to force a fresh connection on the next get_grpc_client() call.
     """
-    global _grpc_client
+    global _grpc_client, _grpc_connect_lock
     if _grpc_client is not None:
         # Don't await disconnect - just clear the reference
         _grpc_client = None
+    # Also reset the lock to avoid stale lock from previous event loop
+    _grpc_connect_lock = None
 
 
 async def call_grpc(

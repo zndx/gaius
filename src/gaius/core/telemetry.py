@@ -1,7 +1,19 @@
 """OpenTelemetry instrumentation for Gaius.
 
 Provides tracing, metrics, and logging via OpenTelemetry.
-Configured via HOCON (gaius.telemetry.*).
+
+Entry Point Identification:
+    Each entry point (TUI, CLI, MCP, Engine, Worker) gets a distinct
+    service.name for observability platform filtering:
+    - gaius-tui
+    - gaius-cli
+    - gaius-mcp
+    - gaius-engine
+    - gaius-worker
+
+Disabling Telemetry:
+    Set OTEL_SDK_DISABLED=true in environment to disable telemetry.
+    This is the standard OTel mechanism for disabling instrumentation.
 
 Usage:
     from gaius.core.telemetry import get_tracer, get_meter, trace_operation
@@ -17,6 +29,8 @@ Usage:
 """
 
 import functools
+import os
+import socket
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -24,16 +38,41 @@ from typing import Any, Callable, Iterator
 _tracer = None
 _meter = None
 _initialized = False
+_entry_point = "cli"  # Default entry point
+
+# Valid entry points
+ENTRY_POINTS = ("tui", "cli", "mcp", "engine", "worker")
 
 
-def _init_telemetry(config: "TelemetryConfig") -> None:
-    """Initialize OpenTelemetry based on config."""
-    global _tracer, _meter, _initialized
+def _is_otel_disabled() -> bool:
+    """Check if OTel is disabled via standard environment variable.
+
+    Per OTel spec, OTEL_SDK_DISABLED=true disables all instrumentation.
+    """
+    return os.getenv("OTEL_SDK_DISABLED", "").lower() == "true"
+
+
+def _init_telemetry(config: "TelemetryConfig", entry_point: str = "cli") -> None:
+    """Initialize OpenTelemetry based on config.
+
+    Telemetry is enabled by default. Set OTEL_SDK_DISABLED=true to disable.
+
+    Args:
+        config: Telemetry configuration from HOCON
+        entry_point: Entry point identifier (tui, cli, mcp, engine, worker)
+    """
+    global _tracer, _meter, _initialized, _entry_point
 
     if _initialized:
         return
 
-    if not config.enabled:
+    # Validate entry point
+    if entry_point not in ENTRY_POINTS:
+        entry_point = "cli"
+    _entry_point = entry_point
+
+    # Check standard OTel disable flag first
+    if _is_otel_disabled():
         _initialized = True
         return
 
@@ -43,10 +82,15 @@ def _init_telemetry(config: "TelemetryConfig") -> None:
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.resources import Resource
 
-        # Create resource with service info
+        # Create resource with service info per OTel semantic conventions
+        # service.name is distinct per entry point for dashboard filtering
+        service_name = f"gaius-{entry_point}"
         resource = Resource.create({
-            "service.name": config.service_name,
+            "service.name": service_name,
+            "service.namespace": "gaius",
             "service.version": "0.2.0",
+            "service.instance.id": f"{socket.gethostname()}-{os.getpid()}",
+            "deployment.environment.name": os.getenv("GAIUS_ENV", "dev"),
         })
 
         # Setup tracer
@@ -75,8 +119,38 @@ def _init_telemetry(config: "TelemetryConfig") -> None:
         trace.set_tracer_provider(tracer_provider)
         _tracer = trace.get_tracer("gaius")
 
-        # Setup meter
-        meter_provider = MeterProvider(resource=resource)
+        # Setup meter with exporter
+        if config.exporter == "otlp":
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+                OTLPMetricExporter,
+            )
+            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+            metric_exporter = OTLPMetricExporter(endpoint=config.endpoint)
+            metric_reader = PeriodicExportingMetricReader(
+                metric_exporter,
+                export_interval_millis=15000,  # Export every 15 seconds
+            )
+            meter_provider = MeterProvider(
+                resource=resource,
+                metric_readers=[metric_reader],
+            )
+        else:
+            # Console exporter for dev/debug
+            from opentelemetry.sdk.metrics.export import (
+                ConsoleMetricExporter,
+                PeriodicExportingMetricReader,
+            )
+
+            metric_reader = PeriodicExportingMetricReader(
+                ConsoleMetricExporter(),
+                export_interval_millis=15000,
+            )
+            meter_provider = MeterProvider(
+                resource=resource,
+                metric_readers=[metric_reader],
+            )
+
         metrics.set_meter_provider(meter_provider)
         _meter = metrics.get_meter("gaius")
 
@@ -211,14 +285,60 @@ def trace_operation(
     return decorator
 
 
-def init_from_config(config: Any) -> None:
+def init_from_config(config: Any, entry_point: str = "cli") -> None:
     """Initialize telemetry from GaiusConfig.
 
     Call this during app startup:
         from gaius.core.telemetry import init_from_config
-        init_from_config(config)
+        init_from_config(config, entry_point="cli")
+
+    Args:
+        config: GaiusConfig with telemetry settings
+        entry_point: Entry point identifier (tui, cli, mcp, engine, worker)
     """
-    _init_telemetry(config.telemetry)
+    _init_telemetry(config.telemetry, entry_point=entry_point)
+
+
+def get_entry_point() -> str:
+    """Get the current entry point identifier.
+
+    Returns:
+        Entry point string (tui, cli, mcp, engine, worker)
+    """
+    return _entry_point
+
+
+@contextmanager
+def traced_command(command: str, function_name: str | None = None) -> Iterator[Any]:
+    """Create a span for a command execution with standard attributes.
+
+    This is the preferred way to trace command execution across all entry points.
+    Creates spans following the naming convention: gaius.{entry_point}/command/{cmd}
+
+    Args:
+        command: The command being executed (e.g., "state", "domain", "search_kb")
+        function_name: Optional function name for code.function.name attribute
+
+    Yields:
+        The span (may be NoOpSpan if telemetry disabled)
+
+    Example:
+        with traced_command("domain", "cmd_domain") as span:
+            # handle command
+            span.set_attribute("domain", "pension")
+    """
+    tracer = get_tracer()
+    entry = get_entry_point()
+    span_name = f"gaius.{entry}/command/{command}"
+
+    with tracer.start_as_current_span(span_name) as span:
+        # Set standard attributes per plan
+        if hasattr(span, "set_attribute"):
+            span.set_attribute("gaius.command", command)
+            span.set_attribute("gaius.entry_point", entry)
+            if function_name:
+                span.set_attribute("code.function.name", function_name)
+        yield span
 
 
 # Pre-defined metrics for common operations
@@ -333,3 +453,41 @@ def record_swarm_round(agent_count: int, domain: str) -> None:
             "domain": domain,
         },
     )
+
+
+def flush_telemetry(timeout_ms: int = 5000) -> bool:
+    """Flush pending telemetry data to the collector.
+
+    Call this before exiting short-lived processes (CLI commands) to ensure
+    metrics and traces are exported. For long-running apps (TUI), the SDK
+    handles periodic export automatically.
+
+    Args:
+        timeout_ms: Maximum time to wait for flush in milliseconds
+
+    Returns:
+        True if flush succeeded, False otherwise
+    """
+    if _is_otel_disabled() or not _initialized:
+        return True
+
+    success = True
+    try:
+        from opentelemetry import trace, metrics
+
+        # Flush traces
+        tracer_provider = trace.get_tracer_provider()
+        if hasattr(tracer_provider, "force_flush"):
+            if not tracer_provider.force_flush(timeout_millis=timeout_ms):
+                success = False
+
+        # Flush metrics
+        meter_provider = metrics.get_meter_provider()
+        if hasattr(meter_provider, "force_flush"):
+            if not meter_provider.force_flush(timeout_millis=timeout_ms):
+                success = False
+
+    except Exception:
+        success = False
+
+    return success

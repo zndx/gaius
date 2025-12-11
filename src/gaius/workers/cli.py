@@ -65,6 +65,15 @@ async def show_status(config: WorkerConfig) -> None:
 
 def main() -> int:
     """Main entry point."""
+    # Initialize telemetry early with worker entry point
+    try:
+        from gaius.core.config import get_config
+        from gaius.core.telemetry import init_from_config
+        config = get_config()
+        init_from_config(config, entry_point="worker")
+    except Exception:
+        pass  # Telemetry init failure is non-fatal
+
     parser = argparse.ArgumentParser(
         description="Gaius fetch worker",
         formatter_class=argparse.RawDescriptionHelpFormatter,

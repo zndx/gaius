@@ -8,10 +8,19 @@ Usage:
     uv run gaius-cli --cmd "/state" # CLI mode
 """
 
-# Suppress huggingface tokenizers parallelism warnings BEFORE any imports
-# These warnings occur when tokenizers are used after process forking
+# Suppress warnings BEFORE any imports that might trigger them
 import os
+
+# Suppress huggingface tokenizers parallelism warnings
+# These warnings occur when tokenizers are used after process forking
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# Configure joblib to use threading instead of multiprocessing
+# This avoids fork() conflicts with gRPC while preserving parallelism.
+# Threading works well for NumPy/sklearn/UMAP since they release the GIL.
+os.environ.setdefault("LOKY_PICKLER", "pickle")  # Ensure compatibility
+from joblib import parallel_config
+parallel_config(backend="threading", n_jobs=-1)
 
 from pathlib import Path
 
@@ -42,6 +51,7 @@ from .widgets.graph_view import GraphView
 from .widgets.think_panel import ThinkPanel
 from .widgets.evolution_panel import EvolutionPanel
 from .widgets.init_panel import InitPanel
+from .widgets.observe_panel import ObservePanel
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -148,6 +158,10 @@ class GaiusApp(App):
         overflow: hidden;
     }
 
+    #grid-row.hidden {
+        display: none;
+    }
+
     /* Main 19x19 grid wrapper */
     #main-grid-wrapper {
         width: auto;
@@ -229,6 +243,13 @@ class GaiusApp(App):
 
     #note-editor.hidden {
         display: none;
+    }
+
+    #note-editor.zoomed {
+        width: 100%;
+        height: 1fr;
+        margin: 0;
+        padding: 0;
     }
 
     /* ─────────────────────────────────────────────────────────────────────
@@ -320,6 +341,7 @@ class GaiusApp(App):
 
         # Notes
         Binding("ctrl+n", "new_note", "New Note"),
+        Binding("ctrl+z", "zoom_editor", "Zoom", show=False),
 
         # Graph view (wiki-links) - 'g' cycles modes
         Binding("g", "toggle_graph", "Graph"),
@@ -334,7 +356,7 @@ class GaiusApp(App):
     def __init__(self, profile: str | None = None) -> None:
         super().__init__()
         self.config = get_config(profile=profile)
-        init_telemetry(self.config)  # Initialize OpenTelemetry
+        init_telemetry(self.config, entry_point="tui")  # Initialize OpenTelemetry
         self.state = AppState()
         self._graph_update_timer: Timer | None = None
         self._apply_config()
@@ -3267,6 +3289,9 @@ The general-purpose agentic query interface.
                         # Init panel (engine initialization progress) - shown during startup, 'g' cycles modes
                         yield InitPanel(self.state, id="init-panel", classes="hidden")
 
+                        # Observe panel (operational metrics) - hidden by default, 'g' cycles modes
+                        yield ObservePanel(self.state, id="observe-panel", classes="hidden")
+
                     # Note editor below the grids (hidden by default, Ctrl-N to show)
                     yield NoteEditor(id="note-editor", classes="hidden")
 
@@ -3667,16 +3692,52 @@ The general-purpose agentic query interface.
         content = self.query_one("#content-panel", ContentPanel)
         content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
 
+    def action_zoom_editor(self) -> None:
+        """Toggle editor zoom (tmux-style Ctrl+z).
+
+        When zoomed, the NoteEditor fills the center column (hiding the 19x19 grid
+        and minigrids). Side panels remain visible and independent.
+        Press Ctrl+z again to restore normal layout.
+        """
+        editor = self.query_one("#note-editor", NoteEditor)
+        grid_row = self.query_one("#grid-row")
+
+        # Toggle zoom state
+        self.state.editor_zoomed = not self.state.editor_zoomed
+
+        if self.state.editor_zoomed:
+            # Show and zoom the editor
+            editor.remove_class("hidden")
+            editor.add_class("zoomed")
+
+            # Hide the grid row (main grid, minigrids, center panels)
+            grid_row.add_class("hidden")
+
+            # Focus the editor
+            editor.focus()
+        else:
+            # Restore normal layout
+            editor.remove_class("zoomed")
+
+            # Show the grid row
+            grid_row.remove_class("hidden")
+
+            # Restore center panel visibility
+            self._apply_center_panel_mode()
+
+        self._update_status()
+
     def action_toggle_graph(self) -> None:
         """Cycle center panel mode.
 
-        During init: INIT → GRAPH → THINK → EVOLUTION → NONE → INIT
-        After ready: GRAPH → THINK → EVOLUTION → NONE → GRAPH (skips INIT)
+        During init: INIT → GRAPH → THINK → EVOLUTION → OBSERVE → NONE → INIT
+        After ready: GRAPH → THINK → EVOLUTION → OBSERVE → NONE → GRAPH (skips INIT)
         """
         graph = self.query_one("#graph-view", GraphView)
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
         init_panel = self.query_one("#init-panel", InitPanel)
+        observe_panel = self.query_one("#observe-panel", ObservePanel)
 
         # Cycle to next mode (state.py handles init-aware cycling)
         new_mode = self.state.cycle_center_panel_mode()
@@ -3686,6 +3747,7 @@ The general-purpose agentic query interface.
         think.add_class("hidden")
         evolution.add_class("hidden")
         init_panel.add_class("hidden")
+        observe_panel.add_class("hidden")
 
         # Update visibility based on mode
         if new_mode == CenterPanelMode.INIT:
@@ -3706,6 +3768,9 @@ The general-purpose agentic query interface.
             # Trigger data refresh
             import asyncio
             asyncio.create_task(evolution.refresh_data())
+        elif new_mode == CenterPanelMode.OBSERVE:
+            observe_panel.remove_class("hidden")
+            observe_panel.refresh()
         else:  # NONE
             # Force layout refresh when hiding all panels
             self.query_one("#grid-row").refresh(layout=True)
@@ -3719,6 +3784,7 @@ The general-purpose agentic query interface.
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
         init_panel = self.query_one("#init-panel", InitPanel)
+        observe_panel = self.query_one("#observe-panel", ObservePanel)
 
         # Set mode directly to EVOLUTION
         self.state.center_panel_mode = CenterPanelMode.EVOLUTION
@@ -3727,6 +3793,7 @@ The general-purpose agentic query interface.
         graph.add_class("hidden")
         think.add_class("hidden")
         init_panel.add_class("hidden")
+        observe_panel.add_class("hidden")
         evolution.remove_class("hidden")
 
         # Trigger data refresh
@@ -3844,6 +3911,7 @@ The general-purpose agentic query interface.
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
         init_panel = self.query_one("#init-panel", InitPanel)
+        observe_panel = self.query_one("#observe-panel", ObservePanel)
 
         # During initialization, override to show InitPanel
         if not self.state.initialization_state.is_ready:
@@ -3856,6 +3924,7 @@ The general-purpose agentic query interface.
         think.add_class("hidden")
         evolution.add_class("hidden")
         init_panel.add_class("hidden")
+        observe_panel.add_class("hidden")
 
         # Show the active one
         if mode == CenterPanelMode.INIT:
@@ -3866,6 +3935,8 @@ The general-purpose agentic query interface.
             think.remove_class("hidden")
         elif mode == CenterPanelMode.EVOLUTION:
             evolution.remove_class("hidden")
+        elif mode == CenterPanelMode.OBSERVE:
+            observe_panel.remove_class("hidden")
         # else: NONE - all stay hidden
 
     def _run_startup_commands(self) -> None:
