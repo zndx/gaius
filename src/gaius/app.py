@@ -52,6 +52,7 @@ from .widgets.think_panel import ThinkPanel
 from .widgets.evolution_panel import EvolutionPanel
 from .widgets.init_panel import InitPanel
 from .widgets.observe_panel import ObservePanel
+from .widgets.splash import SplashScreen
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -93,6 +94,12 @@ class GaiusApp(App):
 
     Screen {
         background: $surface;
+        layers: base splash;
+    }
+
+    /* Splash screen overlay */
+    SplashScreen {
+        layer: splash;
     }
 
     /* ─────────────────────────────────────────────────────────────────────
@@ -3304,6 +3311,9 @@ The general-purpose agentic query interface.
 
         yield Footer()
 
+        # Splash screen (overlay layer, dismisses when ready)
+        yield SplashScreen(id="splash")
+
     def _status_text(self) -> str:
         """Generate status bar text."""
         mode = self.state.view_mode.value.upper()
@@ -3834,6 +3844,14 @@ The general-purpose agentic query interface.
 
         # Run enterApp startup procedure
         self._run_startup_commands()
+
+        # Dismiss splash screen now that init is done
+        try:
+            splash = self.query_one("#splash", SplashScreen)
+            splash.set_status("Ready!")
+            self.set_timer(0.3, splash.dismiss)
+        except Exception:
+            pass  # Splash may not exist in tests
 
     def _start_inference_stack(self) -> None:
         """Start inference orchestrator and default model (nvidia/Orchestrator-8B).
