@@ -21,10 +21,21 @@ Usage:
     uv run python -m gaius.cli --cmd "/info" --format text
 """
 
+# Configure parallelism BEFORE any imports
+import os
+
+# Configure joblib to use threading instead of multiprocessing
+# This avoids fork() conflicts with gRPC while preserving parallelism.
+# Threading works well for NumPy/sklearn/UMAP since they release the GIL.
+try:
+    from joblib import parallel_config
+    parallel_config(backend="threading", n_jobs=-1)
+except ImportError:
+    pass  # joblib not available yet
+
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -123,6 +134,8 @@ class GaiusCLI:
 
     def execute(self, cmd: str) -> dict:
         """Execute a command and return result dict."""
+        from .core.telemetry import traced_command
+
         if cmd.startswith("/"):
             cmd = cmd[1:]
 
@@ -132,101 +145,104 @@ class GaiusCLI:
 
         result = {"command": command, "args": args, "success": True, "data": {}}
 
-        try:
-            if command == "info":
-                result["data"] = self._cmd_info(args)
-            elif command == "goto":
-                result["data"] = self._cmd_goto(args)
-            elif command == "domain":
-                result["data"] = self._cmd_domain(args)
-            elif command == "overlay":
-                result["data"] = self._cmd_overlay(args)
-            elif command == "iso":
-                result["data"] = self._cmd_iso(args)
-            elif command == "view":
-                result["data"] = self._cmd_view(args)
-            elif command == "state":
-                result["data"] = self._cmd_state()
-            elif command == "agents":
-                result["data"] = self._cmd_agents()
-            elif command == "grid":
-                result["data"] = self._cmd_grid()
-            elif command == "help":
-                result["data"] = self._cmd_help()
-            # Inference commands (async)
-            elif command == "ask":
-                result["data"] = self._run_async(self._cmd_ask(args))
-            elif command == "search":
-                result["data"] = self._run_async(self._cmd_search(args))
-            elif command == "research":
-                result["data"] = self._run_async(self._cmd_research(args))
-            elif command == "research!" or command == "research-eval":
-                result["data"] = self._run_async(self._cmd_research_eval(args))
-            elif command == "eval":
-                result["data"] = self._run_async(self._cmd_eval(args))
-            elif command == "eval-stats":
-                result["data"] = self._cmd_eval_stats()
-            elif command == "technique":
-                result["data"] = self._cmd_technique(args)
-            elif command == "kb":
-                result["data"] = self._cmd_kb(args)
-            # Scheduler commands
-            elif command == "scheduler" or command == "sched":
-                result["data"] = self._run_async(self._cmd_scheduler(args))
-            elif command == "submit":
-                result["data"] = self._run_async(self._cmd_submit(args))
-            elif command == "swarm":
-                result["data"] = self._run_async(self._cmd_swarm(args))
-            # GPU Orchestrator commands
-            elif command == "gpu" or command == "orch":
-                result["data"] = self._run_async(self._cmd_gpu(args))
-            # Inference management (high-level)
-            elif command == "inference" or command == "inf":
-                result["data"] = self._run_async(self._cmd_inference(args))
-            elif command == "explain":
-                result["data"] = self._run_async(self._cmd_explain(args))
-            # Evolution daemon commands
-            elif command == "evolve" or command == "evo":
-                result["data"] = self._run_async(self._cmd_evolve(args))
-            # Mini-grid data
-            elif command == "minigrid" or command == "mg":
-                result["data"] = self._cmd_minigrid(args)
-            # Reindex KB to Qdrant
-            elif command == "reindex":
-                result["data"] = self._cmd_reindex()
-            # Tenuki - find strategic jump point
-            elif command == "tenuki":
-                result["data"] = self._cmd_tenuki(args)
-            # Engine connectivity commands
-            elif command == "engine":
-                result["data"] = self._run_async(self._cmd_engine(args))
-            # OTel telemetry watching
-            elif command == "watch":
-                result["data"] = self._run_async(self._cmd_watch(args))
-            # Profile management
-            elif command == "profile":
-                result["data"] = self._cmd_profile(args)
-            # Project notes with bidirectional linking
-            elif command == "project":
-                result["data"] = self._cmd_project(args)
-            # Thoughts - cognition and pattern detection
-            elif command == "thoughts":
-                result["data"] = self._run_async(self._cmd_thoughts(args))
-            # Health check - comprehensive diagnostics
-            elif command == "health":
-                result["data"] = self._run_async(self._cmd_health(args))
-            # Self-healing - tiered recovery system
-            elif command == "heal":
-                result["data"] = self._run_async(self._cmd_heal(args))
-            # Model registry commands
-            elif command == "model" or command == "models":
-                result["data"] = self._cmd_model(args)
-            else:
+        with traced_command(command, "execute") as span:
+            try:
+                if command == "info":
+                    result["data"] = self._cmd_info(args)
+                elif command == "goto":
+                    result["data"] = self._cmd_goto(args)
+                elif command == "domain":
+                    result["data"] = self._cmd_domain(args)
+                elif command == "overlay":
+                    result["data"] = self._cmd_overlay(args)
+                elif command == "iso":
+                    result["data"] = self._cmd_iso(args)
+                elif command == "view":
+                    result["data"] = self._cmd_view(args)
+                elif command == "state":
+                    result["data"] = self._cmd_state()
+                elif command == "agents":
+                    result["data"] = self._cmd_agents()
+                elif command == "grid":
+                    result["data"] = self._cmd_grid()
+                elif command == "help":
+                    result["data"] = self._cmd_help()
+                # Inference commands (async)
+                elif command == "ask":
+                    result["data"] = self._run_async(self._cmd_ask(args))
+                elif command == "search":
+                    result["data"] = self._run_async(self._cmd_search(args))
+                elif command == "research":
+                    result["data"] = self._run_async(self._cmd_research(args))
+                elif command == "research!" or command == "research-eval":
+                    result["data"] = self._run_async(self._cmd_research_eval(args))
+                elif command == "eval":
+                    result["data"] = self._run_async(self._cmd_eval(args))
+                elif command == "eval-stats":
+                    result["data"] = self._cmd_eval_stats()
+                elif command == "technique":
+                    result["data"] = self._cmd_technique(args)
+                elif command == "kb":
+                    result["data"] = self._cmd_kb(args)
+                # Scheduler commands
+                elif command == "scheduler" or command == "sched":
+                    result["data"] = self._run_async(self._cmd_scheduler(args))
+                elif command == "submit":
+                    result["data"] = self._run_async(self._cmd_submit(args))
+                elif command == "swarm":
+                    result["data"] = self._run_async(self._cmd_swarm(args))
+                # GPU Orchestrator commands
+                elif command == "gpu" or command == "orch":
+                    result["data"] = self._run_async(self._cmd_gpu(args))
+                # Inference management (high-level)
+                elif command == "inference" or command == "inf":
+                    result["data"] = self._run_async(self._cmd_inference(args))
+                elif command == "explain":
+                    result["data"] = self._run_async(self._cmd_explain(args))
+                # Evolution daemon commands
+                elif command == "evolve" or command == "evo":
+                    result["data"] = self._run_async(self._cmd_evolve(args))
+                # Mini-grid data
+                elif command == "minigrid" or command == "mg":
+                    result["data"] = self._cmd_minigrid(args)
+                # Reindex KB to Qdrant
+                elif command == "reindex":
+                    result["data"] = self._cmd_reindex()
+                # Tenuki - find strategic jump point
+                elif command == "tenuki":
+                    result["data"] = self._cmd_tenuki(args)
+                # Engine connectivity commands
+                elif command == "engine":
+                    result["data"] = self._run_async(self._cmd_engine(args))
+                # OTel telemetry watching
+                elif command == "watch":
+                    result["data"] = self._run_async(self._cmd_watch(args))
+                # Profile management
+                elif command == "profile":
+                    result["data"] = self._cmd_profile(args)
+                # Project notes with bidirectional linking
+                elif command == "project":
+                    result["data"] = self._cmd_project(args)
+                # Thoughts - cognition and pattern detection
+                elif command == "thoughts":
+                    result["data"] = self._run_async(self._cmd_thoughts(args))
+                # Health check - comprehensive diagnostics
+                elif command == "health":
+                    result["data"] = self._run_async(self._cmd_health(args))
+                # Self-healing - tiered recovery system
+                elif command == "heal":
+                    result["data"] = self._run_async(self._cmd_heal(args))
+                # Model registry commands
+                elif command == "model" or command == "models":
+                    result["data"] = self._cmd_model(args)
+                else:
+                    result["success"] = False
+                    result["error"] = f"Unknown command: {command}"
+            except Exception as e:
+                if hasattr(span, "record_exception"):
+                    span.record_exception(e)
                 result["success"] = False
-                result["error"] = f"Unknown command: {command}"
-        except Exception as e:
-            result["success"] = False
-            result["error"] = str(e)
+                result["error"] = str(e)
 
         return result
 
@@ -2626,12 +2642,13 @@ Respond with:
         """GPU orchestrator operations.
 
         Usage:
-            /gpu status          - Show all endpoints and GPU health
-            /gpu start [name]    - Start endpoint(s)
-            /gpu stop [name]     - Stop endpoint(s)
-            /gpu restart <name>  - Restart endpoint
-            /gpu logs <name>     - Show endpoint logs
-            /gpu health          - Detailed GPU metrics
+            /gpu status           - Show all endpoints and GPU health
+            /gpu start [name]     - Start endpoint(s)
+            /gpu stop [name]      - Stop endpoint(s)
+            /gpu restart <name>   - Restart endpoint
+            /gpu logs <name>      - Show endpoint logs
+            /gpu health           - Detailed GPU metrics
+            /gpu clean-start [ep] - Kill stale processes and reset state
         """
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
@@ -2696,6 +2713,16 @@ Respond with:
                     from .inference.health import get_health_monitor
                     monitor = get_health_monitor()
                     return monitor.get_summary()
+
+                elif subcmd == "clean-start":
+                    # Kill any stale processes and reset state
+                    endpoints_to_start = [e.strip() for e in subargs.split(",") if e.strip()] if subargs else []
+                    result = await orch.clean_start(endpoints_to_start if endpoints_to_start else None)
+                    return {
+                        "action": "clean-start",
+                        "endpoints_requested": endpoints_to_start or ["default"],
+                        "result": result,
+                    }
 
                 else:
                     return {"error": f"Unknown gpu command: {subcmd}"}
@@ -4120,6 +4147,7 @@ Respond with:
             /health diagnose <service> - Deep diagnostics for a service
             /health fix [service]      - Fix unhealthy services
             /health fix --dry-run      - Show fix plan without executing
+            /health watch <cmd>        - Execute command and watch for fallbacks/stubs
         """
         from pathlib import Path
 
@@ -4146,6 +4174,11 @@ Respond with:
         # Handle fix subcommand
         if subcmd == "fix":
             return await self._health_fix(checker, subargs)
+
+        # Handle watch subcommand
+        if subcmd == "watch":
+            watch_cmd = " ".join(subargs) if subargs else None
+            return await self._health_watch(watch_cmd)
 
         # Run appropriate checks
         if subcmd == "quick":
@@ -4389,6 +4422,72 @@ Respond with:
             "results": results,
             "verification": verification_summary,
         }
+
+    async def _health_watch(self, watch_cmd: str | None) -> dict:
+        """Execute a command while watching for fallbacks and stubs.
+
+        Monitors log output and telemetry for patterns indicating:
+        - Stub implementations
+        - Legacy fallbacks
+        - Not implemented features
+        - No-op behavior
+
+        Args:
+            watch_cmd: Command to execute and watch (e.g., "/evolve status")
+
+        Returns:
+            Watch result with observations
+        """
+        from .health.watcher import CommandWatcher, format_watch_result
+
+        if not watch_cmd:
+            return {
+                "error": "Missing command to watch",
+                "usage": "/health watch <command>",
+                "examples": [
+                    "/health watch /evolve status",
+                    "/health watch /kb search test",
+                    "/health watch /thoughts recent",
+                ],
+                "description": (
+                    "Executes the command while monitoring for fallbacks, stubs, "
+                    "and incomplete implementations. Helps identify functionality "
+                    "that is not yet fully implemented."
+                ),
+            }
+
+        # Parse the command to watch
+        watch_cmd = watch_cmd.strip()
+        if watch_cmd.startswith("/"):
+            # It's a CLI command - we need to execute it through our command system
+            cmd_parts = watch_cmd[1:].split(maxsplit=1)
+            cmd_name = cmd_parts[0]
+            cmd_args = cmd_parts[1] if len(cmd_parts) > 1 else ""
+
+            # Get the command method
+            method_name = f"_cmd_{cmd_name}"
+            if not hasattr(self, method_name):
+                return {
+                    "error": f"Unknown command: /{cmd_name}",
+                    "suggestion": "Use /help to see available commands",
+                }
+
+            method = getattr(self, method_name)
+
+            async def command_fn():
+                return await method(cmd_args)
+
+        else:
+            return {
+                "error": "Command must start with /",
+                "usage": "/health watch /<command>",
+            }
+
+        # Execute with watching
+        watcher = CommandWatcher()
+        result = await watcher.watch_command(command_fn, watch_cmd)
+
+        return format_watch_result(result)
 
     # ─────────────────────────────────────────────────────────────────────
     # Heal - Self-Healing System
@@ -4668,6 +4767,15 @@ Respond with:
 
 def main():
     """CLI entry point."""
+    # Initialize telemetry early with CLI entry point
+    try:
+        from .core.config import get_config
+        from .core.telemetry import init_from_config
+        config = get_config()
+        init_from_config(config, entry_point="cli")
+    except Exception:
+        pass  # Telemetry init failure is non-fatal
+
     parser = argparse.ArgumentParser(
         description="Gaius CLI - Non-interactive command mode",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -4716,6 +4824,13 @@ Examples:
         print(output)
         if not result["success"]:
             exit_code = 1
+
+    # Flush telemetry before exit (CLI commands are short-lived)
+    try:
+        from .core.telemetry import flush_telemetry
+        flush_telemetry(timeout_ms=3000)
+    except Exception:
+        pass  # Telemetry flush failure is non-fatal
 
     sys.exit(exit_code)
 

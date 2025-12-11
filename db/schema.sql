@@ -1,4 +1,4 @@
-\restrict VeqUVve2QuRreabvgFyZlthYCic89CTdH7UWmZit0L9HYYRH5saB48MkpTbQlLA
+\restrict Qi7j4ofwVFTHwdJ6MUtNozoFCJ0eXADmYGtB5QkWJjrk05wtCf0J4IIDAZ0z8b2
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -2042,6 +2042,50 @@ CREATE TABLE public.research_threads (
 
 
 --
+-- Name: routing_decisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.routing_decisions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    agent_role text,
+    agent_alias text NOT NULL,
+    workflow_phase text,
+    requested_capabilities text[] DEFAULT '{}'::text[],
+    preferred_model text,
+    actual_endpoint text NOT NULL,
+    actual_model text NOT NULL,
+    fallback_used boolean DEFAULT false,
+    fallback_reason text,
+    capability_mismatch boolean DEFAULT false,
+    mismatched_capabilities text[] DEFAULT '{}'::text[],
+    success boolean NOT NULL,
+    latency_ms integer NOT NULL
+);
+
+
+--
+-- Name: TABLE routing_decisions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.routing_decisions IS 'Tracks capability-based inference routing decisions';
+
+
+--
+-- Name: COLUMN routing_decisions.capability_mismatch; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.routing_decisions.capability_mismatch IS 'True when agent got suboptimal model due to capability/availability mismatch';
+
+
+--
+-- Name: COLUMN routing_decisions.mismatched_capabilities; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.routing_decisions.mismatched_capabilities IS 'List of capabilities that could not be satisfied';
+
+
+--
 -- Name: scheduled_tasks_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -2865,6 +2909,14 @@ ALTER TABLE ONLY public.research_threads
 
 
 --
+-- Name: routing_decisions routing_decisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.routing_decisions
+    ADD CONSTRAINT routing_decisions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: scheduled_tasks scheduled_tasks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3356,6 +3408,34 @@ CREATE INDEX idx_profiles_name ON public.profiles USING btree (name);
 
 
 --
+-- Name: idx_routing_agent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_agent ON public.routing_decisions USING btree (agent_alias, created_at);
+
+
+--
+-- Name: idx_routing_capabilities; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_capabilities ON public.routing_decisions USING gin (mismatched_capabilities) WHERE capability_mismatch;
+
+
+--
+-- Name: idx_routing_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_created ON public.routing_decisions USING btree (created_at);
+
+
+--
+-- Name: idx_routing_mismatch; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_mismatch ON public.routing_decisions USING btree (capability_mismatch) WHERE capability_mismatch;
+
+
+--
 -- Name: idx_scheduled_tasks_completed; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3718,7 +3798,7 @@ ALTER TABLE ONLY public.summary_lineage
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VeqUVve2QuRreabvgFyZlthYCic89CTdH7UWmZit0L9HYYRH5saB48MkpTbQlLA
+\unrestrict Qi7j4ofwVFTHwdJ6MUtNozoFCJ0eXADmYGtB5QkWJjrk05wtCf0J4IIDAZ0z8b2
 
 
 --
@@ -3738,4 +3818,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251204000002'),
     ('20251207000001'),
     ('20251208000001'),
-    ('20251208000002');
+    ('20251208000002'),
+    ('20251210000001');

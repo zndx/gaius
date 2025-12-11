@@ -3386,6 +3386,15 @@ Domain: {domain or 'general'}
 
 def main():
     """Entry point for gaius-mcp command."""
+    # Initialize telemetry early with MCP entry point
+    try:
+        from .core.config import get_config
+        from .core.telemetry import init_from_config
+        config = get_config()
+        init_from_config(config, entry_point="mcp")
+    except Exception:
+        pass  # Telemetry init failure is non-fatal
+
     ensure_mcp()
     server = create_server()
     server.run()

@@ -70,11 +70,15 @@ class AeronConfig:
 
 @dataclass
 class TelemetryConfig:
-    """OpenTelemetry configuration."""
+    """OpenTelemetry configuration.
 
-    enabled: bool = False
+    Telemetry is enabled by default. To disable, set OTEL_SDK_DISABLED=true
+    in environment (standard OTel convention).
+    """
+
+    exporter: str = "otlp"  # otlp or console
     endpoint: str = "http://localhost:4317"
-    service_name: str = "gaius-engine"
+    service_name: str = "gaius-engine"  # Base name, entry point suffix added at init
     sampling_rate: float = 0.01
 
 
@@ -255,9 +259,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         health_stream=get("gaius.engine.aeron.health_stream", 103),
     )
 
-    # Parse telemetry config
+    # Parse telemetry config (enabled by default, disable via OTEL_SDK_DISABLED=true)
     telemetry = TelemetryConfig(
-        enabled=get("gaius.engine.telemetry.enabled", False),
+        exporter=get("gaius.engine.telemetry.exporter", "otlp"),
         endpoint=get("gaius.engine.telemetry.endpoint", "http://localhost:4317"),
         service_name=get("gaius.engine.telemetry.service_name", "gaius-engine"),
         sampling_rate=get("gaius.engine.telemetry.sampling_rate", 0.01),

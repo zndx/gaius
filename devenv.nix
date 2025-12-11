@@ -7,6 +7,12 @@
 
   env.PATH_CONF = "conf";
 
+  # Suppress gRPC fork warnings - these occur when subprocess.Popen() is used
+  # while gRPC threads are active (e.g., starting vLLM during auto-init).
+  # The warnings are harmless but spam the TUI display.
+  env.GRPC_ENABLE_FORK_SUPPORT = 0;
+  env.GRPC_VERBOSITY = "ERROR";
+
   # Library paths for Python C extensions and CUDA
   # Use project-local symlinks to NVIDIA drivers (avoids glibc conflicts with Nix)
   env.LD_LIBRARY_PATH = lib.concatStringsSep ":" [
@@ -91,6 +97,69 @@
       mkdir -p /raid/qdrant/gaius
       ${pkgs.qdrant}/bin/qdrant
     '';
+  };
+
+  # ============================================================================
+  # OpenTelemetry Collector - Receives telemetry from all Gaius components
+  # ============================================================================
+  services.opentelemetry-collector = {
+    enable = true;
+    package = pkgs.opentelemetry-collector-contrib;  # Use contrib for prometheus exporter
+    settings = {
+      receivers = {
+        otlp = {
+          protocols = {
+            grpc.endpoint = "0.0.0.0:4317";
+            http.endpoint = "0.0.0.0:4318";
+          };
+        };
+      };
+      processors = {
+        batch = {
+          timeout = "5s";
+          send_batch_size = 1000;
+        };
+      };
+      exporters = {
+        prometheus = {
+          endpoint = "0.0.0.0:8889";
+          namespace = "gaius";
+          resource_to_telemetry_conversion.enabled = true;
+        };
+        debug.verbosity = "basic";
+      };
+      service = {
+        pipelines = {
+          traces = {
+            receivers = ["otlp"];
+            processors = ["batch"];
+            exporters = ["debug"];
+          };
+          metrics = {
+            receivers = ["otlp"];
+            processors = ["batch"];
+            exporters = ["prometheus"];
+          };
+        };
+      };
+    };
+  };
+
+  # ============================================================================
+  # Prometheus - Metrics storage and querying
+  # ============================================================================
+  services.prometheus = {
+    enable = true;
+    port = 9090;
+    storage.retentionTime = "15d";
+    scrapeConfigs = [
+      {
+        job_name = "otel-collector";
+        static_configs = [{
+          targets = ["localhost:8889"];
+        }];
+      }
+    ];
   };
 
   languages.python = {

@@ -217,12 +217,15 @@ class AwarenessConfig:
 
 @dataclass
 class TelemetryConfig:
-    """OpenTelemetry configuration."""
+    """OpenTelemetry configuration.
 
-    enabled: bool = False
-    exporter: str = "console"
+    Telemetry is enabled by default. To disable, set OTEL_SDK_DISABLED=true
+    in environment (standard OTel convention).
+    """
+
+    exporter: str = "otlp"  # otlp or console
     endpoint: str = "http://localhost:4317"
-    service_name: str = "gaius"
+    service_name: str = "gaius"  # Base name, entry point suffix added at init
 
 
 @dataclass
@@ -522,8 +525,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     )
 
     telemetry = TelemetryConfig(
-        enabled=g.get("telemetry.enabled", False),
-        exporter=g.get("telemetry.exporter", "console"),
+        exporter=g.get("telemetry.exporter", "otlp"),
         endpoint=g.get("telemetry.endpoint", "http://localhost:4317"),
         service_name=g.get("telemetry.service_name", "gaius"),
     )

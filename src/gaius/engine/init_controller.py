@@ -421,21 +421,51 @@ class InitController:
             )
 
     def _get_status_data(self) -> dict:
-        """Get current status as dict for JSON serialization."""
+        """Get current status as dict for JSON serialization.
+
+        Combines preload progress tracking with actual orchestrator status
+        to show both configured and dynamically started endpoints.
+        """
+        # Start with preload tracking data
+        endpoints_data = {
+            name: {
+                "status": ep.status,
+                "progress": ep.progress,
+                "message": ep.message,
+            }
+            for name, ep in self._state.endpoints.items()
+        }
+
+        # Merge actual orchestrator status (for dynamically started endpoints)
+        if self._orchestrator_service:
+            try:
+                orch_status = self._orchestrator_service.get_status()
+                for ep_info in orch_status.get("endpoints", []):
+                    ep_name = ep_info.get("name", "")
+                    if ep_name and ep_name not in endpoints_data:
+                        # Add dynamically started endpoint not in preload list
+                        ep_status = ep_info.get("status", "unknown")
+                        endpoints_data[ep_name] = {
+                            "status": "ready" if ep_status == "healthy" else ep_status,
+                            "progress": 1.0 if ep_status == "healthy" else 0.5,
+                            "message": ep_info.get("model", ""),
+                        }
+                    elif ep_name in endpoints_data:
+                        # Update preload endpoint with actual status if ready
+                        ep_status = ep_info.get("status", "unknown")
+                        if ep_status == "healthy":
+                            endpoints_data[ep_name]["status"] = "ready"
+                            endpoints_data[ep_name]["progress"] = 1.0
+            except Exception as e:
+                logger.debug(f"Could not get orchestrator status for init: {e}")
+
         return {
             "phase": self._state.phase.name.lower(),
             "overall_progress": self._state.overall_progress,
             "message": self._state.message,
             "is_ready": self._init_complete.is_set(),
             "is_paused": not self._paused.is_set(),
-            "endpoints": {
-                name: {
-                    "status": ep.status,
-                    "progress": ep.progress,
-                    "message": ep.message,
-                }
-                for name, ep in self._state.endpoints.items()
-            },
+            "endpoints": endpoints_data,
             "cancelled_endpoints": list(self._cancelled_endpoints),
         }
 

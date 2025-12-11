@@ -214,6 +214,59 @@ class HealthChecker:
                 description="Check available disk space",
                 check_fn="_check_disk_space",
             ),
+            # Evolution checks
+            HealthCheck(
+                id="evolution_daemon",
+                name="Evolution Daemon",
+                category="evolution",
+                description="Check evolution daemon status and cycle frequency",
+                check_fn="_check_evolution_daemon_status",
+            ),
+            # Additional inference checks
+            HealthCheck(
+                id="gpu_temperature",
+                name="GPU Temperature",
+                category="inference",
+                description="Check GPU temperature levels",
+                check_fn="_check_gpu_temperature",
+            ),
+            HealthCheck(
+                id="scheduler_queue",
+                name="Scheduler Queue",
+                category="inference",
+                description="Check scheduler queue depth and wait times",
+                check_fn="_check_scheduler_queue",
+            ),
+            HealthCheck(
+                id="xai_budget",
+                name="XAI Budget",
+                category="inference",
+                description="Check XAI API budget usage",
+                check_fn="_check_xai_budget",
+            ),
+            HealthCheck(
+                id="stale_processes",
+                name="Stale Processes",
+                category="engine",
+                description="Check for orphan vLLM processes not managed by engine",
+                check_fn="_check_stale_processes",
+                heuristic_id="inference/stale_vllm_processes",
+            ),
+            HealthCheck(
+                id="endpoint_stuck",
+                name="Stuck Endpoints",
+                category="engine",
+                description="Check for endpoints stuck in starting/stopping state",
+                check_fn="_check_endpoint_stuck",
+                heuristic_id="inference/endpoint_stuck",
+            ),
+            HealthCheck(
+                id="routing_quality",
+                name="Model Routing",
+                category="inference",
+                description="Check capability-based routing quality",
+                check_fn="_check_routing_quality",
+            ),
         ]
 
     async def run_all(self) -> HealthReport:
@@ -1094,6 +1147,488 @@ class HealthChecker:
                 )
             return CheckResult(
                 name="S3/MinIO",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    # =========================================================================
+    # Additional Health Checks
+    # =========================================================================
+
+    async def _check_evolution_daemon_status(self) -> CheckResult:
+        """Check evolution daemon status and cycle frequency."""
+        try:
+            from ..client.engine_proxy import get_evolution_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                return CheckResult(
+                    name="Evolution Daemon",
+                    status=CheckStatus.WARN,
+                    message="Engine not available",
+                    suggestion="Run: /health fix engine",
+                    heuristic_id="evolution/daemon_not_running",
+                )
+
+            evo = await get_evolution_proxy()
+            status = await evo._get_status_async()
+
+            is_running = status.get("running", False)
+            cycles_completed = status.get("cycles_completed", 0)
+            next_agent = status.get("next_agent", "unknown")
+
+            if not is_running:
+                return CheckResult(
+                    name="Evolution Daemon",
+                    status=CheckStatus.WARN,
+                    message="Daemon not running",
+                    details={
+                        "running": False,
+                        "cycles_completed": cycles_completed,
+                    },
+                    suggestion="Run: /health fix evolution",
+                    heuristic_id="evolution/daemon_not_running",
+                )
+
+            return CheckResult(
+                name="Evolution Daemon",
+                status=CheckStatus.PASS,
+                message=f"Running, {cycles_completed} cycles, next: {next_agent}",
+                details={
+                    "running": True,
+                    "cycles_completed": cycles_completed,
+                    "next_agent": next_agent,
+                    "mode": status.get("mode", "unknown"),
+                },
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="Evolution Daemon",
+                status=CheckStatus.WARN,
+                message=f"Status check failed: {str(e)[:80]}",
+                suggestion="Run: /health fix evolution",
+                heuristic_id="evolution/daemon_not_running",
+            )
+
+    async def _check_gpu_temperature(self) -> CheckResult:
+        """Check GPU temperature levels."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,temperature.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            if result.returncode != 0:
+                return CheckResult(
+                    name="GPU Temperature",
+                    status=CheckStatus.SKIP,
+                    message="nvidia-smi not available",
+                )
+
+            gpus = []
+            warnings = []
+            critical = []
+
+            for line in result.stdout.strip().split("\n"):
+                if not line.strip():
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 2:
+                    idx, temp = int(parts[0]), int(parts[1])
+                    gpus.append({"id": idx, "temperature_c": temp})
+
+                    if temp >= 85:
+                        critical.append(f"GPU {idx}: {temp}°C")
+                    elif temp >= 75:
+                        warnings.append(f"GPU {idx}: {temp}°C")
+
+            if critical:
+                return CheckResult(
+                    name="GPU Temperature",
+                    status=CheckStatus.FAIL,
+                    message=f"Critical: {', '.join(critical)}",
+                    details={"gpus": gpus},
+                    suggestion="Reduce GPU load or improve cooling",
+                )
+
+            if warnings:
+                return CheckResult(
+                    name="GPU Temperature",
+                    status=CheckStatus.WARN,
+                    message=f"Elevated: {', '.join(warnings)}",
+                    details={"gpus": gpus},
+                )
+
+            max_temp = max((g["temperature_c"] for g in gpus), default=0)
+            return CheckResult(
+                name="GPU Temperature",
+                status=CheckStatus.PASS,
+                message=f"{len(gpus)} GPUs, max {max_temp}°C",
+                details={"gpus": gpus},
+            )
+
+        except subprocess.TimeoutExpired:
+            return CheckResult(
+                name="GPU Temperature",
+                status=CheckStatus.WARN,
+                message="nvidia-smi timed out",
+            )
+        except FileNotFoundError:
+            return CheckResult(
+                name="GPU Temperature",
+                status=CheckStatus.SKIP,
+                message="nvidia-smi not found",
+            )
+        except Exception as e:
+            return CheckResult(
+                name="GPU Temperature",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_scheduler_queue(self) -> CheckResult:
+        """Check scheduler queue depth and wait times."""
+        try:
+            from ..client.engine_proxy import get_scheduler_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                return CheckResult(
+                    name="Scheduler Queue",
+                    status=CheckStatus.SKIP,
+                    message="Engine not available",
+                )
+
+            scheduler = await get_scheduler_proxy()
+            status = await scheduler._get_status_async()
+
+            queue_depth = status.get("queue_depth", 0)
+            pending_jobs = status.get("pending_jobs", 0)
+
+            if queue_depth > 20:
+                return CheckResult(
+                    name="Scheduler Queue",
+                    status=CheckStatus.WARN,
+                    message=f"High queue depth: {queue_depth} jobs",
+                    details={"queue_depth": queue_depth, "pending_jobs": pending_jobs},
+                    suggestion="Consider scaling up endpoints or reducing load",
+                )
+
+            if queue_depth > 10:
+                return CheckResult(
+                    name="Scheduler Queue",
+                    status=CheckStatus.WARN,
+                    message=f"Elevated queue: {queue_depth} jobs",
+                    details={"queue_depth": queue_depth, "pending_jobs": pending_jobs},
+                )
+
+            return CheckResult(
+                name="Scheduler Queue",
+                status=CheckStatus.PASS,
+                message=f"Queue depth: {queue_depth}",
+                details={"queue_depth": queue_depth, "pending_jobs": pending_jobs},
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="Scheduler Queue",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_xai_budget(self) -> CheckResult:
+        """Check XAI API budget usage."""
+        try:
+            from ..client.engine_proxy import get_scheduler_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                return CheckResult(
+                    name="XAI Budget",
+                    status=CheckStatus.SKIP,
+                    message="Engine not available",
+                )
+
+            scheduler = await get_scheduler_proxy()
+            budget = await scheduler._get_budget_async()
+
+            daily_used = budget.get("daily_used", 0)
+            daily_limit = budget.get("daily_limit", 50)
+            weekly_used = budget.get("weekly_used", 0)
+            weekly_limit = budget.get("weekly_limit", 200)
+
+            daily_pct = (daily_used / daily_limit * 100) if daily_limit > 0 else 0
+            weekly_pct = (weekly_used / weekly_limit * 100) if weekly_limit > 0 else 0
+
+            details = {
+                "daily_used": daily_used,
+                "daily_limit": daily_limit,
+                "daily_pct": f"{daily_pct:.0f}%",
+                "weekly_used": weekly_used,
+                "weekly_limit": weekly_limit,
+                "weekly_pct": f"{weekly_pct:.0f}%",
+            }
+
+            if weekly_pct >= 90:
+                return CheckResult(
+                    name="XAI Budget",
+                    status=CheckStatus.FAIL,
+                    message=f"Weekly budget critical: {weekly_pct:.0f}%",
+                    details=details,
+                    suggestion="Evolution quality may degrade; consider resetting or waiting",
+                )
+
+            if daily_pct >= 80:
+                return CheckResult(
+                    name="XAI Budget",
+                    status=CheckStatus.WARN,
+                    message=f"Daily budget high: {daily_pct:.0f}%",
+                    details=details,
+                )
+
+            return CheckResult(
+                name="XAI Budget",
+                status=CheckStatus.PASS,
+                message=f"Daily: {daily_pct:.0f}%, Weekly: {weekly_pct:.0f}%",
+                details=details,
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="XAI Budget",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_stale_processes(self) -> CheckResult:
+        """Check for orphan vLLM processes not managed by engine."""
+        try:
+            # Get all vLLM processes
+            result = subprocess.run(
+                ["pgrep", "-f", "vllm.entrypoints"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            vllm_pids = set()
+            if result.returncode == 0:
+                for line in result.stdout.strip().split("\n"):
+                    if line.strip():
+                        vllm_pids.add(int(line.strip()))
+
+            if not vllm_pids:
+                return CheckResult(
+                    name="Stale Processes",
+                    status=CheckStatus.PASS,
+                    message="No vLLM processes running",
+                    details={"vllm_process_count": 0},
+                )
+
+            # Get engine-managed processes
+            try:
+                from ..client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
+
+                if use_engine_proxy():
+                    orch = await get_orchestrator_proxy()
+                    status = await orch.get_status()
+                    managed_pids = set()
+
+                    for ep_name, ep_info in status.get("endpoints", {}).items():
+                        if isinstance(ep_info, dict) and ep_info.get("pid"):
+                            managed_pids.add(ep_info["pid"])
+
+                    orphan_pids = vllm_pids - managed_pids
+
+                    if orphan_pids:
+                        return CheckResult(
+                            name="Stale Processes",
+                            status=CheckStatus.WARN,
+                            message=f"{len(orphan_pids)} orphan vLLM process(es)",
+                            details={
+                                "orphan_pids": list(orphan_pids),
+                                "managed_pids": list(managed_pids),
+                                "total_vllm": len(vllm_pids),
+                            },
+                            suggestion=f"Kill orphans: kill {' '.join(map(str, orphan_pids))}",
+                        )
+
+                    return CheckResult(
+                        name="Stale Processes",
+                        status=CheckStatus.PASS,
+                        message=f"{len(vllm_pids)} vLLM processes, all managed",
+                        details={
+                            "vllm_process_count": len(vllm_pids),
+                            "managed_pids": list(managed_pids),
+                        },
+                    )
+            except Exception:
+                pass
+
+            # Can't verify against engine - just report count
+            return CheckResult(
+                name="Stale Processes",
+                status=CheckStatus.PASS,
+                message=f"{len(vllm_pids)} vLLM processes (engine status unavailable)",
+                details={"vllm_process_count": len(vllm_pids), "pids": list(vllm_pids)},
+            )
+
+        except subprocess.TimeoutExpired:
+            return CheckResult(
+                name="Stale Processes",
+                status=CheckStatus.WARN,
+                message="pgrep timed out",
+            )
+        except FileNotFoundError:
+            return CheckResult(
+                name="Stale Processes",
+                status=CheckStatus.SKIP,
+                message="pgrep not available",
+            )
+        except Exception as e:
+            return CheckResult(
+                name="Stale Processes",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_endpoint_stuck(self) -> CheckResult:
+        """Check for endpoints stuck in starting/stopping state."""
+        try:
+            from ..client.engine_proxy import get_health_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                return CheckResult(
+                    name="Stuck Endpoints",
+                    status=CheckStatus.SKIP,
+                    message="Engine proxy not enabled",
+                )
+
+            # Use HealthProxy.check() which is properly async, instead of
+            # OrchestratorProxy.get_status() which uses run_until_complete
+            health = await get_health_proxy()
+            status = await health.check()
+            endpoints = status.get("endpoints", {})
+
+            if not endpoints:
+                return CheckResult(
+                    name="Stuck Endpoints",
+                    status=CheckStatus.PASS,
+                    message="No endpoints configured",
+                    details={"endpoint_count": 0},
+                )
+
+            stuck = []
+            for name, ep in endpoints.items():
+                if isinstance(ep, dict):
+                    ep_status = ep.get("status", "unknown")
+                    if ep_status in ("starting", "stopping"):
+                        stuck.append({"name": name, "status": ep_status})
+
+            if stuck:
+                stuck_names = [s["name"] for s in stuck]
+                return CheckResult(
+                    name="Stuck Endpoints",
+                    status=CheckStatus.WARN,
+                    message=f"{len(stuck)} endpoint(s) in transitional state",
+                    details={
+                        "stuck_endpoints": stuck,
+                        "total_endpoints": len(endpoints),
+                    },
+                    suggestion=f"Fix with: /health fix endpoints or /engine restart {stuck_names[0]}",
+                )
+
+            return CheckResult(
+                name="Stuck Endpoints",
+                status=CheckStatus.PASS,
+                message=f"All {len(endpoints)} endpoints in stable state",
+                details={"endpoint_count": len(endpoints)},
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="Stuck Endpoints",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_routing_quality(self) -> CheckResult:
+        """Check capability-based routing quality."""
+        try:
+            from ..storage.database import get_routing_summary
+
+            summary = await get_routing_summary(hours=24)
+
+            if "error" in summary:
+                # Table might not exist yet
+                if "does not exist" in str(summary.get("error", "")):
+                    return CheckResult(
+                        name="Model Routing",
+                        status=CheckStatus.SKIP,
+                        message="Routing analytics not yet configured",
+                    )
+                return CheckResult(
+                    name="Model Routing",
+                    status=CheckStatus.WARN,
+                    message=f"Query failed: {summary['error'][:60]}",
+                )
+
+            total = summary.get("total_requests", 0)
+            if total == 0:
+                return CheckResult(
+                    name="Model Routing",
+                    status=CheckStatus.PASS,
+                    message="No routing decisions recorded yet",
+                    details={"total_requests": 0},
+                )
+
+            mismatch_rate = summary.get("mismatch_rate", 0)
+            fallback_rate = summary.get("fallback_rate", 0)
+            starved_agents = summary.get("starved_agents", [])
+            capability_gaps = summary.get("capability_gaps", [])
+
+            details = {
+                "total_requests": total,
+                "mismatch_rate": f"{mismatch_rate:.1%}",
+                "fallback_rate": f"{fallback_rate:.1%}",
+                "starved_agents": starved_agents,
+                "top_capability_gaps": capability_gaps[:3] if capability_gaps else [],
+            }
+
+            # High mismatch or multiple starved agents
+            if mismatch_rate > 0.5 or len(starved_agents) >= 3:
+                return CheckResult(
+                    name="Model Routing",
+                    status=CheckStatus.WARN,
+                    message=f"High mismatch: {mismatch_rate:.0%}, {len(starved_agents)} starved agents",
+                    details=details,
+                    suggestion="Consider deploying models with missing capabilities",
+                )
+
+            if mismatch_rate > 0.25 or len(starved_agents) >= 1:
+                return CheckResult(
+                    name="Model Routing",
+                    status=CheckStatus.WARN,
+                    message=f"Some mismatches: {mismatch_rate:.0%}",
+                    details=details,
+                )
+
+            return CheckResult(
+                name="Model Routing",
+                status=CheckStatus.PASS,
+                message=f"Routing quality good: {1-mismatch_rate:.0%} optimal",
+                details=details,
+            )
+
+        except ImportError:
+            return CheckResult(
+                name="Model Routing",
+                status=CheckStatus.SKIP,
+                message="Routing analytics module not available",
+            )
+        except Exception as e:
+            return CheckResult(
+                name="Model Routing",
                 status=CheckStatus.WARN,
                 message=f"Check failed: {str(e)[:80]}",
             )
