@@ -1447,6 +1447,164 @@ class GaiusApp(App):
         self._refresh_grid()
         self._update_status()
 
+    async def _resolve_broken_link(
+        self,
+        link_text: str,
+        source_file: str | None,
+        kb_root: Path,
+    ) -> None:
+        """Resolve a broken wiki link via search + synthesis.
+
+        When a wiki link target doesn't exist:
+        1. Run hybrid search (BM25 + vector + web) on link text
+        2. Synthesize a zettelkasten note from results
+        3. Update the original wiki link to point to the new note
+        4. Open the new note in the editor
+
+        Args:
+            link_text: The wiki link content (verbatim, used as search query)
+            source_file: Path to the file containing the wiki link (for backlink)
+            kb_root: Knowledge base root directory
+        """
+        from datetime import datetime
+        from .core.links import rewrite_link
+        from .inference.synthesis import ZettelkastenSynthesizer, ZettelkastenNote
+
+        content = self.query_one("#content-panel", ContentPanel)
+        editor = self.query_one("#note-editor", NoteEditor)
+        file_tree = self.query_one("#file-tree", FileTree)
+        graph_view = self.query_one("#graph-view", GraphView)
+
+        try:
+            # Step 1: Run hybrid search
+            content.show_file(
+                "resolving.txt",
+                f"Resolving [[{link_text}]]...\n\n"
+                f"Step 1/3: Searching KB and web..."
+            )
+
+            # Import search components
+            kb_results = []
+            web_results = []
+            errors = []
+
+            # BM25 lexical search
+            try:
+                from .inference.search import get_kb_search
+                kb_search = get_kb_search()
+                if kb_search.index_size == 0:
+                    kb_search.build_index()
+                bm25_hits = kb_search.search(link_text, top_k=10)
+                kb_results = [
+                    {
+                        "source": "bm25",
+                        "path": r.path,
+                        "title": r.title,
+                        "snippet": r.snippet[:150],
+                        "score": round(r.score, 2),
+                    }
+                    for r in bm25_hits
+                ]
+            except ImportError:
+                errors.append("BM25 not available")
+            except Exception as e:
+                errors.append(f"BM25 error: {e}")
+
+            # Web search
+            try:
+                from .inference import get_search
+                search = get_search()
+                web_hits = await search.search(link_text, count=5)
+                web_results = [
+                    {
+                        "source": "web",
+                        "url": r.url,
+                        "title": r.title,
+                        "snippet": r.snippet[:150],
+                    }
+                    for r in web_hits
+                ]
+            except ImportError:
+                errors.append("Web search not available")
+            except Exception as e:
+                errors.append(f"Web search error: {e}")
+
+            # Step 2: Synthesize note
+            content.show_file(
+                "resolving.txt",
+                f"Resolving [[{link_text}]]...\n\n"
+                f"Step 2/3: Synthesizing note from {len(kb_results)} KB + {len(web_results)} web results..."
+            )
+
+            synthesizer = ZettelkastenSynthesizer(kb_root)
+
+            # Try to synthesize with LLM
+            try:
+                note = await synthesizer.synthesize(
+                    query=link_text,
+                    kb_results=kb_results,
+                    web_results=web_results,
+                )
+                # Add origin metadata
+                note.origin_file = source_file
+                note.resolved_from = link_text
+            except Exception as e:
+                # Fallback: create basic note without LLM synthesis
+                now = datetime.now()
+                note = ZettelkastenNote(
+                    query=link_text,
+                    content=f"Search results for: {link_text}\n\n(LLM synthesis unavailable: {e})",
+                    citations=[],
+                    wiki_links=[],
+                    created_at=now,
+                    origin_file=source_file,
+                    resolved_from=link_text,
+                )
+
+            # Save the note
+            saved_path = note.save(kb_root)
+
+            # Step 3: Update original wiki link
+            content.show_file(
+                "resolving.txt",
+                f"Resolving [[{link_text}]]...\n\n"
+                f"Step 3/3: Updating links..."
+            )
+
+            # Compute new link path (relative to kb_root, without .md)
+            new_link_path = str(saved_path.relative_to(kb_root)).removesuffix(".md")
+
+            if source_file:
+                source_path = Path(source_file)
+                rewrite_link(source_path, link_text, new_link_path)
+
+            # Refresh UI
+            file_tree.refresh_tree()
+
+            # Open the new note in editor
+            editor.remove_class("hidden")
+            editor.open_note(str(saved_path))
+
+            # Update graph view to show the new file
+            graph_view.update_for_file(str(saved_path))
+
+            # Show success message
+            content.show_file(
+                "resolved.txt",
+                f"✓ Resolved [[{link_text}]]\n\n"
+                f"Created: {saved_path.name}\n"
+                f"Sources: {len(kb_results)} KB + {len(web_results)} web\n\n"
+                f"The original link has been updated to point to the new note."
+            )
+
+        except Exception as e:
+            content.show_file(
+                "error.txt",
+                f"Failed to resolve [[{link_text}]]\n\n"
+                f"Error: {e}\n\n"
+                f"You can manually create the file or try /search {link_text}"
+            )
+
     def _show_agent_status(self) -> None:
         """Show current agent positions and status."""
         content = self.query_one("#content-panel", ContentPanel)
@@ -4241,33 +4399,27 @@ The general-purpose agentic query interface.
                 # Try prepending kb_root for other relative paths
                 path = kb_root / path
 
-        # Create file if it doesn't exist (wiki-link creates on navigate)
+        # Resolve broken link via search if file doesn't exist
         if not path.exists():
-            # Validate path is within allowed KB directories
-            try:
-                rel_path = path.resolve().relative_to(kb_root.resolve())
-                top_dir = rel_path.parts[0] if rel_path.parts else ""
-                if top_dir not in allowed_dirs:
-                    content.show_file(
-                        "error.txt",
-                        f"Cannot create file outside KB directories.\n\n"
-                        f"Path: {filepath}\n"
-                        f"Allowed: {', '.join(allowed_dirs)}"
-                    )
-                    return
-            except ValueError:
-                # Path is outside kb_root entirely
-                content.show_file(
-                    "error.txt",
-                    f"Cannot create file outside KB root.\n\nPath: {filepath}"
-                )
-                return
+            # Get the source file (the file containing the wiki link)
+            graph_view = self.query_one("#graph-view", GraphView)
+            source_file = graph_view.current_file
 
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch()
-            # Refresh file tree to show new file
-            file_tree.refresh_tree()
-            content.show_file("created.txt", f"Created: {filepath}")
+            # Use original link text as search query (verbatim, no transformation)
+            # e.g., filepath="current/topics/kudu-compaction.md" -> link_text="current/topics/kudu-compaction"
+            link_text = filepath.removesuffix(".md") if filepath.endswith(".md") else filepath
+
+            # Show status and trigger async resolution
+            content.show_file(
+                "resolving.txt",
+                f"Resolving [[{link_text}]]...\n\nSearching KB and web for relevant content."
+            )
+            self.run_worker(
+                self._resolve_broken_link(link_text, source_file, kb_root),
+                name="resolve_link",
+                exclusive=True,
+            )
+            return
 
         # Open in editor if it's an editable KB file (.md under archive/, current/, or scratch/)
         path_parts = path.parts

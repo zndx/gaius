@@ -69,6 +69,8 @@ class ZettelkastenNote:
     wiki_links: list[str] = field(default_factory=list)  # [[topic]] links (normalized)
     created_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    origin_file: str | None = None  # Source file that triggered resolution (for backlink)
+    resolved_from: str | None = None  # Original wiki link text that was resolved
 
     def to_markdown(self) -> str:
         """Generate full markdown document."""
@@ -92,6 +94,14 @@ class ZettelkastenNote:
             # Also add link targets for clarity
             targets = [f"current/topics/{l}.md" for l in self.wiki_links]
             lines.append(f"link-targets: {', '.join(targets)}")
+
+        # Add origin backlink if this note was created from resolving a broken link
+        if self.origin_file:
+            # Extract stem for wiki link (remove .md extension and path)
+            origin_stem = Path(self.origin_file).stem
+            lines.append(f"origin: [[{origin_stem}]]")
+        if self.resolved_from:
+            lines.append(f"resolved-from: {self.resolved_from}")
 
         lines.extend([
             "---",

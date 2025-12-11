@@ -437,3 +437,46 @@ async def save_swarm_to_kb(
         raise RuntimeError(f"Failed to save swarm to KB: {result.error}")
 
     return rel_path
+
+
+def save_swarm_results(results: dict[str, dict[str, Any]], domain: str) -> str:
+    """Save swarm results to KB (sync wrapper for gRPC servicer).
+
+    This is the simple 2-arg version called by gaius_servicer.py.
+    Delegates to save_swarm_to_kb with computed summary.
+
+    Args:
+        results: Raw agent results dict {role_name: {content, status, ...}}
+        domain: Analysis domain
+
+    Returns:
+        Relative path to saved file
+    """
+    import asyncio
+
+    # Compute summary from results
+    total = len(results)
+    completed = sum(1 for r in results.values() if r.get("status") == "completed")
+    failed = total - completed
+    total_tokens = sum(
+        r.get("input_tokens", 0) + r.get("output_tokens", 0)
+        for r in results.values()
+    )
+    total_latency = sum(r.get("latency_ms", 0) for r in results.values())
+
+    summary = {
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "total_tokens": total_tokens,
+        "total_latency_ms": total_latency,
+    }
+
+    # Run the async function
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            save_swarm_to_kb(domain=domain, context="", results=results, summary=summary)
+        )
+    finally:
+        loop.close()
