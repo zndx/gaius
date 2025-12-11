@@ -130,6 +130,32 @@ def resolve_link(link_path: str, kb_root: Path) -> tuple[Path, bool]:
     return resolved, resolved.exists()
 
 
+def rewrite_link(source_file: Path, old_link: str, new_link: str) -> bool:
+    """Replace [[old_link]] with [[new_link]] in source file.
+
+    Args:
+        source_file: Path to file containing the wiki link
+        old_link: Original link text (without brackets)
+        new_link: New link text (without brackets)
+
+    Returns:
+        True if link was found and replaced, False otherwise
+    """
+    if not source_file.exists():
+        return False
+
+    content = source_file.read_text()
+    old_pattern = f"[[{old_link}]]"
+    new_pattern = f"[[{new_link}]]"
+
+    if old_pattern not in content:
+        return False
+
+    updated = content.replace(old_pattern, new_pattern)
+    source_file.write_text(updated)
+    return True
+
+
 def create_linked_file(
     link_path: str,
     kb_root: Path,
