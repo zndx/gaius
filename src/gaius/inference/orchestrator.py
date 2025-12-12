@@ -954,7 +954,7 @@ class GPUOrchestrator:
             Endpoint name or None if none available
         """
         # Priority order
-        priority = ["orchestrator", "fast", "fast-2", "coding"]
+        priority = ["orchestrator", "fast", "coding"]
 
         for name in priority:
             proc = self._processes.get(name)

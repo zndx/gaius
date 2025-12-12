@@ -91,7 +91,7 @@ class InferenceManager:
         Returns:
             Endpoint name or None
         """
-        priority = ["orchestrator", "fast", "fast-2", "coding"]
+        priority = ["orchestrator", "fast", "coding"]
 
         if self._use_engine:
             # Engine mode - use priority order with known endpoints
@@ -135,7 +135,7 @@ class InferenceManager:
         """
         if self._use_engine:
             # Engine mode - return standard endpoints
-            return ["orchestrator", "fast", "fast-2", "coding", "reasoning"]
+            return ["orchestrator", "fast", "embedding", "coding", "reasoning"]
         return self._orchestrator.get_configured_endpoints()
 
     def get_running_endpoints(self) -> list[str]:

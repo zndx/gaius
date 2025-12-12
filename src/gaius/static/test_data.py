@@ -185,30 +185,36 @@ def get_minigrid_data(cursor_x: int, cursor_y: int) -> dict:
     }
 
 
-# Domain suggestions based on position
+# Semantic position hints based on UMAP projection topology
+# These hints describe the Knowledge Gradient interpretation of grid regions
 POSITION_HINTS = {
-    (3, 3): "Corner: Stable, low-volatility allocations",
-    (10, 10): "Center: Balanced, diversified positions",
-    (16, 16): "Corner: Growth-oriented, higher risk",
-    (3, 16): "Edge: Fixed income concentration",
-    (16, 3): "Edge: Equity concentration",
+    (3, 3): "Corner: Low-density region, potential exploration target",
+    (10, 10): "Center: High-information density cluster (tengen)",
+    (9, 9): "Center: Central cluster, high document convergence",
+    (16, 16): "Corner: Sparse region, high uncertainty",
+    (3, 16): "Edge: Semantic boundary, potential H1 cycle",
+    (16, 3): "Edge: Transition zone, negative curvature",
 }
 
 
 def get_position_hint(x: int, y: int) -> str:
-    """Get contextual hint for grid position."""
+    """Get contextual hint for grid position.
+
+    Hints describe the topological/semantic interpretation of the position
+    within the UMAP projection space, using Knowledge Gradient framing.
+    """
     # Check exact matches
     if (x, y) in POSITION_HINTS:
         return POSITION_HINTS[(x, y)]
 
-    # Generate based on region
+    # Generate based on region (topological interpretation)
     if x < 6 and y < 6:
-        return "Lower-left quadrant: Conservative allocations"
+        return "Lower-left quadrant: Sparse embedding region, high exploration value"
     elif x > 12 and y > 12:
-        return "Upper-right quadrant: Aggressive allocations"
+        return "Upper-right quadrant: Sparse region, potential knowledge gap"
     elif x < 6 and y > 12:
-        return "Upper-left quadrant: Fixed income focus"
+        return "Upper-left quadrant: Semantic periphery, boundary candidate"
     elif x > 12 and y < 6:
-        return "Lower-right quadrant: Equity focus"
+        return "Lower-right quadrant: Semantic periphery, exploration target"
     else:
-        return "Central region: Balanced allocation zone"
+        return "Central region: High-density knowledge cluster"

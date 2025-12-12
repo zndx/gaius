@@ -3,6 +3,12 @@
 Uses sentence-transformers for local embeddings and Qdrant for vector storage/search.
 Embeddings are generated on-demand and cached in Qdrant.
 
+Resource Management:
+    GPU resource coordination is handled by the Gaius engine's orchestrator.
+    For engine-managed embeddings, use the EmbedTexts gRPC API instead of
+    loading models in-process. This module provides a fallback for when the
+    engine is not available.
+
 Usage:
     vector_search = VectorSearch()
     await vector_search.index_kb()  # Index all KB documents
@@ -13,6 +19,7 @@ Usage:
 """
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +27,8 @@ from typing import Iterator
 
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 
 # Configuration
@@ -110,7 +119,12 @@ class VectorSearch:
 
     @property
     def model(self) -> SentenceTransformer:
-        """Get or create embedding model with security settings."""
+        """Get or create embedding model with security settings.
+
+        Note: GPU resource coordination should be handled by the Gaius engine's
+        orchestrator via the EmbedTexts gRPC API. This in-process model loading
+        is provided as a fallback for when the engine is not available.
+        """
         if self._model is None:
             kwargs = {
                 "trust_remote_code": self.trust_remote_code,
@@ -127,6 +141,7 @@ class VectorSearch:
                 # This env var tells transformers to prefer safetensors
                 os.environ["SAFETENSORS_FAST_GPU"] = "1"
 
+            logger.debug(f"Loading embedding model {self.model_name}")
             self._model = SentenceTransformer(
                 self.model_name,
                 **kwargs,
@@ -369,7 +384,8 @@ def get_vector_search(kb_root: Path | str | None = None) -> VectorSearch:
     """
     global _vector_search
     if _vector_search is None:
-        # Try to get settings from config
+        # Use ColBERT model from config (or default)
+        # Note: VectorSearchSingle is legacy - use VectorSearchMulti from vector.py instead
         model_name = DEFAULT_MODEL
         model_revision = None
         use_safetensors = True
@@ -379,11 +395,9 @@ def get_vector_search(kb_root: Path | str | None = None) -> VectorSearch:
             from ...core.config import get_config
             config = get_config()
             vs_config = config.vector_store
-            if vs_config.embedding_model:
-                model_name = vs_config.embedding_model
-            model_revision = vs_config.model_revision
-            use_safetensors = vs_config.use_safetensors
-            trust_remote_code = vs_config.trust_remote_code
+            # ColBERT model is now in colbert_model field
+            if vs_config.colbert_model:
+                model_name = vs_config.colbert_model
         except Exception:
             pass  # Use defaults if config not available
 

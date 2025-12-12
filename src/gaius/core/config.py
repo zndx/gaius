@@ -71,21 +71,21 @@ class DatabaseConfig:
 
 @dataclass
 class VectorStoreConfig:
-    """Qdrant vector store configuration."""
+    """Qdrant vector store configuration.
+
+    Uses ColBERT multi-vector embeddings exclusively via fastembed.
+    Single-vector code paths have been removed - multi-vector is required
+    for high-quality semantic search with late interaction.
+    """
 
     host: str = "localhost"
     port: int = 6339
-    collection: str = "gaius_kb"
-    embedding_model: str = "all-MiniLM-L6-v2"  # For single-vector mode
-    model_revision: str | None = None  # Pin to specific commit (e.g., "main", commit hash)
-    use_safetensors: bool = True  # Require safetensors format (safer than pickle)
-    trust_remote_code: bool = False  # Only enable for trusted models like Nomic
+    collection: str = "gaius_kb"  # ColBERT multi-vector collection
 
-    # Multimodal settings
-    embedding_type: str = "single"  # "single" or "multi" (ColQwen)
-    multimodal_model: str = "nomic-ai/colnomic-embed-multimodal-7b"  # For multi mode
-    aggregation: str = "mean"  # "mean", "max", or "first"
-    batch_size: int = 4  # Batch size for multimodal embedding (small for 7B model)
+    # ColBERT embedding settings (via fastembed, CPU-based)
+    colbert_model: str = "colbert-ir/colbertv2.0"  # ColBERT v2 for multi-vector
+    aggregation: str = "mean"  # "mean", "max", or "first" for aggregated single vector
+    batch_size: int = 32  # Batch size for ColBERT (CPU-based, can be larger)
 
 
 @dataclass
@@ -322,6 +322,42 @@ class SummarizationConfig:
 
 
 @dataclass
+class LambdaLabsConfig:
+    """Lambda Labs GPU Cloud configuration."""
+
+    enabled: bool = True
+    api_key: str = ""
+    api_base: str = "https://cloud.lambdalabs.com/api/v1"
+
+
+@dataclass
+class XAIConfig:
+    """XAI (Grok) API configuration."""
+
+    enabled: bool = True
+    api_key: str = ""
+    api_base: str = "https://api.x.ai/v1"
+
+
+@dataclass
+class CerebrasConfig:
+    """Cerebras Inference API configuration."""
+
+    enabled: bool = True
+    api_key: str = ""
+    api_base: str = "https://api.cerebras.ai/v1"
+
+
+@dataclass
+class ProvidersConfig:
+    """Cloud GPU providers configuration."""
+
+    lambdalabs: LambdaLabsConfig = field(default_factory=LambdaLabsConfig)
+    xai: XAIConfig = field(default_factory=XAIConfig)
+    cerebras: CerebrasConfig = field(default_factory=CerebrasConfig)
+
+
+@dataclass
 class ThemeConfig:
     """UI theme configuration.
 
@@ -382,6 +418,7 @@ class GaiusConfig:
     session: SessionConfig = field(default_factory=SessionConfig)
     hx: HxConfig = field(default_factory=HxConfig)
     summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
+    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
 
     # Raw HOCON tree for accessing custom settings
     _raw: ConfigTree | None = field(default=None, repr=False)
@@ -432,17 +469,10 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         host=g.get("vector_store.host", "localhost"),
         port=g.get("vector_store.port", 6339),
         collection=g.get("vector_store.collection", "gaius_kb"),
-        embedding_model=g.get("vector_store.embedding_model", "all-MiniLM-L6-v2"),
-        model_revision=g.get("vector_store.model_revision"),  # None if not set
-        use_safetensors=g.get("vector_store.use_safetensors", True),
-        trust_remote_code=g.get("vector_store.trust_remote_code", False),
-        # Multimodal settings
-        embedding_type=g.get("vector_store.embedding_type", "single"),
-        multimodal_model=g.get(
-            "vector_store.multimodal.model", "nomic-ai/colnomic-embed-multimodal-7b"
-        ),
-        aggregation=g.get("vector_store.multimodal.aggregation", "mean"),
-        batch_size=int(g.get("vector_store.multimodal.batch_size", 4)),
+        # ColBERT multi-vector settings (via fastembed, CPU-based)
+        colbert_model=g.get("vector_store.colbert_model", "colbert-ir/colbertv2.0"),
+        aggregation=g.get("vector_store.aggregation", "mean"),
+        batch_size=int(g.get("vector_store.batch_size", 32)),
     )
 
     optillm = OptillmConfig(
@@ -602,6 +632,31 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         schedule_cron=g.get("summarization.schedule_cron", "15 */2 * * *"),
     )
 
+    # Cloud GPU providers
+    lambdalabs = LambdaLabsConfig(
+        enabled=g.get("providers.lambdalabs.enabled", True),
+        api_key=g.get("providers.lambdalabs.api_key", ""),
+        api_base=g.get("providers.lambdalabs.api_base", "https://cloud.lambdalabs.com/api/v1"),
+    )
+
+    xai = XAIConfig(
+        enabled=g.get("providers.xai.enabled", True),
+        api_key=g.get("providers.xai.api_key", ""),
+        api_base=g.get("providers.xai.api_base", "https://api.x.ai/v1"),
+    )
+
+    cerebras = CerebrasConfig(
+        enabled=g.get("providers.cerebras.enabled", True),
+        api_key=g.get("providers.cerebras.api_key", ""),
+        api_base=g.get("providers.cerebras.api_base", "https://api.cerebras.ai/v1"),
+    )
+
+    providers = ProvidersConfig(
+        lambdalabs=lambdalabs,
+        xai=xai,
+        cerebras=cerebras,
+    )
+
     return GaiusConfig(
         profile=g.get("profile", "default"),
         app=app,
@@ -622,6 +677,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         session=session,
         hx=hx,
         summarization=summarization,
+        providers=providers,
         _raw=tree,
     )
 

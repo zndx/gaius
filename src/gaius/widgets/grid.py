@@ -82,8 +82,8 @@ class MainGrid(Widget):
         # View mode content
         if self.state.view_mode == ViewMode.GO:
             self._render_go_mode(grid)
-        elif self.state.view_mode == ViewMode.PENSION:
-            self._render_pension_mode(grid)
+        elif self.state.view_mode == ViewMode.THETA:
+            self._render_theta_mode(grid)
         elif self.state.view_mode == ViewMode.SWARM:
             self._render_swarm_mode(grid)
 
@@ -116,8 +116,14 @@ class MainGrid(Widget):
             if 0 <= x < 19 and 0 <= y < 19:
                 grid[y][x] = ("○", "white")
 
-    def _render_pension_mode(self, grid: list) -> None:
-        """Render pension allocation density."""
+    def _render_theta_mode(self, grid: list) -> None:
+        """Render information density (theta view).
+
+        Theta waves (4-8 Hz) facilitate memory consolidation - the transfer
+        of information from short-term to long-term storage. This view shows
+        information density as a heatmap, revealing regions of high vs low
+        knowledge accumulation.
+        """
         if not self.state.allocations:
             return
         for y in range(19):

@@ -45,6 +45,18 @@ from ...generated import (
     SwarmStreamRequest,
     SwarmEvent,
     SwarmResult,
+    # Workload Management
+    BeginWorkloadRequest,
+    BeginWorkloadResponse,
+    CompleteWorkloadRequest,
+    EndpointAllocationInfo,
+    ActiveWorkloadInfo,
+    GetActiveWorkloadsResponse,
+    WorkloadType as ProtoWorkloadType,
+    # Embeddings
+    EmbedTextsRequest,
+    EmbedTextsResponse,
+    EmbeddingVector,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
@@ -179,7 +191,7 @@ class GaiusServicer(GaiusServiceServicer):
                 status=status.status,
                 port=status.port or 0,
                 gpu_ids=list(status.gpu_ids) if status.gpu_ids else [],
-                message=status.message or "",
+                message=status.startup_message or "",
             )
         except ValueError as e:
             return EnsureEndpointResponse(
@@ -401,6 +413,248 @@ class GaiusServicer(GaiusServiceServicer):
             job_id=job_id,
             status="pending",
         )
+
+    # =========================================================================
+    # Workload Management (Yunikorn-Style)
+    # =========================================================================
+
+    async def BeginWorkload(
+        self,
+        request: BeginWorkloadRequest,
+        context: aio.ServicerContext,
+    ) -> BeginWorkloadResponse:
+        """Begin a workload and allocate resources.
+
+        Yunikorn-style workload management: the request declares what
+        capabilities are needed and the orchestrator allocates endpoints,
+        potentially evicting idle ones.
+        """
+        from ...workloads import WorkloadRequest, WorkloadType
+        from ...services.scheduler_service import JobPriority
+        from gaius.models.registry import TaskType
+
+        orchestrator = self._services.orchestrator_service
+
+        if not orchestrator:
+            return BeginWorkloadResponse(
+                success=False,
+                workload_id=request.workload_id,
+                error="OrchestratorService not initialized",
+            )
+
+        try:
+            # Map proto workload type to Python enum
+            workload_type_map = {
+                ProtoWorkloadType.WORKLOAD_INIT: WorkloadType.INIT,
+                ProtoWorkloadType.WORKLOAD_SWARM: WorkloadType.SWARM,
+                ProtoWorkloadType.WORKLOAD_INFERENCE: WorkloadType.INFERENCE,
+                ProtoWorkloadType.WORKLOAD_EMBEDDING: WorkloadType.EMBEDDING,
+                ProtoWorkloadType.WORKLOAD_EVOLUTION: WorkloadType.EVOLUTION,
+            }
+            workload_type = workload_type_map.get(
+                request.workload_type, WorkloadType.INFERENCE
+            )
+
+            # Map priority string to enum
+            priority_map = {
+                "critical": JobPriority.CRITICAL,
+                "high": JobPriority.HIGH,
+                "normal": JobPriority.NORMAL,
+                "low": JobPriority.LOW,
+            }
+            priority = priority_map.get(
+                request.priority.lower(), JobPriority.NORMAL
+            )
+
+            # Parse capabilities
+            capabilities = []
+            for cap_str in request.required_capabilities:
+                try:
+                    capabilities.append(TaskType(cap_str))
+                except ValueError:
+                    logger.warning(f"Unknown capability: {cap_str}")
+
+            # Create workload request
+            workload_req = WorkloadRequest(
+                workload_id=request.workload_id,
+                workload_type=workload_type,
+                required_capabilities=capabilities,
+                priority=priority,
+                estimated_duration_s=request.estimated_duration_s or 300,
+                estimated_memory_mb=request.estimated_memory_mb or 0,
+                preemptible=request.preemptible,
+            )
+
+            # Begin workload
+            result = await orchestrator.begin_workload(workload_req)
+
+            # Build response
+            response = BeginWorkloadResponse(
+                success=result.success,
+                workload_id=result.workload_id,
+                error=result.error or "",
+                wait_time_ms=result.wait_time_ms,
+            )
+
+            # Add allocated endpoints
+            for task_type, alloc in result.allocated_endpoints.items():
+                response.allocated_endpoints.append(
+                    EndpointAllocationInfo(
+                        endpoint_name=alloc.endpoint_name,
+                        capability=task_type.value,
+                        port=alloc.port,
+                        healthy=alloc.healthy,
+                        model_id=alloc.model_id,
+                    )
+                )
+
+            # Add evicted and restore lists
+            response.evicted_endpoints.extend(result.evicted_endpoints)
+            response.restore_plan.extend(result.restore_plan)
+
+            return response
+
+        except Exception as e:
+            logger.error(f"BeginWorkload failed: {e}")
+            return BeginWorkloadResponse(
+                success=False,
+                workload_id=request.workload_id,
+                error=str(e),
+            )
+
+    async def CompleteWorkload(
+        self,
+        request: CompleteWorkloadRequest,
+        context: aio.ServicerContext,
+    ) -> empty_pb2.Empty:
+        """Mark a workload as complete and restore evicted endpoints."""
+        orchestrator = self._services.orchestrator_service
+
+        if orchestrator:
+            try:
+                await orchestrator.complete_workload(request.workload_id)
+            except Exception as e:
+                logger.error(f"CompleteWorkload failed: {e}")
+
+        return empty_pb2.Empty()
+
+    async def GetActiveWorkloads(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> GetActiveWorkloadsResponse:
+        """Get information about all active workloads."""
+        orchestrator = self._services.orchestrator_service
+
+        response = GetActiveWorkloadsResponse()
+
+        if orchestrator:
+            try:
+                workloads = orchestrator.get_active_workloads()
+                for wid, info in workloads.items():
+                    response.workloads.append(
+                        ActiveWorkloadInfo(
+                            workload_id=wid,
+                            workload_type=info.get("type", ""),
+                            priority=info.get("priority", ""),
+                            capabilities=info.get("capabilities", []),
+                            elapsed_s=info.get("elapsed_s", 0.0),
+                            estimated_duration_s=info.get("estimated_duration_s", 0),
+                            is_overdue=info.get("is_overdue", False),
+                            endpoints=info.get("endpoints", []),
+                        )
+                    )
+            except Exception as e:
+                logger.error(f"GetActiveWorkloads failed: {e}")
+
+        return response
+
+    # =========================================================================
+    # Embeddings (Engine-Managed)
+    # =========================================================================
+
+    async def EmbedTexts(
+        self,
+        request: EmbedTextsRequest,
+        context: aio.ServicerContext,
+    ) -> EmbedTextsResponse:
+        """Generate embeddings for texts using vLLM embedding endpoint.
+
+        Routes embedding requests through the vLLM endpoint running with
+        --task embed, using the OpenAI-compatible embeddings API.
+        """
+        import time
+        import httpx
+
+        texts = list(request.texts)
+        start_time = time.time()
+
+        try:
+            # Get embedding endpoint from vLLM controller
+            orchestrator = self._services.orchestrator_service
+            if not orchestrator:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details("OrchestratorService not initialized")
+                return EmbedTextsResponse()
+
+            proc = orchestrator._vllm.get_process("embedding")
+
+            if not proc:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details("Embedding endpoint not running. Start it with: /gpu start embedding")
+                return EmbedTextsResponse()
+
+            if proc.status.value != "healthy":
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(f"Embedding endpoint not healthy: {proc.status.value}")
+                return EmbedTextsResponse()
+
+            # Call vLLM OpenAI-compatible embedding API
+            base_url = f"http://localhost:{proc.port}/v1"
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{base_url}/embeddings",
+                    json={
+                        "input": texts,
+                        "model": proc.model,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            # Extract embeddings from OpenAI format
+            embeddings = []
+            for item in data.get("data", []):
+                embeddings.append(item.get("embedding", []))
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            grpc_response = EmbedTextsResponse(
+                model_used=proc.model,
+                latency_ms=latency_ms,
+            )
+
+            for embedding in embeddings:
+                grpc_response.embeddings.append(
+                    EmbeddingVector(values=embedding)
+                )
+
+            return grpc_response
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"EmbedTexts HTTP error: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Embedding API error: {e.response.text}")
+            return EmbedTextsResponse()
+        except Exception as e:
+            logger.error(f"EmbedTexts failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return EmbedTextsResponse()
+
+    # =========================================================================
+    # Swarm Streaming
+    # =========================================================================
 
     async def SwarmStream(
         self,

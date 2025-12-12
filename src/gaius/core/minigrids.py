@@ -383,7 +383,7 @@ def explain_grid_view(
         tda_features: TDA features
         cursor_x: Cursor position X
         cursor_y: Cursor position Y
-        view_mode: Current view mode (go, pension, swarm)
+        view_mode: Current view mode (go, theta, swarm)
         overlay_mode: Current overlay (none, risk, h1, h2, etc.)
 
     Returns:

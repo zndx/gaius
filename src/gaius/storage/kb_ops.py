@@ -325,7 +325,7 @@ async def get_kb_stats() -> dict[str, Any]:
 
 
 async def save_swarm_to_kb(
-    domain: str,
+    domain: str | None,
     context: str,
     results: dict[str, dict[str, Any]],
     summary: dict[str, Any],
@@ -350,8 +350,9 @@ async def save_swarm_to_kb(
     today = datetime.now().strftime("%Y-%m-%d")
     timestamp = datetime.now().strftime("%H%M%S")
 
-    # Sanitize domain for filename
-    safe_domain = "".join(c if c.isalnum() or c in "-_" else "_" for c in domain[:30])
+    # Sanitize domain for filename (use "open" if None)
+    domain_str = domain or "open"
+    safe_domain = "".join(c if c.isalnum() or c in "-_" else "_" for c in domain_str[:30])
     safe_domain = safe_domain.strip() or "analysis"
 
     # Use relative path for storage backend
@@ -359,10 +360,10 @@ async def save_swarm_to_kb(
 
     # Build comprehensive markdown document
     lines = [
-        f"# Swarm Analysis: {domain}",
+        f"# Swarm Analysis: {domain_str}",
         "",
         f"**Created**: {datetime.now().isoformat()}",
-        f"**Domain**: {domain}",
+        f"**Domain**: {domain_str}",
     ]
 
     if context:
@@ -439,7 +440,7 @@ async def save_swarm_to_kb(
     return rel_path
 
 
-def save_swarm_results(results: dict[str, dict[str, Any]], domain: str) -> str:
+def save_swarm_results(results: dict[str, dict[str, Any]], domain: str | None) -> str:
     """Save swarm results to KB (sync wrapper for gRPC servicer).
 
     This is the simple 2-arg version called by gaius_servicer.py.

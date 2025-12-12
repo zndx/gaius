@@ -452,6 +452,8 @@ class GaiusCLI:
             curvatures=curvatures,
             cursor_x=cx,
             cursor_y=cy,
+            iso_mode=self.state.iso_mode,
+            iso_features=grid_data.iso_features if grid_data else None,
         )
 
         # Check if grids have any non-zero values
@@ -2082,7 +2084,7 @@ Respond with:
 
 **Category**: {category}
 **Created**: {datetime.now().isoformat()}
-**Domain**: {self.state.domain or "general"}
+**Domain**: {self.state.domain or "open"}
 
 ## Response
 
@@ -2583,7 +2585,7 @@ Respond with:
         Results are automatically saved to KB at current/agents/swarm/{date}/{timestamp}_{domain}.md
         """
         if not args:
-            args = self.state.domain or "general analysis"
+            args = self.state.domain or "open"
 
         try:
             from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
@@ -3637,7 +3639,10 @@ Respond with:
             embed_grid = embed_data.grid
 
             # Use computed curvatures for iso view
-            iso_data = get_iso_view(grid_data, curvatures_list, cx, cy)
+            iso_data = get_iso_view(
+                grid_data, curvatures_list, cx, cy,
+                iso_features=grid_data.iso_features
+            )
             iso_grid = iso_data.grid
 
         # Build explanation context

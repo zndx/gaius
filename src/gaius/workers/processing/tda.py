@@ -92,13 +92,21 @@ class TDAWorker:
                 # Get TDA manager
                 tda_manager = get_tda_manager()
 
-                # For TDA computation, we'd ideally use the original embeddings
-                # but we can also compute on grid coordinates for visualization
-                features = tda_manager.compute_features(
-                    grid_coords,  # Using 2D coords for visualization-focused TDA
-                    grid_coords,
-                    force_refresh=True,
-                )
+                # Use high-dimensional embeddings for real topology computation
+                # grid_coords are only for visualization bounding boxes
+                if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
+                    features = tda_manager.compute_features(
+                        grid_data.raw_embeddings,  # 768-dim for topology
+                        grid_coords,               # 2D for visualization
+                        force_refresh=True,
+                    )
+                else:
+                    # Fall back to grid coords if no embeddings (should not happen)
+                    features = tda_manager.compute_features(
+                        grid_coords,
+                        grid_coords,
+                        force_refresh=True,
+                    )
 
                 result["tda_features"] = features.to_dict()
 

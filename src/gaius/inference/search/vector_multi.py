@@ -1,21 +1,25 @@
-"""Multi-vector search over KB using Qdrant and ColQwen2.5.
+"""Multi-vector search over KB using Qdrant and ColBERT (fastembed).
 
-Extension of vector.py for multimodal embeddings with ColBERT-style multi-vector representation.
+Extension of vector.py for ColBERT-style multi-vector representation.
 Stores both multi-vectors (for search) and aggregated single vectors (for UMAP/TDA).
 
 Key differences from single-vector (vector_single.py):
-- Uses ColQwen2.5 embedder (text + images)
+- Uses ColBERT via fastembed (CPU-based ONNX, no GPU conflicts)
 - Qdrant named vectors: "multi" for search, "agg" for projection
 - MaxSim late-interaction scoring
-- Supports .png, .jpg, .pdf files alongside .md
+- 128-dim per token (colbert-ir/colbertv2.0) or 96-dim (answerdotai)
+
+Models supported:
+- colbert-ir/colbertv2.0: 128-dim, 0.44 GB (default, best quality)
+- answerdotai/answerai-colbert-small-v1: 96-dim, 0.13 GB (multilingual, faster)
 
 Usage:
     vector_search = VectorSearchMulti()
-    vector_search.index_kb()  # Index text + images
+    vector_search.index_kb()  # Index text documents
 
     results = vector_search.search("query text", top_k=5)
     for r in results:
-        print(f"{r.path}: {r.score:.3f} [{r.content_type}]")
+        print(f"{r.path}: {r.score:.3f}")
 """
 
 import hashlib
@@ -25,16 +29,15 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
-from PIL import Image
 from qdrant_client import QdrantClient, models
 
-from .colqwen import ColQwenEmbedder, get_colqwen_embedder, load_image
+from .colbert import ColBERTEmbedder, get_colbert_embedder
 
 
 # Configuration
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6339"))
-COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "gaius_kb_multi")  # Separate collection
+COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "gaius_kb")  # ColBERT multi-vector collection
 
 
 @dataclass
@@ -46,42 +49,42 @@ class VectorSearchResult:
     score: float  # MaxSim similarity score
     snippet: str
     chunk_id: str  # For precise citation
-    content_type: str  # "text" or "image"
+    content_type: str = "text"  # Always "text" for ColBERT
     metadata: dict = field(default_factory=dict)
 
 
 @dataclass
 class KBChunk:
-    """A chunk of KB content for embedding (text or image)."""
+    """A chunk of KB content for embedding (text only for ColBERT)."""
 
     id: str  # Unique chunk ID (hash of path + chunk_index)
     path: str  # KB file path
     title: str
-    content: str | Image.Image  # Text chunk or PIL Image
-    content_type: str  # "text" or "image"
+    content: str  # Text chunk
     chunk_index: int
     metadata: dict = field(default_factory=dict)
 
 
 class VectorSearchMulti:
-    """Multi-vector search engine using Qdrant and ColQwen2.5.
+    """Multi-vector search engine using Qdrant and ColBERT (fastembed).
 
-    Indexes KB markdown files and images as chunks with multi-vector embeddings.
-    Supports semantic search with MaxSim similarity.
+    Indexes KB markdown files as chunks with multi-vector embeddings.
+    Supports semantic search with MaxSim similarity (late interaction).
+
+    Uses fastembed's ColBERT implementation:
+    - CPU-based ONNX runtime (no GPU conflicts)
+    - 128-dim per token (colbert-ir/colbertv2.0)
+    - MaxSim scoring for high-quality retrieval
     """
 
     ALLOWED_DIRS = ("archive", "current", "scratch")
     CHUNK_SIZE = 512  # Characters per text chunk
     CHUNK_OVERLAP = 64  # Overlap between text chunks
 
-    # Image formats supported
-    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
-    PDF_EXTENSION = ".pdf"
-
     def __init__(
         self,
         kb_root: Path | str | None = None,
-        embedder: ColQwenEmbedder | None = None,
+        embedder: ColBERTEmbedder | None = None,
         qdrant_host: str = QDRANT_HOST,
         qdrant_port: int = QDRANT_PORT,
         collection_name: str = COLLECTION_NAME,
@@ -90,7 +93,7 @@ class VectorSearchMulti:
 
         Args:
             kb_root: Root of KB directory
-            embedder: ColQwen embedder (None = create from config)
+            embedder: ColBERT embedder (None = create from config)
             qdrant_host: Qdrant server host
             qdrant_port: Qdrant server port
             collection_name: Qdrant collection name
@@ -102,16 +105,16 @@ class VectorSearchMulti:
         self.collection_name = collection_name
 
         # Lazy initialization
-        self._embedder: ColQwenEmbedder | None = embedder
+        self._embedder: ColBERTEmbedder | None = embedder
         self._client: QdrantClient | None = None
         self._qdrant_host = qdrant_host
         self._qdrant_port = qdrant_port
 
     @property
-    def embedder(self) -> ColQwenEmbedder:
-        """Get or create ColQwen embedder."""
+    def embedder(self) -> ColBERTEmbedder:
+        """Get or create ColBERT embedder."""
         if self._embedder is None:
-            self._embedder = get_colqwen_embedder()
+            self._embedder = get_colbert_embedder()
         return self._embedder
 
     @property
@@ -155,11 +158,11 @@ class VectorSearchMulti:
                 vectors_config=vectors_config,
             )
 
-    def index_kb(self, batch_size: int = 4) -> int:
-        """Index all KB documents and images into Qdrant.
+    def index_kb(self, batch_size: int = 32) -> int:
+        """Index all KB documents into Qdrant using ColBERT multi-vectors.
 
         Args:
-            batch_size: Number of chunks to embed at once (small for 7B model)
+            batch_size: Number of chunks to embed at once (larger batches ok for CPU)
 
         Returns:
             Number of chunks indexed
@@ -175,39 +178,33 @@ class VectorSearchMulti:
         # Process in batches
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
+            texts = [c.content for c in batch]
 
-            # Generate embeddings (mixed text/images)
-            items = [c.content for c in batch]
-            embedding_results = self.embedder.encode_batch(items)
+            # Generate document embeddings using ColBERT
+            # embed_documents returns list of multi-vectors: [(n_tokens, dim), ...]
+            multi_vecs_list = self.embedder.embed_documents(texts)
 
             # Prepare points with named vectors
             points = []
-            for chunk, emb_result in zip(batch, embedding_results):
-                # For now, store only aggregated vectors in Qdrant
-                # Store multi-vectors in payload as numpy array (serialized)
-                # This is a simplification - full multi-vector support would need
-                # separate storage strategy
+            for chunk, multi_vecs in zip(batch, multi_vecs_list):
+                # Aggregate multi-vectors to single vector for UMAP/TDA
+                agg_vec = self.embedder.aggregate(multi_vecs)
 
                 point = models.PointStruct(
                     id=self._hash_to_int(chunk.id),
                     vector={
-                        "agg": emb_result.aggregated_vector.tolist(),
-                        # "multi": store elsewhere or serialize
+                        "agg": agg_vec.tolist(),
                     },
                     payload={
                         "chunk_id": chunk.id,
                         "path": chunk.path,
                         "title": chunk.title,
-                        "content": (
-                            chunk.content[:500]
-                            if isinstance(chunk.content, str)
-                            else None
-                        ),
-                        "content_type": chunk.content_type,
+                        "content": chunk.content[:500],
+                        "content_type": "text",
                         "chunk_index": chunk.chunk_index,
                         # Store multi-vectors as base64 for MaxSim search
-                        "multi_vectors_shape": emb_result.multi_vectors.shape,
-                        "multi_vectors": self._serialize_array(emb_result.multi_vectors),
+                        "multi_vectors_shape": list(multi_vecs.shape),
+                        "multi_vectors": self._serialize_array(multi_vecs),
                         **chunk.metadata,
                     },
                 )
@@ -251,8 +248,9 @@ class VectorSearchMulti:
         if info.points_count == 0:
             return []
 
-        # Generate query embedding
-        query_multi_vecs, query_agg_vec = self.embedder.encode_text(query)
+        # Generate query embedding using ColBERT
+        query_multi_vecs = self.embedder.embed_query(query)
+        query_agg_vec = self.embedder.aggregate(query_multi_vecs)
 
         if use_maxsim:
             # MaxSim search: need to fetch candidates and rescore
@@ -362,7 +360,7 @@ class VectorSearchMulti:
             return search_results
 
     def _load_chunks(self) -> Iterator[KBChunk]:
-        """Load and chunk all KB documents (text + images)."""
+        """Load and chunk all KB text documents."""
         for dir_name in self.ALLOWED_DIRS:
             dir_path = self.kb_root / dir_name
             if not dir_path.exists():
@@ -386,41 +384,10 @@ class VectorSearchMulti:
                             path=rel_path,
                             title=title,
                             content=chunk_text,
-                            content_type="text",
                             chunk_index=i,
                         )
                 except Exception:
                     continue
-
-            # Process image files
-            for ext in self.IMAGE_EXTENSIONS:
-                for img_file in dir_path.rglob(f"*{ext}"):
-                    try:
-                        rel_path = str(img_file.relative_to(self.kb_root))
-                        title = img_file.stem.replace("-", " ").replace("_", " ").title()
-
-                        # Load image
-                        image = load_image(img_file)
-
-                        chunk_id = hashlib.sha256(
-                            f"{rel_path}:image:0".encode()
-                        ).hexdigest()[:16]
-
-                        yield KBChunk(
-                            id=chunk_id,
-                            path=rel_path,
-                            title=title,
-                            content=image,
-                            content_type="image",
-                            chunk_index=0,  # One chunk per image
-                            metadata={"image_format": ext.lstrip(".")},
-                        )
-                    except Exception:
-                        continue
-
-            # TODO: Process PDF files (extract pages as images)
-            # for pdf_file in dir_path.rglob("*.pdf"):
-            #     ...
 
     def _chunk_text(self, text: str) -> Iterator[str]:
         """Split text into overlapping chunks (character-based)."""
@@ -490,6 +457,67 @@ class VectorSearchMulti:
             return True
         except Exception:
             return False
+
+    def get_all_multi_vectors(self) -> tuple[list[np.ndarray], list[dict]]:
+        """Retrieve all multi-vectors from Qdrant for IsoFeatures computation.
+
+        Returns:
+            Tuple of:
+                - List of multi-vector arrays [(n_tokens, embedding_dim), ...]
+                - List of metadata dicts with path, title, chunk_id
+        """
+        multi_vectors = []
+        metadata = []
+
+        try:
+            # Check collection exists and has points
+            info = self.client.get_collection(self.collection_name)
+            if info.points_count == 0:
+                return [], []
+
+            # Scroll through all points
+            offset = None
+            batch_size = 100
+
+            while True:
+                results, offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=batch_size,
+                    offset=offset,
+                    with_vectors=False,  # We get vectors from payload
+                    with_payload=True,
+                )
+
+                if not results:
+                    break
+
+                for point in results:
+                    payload = point.payload or {}
+
+                    # Deserialize multi-vectors from payload
+                    mv_data = payload.get("multi_vectors", "")
+                    mv_shape = payload.get("multi_vectors_shape", [])
+
+                    if mv_data and mv_shape:
+                        try:
+                            mv = self._deserialize_array(mv_data, tuple(mv_shape))
+                            multi_vectors.append(mv)
+                            metadata.append({
+                                "path": payload.get("path", ""),
+                                "title": payload.get("title", ""),
+                                "chunk_id": payload.get("chunk_id", ""),
+                            })
+                        except Exception:
+                            # Skip malformed entries
+                            continue
+
+                if offset is None:
+                    break
+
+            return multi_vectors, metadata
+
+        except Exception:
+            return [], []
 
 
 # Module-level singleton

@@ -70,8 +70,8 @@ Arguments are space-separated. Flags modify behavior.
 ### View Commands
 
 ```
-/overlay h1         # Set overlay mode
-/mode pension       # Set view mode
+/overlay topology   # Set overlay mode
+/mode theta         # Set view mode
 /zoom D4-F6         # Focus on region (future)
 /screenshot         # Save current view (future)
 ```
@@ -158,8 +158,8 @@ Many common commands have key binding equivalents:
 
 | Command | Binding | Notes |
 |---------|---------|-------|
-| `/overlay h1` | `o` | Cycle mode |
-| `/mode pension` | `v` | Toggle mode |
+| `/overlay topology` | `o` | Cycle mode |
+| `/mode theta` | `v` | Toggle mode |
 | `/round` | `s` | Swarm round |
 | `/domain` | `d` | Opens modal |
 

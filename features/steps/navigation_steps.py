@@ -115,7 +115,7 @@ def step_view_mode_is(context, mode):
 
     mode_map = {
         "go": ViewMode.GO,
-        "pension": ViewMode.PENSION,
+        "theta": ViewMode.THETA,
         "swarm": ViewMode.SWARM,
     }
     context.app.state.view_mode = mode_map[mode.lower()]

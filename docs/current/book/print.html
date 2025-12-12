@@ -773,14 +773,14 @@ persistent_loops = h1_features[h1_features[:, 2] - h1_features[:, 1] &gt; thresh
 <p>Application state is centralized in the <code>GoBoardApp</code> class:</p>
 <pre><code class="language-python">class GoBoardApp(App):
     # View state
-    mode: str           # "go" or "pension"
-    overlay: str        # "none", "risk", "h1", "swarm"
+    mode: str           # "go", "theta", or "swarm"
+    overlay: str        # "none", "topology", "geometry", "dynamics", "agents"
     cursor: tuple[int, int]
 
     # Data state
     black: set          # Black stone positions
     white: set          # White stone positions
-    alloc: list[list]   # Pension allocation grid
+    alloc: list[list]   # Information density grid (theta view)
     candidates: list    # Marked candidate positions
 
     # Swarm state
@@ -815,6 +815,630 @@ persistent_loops = h1_features[h1_features[:, 2] - h1_features[:, 1] &gt; thresh
 └── main.py         # Full swarm implementation (no flags)
 </code></pre>
 <p>The multiple <code>app*.py</code> files represent evolutionary iterations. <code>app.py</code> is the current canonical implementation; <code>main.py</code> contains the complete swarm logic for reference.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="the-knowledge-gradient-optimal-learning-in-gaius"><a class="header" href="#the-knowledge-gradient-optimal-learning-in-gaius">The Knowledge Gradient: Optimal Learning in Gaius</a></h1>
+<p><em>A compute-centric architecture for sequential decision-making under uncertainty</em></p>
+<h2 id="1-introduction-from-sequential-decisions-to-spatial-intelligence"><a class="header" href="#1-introduction-from-sequential-decisions-to-spatial-intelligence">1. Introduction: From Sequential Decisions to Spatial Intelligence</a></h2>
+<h3 id="the-universal-resource-challenge"><a class="header" href="#the-universal-resource-challenge">The Universal Resource Challenge</a></h3>
+<p>Every entity that engages in knowledge work faces the same fundamental constraint: finite cognitive and computational resources must be allocated across infinite possibilities. Whether you're operating an IoT sensor network, a personal workstation, an enterprise GPU cluster, an HPC center, or a nascent space-based data center, the question remains constant:</p>
+<p><strong>What should I compute next?</strong></p>
+<p>This is a sequential decision problem under uncertainty. Each observation updates our beliefs. Each computation consumes resources. The challenge is allocating those resources optimally across the exploration-exploitation frontier.</p>
+<h3 id="the-knowledge-gradient-framework"><a class="header" href="#the-knowledge-gradient-framework">The Knowledge Gradient Framework</a></h3>
+<p>Warren B. Powell's Knowledge Gradient (KG) for Optimal Learning (2010) provides a principled answer. The KG measures the expected value of information from taking an action—not just its immediate reward, but its contribution to improved future decisions.</p>
+<p>Formally, for a belief state <em>S</em> and measurement decision <em>x</em>:</p>
+<pre><code>KG(x | S) = E[ max_x' μ^{n+1}(x') - max_x' μ^n(x') | S^n, x^n = x ]
+</code></pre>
+<p>Where:</p>
+<ul>
+<li>μ^n(x') is our current estimate of the value of alternative x'</li>
+<li>μ^{n+1}(x') is our updated estimate after observing the result of measuring x</li>
+<li>The difference captures how much the measurement improves our best option</li>
+</ul>
+<p>The KG policy selects the measurement that maximizes this expected improvement. It naturally balances exploration (learning about uncertain alternatives) against exploitation (leveraging current knowledge).</p>
+<h3 id="gaius-as-kg-implementation"><a class="header" href="#gaius-as-kg-implementation">Gaius as KG Implementation</a></h3>
+<p>Gaius implements this framework spatially. The 19×19 grid represents a compressed belief state. Documents projected onto the grid are observations. Topological features (H0/H1/H2) reveal structure in the belief space. Curvature indicates where beliefs transition between regimes.</p>
+<p>The human navigating the grid is implicitly solving a KG problem: "Which region should I investigate next to maximize my understanding of this domain?"</p>
+<h3 id="why-compute-costs-matter"><a class="header" href="#why-compute-costs-matter">Why Compute Costs Matter</a></h3>
+<p>In AI research and computational science, the connection between knowledge acquisition and resource expenditure is explicit:</p>
+<ul>
+<li><strong>CapEx</strong>: GPU hardware, network infrastructure, storage systems</li>
+<li><strong>OpEx</strong>: Electricity, cloud API calls, model hosting, inference tokens</li>
+</ul>
+<p>A query to a local vLLM endpoint costs VRAM and power. A query to a cloud API costs dollars directly. The KG framework makes these costs explicit terms in the optimization:</p>
+<pre><code>KG_adjusted(x | S) = KG(x | S) - λ × cost(x)
+</code></pre>
+<p>Where λ trades off information value against resource consumption.</p>
+<p>This framing applies universally:</p>
+<ul>
+<li><strong>IoT networks</strong>: Edge inference constrained by battery and bandwidth</li>
+<li><strong>Personal workstations</strong>: The Tinybox paradigm—6 GPUs, fixed electricity budget</li>
+<li><strong>Enterprise clusters</strong>: Shared resources, contention, scheduling overhead</li>
+<li><strong>HPC centers</strong>: Batch queues, allocation policies, utilization targets</li>
+<li><strong>Space-based systems</strong>: Latency to ground, solar power cycles, thermal constraints</li>
+</ul>
+<p>Every context requires balancing knowledge acquisition against resource consumption.</p>
+<hr />
+<h2 id="2-the-1919-grid-as-state-space"><a class="header" href="#2-the-1919-grid-as-state-space">2. The 19×19 Grid as State Space</a></h2>
+<h3 id="umap-projection-compressing-beliefs"><a class="header" href="#umap-projection-compressing-beliefs">UMAP Projection: Compressing Beliefs</a></h3>
+<p>The grid is not arbitrary. It results from UMAP projection of 768-dimensional document embeddings:</p>
+<pre><code class="language-python"># From src/gaius/core/projection.py:119-128
+self._projector = UMAP(
+    n_components=2,
+    n_neighbors=15,
+    min_dist=0.1,
+    metric="cosine",
+    random_state=42,
+)
+</code></pre>
+<p>Key parameters:</p>
+<ul>
+<li><strong>n_neighbors=15</strong>: Local neighborhood size for manifold approximation</li>
+<li><strong>min_dist=0.1</strong>: Minimum distance between points in output (controls clumping)</li>
+<li><strong>metric="cosine"</strong>: Semantic similarity measure appropriate for text embeddings</li>
+</ul>
+<p>The projection compresses high-dimensional belief states into a 2D manifold that preserves local neighborhood structure. Points close in embedding space remain close on the grid.</p>
+<h3 id="grid-coordinates-as-belief-states"><a class="header" href="#grid-coordinates-as-belief-states">Grid Coordinates as Belief States</a></h3>
+<p>Each position (x, y) on the 19×19 grid represents a region in belief space. A document at position (10, 14) is semantically similar to other documents nearby.</p>
+<p>The <code>GridData</code> structure captures this mapping (<code>src/gaius/core/projection.py:46-77</code>):</p>
+<pre><code class="language-python">@dataclass
+class GridData:
+    document_positions: set[tuple[int, int]]    # Occupied cells
+    allocations: list[list[int]]                 # 19×19 density (0-100)
+    raw_embeddings: np.ndarray | None           # 768-D preserved for TDA
+    embedding_to_grid: dict[int, tuple[int, int]]  # Index → (x, y)
+    grid_to_embedding: dict[tuple[int, int], int]  # (x, y) → index
+</code></pre>
+<p>The bidirectional mappings (<code>embedding_to_grid</code>, <code>grid_to_embedding</code>) enable navigation between the compressed 2D representation and the full high-dimensional space.</p>
+<h3 id="documents-as-observations"><a class="header" href="#documents-as-observations">Documents as Observations</a></h3>
+<p>Each document in the knowledge base is an observation that updates beliefs. When projected to the grid:</p>
+<ul>
+<li><strong>Clustered documents</strong>: High confidence in that region of belief space</li>
+<li><strong>Sparse regions</strong>: Uncertainty—either unexplored or genuinely empty</li>
+<li><strong>Uniform distribution</strong>: Diverse domain with weak structure</li>
+</ul>
+<p>The <code>GridPoint</code> structure tracks document identity (<code>src/gaius/core/projection.py:34-42</code>):</p>
+<pre><code class="language-python">@dataclass
+class GridPoint:
+    x: int                  # 0-18
+    y: int                  # 0-18
+    path: str               # KB document path
+    title: str              # Document title
+    embedding_id: str       # Chunk identifier
+    cluster_id: int = -1    # TDA cluster assignment
+</code></pre>
+<h3 id="coverage-and-density-as-uncertainty"><a class="header" href="#coverage-and-density-as-uncertainty">Coverage and Density as Uncertainty</a></h3>
+<p>Grid coverage quantifies belief completeness:</p>
+<pre><code class="language-python"># From src/gaius/core/projection.py:361-362
+non_empty_cells = np.sum(density &gt; 0)
+grid_data.coverage = non_empty_cells / (19 * 19)
+</code></pre>
+<ul>
+<li><strong>Low coverage (&lt; 20%)</strong>: Sparse beliefs; high uncertainty; exploration likely valuable</li>
+<li><strong>High coverage (&gt; 60%)</strong>: Dense beliefs; lower marginal value of additional observations</li>
+<li><strong>Uneven density</strong>: Structure in beliefs; investigate boundaries between dense and sparse</li>
+</ul>
+<hr />
+<h2 id="3-topological-data-analysis-as-value-function-approximation"><a class="header" href="#3-topological-data-analysis-as-value-function-approximation">3. Topological Data Analysis as Value Function Approximation</a></h2>
+<h3 id="persistent-homology-structural-invariants"><a class="header" href="#persistent-homology-structural-invariants">Persistent Homology: Structural Invariants</a></h3>
+<p>TDA reveals topological features that persist across scales—the "shape" of the belief space that statistics alone cannot capture.</p>
+<p>Gaius computes persistent homology using ripser (<code>src/gaius/core/tda.py:170-266</code>):</p>
+<pre><code class="language-python"># From src/gaius/core/tda.py:199-207
+result = ripser.ripser(
+    sampled_embeddings,
+    maxdim=self.max_dimension,
+    thresh=self.max_edge_length if self.max_edge_length != np.inf else 0,
+    metric="cosine",
+)
+</code></pre>
+<h3 id="betti-numbers-as-structural-indicators"><a class="header" href="#betti-numbers-as-structural-indicators">Betti Numbers as Structural Indicators</a></h3>
+<p>The output quantifies topological structure:</p>
+<ul>
+<li>
+<p><strong>H0 (components)</strong>: Disconnected clusters in belief space</p>
+<ul>
+<li>High H0 → fragmented understanding; integration may be valuable</li>
+</ul>
+</li>
+<li>
+<p><strong>H1 (cycles)</strong>: Loops in the belief graph</p>
+<ul>
+<li>Persistent H1 → circular reasoning, feedback structures, or coverage gaps</li>
+<li>These are the "death loops" that indicate systemic patterns</li>
+</ul>
+</li>
+<li>
+<p><strong>H2 (voids)</strong>: Cavities—regions surrounded by observations but empty within</p>
+<ul>
+<li>H2 voids → missing connections; potentially high-value exploration targets</li>
+</ul>
+</li>
+</ul>
+<h3 id="entropy-as-uncertainty-quantification"><a class="header" href="#entropy-as-uncertainty-quantification">Entropy as Uncertainty Quantification</a></h3>
+<p>Persistence entropy summarizes topological complexity (<code>src/gaius/core/tda.py:232-243</code>):</p>
+<pre><code class="language-python">persistences = np.array([i.persistence for i in intervals])
+total_persistence = np.sum(persistences)
+if total_persistence &gt; 0:
+    probs = persistences / total_persistence
+    # Shannon entropy: -Σ p*log(p)
+    features.entropy = float(-np.sum(probs * np.log(probs + 1e-10)))
+</code></pre>
+<p>Interpretation:</p>
+<ul>
+<li><strong>Low entropy</strong>: Few dominant features; simple structure; beliefs are well-organized</li>
+<li><strong>High entropy</strong>: Many features of similar persistence; complex or noisy structure</li>
+</ul>
+<p>Entropy changes signal regime shifts. A sudden entropy spike may indicate:</p>
+<ul>
+<li>New domain area discovered</li>
+<li>Conflicting information introduced</li>
+<li>Model drift in embedding space</li>
+</ul>
+<h3 id="risk-scores-as-information-value-proxies"><a class="header" href="#risk-scores-as-information-value-proxies">Risk Scores as Information Value Proxies</a></h3>
+<p>Per-point risk scores estimate local topological instability (<code>src/gaius/core/tda.py:400-439</code>):</p>
+<pre><code class="language-python"># k-NN distance analysis
+n_neighbors = min(10, n_points - 1)
+nn = NearestNeighbors(n_neighbors=n_neighbors, metric="cosine")
+nn.fit(embeddings)
+distances, _ = nn.kneighbors(embeddings)
+
+# Average distance to neighbors (skip self at index 0)
+avg_distances = distances[:, 1:].mean(axis=1)
+
+# Normalize to 0-1 range
+risk = (avg_distances - min_d) / (max_d - min_d)
+</code></pre>
+<p>High risk scores indicate:</p>
+<ul>
+<li>Points distant from neighbors (potential outliers)</li>
+<li>Bridge points connecting disparate clusters</li>
+<li>Boundaries between semantic regions</li>
+</ul>
+<p>These are precisely the points where the Knowledge Gradient is likely high—observations here would maximally update beliefs.</p>
+<hr />
+<h2 id="4-mini-grid-perspectives-multi-view-observation"><a class="header" href="#4-mini-grid-perspectives-multi-view-observation">4. Mini-Grid Perspectives: Multi-View Observation</a></h2>
+<p>The 9×9 mini-grids provide orthographic views of the belief space around the cursor, enabling local inspection without losing global context.</p>
+<h3 id="41-embed-view-local-similarity-structure"><a class="header" href="#41-embed-view-local-similarity-structure">4.1 Embed View: Local Similarity Structure</a></h3>
+<p>The Embed view shows cosine similarity in the original 768-dimensional space (<code>src/gaius/core/minigrids.py:40-117</code>):</p>
+<pre><code class="language-python"># Cosine similarity computation
+dot = np.dot(cursor_embedding, embedding)
+norm_cursor = np.linalg.norm(cursor_embedding)
+norm_emb = np.linalg.norm(embedding)
+similarity = dot / (norm_cursor * norm_emb)
+
+# Map to mini-grid coordinates
+embed_grid[my][mx] = (similarity + 1) / 2  # [-1,1] → [0,1]
+</code></pre>
+<p><strong>Interpretation</strong>:</p>
+<ul>
+<li><strong>Bright center</strong>: Cursor point has high self-similarity (always 1.0)</li>
+<li><strong>Bright neighbors</strong>: Semantically similar documents cluster nearby</li>
+<li><strong>Scattered brightness</strong>: Eclectic neighborhood; cursor is at a junction</li>
+<li><strong>Uniform dimness</strong>: Isolated point; potential outlier or unexplored region</li>
+</ul>
+<p>The Embed view reveals whether the UMAP 2D projection faithfully preserves high-dimensional relationships. If nearby grid points have low embedding similarity, the projection may be distorting local structure.</p>
+<h3 id="42-iso-view-topological-elevation"><a class="header" href="#42-iso-view-topological-elevation">4.2 Iso View: Topological Elevation</a></h3>
+<p>The Iso view presents a 3D elevation map where height encodes topological features (<code>src/gaius/core/minigrids.py:120-256</code>). Four modes are available:</p>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Symbol</th><th>Source</th><th>Interpretation</th></tr></thead><tbody>
+<tr><td>Curvature</td><td>κ</td><td>Ricci curvature</td><td>Semantic boundaries vs interiors</td></tr>
+<tr><td>Persistence</td><td>π</td><td>H0+H1+H2 sum</td><td>Topological complexity per document</td></tr>
+<tr><td>Complexity</td><td>σ</td><td>Token variance</td><td>Semantic diversity within documents</td></tr>
+<tr><td>Boundary</td><td>β</td><td>Cocycle contribution</td><td>Loop participation</td></tr>
+</tbody></table>
+</div>
+<p><strong>Curvature Mode (κ)</strong> is primary:</p>
+<pre><code class="language-python"># From src/gaius/core/minigrids.py:293-308
+def _curvature_to_elevation(κ: float) -&gt; float:
+    if κ &lt; -0.3:
+        return 0.9  # High peaks (strong boundaries)
+    elif κ &lt; 0:
+        return 0.5 + (-κ * 1.33)  # Linear map
+    elif κ &gt; 0.3:
+        return 0.1  # Deep valleys (strong interiors)
+    else:
+        return 0.5 - (κ * 1.33)
+</code></pre>
+<p>Negative curvature (peaks) marks semantic boundaries—regions of high information value for exploration. Positive curvature (valleys) marks cluster interiors—regions where exploitation may be more valuable than exploration.</p>
+<h3 id="43-the-curvature-interpretation"><a class="header" href="#43-the-curvature-interpretation">4.3 The Curvature Interpretation</a></h3>
+<p>Ricci curvature measures how geodesics (shortest paths) behave locally. The implementation uses Ollivier-Ricci curvature on the k-NN graph (<code>src/gaius/core/geometry.py:34-57</code>):</p>
+<pre><code>κ(x, y) = 1 - W(μₓ, μᵧ) / d(x, y)
+
+where:
+- W(μₓ, μᵧ) = Wasserstein-1 distance between neighborhood distributions
+- μₓ = probability distribution on x's k-nearest neighbors
+- d(x, y) = graph distance
+</code></pre>
+<p><strong>Geometric interpretation</strong>:</p>
+<ul>
+<li><strong>κ &gt; 0 (positive)</strong>: Geodesics converge; cluster interior; homogeneous region</li>
+<li><strong>κ ≈ 0 (flat)</strong>: Geodesics parallel; uniform structure</li>
+<li><strong>κ &lt; 0 (negative)</strong>: Geodesics diverge; boundary; heterogeneous transition zone</li>
+</ul>
+<p><strong>Knowledge Gradient interpretation</strong>:</p>
+<ul>
+<li>High |κ| regions are where beliefs transition between regimes</li>
+<li>Observations in high |κ| regions maximally discriminate between hypotheses</li>
+<li>The KG is typically highest at decision boundaries</li>
+</ul>
+<hr />
+<h2 id="5-profile-and-domain-semantics"><a class="header" href="#5-profile-and-domain-semantics">5. Profile and Domain Semantics</a></h2>
+<h3 id="51-profile-configuration-scope"><a class="header" href="#51-profile-configuration-scope">5.1 Profile: Configuration Scope</a></h3>
+<p>A <strong>profile</strong> determines the configuration scope for a Gaius session:</p>
+<ul>
+<li><strong>KB root</strong>: Which knowledge base to load</li>
+<li><strong>Agents</strong>: Which swarm members are available</li>
+<li><strong>Inference settings</strong>: Model selection, endpoints, technique chains</li>
+<li><strong>Theme</strong>: Visual appearance</li>
+</ul>
+<p>Profile selection happens at load time via <code>GAIUS_PROFILE</code> environment variable or <code>--profile</code> CLI flag.</p>
+<p>When profile is <code>None</code>, the system uses <code>"default"</code>:</p>
+<pre><code class="language-python"># Profile loading (conceptual)
+profile = os.environ.get("GAIUS_PROFILE") or cli_args.profile or "default"
+</code></pre>
+<p>Profiles enable different configurations for different contexts:</p>
+<ul>
+<li><strong>default</strong>: General-purpose research</li>
+<li><strong>gpu-intensive</strong>: High-compute workloads, reasoning models</li>
+<li><strong>inference-optimized</strong>: Low-latency, fast models</li>
+<li>Custom profiles for specific projects or domains</li>
+</ul>
+<h3 id="52-domain-runtime-focus-or-absence-thereof"><a class="header" href="#52-domain-runtime-focus-or-absence-thereof">5.2 Domain: Runtime Focus (or Absence Thereof)</a></h3>
+<p>A <strong>domain</strong> is an optional runtime constraint that filters and focuses analysis. Unlike profile (which is load-time configuration), domain can change mid-session.</p>
+<p>When domain is <code>None</code> or <code>"open"</code>:</p>
+<ul>
+<li><strong>No KB filtering</strong>: All documents are candidates</li>
+<li><strong>No agent specialization</strong>: Swarm agents operate generically</li>
+<li><strong>Cross-domain reasoning</strong>: Connections across topic areas are permitted</li>
+</ul>
+<p>This represents the <strong>absence of constraint</strong>, not a special mode with specific behaviors.</p>
+<p>The implementation defaults to an open domain (<code>src/gaius/core/state.py:153</code>):</p>
+<pre><code class="language-python">domain: str | None = None  # None = open domain (no constraint)
+</code></pre>
+<p>When domain is <code>None</code>, no domain filter is applied—all queries operate in "open domain" mode.</p>
+<p><strong>Progressive refinement</strong>: The system may suggest a domain based on query patterns:</p>
+<ol>
+<li>User starts with no domain constraint</li>
+<li>Queries cluster semantically (e.g., around inference, GPU allocation)</li>
+<li>System suggests: "Your queries cluster around 'compute optimization'. Set this as domain?"</li>
+<li>User accepts or declines</li>
+</ol>
+<p>This preserves agency while providing structure when patterns emerge.</p>
+<hr />
+<h2 id="6-the-knowledge-gradient-in-practice"><a class="header" href="#6-the-knowledge-gradient-in-practice">6. The Knowledge Gradient in Practice</a></h2>
+<h3 id="61-exploration-high-curvature-navigation"><a class="header" href="#61-exploration-high-curvature-navigation">6.1 Exploration: High-Curvature Navigation</a></h3>
+<p>The <strong>tenuki</strong> algorithm implements KG-guided exploration: jump to unexplored high-|κ| regions.</p>
+<p>In Go, tenuki means "playing elsewhere"—abandoning a local situation to claim value in an uncontested area. In Gaius:</p>
+<pre><code>tenuki_score(x, y) = |κ(x, y)| × distance_factor × novelty_factor
+
+where:
+- |κ(x, y)|: Curvature magnitude (higher = more interesting boundary)
+- distance_factor: Penalize positions too close to current focus
+- novelty_factor: Bonus for unvisited regions
+</code></pre>
+<p>The tenuki command (<code>t</code> key) jumps the cursor to a high-score position, enabling rapid exploration of the belief space.</p>
+<p><strong>H1 cycles as exploration targets</strong>:
+Death loops (H1 features) indicate persistent cycles in the belief graph. These represent:</p>
+<ul>
+<li>Feedback structures worth understanding</li>
+<li>Circular reasoning to validate or break</li>
+<li>Knowledge gaps where the loop fails to close</li>
+</ul>
+<p>Investigating H1 cycles often yields high KG payoffs.</p>
+<p><strong>H2 voids as structural absences</strong>:
+Voids surrounded by observations suggest missing connections. The observations around the void define what <em>should</em> connect; the void indicates it doesn't. High-value exploration fills these cavities.</p>
+<h3 id="62-exploitation-cluster-interior-deepening"><a class="header" href="#62-exploitation-cluster-interior-deepening">6.2 Exploitation: Cluster Interior Deepening</a></h3>
+<p>Not all knowledge work is exploration. Within well-understood regions (low |κ|, high density):</p>
+<ul>
+<li><strong>Deepen existing understanding</strong>: Read more documents in the cluster</li>
+<li><strong>Build on stable features</strong>: High-persistence topological features indicate robust structure</li>
+<li><strong>Trust convergent agents</strong>: When swarm positions cluster, consensus is forming</li>
+</ul>
+<p>Exploitation is appropriate when:</p>
+<ul>
+<li>The current region directly serves the task at hand</li>
+<li>Exploration budget is exhausted</li>
+<li>Confidence in the region exceeds task requirements</li>
+</ul>
+<h3 id="63-the-balance-value-of-information"><a class="header" href="#63-the-balance-value-of-information">6.3 The Balance: Value of Information</a></h3>
+<p>The Knowledge Gradient provides a principled answer to "explore or exploit?":</p>
+<p><strong>Current implementation (theoretical lens)</strong>:</p>
+<ul>
+<li>Visual cues (curvature, entropy, risk) guide human intuition</li>
+<li>Human makes exploration/exploitation decisions</li>
+<li>System provides information; human provides judgment</li>
+</ul>
+<p><strong>Future implementation (algorithmic)</strong>:</p>
+<div class="table-wrapper"><table><thead><tr><th>Phase</th><th>Capability</th><th>Implementation</th></tr></thead><tbody>
+<tr><td>Near-term</td><td>Uncertainty quantification</td><td>Per-cell confidence intervals</td></tr>
+<tr><td>Near-term</td><td>Automated tenuki</td><td>System suggests high-KG positions</td></tr>
+<tr><td>Medium-term</td><td>Acquisition functions</td><td>Explicit KG computation over grid</td></tr>
+<tr><td>Medium-term</td><td>Cost-aware routing</td><td>KG_adjusted with inference costs</td></tr>
+<tr><td>Long-term</td><td>Autonomous policies</td><td>Full KG optimization loop</td></tr>
+</tbody></table>
+</div>
+<p>The roadmap moves from human-guided to increasingly autonomous exploration while preserving human oversight for high-stakes decisions.</p>
+<hr />
+<h2 id="7-compute-economics-across-scales"><a class="header" href="#7-compute-economics-across-scales">7. Compute Economics Across Scales</a></h2>
+<h3 id="71-the-universal-compute-challenge"><a class="header" href="#71-the-universal-compute-challenge">7.1 The Universal Compute Challenge</a></h3>
+<p>Gaius operates across diverse compute environments:</p>
+<p><strong>IoT Networks</strong>:</p>
+<ul>
+<li>Constraints: Battery, bandwidth, intermittent connectivity</li>
+<li>Strategy: Edge inference for latency-critical; cloud for complex analysis</li>
+<li>KG application: Prioritize observations that maximize information per joule</li>
+</ul>
+<p><strong>Personal Workstations (Tinybox paradigm)</strong>:</p>
+<ul>
+<li>Constraints: 6× RTX 4090 (144GB VRAM), residential power</li>
+<li>Strategy: Local inference for privacy and iteration speed; cloud for capability expansion</li>
+<li>KG application: Balance local model quality against electricity cost</li>
+</ul>
+<p><strong>Enterprise Clusters</strong>:</p>
+<ul>
+<li>Constraints: Shared resources, scheduling contention, utilization targets</li>
+<li>Strategy: Batch processing for throughput; interactive for latency</li>
+<li>KG application: Optimize job scheduling across priority queues</li>
+</ul>
+<p><strong>HPC Centers</strong>:</p>
+<ul>
+<li>Constraints: Allocation policies, queue wait times, job size limits</li>
+<li>Strategy: Coarse-grained parallelism; checkpoint/restart patterns</li>
+<li>KG application: Select compute allocation that maximizes research output per allocation-hour</li>
+</ul>
+<p><strong>Space-Based Data Centers</strong>:</p>
+<ul>
+<li>Constraints: Orbital mechanics (latency), solar power cycles, thermal management</li>
+<li>Strategy: Asynchronous processing; predictive caching; power-aware scheduling</li>
+<li>KG application: Compute during power-available windows; cache results for query periods</li>
+</ul>
+<h3 id="72-capex-vs-opex-tradeoffs"><a class="header" href="#72-capex-vs-opex-tradeoffs">7.2 CapEx vs OpEx Tradeoffs</a></h3>
+<p>AI compute involves fundamental economic tradeoffs:</p>
+<p><strong>Local Inference (High CapEx, Low Marginal Cost)</strong>:</p>
+<ul>
+<li>Upfront: GPU hardware ($8K-$50K per card)</li>
+<li>Ongoing: Electricity (~$0.10-0.30 per kWh), cooling, maintenance</li>
+<li>Advantage: No per-token cost; privacy; low latency</li>
+<li>Disadvantage: Fixed capacity; depreciation; requires expertise</li>
+</ul>
+<p><strong>Cloud API (Low CapEx, Variable OpEx)</strong>:</p>
+<ul>
+<li>Upfront: None (pay-as-you-go)</li>
+<li>Ongoing: Per-token pricing ($0.01-$15 per 1M tokens depending on model)</li>
+<li>Advantage: Elastic capacity; latest models; no maintenance</li>
+<li>Disadvantage: Per-query cost; latency; vendor dependency</li>
+</ul>
+<p><strong>Hybrid Strategies</strong>:
+The optimal strategy depends on workload characteristics:</p>
+<div class="table-wrapper"><table><thead><tr><th>Workload Pattern</th><th>Recommended Approach</th></tr></thead><tbody>
+<tr><td>High volume, predictable</td><td>Local inference</td></tr>
+<tr><td>Bursty, variable</td><td>Cloud API</td></tr>
+<tr><td>Latency-critical</td><td>Local inference</td></tr>
+<tr><td>Capability-critical</td><td>Cloud (access frontier models)</td></tr>
+<tr><td>Privacy-critical</td><td>Local inference</td></tr>
+<tr><td>Cost-critical</td><td>Depends on volume crossover point</td></tr>
+</tbody></table>
+</div>
+<h3 id="73-the-lambda-labs--cerebras-decision-framework"><a class="header" href="#73-the-lambda-labs--cerebras-decision-framework">7.3 The Lambda Labs / Cerebras Decision Framework</a></h3>
+<p>For models too large for local hardware, Gaius integrates cloud providers:</p>
+<p><strong>Lambda Labs (GPU Rental)</strong>:</p>
+<ul>
+<li>Pay by the hour for GPU instances</li>
+<li>Full control over deployment</li>
+<li>Cost-effective for sustained workloads</li>
+<li>Available via <code>/model add</code> for feasibility assessment</li>
+</ul>
+<p><strong>Cerebras (Hosted Inference)</strong>:</p>
+<ul>
+<li>Pay per token</li>
+<li>Ultra-fast inference (~2,000 tokens/sec)</li>
+<li>Cost-effective for bursty workloads</li>
+<li>Available via provider integration</li>
+</ul>
+<p>The decision framework:</p>
+<pre><code>break_even_hours = hourly_rental_cost / (tokens_per_hour × token_price)
+
+if expected_hours &gt; break_even_hours:
+    use GPU rental
+else:
+    use hosted inference
+</code></pre>
+<p>For example, if GPU rental costs $10/hour and you process 100K tokens/hour at $0.0001/token:</p>
+<ul>
+<li>API cost: 100K × $0.0001 = $0.01/hour</li>
+<li>Break-even: $10 / $0.01 = 1,000 hours</li>
+</ul>
+<p>For sustained high-volume workloads, rental wins. For occasional bursts, API wins.</p>
+<h3 id="74-optimal-agent-workflow-execution"><a class="header" href="#74-optimal-agent-workflow-execution">7.4 Optimal Agent Workflow Execution</a></h3>
+<p>The Knowledge Gradient applies to inference routing decisions:</p>
+<p><strong>Multi-endpoint architecture</strong> (<code>src/gaius/inference/client.py</code>):</p>
+<ul>
+<li><strong>Reasoning</strong>: DeepSeek-R1 or Qwen-32B for complex analysis</li>
+<li><strong>Coding</strong>: Specialized models for code generation</li>
+<li><strong>Fast</strong>: Lightweight models for low-latency queries</li>
+<li><strong>Evaluation</strong>: XAI Grok for outsider perspective</li>
+</ul>
+<p>Each endpoint has different costs (latency, tokens, quality). The KG framework selects the endpoint that maximizes expected value:</p>
+<pre><code>KG_endpoint(q) = E[improvement | query q, endpoint e] - λ × cost(e)
+</code></pre>
+<p><strong>Agent evolution as compute investment</strong>:
+Background optimization cycles (<code>/evolve</code>) improve agent prompts over time. This is a long-term KG investment:</p>
+<ul>
+<li>Immediate cost: Compute for optimization</li>
+<li>Deferred benefit: Better agent performance on future queries</li>
+</ul>
+<p>The evolution daemon runs during idle periods, maximizing resource utilization.</p>
+<hr />
+<h2 id="8-the-explain-command-contextual-interpretation"><a class="header" href="#8-the-explain-command-contextual-interpretation">8. The /explain Command: Contextual Interpretation</a></h2>
+<p>The <code>/explain</code> command invokes local LLM interpretation of grid state (<code>src/gaius/core/minigrids.py:368-460</code>):</p>
+<pre><code class="language-python">prompt = f"""You are explaining a 19×19 grid visualization of a knowledge base to a user.
+
+Context:
+- Grid coverage: {grid_data.coverage:.1%}
+- Total documents: {grid_data.n_documents}
+- At cursor ({cursor_x}, {cursor_y}): {point.title}
+- H0 (components): {tda_features.h0_count}
+- H1 (loops): {tda_features.h1_count}
+- H2 (voids): {tda_features.h2_count}
+- Topological entropy: {tda_features.entropy:.3f}
+
+Explain in 2-3 sentences:
+1. What the Iso view reveals about the information domain structure
+2. How the user should interpret high vs low elevation areas
+3. What the relationship between grid position and semantic meaning implies
+"""
+</code></pre>
+<p>The explanation combines:</p>
+<ul>
+<li><strong>TDA features</strong>: Topological summary statistics</li>
+<li><strong>Spatial context</strong>: Cursor position and local neighborhood</li>
+<li><strong>View state</strong>: Current mode and overlay settings</li>
+</ul>
+<p>This provides a natural language interpretation that bridges the gap between mathematical features and human understanding.</p>
+<hr />
+<h2 id="9-implementation-details"><a class="header" href="#9-implementation-details">9. Implementation Details</a></h2>
+<h3 id="91-projection-pipeline"><a class="header" href="#91-projection-pipeline">9.1 Projection Pipeline</a></h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    Knowledge Base (Markdown)                      │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Vector Embeddings (768-D)                      │
+│                    via Nomic / sentence-transformers              │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Qdrant Storage                                 │
+│                    (scroll retrieval with metadata)               │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    UMAP Projection                                │
+│                    n_neighbors=15, min_dist=0.1, metric=cosine    │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Normalization to [0,18] × [0,18]               │
+│                    Quantization to integer grid                   │
+└─────────────────────────────────────┬───────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    GridData                                       │
+│                    positions, allocations, bidirectional maps     │
+│                    raw_embeddings preserved for TDA               │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="92-tda-computation"><a class="header" href="#92-tda-computation">9.2 TDA Computation</a></h3>
+<pre><code class="language-python"># From src/gaius/core/tda.py
+# 1. Subsample if necessary (ripser is O(n³) worst case)
+if n_points &gt; max_points:  # default 500
+    indices = np.random.choice(n_points, max_points, replace=False)
+    sampled_embeddings = embeddings[indices]
+
+# 2. Compute persistent homology
+result = ripser.ripser(sampled_embeddings, maxdim=2, metric="cosine")
+diagrams = result['dgms']  # [H0_diagram, H1_diagram, H2_diagram]
+
+# 3. Extract features
+for dim, diagram in enumerate(diagrams):
+    for birth, death in diagram:
+        if np.isfinite(death):
+            intervals.append(PersistenceInterval(birth, death, dim))
+
+# 4. Generate bounding boxes for visualization
+h1_cycles = compute_bounding_boxes(intervals, grid_coords, dimension=1)
+h2_voids = compute_bounding_boxes(intervals, grid_coords, dimension=2)
+</code></pre>
+<h3 id="93-geometry-pipeline"><a class="header" href="#93-geometry-pipeline">9.3 Geometry Pipeline</a></h3>
+<pre><code class="language-python"># From src/gaius/core/geometry.py
+# 1. Build k-NN graph
+knn_graph, distances = self._build_knn_graph(embeddings)
+
+# 2. Compute Ollivier-Ricci curvature
+if GraphRicciCurvature available:
+    orc = OllivierRicci(graph, alpha=0.5, method="OTD")
+    orc.compute_ricci_curvature()
+    # Extract per-node curvatures from edge curvatures
+else:
+    # Fallback: variance-based approximation
+    curvatures = self._compute_curvature_fallback(graph, embeddings)
+
+# 3. Compute gradient field (direction of semantic change)
+gradients = self._compute_gradients_2d(positions, curvatures, knn_graph)
+
+# 4. Compute divergence (sources and sinks)
+divergence = self._compute_divergence(gradients, knn_graph)
+</code></pre>
+<h3 id="94-state-persistence"><a class="header" href="#94-state-persistence">9.4 State Persistence</a></h3>
+<p>Grid state persists to PostgreSQL for history tracking and multi-instance sharing:</p>
+<pre><code class="language-sql">-- From src/gaius/storage/grid_state.py
+
+grid_snapshots:
+  id, created_at, kb_root, embedding_model, projection_method
+  n_documents, coverage, h0_count, h1_count, h2_count, entropy
+  is_current, metadata
+
+grid_points:
+  snapshot_id, x, y, doc_path, doc_title, embedding_id, cluster_id
+
+grid_embeddings:
+  snapshot_id, embedding_index, vector, grid_x, grid_y
+
+grid_tda_features:
+  snapshot_id, h1_cycles, h2_voids, components, risk_scores, intervals
+</code></pre>
+<p>This enables:</p>
+<ul>
+<li>Historical comparison of belief states</li>
+<li>Recovery after session interruption</li>
+<li>Multi-instance coordination</li>
+</ul>
+<hr />
+<h2 id="10-roadmap-from-theory-to-algorithm"><a class="header" href="#10-roadmap-from-theory-to-algorithm">10. Roadmap: From Theory to Algorithm</a></h2>
+<h3 id="101-current-state"><a class="header" href="#101-current-state">10.1 Current State</a></h3>
+<p>The Knowledge Gradient is currently an <strong>interpretive framework</strong>:</p>
+<ul>
+<li>Visual cues (curvature, entropy, risk) guide human intuition</li>
+<li>Manual exploration via keyboard navigation and tenuki</li>
+<li>Human-in-the-loop decision making for all consequential actions</li>
+<li>Compute costs implicit (human awareness of model selection)</li>
+</ul>
+<h3 id="102-near-term-q1-2025"><a class="header" href="#102-near-term-q1-2025">10.2 Near-Term (Q1 2025)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Description</th></tr></thead><tbody>
+<tr><td><strong>Uncertainty quantification</strong></td><td>Per-cell confidence intervals displayed on grid</td></tr>
+<tr><td><strong>Automated tenuki</strong></td><td>System suggests high-KG positions; human confirms</td></tr>
+<tr><td><strong>Compute cost tracking</strong></td><td>Status bar shows inference cost per session</td></tr>
+<tr><td><strong>Profile/domain refactoring</strong></td><td>None semantics implemented as specified</td></tr>
+</tbody></table>
+</div>
+<h3 id="103-medium-term-2025"><a class="header" href="#103-medium-term-2025">10.3 Medium-Term (2025)</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Description</th></tr></thead><tbody>
+<tr><td><strong>Acquisition functions</strong></td><td>Explicit KG computation over grid positions</td></tr>
+<tr><td><strong>Expected improvement</strong></td><td>Quantified value of information per query</td></tr>
+<tr><td><strong>Compute-aware routing</strong></td><td>KG_adjusted with explicit cost terms</td></tr>
+<tr><td><strong>Multi-fidelity inference</strong></td><td>Adaptive model selection based on query value</td></tr>
+</tbody></table>
+</div>
+<h3 id="104-long-term"><a class="header" href="#104-long-term">10.4 Long-Term</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Description</th></tr></thead><tbody>
+<tr><td><strong>Full KG optimization loop</strong></td><td>Autonomous exploration with human oversight</td></tr>
+<tr><td><strong>Exploration policies</strong></td><td>Learned policies for different domain types</td></tr>
+<tr><td><strong>Portfolio optimization</strong></td><td>Balance across multiple research threads</td></tr>
+<tr><td><strong>Cross-instance coordination</strong></td><td>Distributed exploration across Gaius instances</td></tr>
+</tbody></table>
+</div>
+<hr />
+<h2 id="references"><a class="header" href="#references">References</a></h2>
+<ul>
+<li>Powell, W. B. (2010). "The Knowledge Gradient for Optimal Learning." In <em>Wiley Encyclopedia of Operations Research and Management Science</em>.</li>
+<li>Carlsson, G. (2009). "Topology and Data." <em>Bulletin of the American Mathematical Society</em>.</li>
+<li>McInnes, L., Healy, J., &amp; Melville, J. (2018). "UMAP: Uniform Manifold Approximation and Projection for Dimension Reduction."</li>
+<li>Ollivier, Y. (2009). "Ricci curvature of Markov chains on metric spaces." <em>Journal of Functional Analysis</em>.</li>
+</ul>
+<hr />
+<p><em>This document establishes the compute-centric foundation for Gaius architecture. It serves as the shared understanding for ongoing development and the basis for the technical refactoring from domain-specific exemplars to domain-agnostic infrastructure.</em></p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="the-board-widget"><a class="header" href="#the-board-widget">The Board Widget</a></h1>
 <p>The Board widget is the visual core of Gaius—a Textual <code>Static</code> widget that renders the 19×19 grid with all active overlays.</p>
 <h2 id="rendering-pipeline"><a class="header" href="#rendering-pipeline">Rendering Pipeline</a></h2>
@@ -1385,7 +2009,7 @@ vLLM Direct          healthy   DEV FALLBACK - direct HTTP (no auth)
 <li><strong>Phase 3</strong>: Migrate internal traffic to KServe gRPC interface</li>
 </ol>
 <p>The gRPC gateway pattern ensures applications don't need modification during migration—only the gateway configuration changes.</p>
-<h2 id="references"><a class="header" href="#references">References</a></h2>
+<h2 id="references-1"><a class="header" href="#references-1">References</a></h2>
 <ul>
 <li><a href="https://github.com/kserve/open-inference-protocol">Open Inference Protocol</a> - Wire format specification</li>
 <li><a href="https://www.cncf.io/blog/2025/06/18/announcing-kserve-v0-15-advancing-generative-ai-model-serving/">KServe v0.15 Announcement</a> - Envoy AI Gateway integration</li>
@@ -1667,8 +2291,8 @@ uv sync
 /clusters           # Show connected components
 </code></pre>
 <h3 id="view-commands"><a class="header" href="#view-commands">View Commands</a></h3>
-<pre><code>/overlay h1         # Set overlay mode
-/mode pension       # Set view mode
+<pre><code>/overlay topology   # Set overlay mode
+/mode theta         # Set view mode
 /zoom D4-F6         # Focus on region (future)
 /screenshot         # Save current view (future)
 </code></pre>
@@ -1723,8 +2347,8 @@ Error: /goto requires a position argument. Usage: /goto &lt;position&gt;
 <h2 id="integration-with-key-bindings"><a class="header" href="#integration-with-key-bindings">Integration with Key Bindings</a></h2>
 <p>Many common commands have key binding equivalents:</p>
 <div class="table-wrapper"><table><thead><tr><th>Command</th><th>Binding</th><th>Notes</th></tr></thead><tbody>
-<tr><td><code>/overlay h1</code></td><td><code>o</code></td><td>Cycle mode</td></tr>
-<tr><td><code>/mode pension</code></td><td><code>v</code></td><td>Toggle mode</td></tr>
+<tr><td><code>/overlay topology</code></td><td><code>o</code></td><td>Cycle mode</td></tr>
+<tr><td><code>/mode theta</code></td><td><code>v</code></td><td>Toggle mode</td></tr>
 <tr><td><code>/round</code></td><td><code>s</code></td><td>Swarm round</td></tr>
 <tr><td><code>/domain</code></td><td><code>d</code></td><td>Opens modal</td></tr>
 </tbody></table>
@@ -2146,6 +2770,190 @@ GAIUS_KB_SECRET_KEY=...
 </ul>
 <p>By projecting these onto a navigable grid with overlays and keyboard-driven interaction, we make the invisible visible—and navigable.</p>
 <p>This is augmentation, not replacement. The human remains in control, with enhanced perception of complex systems.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="co-creation-with-code-agents"><a class="header" href="#co-creation-with-code-agents">Co-Creation with Code Agents</a></h1>
+<p>Gaius represents a novel architectural pattern: an application co-created with AI code agents, where the development process itself shapes the system's design.</p>
+<h2 id="the-co-creation-paradigm"><a class="header" href="#the-co-creation-paradigm">The Co-Creation Paradigm</a></h2>
+<p>Traditional software development follows a clear separation: humans design, humans implement, humans document. Gaius challenges this by integrating Claude Code (powered by Claude Opus 4.5) as a first-class development partner.</p>
+<p>This isn't "AI-assisted coding" in the conventional sense. It's a symbiotic development process where:</p>
+<ol>
+<li><strong>The human provides vision and judgment</strong> — strategic direction, quality assessment, architectural taste</li>
+<li><strong>The code agent provides implementation velocity</strong> — exploring codebases, generating code, maintaining consistency</li>
+<li><strong>The system evolves through dialogue</strong> — features emerge from conversation, not specification documents</li>
+</ol>
+<h3 id="implications-for-architecture"><a class="header" href="#implications-for-architecture">Implications for Architecture</a></h3>
+<p>When an AI agent is a development partner, certain architectural choices become natural:</p>
+<p><strong>Interface Parity</strong>: CLI, TUI, and MCP interfaces must provide equivalent functionality. Why? Because the code agent (via MCP) needs access to the same operations the human uses (via TUI). Parity isn't a nice-to-have; it's essential for the agent to effectively participate in development and testing.</p>
+<p><strong>Living Documentation in the KB</strong>: Command references live in the Knowledge Base (<code>[[current/commands/]]</code>), not frozen in mdbook. The command set evolves as the agent and human add features together. Static documentation would be perpetually stale.</p>
+<p><strong>Self-Describing Systems</strong>: The MCP tools are the API. The CLI commands are the operations. When these are well-named and well-documented, the code agent can discover and use them without additional instruction.</p>
+<h2 id="the-knowledge-base-as-shared-memory"><a class="header" href="#the-knowledge-base-as-shared-memory">The Knowledge Base as Shared Memory</a></h2>
+<p>A key insight: the KB serves as shared context between human and agent across sessions.</p>
+<h3 id="what-belongs-in-the-kb-vs-mdbook"><a class="header" href="#what-belongs-in-the-kb-vs-mdbook">What Belongs in the KB vs. mdbook</a></h3>
+<div class="table-wrapper"><table><thead><tr><th>KB (<code>build/dev/</code>)</th><th>mdbook (<code>docs/</code>)</th></tr></thead><tbody>
+<tr><td>Command reference (evolving)</td><td>Design philosophy (stable)</td></tr>
+<tr><td>Current research threads</td><td>Architectural foundations</td></tr>
+<tr><td>Session notes and decisions</td><td>Core concepts</td></tr>
+<tr><td>Feature-specific documentation</td><td>User guides</td></tr>
+<tr><td>Agent-generated analysis</td><td>Contributing guidelines</td></tr>
+</tbody></table>
+</div>
+<p>The distinction: <strong>KB content may change between sessions</strong> as features evolve. <strong>mdbook content captures enduring principles</strong> that guide the evolution.</p>
+<h3 id="example-the-commands-directory"><a class="header" href="#example-the-commands-directory">Example: The Commands Directory</a></h3>
+<p>The command reference in <code>[[current/commands/]]</code> was created during a session where we:</p>
+<ol>
+<li>Audited all commands across CLI, TUI, and MCP</li>
+<li>Identified parity gaps</li>
+<li>Documented each interface comprehensively</li>
+</ol>
+<p>This documentation now serves multiple purposes:</p>
+<ul>
+<li><strong>For humans</strong>: Quick reference, training material</li>
+<li><strong>For code agents</strong>: Discovery of available operations</li>
+<li><strong>For development</strong>: Gap analysis, parity tracking</li>
+</ul>
+<p>If we added the command reference to mdbook, it would be outdated within days. In the KB, it can evolve with the system.</p>
+<h2 id="bdd-as-collaborative-specification"><a class="header" href="#bdd-as-collaborative-specification">BDD as Collaborative Specification</a></h2>
+<p>Behavior-Driven Development (BDD) takes on new significance in co-created systems.</p>
+<h3 id="feature-files-as-contracts"><a class="header" href="#feature-files-as-contracts">Feature Files as Contracts</a></h3>
+<p>Gherkin feature files (<code>features/*.feature</code>) serve as:</p>
+<ol>
+<li><strong>Executable specifications</strong> — Tests that verify behavior</li>
+<li><strong>Agent-readable requirements</strong> — Clear, structured descriptions the code agent can understand</li>
+<li><strong>Living documentation</strong> — Always synchronized with actual behavior</li>
+</ol>
+<pre><code class="language-gherkin">Feature: Wiki Link Resolution
+  As a knowledge worker
+  I want broken wiki links to resolve via search
+  So that the knowledge graph grows organically
+
+  Scenario: Selecting an unresolved wiki link
+    Given a file "test.md" containing "[[nonexistent-topic]]"
+    When I select the broken link in the graph panel
+    Then a search runs for "nonexistent-topic"
+    And a new zettelkasten note is created
+    And the original link is updated to point to the new note
+</code></pre>
+<p>This scenario was implemented in a single session. The code agent:</p>
+<ul>
+<li>Read the feature file to understand requirements</li>
+<li>Implemented the feature across multiple files</li>
+<li>Created tests to verify the behavior</li>
+</ul>
+<h3 id="scenarios-as-design-discussions"><a class="header" href="#scenarios-as-design-discussions">Scenarios as Design Discussions</a></h3>
+<p>BDD scenarios often emerge from human-agent dialogue:</p>
+<blockquote>
+<p><strong>Human</strong>: "When I click a broken link, instead of an error, can it search and create a note?"</p>
+<p><strong>Agent</strong>: "So the flow would be: detect missing target → run search → synthesize note → update original link?"</p>
+<p><strong>Human</strong>: "Yes, and add a backlink from the new note to the origin."</p>
+</blockquote>
+<p>This conversation becomes a scenario. The scenario becomes a test. The test drives the implementation.</p>
+<h2 id="interface-parity-as-architectural-principle"><a class="header" href="#interface-parity-as-architectural-principle">Interface Parity as Architectural Principle</a></h2>
+<p>The three interfaces serve different users:</p>
+<div class="table-wrapper"><table><thead><tr><th>Interface</th><th>Primary User</th><th>Interaction Pattern</th></tr></thead><tbody>
+<tr><td><strong>TUI</strong></td><td>Human (interactive)</td><td>Real-time visualization, keyboard navigation</td></tr>
+<tr><td><strong>CLI</strong></td><td>Human (scripting), CI/CD</td><td>JSON output, automation</td></tr>
+<tr><td><strong>MCP</strong></td><td>Code agents, integrations</td><td>Structured tool calls</td></tr>
+</tbody></table>
+</div>
+<h3 id="why-parity-matters"><a class="header" href="#why-parity-matters">Why Parity Matters</a></h3>
+<p>When interfaces drift apart:</p>
+<ul>
+<li>The code agent can't test what the human experiences</li>
+<li>Automation scripts break when TUI adds features</li>
+<li>Documentation fragments across interfaces</li>
+</ul>
+<p>Gaius addresses this through:</p>
+<ol>
+<li><strong>Shared core functions</strong> — CLI and TUI call the same underlying methods</li>
+<li><strong>MCP as the comprehensive API</strong> — 80+ tools covering all operations</li>
+<li><strong>Regular parity audits</strong> — Tracking gaps in <code>[[current/commands/index]]</code></li>
+</ol>
+<h3 id="the-parity-matrix"><a class="header" href="#the-parity-matrix">The Parity Matrix</a></h3>
+<p>The command coverage matrix explicitly tracks which operations are available where:</p>
+<pre><code>| Command      | CLI | TUI | MCP |
+|--------------|-----|-----|-----|
+| /search      |  ✓  |  ✓  |  ✓  |  ← Full parity
+| /model add   |  ✓  |  -  |  ✓  |  ← TUI gap (priority)
+| /init        |  -  |  ✓  |  -  |  ← TUI-specific (OK)
+</code></pre>
+<p>This matrix is itself a development artifact that guides prioritization.</p>
+<h2 id="practical-patterns"><a class="header" href="#practical-patterns">Practical Patterns</a></h2>
+<h3 id="pattern-1-agent-discoverable-operations"><a class="header" href="#pattern-1-agent-discoverable-operations">Pattern 1: Agent-Discoverable Operations</a></h3>
+<p>Name commands and tools descriptively:</p>
+<ul>
+<li><code>scheduler_health_check</code> not <code>shc</code></li>
+<li><code>/evolve trigger</code> not <code>/evo t</code></li>
+</ul>
+<p>The code agent reads these names. Clear naming reduces confusion.</p>
+<h3 id="pattern-2-json-first-cli"><a class="header" href="#pattern-2-json-first-cli">Pattern 2: JSON-First CLI</a></h3>
+<p>CLI commands return structured JSON by default:</p>
+<pre><code class="language-bash">uv run gaius-cli --cmd "/state" --format json
+</code></pre>
+<p>This enables:</p>
+<ul>
+<li>Agent parsing of command output</li>
+<li>Scripted verification of behavior</li>
+<li>Pipeline integration</li>
+</ul>
+<h3 id="pattern-3-incremental-documentation"><a class="header" href="#pattern-3-incremental-documentation">Pattern 3: Incremental Documentation</a></h3>
+<p>Don't write comprehensive documentation upfront. Let it emerge:</p>
+<ol>
+<li>Implement feature with agent</li>
+<li>Agent documents as it implements</li>
+<li>Human reviews and refines</li>
+<li>Documentation evolves with feature</li>
+</ol>
+<h3 id="pattern-4-session-handoff"><a class="header" href="#pattern-4-session-handoff">Pattern 4: Session Handoff</a></h3>
+<p>The KB preserves context across sessions:</p>
+<ul>
+<li><code>[[scratch/YYYY-MM-DD/]]</code> — Daily working notes</li>
+<li><code>[[current/commands/]]</code> — Living reference</li>
+<li>Research threads — Ongoing investigations</li>
+</ul>
+<p>When a new session starts, the agent can read recent KB entries to resume context.</p>
+<h2 id="the-meta-principle"><a class="header" href="#the-meta-principle">The Meta-Principle</a></h2>
+<p><strong>Systems designed for co-creation with code agents are inherently more maintainable.</strong></p>
+<p>Why? Because the requirements for agent collaboration—clear interfaces, structured data, living documentation, testable behavior—are the same requirements for long-term maintainability.</p>
+<p>Designing for an AI collaborator forces us to:</p>
+<ul>
+<li>Make implicit knowledge explicit</li>
+<li>Structure operations consistently</li>
+<li>Document as we build</li>
+<li>Test what we document</li>
+</ul>
+<p>These are good practices regardless of whether an agent is involved. The agent just makes them essential.</p>
+<h2 id="future-directions"><a class="header" href="#future-directions">Future Directions</a></h2>
+<h3 id="agent-initiated-evolution"><a class="header" href="#agent-initiated-evolution">Agent-Initiated Evolution</a></h3>
+<p>Currently, the human initiates feature development. Future systems might:</p>
+<ul>
+<li>Have the agent propose features based on usage patterns</li>
+<li>Automatically generate BDD scenarios from user feedback</li>
+<li>Self-document new capabilities as they're added</li>
+</ul>
+<h3 id="multi-agent-development"><a class="header" href="#multi-agent-development">Multi-Agent Development</a></h3>
+<p>Gaius already uses multi-agent swarms for analysis. The same pattern could apply to development:</p>
+<ul>
+<li>Architect agent proposes structure</li>
+<li>Implementation agent writes code</li>
+<li>Critic agent reviews</li>
+<li>Documentation agent updates KB</li>
+</ul>
+<h3 id="adaptive-interfaces"><a class="header" href="#adaptive-interfaces">Adaptive Interfaces</a></h3>
+<p>If the agent tracks which operations are used most, it could:</p>
+<ul>
+<li>Suggest adding frequently-used MCP tools to TUI</li>
+<li>Identify commands that should be automated</li>
+<li>Propose interface simplifications</li>
+</ul>
+<h2 id="conclusion"><a class="header" href="#conclusion">Conclusion</a></h2>
+<p>Gaius isn't just a tool for augmented cognition—it's a case study in augmented development. The co-creation paradigm, where human vision and AI implementation velocity combine, produces systems that are:</p>
+<ul>
+<li><strong>More consistent</strong> — The agent enforces patterns across the codebase</li>
+<li><strong>Better documented</strong> — Documentation emerges from the development dialogue</li>
+<li><strong>More testable</strong> — BDD scenarios are natural outputs of requirement discussions</li>
+<li><strong>Easier to maintain</strong> — Clear interfaces required for agent collaboration benefit all maintainers</li>
+</ul>
+<p>The KB as shared memory, interface parity as principle, and BDD as collaborative specification—these patterns aren't specific to Gaius. They're applicable to any system designed for human-AI co-creation.</p>
+<p>The future of software development isn't human OR machine. It's human AND machine, each contributing their strengths to create systems neither could build alone.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="inspirations"><a class="header" href="#inspirations">Inspirations</a></h1>
 <p>Gaius stands on the shoulders of giants. This section traces the lineage of ideas that inform its design.</p>
 <h2 id="the-polymath-tradition"><a class="header" href="#the-polymath-tradition">The Polymath Tradition</a></h2>
