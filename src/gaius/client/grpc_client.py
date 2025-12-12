@@ -256,6 +256,10 @@ class GrpcEngineClient:
                 return await self._call_health(action, params, timeout)
             elif service == "Cognition":
                 return await self._call_cognition(action, params, timeout)
+            elif service == "Workload":
+                return await self._call_workload(action, params, timeout)
+            elif service == "Embedding":
+                return await self._call_embedding(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -616,6 +620,84 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Cognition action: {action}")
+
+    async def _call_workload(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Workload service calls via gRPC."""
+        from google.protobuf.json_format import MessageToDict
+        from ..engine.generated import (
+            BeginWorkloadRequest,
+            CompleteWorkloadRequest,
+            WorkloadType as ProtoWorkloadType,
+        )
+
+        if action == "begin":
+            # Map string workload type to proto enum
+            workload_type_str = params.get("workload_type", "INIT")
+            workload_type_map = {
+                "INIT": ProtoWorkloadType.WORKLOAD_INIT,
+                "SWARM": ProtoWorkloadType.WORKLOAD_SWARM,
+                "INFERENCE": ProtoWorkloadType.WORKLOAD_INFERENCE,
+                "EMBEDDING": ProtoWorkloadType.WORKLOAD_EMBEDDING,
+            }
+            workload_type = workload_type_map.get(
+                workload_type_str, ProtoWorkloadType.WORKLOAD_INIT
+            )
+
+            request = BeginWorkloadRequest(
+                workload_id=params.get("workload_id", ""),
+                workload_type=workload_type,
+                required_capabilities=params.get("required_capabilities", []),
+                priority=params.get("priority", "NORMAL"),
+                estimated_duration_s=params.get("estimated_duration_s", 60),
+                estimated_memory_mb=params.get("estimated_memory_mb", 0),
+            )
+            response = await self._gaius_stub.BeginWorkload(request, timeout=timeout)
+            result = MessageToDict(response, preserving_proto_field_name=True)
+            return result
+
+        elif action == "complete":
+            request = CompleteWorkloadRequest(
+                workload_id=params.get("workload_id", ""),
+            )
+            await self._gaius_stub.CompleteWorkload(request, timeout=timeout)
+            return {"success": True}
+
+        elif action == "active":
+            response = await self._gaius_stub.GetActiveWorkloads(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            result = MessageToDict(response, preserving_proto_field_name=True)
+            return result
+
+        else:
+            raise ValueError(f"Unknown Workload action: {action}")
+
+    async def _call_embedding(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Embedding service calls via gRPC."""
+        from ..engine.generated import EmbedTextsRequest
+
+        if action == "embed_texts":
+            texts = params.get("texts", [])
+            model = params.get("model", "")
+
+            request = EmbedTextsRequest(texts=texts, model=model)
+            response = await self._gaius_stub.EmbedTexts(request, timeout=timeout)
+
+            # Convert embeddings to lists
+            embeddings = [list(v.values) for v in response.embeddings]
+            return {
+                "embeddings": embeddings,
+                "model_used": response.model_used,
+                "latency_ms": response.latency_ms,
+            }
+
+        elif action == "model_info":
+            # Not implemented on server yet, return placeholder
+            return {"model": "all-MiniLM-L6-v2", "dimension": 384}
+
+        else:
+            raise ValueError(f"Unknown Embedding action: {action}")
 
     # =========================================================================
     # Swarm Operations

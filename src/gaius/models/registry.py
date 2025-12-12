@@ -108,6 +108,17 @@ class VLLMConfig:
 
 
 @dataclass
+class ResourceRequirements:
+    """Resource requirements for running a model.
+
+    Used by the orchestrator for workload-driven GPU management.
+    """
+
+    num_gpus: int = 1
+    memory_mb: int = 0
+
+
+@dataclass
 class ModelSpec:
     """Specification for a model in the registry."""
 
@@ -125,6 +136,9 @@ class ModelSpec:
     context_length: int = 8192
     embedding_dim: int | None = None  # For embedding models
     parameters_b: float | None = None  # Model size in billions
+
+    # GPU resource requirements
+    memory_mb: int = 0  # GPU memory footprint in MB (0 = estimate from parameters)
 
     # Inference settings
     default_temperature: float = 0.7
@@ -153,6 +167,23 @@ class ModelSpec:
     def score_for_task(self, task: TaskType) -> float:
         """Get affinity score for a task (0-1)."""
         return self.task_scores.get(task, 0.0)
+
+    def get_resource_requirements(self) -> ResourceRequirements:
+        """Get resource requirements for this model.
+
+        Returns:
+            ResourceRequirements with GPU count and memory estimate
+        """
+        num_gpus = 1
+        if self.vllm_config:
+            num_gpus = self.vllm_config.tensor_parallel_size
+
+        memory = self.memory_mb
+        if memory == 0 and self.parameters_b:
+            # Estimate: ~2 bytes/param for fp16 + 20% overhead
+            memory = int(self.parameters_b * 2 * 1024 * 1.2)
+
+        return ResourceRequirements(num_gpus=num_gpus, memory_mb=memory)
 
     def serve_command(
         self,
@@ -216,6 +247,7 @@ QWQ_32B = ModelSpec(
     },
     context_length=32768,
     parameters_b=32,
+    memory_mb=80000,  # ~80GB with TP=4 for full context
     default_temperature=0.6,
     default_max_tokens=4096,
     vllm_config=VLLMConfig(
@@ -247,6 +279,7 @@ DEEPSEEK_R1_DISTILL = ModelSpec(
     },
     context_length=65536,
     parameters_b=32,
+    memory_mb=80000,  # ~80GB with TP=4 for long context
     default_temperature=0.6,
     default_max_tokens=4096,
     vllm_config=VLLMConfig(
@@ -275,6 +308,7 @@ ORCHESTRATOR_8B = ModelSpec(
     },
     context_length=32768,
     parameters_b=8,
+    memory_mb=8000,  # ~8GB for 8B model on single GPU
     default_temperature=0.3,
     default_max_tokens=1024,
     vllm_config=VLLMConfig(
@@ -304,6 +338,7 @@ GLM_46V_FLASH = ModelSpec(
     },
     context_length=65536,
     parameters_b=9,
+    memory_mb=24000,  # ~24GB with TP=4 for vision + long context
     default_temperature=0.7,
     default_max_tokens=8192,
     vllm_config=VLLMConfig(
@@ -335,6 +370,7 @@ MISTRAL_7B = ModelSpec(
     },
     context_length=32768,
     parameters_b=7,
+    memory_mb=7000,  # ~7GB for 7B model
     default_temperature=0.7,
     default_max_tokens=2048,
     vllm_config=VLLMConfig(
@@ -365,6 +401,7 @@ QWEN3_CODER = ModelSpec(
     },
     context_length=200000,
     parameters_b=30,
+    memory_mb=20000,  # MoE model, active params ~3B, ~20GB with TP=2
     default_temperature=0.7,
     default_max_tokens=2048,
     vllm_config=VLLMConfig(
@@ -386,6 +423,7 @@ NOMIC_EMBED_TEXT = ModelSpec(
         TaskType.TEXT_EMBEDDING: 1.0,
     },
     embedding_dim=768,
+    memory_mb=800,  # ~800MB for nomic text embedding model
     description="Nomic text embeddings - unified space with vision model",
     tags=["embedding", "text", "retrieval"],
 )
@@ -400,6 +438,7 @@ NOMIC_EMBED_VISION = ModelSpec(
         TaskType.VISION_EMBEDDING: 1.0,
     },
     embedding_dim=768,  # Same as text!
+    memory_mb=1200,  # ~1.2GB for nomic vision embedding model
     description="Nomic vision embeddings - unified space with text model",
     tags=["embedding", "vision", "multimodal"],
 )
@@ -475,6 +514,7 @@ QWEN3_8B = ModelSpec(
     },
     context_length=40960,
     parameters_b=8.2,
+    memory_mb=8500,  # ~8.5GB for 8B model
     default_temperature=0.7,
     default_max_tokens=2048,
     vllm_config=VLLMConfig(
@@ -498,6 +538,7 @@ META_LLAMA_3_1_8B_INSTRUCT = ModelSpec(
     },
     context_length=32768,
     parameters_b=8.0,
+    memory_mb=10000,  # ~10GB with TP=2
     default_temperature=0.7,
     default_max_tokens=2048,
     vllm_config=VLLMConfig(
@@ -506,6 +547,42 @@ META_LLAMA_3_1_8B_INSTRUCT = ModelSpec(
     ),
     description="Llama-3.1-8B Instruct - text generation model with text embedding capabilities",
     tags=["transformers", "safetensors", "llama", "text-generation", "facebook", "meta", "pytorch", "llama-3", "conversational", "en", "de", "fr", "it", "pt", "hi"],
+)
+
+
+# Note: This import is redundant since we're already in registry.py
+# Kept for backwards compatibility with generated ModelSpecs
+# from gaius.models.registry import ModelSpec, VLLMConfig, ModelCapability, TaskType
+
+DEVSTRAL_SMALL_2_24B_INSTRUCT_2512 = ModelSpec(
+    model_id="mistralai/Devstral-Small-2-24B-Instruct-2512",
+    name="Devstral-Small-2-24B-Instruct-2512",
+    provider="vllm",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.CODING,
+        ModelCapability.FUNCTION_CALLING,
+        ModelCapability.VISION_LANGUAGE,
+        ModelCapability.LONG_CONTEXT,
+    ],
+    task_scores={
+        TaskType.CHAT: 0.85,
+        TaskType.CODING: 0.95,
+        TaskType.SWARM_AGENT: 0.80,
+    },
+    context_length=262144,
+    parameters_b=24.0,
+    memory_mb=15000,  # ~15GB with TP=2 (fp8 quantized)
+    default_temperature=0.7,
+    default_max_tokens=2048,
+    default_port=8085,
+    vllm_config=VLLMConfig(
+        tensor_parallel_size=2,
+        max_model_len=65536,
+        trust_remote_code=False,
+    ),
+    description="Devstral Small 2 24B Instruct 2512 - agentic LLM for software engineering tasks with vision capabilities",
+    tags=["vllm", "safetensors", "mistral3", "mistral-common", "fp8", "agentic", "coding", "vision"],
 )
 
 
@@ -522,6 +599,7 @@ class ModelRegistry:
     def _register_defaults(self) -> None:
         """Register default model set."""
         defaults = [
+            DEVSTRAL_SMALL_2_24B_INSTRUCT_2512,
             META_LLAMA_3_1_8B_INSTRUCT,
             QWEN3_8B,
             # Local vLLM models

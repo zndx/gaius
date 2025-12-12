@@ -97,14 +97,14 @@ Application state is centralized in the `GoBoardApp` class:
 ```python
 class GoBoardApp(App):
     # View state
-    mode: str           # "go" or "pension"
-    overlay: str        # "none", "risk", "h1", "swarm"
+    mode: str           # "go", "theta", or "swarm"
+    overlay: str        # "none", "topology", "geometry", "dynamics", "agents"
     cursor: tuple[int, int]
 
     # Data state
     black: set          # Black stone positions
     white: set          # White stone positions
-    alloc: list[list]   # Pension allocation grid
+    alloc: list[list]   # Information density grid (theta view)
     candidates: list    # Marked candidate positions
 
     # Swarm state

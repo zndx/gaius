@@ -56,6 +56,18 @@ from .gaius_service_pb2 import (
     SwarmStreamRequest,
     SwarmEvent,
     SwarmResult,
+    # Workload Management
+    WorkloadType,
+    BeginWorkloadRequest,
+    BeginWorkloadResponse,
+    CompleteWorkloadRequest,
+    EndpointAllocationInfo,
+    ActiveWorkloadInfo,
+    GetActiveWorkloadsResponse,
+    # Embeddings
+    EmbedTextsRequest,
+    EmbedTextsResponse,
+    EmbeddingVector,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
@@ -76,9 +88,6 @@ from .gaius_service_pb2 import (
     # Events
     EventStreamRequest,
     Event,
-    # Init streaming
-    InitCommand,
-    InitEvent,
     # Grid
     ProjectEmbeddingsRequest,
     GridPosition,
@@ -89,6 +98,9 @@ from .gaius_service_pb2 import (
     ComputeTDARequest,
     PersistenceInterval,
     TDAResponse,
+    # Init streaming
+    InitCommand,
+    InitEvent,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -139,6 +151,18 @@ __all__ = [
     "SwarmStreamRequest",
     "SwarmEvent",
     "SwarmResult",
+    # Gaius - Workload Management
+    "WorkloadType",
+    "BeginWorkloadRequest",
+    "BeginWorkloadResponse",
+    "CompleteWorkloadRequest",
+    "EndpointAllocationInfo",
+    "ActiveWorkloadInfo",
+    "GetActiveWorkloadsResponse",
+    # Gaius - Embeddings
+    "EmbedTextsRequest",
+    "EmbedTextsResponse",
+    "EmbeddingVector",
     # Gaius - Evolution
     "EvolutionStatusResponse",
     "TriggerEvolutionRequest",
@@ -159,9 +183,6 @@ __all__ = [
     # Gaius - Events
     "EventStreamRequest",
     "Event",
-    # Gaius - Init
-    "InitCommand",
-    "InitEvent",
     # Gaius - Grid
     "ProjectEmbeddingsRequest",
     "GridPosition",
@@ -172,7 +193,10 @@ __all__ = [
     "ComputeTDARequest",
     "PersistenceInterval",
     "TDAResponse",
-    # Gaius service
+    # Gaius - Init
+    "InitCommand",
+    "InitEvent",
+    # Gaius - Service
     "GaiusServiceStub",
     "GaiusServiceServicer",
     "add_GaiusServiceServicer_to_server",

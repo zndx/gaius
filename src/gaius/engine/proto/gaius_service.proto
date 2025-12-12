@@ -251,6 +251,85 @@ message CognitionActivityResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Workload Management Messages (Yunikorn-Style)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum WorkloadType {
+  WORKLOAD_INIT = 0;
+  WORKLOAD_SWARM = 1;
+  WORKLOAD_INFERENCE = 2;
+  WORKLOAD_EMBEDDING = 3;
+  WORKLOAD_EVOLUTION = 4;
+}
+
+message BeginWorkloadRequest {
+  string workload_id = 1;                    // Unique ID (e.g., "init-2024-12-11-001")
+  WorkloadType workload_type = 2;            // Type of workload
+  repeated string required_capabilities = 3;  // TaskType names (e.g., "text_embedding")
+  string priority = 4;                        // "critical", "high", "normal", "low"
+  int32 estimated_duration_s = 5;            // Hint for makespan planning
+  int32 estimated_memory_mb = 6;             // GPU memory needed (0 for CPU-only)
+  bool preemptible = 7;                      // Can this workload be preempted?
+}
+
+message EndpointAllocationInfo {
+  string endpoint_name = 1;
+  string capability = 2;                      // TaskType value
+  int32 port = 3;
+  bool healthy = 4;
+  string model_id = 5;
+}
+
+message BeginWorkloadResponse {
+  bool success = 1;
+  string workload_id = 2;
+  repeated EndpointAllocationInfo allocated_endpoints = 3;
+  repeated string evicted_endpoints = 4;     // Endpoints stopped to make room
+  repeated string restore_plan = 5;          // Endpoints to restart after completion
+  string error = 6;
+  int32 wait_time_ms = 7;
+}
+
+message CompleteWorkloadRequest {
+  string workload_id = 1;
+}
+
+message ActiveWorkloadInfo {
+  string workload_id = 1;
+  string workload_type = 2;
+  string priority = 3;
+  repeated string capabilities = 4;
+  float elapsed_s = 5;
+  int32 estimated_duration_s = 6;
+  bool is_overdue = 7;
+  repeated string endpoints = 8;
+}
+
+message GetActiveWorkloadsResponse {
+  repeated ActiveWorkloadInfo workloads = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Embedding Service Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+message EmbedTextsRequest {
+  repeated string texts = 1;                  // Texts to embed
+  string model = 2;                           // Optional model ID, uses default if empty
+  string workload_id = 3;                     // Optional workload context
+}
+
+message EmbeddingVector {
+  repeated float values = 1;
+}
+
+message EmbedTextsResponse {
+  repeated EmbeddingVector embeddings = 1;
+  string model_used = 2;
+  int32 latency_ms = 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Health Streaming Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -437,6 +516,18 @@ service GaiusService {
   // Streaming swarm analysis - returns progress events then final result
   // Handles backend wait internally, streaming QUEUED status while waiting
   rpc SwarmStream(SwarmStreamRequest) returns (stream SwarmEvent);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Workload Management (Yunikorn-Style)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc BeginWorkload(BeginWorkloadRequest) returns (BeginWorkloadResponse);
+  rpc CompleteWorkload(CompleteWorkloadRequest) returns (google.protobuf.Empty);
+  rpc GetActiveWorkloads(google.protobuf.Empty) returns (GetActiveWorkloadsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Embeddings (Engine-Managed)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc EmbedTexts(EmbedTextsRequest) returns (EmbedTextsResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Evolution

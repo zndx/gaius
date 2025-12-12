@@ -3,6 +3,11 @@
 Transforms high-dimensional embeddings from Qdrant into 2D coordinates
 suitable for display on the Gaius grid. Supports UMAP and PCA projections.
 
+Multi-vector Architecture:
+    Uses ColBERT multi-vector embeddings via fastembed. Each document has
+    multiple token vectors, aggregated to a single "agg" vector for projection.
+    The aggregated vectors are stored in Qdrant's "agg" named vector.
+
 Usage:
     from gaius.core.projection import GridProjector, GridData
 
@@ -14,20 +19,25 @@ Usage:
     state.black_stones = grid_data.document_positions
 """
 
-import hashlib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-# Import vector search directly to avoid bm25s dependency chain
+logger = logging.getLogger(__name__)
+
+# Import multi-vector search (ColBERT)
 try:
-    from ..inference.search.vector import VectorSearch, get_vector_search
+    from ..inference.search.vector import VectorSearchMulti, get_vector_search
 except ImportError:
     # Fallback: define minimal stubs if dependencies missing
-    VectorSearch = None
+    VectorSearchMulti = None
     get_vector_search = None
+
+if TYPE_CHECKING:
+    from .iso_features import IsoFeatures
 
 
 @dataclass
@@ -74,6 +84,12 @@ class GridData:
 
     # Reverse mapping: grid position to embedding index (for mini-grids)
     grid_to_embedding: dict[tuple[int, int], int] = field(default_factory=dict)
+
+    # Multi-vector per-document embeddings for TDA (list of (n_tokens, dim) arrays)
+    multi_vectors: list[np.ndarray] | None = None
+
+    # Pre-computed IsoFeatures for Iso mini-grid view (computed from multi_vectors)
+    iso_features: "IsoFeatures | None" = None
 
     def __post_init__(self):
         if not self.allocations:
@@ -183,10 +199,11 @@ class GridProjector:
         return self._build_grid_data(grid_coords, metadata, embeddings)
 
     def _retrieve_embeddings(self) -> tuple[np.ndarray, list[dict]]:
-        """Retrieve all embeddings from Qdrant.
+        """Retrieve aggregated embeddings from Qdrant.
 
-        For multi-vector embeddings, fetches aggregated vectors ("agg" named vector).
-        For single-vector embeddings, fetches default vector.
+        For multi-vector (ColBERT), fetches the "agg" named vector which is the
+        mean-pooled aggregation of all token vectors. This provides a single
+        128-dim vector per document for UMAP/TDA projection.
         """
         if self.vector_search is None:
             return np.array([]), []
@@ -199,41 +216,25 @@ class GridProjector:
             try:
                 info = client.get_collection(collection)
                 if info.points_count == 0:
+                    logger.info(f"Collection '{collection}' is empty")
                     return np.array([]), []
-            except Exception:
+            except Exception as e:
+                logger.error(f"Failed to get collection '{collection}': {e}")
                 return np.array([]), []
 
-            # Determine embedding type from config
-            embedding_type = "single"  # Default
-            try:
-                from .config import get_config
-
-                config = get_config()
-                embedding_type = getattr(config.vector_store, "embedding_type", "single")
-            except Exception:
-                pass  # Use default
-
-            # Scroll through all points
+            # Scroll through all points - always fetch "agg" named vector
             all_embeddings = []
             all_metadata = []
 
             offset = None
             batch_size = 100
 
-            # Configure which vectors to fetch
-            if embedding_type == "multi":
-                # Multi-vector: fetch "agg" named vector
-                with_vectors = ["agg"]
-            else:
-                # Single-vector: fetch default vector
-                with_vectors = True
-
             while True:
                 results, offset = client.scroll(
                     collection_name=collection,
                     limit=batch_size,
                     offset=offset,
-                    with_vectors=with_vectors,
+                    with_vectors=["agg"],  # Multi-vector: fetch aggregated vector
                     with_payload=True,
                 )
 
@@ -241,13 +242,8 @@ class GridProjector:
                     break
 
                 for point in results:
-                    # Extract vector based on type
-                    if embedding_type == "multi":
-                        # Named vectors: point.vector is a dict
-                        vector = point.vector.get("agg") if point.vector else None
-                    else:
-                        # Single vector: point.vector is a list
-                        vector = point.vector
+                    # Named vectors: point.vector is a dict with "agg" key
+                    vector = point.vector.get("agg") if point.vector else None
 
                     if vector is not None:
                         all_embeddings.append(vector)
@@ -264,10 +260,13 @@ class GridProjector:
                     break
 
             if all_embeddings:
+                logger.info(f"Retrieved {len(all_embeddings)} embeddings from Qdrant")
                 return np.array(all_embeddings), all_metadata
+            logger.warning("No embeddings found in Qdrant collection")
             return np.array([]), []
 
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to retrieve embeddings from Qdrant: {e}")
             return np.array([]), []
 
     def _project_to_2d(self, embeddings: np.ndarray) -> np.ndarray:
@@ -383,18 +382,66 @@ class GridDataManager:
     def get_grid_data(self, force_refresh: bool = False) -> GridData:
         """Get current grid data, using cache if valid.
 
+        Includes multi-vector retrieval and IsoFeatures computation for
+        the Iso mini-grid view. No fallbacks - multi-vectors are required.
+
         Args:
             force_refresh: If True, bypass cache and recompute
 
         Returns:
-            GridData with current projections
+            GridData with current projections and IsoFeatures
         """
         if self._cached_data is not None and self._cache_valid and not force_refresh:
             return self._cached_data
 
-        self._cached_data = self.projector.project_kb()
+        # Project KB to grid
+        grid_data = self.projector.project_kb()
+
+        # Load multi-vectors and compute IsoFeatures
+        if self.vector_search is not None and grid_data.n_documents > 0:
+            self._compute_iso_features(grid_data)
+
+        self._cached_data = grid_data
         self._cache_valid = True
         return self._cached_data
+
+    def _compute_iso_features(self, grid_data: GridData) -> None:
+        """Load multi-vectors from Qdrant and compute IsoFeatures.
+
+        This is the critical path for eliminating density fallbacks in the
+        Iso mini-grid view. Multi-vectors enable real TDA (ripser H0+H1+H2).
+
+        Args:
+            grid_data: GridData to populate with multi_vectors and iso_features
+        """
+        try:
+            # Retrieve all multi-vectors from Qdrant
+            multi_vectors, metadata = self.vector_search.get_all_multi_vectors()
+
+            if not multi_vectors:
+                logger.warning("No multi-vectors found in Qdrant - Iso view disabled")
+                return
+
+            logger.info(f"Loaded {len(multi_vectors)} multi-vectors for IsoFeatures")
+
+            # Store multi-vectors in grid_data
+            grid_data.multi_vectors = multi_vectors
+
+            # Import and compute IsoFeatures
+            from .iso_features import IsoFeatureComputer
+
+            computer = IsoFeatureComputer(use_cocycles=True)
+            iso_features = computer.compute_all(grid_data, multi_vectors)
+
+            grid_data.iso_features = iso_features
+            logger.info(
+                f"Computed IsoFeatures: {iso_features.n_documents} docs, "
+                f"{iso_features.computation_time:.2f}s, type={iso_features.embedding_type}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to compute IsoFeatures: {e}")
+            # No fallback - iso_features remains None
 
     def invalidate_cache(self) -> None:
         """Mark cache as invalid (e.g., after KB changes)."""
@@ -414,9 +461,10 @@ class GridDataManager:
         return self.get_grid_data(force_refresh=True)
 
     def project_query(self, query: str) -> tuple[int, int] | None:
-        """Project a query to grid coordinates.
+        """Project a query to grid coordinates using ColBERT.
 
-        Useful for showing where a search query would land.
+        Uses the ColBERT embedder to generate multi-vectors for the query,
+        aggregates them, then projects to grid coordinates.
 
         Args:
             query: Search query text
@@ -428,14 +476,16 @@ class GridDataManager:
             return None
 
         try:
-            # Embed the query
-            embedding = self.vector_search.model.encode(
-                query, show_progress_bar=False
-            )
+            # Use ColBERT embedder from vector_search
+            embedder = self.vector_search.embedder
+
+            # Generate query embedding (multi-vector) and aggregate
+            query_multi_vecs = embedder.embed_query(query)
+            query_agg_vec = embedder.aggregate(query_multi_vecs)
 
             # If we have fitted projector, use it
             if self.projector._fitted and self.projector._projector is not None:
-                coords_2d = self.projector._projector.transform([embedding])
+                coords_2d = self.projector._projector.transform([query_agg_vec])
                 grid_coords = self.projector._normalize_to_grid(coords_2d)
                 return (int(grid_coords[0, 0]), int(grid_coords[0, 1]))
 

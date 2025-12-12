@@ -72,6 +72,7 @@ class VLLMProcess:
     tensor_parallel: int = 1
     context_length: int = 32768  # Per-endpoint context length
     max_num_seqs: int = 256  # Max concurrent sequences
+    task: str = "generate"  # vLLM task: generate | embed | classify | reward
 
     # Process state
     process: Optional[asyncio.subprocess.Process] = None
@@ -259,10 +260,14 @@ class VLLMController:
             port = self._allocate_port()
 
             # Create process state
-            # Get max_num_seqs from endpoint config if available
+            # Get max_num_seqs and task from endpoint config if available
             max_num_seqs = 256  # Default
-            if agent_config.endpoint and agent_config.endpoint.max_num_seqs:
-                max_num_seqs = agent_config.endpoint.max_num_seqs
+            task = "generate"  # Default
+            if agent_config.endpoint:
+                if agent_config.endpoint.max_num_seqs:
+                    max_num_seqs = agent_config.endpoint.max_num_seqs
+                if agent_config.endpoint.task:
+                    task = agent_config.endpoint.task
 
             proc = VLLMProcess(
                 agent_alias=agent_alias,
@@ -272,6 +277,7 @@ class VLLMController:
                 tensor_parallel=agent_config.resources.gpus,
                 context_length=agent_config.resources.context_length,
                 max_num_seqs=max_num_seqs,
+                task=task,
                 status=ProcessStatus.STARTING,
             )
             self._processes[agent_alias] = proc
@@ -314,6 +320,12 @@ class VLLMController:
             "--dtype",
             self._dtype,
         ]
+
+        # Add task if not default (generate)
+        if proc.task and proc.task != "generate":
+            cmd.extend(["--task", proc.task])
+            # Embedding models often need trust-remote-code for custom tokenizers
+            cmd.append("--trust-remote-code")
 
         # Add tensor parallelism if needed
         if proc.tensor_parallel > 1:

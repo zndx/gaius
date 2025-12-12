@@ -30,6 +30,7 @@ class EndpointConfig:
     port: int = 8080
     tensor_parallel: int = 1
     max_num_seqs: int = 256  # Max concurrent sequences for vLLM
+    task: str = "generate"  # vLLM task: generate | embed | classify | reward
 
 
 @dataclass
@@ -303,6 +304,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
                     port=safe_get(endpoint_conf, "port", 8080),
                     tensor_parallel=safe_get(endpoint_conf, "tensor-parallel", 1),
                     max_num_seqs=safe_get(endpoint_conf, "max-num-seqs", 256),
+                    task=safe_get(endpoint_conf, "task", "generate"),
                 )
 
             agents[name] = AgentConfig(

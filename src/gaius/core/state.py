@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 class ViewMode(Enum):
     """Primary view modes for the grid."""
     GO = "go"
-    PENSION = "pension"
+    THETA = "theta"  # Information density (theta waves facilitate memory consolidation)
     SWARM = "swarm"
 
 
@@ -132,7 +132,7 @@ class AppState:
     cursor_y: int = 9
 
     # View state
-    view_mode: ViewMode = ViewMode.PENSION
+    view_mode: ViewMode = ViewMode.GO
     overlay_mode: OverlayMode = OverlayMode.NONE
     iso_mode: IsoMode = IsoMode.CURVATURE
 
@@ -149,8 +149,8 @@ class AppState:
     candidates: list = field(default_factory=list)
     show_candidates: bool = False
 
-    # Domain
-    domain: str = "pension asset allocation"
+    # Domain (None = open domain, no constraint applied)
+    domain: str | None = None
 
     # Selected items
     selected_file: Optional[str] = None

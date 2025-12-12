@@ -1,15 +1,17 @@
-"""ColQwen2.5 multimodal embedder for unified text+image embeddings.
+"""ColQwen multimodal embedder for unified text+image embeddings.
 
-Uses colpali-engine's ColQwen2_5 (fine-tuned from Qwen2.5-VL 7B) for:
+Supports both ColQwen2 (colpali-engine 0.3.2) and ColQwen2_5 (0.3.5+):
 - Multi-vector document embeddings (ColBERT-style late interaction)
 - Unified text and image embedding space
 - Safetensors only (no trust_remote_code needed)
 
-Performance: 62.7 NDCG@5 on Vidore-v2, outperforming OpenAI CLIP and other models.
+Models:
+- vidore/colqwen2-v0.1: 2B model, 128-dim, works with colpali-engine 0.3.2
+- nomic-ai/colnomic-embed-multimodal-7b: 7B model, requires colpali-engine 0.3.5+
 
 Usage:
     embedder = ColQwenEmbedder(
-        model_name="nomic-ai/colnomic-embed-multimodal-7b",
+        model_name="vidore/colqwen2-v0.1",  # or "nomic-ai/colnomic-embed-multimodal-7b"
         aggregation="mean",  # For single-vector projection
     )
 
@@ -39,23 +41,69 @@ from PIL import Image
 
 
 # Lazy imports to avoid loading ColQwen unless actually used
+# We support both ColQwen2 (0.3.2) and ColQwen2_5 (0.3.5+)
+_ColQwen2 = None
+_ColQwen2Processor = None
 _ColQwen2_5 = None
 _ColQwen2_5_Processor = None
+_COLPALI_VERSION = None
 
 
 def _ensure_colpali_imports():
-    """Lazy import colpali_engine."""
-    global _ColQwen2_5, _ColQwen2_5_Processor
-    if _ColQwen2_5 is None:
+    """Lazy import colpali_engine with version detection."""
+    global _ColQwen2, _ColQwen2Processor, _ColQwen2_5, _ColQwen2_5_Processor, _COLPALI_VERSION
+
+    if _COLPALI_VERSION is not None:
+        return  # Already imported
+
+    try:
+        import colpali_engine
+        _COLPALI_VERSION = getattr(colpali_engine, "__version__", "0.3.0")
+
+        # ColQwen2 is available in all versions
+        from colpali_engine.models import ColQwen2, ColQwen2Processor
+        _ColQwen2 = ColQwen2
+        _ColQwen2Processor = ColQwen2Processor
+
+        # ColQwen2_5 only available in 0.3.5+
         try:
             from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
-
             _ColQwen2_5 = ColQwen2_5
             _ColQwen2_5_Processor = ColQwen2_5_Processor
-        except ImportError as e:
+        except ImportError:
+            pass  # ColQwen2_5 not available in this version
+
+    except ImportError as e:
+        raise ImportError(
+            "colpali-engine not installed. Install with: uv sync"
+        ) from e
+
+
+def _get_model_class(model_name: str):
+    """Get appropriate ColQwen model and processor classes based on model name.
+
+    Args:
+        model_name: HuggingFace model ID
+
+    Returns:
+        Tuple of (ModelClass, ProcessorClass)
+    """
+    _ensure_colpali_imports()
+
+    # Check if model requires ColQwen2_5
+    is_qwen25_model = "qwen2.5" in model_name.lower() or "colnomic" in model_name.lower()
+
+    if is_qwen25_model:
+        if _ColQwen2_5 is None:
             raise ImportError(
-                "colpali-engine not installed. Install with: uv sync --extra multimodal"
-            ) from e
+                f"Model {model_name} requires ColQwen2_5 from colpali-engine>=0.3.5, "
+                f"but you have version {_COLPALI_VERSION}. "
+                f"Use 'vidore/colqwen2-v0.1' instead, or upgrade colpali-engine "
+                f"(may conflict with vLLM)."
+            )
+        return _ColQwen2_5, _ColQwen2_5_Processor
+    else:
+        return _ColQwen2, _ColQwen2Processor
 
 
 class AggregationMethod(str, Enum):
@@ -77,30 +125,35 @@ class EmbeddingResult:
 
 
 class ColQwenEmbedder:
-    """Multi-vector embedder using ColQwen2.5.
+    """Multi-vector embedder using ColQwen2 or ColQwen2.5.
 
     Stores both multi-vectors (for search quality) and aggregated single vectors
     (for grid projection and TDA).
 
+    Supported models:
+    - vidore/colqwen2-v0.1: 2B model, works with colpali-engine 0.3.2
+    - nomic-ai/colnomic-embed-multimodal-7b: 7B model, requires colpali-engine 0.3.5+
+
     Architecture:
-    - Model: Qwen2.5-VL 7B fine-tuned for document retrieval
     - Output: Multiple 128-dim vectors per document (ColBERT-style)
     - Aggregation: Configurable (mean/max/first) for single-vector tasks
 
-    Memory usage:
-    - fp32: ~14GB VRAM
-    - fp16: ~7GB VRAM (recommended)
-    - int8: ~4GB VRAM (quantization, slight quality loss)
+    Memory usage (vidore/colqwen2-v0.1):
+    - fp32: ~4GB VRAM
+    - bf16: ~2GB VRAM (recommended)
     """
+
+    # Default to ColQwen2 model compatible with colpali-engine 0.3.2
+    DEFAULT_MODEL = "vidore/colqwen2-v0.1"
 
     def __init__(
         self,
-        model_name: str = "nomic-ai/colnomic-embed-multimodal-7b",
+        model_name: str = DEFAULT_MODEL,
         model_revision: str | None = None,
         aggregation: str | AggregationMethod = AggregationMethod.MEAN,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        dtype: torch.dtype = torch.bfloat16,  # fp16 for memory efficiency
-        batch_size: int = 4,  # Small batch for 7B model
+        dtype: torch.dtype = torch.bfloat16,  # bf16 for memory efficiency
+        batch_size: int = 8,  # Larger batch ok for 2B model
     ):
         """Initialize ColQwen embedder.
 
@@ -125,6 +178,9 @@ class ColQwenEmbedder:
         self.dtype = dtype
         self.batch_size = batch_size
 
+        # Get appropriate model and processor classes for this model
+        self._model_class, self._processor_class = _get_model_class(model_name)
+
         # Lazy initialization
         self._model = None
         self._processor = None
@@ -138,7 +194,7 @@ class ColQwenEmbedder:
             if self.model_revision:
                 kwargs["revision"] = self.model_revision
 
-            self._model = _ColQwen2_5.from_pretrained(self.model_name, **kwargs)
+            self._model = self._model_class.from_pretrained(self.model_name, **kwargs)
             self._model.eval()  # Inference mode
 
         return self._model
@@ -151,7 +207,7 @@ class ColQwenEmbedder:
             if self.model_revision:
                 kwargs["revision"] = self.model_revision
 
-            self._processor = _ColQwen2_5_Processor.from_pretrained(
+            self._processor = self._processor_class.from_pretrained(
                 self.model_name, **kwargs
             )
 
@@ -186,7 +242,8 @@ class ColQwenEmbedder:
         with torch.no_grad():
             outputs = self.model(**inputs)
             # outputs: (batch, n_tokens, hidden_dim)
-            multi_vecs = outputs[0].cpu().numpy()  # (n_tokens, 128)
+            # Convert bfloat16 to float32 before numpy (bfloat16 not supported by numpy)
+            multi_vecs = outputs[0].cpu().float().numpy()  # (n_tokens, 128)
 
         # Aggregate to single vector
         agg_vec = self._aggregate(multi_vecs)
@@ -212,7 +269,8 @@ class ColQwenEmbedder:
         with torch.no_grad():
             outputs = self.model(**inputs)
             # outputs: (batch, n_patches, hidden_dim)
-            multi_vecs = outputs[0].cpu().numpy()  # (n_patches, 128)
+            # Convert bfloat16 to float32 before numpy (bfloat16 not supported by numpy)
+            multi_vecs = outputs[0].cpu().float().numpy()  # (n_patches, 128)
 
         # Aggregate to single vector
         agg_vec = self._aggregate(multi_vecs)
@@ -379,7 +437,7 @@ def get_colqwen_embedder(
     Reads settings from config if available.
 
     Args:
-        model_name: Override model name (None = use config)
+        model_name: Override model name (None = use config or default)
         model_revision: Override model revision (None = use config)
         aggregation: Override aggregation method (None = use config)
 
@@ -397,7 +455,7 @@ def get_colqwen_embedder(
 
             if model_name is None:
                 model_name = getattr(
-                    mm_config, "multimodal_model", "nomic-ai/colnomic-embed-multimodal-7b"
+                    mm_config, "multimodal_model", ColQwenEmbedder.DEFAULT_MODEL
                 )
             if model_revision is None:
                 model_revision = getattr(mm_config, "model_revision", None)
@@ -407,7 +465,7 @@ def get_colqwen_embedder(
         except Exception:
             # Use defaults if config not available
             if model_name is None:
-                model_name = "nomic-ai/colnomic-embed-multimodal-7b"
+                model_name = ColQwenEmbedder.DEFAULT_MODEL
 
         _embedder = ColQwenEmbedder(
             model_name=model_name,

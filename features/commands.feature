@@ -77,7 +77,7 @@ Feature: Command System
   Scenario: Cycle view mode with '/view' (no argument)
     Given the view mode is "go"
     When I enter command "/view"
-    Then the view mode should be "pension"
+    Then the view mode should be "theta"
 
   Scenario: Set overlay mode with '/overlay'
     When I enter command "/overlay topology"

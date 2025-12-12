@@ -13,13 +13,13 @@ Feature: View Modes and Overlays
   Scenario: Cycle view modes with 'v'
     Given the view mode is "go"
     When I press "v"
-    Then the view mode should be "pension"
-    And the status bar should show "PENSION"
+    Then the view mode should be "theta"
+    And the status bar should show "THETA"
 
   Scenario: View mode cycle order
     Given the view mode is "go"
     When I press "v" 3 times
-    Then the view mode should cycle through "pension" → "swarm" → "go"
+    Then the view mode should cycle through "theta" → "swarm" → "go"
 
   # ─────────────────────────────────────────────────────────────────────
   # Go View Mode
@@ -32,14 +32,14 @@ Feature: View Modes and Overlays
     And the grid should use 19x19 intersections
 
   # ─────────────────────────────────────────────────────────────────────
-  # Pension View Mode
+  # Theta View Mode (Information Density)
   # ─────────────────────────────────────────────────────────────────────
 
-  Scenario: Pension view shows allocation data
-    Given the view mode is "pension"
-    And pension allocation data is loaded
-    Then the grid should show allocation heatmap
-    And positions should reflect asset distribution
+  Scenario: Theta view shows information density
+    Given the view mode is "theta"
+    And information density data is loaded
+    Then the grid should show density heatmap
+    And positions should reflect knowledge distribution
 
   # ─────────────────────────────────────────────────────────────────────
   # Swarm View Mode
@@ -134,9 +134,9 @@ Feature: View Modes and Overlays
   # ─────────────────────────────────────────────────────────────────────
 
   Scenario: Overlays work with any view mode
-    Given the view mode is "pension"
+    Given the view mode is "theta"
     When I press "o" to activate "topology" overlay
-    Then the topology overlay should display over the pension view
+    Then the topology overlay should display over the theta view
 
   Scenario: View change preserves overlay
     Given the overlay mode is "geometry"

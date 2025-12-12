@@ -14,6 +14,7 @@
 # Architecture
 
 - [System Overview](./architecture.md)
+- [Knowledge Gradient](./architecture/knowledge-gradient.md)
 - [The Board Widget](./architecture/board.md)
 - [Multi-Agent Swarms](./architecture/swarms.md)
 - [Vector Memory](./architecture/memory.md)

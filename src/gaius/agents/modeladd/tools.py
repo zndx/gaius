@@ -430,12 +430,15 @@ def commit_modelspec_to_registry(
 async def critique_modelspec_code(
     code: str,
     hf_data: HFModelData,
+    hardware_context: dict | None = None,
 ) -> CritiqueResult:
     """Get XAI Grok critique of generated ModelSpec code.
 
     Args:
         code: Generated Python code
         hf_data: HuggingFace model data for context
+        hardware_context: Optional hardware specs (GPU count, VRAM, model names)
+            for validating tensor_parallel_size and max_model_len
 
     Returns:
         CritiqueResult with score and feedback
@@ -452,23 +455,52 @@ async def critique_modelspec_code(
             model_used="none",
         )
 
-    system_prompt = """You are a code reviewer for ModelSpec definitions in the Gaius model registry.
+    # Build system prompt with hardware awareness
+    hardware_section = ""
+    if hardware_context:
+        gpu_count = hardware_context.get("gpu_count", 0)
+        gpu_model = hardware_context.get("gpu_model", "unknown")
+        total_vram = hardware_context.get("total_vram_mb", 0)
+        per_gpu_vram = total_vram // gpu_count if gpu_count > 0 else 0
+        hardware_section = f"""
+5. Hardware compatibility: Validate against target hardware:
+   - GPUs: {gpu_count}x {gpu_model}
+   - VRAM per GPU: {per_gpu_vram}MB ({per_gpu_vram / 1024:.1f}GB)
+   - Total VRAM: {total_vram}MB ({total_vram / 1024:.1f}GB)
+
+   Check that:
+   - tensor_parallel_size <= {gpu_count} (available GPUs)
+   - tensor_parallel_size divides evenly into num_attention_heads
+   - Model weights (~2 bytes/param for BF16) fit in available VRAM
+   - max_model_len is achievable with remaining VRAM after weights
+"""
+
+    system_prompt = f"""You are a code reviewer for ModelSpec definitions in the Gaius model registry.
 
 Evaluate the generated code for:
 1. Correctness: Valid Python, correct enum usage
 2. Accuracy: model_id matches HuggingFace, context_length is accurate
 3. Completeness: All required fields populated, reasonable task_scores
 4. Best practices: tensor_parallel_size appropriate for model size
-
+{hardware_section}
 Respond with JSON:
-{
+{{
     "score": 0.0-1.0,
-    "issues": [{"severity": "high|medium|low", "field": "...", "message": "..."}],
+    "issues": [{{"severity": "high|medium|low", "field": "...", "message": "..."}}],
     "suggestions": ["..."],
     "approved": true|false
-}
+}}
 
 Approve (score >= 0.7) if the code is usable with minor issues.
+"""
+
+    # Build user prompt with hardware context
+    hardware_info = ""
+    if hardware_context:
+        hardware_info = f"""
+Target Hardware:
+- {hardware_context.get('gpu_count', 0)}x {hardware_context.get('gpu_model', 'unknown')}
+- {hardware_context.get('total_vram_mb', 0) / 1024:.1f}GB total VRAM
 """
 
     user_prompt = f"""Review this ModelSpec code:
@@ -482,7 +514,7 @@ Context:
 - Context Length from config: {hf_data.config.get('max_position_embeddings', 'unknown')}
 - Architecture: {hf_data.config.get('architectures', ['unknown'])}
 - Tags: {hf_data.api_info.get('tags', [])}
-"""
+{hardware_info}"""
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:

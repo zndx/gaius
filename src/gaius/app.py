@@ -502,7 +502,7 @@ class GaiusApp(App):
             # Check if cache is valid for current config
             if not check_cache_validity(
                 self.config.kb.root,
-                self.config.vector_store.embedding_model,
+                self.config.vector_store.colbert_model,
                 self.config.tda.projection_method,
             ):
                 return False
@@ -517,6 +517,7 @@ class GaiusApp(App):
             self.state.black_stones = grid_data.document_positions
             self.state.white_stones = grid_data.cluster_centers
             self.state.allocations = grid_data.allocations
+            self.state.iso_features = iso_features or grid_data.iso_features  # Multi-vector TDA
 
             # Apply cached TDA features
             self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
@@ -594,6 +595,7 @@ class GaiusApp(App):
             self.state.black_stones = grid_data.document_positions
             self.state.white_stones = grid_data.cluster_centers
             self.state.allocations = grid_data.allocations
+            self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
 
             # Try to compute TDA on 768-dim embeddings (not 2D projections)
             try:
@@ -733,7 +735,7 @@ class GaiusApp(App):
                 self.config.kb.root,
                 grid_data,
                 tda_features,
-                self.config.vector_store.embedding_model,
+                self.config.vector_store.colbert_model,
                 self.config.tda.projection_method,
             )
 
@@ -741,6 +743,7 @@ class GaiusApp(App):
             self.state.black_stones = grid_data.document_positions
             self.state.white_stones = grid_data.cluster_centers
             self.state.allocations = grid_data.allocations
+            self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
 
             self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
             self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
@@ -796,12 +799,40 @@ class GaiusApp(App):
             old_stderr = sys.stderr
             sys.stderr = io.StringIO()
 
+            # Track workload for resource management
+            workload_id = None
+
             try:
                 from .inference.search import get_vector_search
                 from .core.cache import save_cached_state
                 import numpy as np
 
-                task.message = "Step 1/5: Indexing KB documents..."
+                # Request GPU resources from engine (triggers preemption if needed)
+                task.message = "Step 0/6: Requesting GPU resources..."
+                task.progress = 0.05
+                try:
+                    from .client.engine_proxy import (
+                        begin_workload_sync,
+                        complete_workload_sync,
+                        use_engine_proxy,
+                    )
+                    if use_engine_proxy():
+                        workload_id = f"init-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                        result = begin_workload_sync(
+                            workload_id=workload_id,
+                            workload_type="INIT",
+                            required_capabilities=["TEXT_EMBEDDING"],
+                            priority="CRITICAL",
+                            estimated_duration_s=300,
+                            estimated_memory_mb=2000,
+                        )
+                        if result.evicted_endpoints:
+                            task.message = f"Evicted {len(result.evicted_endpoints)} endpoints for init"
+                except Exception as e:
+                    # If workload request fails, continue anyway (may still work)
+                    print(f"Workload request failed: {e}")
+
+                task.message = "Step 1/6: Indexing KB documents..."
                 task.progress = 0.1
 
                 vector_search = get_vector_search(self.config.kb.root)
@@ -883,7 +914,7 @@ class GaiusApp(App):
                     self.config.kb.root,
                     grid_data,
                     tda_features,
-                    self.config.vector_store.embedding_model,
+                    self.config.vector_store.colbert_model,
                     self.config.tda.projection_method,
                 )
 
@@ -891,6 +922,7 @@ class GaiusApp(App):
                 self.state.black_stones = grid_data.document_positions
                 self.state.white_stones = grid_data.cluster_centers
                 self.state.allocations = grid_data.allocations
+                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
                 self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
                 self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
                 self.state.tda_entropy = tda_features.entropy
@@ -914,6 +946,13 @@ class GaiusApp(App):
                 task.completed_at = datetime.now()
                 return False
             finally:
+                # Release workload resources (restores evicted endpoints)
+                if workload_id:
+                    try:
+                        complete_workload_sync(workload_id)
+                    except Exception:
+                        pass  # Best effort
+
                 # Restore stderr
                 sys.stderr = old_stderr
 
@@ -964,6 +1003,7 @@ class GaiusApp(App):
             if grid_data.n_documents > 0:
                 self.state.black_stones = grid_data.document_positions
                 self.state.allocations = grid_data.allocations
+                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
 
                 # Refresh TDA on 768-dim embeddings (not 2D projections)
                 tda_features = None
@@ -994,7 +1034,7 @@ class GaiusApp(App):
                             self.config.kb.root,
                             grid_data,
                             tda_features,
-                            self.config.vector_store.embedding_model,
+                            self.config.vector_store.colbert_model,
                             self.config.tda.projection_method,
                         )
                     except Exception:
@@ -1057,6 +1097,7 @@ class GaiusApp(App):
 
                 self.state.black_stones = grid_data.document_positions
                 self.state.allocations = grid_data.allocations
+                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
 
                 # Refresh TDA
                 task.message = "Step 3/4: Computing TDA features (H0/H1/H2)..."
@@ -1089,7 +1130,7 @@ class GaiusApp(App):
                             self.config.kb.root,
                             grid_data,
                             tda_features,
-                            self.config.vector_store.embedding_model,
+                            self.config.vector_store.colbert_model,
                             self.config.tda.projection_method,
                         )
                     except Exception:
@@ -1869,7 +1910,10 @@ class GaiusApp(App):
                 embed_grid = embed_data.grid
 
                 curvatures = getattr(self.state, 'curvatures_raw', None)
-                iso_data = get_iso_view(grid_data, curvatures, cx, cy)
+                iso_data = get_iso_view(
+                    grid_data, curvatures, cx, cy,
+                    iso_features=grid_data.iso_features
+                )
                 iso_grid = iso_data.grid
 
                 # Create explanation context
@@ -3035,7 +3079,7 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
             content.show_file("error.txt", "Usage: /research <topic>\n\nSearches web and synthesizes results to KB.")
             return
 
-        domain = self.state.domain or "general"
+        domain = self.state.domain or "open"
         content.show_file("research.md", f"Researching: **{topic}**\n\nDomain: {domain}\n\n*Searching web...*")
         think.stream_reasoning(f"Researching: {topic}")
 
@@ -3477,7 +3521,8 @@ The general-purpose agentic query interface.
         mode = self.state.view_mode.value.upper()
         overlay = self.state.overlay_mode.value
         coord = self.state.cursor_coord
-        domain = self.state.domain[:20] + "..." if len(self.state.domain) > 23 else self.state.domain
+        domain = self.state.domain or "open"
+        domain = domain[:20] + "..." if len(domain) > 23 else domain
 
         # Center panel mode indicator
         center_mode = self.state.center_panel_mode.value.upper()
@@ -3650,7 +3695,7 @@ The general-purpose agentic query interface.
 - **t**: Tenuki (jump to strategic point)
 
 ## Views
-- **v**: Cycle view modes (Go/Pension/Swarm)
+- **v**: Cycle view modes (Go/Theta/Swarm)
 - **o**: Cycle overlays (none/risk/h1/h2/agents/temporal)
 - **c**: Toggle candidate markers
 
@@ -4201,7 +4246,7 @@ The general-purpose agentic query interface.
                     "startup.md",
                     f"# Welcome to Gaius\n\n"
                     f"**Profile:** {self.config.profile}\n"
-                    f"**Domain:** {self.state.domain}\n"
+                    f"**Domain:** {self.state.domain or 'open'}\n"
                     f"**Time:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
                     f"*No thought notes found. The engine will generate thoughts periodically.*\n"
                     f"*Use `/thoughts` to trigger cognition manually.*"

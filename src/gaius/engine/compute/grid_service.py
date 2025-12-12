@@ -171,8 +171,9 @@ class GridService:
                     method=request.method,
                 )
 
-            # Use internal projection method
-            grid_coords = projector._project(embeddings)
+            # Use internal projection methods (2D projection + grid normalization)
+            coords_2d = projector._project_to_2d(embeddings)
+            grid_coords = projector._normalize_to_grid(coords_2d)
 
             # Build result
             points = []
@@ -249,8 +250,9 @@ class GridService:
             return None
 
         try:
-            coords = projector._project(query_embedding.reshape(1, -1))
-            return (int(coords[0, 0]), int(coords[0, 1]))
+            coords_2d = projector._project_to_2d(query_embedding.reshape(1, -1))
+            grid_coords = projector._normalize_to_grid(coords_2d)
+            return (int(grid_coords[0, 0]), int(grid_coords[0, 1]))
         except Exception:
             return None
 

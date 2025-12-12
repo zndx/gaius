@@ -82,6 +82,12 @@ class WorkflowState:
     # Fallback state - track when local stack fails and XAI permission granted
     local_coding_failed: bool = False
     xai_fallback_approved: bool = False
+    # Hardware context for validation - populated by gpu_health tool
+    hardware_context: dict | None = None
+    # Feasibility check result - None means not checked yet
+    feasibility: dict | None = None  # {feasible: bool, reason: str, requirements: dict}
+    # KB entry path if model info was saved (for infeasible models)
+    kb_entry_path: str | None = None
 
 
 class ModelAddOrchestrator:
@@ -122,6 +128,8 @@ class ModelAddOrchestrator:
             "model_launch_coding": self._tool_launch_coding,
             "model_stop_coding": self._tool_stop_coding,
             "model_fetch_hf": self._tool_fetch_hf,
+            "check_feasibility": self._tool_check_feasibility,
+            "save_model_info_to_kb": self._tool_save_model_info_to_kb,
             "model_generate_code": self._tool_generate_code,
             "model_validate_code": self._tool_validate_code,
             "model_xai_critique": self._tool_xai_critique,
@@ -383,9 +391,36 @@ class ModelAddOrchestrator:
         """
         import os
 
-        # Step through workflow in order
+        # Step 0: Get hardware context early for validation/critique
+        if not state.hardware_context:
+            # Check if we already tried and failed
+            already_tried = any(
+                h["tool"] == "gpu_health" for h in state.tool_history
+            )
+            if not already_tried:
+                return ToolCall(name="gpu_health", args={})
+
+        # Step 1: Fetch HuggingFace data
         if not state.hf_data:
             return ToolCall(name="model_fetch_hf", args={"model_id": state.model_id})
+
+        # Step 2: Check feasibility - can this model run on our hardware?
+        if state.feasibility is None and state.hardware_context and state.hf_data:
+            return ToolCall(name="check_feasibility", args={})
+
+        # Step 3: If infeasible, save info to KB and exit gracefully
+        if state.feasibility and not state.feasibility.get("feasible", True):
+            # Check if we already saved to KB
+            if not state.kb_entry_path:
+                return ToolCall(name="save_model_info_to_kb", args={})
+            # Already saved - signal done
+            return ToolCall(name="done", args={
+                "status": "infeasible",
+                "message": state.feasibility.get("reason", "Model cannot run on available hardware"),
+                "kb_entry": state.kb_entry_path,
+                "requirements": state.feasibility.get("requirements", {}),
+                "cleanup_complete": True,
+            })
 
         # HEURISTIC: Check if coding launch has failed before
         coding_launch_failed = any(
@@ -539,7 +574,9 @@ class ModelAddOrchestrator:
     # =========================================================================
 
     async def _tool_gpu_health(self, state: WorkflowState, args: dict) -> dict:
-        """Check GPU health."""
+        """Check GPU health and store hardware context for later validation."""
+        result = {"gpus": [], "count": 0}
+
         try:
             from ...inference.health import get_health_monitor
 
@@ -553,13 +590,13 @@ class ModelAddOrchestrator:
                     "memory_total_mb": gpu.memory_total_mb,
                     "temperature": gpu.temperature_c,
                 })
-            return {"gpus": gpus, "count": len(gpus)}
+            result = {"gpus": gpus, "count": len(gpus)}
         except Exception as e:
             # Fallback to nvidia-smi
             import subprocess
 
             proc = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index,memory.used,memory.total,utilization.gpu",
+                ["nvidia-smi", "--query-gpu=index,name,memory.used,memory.total,utilization.gpu",
                  "--format=csv,noheader,nounits"],
                 capture_output=True,
                 text=True,
@@ -568,15 +605,28 @@ class ModelAddOrchestrator:
                 gpus = []
                 for line in proc.stdout.strip().split("\n"):
                     parts = line.split(", ")
-                    if len(parts) >= 4:
+                    if len(parts) >= 5:
                         gpus.append({
                             "index": int(parts[0]),
-                            "memory_used_mb": int(parts[1]),
-                            "memory_total_mb": int(parts[2]),
-                            "utilization": int(parts[3]),
+                            "name": parts[1].strip(),
+                            "memory_used_mb": int(parts[2]),
+                            "memory_total_mb": int(parts[3]),
+                            "utilization": int(parts[4]),
                         })
-                return {"gpus": gpus, "count": len(gpus)}
-            return {"error": str(e), "gpus": [], "count": 0}
+                result = {"gpus": gpus, "count": len(gpus)}
+            else:
+                result = {"error": str(e), "gpus": [], "count": 0}
+
+        # Store hardware context for use during validation/critique
+        if result.get("gpus"):
+            state.hardware_context = {
+                "gpu_count": result["count"],
+                "gpus": result["gpus"],
+                "total_vram_mb": sum(g.get("memory_total_mb", 0) for g in result["gpus"]),
+                "gpu_model": result["gpus"][0].get("name", "unknown") if result["gpus"] else "unknown",
+            }
+
+        return result
 
     async def _tool_launch_coding(self, state: WorkflowState, args: dict) -> dict:
         """Launch coding model endpoint via engine.
@@ -700,6 +750,259 @@ class ModelAddOrchestrator:
             "architectures": hf_data.config.get("architectures", []),
         }
 
+    async def _tool_check_feasibility(self, state: WorkflowState, args: dict) -> dict:
+        """Check if model can run on available hardware.
+
+        Compares model requirements (params, VRAM) against hardware context.
+        Fails fast for models that clearly cannot run locally.
+        """
+        if not state.hf_data:
+            return {"error": "No HuggingFace data. Call model_fetch_hf first."}
+
+        if not state.hardware_context:
+            return {"error": "No hardware context. Call gpu_health first."}
+
+        # Extract model size
+        api_info = state.hf_data.api_info
+        config = state.hf_data.config
+        model_name = state.model_id.split("/")[-1]
+
+        # Get parameter count
+        safetensors = api_info.get("safetensors", {})
+        if safetensors and safetensors.get("total"):
+            params_b = safetensors["total"] / 1e9
+        else:
+            # Parse from name (e.g., "123B", "24B")
+            import re
+            match = re.search(r"(\d+(?:\.\d+)?)[Bb]", model_name)
+            params_b = float(match.group(1)) if match else 7.0
+
+        # Calculate VRAM requirements
+        # BF16: ~2 bytes per param, plus ~20% overhead for KV cache, activations
+        vram_required_gb = (params_b * 2 * 1.2)
+
+        # Get available hardware
+        hw = state.hardware_context
+        total_vram_gb = hw.get("total_vram_mb", 0) / 1024
+        gpu_count = hw.get("gpu_count", 0)
+        gpu_model = hw.get("gpu_model", "unknown")
+        per_gpu_vram_gb = total_vram_gb / gpu_count if gpu_count > 0 else 0
+
+        # Determine minimum TP needed
+        min_tp_needed = 1
+        while min_tp_needed <= 8:
+            if vram_required_gb / min_tp_needed <= per_gpu_vram_gb * 0.9:  # 90% threshold
+                break
+            min_tp_needed *= 2
+
+        # Check feasibility
+        feasible = True
+        reasons = []
+
+        if min_tp_needed > gpu_count:
+            feasible = False
+            reasons.append(
+                f"Model requires TP={min_tp_needed} but only {gpu_count} GPUs available"
+            )
+
+        if vram_required_gb > total_vram_gb:
+            feasible = False
+            reasons.append(
+                f"Model requires ~{vram_required_gb:.0f}GB VRAM but only {total_vram_gb:.0f}GB available"
+            )
+
+        # Build requirements summary
+        requirements = {
+            "params_b": round(params_b, 1),
+            "vram_required_gb": round(vram_required_gb, 1),
+            "min_tensor_parallel": min_tp_needed,
+            "min_gpus_needed": min_tp_needed,
+            "context_length": config.get("max_position_embeddings", "unknown"),
+        }
+
+        state.feasibility = {
+            "feasible": feasible,
+            "reason": "; ".join(reasons) if reasons else "Model can run on available hardware",
+            "requirements": requirements,
+            "hardware": {
+                "gpu_count": gpu_count,
+                "gpu_model": gpu_model,
+                "total_vram_gb": round(total_vram_gb, 1),
+                "per_gpu_vram_gb": round(per_gpu_vram_gb, 1),
+            },
+        }
+
+        return state.feasibility
+
+    async def _tool_save_model_info_to_kb(self, state: WorkflowState, args: dict) -> dict:
+        """Save model information to KB for reference (used for infeasible models).
+
+        Creates a zettelkasten note with model specs and requirements,
+        even though the model can't be added to the registry.
+        """
+        if not state.hf_data:
+            return {"error": "No HuggingFace data available"}
+
+        from datetime import datetime
+
+        # Build markdown content
+        hf = state.hf_data
+        feasibility = state.feasibility or {}
+        requirements = feasibility.get("requirements", {})
+        hardware = feasibility.get("hardware", {})
+
+        model_name = state.model_id.split("/")[-1]
+        tags = hf.api_info.get("tags", [])[:10]
+
+        content = f"""# {model_name}
+
+---
+created: {datetime.now().strftime('%Y-%m-%d')}
+type: model-reference
+status: infeasible
+model_id: {state.model_id}
+---
+
+## Overview
+
+**Model ID**: `{state.model_id}`
+**Parameters**: {requirements.get('params_b', 'unknown')}B
+**Context Length**: {requirements.get('context_length', 'unknown')}
+**Architecture**: {', '.join(hf.config.get('architectures', ['unknown']))}
+**Tags**: {', '.join(tags)}
+
+## Hardware Requirements
+
+| Requirement | Value |
+|-------------|-------|
+| VRAM Required | ~{requirements.get('vram_required_gb', '?')}GB |
+| Min Tensor Parallel | {requirements.get('min_tensor_parallel', '?')} |
+| Min GPUs | {requirements.get('min_gpus_needed', '?')} |
+
+## Local Hardware
+
+| Resource | Available |
+|----------|-----------|
+| GPUs | {hardware.get('gpu_count', '?')}x {hardware.get('gpu_model', 'unknown')} |
+| Total VRAM | {hardware.get('total_vram_gb', '?')}GB |
+| Per-GPU VRAM | {hardware.get('per_gpu_vram_gb', '?')}GB |
+
+## Feasibility
+
+**Status**: ❌ Cannot run locally
+**Reason**: {feasibility.get('reason', 'Unknown')}
+
+## Links
+
+- [HuggingFace]({f'https://huggingface.co/{state.model_id}'})
+"""
+
+        # Add cloud suggestions from Lambda Labs
+        vram_required = requirements.get('vram_required_gb', 0)
+        # For cloud, use TP=8 as max (8-GPU instances available)
+        min_tp_cloud = min(requirements.get('min_tensor_parallel', 8), 8)
+
+        best_instance_info = None
+        try:
+            from ...providers.lambdalabs import LambdaLabsClient
+            client = LambdaLabsClient()
+
+            # Find best available instance (we're already in async context)
+            best = await client.find_best_available_instance(vram_required, min_tp_cloud)
+
+            if best:
+                inst, regions, cost = best
+                best_instance_info = {
+                    "instance_type": inst.name,
+                    "gpu_model": inst.gpu_model,
+                    "gpu_count": inst.gpu_count,
+                    "total_vram_gb": inst.total_vram_gb,
+                    "cost_per_hour": cost,
+                    "regions": regions,
+                }
+
+                content += f"""
+## Recommended Cloud Instance
+
+**Best Available**: `{inst.name}`
+- **GPUs**: {inst.gpu_count}x {inst.gpu_model}
+- **VRAM**: {inst.total_vram_gb}GB total
+- **Cost**: ${cost:.2f}/hr
+- **Regions**: {', '.join(regions[:3])}{' (+more)' if len(regions) > 3 else ''}
+
+"""
+
+            # Also add the full options table
+            cloud_section = client.format_suggestions_markdown(vram_required, min_tp_cloud)
+            if "No Lambda Labs instances" not in cloud_section:
+                content += f"{cloud_section}\n"
+
+        except Exception as e:
+            logger.debug(f"Lambda Labs lookup failed: {e}")
+            content += """
+## Future Options
+
+- Distributed inference across multiple nodes
+- Federated engine with remote execution
+- Quantized versions (GPTQ, AWQ, GGUF)
+- Cloud GPU providers (Lambda Labs, etc.)
+"""
+
+        # Check for Cerebras hosted inference option
+        try:
+            from ...providers.cerebras import CerebrasClient
+            cerebras_client = CerebrasClient()
+
+            # Get GPU cost for comparison (use best instance if found)
+            gpu_cost = best_instance_info.get("cost_per_hour") if best_instance_info else None
+
+            cerebras_section = cerebras_client.format_options_markdown(
+                state.model_id,
+                gpu_cost_per_hour=gpu_cost,
+            )
+            if cerebras_section:
+                content += f"\n{cerebras_section}\n"
+        except Exception as e:
+            logger.debug(f"Cerebras lookup failed: {e}")
+
+        # Append README excerpt if available
+        if hf.readme:
+            content += f"\n## Model Card (excerpt)\n\n{hf.readme[:1500]}...\n"
+
+        # Save to KB scratch directory
+        from pathlib import Path
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        time_prefix = datetime.now().strftime("%H%M%S")
+        slug = model_name.lower().replace("-", "_").replace(".", "_")[:30]
+
+        # Try to get KB root from config
+        try:
+            from ...core.config import get_config
+            config = get_config()
+            kb_root = Path(config.kb.root)
+        except Exception:
+            kb_root = Path("build/dev")
+
+        output_dir = kb_root / "scratch" / today / "models"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{time_prefix}_{slug}.md"
+        output_path.write_text(content)
+
+        state.kb_entry_path = str(output_path)
+
+        result = {
+            "status": "saved",
+            "path": str(output_path),
+            "model_id": state.model_id,
+        }
+
+        # Include best available instance if found
+        if best_instance_info:
+            result["best_cloud_instance"] = best_instance_info
+
+        return result
+
     async def _tool_generate_code(self, state: WorkflowState, args: dict) -> dict:
         """Generate ModelSpec code."""
         model_id = args.get("model_id", state.model_id)
@@ -774,7 +1077,7 @@ class ModelAddOrchestrator:
         }
 
     async def _tool_xai_critique(self, state: WorkflowState, args: dict) -> dict:
-        """Get XAI critique of generated code."""
+        """Get XAI critique of generated code with hardware context."""
         code = args.get("code", state.generated_code)
         model_id = args.get("model_id", state.model_id)
 
@@ -784,7 +1087,12 @@ class ModelAddOrchestrator:
         if not state.hf_data:
             return {"error": "No HuggingFace data for context"}
 
-        result = await critique_modelspec_code(code, state.hf_data)
+        # Pass hardware context if available for validation
+        result = await critique_modelspec_code(
+            code,
+            state.hf_data,
+            hardware_context=state.hardware_context,
+        )
         state.critique = {
             "score": result.score,
             "issues": result.issues,
@@ -898,29 +1206,59 @@ class ModelAddOrchestrator:
 
     def _finalize_result(self, state: WorkflowState, forced: bool = False) -> dict:
         """Finalize the workflow result."""
-        return {
-            "status": state.final_status if state.final_status != "pending" else (
-                "pending_review" if state.validation and state.validation.is_valid else "failed"
-            ),
+        # Determine status
+        if state.final_status != "pending":
+            status = state.final_status
+        elif state.feasibility and not state.feasibility.get("feasible", True):
+            status = "infeasible"
+        elif state.validation and state.validation.is_valid:
+            status = "pending_review"
+        else:
+            status = "failed"
+
+        result = {
+            "status": status,
             "model_id": state.model_id,
-            "generated_code": state.generated_code,
-            "validation": {
+            "iterations": state.iteration,
+            "forced_completion": forced,
+            "tool_history": state.tool_history,
+        }
+
+        # Add feasibility info if model couldn't run locally
+        if state.feasibility:
+            result["feasibility"] = state.feasibility
+            if state.kb_entry_path:
+                result["kb_entry"] = state.kb_entry_path
+
+        # Add code generation info if we got that far
+        if state.generated_code:
+            result["generated_code"] = state.generated_code
+            result["generation_attempts"] = state.generation_attempts
+
+        if state.validation:
+            result["validation"] = {
                 "syntax": state.validation.syntax,
                 "imports": state.validation.imports,
                 "serve_cmd": state.validation.serve_cmd,
                 "variable_name": state.validation.variable_name,
                 "warnings": state.validation.warnings,
-            } if state.validation else None,
-            "critique": state.critique,
-            "iterations": state.iteration,
-            "generation_attempts": state.generation_attempts,
-            "forced_completion": forced,
-            "tool_history": state.tool_history,
-            "next_steps": [
+            }
+
+        if state.critique:
+            result["critique"] = state.critique
+
+        # Add next steps based on status
+        if status == "pending_review":
+            result["next_steps"] = [
                 "/model add-confirm  - Write to registry",
                 "/model add-cancel   - Discard",
-            ] if state.final_status == "pending_review" else [],
-        }
+            ]
+        elif status == "infeasible":
+            result["next_steps"] = [
+                f"View model info: cat {state.kb_entry_path}" if state.kb_entry_path else "Model info saved to KB",
+            ]
+
+        return result
 
     def _parse_final_response(self, args: dict, state: WorkflowState) -> dict:
         """Parse final response from orchestrator."""

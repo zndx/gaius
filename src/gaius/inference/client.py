@@ -159,11 +159,12 @@ class InferenceClient:
                 max_tokens=max_tokens,
             )
 
+            # scheduler.complete() returns CompletionResult directly
             return CompletionResult(
-                content=result.get("content", ""),
-                model=result.get("model", ""),
-                input_tokens=result.get("input_tokens", 0),
-                output_tokens=result.get("output_tokens", 0),
+                content=result.content,
+                model=result.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
                 backend="grpc_engine",
             )
         except Exception as e:

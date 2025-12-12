@@ -342,13 +342,14 @@ class SchedulerProxy:
             },
         )
 
+        # gRPC CompleteResponse uses 'text' field, not 'content'
         return CompletionResult(
-            content=result.get("content", ""),
+            content=result.get("text", result.get("content", "")),
             model=result.get("model", ""),
             input_tokens=result.get("input_tokens", 0),
-            output_tokens=result.get("output_tokens", 0),
+            output_tokens=result.get("tokens_used", result.get("output_tokens", 0)),
             technique=result.get("technique"),
-            backend=result.get("backend"),
+            backend=result.get("backend", "grpc_engine"),
             raw_response=result,
         )
 
@@ -865,6 +866,198 @@ class CognitionProxy:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Workload Proxy
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class WorkloadAllocation:
+    """Result from workload resource allocation."""
+
+    success: bool
+    workload_id: str
+    allocated_endpoints: dict[str, dict[str, Any]]
+    evicted_endpoints: list[str]
+    error: Optional[str] = None
+
+
+class WorkloadProxy:
+    """Proxy for workload management.
+
+    Enables callers to request GPU resources for multi-step workloads
+    (like /init) using Yunikorn-style priority scheduling.
+
+    Usage:
+        proxy = await get_workload_proxy()
+        result = await proxy.begin_workload(
+            workload_id="init-2024-12-11",
+            workload_type="INIT",
+            required_capabilities=["TEXT_EMBEDDING"],
+            priority="CRITICAL",
+            estimated_duration_s=300,
+            estimated_memory_mb=2000,
+        )
+        if result.success:
+            try:
+                # Use allocated endpoints
+                ...
+            finally:
+                await proxy.complete_workload(result.workload_id)
+    """
+
+    def __init__(self, client: GrpcEngineClient):
+        """Initialize proxy."""
+        self._client = client
+
+    async def begin_workload(
+        self,
+        workload_id: str,
+        workload_type: str,
+        required_capabilities: list[str],
+        priority: str = "NORMAL",
+        estimated_duration_s: int = 60,
+        estimated_memory_mb: int = 0,
+    ) -> WorkloadAllocation:
+        """Request resources for a workload.
+
+        The engine will evict lower-priority idle endpoints if needed
+        to satisfy resource requirements.
+
+        Args:
+            workload_id: Unique workload identifier
+            workload_type: INIT, SWARM, INFERENCE, or EMBEDDING
+            required_capabilities: List of TaskType names needed
+            priority: CRITICAL, HIGH, NORMAL, or LOW
+            estimated_duration_s: Expected duration hint
+            estimated_memory_mb: GPU memory needed
+
+        Returns:
+            WorkloadAllocation with allocated endpoints or error
+        """
+        result = await self._client.call(
+            "Workload",
+            "begin",
+            {
+                "workload_id": workload_id,
+                "workload_type": workload_type,
+                "required_capabilities": required_capabilities,
+                "priority": priority,
+                "estimated_duration_s": estimated_duration_s,
+                "estimated_memory_mb": estimated_memory_mb,
+            },
+        )
+
+        return WorkloadAllocation(
+            success=result.get("success", False),
+            workload_id=workload_id,
+            allocated_endpoints=result.get("allocated_endpoints", {}),
+            evicted_endpoints=result.get("evicted_endpoints", []),
+            error=result.get("error"),
+        )
+
+    async def complete_workload(self, workload_id: str) -> None:
+        """Mark workload complete and restore evicted endpoints.
+
+        Args:
+            workload_id: Workload to complete
+        """
+        await self._client.call(
+            "Workload",
+            "complete",
+            {"workload_id": workload_id},
+        )
+
+    async def get_active_workloads(self) -> list[dict[str, Any]]:
+        """Get currently active workloads.
+
+        Returns:
+            List of active workload dicts
+        """
+        result = await self._client.call("Workload", "active", {})
+        return result.get("workloads", [])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Embedding Proxy
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class EmbeddingResult:
+    """Result from embedding request."""
+
+    embeddings: list[list[float]]
+    model_used: str
+    latency_ms: int
+    texts_processed: int
+    error: Optional[str] = None
+
+    @property
+    def success(self) -> bool:
+        """Whether request succeeded."""
+        return self.error is None
+
+
+class EmbeddingProxy:
+    """Proxy for engine-managed embeddings.
+
+    Routes embedding requests through the engine's resource management,
+    ensuring GPU resources are properly allocated and coordinated.
+
+    Usage:
+        proxy = await get_embedding_proxy()
+        result = await proxy.embed_texts(["hello", "world"])
+        if result.success:
+            embeddings = result.embeddings
+    """
+
+    def __init__(self, client: GrpcEngineClient):
+        """Initialize proxy."""
+        self._client = client
+
+    async def embed_texts(
+        self,
+        texts: list[str],
+        model: str = "",
+        batch_size: int = 32,
+    ) -> EmbeddingResult:
+        """Generate embeddings for texts via engine.
+
+        Args:
+            texts: Texts to embed
+            model: Optional model name (empty = default)
+            batch_size: Processing batch size
+
+        Returns:
+            EmbeddingResult with embeddings or error
+        """
+        result = await self._client.call(
+            "Embedding",
+            "embed_texts",
+            {
+                "texts": texts,
+                "model": model,
+            },
+        )
+
+        return EmbeddingResult(
+            embeddings=result.get("embeddings", []),
+            model_used=result.get("model_used", model or "unknown"),
+            latency_ms=result.get("latency_ms", 0),
+            texts_processed=len(result.get("embeddings", [])),
+            error=result.get("error"),
+        )
+
+    async def get_model_info(self) -> dict[str, Any]:
+        """Get information about loaded embedding models.
+
+        Returns:
+            Dict with model info
+        """
+        return await self._client.call("Embedding", "model_info", {})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Factory Functions
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -875,6 +1068,8 @@ _health_proxy: Optional[HealthProxy] = None
 _tda_proxy: Optional[TDAProxy] = None
 _grid_proxy: Optional[GridProxy] = None
 _cognition_proxy: Optional[CognitionProxy] = None
+_workload_proxy: Optional[WorkloadProxy] = None
+_embedding_proxy: Optional[EmbeddingProxy] = None
 
 
 async def get_orchestrator_proxy() -> OrchestratorProxy:
@@ -940,6 +1135,24 @@ async def get_cognition_proxy() -> CognitionProxy:
     return _cognition_proxy
 
 
+async def get_workload_proxy() -> WorkloadProxy:
+    """Get or create workload proxy singleton."""
+    global _workload_proxy
+    if _workload_proxy is None:
+        client = await get_client()
+        _workload_proxy = WorkloadProxy(client)
+    return _workload_proxy
+
+
+async def get_embedding_proxy() -> EmbeddingProxy:
+    """Get or create embedding proxy singleton."""
+    global _embedding_proxy
+    if _embedding_proxy is None:
+        client = await get_client()
+        _embedding_proxy = EmbeddingProxy(client)
+    return _embedding_proxy
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Compatibility Layer
 # ─────────────────────────────────────────────────────────────────────────────
@@ -947,16 +1160,29 @@ async def get_cognition_proxy() -> CognitionProxy:
 def use_engine_proxy() -> bool:
     """Check if engine proxy should be used.
 
-    Returns True if gRPC server is reachable or GAIUS_ENGINE=true.
-    Uses gRPC on port 50051 as the only transport.
+    Returns True if:
+    1. GAIUS_ENGINE=true environment variable is set, OR
+    2. The gRPC client singleton is already connected, OR
+    3. A socket test to the gRPC server succeeds
+
+    The check prioritizes the singleton state since the TUI establishes
+    the gRPC connection during startup. This prevents false negatives
+    in thread pool code (like /init) that runs after the TUI is connected.
     """
     import os
     import socket
 
+    # Always use engine if explicitly configured
     if os.environ.get("GAIUS_ENGINE", "").lower() == "true":
         return True
 
-    # Check if gRPC server is reachable
+    # Check if gRPC client singleton is already connected
+    # This is the primary check - if TUI has connected, we should use it
+    from .grpc_client import _grpc_client
+    if _grpc_client is not None and _grpc_client.is_connected:
+        return True
+
+    # Fallback: try socket connection (for CLI or standalone use)
     host = os.environ.get("GAIUS_GRPC_HOST", "localhost")
     port = int(os.environ.get("GAIUS_GRPC_PORT", "50051"))
 
@@ -965,3 +1191,123 @@ def use_engine_proxy() -> bool:
             return True
     except (socket.error, socket.timeout):
         return False
+
+
+def begin_workload_sync(
+    workload_id: str,
+    workload_type: str = "INIT",
+    required_capabilities: list[str] | None = None,
+    priority: str = "CRITICAL",
+    estimated_duration_s: int = 300,
+    estimated_memory_mb: int = 2000,
+) -> WorkloadAllocation:
+    """Synchronous wrapper for begin_workload (for use in thread pools).
+
+    Requests GPU resources from the engine, potentially triggering
+    preemption of lower-priority idle endpoints.
+
+    Args:
+        workload_id: Unique workload identifier
+        workload_type: INIT, SWARM, INFERENCE, or EMBEDDING
+        required_capabilities: List of TaskType names (default: TEXT_EMBEDDING)
+        priority: CRITICAL, HIGH, NORMAL, or LOW
+        estimated_duration_s: Expected duration hint
+        estimated_memory_mb: GPU memory needed
+
+    Returns:
+        WorkloadAllocation with result
+    """
+    import asyncio
+
+    if required_capabilities is None:
+        required_capabilities = ["TEXT_EMBEDDING"]
+
+    if not use_engine_proxy():
+        return WorkloadAllocation(
+            success=False,
+            workload_id=workload_id,
+            allocated_endpoints={},
+            evicted_endpoints=[],
+            error="Engine not available",
+        )
+
+    async def _begin():
+        proxy = await get_workload_proxy()
+        return await proxy.begin_workload(
+            workload_id=workload_id,
+            workload_type=workload_type,
+            required_capabilities=required_capabilities,
+            priority=priority,
+            estimated_duration_s=estimated_duration_s,
+            estimated_memory_mb=estimated_memory_mb,
+        )
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_begin())
+    finally:
+        loop.close()
+
+
+def complete_workload_sync(workload_id: str) -> None:
+    """Synchronous wrapper for complete_workload (for use in thread pools).
+
+    Marks a workload complete and triggers restoration of evicted endpoints.
+
+    Args:
+        workload_id: Workload to complete
+    """
+    import asyncio
+
+    if not use_engine_proxy():
+        return
+
+    async def _complete():
+        proxy = await get_workload_proxy()
+        await proxy.complete_workload(workload_id)
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_complete())
+    finally:
+        loop.close()
+
+
+def embed_texts_sync(
+    texts: list[str],
+    model: str = "",
+) -> list[list[float]]:
+    """Synchronous wrapper for engine embeddings (for use in thread pools).
+
+    Tries to use engine if available, otherwise falls back to in-process.
+    This is intended for legacy code that runs in thread pools (like /init).
+
+    Args:
+        texts: Texts to embed
+        model: Optional model name
+
+    Returns:
+        List of embedding vectors
+    """
+    import asyncio
+
+    if not use_engine_proxy():
+        # Engine not available, return empty to trigger fallback
+        return []
+
+    async def _embed():
+        proxy = await get_embedding_proxy()
+        result = await proxy.embed_texts(texts, model)
+        if result.success:
+            return result.embeddings
+        return []
+
+    # Run in a new event loop (safe from thread pool)
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_embed())
+    finally:
+        loop.close()

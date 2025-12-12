@@ -7,19 +7,28 @@ BDD Alignment (swarm_evolution.feature):
 - Start evolution daemon with '/evolve start' → clean start, endpoint management
 - Evolution daemon monitors GPU idle state → health monitoring
 - Orphaned vLLM processes should be cleaned up → cleanup_stale_processes
+
+Yunikorn-Style Workload Management:
+- Capability-based routing: requests declare capabilities, not endpoints
+- Priority-based preemption: idle endpoints evicted for higher-priority work
+- Makespan fulfillment: engine ensures work completes, then restores set points
 """
 
 import asyncio
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from ..backends import BackendRouter, OptillmController, ProcessStatus, VLLMController
 from ..config import EngineConfig
 from ..resources import ResourceManager
+
+if TYPE_CHECKING:
+    from gaius.models.registry import TaskType
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +87,43 @@ class CleanupResult:
             self.errors = []
 
 
+@dataclass
+class EndpointActivity:
+    """Track endpoint usage for preemption decisions.
+
+    Yunikorn-style activity tracking to determine which endpoints
+    are idle and can be evicted for higher-priority work.
+
+    Attributes:
+        endpoint_name: Name of the endpoint
+        last_request_time: Unix timestamp of last request
+        requests_in_flight: Number of active requests
+        priority: Priority level of current workload
+        capability: TaskType capability this endpoint provides
+        model_id: Model being served
+    """
+
+    endpoint_name: str
+    last_request_time: float = field(default_factory=time.time)
+    requests_in_flight: int = 0
+    priority: int = 2  # JobPriority.NORMAL.value
+    capability: Optional[str] = None  # TaskType value
+    model_id: str = ""
+
+    @property
+    def is_idle(self) -> bool:
+        """Idle if no requests in 60 seconds and none in flight."""
+        return (
+            self.requests_in_flight == 0 and
+            time.time() - self.last_request_time > 60.0
+        )
+
+    @property
+    def idle_seconds(self) -> float:
+        """Seconds since last request."""
+        return time.time() - self.last_request_time
+
+
 class OrchestratorService:
     """GPU endpoint orchestration service.
 
@@ -129,6 +175,14 @@ class OrchestratorService:
         )
         # Track restart attempts per endpoint
         self._restart_attempts: dict[str, int] = {}
+
+        # Capability-based endpoint tracking (Yunikorn-style)
+        # Maps TaskType.value -> list of endpoint names that provide that capability
+        self._capability_map: dict[str, list[str]] = {}
+        # Maps endpoint name -> EndpointActivity
+        self._endpoint_activity: dict[str, EndpointActivity] = {}
+        # Active workloads being tracked
+        self._active_workloads: dict[str, Any] = {}  # workload_id -> ActiveWorkload
 
         logger.info("OrchestratorService initialized")
 
@@ -184,9 +238,10 @@ class OrchestratorService:
             raise ValueError(f"Unknown agent: {agent_alias}")
 
         agent_config = self.config.agents[agent_alias]
+        backend = agent_config.backend.lower()
 
         # For optillm-backed agents, no dedicated endpoint needed
-        if agent_config.backend.lower() != "vllm":
+        if backend == "optillm":
             return EndpointStatus(
                 agent_alias=agent_alias,
                 model=agent_config.model,
@@ -194,6 +249,10 @@ class OrchestratorService:
                 gpu_ids=[],
                 status="optillm",  # Uses shared optillm, always available
             )
+
+        # Note: sentence-transformers backend is deprecated.
+        # Use backend = "vllm" with endpoint.task = "embed" instead.
+        # vLLM handles embedding models directly with --task embed flag.
 
         # Check if already healthy
         existing = self.get_endpoint_status(agent_alias)
@@ -268,9 +327,10 @@ class OrchestratorService:
             raise ValueError(f"Unknown agent: {agent_alias}")
 
         agent_config = self.config.agents[agent_alias]
+        backend = agent_config.backend.lower()
 
-        # Only vLLM agents need endpoint startup
-        if agent_config.backend.lower() != "vllm":
+        # optillm agents use shared optillm, no dedicated endpoint
+        if backend == "optillm":
             return EndpointStatus(
                 agent_alias=agent_alias,
                 model=agent_config.model,
@@ -278,6 +338,9 @@ class OrchestratorService:
                 gpu_ids=[],
                 status="optillm",  # Uses optillm, no dedicated endpoint
             )
+
+        # Note: sentence-transformers backend is deprecated.
+        # Use backend = "vllm" with endpoint.task = "embed" instead.
 
         # Start vLLM endpoint
         proc = await self._vllm.start_endpoint(agent_alias, agent_config)
@@ -315,6 +378,81 @@ class OrchestratorService:
         await self.stop_endpoint(agent_alias)
         await asyncio.sleep(2)  # Brief cooldown
         return await self.start_endpoint(agent_alias)
+
+    async def _start_embedding_endpoint(
+        self,
+        agent_alias: str,
+        agent_config: "AgentConfig",
+    ) -> EndpointStatus:
+        """Start a sentence-transformers embedding endpoint.
+
+        Uses the EmbeddingController to load the model on GPU.
+
+        Args:
+            agent_alias: Agent identifier
+            agent_config: Agent configuration
+
+        Returns:
+            EndpointStatus with startup state
+        """
+        from ..backends.embedding_controller import get_embedding_controller
+        from gaius.models.registry import ModelSpec
+
+        try:
+            controller = get_embedding_controller()
+
+            # Create ModelSpec from agent config
+            model_spec = ModelSpec(
+                model_id=agent_config.model,
+                name=agent_alias,
+                provider="sentence-transformers",
+            )
+
+            # Allocate GPU for embedding model
+            required_gpus = agent_config.resources.gpus
+            free_gpus = self.resource_manager.get_free_gpus()
+
+            if len(free_gpus) < required_gpus:
+                return EndpointStatus(
+                    agent_alias=agent_alias,
+                    model=agent_config.model,
+                    port=None,
+                    gpu_ids=[],
+                    status="insufficient_resources",
+                    startup_message=f"Need {required_gpus} GPUs, only {len(free_gpus)} free",
+                )
+
+            gpu_ids = free_gpus[:required_gpus]
+
+            # Start embedding endpoint
+            endpoint = await controller.start_embedding_endpoint(
+                model_spec=model_spec,
+                gpu_ids=gpu_ids,
+                endpoint_name=agent_alias,
+            )
+
+            # Track the allocation
+            self.resource_manager.allocate(agent_alias, gpu_ids)
+
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,  # Embedding endpoints don't use HTTP
+                gpu_ids=gpu_ids,
+                status="healthy" if endpoint.status.value == "ready" else endpoint.status.value,
+                startup_message=f"Embedding model {agent_config.model} loaded",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to start embedding endpoint {agent_alias}: {e}")
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,
+                gpu_ids=[],
+                status="failed",
+                startup_message=f"Failed: {e}",
+            )
 
     def get_endpoint_status(self, agent_alias: str) -> Optional[EndpointStatus]:
         """Get status of a specific endpoint.
@@ -369,6 +507,529 @@ class OrchestratorService:
             List of log lines
         """
         return self._vllm.get_recent_logs(agent_alias, lines)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Capability-Based Endpoint Management (Yunikorn-Style)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def ensure_capability(
+        self,
+        task_type: "TaskType",
+        priority: int = 2,  # JobPriority.NORMAL.value
+    ) -> EndpointStatus:
+        """Ensure an endpoint with the required capability is running.
+
+        Yunikorn-style capability routing: requests declare what capability
+        they need, not which specific endpoint. The orchestrator finds or
+        starts an appropriate endpoint.
+
+        If no endpoint with this capability is running:
+        1. Find best model for task_type from registry
+        2. Check if resources available
+        3. If not, evict idle endpoints (priority-based)
+        4. Start the endpoint
+        5. Register capability mapping
+
+        Args:
+            task_type: TaskType capability needed (e.g., TEXT_EMBEDDING)
+            priority: Request priority for preemption decisions
+
+        Returns:
+            EndpointStatus with the endpoint providing this capability
+        """
+        from gaius.models.registry import get_model_registry
+
+        capability_key = task_type.value
+
+        # Check if we already have an endpoint for this capability
+        existing_endpoint = self.get_endpoint_for_capability(task_type)
+        if existing_endpoint:
+            status = self.get_endpoint_status(existing_endpoint)
+            if status and status.status == "healthy":
+                logger.debug(f"Reusing existing endpoint {existing_endpoint} for {capability_key}")
+                return status
+
+        # Find best model for this capability
+        registry = get_model_registry()
+        model_spec = registry.get_for_task(task_type, require_local=True)
+
+        if not model_spec:
+            return EndpointStatus(
+                agent_alias="",
+                model="",
+                port=None,
+                gpu_ids=[],
+                status="no_model",
+                startup_message=f"No model available for capability: {capability_key}",
+            )
+
+        # Check resource requirements
+        requirements = model_spec.get_resource_requirements()
+        free_gpus = self.resource_manager.get_free_gpus()
+
+        if len(free_gpus) < requirements.num_gpus:
+            # Try to evict idle endpoints to make room
+            evicted = await self._find_and_evict_for_resources(
+                required_gpus=requirements.num_gpus,
+                required_memory_mb=requirements.memory_mb,
+                requesting_priority=priority,
+            )
+            if not evicted:
+                return EndpointStatus(
+                    agent_alias="",
+                    model=model_spec.model_id,
+                    port=None,
+                    gpu_ids=[],
+                    status="insufficient_resources",
+                    startup_message=f"Need {requirements.num_gpus} GPUs, only {len(free_gpus)} free",
+                )
+            # Re-check free GPUs after eviction
+            free_gpus = self.resource_manager.get_free_gpus()
+
+        # Create a dynamic endpoint name based on capability
+        endpoint_name = f"cap_{capability_key}"
+
+        # Start the endpoint
+        logger.info(f"Starting endpoint {endpoint_name} for capability {capability_key}")
+        status = await self._start_capability_endpoint(
+            endpoint_name=endpoint_name,
+            model_spec=model_spec,
+            task_type=task_type,
+            gpus=free_gpus[:requirements.num_gpus],
+        )
+
+        # Register capability mapping
+        if status.status == "healthy" or status.status == "starting":
+            self._register_capability(capability_key, endpoint_name, model_spec.model_id)
+
+        return status
+
+    def get_endpoint_for_capability(self, task_type: "TaskType") -> Optional[str]:
+        """Get running endpoint that provides capability, or None.
+
+        Args:
+            task_type: The TaskType capability needed
+
+        Returns:
+            Endpoint name if one exists, None otherwise
+        """
+        capability_key = task_type.value
+        endpoints = self._capability_map.get(capability_key, [])
+
+        # Find first healthy endpoint
+        for endpoint_name in endpoints:
+            status = self.get_endpoint_status(endpoint_name)
+            if status and status.status == "healthy":
+                return endpoint_name
+
+        return None
+
+    def _register_capability(
+        self,
+        capability_key: str,
+        endpoint_name: str,
+        model_id: str,
+    ) -> None:
+        """Register an endpoint as providing a capability.
+
+        Args:
+            capability_key: TaskType.value
+            endpoint_name: Name of the endpoint
+            model_id: Model being served
+        """
+        if capability_key not in self._capability_map:
+            self._capability_map[capability_key] = []
+
+        if endpoint_name not in self._capability_map[capability_key]:
+            self._capability_map[capability_key].append(endpoint_name)
+
+        # Track activity
+        self._endpoint_activity[endpoint_name] = EndpointActivity(
+            endpoint_name=endpoint_name,
+            capability=capability_key,
+            model_id=model_id,
+        )
+
+        logger.info(f"Registered {endpoint_name} for capability {capability_key}")
+
+    def _unregister_capability(self, endpoint_name: str) -> None:
+        """Unregister an endpoint from all capability mappings.
+
+        Args:
+            endpoint_name: Name of the endpoint to unregister
+        """
+        for capability_key, endpoints in self._capability_map.items():
+            if endpoint_name in endpoints:
+                endpoints.remove(endpoint_name)
+
+        if endpoint_name in self._endpoint_activity:
+            del self._endpoint_activity[endpoint_name]
+
+        logger.info(f"Unregistered endpoint {endpoint_name}")
+
+    async def _start_capability_endpoint(
+        self,
+        endpoint_name: str,
+        model_spec: "ModelSpec",
+        task_type: "TaskType",
+        gpus: list[int],
+    ) -> EndpointStatus:
+        """Start an endpoint for a capability.
+
+        Args:
+            endpoint_name: Name for the endpoint
+            model_spec: Model specification
+            task_type: Capability this provides
+            gpus: GPU IDs to use
+
+        Returns:
+            EndpointStatus
+        """
+        from gaius.models.registry import ModelSpec
+
+        # For embedding models, we need special handling (Phase 5)
+        # For now, check if it's a vLLM-backed model
+        if model_spec.provider == "vllm" and model_spec.vllm_config:
+            # Create a temporary agent config for the endpoint
+            port = self._find_available_port()
+            cmd, env = model_spec.serve_command(port=port, gpus=gpus)
+
+            # Start via vLLM controller
+            proc = await self._vllm.start_model(
+                endpoint_name=endpoint_name,
+                model_id=model_spec.model_id,
+                port=port,
+                gpu_ids=gpus,
+                serve_command=cmd,
+                env_vars=env,
+            )
+
+            return EndpointStatus(
+                agent_alias=endpoint_name,
+                model=model_spec.model_id,
+                port=port,
+                gpu_ids=gpus,
+                status=proc.status.value if proc else "failed",
+                pid=proc.pid if proc else None,
+            )
+        else:
+            # Non-vLLM model (embedding, API, etc.)
+            # Use the embedding controller
+            from ..backends.embedding_controller import get_embedding_controller
+
+            try:
+                controller = get_embedding_controller()
+                endpoint = await controller.start_embedding_endpoint(
+                    model_spec=model_spec,
+                    gpu_ids=gpus,
+                    endpoint_name=endpoint_name,
+                )
+
+                return EndpointStatus(
+                    agent_alias=endpoint_name,
+                    model=model_spec.model_id,
+                    port=None,  # Embeddings don't use HTTP ports
+                    gpu_ids=gpus,
+                    status="healthy" if endpoint.status.value == "ready" else endpoint.status.value,
+                    startup_message=f"Embedding model {model_spec.model_id} loaded",
+                )
+            except Exception as e:
+                logger.error(f"Failed to start embedding endpoint: {e}")
+                return EndpointStatus(
+                    agent_alias=endpoint_name,
+                    model=model_spec.model_id,
+                    port=None,
+                    gpu_ids=[],
+                    status="failed",
+                    startup_message=f"Failed to load embedding model: {e}",
+                )
+
+    def _find_available_port(self, start: int = 8080, end: int = 8095) -> int:
+        """Find an available port for a new endpoint.
+
+        Args:
+            start: Start of port range
+            end: End of port range
+
+        Returns:
+            Available port number
+        """
+        used_ports = set()
+        for proc in self._vllm._processes.values():
+            if proc.port:
+                used_ports.add(proc.port)
+
+        for port in range(start, end + 1):
+            if port not in used_ports:
+                return port
+
+        raise RuntimeError(f"No available ports in range {start}-{end}")
+
+    async def _find_and_evict_for_resources(
+        self,
+        required_gpus: int,
+        required_memory_mb: int,
+        requesting_priority: int,
+    ) -> bool:
+        """Find and evict idle endpoints to free resources.
+
+        Yunikorn-style preemption rules:
+        1. Only evict if requester priority >= endpoint priority
+        2. Prefer idle endpoints over active ones
+        3. Prefer lower priority endpoints
+        4. Never evict endpoints with in-flight requests
+
+        Args:
+            required_gpus: Number of GPUs needed
+            required_memory_mb: GPU memory needed
+            requesting_priority: Priority of requesting workload
+
+        Returns:
+            True if enough resources freed, False otherwise
+        """
+        candidates = []
+
+        # First check capability-registered endpoints (tracked with activity)
+        for name, activity in self._endpoint_activity.items():
+            # Skip endpoints with in-flight requests
+            if activity.requests_in_flight > 0:
+                continue
+
+            # Skip higher priority endpoints
+            if activity.priority > requesting_priority:
+                continue
+
+            status = self.get_endpoint_status(name)
+            if status:
+                candidates.append((name, activity, status))
+
+        # Also check vLLM processes not tracked in _endpoint_activity
+        # These are legacy endpoints started by the engine on initialization
+        for proc_name, proc in self._vllm._processes.items():
+            if proc_name in self._endpoint_activity:
+                continue  # Already tracked
+
+            # Create a synthetic activity for legacy endpoints
+            # Assume they are NORMAL priority and potentially idle
+            synthetic_activity = EndpointActivity(
+                endpoint_name=proc_name,
+                capability="REASONING",  # Assume vLLM endpoints are for reasoning
+                model_id=proc.model,
+                priority=2,  # NORMAL priority
+            )
+
+            # Legacy endpoints are considered idle if we have no tracking info
+            # This makes them prime candidates for eviction when needed
+
+            status = self.get_endpoint_status(proc_name)
+            if status and status.status == "healthy":
+                candidates.append((proc_name, synthetic_activity, status))
+
+        # Sort: idle first, then by priority (lowest first), then by idle time (longest first)
+        candidates.sort(
+            key=lambda x: (
+                not x[1].is_idle,  # Idle first
+                x[1].priority,  # Lower priority first
+                -x[1].idle_seconds,  # Longer idle first
+            )
+        )
+
+        freed_gpus = 0
+        to_evict = []
+
+        for name, activity, status in candidates:
+            to_evict.append(name)
+            freed_gpus += len(status.gpu_ids)
+
+            if freed_gpus >= required_gpus:
+                break
+
+        if freed_gpus < required_gpus:
+            logger.warning(
+                f"Cannot free {required_gpus} GPUs: only {freed_gpus} available from "
+                f"{len(candidates)} candidates"
+            )
+            return False
+
+        # Execute evictions
+        for name in to_evict:
+            logger.info(f"Evicting endpoint {name} to free resources for higher-priority workload")
+            await self.stop_endpoint(name)
+            self._unregister_capability(name)
+
+        # Wait for GPU memory to be freed
+        await asyncio.sleep(2)
+        return True
+
+    def record_request_start(self, endpoint_name: str) -> None:
+        """Record that a request started on an endpoint.
+
+        Args:
+            endpoint_name: Name of the endpoint
+        """
+        if endpoint_name in self._endpoint_activity:
+            self._endpoint_activity[endpoint_name].requests_in_flight += 1
+            self._endpoint_activity[endpoint_name].last_request_time = time.time()
+
+    def record_request_end(self, endpoint_name: str) -> None:
+        """Record that a request completed on an endpoint.
+
+        Args:
+            endpoint_name: Name of the endpoint
+        """
+        if endpoint_name in self._endpoint_activity:
+            activity = self._endpoint_activity[endpoint_name]
+            activity.requests_in_flight = max(0, activity.requests_in_flight - 1)
+            activity.last_request_time = time.time()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Workload Management (Yunikorn-Style Makespan)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def begin_workload(
+        self,
+        request: "WorkloadRequest",
+    ) -> "WorkloadResult":
+        """Allocate resources for a workload, evicting if needed.
+
+        Yunikorn-style makespan management: the workload declares what
+        capabilities it needs and for how long. The orchestrator allocates
+        resources, evicting idle endpoints if necessary.
+
+        Args:
+            request: WorkloadRequest with capabilities and resource requirements
+
+        Returns:
+            WorkloadResult with allocated endpoints and eviction info
+        """
+        from ..workloads import (
+            WorkloadRequest,
+            WorkloadResult,
+            EndpointAllocation,
+            ActiveWorkload,
+        )
+
+        start_time = time.time()
+        allocated: dict = {}
+        evicted: list[str] = []
+        restore_plan: list[str] = []
+
+        logger.info(
+            f"Beginning workload {request.workload_id} "
+            f"(type={request.workload_type.name}, priority={request.priority.name})"
+        )
+
+        # Allocate endpoints for each required capability
+        for task_type in request.required_capabilities:
+            status = await self.ensure_capability(
+                task_type=task_type,
+                priority=request.priority.value,
+            )
+
+            if status.status in ("healthy", "starting"):
+                allocated[task_type] = EndpointAllocation(
+                    endpoint_name=status.agent_alias,
+                    capability=task_type,
+                    port=status.port or 0,
+                    healthy=status.status == "healthy",
+                    model_id=status.model,
+                )
+            elif status.status == "requires_embedding_controller":
+                # This capability needs the embedding controller (Phase 5)
+                # For now, mark as pending
+                allocated[task_type] = EndpointAllocation(
+                    endpoint_name="pending_embedding",
+                    capability=task_type,
+                    port=0,
+                    healthy=False,
+                    model_id=status.model,
+                )
+            else:
+                # Failed to allocate this capability
+                logger.error(
+                    f"Failed to allocate capability {task_type.value}: {status.status}"
+                )
+                return WorkloadResult(
+                    success=False,
+                    workload_id=request.workload_id,
+                    error=f"Failed to allocate {task_type.value}: {status.startup_message}",
+                    wait_time_ms=int((time.time() - start_time) * 1000),
+                )
+
+        # Track this workload
+        request.started_at = datetime.now()
+        result = WorkloadResult(
+            success=True,
+            workload_id=request.workload_id,
+            allocated_endpoints=allocated,
+            evicted_endpoints=evicted,
+            restore_plan=restore_plan,
+            wait_time_ms=int((time.time() - start_time) * 1000),
+        )
+
+        self._active_workloads[request.workload_id] = ActiveWorkload(
+            request=request,
+            result=result,
+        )
+
+        logger.info(
+            f"Workload {request.workload_id} started with "
+            f"{len(allocated)} endpoints allocated"
+        )
+
+        return result
+
+    async def complete_workload(self, workload_id: str) -> None:
+        """Mark workload complete and restore evicted endpoints.
+
+        Called when a workload finishes to release resources and
+        potentially restore previously evicted endpoints.
+
+        Args:
+            workload_id: ID of the completed workload
+        """
+        if workload_id not in self._active_workloads:
+            logger.warning(f"Unknown workload {workload_id}")
+            return
+
+        workload = self._active_workloads.pop(workload_id)
+        workload.request.completed_at = datetime.now()
+
+        logger.info(
+            f"Completing workload {workload_id} "
+            f"(duration={workload.elapsed_s:.1f}s)"
+        )
+
+        # Restore evicted endpoints if specified
+        for endpoint_name in workload.result.restore_plan:
+            try:
+                logger.info(f"Restoring evicted endpoint: {endpoint_name}")
+                await self.start_endpoint(endpoint_name)
+            except Exception as e:
+                logger.error(f"Failed to restore endpoint {endpoint_name}: {e}")
+
+    def get_active_workloads(self) -> dict[str, dict]:
+        """Get information about active workloads.
+
+        Returns:
+            Dict mapping workload_id to workload info
+        """
+        result = {}
+        for wid, workload in self._active_workloads.items():
+            result[wid] = {
+                "workload_id": wid,
+                "type": workload.request.workload_type.name,
+                "priority": workload.request.priority.name,
+                "capabilities": [c.value for c in workload.request.required_capabilities],
+                "elapsed_s": workload.elapsed_s,
+                "estimated_duration_s": workload.request.estimated_duration_s,
+                "is_overdue": workload.is_overdue,
+                "endpoints": [
+                    alloc.endpoint_name
+                    for alloc in workload.result.allocated_endpoints.values()
+                ],
+            }
+        return result
 
     # ─────────────────────────────────────────────────────────────────────────
     # Clean Start (BDD: '/evolve start' scenario)

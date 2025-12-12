@@ -43,7 +43,7 @@ Feature: Application Startup
     Then the status bar should display:
       | Field        | Example Content    |
       | Coordinates  | (9, 9)             |
-      | View Mode    | PENSION            |
+      | View Mode    | GO                 |
       | Domain       | (current domain)   |
       | Panel Mode   | NONE               |
 
@@ -60,9 +60,9 @@ Feature: Application Startup
   # Default View State
   # ─────────────────────────────────────────────────────────────────────
 
-  Scenario: Default view mode is pension
+  Scenario: Default view mode is Go
     When the TUI loads
-    Then the view mode should be "pension"
+    Then the view mode should be "go"
 
   Scenario: Default overlay is none
     When the TUI loads

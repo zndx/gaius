@@ -94,6 +94,26 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.SwarmStreamRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.SwarmEvent.FromString,
                 _registered_method=True)
+        self.BeginWorkload = channel.unary_unary(
+                '/gaius.engine.GaiusService/BeginWorkload',
+                request_serializer=gaius__service__pb2.BeginWorkloadRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.BeginWorkloadResponse.FromString,
+                _registered_method=True)
+        self.CompleteWorkload = channel.unary_unary(
+                '/gaius.engine.GaiusService/CompleteWorkload',
+                request_serializer=gaius__service__pb2.CompleteWorkloadRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetActiveWorkloads = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetActiveWorkloads',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetActiveWorkloadsResponse.FromString,
+                _registered_method=True)
+        self.EmbedTexts = channel.unary_unary(
+                '/gaius.engine.GaiusService/EmbedTexts',
+                request_serializer=gaius__service__pb2.EmbedTextsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EmbedTextsResponse.FromString,
+                _registered_method=True)
         self.EvolutionStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/EvolutionStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -244,6 +264,36 @@ class GaiusServiceServicer(object):
     def SwarmStream(self, request, context):
         """Streaming swarm analysis - returns progress events then final result
         Handles backend wait internally, streaming QUEUED status while waiting
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BeginWorkload(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Workload Management (Yunikorn-Style)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CompleteWorkload(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetActiveWorkloads(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EmbedTexts(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Embeddings (Engine-Managed)
+        ─────────────────────────────────────────────────────────────────────────
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -408,6 +458,26 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.SwarmStream,
                     request_deserializer=gaius__service__pb2.SwarmStreamRequest.FromString,
                     response_serializer=gaius__service__pb2.SwarmEvent.SerializeToString,
+            ),
+            'BeginWorkload': grpc.unary_unary_rpc_method_handler(
+                    servicer.BeginWorkload,
+                    request_deserializer=gaius__service__pb2.BeginWorkloadRequest.FromString,
+                    response_serializer=gaius__service__pb2.BeginWorkloadResponse.SerializeToString,
+            ),
+            'CompleteWorkload': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompleteWorkload,
+                    request_deserializer=gaius__service__pb2.CompleteWorkloadRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'GetActiveWorkloads': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetActiveWorkloads,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.GetActiveWorkloadsResponse.SerializeToString,
+            ),
+            'EmbedTexts': grpc.unary_unary_rpc_method_handler(
+                    servicer.EmbedTexts,
+                    request_deserializer=gaius__service__pb2.EmbedTextsRequest.FromString,
+                    response_serializer=gaius__service__pb2.EmbedTextsResponse.SerializeToString,
             ),
             'EvolutionStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.EvolutionStatus,
@@ -781,6 +851,114 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/SwarmStream',
             gaius__service__pb2.SwarmStreamRequest.SerializeToString,
             gaius__service__pb2.SwarmEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BeginWorkload(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/BeginWorkload',
+            gaius__service__pb2.BeginWorkloadRequest.SerializeToString,
+            gaius__service__pb2.BeginWorkloadResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CompleteWorkload(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CompleteWorkload',
+            gaius__service__pb2.CompleteWorkloadRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetActiveWorkloads(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetActiveWorkloads',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.GetActiveWorkloadsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EmbedTexts(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EmbedTexts',
+            gaius__service__pb2.EmbedTextsRequest.SerializeToString,
+            gaius__service__pb2.EmbedTextsResponse.FromString,
             options,
             channel_credentials,
             insecure,

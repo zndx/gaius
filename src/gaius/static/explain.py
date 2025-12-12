@@ -10,10 +10,11 @@ def get_view_explanation(view_mode: ViewMode) -> str:
 Black and white stones represent competing positions or allocations.
 Influence radiates from stone positions, creating territories.""",
 
-        ViewMode.PENSION: """**Pension View**: Asset allocation heatmap.
-Color intensity shows allocation weight (0-100%).
-Brighter cells indicate higher concentration.
-Navigate to explore allocation distribution.""",
+        ViewMode.THETA: """**Theta View**: Information density heatmap.
+Theta waves (4-8 Hz) facilitate memory consolidation - the transfer
+of information from short-term to long-term storage.
+Color intensity shows knowledge density. Brighter cells indicate
+higher document concentration in the UMAP projection.""",
 
         ViewMode.SWARM: """**Swarm View**: Multi-agent activity map.
 Agent positions shown with role indicators.
@@ -66,19 +67,19 @@ def _near_agent(x: int, y: int) -> bool:
 
 def get_position_context(x: int, y: int) -> str:
     """Get contextual explanation for a grid position."""
-    # Quadrant analysis
+    # Quadrant analysis (topological/semantic interpretation)
     if x < 6 and y < 6:
-        quadrant = "Upper-left quadrant: Conservative/defensive positioning."
+        quadrant = "Upper-left quadrant: Sparse embedding region, high exploration value."
     elif x >= 13 and y < 6:
-        quadrant = "Upper-right quadrant: Growth-oriented exposure."
+        quadrant = "Upper-right quadrant: Semantic periphery, potential knowledge gap."
     elif x < 6 and y >= 13:
-        quadrant = "Lower-left quadrant: Fixed income concentration."
+        quadrant = "Lower-left quadrant: Boundary region, possible H1 cycle participation."
     elif x >= 13 and y >= 13:
-        quadrant = "Lower-right quadrant: Alternative investments."
+        quadrant = "Lower-right quadrant: Transition zone, negative curvature likely."
     elif 6 <= x <= 12 and 6 <= y <= 12:
-        quadrant = "Central region: Balanced, diversified core."
+        quadrant = "Central region: High-density knowledge cluster."
     else:
-        quadrant = "Edge region: Transitional positioning."
+        quadrant = "Edge region: Semantic boundary, exploration target."
 
     # Corner/star point significance (Go terminology)
     star_points = [(3, 3), (3, 9), (3, 15), (9, 3), (9, 9), (9, 15), (15, 3), (15, 9), (15, 15)]

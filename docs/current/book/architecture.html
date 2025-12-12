@@ -258,14 +258,14 @@
 <p>Application state is centralized in the <code>GoBoardApp</code> class:</p>
 <pre><code class="language-python">class GoBoardApp(App):
     # View state
-    mode: str           # "go" or "pension"
-    overlay: str        # "none", "risk", "h1", "swarm"
+    mode: str           # "go", "theta", or "swarm"
+    overlay: str        # "none", "topology", "geometry", "dynamics", "agents"
     cursor: tuple[int, int]
 
     # Data state
     black: set          # Black stone positions
     white: set          # White stone positions
-    alloc: list[list]   # Pension allocation grid
+    alloc: list[list]   # Information density grid (theta view)
     candidates: list    # Marked candidate positions
 
     # Swarm state
@@ -309,7 +309,7 @@
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="architecture/board.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="architecture/knowledge-gradient.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -323,7 +323,7 @@
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="architecture/board.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="architecture/knowledge-gradient.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
