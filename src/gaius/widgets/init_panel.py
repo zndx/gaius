@@ -311,14 +311,17 @@ class InitPanel(Widget):
             await self._poll_init_status()
 
     async def _poll_init_status(self) -> None:
-        """Fallback: poll for init status if streaming fails."""
+        """Fallback: poll for init status if streaming fails.
+
+        Continues polling even after init completes to keep endpoint
+        status in sync with ThinkPanel.
+        """
         logger.debug("InitPanel falling back to polling mode")
 
         max_retries = 5
-        retry_count = 0
         consecutive_failures = 0
 
-        while not self.state.initialization_state.is_ready:
+        while True:  # Keep polling to stay in sync
             try:
                 from ..client.engine_proxy import get_health_proxy
 
@@ -333,7 +336,12 @@ class InitPanel(Widget):
                 # Populate endpoints from health status
                 endpoints = status.get("endpoints", {})
                 healthy_count = 0
+
+                # Track which endpoints are still active
+                active_endpoints = set()
+
                 for ep_name, ep_data in endpoints.items():
+                    active_endpoints.add(ep_name)
                     if isinstance(ep_data, dict):
                         ep_status = ep_data.get("status", "unknown")
                         is_healthy = ep_status == "healthy"
@@ -348,11 +356,20 @@ class InitPanel(Widget):
                         ep.progress = 1.0 if is_healthy else 0.5
                         ep.message = ep_data.get("model", "")
 
+                # Remove endpoints that are no longer in the health response
+                stale_endpoints = [name for name in init_state.endpoints if name not in active_endpoints]
+                for name in stale_endpoints:
+                    del init_state.endpoints[name]
+
                 if healthy_count > 0:
                     init_state.is_ready = True
                     init_state.overall_progress = 1.0
                     init_state.phase = "ready"
-                    init_state.message = "All endpoints ready"
+                    init_state.message = f"{healthy_count} endpoint{'s' if healthy_count != 1 else ''} healthy"
+                else:
+                    init_state.is_ready = False
+                    init_state.phase = "waiting"
+                    init_state.message = "No healthy endpoints"
 
                 self.refresh()
 
@@ -370,8 +387,9 @@ class InitPanel(Widget):
                     self.refresh()
                     return
 
-            retry_count += 1
-            await asyncio.sleep(2.0)  # Poll every 2 seconds
+            # Poll every 5 seconds (slower than during init since we're in steady state)
+            poll_interval = 5.0 if self.state.initialization_state.is_ready else 2.0
+            await asyncio.sleep(poll_interval)
 
     def _update_from_event(self, event: dict) -> None:
         """Update initialization state from an InitEvent."""

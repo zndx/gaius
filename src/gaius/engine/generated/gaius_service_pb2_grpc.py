@@ -154,6 +154,56 @@ class GaiusServiceStub(object):
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionActivityResponse.FromString,
                 _registered_method=True)
+        self.GetCurrentState = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetCurrentState',
+                request_serializer=gaius__service__pb2.GetStateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GridState.FromString,
+                _registered_method=True)
+        self.SubscribeState = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeState',
+                request_serializer=gaius__service__pb2.SubscribeStateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.StateUpdate.FromString,
+                _registered_method=True)
+        self.GetPreferences = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetPreferences',
+                request_serializer=gaius__service__pb2.GetPreferencesRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.UIPreferences.FromString,
+                _registered_method=True)
+        self.SavePreferences = channel.unary_unary(
+                '/gaius.engine.GaiusService/SavePreferences',
+                request_serializer=gaius__service__pb2.SavePreferencesRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.PruneSnapshots = channel.unary_unary(
+                '/gaius.engine.GaiusService/PruneSnapshots',
+                request_serializer=gaius__service__pb2.PruneSnapshotsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.PruneSnapshotsResponse.FromString,
+                _registered_method=True)
+        self.ExecuteCommand = channel.unary_unary(
+                '/gaius.engine.GaiusService/ExecuteCommand',
+                request_serializer=gaius__service__pb2.ExecuteCommandRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ExecuteCommandResponse.FromString,
+                _registered_method=True)
+        self.Init = channel.unary_unary(
+                '/gaius.engine.GaiusService/Init',
+                request_serializer=gaius__service__pb2.InitRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.InitResponse.FromString,
+                _registered_method=True)
+        self.InitProgressStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/InitProgressStream',
+                request_serializer=gaius__service__pb2.InitRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.InitProgress.FromString,
+                _registered_method=True)
+        self.Reindex = channel.unary_unary(
+                '/gaius.engine.GaiusService/Reindex',
+                request_serializer=gaius__service__pb2.ReindexRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ReindexResponse.FromString,
+                _registered_method=True)
+        self.ReindexStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/ReindexStream',
+                request_serializer=gaius__service__pb2.ReindexRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ReindexProgress.FromString,
+                _registered_method=True)
         self.ProjectEmbeddings = channel.unary_unary(
                 '/gaius.engine.GaiusService/ProjectEmbeddings',
                 request_serializer=gaius__service__pb2.ProjectEmbeddingsRequest.SerializeToString,
@@ -168,6 +218,11 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/ComputeTDA',
                 request_serializer=gaius__service__pb2.ComputeTDARequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.TDAResponse.FromString,
+                _registered_method=True)
+        self.Explain = channel.unary_unary(
+                '/gaius.engine.GaiusService/Explain',
+                request_serializer=gaius__service__pb2.ExplainRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ExplainResponse.FromString,
                 _registered_method=True)
         self.HealthStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/HealthStream',
@@ -353,6 +408,74 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetCurrentState(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        State (Thin Client Architecture)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeState(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPreferences(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SavePreferences(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PruneSnapshots(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ExecuteCommand(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Command (Unified Entry Point)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Init(self, request, context):
+        """Full init: index KB + project to grid + compute TDA + save to cache
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def InitProgressStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Reindex(self, request, context):
+        """Reindex: re-embed documents + re-project + re-compute TDA
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReindexStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ProjectEmbeddings(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Grid (Embedding Projection)
@@ -371,6 +494,15 @@ class GaiusServiceServicer(object):
     def ComputeTDA(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         TDA (Topological Data Analysis)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Explain(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Explain (Grid Position Interpretation)
         ─────────────────────────────────────────────────────────────────────────
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -519,6 +651,56 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.CognitionActivityResponse.SerializeToString,
             ),
+            'GetCurrentState': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCurrentState,
+                    request_deserializer=gaius__service__pb2.GetStateRequest.FromString,
+                    response_serializer=gaius__service__pb2.GridState.SerializeToString,
+            ),
+            'SubscribeState': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeState,
+                    request_deserializer=gaius__service__pb2.SubscribeStateRequest.FromString,
+                    response_serializer=gaius__service__pb2.StateUpdate.SerializeToString,
+            ),
+            'GetPreferences': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPreferences,
+                    request_deserializer=gaius__service__pb2.GetPreferencesRequest.FromString,
+                    response_serializer=gaius__service__pb2.UIPreferences.SerializeToString,
+            ),
+            'SavePreferences': grpc.unary_unary_rpc_method_handler(
+                    servicer.SavePreferences,
+                    request_deserializer=gaius__service__pb2.SavePreferencesRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'PruneSnapshots': grpc.unary_unary_rpc_method_handler(
+                    servicer.PruneSnapshots,
+                    request_deserializer=gaius__service__pb2.PruneSnapshotsRequest.FromString,
+                    response_serializer=gaius__service__pb2.PruneSnapshotsResponse.SerializeToString,
+            ),
+            'ExecuteCommand': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExecuteCommand,
+                    request_deserializer=gaius__service__pb2.ExecuteCommandRequest.FromString,
+                    response_serializer=gaius__service__pb2.ExecuteCommandResponse.SerializeToString,
+            ),
+            'Init': grpc.unary_unary_rpc_method_handler(
+                    servicer.Init,
+                    request_deserializer=gaius__service__pb2.InitRequest.FromString,
+                    response_serializer=gaius__service__pb2.InitResponse.SerializeToString,
+            ),
+            'InitProgressStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.InitProgressStream,
+                    request_deserializer=gaius__service__pb2.InitRequest.FromString,
+                    response_serializer=gaius__service__pb2.InitProgress.SerializeToString,
+            ),
+            'Reindex': grpc.unary_unary_rpc_method_handler(
+                    servicer.Reindex,
+                    request_deserializer=gaius__service__pb2.ReindexRequest.FromString,
+                    response_serializer=gaius__service__pb2.ReindexResponse.SerializeToString,
+            ),
+            'ReindexStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.ReindexStream,
+                    request_deserializer=gaius__service__pb2.ReindexRequest.FromString,
+                    response_serializer=gaius__service__pb2.ReindexProgress.SerializeToString,
+            ),
             'ProjectEmbeddings': grpc.unary_unary_rpc_method_handler(
                     servicer.ProjectEmbeddings,
                     request_deserializer=gaius__service__pb2.ProjectEmbeddingsRequest.FromString,
@@ -533,6 +715,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.ComputeTDA,
                     request_deserializer=gaius__service__pb2.ComputeTDARequest.FromString,
                     response_serializer=gaius__service__pb2.TDAResponse.SerializeToString,
+            ),
+            'Explain': grpc.unary_unary_rpc_method_handler(
+                    servicer.Explain,
+                    request_deserializer=gaius__service__pb2.ExplainRequest.FromString,
+                    response_serializer=gaius__service__pb2.ExplainResponse.SerializeToString,
             ),
             'HealthStream': grpc.unary_stream_rpc_method_handler(
                     servicer.HealthStream,
@@ -1186,6 +1373,276 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def GetCurrentState(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetCurrentState',
+            gaius__service__pb2.GetStateRequest.SerializeToString,
+            gaius__service__pb2.GridState.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeState(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeState',
+            gaius__service__pb2.SubscribeStateRequest.SerializeToString,
+            gaius__service__pb2.StateUpdate.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPreferences(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetPreferences',
+            gaius__service__pb2.GetPreferencesRequest.SerializeToString,
+            gaius__service__pb2.UIPreferences.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SavePreferences(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SavePreferences',
+            gaius__service__pb2.SavePreferencesRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PruneSnapshots(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/PruneSnapshots',
+            gaius__service__pb2.PruneSnapshotsRequest.SerializeToString,
+            gaius__service__pb2.PruneSnapshotsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExecuteCommand(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ExecuteCommand',
+            gaius__service__pb2.ExecuteCommandRequest.SerializeToString,
+            gaius__service__pb2.ExecuteCommandResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Init(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/Init',
+            gaius__service__pb2.InitRequest.SerializeToString,
+            gaius__service__pb2.InitResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InitProgressStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/InitProgressStream',
+            gaius__service__pb2.InitRequest.SerializeToString,
+            gaius__service__pb2.InitProgress.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Reindex(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/Reindex',
+            gaius__service__pb2.ReindexRequest.SerializeToString,
+            gaius__service__pb2.ReindexResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReindexStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ReindexStream',
+            gaius__service__pb2.ReindexRequest.SerializeToString,
+            gaius__service__pb2.ReindexProgress.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ProjectEmbeddings(request,
             target,
             options=(),
@@ -1256,6 +1713,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/ComputeTDA',
             gaius__service__pb2.ComputeTDARequest.SerializeToString,
             gaius__service__pb2.TDAResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Explain(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/Explain',
+            gaius__service__pb2.ExplainRequest.SerializeToString,
+            gaius__service__pb2.ExplainResponse.FromString,
             options,
             channel_credentials,
             insecure,

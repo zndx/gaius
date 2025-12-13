@@ -9,6 +9,7 @@ Usage:
 """
 
 # Suppress warnings BEFORE any imports that might trigger them
+import asyncio
 import os
 
 # Suppress huggingface tokenizers parallelism warnings
@@ -34,7 +35,7 @@ from .core.state import AppState, ViewMode, OverlayMode, CenterPanelMode
 from .core.config import get_config, GaiusConfig
 from .core.telemetry import init_from_config as init_telemetry
 from .core.projection import get_grid_manager, GridData
-from .core.tda import get_tda_manager
+# NOTE: get_tda_manager imported locally where needed (deferred for instant startup)
 from .core.activity import get_activity_tracker, log_activity, ActivityType
 from .core.session import get_session_manager, SessionHandoff
 from .agents import get_swarm_manager
@@ -53,6 +54,8 @@ from .widgets.evolution_panel import EvolutionPanel
 from .widgets.init_panel import InitPanel
 from .widgets.observe_panel import ObservePanel
 from .widgets.splash import SplashScreen
+from .client.state_client import ConnectionStatus
+from .storage.grid_state import load_current_state_fast_sync, CurrentState
 from .static import (
     GRID_DATA,
     AGENT_DATA,
@@ -366,6 +369,8 @@ class GaiusApp(App):
         init_telemetry(self.config, entry_point="tui")  # Initialize OpenTelemetry
         self.state = AppState()
         self._graph_update_timer: Timer | None = None
+        self._connection_status: ConnectionStatus = ConnectionStatus.PENDING
+        self._state_generation: int = 0
         self._apply_config()
         self._load_test_data()
 
@@ -399,43 +404,28 @@ class GaiusApp(App):
         """Initialize grid state on startup.
 
         Priority:
-        1. Load from cache (instant)
-        2. If KB has content but no cache, schedule auto-init
-        3. Fall back to static test data (fresh install)
+        1. Load from Postgres cache (instant, ~25ms)
+        2. If KB has content but no cache, show empty grid + schedule auto-init
+        3. Empty grid for fresh install
+
+        Note: Static test data is no longer used - empty grid is cleaner.
         """
-        # Try to load from cache first (fast)
+        # Try to load from cache first (fast Postgres path)
         if self._try_load_cached_state():
             return
+
+        # No cache available - show empty grid with loading indicator
+        self.state.black_stones = set()
+        self.state.white_stones = set()
+        self.state.allocations = [[0] * 19 for _ in range(19)]
+        self.state.h1_cycles = []
+        self.state.h2_voids = []
+        self.state.tda_entropy = 0.0
+        self._cache_source = "none"
 
         # Check if KB has real content - if so, schedule auto-init
         if self._kb_has_content():
             self._schedule_auto_init()
-            # Use minimal placeholder until init completes
-            self.state.black_stones = []
-            self.state.white_stones = []
-            self.state.allocations = {}
-            self.state.h1_cycles = []
-            self.state.tda_entropy = 0.0
-            return
-
-        # Fall back to static test data (fresh install with empty KB)
-        self.state.black_stones = GRID_DATA["black"]
-        self.state.white_stones = GRID_DATA["white"]
-        self.state.allocations = GRID_DATA["alloc"]
-        self.state.h1_cycles = DEATH_LOOPS
-        self.state.tda_entropy = TDA_METRICS["entropy"]
-
-        # Load agent positions
-        for agent in AGENT_DATA:
-            self.state.agent_positions.append((
-                agent["name"],
-                agent["pos"][0],
-                agent["pos"][1],
-                agent["color"],
-            ))
-
-        # Set some candidates
-        self.state.candidates = [(3, 3), (15, 15), (10, 10), (5, 14), (14, 5)]
 
     def _kb_has_content(self) -> bool:
         """Check if KB has real content worth indexing."""
@@ -480,8 +470,82 @@ class GaiusApp(App):
         # Schedule to run after mount
         self.call_later(lambda: asyncio.create_task(run_auto_init()))
 
+    def _populate_state_from_cache(self, cached: "CurrentState") -> bool:
+        """Populate AppState from Postgres cache for instant startup.
+
+        This converts the denormalized CurrentState (from current_state table)
+        to AppState fields for immediate grid rendering.
+
+        Args:
+            cached: CurrentState loaded from Postgres cache
+
+        Returns:
+            True if state was populated successfully
+        """
+        try:
+            # Grid positions - documents as black stones, clusters as white
+            self.state.black_stones = {(d["x"], d["y"]) for d in cached.documents}
+            self.state.white_stones = set(cached.clusters)
+            self.state.allocations = cached.allocations
+
+            # TDA features - convert bbox dicts to tuples
+            self.state.h1_cycles = [
+                (b["x_min"], b["y_min"], b["x_max"], b["y_max"])
+                for b in cached.h1_cycles
+            ]
+            self.state.h2_voids = [
+                (b["x_min"], b["y_min"], b["x_max"], b["y_max"])
+                for b in cached.h2_voids
+            ]
+            self.state.tda_entropy = cached.entropy
+
+            # Geometry features for dynamics overlay
+            # gradient_field is list of [x, y, gx, gy]
+            if cached.gradient_field:
+                self.state.gradient_field = cached.gradient_field
+                self.log.debug(f"Loaded {len(cached.gradient_field)} gradient vectors")
+
+            # Curvature map for geometry overlay (convert flat to 19x19 if needed)
+            if cached.curvature_map:
+                if len(cached.curvature_map) == 361:
+                    # Flat list - convert to 19x19
+                    self.state.curvature_map = [
+                        cached.curvature_map[i*19:(i+1)*19] for i in range(19)
+                    ]
+                else:
+                    self.state.curvature_map = cached.curvature_map
+
+            # Divergence map for dynamics overlay (convert flat to 19x19 if needed)
+            if cached.divergence_map:
+                if len(cached.divergence_map) == 361:
+                    self.state.divergence_map = [
+                        cached.divergence_map[i*19:(i+1)*19] for i in range(19)
+                    ]
+                else:
+                    self.state.divergence_map = cached.divergence_map
+
+            # Store generation for sync protocol
+            self._state_generation = cached.generation
+
+            # Mark cache as source
+            self._cache_source = "postgres"
+
+            self.log.info(
+                f"Loaded from Postgres cache: {cached.n_documents} docs, "
+                f"generation={cached.generation}"
+            )
+            return True
+
+        except Exception as e:
+            self.log.error(f"Failed to populate state from cache: {e}")
+            return False
+
     def _try_load_cached_state(self) -> bool:
-        """Try to load cached grid/TDA state.
+        """Try to load cached grid/TDA state for instant startup.
+
+        Priority:
+        1. Fast Postgres cache (denormalized current_state table, ~25ms)
+        2. Legacy file-based cache (slower, for backwards compatibility)
 
         Returns:
             True if cache was loaded successfully
@@ -497,6 +561,15 @@ class GaiusApp(App):
             except RuntimeError:
                 pass  # No running loop, safe to proceed
 
+            # === Priority 1: Fast Postgres cache (denormalized JSON, ~25ms) ===
+            # Note: load_current_state_fast_sync imported at module level
+            cached = load_current_state_fast_sync(self.config.kb.root)
+            if cached and cached.n_documents > 0:
+                if self._populate_state_from_cache(cached):
+                    return True
+                # If populate failed, fall through to legacy cache
+
+            # === Priority 2: Legacy file-based cache (backwards compatibility) ===
             from .core.cache import load_cached_state, check_cache_validity
 
             # Check if cache is valid for current config
@@ -569,7 +642,12 @@ class GaiusApp(App):
 
             return True
 
-        except Exception:
+        except Exception as e:
+            import traceback
+            import logging
+            logging.getLogger(__name__).warning(
+                f"_try_load_cached_state failed: {e}\n{traceback.format_exc()}"
+            )
             return False
 
     def _try_load_real_grid_data(self) -> bool:
@@ -599,6 +677,7 @@ class GaiusApp(App):
 
             # Try to compute TDA on 768-dim embeddings (not 2D projections)
             try:
+                from .core.tda import get_tda_manager
                 tda_manager = get_tda_manager()
                 if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
                     import numpy as np
@@ -700,6 +779,7 @@ class GaiusApp(App):
             if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) < 3:
                 return False
 
+            from .core.tda import get_tda_manager
             tda_manager = get_tda_manager()
             tda_manager.invalidate_cache()
 
@@ -875,6 +955,7 @@ class GaiusApp(App):
                 task.message = "Step 4/6: Computing TDA (H0/H1/H2)..."
                 task.progress = 0.6
 
+                from .core.tda import get_tda_manager
                 tda_manager = get_tda_manager()
                 tda_manager.invalidate_cache()
 
@@ -1008,6 +1089,7 @@ class GaiusApp(App):
                 # Refresh TDA on 768-dim embeddings (not 2D projections)
                 tda_features = None
                 try:
+                    from .core.tda import get_tda_manager
                     tda_manager = get_tda_manager()
                     if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
                         grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
@@ -1105,6 +1187,7 @@ class GaiusApp(App):
 
                 tda_features = None
                 try:
+                    from .core.tda import get_tda_manager
                     tda_manager = get_tda_manager()
                     if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
                         grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
@@ -3534,12 +3617,27 @@ The general-purpose agentic query interface.
             "NONE": "dim",
         }.get(center_mode, "white")
 
+        # Connection status indicator (thin client architecture)
+        conn_icons = {
+            ConnectionStatus.PENDING: ("○", "dim"),
+            ConnectionStatus.CONNECTING: ("◐", "yellow"),
+            ConnectionStatus.CONNECTED: ("●", "green"),
+            ConnectionStatus.OFFLINE: ("◯", "dim white"),
+            ConnectionStatus.ERROR: ("✗", "red"),
+        }
+        conn_icon, conn_color = conn_icons.get(self._connection_status, ("?", "red"))
+
+        # Generation indicator (shows data freshness)
+        gen_str = f"g{self._state_generation}" if self._state_generation > 0 else ""
+
         return (
+            f"[{conn_color}]{conn_icon}[/] "
             f"[bold green]{mode}[/] │ "
             f"[yellow]{overlay}[/] │ "
             f"[{center_style}]{center_mode}[/] │ "
             f"[bold cyan]{coord}[/] │ "
-            f"{domain} │ "
+            f"{domain} "
+            f"[dim]{gen_str}[/] │ "
             f"[dim]hjkl:move o:overlay v:view g:panel /:cmd[/]"
         )
 
@@ -3554,19 +3652,27 @@ The general-purpose agentic query interface.
         grid.update_state(self.state)
 
     def _update_minigrids(self) -> None:
-        """Update mini-grids based on cursor position with real TDA/UMAP data."""
+        """Update mini-grids based on cursor position with real TDA/UMAP data.
+
+        IMPORTANT: Only uses cached data - does NOT trigger slow projection.
+        This ensures instant startup. Mini-grids stay empty until background
+        sync populates the cache.
+
+        Thin Client: TDA features come from Postgres cache (self.state), not
+        from TDAManager. The Engine computes TDA, TUI just displays it.
+        """
         from .core.minigrids import get_real_minigrid_data
         from .core.projection import get_grid_manager
-        from .core.tda import get_tda_manager
 
-        # Get grid data and TDA features from managers
+        # Get grid data from manager cache (don't trigger projection)
         grid_data = None
-        tda_features = None
         try:
             grid_manager = get_grid_manager()
-            grid_data = grid_manager.get_grid_data()
-            tda_manager = get_tda_manager()
-            tda_features = tda_manager._cached_features  # May be None if not computed yet
+
+            # Only use cached data - don't call get_grid_data() which triggers projection
+            if grid_manager._cache_valid and grid_manager._cached_data is not None:
+                grid_data = grid_manager._cached_data
+            # else: mini-grids stay empty until background sync
 
             # Debug logging
             if grid_data:
@@ -3601,11 +3707,14 @@ The general-purpose agentic query interface.
         )
 
         # Update each mini-grid (right column: top and bottom)
+        # data values are MiniGridData objects with .grid and .title
         try:
             if "right" in data and data["right"]:
-                self.query_one("#minigrid-top", MiniGrid).update_data(data["right"])
+                mg_data = data["right"]
+                self.query_one("#minigrid-top", MiniGrid).update_data(mg_data.grid, mg_data.title)
             if "top" in data and data["top"]:
-                self.query_one("#minigrid-bottom", MiniGrid).update_data(data["top"])
+                mg_data = data["top"]
+                self.query_one("#minigrid-bottom", MiniGrid).update_data(mg_data.grid, mg_data.title)
         except Exception as e:
             self.log.error(f"Failed to update mini-grids: {e}")
 
@@ -4039,6 +4148,12 @@ The general-purpose agentic query interface.
         # Apply center panel mode from config
         self._apply_center_panel_mode()
 
+        # Start state client for thin client architecture (instant startup)
+        self._start_state_client()
+
+        # Load minigrid embedding data from Postgres (background)
+        self._load_minigrid_data()
+
         # Start inference stack (orchestrator + nvidia/Orchestrator-8B)
         self._start_inference_stack()
 
@@ -4056,15 +4171,119 @@ The general-purpose agentic query interface.
         except Exception:
             pass  # Splash may not exist in tests
 
+    def _start_state_client(self) -> None:
+        """Start state client for thin client architecture.
+
+        Attempts to:
+        1. Load cached state from Postgres (instant)
+        2. Connect to Engine in background
+        3. Sync state updates via subscription
+
+        This enables <100ms TUI startup while Engine connects in background.
+        """
+        import asyncio
+
+        async def connect_and_sync():
+            """Background task to connect and sync state."""
+            from .client.state_client import get_state_client
+
+            try:
+                # Update status to connecting
+                self._connection_status = ConnectionStatus.CONNECTING
+                self._update_status()
+
+                client = await get_state_client()
+                kb_root = self.config.kb.root
+
+                # Try to load cached state first
+                state = await client.get_current_state(kb_root)
+                if state:
+                    self._state_generation = state.generation
+                    # Update connection status based on source
+                    if state.from_cache:
+                        self._connection_status = ConnectionStatus.OFFLINE
+                    else:
+                        self._connection_status = ConnectionStatus.CONNECTED
+                else:
+                    # No cached state - check connection status
+                    if client.is_connected:
+                        self._connection_status = ConnectionStatus.CONNECTED
+                    else:
+                        self._connection_status = ConnectionStatus.OFFLINE
+
+                # Register status change callback
+                def on_status_change(status: ConnectionStatus):
+                    self._connection_status = status
+                    self.call_from_thread(self._update_status)
+
+                client.on_status_change(on_status_change)
+
+            except Exception as e:
+                self.log.debug(f"State client connect failed: {e}")
+                self._connection_status = ConnectionStatus.OFFLINE
+
+            finally:
+                self._update_status()
+
+        asyncio.create_task(connect_and_sync())
+
+    def _load_minigrid_data(self) -> None:
+        """Load embedding data from Postgres for minigrid rendering.
+
+        Called asynchronously after TUI mount. Loads raw embeddings and
+        grid mappings, then populates GridManager cache.
+
+        This enables minigrid views (Embed/Iso) to show real data instead
+        of empty grids after instant startup.
+
+        Also loads curvatures_raw for Iso view mode cycling.
+        """
+        import asyncio
+
+        async def load_and_populate():
+            """Background task to load embeddings and update minigrids."""
+            try:
+                from .storage.grid_state import load_full_grid_data_for_minigrids, load_current_state_fast
+                from .core.projection import get_grid_manager
+
+                kb_root = self.config.kb.root
+
+                # Load curvatures_raw from cached state for Iso view
+                cached = await load_current_state_fast(kb_root)
+                if cached and cached.curvatures_raw:
+                    self.state.curvatures_raw = cached.curvatures_raw
+                    self.log.info(f"Loaded {len(cached.curvatures_raw)} curvatures for Iso view")
+
+                grid_data = await load_full_grid_data_for_minigrids(kb_root)
+
+                if grid_data is not None and grid_data.raw_embeddings is not None:
+                    # Populate GridManager cache
+                    grid_manager = get_grid_manager()
+                    grid_manager.set_cached_data(grid_data)
+
+                    # Update minigrids on main thread
+                    self.call_from_thread(self._update_minigrids)
+
+                    self.log.info(
+                        f"Minigrid data loaded: {len(grid_data.grid_to_embedding)} mappings"
+                    )
+                else:
+                    self.log.debug("No embedding data available for minigrids")
+
+            except Exception as e:
+                self.log.debug(f"Minigrid data load failed: {e}")
+
+        asyncio.create_task(load_and_populate())
+
     def _start_inference_stack(self) -> None:
         """Start inference orchestrator and default model (nvidia/Orchestrator-8B).
 
         Creates background task with progress tracking.
+        IMPORTANT: Defers heavy imports to async context for instant startup.
         """
         import asyncio
         from datetime import datetime
         from .core.state import BackgroundTask
-        from .inference.manager import get_inference_manager
 
         # Create background task
         task = BackgroundTask(
@@ -4077,6 +4296,8 @@ The general-purpose agentic query interface.
 
         async def start_with_progress():
             """Start inference stack with progress updates."""
+            # Defer heavy import to async context (get_inference_manager() takes ~500ms)
+            from .inference.manager import get_inference_manager
             manager = get_inference_manager()
 
             def update_progress(task_name: str, progress: float, message: str):
@@ -4112,15 +4333,22 @@ The general-purpose agentic query interface.
         asyncio.create_task(start_with_progress())
 
     def _start_scheduler(self) -> None:
-        """Start the scheduler service for background inference."""
-        try:
-            from .inference.scheduler import get_scheduler_service
-            import asyncio
+        """Start the scheduler service for background inference.
 
-            service = get_scheduler_service()
-            asyncio.create_task(service.start())
-        except ImportError:
-            pass  # Scheduler not available
+        IMPORTANT: Defers heavy imports to async context for instant startup.
+        """
+        import asyncio
+
+        async def start_scheduler():
+            try:
+                # Defer heavy import to async context (get_scheduler_service() takes ~500ms)
+                from .inference.scheduler import get_scheduler_service
+                service = get_scheduler_service()
+                await service.start()
+            except ImportError:
+                pass  # Scheduler not available
+
+        asyncio.create_task(start_scheduler())
 
     def _apply_center_panel_mode(self) -> None:
         """Apply center panel mode visibility from state.
@@ -4580,6 +4808,7 @@ The general-purpose agentic query interface.
         elif command == "tda":
             # Show TDA metrics
             try:
+                from .core.tda import get_tda_manager
                 tda_manager = get_tda_manager()
                 metrics = tda_manager.get_metrics()
                 tda_text = f"""# TDA Metrics

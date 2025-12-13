@@ -44,6 +44,7 @@ from .gaius_service_pb2 import (
     CleanStartResponse,
     EndpointResponse,
     EnsureEndpointResponse,
+    EndpointAllocationInfo,
     # Scheduler
     CompleteRequest,
     CompleteResponse,
@@ -52,34 +53,10 @@ from .gaius_service_pb2 import (
     GetJobResultRequest,
     GetJobResultResponse,
     SchedulerStatusResponse,
-    # Swarm streaming
-    SwarmStreamRequest,
-    SwarmEvent,
-    SwarmResult,
-    # Workload Management
-    WorkloadType,
-    BeginWorkloadRequest,
-    BeginWorkloadResponse,
-    CompleteWorkloadRequest,
-    EndpointAllocationInfo,
-    ActiveWorkloadInfo,
-    GetActiveWorkloadsResponse,
-    # Embeddings
-    EmbedTextsRequest,
-    EmbedTextsResponse,
-    EmbeddingVector,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
     EvolutionCycleResponse,
-    # Cognition
-    CognitionStatusResponse,
-    ThoughtMessage,
-    GetRecentThoughtsRequest,
-    GetRecentThoughtsResponse,
-    TriggerCognitionRequest,
-    TriggerCognitionResponse,
-    CognitionActivityResponse,
     # Health
     HealthStreamRequest,
     HealthMetrics,
@@ -94,13 +71,63 @@ from .gaius_service_pb2 import (
     ProjectEmbeddingsResponse,
     ProjectQueryRequest,
     ProjectQueryResponse,
+    GridState,
     # TDA
     ComputeTDARequest,
     PersistenceInterval,
     TDAResponse,
+    TDAFeatures,
+    # Explain (Grid Position Interpretation)
+    ExplainRequest,
+    ExplainResponse,
+    GeometryFeatures,
+    GradientVector,
+    BoundingBox,
     # Init streaming
     InitCommand,
     InitEvent,
+    InitRequest,
+    InitResponse,
+    InitProgress,
+    # Swarm streaming
+    SwarmStreamRequest,
+    SwarmEvent,
+    SwarmResult,
+    # Workload tracking
+    WorkloadType,
+    BeginWorkloadRequest,
+    BeginWorkloadResponse,
+    CompleteWorkloadRequest,
+    ActiveWorkloadInfo,
+    GetActiveWorkloadsResponse,
+    # Cognition
+    TriggerCognitionRequest,
+    TriggerCognitionResponse,
+    ThoughtMessage,
+    GetRecentThoughtsRequest,
+    GetRecentThoughtsResponse,
+    CognitionStatusResponse,
+    CognitionActivityResponse,
+    # State management
+    GetStateRequest,
+    StateUpdate,
+    SubscribeStateRequest,
+    UIPreferences,
+    GetPreferencesRequest,
+    SavePreferencesRequest,
+    # Command execution
+    ExecuteCommandRequest,
+    ExecuteCommandResponse,
+    # Embedding
+    EmbeddingVector,
+    EmbedTextsRequest,
+    EmbedTextsResponse,
+    # Reindex
+    ReindexRequest,
+    ReindexResponse,
+    ReindexProgress,
+    PruneSnapshotsRequest,
+    PruneSnapshotsResponse,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -139,6 +166,7 @@ __all__ = [
     "CleanStartResponse",
     "EndpointResponse",
     "EnsureEndpointResponse",
+    "EndpointAllocationInfo",
     # Gaius - Scheduler
     "CompleteRequest",
     "CompleteResponse",
@@ -147,34 +175,10 @@ __all__ = [
     "GetJobResultRequest",
     "GetJobResultResponse",
     "SchedulerStatusResponse",
-    # Gaius - Swarm
-    "SwarmStreamRequest",
-    "SwarmEvent",
-    "SwarmResult",
-    # Gaius - Workload Management
-    "WorkloadType",
-    "BeginWorkloadRequest",
-    "BeginWorkloadResponse",
-    "CompleteWorkloadRequest",
-    "EndpointAllocationInfo",
-    "ActiveWorkloadInfo",
-    "GetActiveWorkloadsResponse",
-    # Gaius - Embeddings
-    "EmbedTextsRequest",
-    "EmbedTextsResponse",
-    "EmbeddingVector",
     # Gaius - Evolution
     "EvolutionStatusResponse",
     "TriggerEvolutionRequest",
     "EvolutionCycleResponse",
-    # Gaius - Cognition
-    "CognitionStatusResponse",
-    "ThoughtMessage",
-    "GetRecentThoughtsRequest",
-    "GetRecentThoughtsResponse",
-    "TriggerCognitionRequest",
-    "TriggerCognitionResponse",
-    "CognitionActivityResponse",
     # Gaius - Health
     "HealthStreamRequest",
     "HealthMetrics",
@@ -189,14 +193,64 @@ __all__ = [
     "ProjectEmbeddingsResponse",
     "ProjectQueryRequest",
     "ProjectQueryResponse",
+    "GridState",
     # Gaius - TDA
     "ComputeTDARequest",
     "PersistenceInterval",
     "TDAResponse",
+    "TDAFeatures",
+    # Gaius - Explain
+    "ExplainRequest",
+    "ExplainResponse",
+    "GeometryFeatures",
+    "GradientVector",
+    "BoundingBox",
     # Gaius - Init
     "InitCommand",
     "InitEvent",
-    # Gaius - Service
+    "InitRequest",
+    "InitResponse",
+    "InitProgress",
+    # Gaius - Swarm
+    "SwarmStreamRequest",
+    "SwarmEvent",
+    "SwarmResult",
+    # Gaius - Workload
+    "WorkloadType",
+    "BeginWorkloadRequest",
+    "BeginWorkloadResponse",
+    "CompleteWorkloadRequest",
+    "ActiveWorkloadInfo",
+    "GetActiveWorkloadsResponse",
+    # Gaius - Cognition
+    "TriggerCognitionRequest",
+    "TriggerCognitionResponse",
+    "ThoughtMessage",
+    "GetRecentThoughtsRequest",
+    "GetRecentThoughtsResponse",
+    "CognitionStatusResponse",
+    "CognitionActivityResponse",
+    # Gaius - State
+    "GetStateRequest",
+    "StateUpdate",
+    "SubscribeStateRequest",
+    "UIPreferences",
+    "GetPreferencesRequest",
+    "SavePreferencesRequest",
+    # Gaius - Command
+    "ExecuteCommandRequest",
+    "ExecuteCommandResponse",
+    # Gaius - Embedding
+    "EmbeddingVector",
+    "EmbedTextsRequest",
+    "EmbedTextsResponse",
+    # Gaius - Reindex
+    "ReindexRequest",
+    "ReindexResponse",
+    "ReindexProgress",
+    "PruneSnapshotsRequest",
+    "PruneSnapshotsResponse",
+    # Service stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",
     "add_GaiusServiceServicer_to_server",

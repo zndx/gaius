@@ -160,7 +160,7 @@ class GaiusCLI:
                 elif command == "view":
                     result["data"] = self._cmd_view(args)
                 elif command == "state":
-                    result["data"] = self._cmd_state()
+                    result["data"] = self._run_async(self._cmd_state(args))
                 elif command == "agents":
                     result["data"] = self._cmd_agents()
                 elif command == "grid":
@@ -204,10 +204,13 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_evolve(args))
                 # Mini-grid data
                 elif command == "minigrid" or command == "mg":
-                    result["data"] = self._cmd_minigrid(args)
-                # Reindex KB to Qdrant
+                    result["data"] = self._run_async(self._cmd_minigrid(args))
+                # Reindex KB to Qdrant (via Engine or local)
                 elif command == "reindex":
-                    result["data"] = self._cmd_reindex()
+                    result["data"] = self._run_async(self._cmd_reindex(args))
+                # Init - full initialization pipeline via Engine
+                elif command == "init":
+                    result["data"] = self._run_async(self._cmd_init(args))
                 # Tenuki - find strategic jump point
                 elif command == "tenuki":
                     result["data"] = self._cmd_tenuki(args)
@@ -235,6 +238,9 @@ class GaiusCLI:
                 # Model registry commands
                 elif command == "model" or command == "models":
                     result["data"] = self._cmd_model(args)
+                # Execute via Engine's CommandService (unified entry point)
+                elif command == "exec":
+                    result["data"] = self._run_async(self._cmd_exec(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -371,22 +377,190 @@ class GaiusCLI:
             self.state.cycle_view_mode()
         return {"view": self.state.view_mode.value}
 
-    def _cmd_state(self) -> dict:
-        """Get full state."""
+    async def _cmd_state(self, args: str = "") -> dict:
+        """Get or sync application state.
+
+        Usage:
+            /state              - Get current application state
+            /state sync         - Load cached state from Postgres
+            /state generation   - Get current generation number
+            /state prefs [save] - Get or save UI preferences
+            /state prune [n]    - Prune old snapshots (keep n, default 10)
+        """
+        parts = args.strip().split()
+        subcmd = parts[0] if parts else ""
+
+        if not subcmd:
+            # Default: return local state
+            return {
+                "cursor": self._coord_string(self.state.cursor_x, self.state.cursor_y),
+                "cursor_x": self.state.cursor_x,
+                "cursor_y": self.state.cursor_y,
+                "view_mode": self.state.view_mode.value,
+                "overlay_mode": self.state.overlay_mode.value,
+                "domain": self.state.domain,
+                "tda_entropy": self.state.tda_entropy,
+                "num_agents": len(self.state.agent_positions),
+                "num_h1_cycles": len(self.state.h1_cycles),
+                "num_h2_voids": len(self.state.h2_voids),
+                "has_curvature_map": bool(self.state.curvature_map),
+                "has_gradient_field": bool(self.state.gradient_field),
+            }
+
+        if subcmd == "sync":
+            # Load cached state from Postgres
+            return await self._cmd_state_sync()
+
+        if subcmd == "generation" or subcmd == "gen":
+            # Get current generation
+            return await self._cmd_state_generation()
+
+        if subcmd == "prefs" or subcmd == "preferences":
+            # Get or save preferences
+            save = "save" in parts[1:] if len(parts) > 1 else False
+            return await self._cmd_state_prefs(save)
+
+        if subcmd == "prune":
+            # Prune old snapshots
+            keep = int(parts[1]) if len(parts) > 1 else 10
+            return await self._cmd_state_prune(keep)
+
+        return {"error": f"Unknown state subcommand: {subcmd}"}
+
+    async def _cmd_state_sync(self) -> dict:
+        """Load cached state from Postgres for instant startup."""
+        from .client.state_client import get_state_client
+
+        client = await get_state_client()
+        kb_root = self._get_kb_root()
+
+        state = await client.get_current_state(kb_root)
+
+        if not state:
+            return {
+                "status": "no_cached_state",
+                "kb_root": kb_root,
+                "message": "No cached state found. Run /reindex to populate.",
+            }
+
+        # Update self.state with geometry from loaded state
+        if state.geometry and state.geometry.curvature_map:
+            self.state.curvature_map = state.geometry.curvature_map
+        if state.geometry and state.geometry.gradient_field:
+            self.state.gradient_field = state.geometry.gradient_field
+
         return {
-            "cursor": self._coord_string(self.state.cursor_x, self.state.cursor_y),
-            "cursor_x": self.state.cursor_x,
-            "cursor_y": self.state.cursor_y,
-            "view_mode": self.state.view_mode.value,
-            "overlay_mode": self.state.overlay_mode.value,
-            "domain": self.state.domain,
-            "tda_entropy": self.state.tda_entropy,
-            "num_agents": len(self.state.agent_positions),
-            "num_h1_cycles": len(self.state.h1_cycles),
-            "num_h2_voids": len(self.state.h2_voids),
-            "has_curvature_map": bool(self.state.curvature_map),
-            "has_gradient_field": bool(self.state.gradient_field),
+            "status": "loaded",
+            "kb_root": kb_root,
+            "snapshot_id": state.snapshot_id,
+            "generation": state.generation,
+            "n_documents": state.n_documents,
+            "tda": {
+                "h0_count": state.tda.h0_count,
+                "h1_count": state.tda.h1_count,
+                "h2_count": state.tda.h2_count,
+                "entropy": state.tda.entropy,
+            },
+            "geometry": {
+                "has_curvature_map": bool(state.geometry.curvature_map),
+                "has_gradient_field": bool(state.geometry.gradient_field),
+                "gradient_field_count": len(state.geometry.gradient_field) if state.geometry else 0,
+            },
+            "from_cache": state.from_cache,
+            "connection_status": client.status.value,
         }
+
+    async def _cmd_state_generation(self) -> dict:
+        """Get current state generation number."""
+        from .storage.grid_state import get_current_generation
+
+        kb_root = self._get_kb_root()
+        generation = await get_current_generation(kb_root)
+
+        return {
+            "kb_root": kb_root,
+            "generation": generation,
+        }
+
+    async def _cmd_state_prefs(self, save: bool = False) -> dict:
+        """Get or save UI preferences."""
+        from .client.state_client import get_state_client, UIPreferences
+
+        client = await get_state_client()
+
+        if save:
+            # Save current state to preferences
+            prefs = UIPreferences(
+                client_id="cli",
+                cursor_x=self.state.cursor_x,
+                cursor_y=self.state.cursor_y,
+                view_mode=self.state.view_mode.value,
+                overlay_mode=self.state.overlay_mode.value,
+                domain=self.state.domain or "",
+            )
+            success = await client.save_preferences(prefs)
+            return {
+                "action": "saved",
+                "success": success,
+                "preferences": {
+                    "cursor_x": prefs.cursor_x,
+                    "cursor_y": prefs.cursor_y,
+                    "view_mode": prefs.view_mode,
+                    "overlay_mode": prefs.overlay_mode,
+                    "domain": prefs.domain,
+                },
+            }
+        else:
+            # Load preferences
+            prefs = await client.get_preferences("cli")
+            if not prefs:
+                return {"status": "no_preferences", "message": "No saved preferences found"}
+
+            return {
+                "action": "loaded",
+                "preferences": {
+                    "cursor_x": prefs.cursor_x,
+                    "cursor_y": prefs.cursor_y,
+                    "view_mode": prefs.view_mode,
+                    "overlay_mode": prefs.overlay_mode,
+                    "domain": prefs.domain,
+                },
+            }
+
+    async def _cmd_state_prune(self, keep_count: int = 10) -> dict:
+        """Prune old grid snapshots."""
+        from .client.state_client import get_state_client
+
+        client = await get_state_client()
+        kb_root = self._get_kb_root()
+
+        # First do a dry run
+        dry_count, dry_ids = await client.prune_snapshots(
+            kb_root, keep_count=keep_count, dry_run=True
+        )
+
+        if dry_count == 0:
+            return {
+                "action": "prune",
+                "deleted_count": 0,
+                "message": f"No snapshots to prune (keeping {keep_count})",
+            }
+
+        # Actually prune
+        count, deleted_ids = await client.prune_snapshots(
+            kb_root, keep_count=keep_count, dry_run=False
+        )
+
+        return {
+            "action": "prune",
+            "deleted_count": count,
+            "deleted_ids": deleted_ids[:10],  # Only show first 10
+            "kept_count": keep_count,
+        }
+
+    def _get_kb_root(self) -> str:
+        """Get KB root from config."""
+        return getattr(self.config, "kb_root", "build/dev")
 
     def _cmd_agents(self) -> dict:
         """List agents."""
@@ -406,11 +580,12 @@ class GaiusCLI:
         grid_str = self._render_grid_ascii()
         return {"grid": grid_str}
 
-    def _cmd_minigrid(self, args: str) -> dict:
+    async def _cmd_minigrid(self, args: str) -> dict:
         """Get mini-grid data for a position.
 
         Usage:
-            /minigrid [pos]  - Get Embed and Iso mini-grid data (default: cursor)
+            /minigrid [pos]       - Get from Postgres cache (fast)
+            /minigrid [pos] live  - Trigger projection (slow)
 
         Returns:
             embed_grid: 9x9 embedding similarity around position
@@ -418,30 +593,59 @@ class GaiusCLI:
             grid_data_status: info about underlying data
         """
         from .core.projection import get_grid_manager
-        from .core.minigrids import get_embed_view, get_iso_view, get_real_minigrid_data
+        from .core.minigrids import get_real_minigrid_data
+
+        # Parse args
+        parts = args.strip().split() if args else []
+        use_live = "live" in parts
+        pos_args = [p for p in parts if p != "live"]
 
         # Parse position
-        if args:
-            cx, cy = self._parse_coord(args)
+        if pos_args:
+            cx, cy = self._parse_coord(" ".join(pos_args))
         else:
             cx, cy = self.state.cursor_x, self.state.cursor_y
 
         # Get grid data
         grid_data = None
-        grid_data_status = {}
-        try:
-            grid_manager = get_grid_manager()
-            grid_data = grid_manager.get_grid_data()
-            grid_data_status = {
-                "n_documents": grid_data.n_documents,
-                "coverage": grid_data.coverage,
-                "method": grid_data.method,
-                "has_embeddings": grid_data.raw_embeddings is not None,
-                "embedding_count": len(grid_data.raw_embeddings) if grid_data.raw_embeddings is not None else 0,
-                "grid_mappings": len(grid_data.grid_to_embedding),
-            }
-        except Exception as e:
-            grid_data_status["error"] = str(e)
+        grid_data_status = {"source": "none"}
+
+        if use_live:
+            # Live projection (slow, triggers full recomputation)
+            try:
+                grid_manager = get_grid_manager()
+                grid_data = grid_manager.get_grid_data()
+                grid_data_status = {
+                    "source": "live_projection",
+                    "n_documents": grid_data.n_documents,
+                    "coverage": grid_data.coverage,
+                    "method": grid_data.method,
+                    "has_embeddings": grid_data.raw_embeddings is not None,
+                    "embedding_count": len(grid_data.raw_embeddings) if grid_data.raw_embeddings is not None else 0,
+                    "grid_mappings": len(grid_data.grid_to_embedding),
+                }
+            except Exception as e:
+                grid_data_status["error"] = str(e)
+        else:
+            # Load from Postgres cache (fast, ~100ms)
+            try:
+                from .storage.grid_state import load_full_grid_data_for_minigrids
+                kb_root = self.config.kb.root
+                grid_data = await load_full_grid_data_for_minigrids(kb_root)
+                if grid_data:
+                    grid_data_status = {
+                        "source": "postgres_cache",
+                        "n_documents": grid_data.n_documents,
+                        "coverage": grid_data.coverage,
+                        "method": grid_data.method,
+                        "has_embeddings": grid_data.raw_embeddings is not None,
+                        "embedding_count": len(grid_data.raw_embeddings) if grid_data.raw_embeddings is not None else 0,
+                        "grid_mappings": len(grid_data.grid_to_embedding),
+                    }
+                else:
+                    grid_data_status["error"] = "No cached state found"
+            except Exception as e:
+                grid_data_status["error"] = str(e)
 
         # Get curvatures from state
         curvatures = self.state.curvatures_raw if self.state.curvatures_raw else None
@@ -472,23 +676,137 @@ class GaiusCLI:
             "curvatures_available": curvatures is not None,
         }
 
-    def _cmd_reindex(self) -> dict:
+    async def _cmd_reindex(self, args: str = "") -> dict:
         """Reindex KB documents to Qdrant and refresh grid projection.
 
         Usage:
-            /reindex  - Index all KB documents and project to grid
+            /reindex           - Index via Engine with streaming progress (default)
+            /reindex nostream  - Disable streaming (wait for completion)
+            /reindex local     - Force local compute (bypass Engine)
+            /reindex force     - Force full reindex even if up-to-date
 
         Returns:
             n_documents: Number of documents indexed
             coverage: Grid coverage percentage
-            grid_mappings: Number of grid positions with documents
+            generation: State generation after reindex
         """
+        import time
+
+        parts = args.strip().split()
+
+        # Parse options
+        force = "force" in parts
+        local = "local" in parts
+        # Stream by default unless nostream is specified
+        stream = "nostream" not in parts
+
+        kb_root = self._get_kb_root()
+
+        # Try Engine first (unless local explicitly requested)
+        if not local:
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+
+                if stream:
+                    # Streaming mode with progress updates
+                    start_time = time.time()
+                    last_progress = None
+                    final_result = None
+
+                    async for progress in client.reindex_with_progress(
+                        kb_root=kb_root,
+                        force=force,
+                    ):
+                        phase = progress.get("phase", "")
+                        pct = progress.get("progress", 0.0)
+                        msg = progress.get("message", "")
+                        docs_done = progress.get("documents_processed", 0)
+                        docs_total = progress.get("documents_total", 0)
+
+                        # Progress bar visualization
+                        bar_width = 30
+                        filled = int(bar_width * pct)
+                        bar = "█" * filled + "░" * (bar_width - filled)
+
+                        # Print progress line (overwrite previous)
+                        if docs_total > 0:
+                            progress_line = f"\r[{bar}] {pct:5.1%} | {phase:10s} | {docs_done}/{docs_total} docs | {msg}"
+                        else:
+                            progress_line = f"\r[{bar}] {pct:5.1%} | {phase:10s} | {msg}"
+
+                        # Truncate to terminal width and pad to overwrite previous
+                        print(progress_line.ljust(100)[:100], end="", flush=True)
+                        last_progress = progress
+
+                        if phase in ("complete", "error"):
+                            final_result = progress
+                            break
+
+                    print()  # Newline after progress bar
+
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    if final_result and final_result.get("phase") == "error":
+                        return {
+                            "mode": "engine",
+                            "success": False,
+                            "kb_root": kb_root,
+                            "error": final_result.get("message", "Unknown error"),
+                            "duration_ms": duration_ms,
+                        }
+
+                    return {
+                        "mode": "engine",
+                        "success": True,
+                        "kb_root": kb_root,
+                        "n_documents": last_progress.get("documents_processed", 0) if last_progress else 0,
+                        "message": last_progress.get("message", "") if last_progress else "",
+                        "duration_ms": duration_ms,
+                    }
+
+                else:
+                    # Non-streaming mode (wait for completion)
+                    result = await client.call(
+                        service="Init",
+                        action="reindex",
+                        params={
+                            "kb_root": kb_root,
+                            "client_id": "cli",
+                            "force": force,
+                        },
+                        timeout=600.0,  # 10 minute timeout for full reindex
+                    )
+
+                    return {
+                        "mode": "engine",
+                        "success": result.get("success", False),
+                        "kb_root": kb_root,
+                        "n_documents": result.get("documents_indexed", 0),
+                        "documents_skipped": result.get("documents_skipped", 0),
+                        "generation": result.get("generation", 0),
+                        "duration_ms": result.get("duration_ms", 0),
+                        "message": result.get("message", ""),
+                    }
+
+            except Exception as e:
+                # Engine not available or failed - fall through to local
+                # Log warning and use local
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Engine reindex failed ({e}), using local compute"
+                )
+
+        # Local fallback
         from .core.projection import get_grid_manager
 
         grid_manager = get_grid_manager()
         grid_data = grid_manager.reindex_and_project()
 
         return {
+            "mode": "local",
+            "success": True,
             "n_documents": grid_data.n_documents,
             "coverage": grid_data.coverage,
             "method": grid_data.method,
@@ -496,6 +814,145 @@ class GaiusCLI:
             "has_embeddings": grid_data.raw_embeddings is not None,
             "embedding_count": len(grid_data.raw_embeddings) if grid_data.raw_embeddings is not None else 0,
         }
+
+    async def _cmd_init(self, args: str = "") -> dict:
+        """Initialize KB: index, project, compute TDA, save to Postgres.
+
+        This is the primary entry point for setting up a fresh Gaius instance
+        or forcing a complete rebuild. After /init completes, the TUI should
+        start fully populated in < 5 seconds by reading from Postgres cache.
+
+        Usage:
+            /init              - Initialize (skip if already done)
+            /init force        - Force full re-initialization
+            /init stream       - Stream progress updates (default: true)
+            /init nostream     - Disable streaming (wait for completion)
+
+        Pipeline:
+        1. Scan KB for documents
+        2. Compute ColBERT embeddings
+        3. Project to 19x19 grid via UMAP
+        4. Compute TDA features (H0/H1/H2)
+        5. Save to Postgres (grid_snapshots + current_state)
+
+        Returns:
+            success: True if initialization succeeded
+            n_documents: Number of documents indexed
+            h0_count, h1_count, h2_count: TDA feature counts
+            entropy: Persistence entropy
+            generation: State generation number
+            duration_ms: Total duration in milliseconds
+        """
+        import sys
+        import time
+
+        parts = args.strip().split()
+
+        # Parse options
+        force = "force" in parts
+        # Stream by default unless nostream is specified
+        stream = "nostream" not in parts
+
+        kb_root = self._get_kb_root()
+
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            if stream:
+                # Streaming mode with progress updates
+                start_time = time.time()
+                last_progress = None
+                final_result = None
+
+                async for progress in client.init_with_progress(
+                    kb_root=kb_root,
+                    force=force,
+                ):
+                    phase = progress.get("phase", "")
+                    pct = progress.get("progress", 0.0)
+                    msg = progress.get("message", "")
+                    docs_done = progress.get("documents_processed", 0)
+                    docs_total = progress.get("documents_total", 0)
+
+                    # Progress bar visualization
+                    bar_width = 30
+                    filled = int(bar_width * pct)
+                    bar = "█" * filled + "░" * (bar_width - filled)
+
+                    # Print progress line (overwrite previous)
+                    if docs_total > 0:
+                        progress_line = f"\r[{bar}] {pct:5.1%} | {phase:10s} | {docs_done}/{docs_total} docs | {msg}"
+                    else:
+                        progress_line = f"\r[{bar}] {pct:5.1%} | {phase:10s} | {msg}"
+
+                    # Truncate to terminal width and pad to overwrite previous
+                    print(progress_line.ljust(100)[:100], end="", flush=True)
+                    last_progress = progress
+
+                    if phase in ("complete", "error"):
+                        final_result = progress
+                        break
+
+                print()  # Newline after progress bar
+
+                duration_ms = int((time.time() - start_time) * 1000)
+
+                if final_result and final_result.get("phase") == "error":
+                    return {
+                        "mode": "engine",
+                        "success": False,
+                        "kb_root": kb_root,
+                        "error": final_result.get("message", "Unknown error"),
+                        "duration_ms": duration_ms,
+                    }
+
+                return {
+                    "mode": "engine",
+                    "success": True,
+                    "kb_root": kb_root,
+                    "n_documents": last_progress.get("documents_processed", 0) if last_progress else 0,
+                    "message": last_progress.get("message", "") if last_progress else "",
+                    "duration_ms": duration_ms,
+                }
+
+            else:
+                # Non-streaming mode (wait for completion)
+                result = await client.call(
+                    service="Init",
+                    action="init",
+                    params={
+                        "kb_root": kb_root,
+                        "client_id": "cli",
+                        "force": force,
+                    },
+                    timeout=600.0,  # 10 minute timeout for full init
+                )
+
+                return {
+                    "mode": "engine",
+                    "success": result.get("success", False),
+                    "kb_root": kb_root,
+                    "n_documents": result.get("documents_indexed", 0),
+                    "h0_count": result.get("h0_count", 0),
+                    "h1_count": result.get("h1_count", 0),
+                    "h2_count": result.get("h2_count", 0),
+                    "entropy": result.get("entropy", 0.0),
+                    "generation": result.get("generation", 0),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "message": result.get("message", ""),
+                }
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Init failed: {e}")
+            return {
+                "mode": "engine",
+                "success": False,
+                "kb_root": kb_root,
+                "error": str(e),
+            }
 
     def _cmd_tenuki(self, args: str) -> dict:
         """Find strategic jump point (tenuki) from current position.
@@ -657,7 +1114,7 @@ class GaiusCLI:
                 "domain [name]": "Set or get domain",
                 "overlay [mode]": "Set or cycle overlay mode",
                 "view [mode]": "Set or cycle view mode",
-                "state": "Get full application state",
+                "state [subcmd]": "State ops (sync, generation, prefs, prune)",
                 "agents": "List all agents",
                 "grid": "Get ASCII grid representation",
                 "minigrid [pos]": "Get 9x9 Embed/Iso mini-grid data for position",
@@ -688,6 +1145,8 @@ class GaiusCLI:
                 "explain [pos]": "Explain grid position using local LLM (default: K10)",
                 # Engine connectivity
                 "engine [cmd]": "Engine connection (status, reconnect, test)",
+                # Unified command routing (thin client)
+                "exec <cmd> [args]": "Execute via Engine's CommandService",
             },
             "tagline": "/ask away! Use /ask for general queries, /watch for telemetry, /search for research.",
         }
@@ -3234,6 +3693,67 @@ Respond with:
         else:
             return {"error": f"Unknown engine command: {subcmd}"}
 
+    async def _cmd_exec(self, args: str) -> dict:
+        """Execute a command via Engine's CommandService (unified entry point).
+
+        This routes any command through the Engine's gRPC CommandService,
+        enabling the thin client architecture where all compute happens
+        server-side.
+
+        Usage:
+            /exec <command> [args]  - Execute command via Engine
+            /exec goto 5,5          - Example: goto position via Engine
+            /exec reindex           - Example: reindex via Engine
+
+        Returns:
+            success: True if command executed successfully
+            command: The command that was executed
+            message: Human-readable result message
+            data: Command-specific result data (if any)
+            generation: State generation after command
+            duration_ms: Execution time in milliseconds
+        """
+        if not args:
+            return {"error": "Usage: /exec <command> [args]"}
+
+        parts = args.split(maxsplit=1)
+        command = parts[0]
+        cmd_args = parts[1] if len(parts) > 1 else ""
+
+        kb_root = self._get_kb_root()
+
+        try:
+            from .client.command_client import get_command_client
+
+            client = await get_command_client()
+            result = await client.execute(
+                command=command,
+                args=cmd_args,
+                kb_root=kb_root,
+                context={
+                    "cursor_x": str(self.state.cursor_x),
+                    "cursor_y": str(self.state.cursor_y),
+                    "view_mode": self.state.view_mode.value if hasattr(self.state.view_mode, "value") else str(self.state.view_mode),
+                    "overlay_mode": self.state.overlay_mode.value if hasattr(self.state.overlay_mode, "value") else str(self.state.overlay_mode),
+                },
+            )
+
+            return {
+                "success": result.success,
+                "command": result.command,
+                "message": result.message,
+                "data": result.data,
+                "generation": result.generation,
+                "duration_ms": result.duration_ms,
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "command": command,
+                "error": str(e),
+            }
+
     async def _cmd_watch(self, args: str) -> dict:
         """Watch OpenTelemetry telemetry streams with filtering.
 
@@ -3519,7 +4039,10 @@ Respond with:
         return True
 
     async def _cmd_explain(self, args: str) -> dict:
-        """Explain a grid position using local LLM with differential geometry.
+        """Explain a grid position via Engine gRPC.
+
+        All computation (TDA, geometry, minigrid, LLM) happens on the Engine.
+        No local fallbacks - Engine must be functional.
 
         Usage: /explain [pos] [--save]
         Examples:
@@ -3527,19 +4050,7 @@ Respond with:
             /explain K10 --save - Explain and save to KB
             /explain --save     - Explain default position and save
         """
-        from datetime import datetime
-        from pathlib import Path
-
-        try:
-            import asyncio
-            import numpy as np
-            from .inference.llm import explain_position, ExplanationContext
-            from .core.projection import get_grid_manager
-            from .core.tda import get_tda_manager
-            from .core.geometry import GeometryComputer
-            from .core.minigrids import get_embed_view, get_iso_view
-        except ImportError as e:
-            raise RuntimeError(f"Explain not available: {e}. Run: uv sync --extra inference")
+        from .client.grpc_client import get_grpc_client
 
         # Parse --save flag
         save_to_kb = "--save" in args
@@ -3551,182 +4062,47 @@ Respond with:
         else:
             cx, cy = 9, 9  # K10 (center)
 
-        start_time = datetime.now()
+        kb_root = self.config.kb.root
 
-        # Try to get real grid data with computed features
-        grid_data = None
-        tda_features = None
-        curvatures_list = None
-        try:
-            grid_data = get_grid_manager().get_grid_data()
-
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
-                # Compute TDA features
-                tda_manager = get_tda_manager()
-                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                tda_features = tda_manager.compute_features(
-                    grid_data.raw_embeddings, grid_coords
-                )
-
-                # Compute geometry features (Ricci curvatures)
-                gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
-
-                # Handle async: check if already in event loop
-                try:
-                    loop = asyncio.get_running_loop()
-                    # Already in event loop, use nest_asyncio or thread
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(
-                            asyncio.run,
-                            gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                        )
-                        geom_features = future.result(timeout=60)
-                except RuntimeError:
-                    # No event loop running, safe to use asyncio.run
-                    geom_features = asyncio.run(
-                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                    )
-
-                if geom_features is not None:
-                    curvatures_list = [float(k) for k in geom_features.curvatures]
-                    # Store in state for later use
-                    self.state.curvatures_raw = curvatures_list
-        except Exception as e:
-            import sys
-            print(f"Geometry computation error: {e}", file=sys.stderr)
-
-        # Get document at cursor (if real grid data available)
-        document_title = None
-        document_path = None
-        if grid_data:
-            point_idx = grid_data.grid_to_embedding.get((cx, cy))
-            if point_idx is not None and point_idx < len(grid_data.points):
-                point = grid_data.points[point_idx]
-                document_title = point.title
-                document_path = point.path
-
-        # Extract geometric features from state
-        curvature = None
-        gradient_x, gradient_y = None, None
-        divergence = None
-
-        if self.state.curvature_map:
-            curvature = self.state.curvature_map.get((cx, cy))
-        if self.state.gradient_field:
-            grad = self.state.gradient_field.get((cx, cy))
-            if grad:
-                gradient_x, gradient_y = grad
-
-        # Get nearby documents
-        nearby_documents = []
-        if grid_data:
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    if dx == 0 and dy == 0:
-                        continue
-                    nx, ny = cx + dx, cy + dy
-                    if 0 <= nx < 19 and 0 <= ny < 19:
-                        neighbor_idx = grid_data.grid_to_embedding.get((nx, ny))
-                        if neighbor_idx is not None and neighbor_idx < len(grid_data.points):
-                            nearby_documents.append(grid_data.points[neighbor_idx].title)
-
-        # Get mini-grid data for visual descriptions
-        embed_grid = None
-        iso_grid = None
-        if grid_data:
-            embed_data = get_embed_view(grid_data, cx, cy)
-            embed_grid = embed_data.grid
-
-            # Use computed curvatures for iso view
-            iso_data = get_iso_view(
-                grid_data, curvatures_list, cx, cy,
-                iso_features=grid_data.iso_features
-            )
-            iso_grid = iso_data.grid
-
-        # Build explanation context
-        ctx = ExplanationContext(
-            cursor_x=cx,
-            cursor_y=cy,
-            document_title=document_title,
-            document_path=document_path,
-            curvature=curvature,
-            gradient_x=gradient_x,
-            gradient_y=gradient_y,
-            divergence=divergence,
-            tda_entropy=self.state.tda_entropy,
-            h0_count=len(getattr(self.state, 'h0_components', [])),
-            h1_count=len(self.state.h1_cycles),
-            h2_count=len(self.state.h2_voids),
-            risk_score=self.state.risk_scores.get((cx, cy)) if getattr(self.state, 'risk_scores', None) else None,
-            grid_coverage=len(grid_data.points) / 361 if grid_data else 0.0,
-            total_documents=len(grid_data.points) if grid_data else 0,
-            nearby_documents=nearby_documents[:5],
-            embed_grid=embed_grid,
-            iso_grid=iso_grid,
+        # Call Engine via gRPC
+        client = await get_grpc_client()
+        response = await client.explain(
+            kb_root=kb_root,
+            x=cx,
+            y=cy,
+            save_to_kb=save_to_kb,
+            max_tokens=800,
         )
 
-        # Generate explanation
-        from .inference.client import InferenceClient
-        client = InferenceClient()
+        if not response.success:
+            raise RuntimeError(f"Engine /explain failed: {response.error}")
 
-        # Discover vLLM model
-        await client._discover_vllm_model()
-
-        explanation = await explain_position(ctx, client=client, max_tokens=800)
-
-        # Strip thinking tags if present
-        if '<think>' in explanation and '</think>' in explanation:
-            explanation = explanation.split('</think>')[-1].strip()
-
-        elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-        model_name = getattr(client, '_vllm_model', 'unknown')
-
+        # Build result from Engine response
         result = {
-            "position": self._coord_string(cx, cy),
-            "x": cx,
-            "y": cy,
-            "document": document_title,
-            "curvature": curvature,
-            "explanation": explanation,
-            "model": model_name,
-            "elapsed_ms": elapsed_ms,
+            "position": response.position,
+            "x": response.x,
+            "y": response.y,
+            "document": response.document_title or None,
+            "document_path": response.document_path or None,
+            "curvature": response.curvature if response.curvature else None,
+            "gradient": (response.gradient_x, response.gradient_y) if response.gradient_x else None,
+            "tda": {
+                "entropy": response.tda_entropy,
+                "h0_count": response.h0_count,
+                "h1_count": response.h1_count,
+                "h2_count": response.h2_count,
+            },
+            "risk_score": response.risk_score if response.risk_score else None,
+            "grid_coverage": response.grid_coverage,
+            "total_documents": response.total_documents,
+            "nearby_documents": list(response.nearby_documents),
+            "explanation": response.explanation,
+            "model": response.model,
+            "elapsed_ms": response.duration_ms,
         }
 
-        # Save to KB if requested
-        if save_to_kb:
-            from .core.kb_capture import ExplainCapture
-
-            capture = ExplainCapture(
-                position=self._coord_string(cx, cy),
-                x=cx,
-                y=cy,
-                document_title=document_title,
-                document_path=document_path,
-                nearby_documents=nearby_documents[:8],
-                curvature=curvature,
-                gradient=(gradient_x, gradient_y) if gradient_x is not None else None,
-                risk_score=self.state.risk_scores.get((cx, cy)) if getattr(self.state, 'risk_scores', None) else None,
-                h0_count=len(getattr(self.state, 'h0_components', [])),
-                h1_count=len(self.state.h1_cycles),
-                h2_count=len(self.state.h2_voids),
-                tda_entropy=self.state.tda_entropy or 0.0,
-                embed_grid=embed_grid,
-                iso_grid=iso_grid,
-                grid_coverage=len(grid_data.points) / 361 if grid_data else 0.0,
-                total_documents=len(grid_data.points) if grid_data else 0,
-                view_mode=self.state.view_mode.name if hasattr(self.state, 'view_mode') else "Go",
-                overlay_mode=self.state.overlay_mode.name if hasattr(self.state, 'overlay_mode') else "none",
-                explanation=explanation,
-                model=model_name,
-                elapsed_ms=elapsed_ms,
-            )
-
-            # Determine KB scratch root
-            scratch_root = Path("build/dev/scratch")
-            kb_path = capture.save_to_kb(scratch_root)
-            result["saved_to"] = str(kb_path)
+        if save_to_kb and response.saved_path:
+            result["saved_to"] = response.saved_path
 
         return result
 
@@ -3809,7 +4185,30 @@ Respond with:
         return f"{col}{row}"
 
     def _render_grid_ascii(self) -> str:
-        """Render simple ASCII grid."""
+        """Render simple ASCII grid with optional dynamics overlay."""
+        from .core.state import OverlayMode
+
+        # Build gradient lookup if in dynamics mode
+        gradient_lookup = {}
+        if self.state.overlay_mode == OverlayMode.DYNAMICS and self.state.gradient_field:
+            for gv in self.state.gradient_field:
+                if isinstance(gv, (list, tuple)) and len(gv) >= 4:
+                    x, y = int(gv[0]), int(gv[1])
+                    gx, gy = float(gv[2]), float(gv[3])
+                    gradient_lookup[(x, y)] = (gx, gy)
+
+        def get_arrow(gx: float, gy: float) -> str:
+            """Convert gradient vector to Unicode arrow."""
+            import math
+            mag = math.sqrt(gx*gx + gy*gy)
+            if mag < 0.001:
+                return "·"
+            angle = math.atan2(gy, gx)
+            # 8 directions
+            idx = int((angle + math.pi) / (2 * math.pi) * 8 + 0.5) % 8
+            arrows = ["←", "↙", "↓", "↘", "→", "↗", "↑", "↖"]
+            return arrows[idx]
+
         lines = []
         for y in range(19):
             row = []
@@ -3820,6 +4219,9 @@ Respond with:
                     row.append("#")
                 elif (x, y) in self.state.white_stones:
                     row.append("O")
+                elif (x, y) in gradient_lookup:
+                    gx, gy = gradient_lookup[(x, y)]
+                    row.append(get_arrow(gx, gy))
                 else:
                     row.append(".")
             lines.append(f"{19-y:2} " + " ".join(row))

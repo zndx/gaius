@@ -133,8 +133,15 @@ class TDAComputer:
         self.max_edge_length = max_edge_length
         self.method = method
 
-        # Check if ripser is available
-        self._ripser_available = self._check_ripser()
+        # Lazy check for ripser - don't import until needed (import takes ~1s)
+        self._ripser_available: bool | None = None
+
+    @property
+    def ripser_available(self) -> bool:
+        """Check if ripser is installed (lazy, cached)."""
+        if self._ripser_available is None:
+            self._ripser_available = self._check_ripser()
+        return self._ripser_available
 
     def _check_ripser(self) -> bool:
         """Check if ripser is installed."""
@@ -162,7 +169,7 @@ class TDAComputer:
         if len(embeddings) < 3:
             return TDAFeatures(n_points=len(embeddings))
 
-        if self._ripser_available:
+        if self.ripser_available:
             return self._compute_ripser(embeddings, grid_coords)
         else:
             return self._compute_fallback(embeddings, grid_coords)

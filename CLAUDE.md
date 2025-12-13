@@ -120,5 +120,4 @@ The CLI is the product. Previous test outputs are invalidated by code changes. D
 uv run gaius-cli --cmd "/evolve status" --format json
  
 This isn't redundant tool use - it's verifying the product works.
-
-
+- you can use devenv processes down and devenv processes up to control the gaius platform components
