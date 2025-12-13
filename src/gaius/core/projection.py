@@ -379,6 +379,18 @@ class GridDataManager:
         self._cached_data: GridData | None = None
         self._cache_valid = False
 
+    @property
+    def has_cached_data(self) -> bool:
+        """Check if manager has valid cached data without triggering projection.
+
+        Used for instant startup - callers can check this before calling
+        get_grid_data() to avoid slow operations.
+
+        Returns:
+            True if cached data is available and valid
+        """
+        return self._cache_valid and self._cached_data is not None
+
     def get_grid_data(self, force_refresh: bool = False) -> GridData:
         """Get current grid data, using cache if valid.
 
@@ -446,6 +458,24 @@ class GridDataManager:
     def invalidate_cache(self) -> None:
         """Mark cache as invalid (e.g., after KB changes)."""
         self._cache_valid = False
+
+    def set_cached_data(self, grid_data: GridData) -> None:
+        """Set cached data from external source (e.g., Postgres).
+
+        Used during startup to populate cache from Postgres without
+        triggering slow projection. Enables instant minigrid rendering.
+
+        Args:
+            grid_data: Pre-loaded GridData to cache
+        """
+        self._cached_data = grid_data
+        self._cache_valid = True
+        logger.info(
+            f"GridManager cache set from external source: "
+            f"{grid_data.n_documents} docs, "
+            f"{len(grid_data.grid_to_embedding)} grid mappings, "
+            f"embeddings={'yes' if grid_data.raw_embeddings is not None else 'no'}"
+        )
 
     def reindex_and_project(self) -> GridData:
         """Reindex KB and project to grid.

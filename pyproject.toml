@@ -165,7 +165,7 @@ engine-grpc = [
 ]
 
 [project.scripts]
-gaius = "gaius.app:main"
+gaius = "gaius.launcher:main"
 gaius-cli = "gaius.cli:main"
 gaius-mcp = "gaius.mcp_server:main"
 gaius-worker = "gaius.workers.cli:main"

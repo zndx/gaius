@@ -131,6 +131,16 @@ from .gaius_service_pb2 import (
     ComputeTDARequest,
     PersistenceInterval,
     TDAResponse,
+    # Explain (Grid Position Interpretation)
+    ExplainRequest,
+    ExplainResponse,
+    # Init streaming
+    InitCommand,
+    InitEvent,
+    # Swarm streaming
+    SwarmStreamRequest,
+    SwarmEvent,
+    SwarmResult,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -193,6 +203,12 @@ __all__ = [
     "ComputeTDARequest",
     "PersistenceInterval",
     "TDAResponse",
+    "ExplainRequest",
+    "ExplainResponse",
+    "InitCommand",
+    "InitEvent",
+    "SwarmStreamRequest",
+    "SwarmEvent",
     "GaiusServiceStub",
     "GaiusServiceServicer",
     "add_GaiusServiceServicer_to_server",

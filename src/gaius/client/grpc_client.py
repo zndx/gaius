@@ -49,6 +49,9 @@ from ..engine.generated import (
     ProjectEmbeddingsRequest,
     ProjectQueryRequest,
     ComputeTDARequest,
+    # Explain (Grid Position Interpretation)
+    ExplainRequest,
+    ExplainResponse,
     # Init streaming
     InitCommand,
     InitEvent,
@@ -260,6 +263,8 @@ class GrpcEngineClient:
                 return await self._call_workload(action, params, timeout)
             elif service == "Embedding":
                 return await self._call_embedding(action, params, timeout)
+            elif service == "Init":
+                return await self._call_init(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -476,6 +481,52 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown TDA action: {action}")
+
+    async def explain(
+        self,
+        kb_root: str,
+        x: int,
+        y: int,
+        save_to_kb: bool = False,
+        max_tokens: int = 800,
+        client_id: str = "cli",
+    ) -> "ExplainResponse":
+        """Explain a grid position via Engine gRPC.
+
+        All heavy computation (TDA, geometry, minigrid, LLM) happens on Engine.
+        No fallbacks - Engine must be functional.
+
+        Args:
+            kb_root: KB root directory
+            x: Grid x coordinate (0-18)
+            y: Grid y coordinate (0-18)
+            save_to_kb: Save explanation as zettelkasten entry
+            max_tokens: Max tokens for LLM explanation
+            client_id: Client identifier
+
+        Returns:
+            ExplainResponse from Engine
+        """
+        if not self._connected:
+            connected = await self.connect()
+            if not connected or self._gaius_stub is None:
+                raise RuntimeError(
+                    f"Failed to connect to Engine at {self.config.host}:{self.config.port}. "
+                    "Ensure gaius-engine is running."
+                )
+
+        response = await self._gaius_stub.Explain(
+            ExplainRequest(
+                kb_root=kb_root,
+                x=x,
+                y=y,
+                save_to_kb=save_to_kb,
+                client_id=client_id,
+                max_tokens=max_tokens,
+            ),
+            timeout=120.0,  # Explain can take a while with LLM
+        )
+        return response
 
     async def _call_health(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Health service calls."""
@@ -698,6 +749,178 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Embedding action: {action}")
+
+    async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Init/Reindex service calls via gRPC.
+
+        These are heavy compute operations that run on the Engine:
+        - init: Full initialization (index + project + TDA + save)
+        - reindex: Re-index KB documents and recompute projection
+
+        Args:
+            action: Action to perform (init, reindex)
+            params: Action parameters (kb_root, force, embedding_model, projection_method)
+            timeout: Request timeout (default 300s for heavy operations)
+
+        Returns:
+            Result dict with success, message, counts, generation
+        """
+        from ..engine.generated import InitRequest, ReindexRequest
+
+        # Use longer timeout for heavy operations (default 5 min)
+        timeout = timeout or 300.0
+
+        if action == "init":
+            kb_root = params.get("kb_root", "build/dev")
+            client_id = params.get("client_id", "grpc_client")
+            force = params.get("force", False)
+            embedding_model = params.get("embedding_model", "")
+            projection_method = params.get("projection_method", "")
+
+            request = InitRequest(
+                kb_root=kb_root,
+                client_id=client_id,
+                force=force,
+                embedding_model=embedding_model,
+                projection_method=projection_method,
+            )
+            response = await self._gaius_stub.Init(request, timeout=timeout)
+            return {
+                "success": response.success,
+                "message": response.message,
+                "documents_indexed": response.documents_indexed,
+                "h0_count": response.h0_count,
+                "h1_count": response.h1_count,
+                "h2_count": response.h2_count,
+                "entropy": response.entropy,
+                "generation": response.generation,
+                "duration_ms": response.duration_ms,
+            }
+
+        elif action == "reindex":
+            kb_root = params.get("kb_root", "build/dev")
+            client_id = params.get("client_id", "grpc_client")
+            force = params.get("force", False)
+            embedding_model = params.get("embedding_model", "")
+
+            request = ReindexRequest(
+                kb_root=kb_root,
+                client_id=client_id,
+                force=force,
+                embedding_model=embedding_model,
+            )
+            response = await self._gaius_stub.Reindex(request, timeout=timeout)
+            return {
+                "success": response.success,
+                "message": response.message,
+                "documents_indexed": response.documents_indexed,
+                "documents_skipped": response.documents_skipped,
+                "generation": response.generation,
+                "duration_ms": response.duration_ms,
+            }
+
+        else:
+            raise ValueError(f"Unknown Init action: {action}")
+
+    async def init_with_progress(
+        self,
+        kb_root: str = "build/dev",
+        force: bool = False,
+        embedding_model: str = "",
+        projection_method: str = "",
+    ):
+        """Stream init progress updates.
+
+        Yields progress dicts with phase, progress, message, and optional counts.
+        Use this for CLI/TUI progress display.
+
+        Usage:
+            async for progress in client.init_with_progress(force=True):
+                print(f"{progress['phase']}: {progress['progress']:.0%} - {progress['message']}")
+
+        Yields:
+            dict with keys: phase, progress (0.0-1.0), message, documents_processed, documents_total
+        """
+        from ..engine.generated import InitRequest, InitProgress
+
+        if not self._connected:
+            await self.connect()
+
+        request = InitRequest(
+            kb_root=kb_root,
+            client_id="grpc_client",
+            force=force,
+            embedding_model=embedding_model,
+            projection_method=projection_method,
+        )
+
+        # Map proto phase enum to string names
+        phase_names = {
+            InitProgress.Phase.STARTED: "started",
+            InitProgress.Phase.SCANNING: "scanning",
+            InitProgress.Phase.EMBEDDING: "embedding",
+            InitProgress.Phase.PROJECTING: "projecting",
+            InitProgress.Phase.TDA: "tda",
+            InitProgress.Phase.GEOMETRY: "geometry",
+            InitProgress.Phase.SAVING: "saving",
+            InitProgress.Phase.COMPLETE: "complete",
+            InitProgress.Phase.ERROR: "error",
+        }
+
+        async for progress in self._gaius_stub.InitProgressStream(request):
+            yield {
+                "phase": phase_names.get(progress.phase, "unknown"),
+                "progress": progress.progress,
+                "message": progress.message,
+                "documents_processed": progress.documents_processed,
+                "documents_total": progress.documents_total,
+            }
+
+    async def reindex_with_progress(
+        self,
+        kb_root: str = "build/dev",
+        force: bool = False,
+        embedding_model: str = "",
+    ):
+        """Stream reindex progress updates.
+
+        Yields progress dicts with phase, progress, message, and optional counts.
+
+        Yields:
+            dict with keys: phase, progress (0.0-1.0), message, documents_processed, documents_total
+        """
+        from ..engine.generated import ReindexRequest, ReindexProgress
+
+        if not self._connected:
+            await self.connect()
+
+        request = ReindexRequest(
+            kb_root=kb_root,
+            client_id="grpc_client",
+            force=force,
+            embedding_model=embedding_model,
+        )
+
+        # Map proto phase enum to string names
+        phase_names = {
+            ReindexProgress.Phase.STARTED: "started",
+            ReindexProgress.Phase.SCANNING: "scanning",
+            ReindexProgress.Phase.EMBEDDING: "embedding",
+            ReindexProgress.Phase.PROJECTING: "projecting",
+            ReindexProgress.Phase.TDA: "tda",
+            ReindexProgress.Phase.SAVING: "saving",
+            ReindexProgress.Phase.COMPLETE: "complete",
+            ReindexProgress.Phase.ERROR: "error",
+        }
+
+        async for progress in self._gaius_stub.ReindexStream(request):
+            yield {
+                "phase": phase_names.get(progress.phase, "unknown"),
+                "progress": progress.progress,
+                "message": progress.message,
+                "documents_processed": progress.documents_processed,
+                "documents_total": progress.documents_total,
+            }
 
     # =========================================================================
     # Swarm Operations

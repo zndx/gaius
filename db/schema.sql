@@ -1,4 +1,4 @@
-\restrict Qi7j4ofwVFTHwdJ6MUtNozoFCJ0eXADmYGtB5QkWJjrk05wtCf0J4IIDAZ0z8b2
+\restrict 2xdNuZUjxfNKbAw4vySih6Eh8aGWRb8dmSsR1u9fO0eUTld3AUsw8WJh4fr2jRi
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -600,6 +600,38 @@ $$;
 
 
 --
+-- Name: update_current_state(text, integer, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.update_current_state(p_kb_root text, p_snapshot_id integer, p_state_json jsonb) RETURNS bigint
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    new_gen BIGINT;
+BEGIN
+    -- Get next generation (atomic)
+    INSERT INTO current_state (kb_root, snapshot_id, generation, state_json)
+    VALUES (p_kb_root, p_snapshot_id, 1, p_state_json)
+    ON CONFLICT (kb_root) DO UPDATE SET
+        snapshot_id = EXCLUDED.snapshot_id,
+        generation = current_state.generation + 1,
+        state_json = EXCLUDED.state_json,
+        updated_at = NOW()
+    RETURNING generation INTO new_gen;
+
+    RETURN new_gen;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION update_current_state(p_kb_root text, p_snapshot_id integer, p_state_json jsonb); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.update_current_state(p_kb_root text, p_snapshot_id integer, p_state_json jsonb) IS 'Atomically update state with incremented generation. Returns new generation.';
+
+
+--
 -- Name: update_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -611,6 +643,38 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: upsert_current_state_if_newer(text, integer, bigint, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.upsert_current_state_if_newer(p_kb_root text, p_snapshot_id integer, p_generation bigint, p_state_json jsonb) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    updated BOOLEAN;
+BEGIN
+    INSERT INTO current_state (kb_root, snapshot_id, generation, state_json)
+    VALUES (p_kb_root, p_snapshot_id, p_generation, p_state_json)
+    ON CONFLICT (kb_root) DO UPDATE SET
+        snapshot_id = EXCLUDED.snapshot_id,
+        generation = EXCLUDED.generation,
+        state_json = EXCLUDED.state_json,
+        updated_at = NOW()
+    WHERE current_state.generation < EXCLUDED.generation;
+
+    GET DIAGNOSTICS updated = ROW_COUNT;
+    RETURN updated > 0;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION upsert_current_state_if_newer(p_kb_root text, p_snapshot_id integer, p_generation bigint, p_state_json jsonb); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.upsert_current_state_if_newer(p_kb_root text, p_snapshot_id integer, p_generation bigint, p_state_json jsonb) IS 'Idempotent update: only applies if incoming generation > current.';
 
 
 --
@@ -1173,6 +1237,58 @@ COMMENT ON COLUMN public.cognition_thoughts.content_hash IS 'SHA256 hash for exa
 
 
 --
+-- Name: command_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.command_history (
+    id integer NOT NULL,
+    client_id text NOT NULL,
+    kb_root text,
+    command text NOT NULL,
+    args_json jsonb,
+    success boolean,
+    offline boolean DEFAULT false,
+    result_json jsonb,
+    duration_ms integer,
+    executed_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE command_history; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.command_history IS 'Unified command history across all entry points.';
+
+
+--
+-- Name: COLUMN command_history.offline; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.command_history.offline IS 'True if command was attempted while Engine unavailable.';
+
+
+--
+-- Name: command_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.command_history_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: command_history_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.command_history_id_seq OWNED BY public.command_history.id;
+
+
+--
 -- Name: content_items; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1268,6 +1384,40 @@ CREATE SEQUENCE public.content_items_id_seq
 --
 
 ALTER SEQUENCE public.content_items_id_seq OWNED BY public.content_items.id;
+
+
+--
+-- Name: current_state; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.current_state (
+    kb_root text NOT NULL,
+    snapshot_id integer,
+    generation bigint DEFAULT 0,
+    state_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE current_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.current_state IS 'Cached grid state for instant TUI startup. Denormalized for fast reads.';
+
+
+--
+-- Name: COLUMN current_state.generation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.current_state.generation IS 'Monotonic counter for sync protocol. Only update if incoming > current.';
+
+
+--
+-- Name: COLUMN current_state.state_json; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.current_state.state_json IS 'Complete GridState as JSON: documents, clusters, allocations, tda, geometry.';
 
 
 --
@@ -1698,7 +1848,9 @@ CREATE TABLE public.grid_snapshots (
     h2_count integer DEFAULT 0,
     entropy double precision DEFAULT 0.0,
     is_current boolean DEFAULT false,
-    metadata jsonb DEFAULT '{}'::jsonb
+    metadata jsonb DEFAULT '{}'::jsonb,
+    generation bigint DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT now()
 );
 
 
@@ -2209,6 +2361,55 @@ CREATE TABLE public.sessions (
 
 
 --
+-- Name: state_changes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.state_changes (
+    id integer NOT NULL,
+    kb_root text NOT NULL,
+    client_id text,
+    change_type text NOT NULL,
+    generation bigint,
+    change_data jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE state_changes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.state_changes IS 'Audit log of all state mutations for debugging idempotency issues.';
+
+
+--
+-- Name: COLUMN state_changes.change_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.state_changes.change_type IS 'Type: init, reindex, cursor_move, domain_change, preference_update, prune';
+
+
+--
+-- Name: state_changes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.state_changes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: state_changes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.state_changes_id_seq OWNED BY public.state_changes.id;
+
+
+--
 -- Name: summary_lineage; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2255,6 +2456,34 @@ CREATE SEQUENCE public.summary_lineage_id_seq
 --
 
 ALTER SEQUENCE public.summary_lineage_id_seq OWNED BY public.summary_lineage.id;
+
+
+--
+-- Name: ui_preferences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ui_preferences (
+    client_id text NOT NULL,
+    cursor_x integer DEFAULT 9,
+    cursor_y integer DEFAULT 9,
+    view_mode text DEFAULT 'go'::text,
+    overlay_mode text DEFAULT 'none'::text,
+    iso_mode text DEFAULT 'curvature'::text,
+    center_panel_mode text DEFAULT 'graph'::text,
+    left_panel_visible boolean DEFAULT true,
+    right_panel_visible boolean DEFAULT true,
+    domain text,
+    preferences_json jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE ui_preferences; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.ui_preferences IS 'Per-client UI state. TUI/CLI/MCP each have their own preferences.';
 
 
 --
@@ -2449,6 +2678,13 @@ ALTER TABLE ONLY public.cognition_cycles ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
+-- Name: command_history id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.command_history ALTER COLUMN id SET DEFAULT nextval('public.command_history_id_seq'::regclass);
+
+
+--
 -- Name: content_items id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2575,6 +2811,13 @@ ALTER TABLE ONLY public.scheduled_tasks ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: state_changes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.state_changes ALTER COLUMN id SET DEFAULT nextval('public.state_changes_id_seq'::regclass);
+
+
+--
 -- Name: summary_lineage id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2645,6 +2888,14 @@ ALTER TABLE ONLY public.cognition_thoughts
 
 
 --
+-- Name: command_history command_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.command_history
+    ADD CONSTRAINT command_history_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: content_items content_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2658,6 +2909,14 @@ ALTER TABLE ONLY public.content_items
 
 ALTER TABLE ONLY public.content_items
     ADD CONSTRAINT content_items_source_id_external_id_key UNIQUE (source_id, external_id);
+
+
+--
+-- Name: current_state current_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_state
+    ADD CONSTRAINT current_state_pkey PRIMARY KEY (kb_root);
 
 
 --
@@ -2781,11 +3040,11 @@ ALTER TABLE ONLY public.grid_points
 
 
 --
--- Name: grid_points grid_points_snapshot_id_doc_path_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: grid_points grid_points_snapshot_id_embedding_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.grid_points
-    ADD CONSTRAINT grid_points_snapshot_id_doc_path_key UNIQUE (snapshot_id, doc_path);
+    ADD CONSTRAINT grid_points_snapshot_id_embedding_id_key UNIQUE (snapshot_id, embedding_id);
 
 
 --
@@ -2949,6 +3208,14 @@ ALTER TABLE ONLY public.sessions
 
 
 --
+-- Name: state_changes state_changes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.state_changes
+    ADD CONSTRAINT state_changes_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: summary_lineage summary_lineage_kb_path_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2962,6 +3229,14 @@ ALTER TABLE ONLY public.summary_lineage
 
 ALTER TABLE ONLY public.summary_lineage
     ADD CONSTRAINT summary_lineage_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: ui_preferences ui_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ui_preferences
+    ADD CONSTRAINT ui_preferences_pkey PRIMARY KEY (client_id);
 
 
 --
@@ -3083,6 +3358,20 @@ CREATE INDEX idx_agent_versions_score ON public.agent_versions USING btree (avg_
 --
 
 CREATE UNIQUE INDEX idx_agent_versions_single_active ON public.agent_versions USING btree (agent_id) WHERE (is_active = true);
+
+
+--
+-- Name: idx_command_history_client; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_command_history_client ON public.command_history USING btree (client_id, executed_at DESC);
+
+
+--
+-- Name: idx_command_history_kb; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_command_history_kb ON public.command_history USING btree (kb_root, executed_at DESC);
 
 
 --
@@ -3272,6 +3561,13 @@ CREATE INDEX idx_grid_points_position ON public.grid_points USING btree (snapsho
 --
 
 CREATE INDEX idx_grid_snapshots_current ON public.grid_snapshots USING btree (kb_root, is_current) WHERE (is_current = true);
+
+
+--
+-- Name: idx_grid_snapshots_generation; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_grid_snapshots_generation ON public.grid_snapshots USING btree (kb_root, generation DESC);
 
 
 --
@@ -3499,6 +3795,20 @@ CREATE INDEX idx_sessions_recent ON public.sessions USING btree (started_at DESC
 
 
 --
+-- Name: idx_state_changes_client; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_state_changes_client ON public.state_changes USING btree (client_id, created_at DESC);
+
+
+--
+-- Name: idx_state_changes_kb_root; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_state_changes_kb_root ON public.state_changes USING btree (kb_root, created_at DESC);
+
+
+--
 -- Name: idx_summary_content; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3675,6 +3985,14 @@ ALTER TABLE ONLY public.content_items
 
 
 --
+-- Name: current_state current_state_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.current_state
+    ADD CONSTRAINT current_state_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE SET NULL;
+
+
+--
 -- Name: engine_observations engine_observations_related_thought_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3798,7 +4116,7 @@ ALTER TABLE ONLY public.summary_lineage
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Qi7j4ofwVFTHwdJ6MUtNozoFCJ0eXADmYGtB5QkWJjrk05wtCf0J4IIDAZ0z8b2
+\unrestrict 2xdNuZUjxfNKbAw4vySih6Eh8aGWRb8dmSsR1u9fO0eUTld3AUsw8WJh4fr2jRi
 
 
 --
@@ -3819,4 +4137,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251207000001'),
     ('20251208000001'),
     ('20251208000002'),
-    ('20251210000001');
+    ('20251210000001'),
+    ('20251212000001'),
+    ('20251212001000');

@@ -79,7 +79,9 @@ class MiniGrid(Widget):
         else:
             return (" ", "")
 
-    def update_data(self, data: list[list[float]]) -> None:
-        """Update the grid data and refresh."""
+    def update_data(self, data: list[list[float]], title: str | None = None) -> None:
+        """Update the grid data (and optionally title) and refresh."""
         self._data = data
+        if title is not None:
+            self.border_title = title
         self.refresh()

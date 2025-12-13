@@ -433,6 +433,300 @@ message InitEvent {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// State Service Messages (Thin Client Architecture)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request for current grid state
+message GetStateRequest {
+  string kb_root = 1;
+  string client_id = 2;
+  int64 since_generation = 3;  // 0 = full state, >0 = check if newer exists
+  bool include_geometry = 4;   // Include curvature/gradient (larger payload)
+}
+
+// Complete grid state for TUI rendering
+message GridState {
+  string snapshot_id = 1;
+  int64 generation = 2;        // Monotonic counter for sync
+  int64 updated_at_ms = 3;
+
+  // Grid positions (19x19)
+  repeated GridPosition documents = 4;
+  repeated GridPosition clusters = 5;
+  repeated int32 allocations = 6;  // 361 values (19x19 flattened)
+
+  // TDA features
+  TDAFeatures tda = 7;
+
+  // Geometry features (optional, only if include_geometry=true)
+  GeometryFeatures geometry = 8;
+
+  // Metadata
+  int32 n_documents = 9;
+  float coverage = 10;
+  string projection_method = 11;
+  string embedding_model = 12;
+}
+
+// TDA features for overlay rendering
+message TDAFeatures {
+  repeated BoundingBox h1_cycles = 1;
+  repeated BoundingBox h2_voids = 2;
+  repeated int32 risk_scores = 3;  // Per-cell risk (361 values)
+  float entropy = 4;
+  int32 h0_count = 5;
+  int32 h1_count = 6;
+  int32 h2_count = 7;
+}
+
+// Bounding box for TDA features
+message BoundingBox {
+  int32 x_min = 1;
+  int32 y_min = 2;
+  int32 x_max = 3;
+  int32 y_max = 4;
+  float persistence = 5;
+}
+
+// Geometry features for Iso view
+message GeometryFeatures {
+  repeated float curvature_map = 1;    // 361 values (19x19)
+  repeated GradientVector gradient_field = 2;
+  repeated float divergence_map = 3;   // 361 values (19x19)
+}
+
+// Gradient vector for geometry overlay
+message GradientVector {
+  int32 x = 1;
+  int32 y = 2;
+  float gx = 3;
+  float gy = 4;
+}
+
+// Subscribe to state updates
+message SubscribeStateRequest {
+  string kb_root = 1;
+  string client_id = 2;
+}
+
+// State update event (generation-based)
+message StateUpdate {
+  enum Type {
+    FULL_REFRESH = 0;           // Complete state (on connect or major change)
+    GENERATION_CHANGED = 1;     // Generation incremented, fetch new state
+    COMPUTATION_STARTED = 2;    // Heavy compute started (show progress)
+    COMPUTATION_PROGRESS = 3;   // Progress update
+    COMPUTATION_COMPLETE = 4;   // Compute done, state updated
+    ERROR = 5;                  // Error occurred
+  }
+  Type type = 1;
+  int64 generation = 2;
+  int64 timestamp_ms = 3;
+  GridState state = 4;          // Set for FULL_REFRESH
+  float progress = 5;           // 0.0-1.0 for COMPUTATION_PROGRESS
+  string message = 6;           // Human-readable message
+  string phase = 7;             // Current phase name
+}
+
+// UI preferences request
+message GetPreferencesRequest {
+  string client_id = 1;
+}
+
+// UI preferences
+message UIPreferences {
+  string client_id = 1;
+  int32 cursor_x = 2;
+  int32 cursor_y = 3;
+  string view_mode = 4;
+  string overlay_mode = 5;
+  string iso_mode = 6;
+  string center_panel_mode = 7;
+  bool left_panel_visible = 8;
+  bool right_panel_visible = 9;
+  string domain = 10;
+  bytes preferences_json = 11;  // Extensible JSON
+}
+
+// Save preferences request
+message SavePreferencesRequest {
+  UIPreferences preferences = 1;
+}
+
+// Prune request for snapshot cleanup
+message PruneSnapshotsRequest {
+  string kb_root = 1;
+  int32 keep_count = 2;         // Keep N most recent (0 = use older_than_days)
+  int32 older_than_days = 3;    // Delete older than N days (0 = use keep_count)
+  bool dry_run = 4;             // If true, just return count without deleting
+}
+
+message PruneSnapshotsResponse {
+  int32 deleted_count = 1;
+  int32 remaining_count = 2;
+  bool dry_run = 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Command Service Messages (Unified Entry Point)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Generic command request - routes to appropriate handler
+message ExecuteCommandRequest {
+  string command = 1;           // Command name (e.g., "reindex", "goto", "domain")
+  string args = 2;              // Command arguments as string
+  string kb_root = 3;           // KB root for context
+  string client_id = 4;         // Client identifier (tui, cli, mcp)
+  map<string, string> context = 5;  // Additional context (cursor_x, cursor_y, etc.)
+}
+
+// Generic command response
+message ExecuteCommandResponse {
+  bool success = 1;
+  string command = 2;
+  string message = 3;           // Human-readable result message
+  bytes result_json = 4;        // JSON-encoded result data
+  int64 generation = 5;         // State generation after command (0 if unchanged)
+  int32 duration_ms = 6;        // Execution duration
+}
+
+// Init request - full initialization pipeline (index + project + TDA + cache)
+message InitRequest {
+  string kb_root = 1;
+  string client_id = 2;
+  bool force = 3;               // Force reinit even if cache exists
+  string embedding_model = 4;   // Override default model (empty = use config)
+  string projection_method = 5; // "umap" or "pca" (empty = umap)
+}
+
+// Init response
+message InitResponse {
+  bool success = 1;
+  string message = 2;
+  int32 documents_indexed = 3;
+  int32 h0_count = 4;           // Connected components
+  int32 h1_count = 5;           // Loops/cycles
+  int32 h2_count = 6;           // Voids/cavities
+  float entropy = 7;            // TDA entropy
+  int64 generation = 8;         // New state generation
+  int32 duration_ms = 9;
+}
+
+// Streaming init progress
+message InitProgress {
+  enum Phase {
+    STARTED = 0;
+    SCANNING = 1;        // Scanning KB for documents
+    EMBEDDING = 2;       // Computing embeddings (ColBERT)
+    PROJECTING = 3;      // UMAP/PCA projection to grid
+    TDA = 4;             // Computing TDA features (H0/H1/H2)
+    GEOMETRY = 5;        // Computing geometry features (optional)
+    SAVING = 6;          // Saving to Postgres cache
+    COMPLETE = 7;
+    ERROR = 8;
+  }
+  Phase phase = 1;
+  float progress = 2;           // 0.0 to 1.0
+  string message = 3;
+  int32 documents_processed = 4;
+  int32 documents_total = 5;
+}
+
+// Reindex request - triggers full KB reindexing
+message ReindexRequest {
+  string kb_root = 1;
+  string client_id = 2;
+  bool force = 3;               // Force reindex even if up-to-date
+  string embedding_model = 4;   // Override default model (empty = use config)
+}
+
+// Reindex response with progress info
+message ReindexResponse {
+  bool success = 1;
+  string message = 2;
+  int32 documents_indexed = 3;
+  int32 documents_skipped = 4;
+  int64 generation = 5;         // New state generation
+  int32 duration_ms = 6;
+}
+
+// Streaming reindex progress
+message ReindexProgress {
+  enum Phase {
+    STARTED = 0;
+    SCANNING = 1;
+    EMBEDDING = 2;
+    PROJECTING = 3;
+    TDA = 4;
+    SAVING = 5;
+    COMPLETE = 6;
+    ERROR = 7;
+  }
+  Phase phase = 1;
+  float progress = 2;           // 0.0 to 1.0
+  string message = 3;
+  int32 documents_processed = 4;
+  int32 documents_total = 5;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Explain Service Messages (Grid Position Interpretation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to explain a grid position with differential geometry context
+message ExplainRequest {
+  string kb_root = 1;
+  int32 x = 2;                    // Grid x coordinate (0-18)
+  int32 y = 3;                    // Grid y coordinate (0-18)
+  bool save_to_kb = 4;            // Save explanation as zettelkasten entry
+  string client_id = 5;           // Client making request
+  int32 max_tokens = 6;           // Max tokens for explanation (default: 800)
+}
+
+// Explanation response with geometry and LLM interpretation
+message ExplainResponse {
+  bool success = 1;
+  string position = 2;            // Go notation (e.g., "K10")
+  int32 x = 3;
+  int32 y = 4;
+
+  // Document at position (if any)
+  string document_title = 5;
+  string document_path = 6;
+
+  // Geometry features at position
+  float curvature = 7;            // Ricci curvature
+  float gradient_x = 8;           // Gradient x component
+  float gradient_y = 9;           // Gradient y component
+  float divergence = 10;          // Divergence at position
+
+  // TDA context
+  float tda_entropy = 11;
+  int32 h0_count = 12;            // Connected components
+  int32 h1_count = 13;            // Loops/cycles
+  int32 h2_count = 14;            // Voids/cavities
+  float risk_score = 15;          // Topological risk at position
+
+  // Grid context
+  float grid_coverage = 16;       // Fraction of grid with documents
+  int32 total_documents = 17;
+  repeated string nearby_documents = 18;  // Titles of nearby docs (max 5)
+
+  // Mini-grid data (9x9 each, flattened)
+  repeated float embed_grid = 19; // 81 values: cosine similarity around position
+  repeated float iso_grid = 20;   // 81 values: curvature-based elevation
+
+  // LLM explanation
+  string explanation = 21;        // Generated interpretation
+  string model = 22;              // Model used for generation
+  int32 duration_ms = 23;
+
+  // KB path if saved
+  string saved_path = 24;
+  string error = 25;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Grid Service Messages (Embedding Projection)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -546,6 +840,28 @@ service GaiusService {
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
+  // State (Thin Client Architecture)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc GetCurrentState(GetStateRequest) returns (GridState);
+  rpc SubscribeState(SubscribeStateRequest) returns (stream StateUpdate);
+  rpc GetPreferences(GetPreferencesRequest) returns (UIPreferences);
+  rpc SavePreferences(SavePreferencesRequest) returns (google.protobuf.Empty);
+  rpc PruneSnapshots(PruneSnapshotsRequest) returns (PruneSnapshotsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Command (Unified Entry Point)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ExecuteCommand(ExecuteCommandRequest) returns (ExecuteCommandResponse);
+
+  // Full init: index KB + project to grid + compute TDA + save to cache
+  rpc Init(InitRequest) returns (InitResponse);
+  rpc InitProgressStream(InitRequest) returns (stream InitProgress);
+
+  // Reindex: re-embed documents + re-project + re-compute TDA
+  rpc Reindex(ReindexRequest) returns (ReindexResponse);
+  rpc ReindexStream(ReindexRequest) returns (stream ReindexProgress);
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Grid (Embedding Projection)
   // ─────────────────────────────────────────────────────────────────────────
   rpc ProjectEmbeddings(ProjectEmbeddingsRequest) returns (ProjectEmbeddingsResponse);
@@ -555,6 +871,11 @@ service GaiusService {
   // TDA (Topological Data Analysis)
   // ─────────────────────────────────────────────────────────────────────────
   rpc ComputeTDA(ComputeTDARequest) returns (TDAResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Explain (Grid Position Interpretation)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Streaming

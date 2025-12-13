@@ -69,6 +69,20 @@ from ...generated import (
     TriggerCognitionRequest,
     TriggerCognitionResponse,
     CognitionActivityResponse,
+    # State Service (Thin Client Architecture)
+    GetStateRequest,
+    GridState,
+    TDAFeatures as ProtoTDAFeatures,
+    BoundingBox as ProtoBoundingBox,
+    GeometryFeatures,
+    GradientVector,
+    SubscribeStateRequest,
+    StateUpdate,
+    GetPreferencesRequest,
+    UIPreferences,
+    SavePreferencesRequest,
+    PruneSnapshotsRequest,
+    PruneSnapshotsResponse,
     # Health
     HealthStreamRequest,
     HealthMetrics,
@@ -87,9 +101,22 @@ from ...generated import (
     ComputeTDARequest,
     PersistenceInterval,
     TDAResponse,
+    # Explain (Grid Position Interpretation)
+    ExplainRequest,
+    ExplainResponse,
     # Init streaming
     InitCommand,
     InitEvent,
+    # Command Service (Unified Entry Point)
+    ExecuteCommandRequest,
+    ExecuteCommandResponse,
+    # Init/Reindex (Heavy Compute)
+    InitRequest,
+    InitResponse,
+    InitProgress,
+    ReindexRequest,
+    ReindexResponse,
+    ReindexProgress,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -1113,6 +1140,325 @@ class GaiusServicer(GaiusServiceServicer):
         return response
 
     # =========================================================================
+    # State Service (Thin Client Architecture)
+    # =========================================================================
+
+    async def GetCurrentState(
+        self,
+        request: GetStateRequest,
+        context: aio.ServicerContext,
+    ) -> GridState:
+        """Get current grid state for instant TUI startup.
+
+        Loads state from Postgres current_state table, which is denormalized
+        for fast reads. If since_generation > 0 and matches current generation,
+        returns empty state (client is up to date).
+        """
+        kb_root = request.kb_root or "build/dev"
+        since_generation = request.since_generation
+        include_geometry = request.include_geometry
+
+        try:
+            from ....storage.grid_state import load_current_state_fast
+
+            cached = await load_current_state_fast(kb_root)
+
+            if cached is None:
+                # No cached state - return empty
+                return GridState(
+                    snapshot_id="",
+                    generation=0,
+                    n_documents=0,
+                )
+
+            current_gen = cached.generation
+
+            # If client is up to date, return minimal response
+            if since_generation > 0 and since_generation >= current_gen:
+                updated_ms = int(cached.updated_at.timestamp() * 1000) if cached.updated_at else 0
+                return GridState(
+                    snapshot_id=str(cached.snapshot_id) if cached.snapshot_id else "",
+                    generation=current_gen,
+                    updated_at_ms=updated_ms,
+                    n_documents=0,  # Indicates "no new data"
+                )
+
+            # Build full response
+            updated_ms = int(cached.updated_at.timestamp() * 1000) if cached.updated_at else 0
+            response = GridState(
+                snapshot_id=str(cached.snapshot_id) if cached.snapshot_id else "",
+                generation=int(current_gen),
+                updated_at_ms=int(updated_ms),
+                n_documents=int(cached.n_documents),
+                projection_method=cached.projection_method or "",
+                embedding_model=cached.embedding_model or "",
+            )
+
+            # Add document positions (documents is list of dicts with x, y, path, title)
+            for doc in cached.documents:
+                response.documents.append(GridPosition(
+                    id=doc.get("path", ""),
+                    x=int(doc.get("x", 0)),
+                    y=int(doc.get("y", 0)),
+                    cluster=int(doc.get("cluster_id", -1)),
+                ))
+
+            # Add cluster centers (clusters is list of (x, y) tuples)
+            for cluster in cached.clusters:
+                if isinstance(cluster, (list, tuple)) and len(cluster) >= 2:
+                    response.clusters.append(GridPosition(
+                        x=int(float(cluster[0])),
+                        y=int(float(cluster[1])),
+                    ))
+
+            # Add allocations (flattened 19x19)
+            allocations = cached.allocations
+            if allocations:
+                # Flatten if nested, ensuring int type
+                if allocations and isinstance(allocations[0], list):
+                    flat = [int(v) for row in allocations for v in row]
+                    response.allocations.extend(flat)
+                else:
+                    response.allocations.extend([int(v) for v in allocations])
+
+            # Add TDA features directly from cached dataclass
+            tda_features = ProtoTDAFeatures(
+                entropy=float(cached.entropy),
+                h0_count=int(cached.h0_count),
+                h1_count=int(cached.h1_count),
+                h2_count=int(cached.h2_count),
+            )
+            for cycle in cached.h1_cycles:
+                tda_features.h1_cycles.append(ProtoBoundingBox(
+                    x_min=int(cycle.get("x_min", 0)),
+                    y_min=int(cycle.get("y_min", 0)),
+                    x_max=int(cycle.get("x_max", 0)),
+                    y_max=int(cycle.get("y_max", 0)),
+                    persistence=float(cycle.get("persistence", 0.0)),
+                ))
+            for void in cached.h2_voids:
+                tda_features.h2_voids.append(ProtoBoundingBox(
+                    x_min=int(void.get("x_min", 0)),
+                    y_min=int(void.get("y_min", 0)),
+                    x_max=int(void.get("x_max", 0)),
+                    y_max=int(void.get("y_max", 0)),
+                    persistence=float(void.get("persistence", 0.0)),
+                ))
+            tda_features.risk_scores.extend([int(r) for r in cached.risk_scores])
+            response.tda.CopyFrom(tda_features)
+
+            # Add geometry if requested
+            if include_geometry and (cached.curvature_map or cached.gradient_field):
+                geo_features = GeometryFeatures()
+                # curvature_map is already 361-element flat list
+                if cached.curvature_map:
+                    geo_features.curvature_map.extend(cached.curvature_map)
+                # divergence_map is also 361-element flat list
+                if cached.divergence_map:
+                    geo_features.divergence_map.extend(cached.divergence_map)
+                # gradient_field is list of [x, y, gx, gy] lists
+                for gv in cached.gradient_field:
+                    if isinstance(gv, (list, tuple)) and len(gv) >= 4:
+                        # gv is [x, y, gx, gy] - x/y are grid positions (ints), gx/gy are gradient components (floats)
+                        geo_features.gradient_field.append(GradientVector(
+                            x=int(float(gv[0])),  # Convert float->int safely
+                            y=int(float(gv[1])),
+                            gx=float(gv[2]),
+                            gy=float(gv[3]),
+                        ))
+                    elif isinstance(gv, dict):
+                        # Legacy format support
+                        geo_features.gradient_field.append(GradientVector(
+                            x=gv.get("x", 0),
+                            y=gv.get("y", 0),
+                            gx=gv.get("gx", 0.0),
+                            gy=gv.get("gy", 0.0),
+                        ))
+                response.geometry.CopyFrom(geo_features)
+
+            return response
+
+        except Exception as e:
+            logger.error(f"GetCurrentState failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return GridState()
+
+    async def SubscribeState(
+        self,
+        request: SubscribeStateRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[StateUpdate]:
+        """Subscribe to state updates (generation-based).
+
+        Only pushes updates when generation increments (meaningful changes).
+        Clients receive FULL_REFRESH on connect, then GENERATION_CHANGED
+        when state updates.
+        """
+        kb_root = request.kb_root or "build/dev"
+        client_id = request.client_id or context.peer() or "unknown"
+
+        logger.debug(f"StateSubscription started: {client_id} -> {kb_root}")
+
+        # Track current generation
+        current_gen = 0
+
+        try:
+            from ....storage.grid_state import load_current_state_fast
+
+            # Initial state
+            cached = await load_current_state_fast(kb_root)
+            if cached:
+                current_gen = cached.generation
+
+                # Send FULL_REFRESH on connect
+                yield StateUpdate(
+                    type=StateUpdate.Type.FULL_REFRESH,
+                    generation=current_gen,
+                    timestamp_ms=int(time.time() * 1000),
+                    message="Connected, initial state loaded",
+                )
+
+            # Poll for changes (generation-based)
+            poll_interval = 2.0  # Check every 2 seconds
+
+            while not context.cancelled():
+                await asyncio.sleep(poll_interval)
+
+                # Check for new generation
+                cached = await load_current_state_fast(kb_root)
+                if cached:
+                    new_gen = cached.generation
+                    if new_gen > current_gen:
+                        current_gen = new_gen
+                        yield StateUpdate(
+                            type=StateUpdate.Type.GENERATION_CHANGED,
+                            generation=new_gen,
+                            timestamp_ms=int(time.time() * 1000),
+                            message=f"State updated to generation {new_gen}",
+                        )
+
+        except asyncio.CancelledError:
+            logger.debug(f"StateSubscription cancelled: {client_id}")
+        except Exception as e:
+            logger.error(f"StateSubscription error: {e}")
+            yield StateUpdate(
+                type=StateUpdate.Type.ERROR,
+                timestamp_ms=int(time.time() * 1000),
+                message=str(e),
+            )
+
+    async def GetPreferences(
+        self,
+        request: GetPreferencesRequest,
+        context: aio.ServicerContext,
+    ) -> UIPreferences:
+        """Get UI preferences for a client."""
+        client_id = request.client_id
+
+        try:
+            from ....storage.grid_state import load_ui_preferences
+
+            prefs = await load_ui_preferences(client_id)
+
+            if prefs is None:
+                # Return defaults
+                return UIPreferences(
+                    client_id=client_id,
+                    cursor_x=9,
+                    cursor_y=9,
+                    view_mode="go",
+                    overlay_mode="none",
+                    iso_mode="curvature",
+                    center_panel_mode="graph",
+                    left_panel_visible=True,
+                    right_panel_visible=True,
+                )
+
+            return UIPreferences(
+                client_id=client_id,
+                cursor_x=prefs.get("cursor_x", 9),
+                cursor_y=prefs.get("cursor_y", 9),
+                view_mode=prefs.get("view_mode", "go"),
+                overlay_mode=prefs.get("overlay_mode", "none"),
+                iso_mode=prefs.get("iso_mode", "curvature"),
+                center_panel_mode=prefs.get("center_panel_mode", "graph"),
+                left_panel_visible=prefs.get("left_panel_visible", True),
+                right_panel_visible=prefs.get("right_panel_visible", True),
+                domain=prefs.get("domain", ""),
+                preferences_json=json.dumps(prefs.get("preferences_json", {})).encode(),
+            )
+
+        except Exception as e:
+            logger.error(f"GetPreferences failed: {e}")
+            return UIPreferences(client_id=client_id)
+
+    async def SavePreferences(
+        self,
+        request: SavePreferencesRequest,
+        context: aio.ServicerContext,
+    ) -> empty_pb2.Empty:
+        """Save UI preferences for a client."""
+        prefs = request.preferences
+
+        try:
+            from ....storage.grid_state import save_ui_preferences
+
+            await save_ui_preferences(
+                client_id=prefs.client_id,
+                cursor_x=prefs.cursor_x,
+                cursor_y=prefs.cursor_y,
+                view_mode=prefs.view_mode,
+                overlay_mode=prefs.overlay_mode,
+                iso_mode=prefs.iso_mode,
+                center_panel_mode=prefs.center_panel_mode,
+                left_panel_visible=prefs.left_panel_visible,
+                right_panel_visible=prefs.right_panel_visible,
+                domain=prefs.domain,
+                preferences_json=json.loads(prefs.preferences_json) if prefs.preferences_json else {},
+            )
+
+        except Exception as e:
+            logger.error(f"SavePreferences failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+
+        return empty_pb2.Empty()
+
+    async def PruneSnapshots(
+        self,
+        request: PruneSnapshotsRequest,
+        context: aio.ServicerContext,
+    ) -> PruneSnapshotsResponse:
+        """Prune old grid snapshots."""
+        kb_root = request.kb_root or "build/dev"
+        keep_count = request.keep_count
+        older_than_days = request.older_than_days
+        dry_run = request.dry_run
+
+        try:
+            from ....storage.grid_state import prune_snapshots
+
+            result = await prune_snapshots(
+                kb_root=kb_root,
+                keep_count=keep_count if keep_count > 0 else None,
+                older_than_days=older_than_days if older_than_days > 0 else None,
+                dry_run=dry_run,
+            )
+
+            return PruneSnapshotsResponse(
+                deleted_count=result.get("deleted_count", 0),
+                remaining_count=result.get("remaining_count", 0),
+                dry_run=dry_run,
+            )
+
+        except Exception as e:
+            logger.error(f"PruneSnapshots failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return PruneSnapshotsResponse(dry_run=dry_run)
+
+    # =========================================================================
     # Grid (Embedding Projection)
     # =========================================================================
 
@@ -1149,6 +1495,261 @@ class GaiusServicer(GaiusServiceServicer):
         """Compute topological features of embeddings."""
         # TODO: Implement via TDA service
         return TDAResponse(betti_numbers=[0, 0, 0])
+
+    # =========================================================================
+    # Explain (Grid Position Interpretation)
+    # =========================================================================
+
+    async def Explain(
+        self,
+        request: ExplainRequest,
+        context: aio.ServicerContext,
+    ) -> ExplainResponse:
+        """Explain a grid position using differential geometry and LLM.
+
+        All heavy computation (TDA, geometry, minigrid) happens on the Engine.
+        No fallbacks - Engine must be functional.
+
+        Args:
+            request: ExplainRequest with position and options
+
+        Returns:
+            ExplainResponse with geometry context and LLM interpretation
+        """
+        import numpy as np
+        start_time = time.time()
+        kb_root = request.kb_root or "build/dev"
+        cx, cy = request.x, request.y
+        max_tokens = request.max_tokens or 800
+
+        # Convert to Go notation
+        col = chr(ord("A") + cx + (1 if cx >= 8 else 0))  # Skip 'I'
+        position = f"{col}{19 - cy}"
+
+        logger.info(f"Explain: position={position} ({cx},{cy}) kb_root={kb_root}")
+
+        try:
+            from ....core.projection import get_grid_manager
+            from ....core.tda import get_tda_manager
+            from ....core.geometry import GeometryComputer
+            from ....core.minigrids import get_embed_view, get_iso_view
+            from ....inference.llm import explain_position, ExplanationContext
+            from ....inference.client import InferenceClient
+            from ....storage.grid_state import load_full_grid_data_for_minigrids
+
+            # Get grid manager to check cache first
+            grid_manager = get_grid_manager(kb_root=kb_root)
+
+            # Check if cache is already populated
+            grid_data = None
+            if grid_manager._cached_data is not None and grid_manager._cached_data.n_documents > 0:
+                grid_data = grid_manager._cached_data
+                logger.info(f"Using cached grid data: {grid_data.n_documents} documents")
+            else:
+                # Try loading from Postgres (fast) before triggering slow UMAP
+                logger.info("Grid cache empty, trying Postgres...")
+                pg_grid_data = await load_full_grid_data_for_minigrids(kb_root)
+                if pg_grid_data is not None and pg_grid_data.n_documents > 0:
+                    grid_manager.set_cached_data(pg_grid_data)
+                    grid_data = pg_grid_data
+                    logger.info(f"Loaded {grid_data.n_documents} documents from Postgres")
+                else:
+                    # Last resort: compute fresh (slow UMAP projection)
+                    logger.info("No Postgres cache, computing fresh projection...")
+                    grid_data = grid_manager.get_grid_data()
+
+            if grid_data is None or grid_data.n_documents == 0:
+                return ExplainResponse(
+                    success=False,
+                    error="No documents indexed. Run /init first.",
+                    position=position,
+                    x=cx, y=cy,
+                )
+
+            # Get document at position
+            document_title = ""
+            document_path = ""
+            point_idx = grid_data.grid_to_embedding.get((cx, cy))
+            if point_idx is not None and point_idx < len(grid_data.points):
+                point = grid_data.points[point_idx]
+                document_title = point.title
+                document_path = point.path
+
+            # Get nearby documents
+            nearby_documents = []
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < 19 and 0 <= ny < 19:
+                        neighbor_idx = grid_data.grid_to_embedding.get((nx, ny))
+                        if neighbor_idx is not None and neighbor_idx < len(grid_data.points):
+                            nearby_documents.append(grid_data.points[neighbor_idx].title)
+
+            # Compute geometry features (Ricci curvatures, gradients)
+            curvature = 0.0
+            gradient_x, gradient_y = 0.0, 0.0
+            curvatures_list = None
+
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 15:
+                gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
+                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                geom_features = await gc.compute_features(grid_data.raw_embeddings, grid_coords)
+
+                if geom_features is not None:
+                    curvatures_list = [float(k) for k in geom_features.curvatures]
+                    # Build curvature map
+                    curvature_map = {}
+                    for i, (px, py) in enumerate(grid_coords):
+                        if i < len(curvatures_list):
+                            curvature_map[(int(px), int(py))] = curvatures_list[i]
+                    curvature = curvature_map.get((cx, cy), 0.0)
+
+                    # Build gradient field
+                    if hasattr(geom_features, 'gradient_field') and geom_features.gradient_field is not None:
+                        for i, (px, py) in enumerate(grid_coords):
+                            if i < len(geom_features.gradient_field):
+                                if (int(px), int(py)) == (cx, cy):
+                                    gradient_x, gradient_y = geom_features.gradient_field[i]
+                                    break
+
+            # Get TDA features
+            tda_entropy = 0.0
+            h0_count, h1_count, h2_count = 0, 0, 0
+            risk_score = 0.0
+
+            tda_manager = get_tda_manager()
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
+                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
+                tda_features = tda_manager.compute_features(
+                    grid_data.raw_embeddings, grid_coords
+                )
+                if tda_features:
+                    tda_entropy = tda_features.entropy
+                    # Use pre-computed counts from persistence intervals, not bounding box lists
+                    h0_count = tda_features.h0_count
+                    h1_count = tda_features.h1_count
+                    h2_count = tda_features.h2_count
+                    # risk_scores is a list indexed by point index, not grid coordinates
+                    if hasattr(tda_features, 'risk_scores') and tda_features.risk_scores:
+                        point_idx = grid_data.grid_to_embedding.get((cx, cy))
+                        if point_idx is not None and point_idx < len(tda_features.risk_scores):
+                            risk_score = tda_features.risk_scores[point_idx]
+
+            # Compute mini-grid data
+            embed_grid_flat = []
+            iso_grid_flat = []
+
+            embed_data = get_embed_view(grid_data, cx, cy)
+            if embed_data and embed_data.grid:
+                embed_grid_flat = [v for row in embed_data.grid for v in row]
+
+            iso_data = get_iso_view(
+                grid_data, curvatures_list, cx, cy,
+                iso_features=grid_data.iso_features
+            )
+            if iso_data and iso_data.grid:
+                iso_grid_flat = [v for row in iso_data.grid for v in row]
+
+            # Build explanation context
+            ctx = ExplanationContext(
+                cursor_x=cx,
+                cursor_y=cy,
+                document_title=document_title,
+                document_path=document_path,
+                curvature=curvature,
+                gradient_x=gradient_x,
+                gradient_y=gradient_y,
+                divergence=None,
+                tda_entropy=tda_entropy,
+                h0_count=h0_count,
+                h1_count=h1_count,
+                h2_count=h2_count,
+                risk_score=risk_score,
+                grid_coverage=len(grid_data.points) / 361,
+                total_documents=len(grid_data.points),
+                nearby_documents=nearby_documents[:5],
+                embed_grid=embed_data.grid if embed_data else None,
+                iso_grid=iso_data.grid if iso_data else None,
+            )
+
+            # Generate LLM explanation
+            client = InferenceClient()
+            await client._discover_vllm_model()
+            explanation = await explain_position(ctx, client=client, max_tokens=max_tokens)
+
+            # Strip thinking tags if present
+            if '<think>' in explanation and '</think>' in explanation:
+                explanation = explanation.split('</think>')[-1].strip()
+
+            model_name = getattr(client, '_vllm_model', 'unknown')
+
+            # Save to KB if requested
+            saved_path = ""
+            if request.save_to_kb:
+                from ....core.kb_capture import ExplainCapture
+                from pathlib import Path
+
+                capture = ExplainCapture(
+                    position=position,
+                    x=cx,
+                    y=cy,
+                    document_title=document_title,
+                    curvature=curvature,
+                    gradient=(gradient_x, gradient_y),
+                    tda_entropy=tda_entropy,
+                    h0_count=h0_count,
+                    h1_count=h1_count,
+                    h2_count=h2_count,
+                    risk_score=risk_score,
+                    nearby_documents=nearby_documents[:5],
+                    explanation=explanation,
+                    model=model_name,
+                )
+                try:
+                    saved_path = capture.save(Path(kb_root) / "scratch")
+                except Exception as e:
+                    logger.warning(f"Failed to save explanation: {e}")
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return ExplainResponse(
+                success=True,
+                position=position,
+                x=cx,
+                y=cy,
+                document_title=document_title,
+                document_path=document_path,
+                curvature=curvature,
+                gradient_x=gradient_x,
+                gradient_y=gradient_y,
+                divergence=0.0,
+                tda_entropy=tda_entropy,
+                h0_count=h0_count,
+                h1_count=h1_count,
+                h2_count=h2_count,
+                risk_score=risk_score,
+                grid_coverage=len(grid_data.points) / 361,
+                total_documents=len(grid_data.points),
+                nearby_documents=nearby_documents[:5],
+                embed_grid=embed_grid_flat,
+                iso_grid=iso_grid_flat,
+                explanation=explanation,
+                model=model_name,
+                duration_ms=duration_ms,
+                saved_path=saved_path,
+            )
+
+        except Exception as e:
+            logger.error(f"Explain failed: {e}", exc_info=True)
+            return ExplainResponse(
+                success=False,
+                error=str(e),
+                position=position,
+                x=cx, y=cy,
+                duration_ms=int((time.time() - start_time) * 1000),
+            )
 
     # =========================================================================
     # Streaming
@@ -1387,3 +1988,685 @@ class GaiusServicer(GaiusServiceServicer):
                 pass
             init_controller.unsubscribe(event_queue)
             logger.debug(f"InitStream closed for {client_id}")
+
+    # =========================================================================
+    # Command Service (Unified Entry Point)
+    # =========================================================================
+
+    async def ExecuteCommand(
+        self, request: ExecuteCommandRequest, context: grpc.aio.ServicerContext
+    ) -> ExecuteCommandResponse:
+        """Execute a command and return the result.
+
+        Routes commands to appropriate handlers. For heavy compute commands,
+        runs them through the Engine. For state-only commands, accesses Postgres.
+        """
+        start_time = time.time()
+        command = request.command
+        args = request.args
+        kb_root = request.kb_root or "build/dev"
+        client_id = request.client_id or "grpc"
+
+        logger.info(f"ExecuteCommand: {command} args={args} from {client_id}")
+
+        try:
+            result = {}
+            message = ""
+            generation = 0
+
+            # Route to appropriate handler
+            if command == "reindex":
+                # Delegate to Reindex RPC
+                reindex_req = ReindexRequest(
+                    kb_root=kb_root,
+                    client_id=client_id,
+                    force="force" in args.lower() if args else False,
+                )
+                reindex_resp = await self.Reindex(reindex_req, context)
+                result = {
+                    "documents_indexed": reindex_resp.documents_indexed,
+                    "documents_skipped": reindex_resp.documents_skipped,
+                    "duration_ms": reindex_resp.duration_ms,
+                }
+                message = reindex_resp.message
+                generation = reindex_resp.generation
+
+            elif command == "state":
+                # Get current state
+                from ....storage.grid_state import load_current_state_fast, get_current_generation
+                state = await load_current_state_fast(kb_root)
+                generation = await get_current_generation(kb_root)
+                if state:
+                    result = {
+                        "snapshot_id": state.snapshot_id,
+                        "n_documents": state.n_documents,
+                        "h0_count": state.h0_count,
+                        "h1_count": state.h1_count,
+                        "entropy": state.entropy,
+                    }
+                    message = f"State loaded (gen {generation})"
+                else:
+                    message = "No state available"
+
+            elif command == "generation":
+                # Get current generation
+                from ....storage.grid_state import get_current_generation
+                generation = await get_current_generation(kb_root)
+                result = {"generation": generation}
+                message = f"Generation: {generation}"
+
+            elif command == "prefs":
+                # Get/save preferences
+                from ....storage.grid_state import load_ui_preferences, save_ui_preferences, UIPreferences
+                if "save" in args.lower() if args else False:
+                    # Parse context for preferences
+                    ctx = dict(request.context)
+                    prefs = UIPreferences(
+                        client_id=client_id,
+                        cursor_x=int(ctx.get("cursor_x", 9)),
+                        cursor_y=int(ctx.get("cursor_y", 9)),
+                        view_mode=ctx.get("view_mode", "go"),
+                        overlay_mode=ctx.get("overlay_mode", "none"),
+                    )
+                    await save_ui_preferences(prefs)
+                    result = {"action": "saved"}
+                    message = "Preferences saved"
+                else:
+                    prefs = await load_ui_preferences(client_id)
+                    if prefs:
+                        result = {
+                            "cursor_x": prefs.cursor_x,
+                            "cursor_y": prefs.cursor_y,
+                            "view_mode": prefs.view_mode,
+                            "overlay_mode": prefs.overlay_mode,
+                        }
+                        message = "Preferences loaded"
+                    else:
+                        message = "No preferences found"
+
+            else:
+                # Unknown command
+                return ExecuteCommandResponse(
+                    success=False,
+                    command=command,
+                    message=f"Unknown command: {command}",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            return ExecuteCommandResponse(
+                success=True,
+                command=command,
+                message=message,
+                result_json=json.dumps(result).encode("utf-8"),
+                generation=generation,
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            logger.exception(f"ExecuteCommand failed: {e}")
+            return ExecuteCommandResponse(
+                success=False,
+                command=command,
+                message=str(e),
+                duration_ms=int((time.time() - start_time) * 1000),
+            )
+
+    async def Reindex(
+        self, request: ReindexRequest, context: grpc.aio.ServicerContext
+    ) -> ReindexResponse:
+        """Reindex KB documents to Qdrant and compute grid projection.
+
+        This is the main heavy compute operation - runs embedding, projection,
+        and TDA computation on the Engine.
+        """
+        start_time = time.time()
+        kb_root = request.kb_root or "build/dev"
+        client_id = request.client_id or "grpc"
+
+        logger.info(f"Reindex: kb_root={kb_root} force={request.force} from {client_id}")
+
+        try:
+            from ....core.projection import get_grid_manager
+            from ....core.tda import get_tda_manager, TDAFeatures as CoreTDAFeatures
+            from ....core.geometry import GeometryComputer
+            from ....storage.grid_state import save_grid_state, get_current_generation
+            import numpy as np
+
+            # Get managers (lazily initialized, kb_root passed at first call)
+            grid_manager = get_grid_manager(kb_root=kb_root)
+            tda_manager = get_tda_manager()
+
+            # Run the reindex pipeline
+            # 1. Reindex KB to Qdrant and project to grid
+            grid_data = await asyncio.get_event_loop().run_in_executor(
+                None,
+                grid_manager.reindex_and_project
+            )
+
+            if not grid_data or grid_data.n_documents == 0:
+                return ReindexResponse(
+                    success=False,
+                    message="Reindex failed: no documents found",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # 2. Compute TDA features from raw embeddings
+            tda_features = CoreTDAFeatures()
+            geometry_features = None
+            grid_coords = None
+
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+                # Build grid_coords array from embedding_to_grid mapping
+                grid_coords = np.array([
+                    grid_data.embedding_to_grid.get(i, (9, 9))
+                    for i in range(len(grid_data.raw_embeddings))
+                ])
+                tda_features = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: tda_manager.compute_features(
+                        grid_data.raw_embeddings,
+                        grid_coords,
+                        force_refresh=True
+                    )
+                )
+
+                # 3. Compute geometry features (curvature, gradients, divergence)
+                try:
+                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    if k_neighbors >= 2:  # Need at least 2 neighbors
+                        gc = GeometryComputer(k_neighbors=k_neighbors)
+                        geometry_features = await gc.compute_features(
+                            grid_data.raw_embeddings, grid_coords
+                        )
+                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                except Exception as geom_err:
+                    logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
+                    geometry_features = None
+
+            # 4. Save to Postgres (updates current_state table)
+            embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+            snapshot_id = await save_grid_state(
+                kb_root=kb_root,
+                grid_data=grid_data,
+                tda_features=tda_features,
+                embedding_model=embedding_model,
+                projection_method=grid_data.method,
+                embedding_type="multi",  # ColBERT multi-vector
+                geometry_features=geometry_features,
+            )
+
+            # Get new generation
+            generation = await get_current_generation(kb_root)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            return ReindexResponse(
+                success=True,
+                message=f"Indexed {grid_data.n_documents} documents",
+                documents_indexed=grid_data.n_documents,
+                documents_skipped=0,
+                generation=generation,
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            logger.exception(f"Reindex failed: {e}")
+            return ReindexResponse(
+                success=False,
+                message=str(e),
+                duration_ms=int((time.time() - start_time) * 1000),
+            )
+
+    async def ReindexStream(
+        self, request: ReindexRequest, context: grpc.aio.ServicerContext
+    ) -> AsyncIterator[ReindexProgress]:
+        """Streaming reindex with progress updates.
+
+        Yields progress events during the reindex pipeline.
+        """
+        kb_root = request.kb_root or "build/dev"
+        client_id = request.client_id or "grpc"
+
+        logger.info(f"ReindexStream: kb_root={kb_root} from {client_id}")
+
+        try:
+            # Started
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.STARTED,
+                progress=0.0,
+                message="Starting reindex...",
+            )
+
+            # Scanning
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.SCANNING,
+                progress=0.1,
+                message="Scanning documents...",
+            )
+
+            from ....core.projection import get_grid_manager
+            from ....core.tda import get_tda_manager, TDAFeatures as CoreTDAFeatures
+            from ....core.geometry import GeometryComputer
+            from ....storage.grid_state import save_grid_state, get_current_generation
+            import numpy as np
+
+            grid_manager = get_grid_manager(kb_root=kb_root)
+            tda_manager = get_tda_manager()
+
+            # Embedding phase
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.EMBEDDING,
+                progress=0.2,
+                message="Computing embeddings...",
+            )
+
+            # Run reindex (this does embedding + projection)
+            grid_data = await asyncio.get_event_loop().run_in_executor(
+                None,
+                grid_manager.reindex_and_project
+            )
+
+            if not grid_data or grid_data.n_documents == 0:
+                yield ReindexProgress(
+                    phase=ReindexProgress.Phase.ERROR,
+                    progress=0.0,
+                    message="No documents found",
+                )
+                return
+
+            # Projecting
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.PROJECTING,
+                progress=0.6,
+                message=f"Projected {grid_data.n_documents} documents to grid",
+                documents_processed=grid_data.n_documents,
+                documents_total=grid_data.n_documents,
+            )
+
+            # TDA
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.TDA,
+                progress=0.8,
+                message="Computing TDA features...",
+            )
+
+            tda_features = CoreTDAFeatures()
+            geometry_features = None
+            grid_coords = None
+
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+                grid_coords = np.array([
+                    grid_data.embedding_to_grid.get(i, (9, 9))
+                    for i in range(len(grid_data.raw_embeddings))
+                ])
+                tda_features = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: tda_manager.compute_features(
+                        grid_data.raw_embeddings,
+                        grid_coords,
+                        force_refresh=True
+                    )
+                )
+
+                # Compute geometry features
+                try:
+                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    if k_neighbors >= 2:
+                        gc = GeometryComputer(k_neighbors=k_neighbors)
+                        geometry_features = await gc.compute_features(
+                            grid_data.raw_embeddings, grid_coords
+                        )
+                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                except Exception as geom_err:
+                    logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
+                    geometry_features = None
+
+            # Saving
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.SAVING,
+                progress=0.9,
+                message="Saving state...",
+            )
+
+            embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+            await save_grid_state(
+                kb_root=kb_root,
+                grid_data=grid_data,
+                tda_features=tda_features,
+                embedding_model=embedding_model,
+                projection_method=grid_data.method,
+                embedding_type="multi",
+                geometry_features=geometry_features,
+            )
+
+            generation = await get_current_generation(kb_root)
+
+            # Complete
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.COMPLETE,
+                progress=1.0,
+                message=f"Indexed {grid_data.n_documents} documents (gen {generation})",
+                documents_processed=grid_data.n_documents,
+                documents_total=grid_data.n_documents,
+            )
+
+        except Exception as e:
+            logger.exception(f"ReindexStream failed: {e}")
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.ERROR,
+                progress=0.0,
+                message=str(e),
+            )
+
+    # =========================================================================
+    # Init (Full Initialization Pipeline)
+    # =========================================================================
+
+    async def Init(
+        self, request: InitRequest, context: grpc.aio.ServicerContext
+    ) -> InitResponse:
+        """Full initialization pipeline: index KB, project to grid, compute TDA.
+
+        This is the primary entry point for initializing a fresh Gaius instance
+        or forcing a complete rebuild of the KB index and grid projection.
+
+        Pipeline:
+        1. Scan KB for documents
+        2. Compute ColBERT embeddings
+        3. Project to 19x19 grid via UMAP
+        4. Compute TDA features (H0/H1/H2)
+        5. Save to Postgres (grid_snapshots + current_state)
+        """
+        start_time = time.time()
+        kb_root = request.kb_root or "build/dev"
+        client_id = request.client_id or "grpc"
+        force = request.force
+        embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+        projection_method = request.projection_method or "umap"
+
+        logger.info(f"Init: kb_root={kb_root} force={force} from {client_id}")
+
+        try:
+            from ....core.projection import get_grid_manager
+            from ....core.tda import get_tda_manager, TDAFeatures as CoreTDAFeatures
+            from ....core.geometry import GeometryComputer
+            from ....storage.grid_state import (
+                save_grid_state,
+                get_current_generation,
+                check_state_exists,
+            )
+            import numpy as np
+
+            # Check if state already exists (skip if not forcing)
+            if not force:
+                state_exists = await check_state_exists(
+                    kb_root, embedding_model, projection_method
+                )
+                if state_exists:
+                    generation = await get_current_generation(kb_root)
+                    return InitResponse(
+                        success=True,
+                        message="State already exists (use force=true to rebuild)",
+                        generation=generation,
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+
+            # Get managers
+            grid_manager = get_grid_manager(method=projection_method, kb_root=kb_root)
+            tda_manager = get_tda_manager()
+
+            # Run the full pipeline
+            # 1. Reindex KB to Qdrant and project to grid
+            grid_data = await asyncio.get_event_loop().run_in_executor(
+                None,
+                grid_manager.reindex_and_project
+            )
+
+            if not grid_data or grid_data.n_documents == 0:
+                return InitResponse(
+                    success=False,
+                    message="No documents found in KB",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # 2. Compute TDA features from raw embeddings
+            tda_features = CoreTDAFeatures()
+            geometry_features = None
+            grid_coords = None
+
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+                grid_coords = np.array([
+                    grid_data.embedding_to_grid.get(i, (9, 9))
+                    for i in range(len(grid_data.raw_embeddings))
+                ])
+                tda_features = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: tda_manager.compute_features(
+                        grid_data.raw_embeddings,
+                        grid_coords,
+                        force_refresh=True
+                    )
+                )
+
+                # 3. Compute geometry features (curvature, gradients, divergence)
+                try:
+                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    if k_neighbors >= 2:
+                        gc = GeometryComputer(k_neighbors=k_neighbors)
+                        geometry_features = await gc.compute_features(
+                            grid_data.raw_embeddings, grid_coords
+                        )
+                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                except Exception as geom_err:
+                    logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
+                    geometry_features = None
+
+            # 4. Save to Postgres
+            snapshot_id = await save_grid_state(
+                kb_root=kb_root,
+                grid_data=grid_data,
+                tda_features=tda_features,
+                embedding_model=embedding_model,
+                projection_method=projection_method,
+                embedding_type="multi",
+                geometry_features=geometry_features,
+            )
+
+            # Get new generation
+            generation = await get_current_generation(kb_root)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            return InitResponse(
+                success=True,
+                message=f"Initialized {grid_data.n_documents} documents",
+                documents_indexed=grid_data.n_documents,
+                h0_count=tda_features.h0_count,
+                h1_count=tda_features.h1_count,
+                h2_count=tda_features.h2_count,
+                entropy=tda_features.entropy,
+                generation=generation,
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            logger.exception(f"Init failed: {e}")
+            return InitResponse(
+                success=False,
+                message=str(e),
+                duration_ms=int((time.time() - start_time) * 1000),
+            )
+
+    async def InitProgressStream(
+        self, request: InitRequest, context: grpc.aio.ServicerContext
+    ) -> AsyncIterator[InitProgress]:
+        """Streaming init with detailed progress updates.
+
+        Yields progress events for each phase of the init pipeline,
+        allowing TUI/CLI to show real-time progress during long operations.
+        """
+        kb_root = request.kb_root or "build/dev"
+        client_id = request.client_id or "grpc"
+        force = request.force
+        embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+        projection_method = request.projection_method or "umap"
+
+        logger.info(f"InitProgressStream: kb_root={kb_root} from {client_id}")
+
+        try:
+            # STARTED
+            yield InitProgress(
+                phase=InitProgress.Phase.STARTED,
+                progress=0.0,
+                message="Starting initialization...",
+            )
+
+            from ....core.projection import get_grid_manager
+            from ....core.tda import get_tda_manager, TDAFeatures as CoreTDAFeatures
+            from ....core.geometry import GeometryComputer
+            from ....storage.grid_state import (
+                save_grid_state,
+                get_current_generation,
+                check_state_exists,
+            )
+            import numpy as np
+
+            # Check if state already exists (skip if not forcing)
+            if not force:
+                state_exists = await check_state_exists(
+                    kb_root, embedding_model, projection_method
+                )
+                if state_exists:
+                    generation = await get_current_generation(kb_root)
+                    yield InitProgress(
+                        phase=InitProgress.Phase.COMPLETE,
+                        progress=1.0,
+                        message=f"State already exists (gen {generation})",
+                    )
+                    return
+
+            # SCANNING
+            yield InitProgress(
+                phase=InitProgress.Phase.SCANNING,
+                progress=0.1,
+                message="Scanning KB for documents...",
+            )
+
+            grid_manager = get_grid_manager(method=projection_method, kb_root=kb_root)
+            tda_manager = get_tda_manager()
+
+            # EMBEDDING
+            yield InitProgress(
+                phase=InitProgress.Phase.EMBEDDING,
+                progress=0.2,
+                message="Computing ColBERT embeddings...",
+            )
+
+            # Run reindex (embedding + projection in one call)
+            grid_data = await asyncio.get_event_loop().run_in_executor(
+                None,
+                grid_manager.reindex_and_project
+            )
+
+            if not grid_data or grid_data.n_documents == 0:
+                yield InitProgress(
+                    phase=InitProgress.Phase.ERROR,
+                    progress=0.0,
+                    message="No documents found in KB",
+                )
+                return
+
+            # PROJECTING
+            yield InitProgress(
+                phase=InitProgress.Phase.PROJECTING,
+                progress=0.5,
+                message=f"Projected {grid_data.n_documents} documents to grid",
+                documents_processed=grid_data.n_documents,
+                documents_total=grid_data.n_documents,
+            )
+
+            # TDA
+            yield InitProgress(
+                phase=InitProgress.Phase.TDA,
+                progress=0.7,
+                message="Computing TDA features (H0/H1/H2)...",
+            )
+
+            tda_features = CoreTDAFeatures()
+            geometry_features = None
+            grid_coords = None
+
+            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+                grid_coords = np.array([
+                    grid_data.embedding_to_grid.get(i, (9, 9))
+                    for i in range(len(grid_data.raw_embeddings))
+                ])
+                tda_features = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: tda_manager.compute_features(
+                        grid_data.raw_embeddings,
+                        grid_coords,
+                        force_refresh=True
+                    )
+                )
+
+            # GEOMETRY (compute curvature, gradients, divergence)
+            yield InitProgress(
+                phase=InitProgress.Phase.GEOMETRY,
+                progress=0.85,
+                message="Computing geometry features (curvature, gradients)...",
+            )
+
+            logger.info(f"Geometry check: raw_embeddings={grid_data.raw_embeddings is not None}, grid_coords={grid_coords is not None}")
+            if grid_data.raw_embeddings is not None and grid_coords is not None:
+                try:
+                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(grid_data.raw_embeddings)}")
+                    if k_neighbors >= 2:
+                        gc = GeometryComputer(k_neighbors=k_neighbors)
+                        geometry_features = await gc.compute_features(
+                            grid_data.raw_embeddings, grid_coords
+                        )
+                        logger.info(f"Computed geometry features: curvatures={len(geometry_features.curvatures)}, gradients={len(geometry_features.gradients)}")
+                except Exception as geom_err:
+                    logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
+                    import traceback
+                    traceback.print_exc()
+                    geometry_features = None
+            else:
+                logger.warning(f"Skipping geometry: no raw embeddings or grid coords")
+
+            # SAVING
+            yield InitProgress(
+                phase=InitProgress.Phase.SAVING,
+                progress=0.9,
+                message="Saving to Postgres cache...",
+            )
+
+            await save_grid_state(
+                kb_root=kb_root,
+                grid_data=grid_data,
+                tda_features=tda_features,
+                embedding_model=embedding_model,
+                projection_method=projection_method,
+                embedding_type="multi",
+                geometry_features=geometry_features,
+            )
+
+            generation = await get_current_generation(kb_root)
+
+            # COMPLETE
+            yield InitProgress(
+                phase=InitProgress.Phase.COMPLETE,
+                progress=1.0,
+                message=f"Initialized {grid_data.n_documents} documents (gen {generation})",
+                documents_processed=grid_data.n_documents,
+                documents_total=grid_data.n_documents,
+            )
+
+        except Exception as e:
+            logger.exception(f"InitProgressStream failed: {e}")
+            yield InitProgress(
+                phase=InitProgress.Phase.ERROR,
+                progress=0.0,
+                message=str(e),
+            )

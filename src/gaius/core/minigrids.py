@@ -467,7 +467,7 @@ def get_real_minigrid_data(
     cursor_y: int,
     iso_mode: IsoMode = IsoMode.CURVATURE,
     iso_features: "IsoFeatures | None" = None,
-) -> dict[str, list[list[float]]]:
+) -> dict[str, "MiniGridData"]:
     """Get real mini-grid data from curvature and UMAP projections.
 
     Replaces the static test_data.get_minigrid_data() with real data.
@@ -481,12 +481,15 @@ def get_real_minigrid_data(
         iso_features: Pre-computed IsoFeatures from TDA
 
     Returns:
-        Dict with "top" (Iso) and "right" (Embed) grids
+        Dict with "top" (Iso MiniGridData) and "right" (Embed MiniGridData)
     """
     if grid_data is None:
         # Fallback to empty grids
         empty = [[0.0] * 9 for _ in range(9)]
-        return {"top": empty, "right": empty}
+        return {
+            "top": MiniGridData(grid=empty, title="Iso", description="No data"),
+            "right": MiniGridData(grid=empty, title="Embed", description="No data"),
+        }
 
     # Generate real views
     embed_data = get_embed_view(grid_data, cursor_x, cursor_y)
@@ -496,6 +499,6 @@ def get_real_minigrid_data(
     )
 
     return {
-        "right": embed_data.grid,  # Right mini-grid = Embed
-        "top": iso_data.grid,  # Top/bottom mini-grid = Iso
+        "right": embed_data,  # Right mini-grid = Embed (MiniGridData)
+        "top": iso_data,  # Top/bottom mini-grid = Iso (MiniGridData)
     }

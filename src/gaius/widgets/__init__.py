@@ -10,6 +10,7 @@ from .note_editor import NoteEditor
 from .graph_view import GraphView
 from .think_panel import ThinkPanel
 from .evolution_panel import EvolutionPanel
+from .connection_indicator import ConnectionIndicator, ConnectionStatusBar
 
 __all__ = [
     "MainGrid",
@@ -23,4 +24,6 @@ __all__ = [
     "GraphView",
     "ThinkPanel",
     "EvolutionPanel",
+    "ConnectionIndicator",
+    "ConnectionStatusBar",
 ]
