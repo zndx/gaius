@@ -176,6 +176,11 @@ class OrchestratorService:
         # Track restart attempts per endpoint
         self._restart_attempts: dict[str, int] = {}
 
+        # Stuck state detection (AIOps autonomous health loop)
+        self._stuck_starting_timeout = 300  # 5 minutes
+        self._stuck_stopping_timeout = 120  # 2 minutes
+        self._stuck_detections: dict[str, dict] = {}  # endpoint -> {detected_at, elapsed}
+
         # Capability-based endpoint tracking (Yunikorn-style)
         # Maps TaskType.value -> list of endpoint names that provide that capability
         self._capability_map: dict[str, list[str]] = {}
@@ -1436,12 +1441,39 @@ class OrchestratorService:
             logger.debug(f"GPU health update failed: {e}")
 
     async def _check_endpoint_health(self) -> None:
-        """Check health of all running endpoints and auto-restart if configured."""
+        """Check health of all running endpoints with stuck state detection.
+
+        AIOps autonomous health loop:
+        - Detect endpoints stuck in STARTING for >5 minutes
+        - Detect endpoints stuck in STOPPING for >2 minutes
+        - Auto-remediate low-severity issues (restart)
+        - Record events for audit trail
+        """
+        now = time.time()
+
         for alias, proc in list(self._vllm._processes.items()):
-            if proc.status not in (ProcessStatus.HEALTHY, ProcessStatus.UNHEALTHY, ProcessStatus.FAILED):
+            # Handle stuck STARTING state
+            if proc.status == ProcessStatus.STARTING:
+                if proc.started_at:
+                    elapsed = now - proc.started_at.timestamp()
+                    if elapsed > self._stuck_starting_timeout:
+                        await self._remediate_stuck_starting(alias, proc, elapsed)
                 continue
 
-            # Check if process is still running
+            # Handle stuck STOPPING state
+            if proc.status == ProcessStatus.STOPPING:
+                # Use last_health_check as proxy for when stop was initiated
+                if proc.last_health_check:
+                    elapsed = now - proc.last_health_check.timestamp()
+                    if elapsed > self._stuck_stopping_timeout:
+                        await self._remediate_stuck_stopping(alias, proc, elapsed)
+                continue
+
+            # Skip STOPPED - nothing to check
+            if proc.status == ProcessStatus.STOPPED:
+                continue
+
+            # Check if process is still running (HEALTHY, UNHEALTHY, FAILED)
             if proc.process and proc.process.returncode is not None:
                 logger.warning(
                     f"Process for {alias} exited with code {proc.process.returncode}"
@@ -1507,6 +1539,176 @@ class OrchestratorService:
 
         except Exception as e:
             logger.error(f"Failed to restart endpoint {alias}: {e}")
+
+    async def _remediate_stuck_starting(
+        self, alias: str, proc: "VLLMProcess", elapsed: float
+    ) -> None:
+        """Auto-remediate endpoint stuck in STARTING state.
+
+        AIOps: Low severity - auto-remediation without approval.
+
+        Args:
+            alias: Endpoint alias
+            proc: VLLMProcess instance
+            elapsed: Seconds spent in STARTING state
+        """
+        logger.warning(
+            f"Endpoint {alias} stuck in STARTING for {elapsed:.0f}s (threshold: "
+            f"{self._stuck_starting_timeout}s). Auto-remediating..."
+        )
+
+        # Record AIOps event
+        await self._record_aiops_event(
+            category="stuck_state",
+            severity="medium",
+            endpoint=alias,
+            description=f"Endpoint stuck in STARTING state for {elapsed:.0f} seconds",
+            context={
+                "elapsed_seconds": elapsed,
+                "threshold_seconds": self._stuck_starting_timeout,
+                "pid": proc.pid,
+                "model": proc.model,
+            },
+            remediation_action="force_restart",
+            status="auto_remediated",
+        )
+
+        # Kill the stuck process
+        if proc.pid:
+            try:
+                import signal
+                os.kill(proc.pid, signal.SIGKILL)
+                logger.info(f"Killed stuck process {proc.pid} for {alias}")
+            except ProcessLookupError:
+                logger.debug(f"Process {proc.pid} already gone")
+            except Exception as e:
+                logger.error(f"Failed to kill process {proc.pid}: {e}")
+
+        # Mark as failed and clear
+        proc.status = ProcessStatus.FAILED
+        proc.process = None
+        proc.pid = None
+
+        # Schedule restart after cleanup delay
+        await asyncio.sleep(5)
+        await self._maybe_restart_endpoint(alias)
+
+    async def _remediate_stuck_stopping(
+        self, alias: str, proc: "VLLMProcess", elapsed: float
+    ) -> None:
+        """Auto-remediate endpoint stuck in STOPPING state.
+
+        AIOps: Low severity - auto-remediation without approval.
+
+        Args:
+            alias: Endpoint alias
+            proc: VLLMProcess instance
+            elapsed: Seconds spent in STOPPING state
+        """
+        logger.warning(
+            f"Endpoint {alias} stuck in STOPPING for {elapsed:.0f}s (threshold: "
+            f"{self._stuck_stopping_timeout}s). Force killing..."
+        )
+
+        # Record AIOps event
+        await self._record_aiops_event(
+            category="stuck_state",
+            severity="low",
+            endpoint=alias,
+            description=f"Endpoint stuck in STOPPING state for {elapsed:.0f} seconds",
+            context={
+                "elapsed_seconds": elapsed,
+                "threshold_seconds": self._stuck_stopping_timeout,
+                "pid": proc.pid,
+            },
+            remediation_action="force_kill",
+            status="auto_remediated",
+        )
+
+        # Force kill the stuck process
+        if proc.pid:
+            try:
+                import signal
+                os.kill(proc.pid, signal.SIGKILL)
+                logger.info(f"Force killed stuck stopping process {proc.pid}")
+            except ProcessLookupError:
+                logger.debug(f"Process {proc.pid} already gone")
+            except Exception as e:
+                logger.error(f"Failed to force kill process {proc.pid}: {e}")
+
+        # Mark as stopped
+        proc.status = ProcessStatus.STOPPED
+        proc.process = None
+        proc.pid = None
+
+    async def _record_aiops_event(
+        self,
+        category: str,
+        severity: str,
+        endpoint: str | None,
+        description: str,
+        context: dict | None = None,
+        remediation_action: str | None = None,
+        status: str = "detected",
+    ) -> int | None:
+        """Record an AIOps event to the database.
+
+        Args:
+            category: Event category (stuck_state, gpu_error, endpoint_failure)
+            severity: low, medium, high, critical
+            endpoint: Affected endpoint name
+            description: Human-readable description
+            context: Additional context as JSON
+            remediation_action: Action taken/proposed
+            status: Event status
+
+        Returns:
+            Event ID if recorded, None on error
+        """
+        try:
+            import asyncpg
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                import json
+                event_id = await conn.fetchval(
+                    """
+                    INSERT INTO aiops_events
+                        (category, severity, status, endpoint, description, context,
+                         remediation_action, approved_by, approved_at, resolved_at)
+                    VALUES ($1, $2::aiops_severity, $3::aiops_status, $4, $5, $6::jsonb,
+                            $7, $8, $9, $10)
+                    RETURNING id
+                    """,
+                    category,
+                    severity,
+                    status,
+                    endpoint,
+                    description,
+                    json.dumps(context or {}),
+                    remediation_action,
+                    "system" if status == "auto_remediated" else None,
+                    datetime.now() if status == "auto_remediated" else None,
+                    datetime.now() if status in ("auto_remediated", "resolved") else None,
+                )
+                logger.info(
+                    f"Recorded AIOps event {event_id}: {category} ({severity}) - {description}"
+                )
+                return event_id
+            finally:
+                await conn.close()
+
+        except ImportError:
+            logger.debug("asyncpg not available, skipping AIOps event recording")
+        except Exception as e:
+            logger.error(f"Failed to record AIOps event: {e}")
+
+        return None
 
     def get_gpu_utilization(self) -> dict[int, float]:
         """Get current GPU utilization.

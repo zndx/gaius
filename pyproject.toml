@@ -11,7 +11,7 @@ requires-python = "~=3.12.0"  # Pin to 3.12.x (giotto-tda not available for 3.13
 dependencies = [
     "asyncpg>=0.31.0",
     "behave>=1.3.3",
-    "deeponto>=0.9.0",  # Ontology verbalization (fastembed replaces colnomic, no peft conflict)
+    "deeponto>=0.9.0", # Ontology verbalization (fastembed replaces colnomic, no peft conflict)
     "docling>=2.63.0",
     "einops>=0.8.1",
     "math-verify>=0.8.0",
@@ -42,7 +42,9 @@ dependencies = [
     "sentence-transformers>=5.1.2",
     "opentelemetry-exporter-otlp>=1.39.0",
     "fastembed>=0.7.4",
-    "minio>=7.2.0",  # S3-compatible storage client for KB sync
+    "minio>=7.2.0", # S3-compatible object storage (KB storage, sync, HX data lake)
+    "ansible>=13.1.0",
+    "ansible-runner>=2.4.2",
 ]
 
 [project.optional-dependencies]

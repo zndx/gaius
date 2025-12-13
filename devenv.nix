@@ -38,6 +38,7 @@
   # https://devenv.sh/packages/
   packages = with pkgs; [
     aeron
+    awscli
     cmake
     conftest
     d2
@@ -50,6 +51,7 @@
     mdbook-d2
     mdbook-katex
     mdbook-mermaid
+    open-policy-agent
     opentofu
     protobuf
     presenterm

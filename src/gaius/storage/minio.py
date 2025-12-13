@@ -28,22 +28,16 @@ from deepagents.backends.protocol import (
 
 from .protocol import KBDocument, StorageBackend, StorageConfig
 
-# Lazy import minio to avoid hard dependency
+# Deferred import for faster module load time
 _minio_client = None
 
 
 def _get_minio():
-    """Lazy import minio client."""
+    """Get minio client class (deferred import for faster startup)."""
     global _minio_client
     if _minio_client is None:
-        try:
-            from minio import Minio
-
-            _minio_client = Minio
-        except ImportError:
-            raise ImportError(
-                "minio package not installed. Install with: uv pip install minio"
-            )
+        from minio import Minio
+        _minio_client = Minio
     return _minio_client
 
 

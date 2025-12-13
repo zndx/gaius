@@ -1,4 +1,4 @@
-\restrict u5A4vrZ2YT6QBQFLNRCvgzvn5QsncICI3iVD6Ftw02t1s2trJjG4CsH80CQhSo8
+\restrict ZxSmj0ECBdNOLeW0QN7iMvnpZGg57DL3hfjfreV1gu7oQZqxmU0hfAdAKblEY1Z
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -74,6 +74,33 @@ CREATE TYPE public.activity_type AS ENUM (
     'research_complete',
     'reflection_complete',
     'evolution_cycle'
+);
+
+
+--
+-- Name: aiops_severity; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.aiops_severity AS ENUM (
+    'low',
+    'medium',
+    'high',
+    'critical'
+);
+
+
+--
+-- Name: aiops_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.aiops_status AS ENUM (
+    'detected',
+    'auto_remediated',
+    'pending_approval',
+    'approved',
+    'rejected',
+    'failed',
+    'resolved'
 );
 
 
@@ -1235,6 +1262,92 @@ CREATE VIEW public.agent_version_history AS
 
 
 --
+-- Name: aiops_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.aiops_events (
+    id integer NOT NULL,
+    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    category character varying(64) NOT NULL,
+    severity public.aiops_severity NOT NULL,
+    status public.aiops_status DEFAULT 'detected'::public.aiops_status NOT NULL,
+    endpoint character varying(64),
+    description text NOT NULL,
+    context jsonb DEFAULT '{}'::jsonb,
+    remediation_action character varying(255),
+    remediation_result jsonb,
+    approved_by character varying(64),
+    approved_at timestamp with time zone,
+    resolved_at timestamp with time zone,
+    failure_mode_id character varying(32),
+    runtime_severity integer,
+    runtime_occurrence integer,
+    runtime_detection integer,
+    rpn_score integer,
+    CONSTRAINT aiops_events_rpn_score_check CHECK (((rpn_score >= 1) AND (rpn_score <= 1000))),
+    CONSTRAINT aiops_events_runtime_detection_check CHECK (((runtime_detection >= 1) AND (runtime_detection <= 10))),
+    CONSTRAINT aiops_events_runtime_occurrence_check CHECK (((runtime_occurrence >= 1) AND (runtime_occurrence <= 10))),
+    CONSTRAINT aiops_events_runtime_severity_check CHECK (((runtime_severity >= 1) AND (runtime_severity <= 10)))
+);
+
+
+--
+-- Name: TABLE aiops_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.aiops_events IS 'Infrastructure health events with remediation tracking';
+
+
+--
+-- Name: COLUMN aiops_events.category; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.aiops_events.category IS 'Event type: stuck_state, gpu_error, memory_pressure, endpoint_failure';
+
+
+--
+-- Name: COLUMN aiops_events.approved_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.aiops_events.approved_by IS 'system for auto-remediation, user identifier for manual approval';
+
+
+--
+-- Name: COLUMN aiops_events.failure_mode_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.aiops_events.failure_mode_id IS 'Link to FMEA catalog entry';
+
+
+--
+-- Name: COLUMN aiops_events.rpn_score; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.aiops_events.rpn_score IS 'Risk Priority Number = S × O × D (1-1000)';
+
+
+--
+-- Name: aiops_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.aiops_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: aiops_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.aiops_events_id_seq OWNED BY public.aiops_events.id;
+
+
+--
 -- Name: best_agent_versions; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -1819,6 +1932,209 @@ ALTER SEQUENCE public.fetch_jobs_id_seq OWNED BY public.fetch_jobs.id;
 
 
 --
+-- Name: fmea_adjustments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_adjustments (
+    id integer NOT NULL,
+    failure_mode_id character varying(32) NOT NULL,
+    endpoint character varying(64),
+    hour_of_day integer,
+    adjusted_severity integer,
+    adjusted_occurrence integer,
+    adjusted_detection integer,
+    sample_count integer DEFAULT 0,
+    last_updated timestamp with time zone DEFAULT now(),
+    CONSTRAINT fmea_adjustments_adjusted_detection_check CHECK (((adjusted_detection >= 1) AND (adjusted_detection <= 10))),
+    CONSTRAINT fmea_adjustments_adjusted_occurrence_check CHECK (((adjusted_occurrence >= 1) AND (adjusted_occurrence <= 10))),
+    CONSTRAINT fmea_adjustments_adjusted_severity_check CHECK (((adjusted_severity >= 1) AND (adjusted_severity <= 10))),
+    CONSTRAINT fmea_adjustments_hour_of_day_check CHECK (((hour_of_day >= 0) AND (hour_of_day <= 23)))
+);
+
+
+--
+-- Name: TABLE fmea_adjustments; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_adjustments IS 'Context-specific S/O/D adjustments learned from outcomes';
+
+
+--
+-- Name: fmea_adjustments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.fmea_adjustments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: fmea_adjustments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.fmea_adjustments_id_seq OWNED BY public.fmea_adjustments.id;
+
+
+--
+-- Name: fmea_catalog; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_catalog (
+    failure_mode_id character varying(32) NOT NULL,
+    category character varying(32) NOT NULL,
+    name character varying(128) NOT NULL,
+    description text,
+    base_severity integer NOT NULL,
+    base_occurrence integer NOT NULL,
+    base_detection integer NOT NULL,
+    detection_method character varying(64),
+    detection_query text,
+    detection_threshold jsonb DEFAULT '{}'::jsonb,
+    recommended_actions text[],
+    escalation_tier integer DEFAULT 0,
+    preventive_controls text[],
+    detective_controls text[],
+    mitigative_controls text[],
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT fmea_catalog_base_detection_check CHECK (((base_detection >= 1) AND (base_detection <= 10))),
+    CONSTRAINT fmea_catalog_base_occurrence_check CHECK (((base_occurrence >= 1) AND (base_occurrence <= 10))),
+    CONSTRAINT fmea_catalog_base_severity_check CHECK (((base_severity >= 1) AND (base_severity <= 10)))
+);
+
+
+--
+-- Name: TABLE fmea_catalog; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_catalog IS 'FMEA failure mode definitions with S/O/D scores';
+
+
+--
+-- Name: COLUMN fmea_catalog.failure_mode_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.failure_mode_id IS 'Unique ID: GPU_001, VLLM_002, MQ_003, etc.';
+
+
+--
+-- Name: COLUMN fmea_catalog.base_severity; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.base_severity IS 'Severity score 1-10: impact on system availability';
+
+
+--
+-- Name: COLUMN fmea_catalog.base_occurrence; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.base_occurrence IS 'Occurrence score 1-10: probability of recurrence';
+
+
+--
+-- Name: COLUMN fmea_catalog.base_detection; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.base_detection IS 'Detection score 1-10: ability to detect before impact (1=certain, 10=none)';
+
+
+--
+-- Name: fmea_occurrences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_occurrences (
+    id integer NOT NULL,
+    failure_mode_id character varying(32) NOT NULL,
+    occurred_at timestamp with time zone DEFAULT now(),
+    endpoint character varying(64),
+    context jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE fmea_occurrences; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_occurrences IS 'History of failure mode occurrences for calculating O score';
+
+
+--
+-- Name: fmea_occurrences_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.fmea_occurrences_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: fmea_occurrences_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.fmea_occurrences_id_seq OWNED BY public.fmea_occurrences.id;
+
+
+--
+-- Name: fmea_outcomes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_outcomes (
+    id integer NOT NULL,
+    failure_mode_id character varying(32) NOT NULL,
+    aiops_event_id integer,
+    mlops_event_id integer,
+    rpn_score integer NOT NULL,
+    severity integer NOT NULL,
+    occurrence integer NOT NULL,
+    detection integer NOT NULL,
+    action_taken character varying(128),
+    tier_used integer,
+    success boolean NOT NULL,
+    duration_ms integer,
+    downtime_seconds integer,
+    sla_breach boolean DEFAULT false,
+    detection_lead_time_seconds integer,
+    detected_by character varying(32),
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE fmea_outcomes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_outcomes IS 'Remediation outcomes for adaptive S/O/D learning';
+
+
+--
+-- Name: fmea_outcomes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.fmea_outcomes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: fmea_outcomes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.fmea_outcomes_id_seq OWNED BY public.fmea_outcomes.id;
+
+
+--
 -- Name: grid_allocations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2032,6 +2348,51 @@ CREATE SEQUENCE public.grid_tda_features_id_seq
 --
 
 ALTER SEQUENCE public.grid_tda_features_id_seq OWNED BY public.grid_tda_features.id;
+
+
+--
+-- Name: health_loop_state; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.health_loop_state (
+    id integer NOT NULL,
+    updated_at timestamp with time zone DEFAULT now(),
+    check_interval_seconds integer DEFAULT 30,
+    stuck_starting_timeout_seconds integer DEFAULT 300,
+    stuck_stopping_timeout_seconds integer DEFAULT 120,
+    endpoint_last_check jsonb DEFAULT '{}'::jsonb,
+    stuck_detections jsonb DEFAULT '{}'::jsonb,
+    total_auto_remediations integer DEFAULT 0,
+    total_pending_approvals integer DEFAULT 0,
+    last_remediation_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE health_loop_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.health_loop_state IS 'Persistent state for autonomous health loop';
+
+
+--
+-- Name: health_loop_state_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.health_loop_state_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: health_loop_state_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.health_loop_state_id_seq OWNED BY public.health_loop_state.id;
 
 
 --
@@ -2364,6 +2725,70 @@ ALTER SEQUENCE public.lineage_events_id_seq OWNED BY public.lineage_events.id;
 
 
 --
+-- Name: mlops_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mlops_events (
+    id integer NOT NULL,
+    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    category character varying(64) NOT NULL,
+    severity public.aiops_severity NOT NULL,
+    status public.aiops_status DEFAULT 'detected'::public.aiops_status NOT NULL,
+    agent_id character varying(64),
+    model_version character varying(128),
+    description text NOT NULL,
+    metrics jsonb DEFAULT '{}'::jsonb,
+    remediation_action character varying(255),
+    remediation_result jsonb,
+    resolved_at timestamp with time zone,
+    failure_mode_id character varying(32),
+    runtime_severity integer,
+    runtime_occurrence integer,
+    runtime_detection integer,
+    rpn_score integer,
+    CONSTRAINT mlops_events_rpn_score_check CHECK (((rpn_score >= 1) AND (rpn_score <= 1000))),
+    CONSTRAINT mlops_events_runtime_detection_check CHECK (((runtime_detection >= 1) AND (runtime_detection <= 10))),
+    CONSTRAINT mlops_events_runtime_occurrence_check CHECK (((runtime_occurrence >= 1) AND (runtime_occurrence <= 10))),
+    CONSTRAINT mlops_events_runtime_severity_check CHECK (((runtime_severity >= 1) AND (runtime_severity <= 10)))
+);
+
+
+--
+-- Name: TABLE mlops_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.mlops_events IS 'Model lifecycle events for evolution and deployment tracking';
+
+
+--
+-- Name: COLUMN mlops_events.agent_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.mlops_events.agent_id IS 'Agent being affected: leader, worker, critic, etc.';
+
+
+--
+-- Name: mlops_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.mlops_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: mlops_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.mlops_events_id_seq OWNED BY public.mlops_events.id;
+
+
+--
 -- Name: optimization_runs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2460,6 +2885,63 @@ CREATE SEQUENCE public.profiles_id_seq
 --
 
 ALTER SEQUENCE public.profiles_id_seq OWNED BY public.profiles.id;
+
+
+--
+-- Name: remediation_approvals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.remediation_approvals (
+    id integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    event_type character varying(16) NOT NULL,
+    event_id integer NOT NULL,
+    action_command character varying(255) NOT NULL,
+    description text NOT NULL,
+    severity public.aiops_severity NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    status character varying(32) DEFAULT 'pending'::character varying,
+    approved_by character varying(64),
+    approved_at timestamp with time zone,
+    rejection_reason text,
+    failure_mode_id character varying(32),
+    rpn_score integer,
+    rpn_breakdown jsonb
+);
+
+
+--
+-- Name: TABLE remediation_approvals; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.remediation_approvals IS 'Queue for high-severity actions requiring user approval';
+
+
+--
+-- Name: COLUMN remediation_approvals.expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.remediation_approvals.expires_at IS 'Auto-reject if not acted upon by this time';
+
+
+--
+-- Name: remediation_approvals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.remediation_approvals_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: remediation_approvals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.remediation_approvals_id_seq OWNED BY public.remediation_approvals.id;
 
 
 --
@@ -2991,6 +3473,13 @@ ALTER TABLE ONLY public.agent_evaluations ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: aiops_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.aiops_events ALTER COLUMN id SET DEFAULT nextval('public.aiops_events_id_seq'::regclass);
+
+
+--
 -- Name: cognition_cycles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3054,6 +3543,27 @@ ALTER TABLE ONLY public.fetch_jobs ALTER COLUMN id SET DEFAULT nextval('public.f
 
 
 --
+-- Name: fmea_adjustments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_adjustments ALTER COLUMN id SET DEFAULT nextval('public.fmea_adjustments_id_seq'::regclass);
+
+
+--
+-- Name: fmea_occurrences id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_occurrences ALTER COLUMN id SET DEFAULT nextval('public.fmea_occurrences_id_seq'::regclass);
+
+
+--
+-- Name: fmea_outcomes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_outcomes ALTER COLUMN id SET DEFAULT nextval('public.fmea_outcomes_id_seq'::regclass);
+
+
+--
 -- Name: grid_allocations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3096,6 +3606,13 @@ ALTER TABLE ONLY public.grid_tda_features ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: health_loop_state id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.health_loop_state ALTER COLUMN id SET DEFAULT nextval('public.health_loop_state_id_seq'::regclass);
+
+
+--
 -- Name: held_out_queries id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3131,6 +3648,13 @@ ALTER TABLE ONLY public.lineage_events ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: mlops_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mlops_events ALTER COLUMN id SET DEFAULT nextval('public.mlops_events_id_seq'::regclass);
+
+
+--
 -- Name: optimization_runs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3142,6 +3666,13 @@ ALTER TABLE ONLY public.optimization_runs ALTER COLUMN id SET DEFAULT nextval('p
 --
 
 ALTER TABLE ONLY public.profiles ALTER COLUMN id SET DEFAULT nextval('public.profiles_id_seq'::regclass);
+
+
+--
+-- Name: remediation_approvals id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.remediation_approvals ALTER COLUMN id SET DEFAULT nextval('public.remediation_approvals_id_seq'::regclass);
 
 
 --
@@ -3210,6 +3741,22 @@ ALTER TABLE ONLY public.agent_evaluations
 
 ALTER TABLE ONLY public.agent_versions
     ADD CONSTRAINT agent_versions_pkey PRIMARY KEY (version_id);
+
+
+--
+-- Name: aiops_events aiops_events_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.aiops_events
+    ADD CONSTRAINT aiops_events_event_id_key UNIQUE (event_id);
+
+
+--
+-- Name: aiops_events aiops_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.aiops_events
+    ADD CONSTRAINT aiops_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -3325,6 +3872,46 @@ ALTER TABLE ONLY public.fetch_jobs
 
 
 --
+-- Name: fmea_adjustments fmea_adjustments_failure_mode_id_endpoint_hour_of_day_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_adjustments
+    ADD CONSTRAINT fmea_adjustments_failure_mode_id_endpoint_hour_of_day_key UNIQUE (failure_mode_id, endpoint, hour_of_day);
+
+
+--
+-- Name: fmea_adjustments fmea_adjustments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_adjustments
+    ADD CONSTRAINT fmea_adjustments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: fmea_catalog fmea_catalog_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_catalog
+    ADD CONSTRAINT fmea_catalog_pkey PRIMARY KEY (failure_mode_id);
+
+
+--
+-- Name: fmea_occurrences fmea_occurrences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_occurrences
+    ADD CONSTRAINT fmea_occurrences_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: fmea_outcomes fmea_outcomes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_outcomes
+    ADD CONSTRAINT fmea_outcomes_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: grid_allocations grid_allocations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3410,6 +3997,14 @@ ALTER TABLE ONLY public.grid_tda_features
 
 ALTER TABLE ONLY public.grid_tda_features
     ADD CONSTRAINT grid_tda_features_snapshot_id_key UNIQUE (snapshot_id);
+
+
+--
+-- Name: health_loop_state health_loop_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.health_loop_state
+    ADD CONSTRAINT health_loop_state_pkey PRIMARY KEY (id);
 
 
 --
@@ -3501,6 +4096,22 @@ ALTER TABLE ONLY public.lineage_events
 
 
 --
+-- Name: mlops_events mlops_events_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mlops_events
+    ADD CONSTRAINT mlops_events_event_id_key UNIQUE (event_id);
+
+
+--
+-- Name: mlops_events mlops_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mlops_events
+    ADD CONSTRAINT mlops_events_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: optimization_runs optimization_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3538,6 +4149,14 @@ ALTER TABLE ONLY public.profiles
 
 ALTER TABLE ONLY public.profiles
     ADD CONSTRAINT profiles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: remediation_approvals remediation_approvals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.remediation_approvals
+    ADD CONSTRAINT remediation_approvals_pkey PRIMARY KEY (id);
 
 
 --
@@ -3742,6 +4361,62 @@ CREATE UNIQUE INDEX idx_agent_versions_single_active ON public.agent_versions US
 
 
 --
+-- Name: idx_aiops_events_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aiops_events_category ON public.aiops_events USING btree (category, created_at DESC);
+
+
+--
+-- Name: idx_aiops_events_endpoint; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aiops_events_endpoint ON public.aiops_events USING btree (endpoint, created_at DESC);
+
+
+--
+-- Name: idx_aiops_events_failure_mode; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aiops_events_failure_mode ON public.aiops_events USING btree (failure_mode_id);
+
+
+--
+-- Name: idx_aiops_events_rpn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aiops_events_rpn ON public.aiops_events USING btree (rpn_score DESC) WHERE (rpn_score IS NOT NULL);
+
+
+--
+-- Name: idx_aiops_events_severity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aiops_events_severity ON public.aiops_events USING btree (severity, status);
+
+
+--
+-- Name: idx_aiops_events_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aiops_events_status ON public.aiops_events USING btree (status, created_at DESC);
+
+
+--
+-- Name: idx_approvals_event; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_approvals_event ON public.remediation_approvals USING btree (event_type, event_id);
+
+
+--
+-- Name: idx_approvals_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_approvals_pending ON public.remediation_approvals USING btree (status, expires_at) WHERE ((status)::text = 'pending'::text);
+
+
+--
 -- Name: idx_command_history_client; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3931,6 +4606,41 @@ CREATE INDEX idx_fetch_jobs_source ON public.fetch_jobs USING btree (source_id, 
 
 
 --
+-- Name: idx_fmea_adjustments_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_fmea_adjustments_lookup ON public.fmea_adjustments USING btree (failure_mode_id, endpoint, hour_of_day);
+
+
+--
+-- Name: idx_fmea_occurrences_mode; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_fmea_occurrences_mode ON public.fmea_occurrences USING btree (failure_mode_id, occurred_at DESC);
+
+
+--
+-- Name: idx_fmea_occurrences_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_fmea_occurrences_recent ON public.fmea_occurrences USING btree (occurred_at DESC);
+
+
+--
+-- Name: idx_fmea_outcomes_mode; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_fmea_outcomes_mode ON public.fmea_outcomes USING btree (failure_mode_id, created_at DESC);
+
+
+--
+-- Name: idx_fmea_outcomes_success; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_fmea_outcomes_success ON public.fmea_outcomes USING btree (success, created_at DESC);
+
+
+--
 -- Name: idx_grid_points_position; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4047,6 +4757,41 @@ CREATE INDEX idx_lineage_time ON public.lineage_events USING btree (event_time D
 --
 
 CREATE INDEX idx_lineage_unprocessed ON public.lineage_events USING btree (created_at) WHERE (NOT processed);
+
+
+--
+-- Name: idx_mlops_events_agent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mlops_events_agent ON public.mlops_events USING btree (agent_id, created_at DESC);
+
+
+--
+-- Name: idx_mlops_events_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mlops_events_category ON public.mlops_events USING btree (category, created_at DESC);
+
+
+--
+-- Name: idx_mlops_events_failure_mode; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mlops_events_failure_mode ON public.mlops_events USING btree (failure_mode_id);
+
+
+--
+-- Name: idx_mlops_events_rpn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mlops_events_rpn ON public.mlops_events USING btree (rpn_score DESC) WHERE (rpn_score IS NOT NULL);
+
+
+--
+-- Name: idx_mlops_events_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mlops_events_status ON public.mlops_events USING btree (status, created_at DESC);
 
 
 --
@@ -4371,6 +5116,14 @@ ALTER TABLE ONLY public.agent_versions
 
 
 --
+-- Name: aiops_events aiops_events_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.aiops_events
+    ADD CONSTRAINT aiops_events_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
 -- Name: cognition_thoughts cognition_thoughts_predecessor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4408,6 +5161,46 @@ ALTER TABLE ONLY public.engine_observations
 
 ALTER TABLE ONLY public.fetch_jobs
     ADD CONSTRAINT fetch_jobs_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.feed_sources(id) ON DELETE CASCADE;
+
+
+--
+-- Name: fmea_adjustments fmea_adjustments_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_adjustments
+    ADD CONSTRAINT fmea_adjustments_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
+-- Name: fmea_occurrences fmea_occurrences_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_occurrences
+    ADD CONSTRAINT fmea_occurrences_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
+-- Name: fmea_outcomes fmea_outcomes_aiops_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_outcomes
+    ADD CONSTRAINT fmea_outcomes_aiops_event_id_fkey FOREIGN KEY (aiops_event_id) REFERENCES public.aiops_events(id);
+
+
+--
+-- Name: fmea_outcomes fmea_outcomes_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_outcomes
+    ADD CONSTRAINT fmea_outcomes_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
+-- Name: fmea_outcomes fmea_outcomes_mlops_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fmea_outcomes
+    ADD CONSTRAINT fmea_outcomes_mlops_event_id_fkey FOREIGN KEY (mlops_event_id) REFERENCES public.mlops_events(id);
 
 
 --
@@ -4467,6 +5260,14 @@ ALTER TABLE ONLY public.kb_sync_state
 
 
 --
+-- Name: mlops_events mlops_events_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mlops_events
+    ADD CONSTRAINT mlops_events_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
 -- Name: optimization_runs optimization_runs_best_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4507,6 +5308,14 @@ ALTER TABLE ONLY public.profile_sources
 
 
 --
+-- Name: remediation_approvals remediation_approvals_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.remediation_approvals
+    ADD CONSTRAINT remediation_approvals_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
 -- Name: research_threads research_threads_created_session_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4534,7 +5343,7 @@ ALTER TABLE ONLY public.summary_lineage
 -- PostgreSQL database dump complete
 --
 
-\unrestrict u5A4vrZ2YT6QBQFLNRCvgzvn5QsncICI3iVD6Ftw02t1s2trJjG4CsH80CQhSo8
+\unrestrict ZxSmj0ECBdNOLeW0QN7iMvnpZGg57DL3hfjfreV1gu7oQZqxmU0hfAdAKblEY1Z
 
 
 --
@@ -4559,4 +5368,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251212000001'),
     ('20251212001000'),
     ('20251214000001'),
-    ('20251214000002');
+    ('20251214000002'),
+    ('20251214000003'),
+    ('20251215000001');

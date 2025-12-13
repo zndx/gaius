@@ -42,6 +42,12 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 **Swarm**
 - run_swarm: Execute swarm analysis
 
+**FMEA (Failure Mode and Effects Analysis)**
+- fmea_catalog: List failure modes with base RPN scores
+- fmea_calculate_rpn: Calculate RPN for a failure mode with context
+- fmea_get_controls: Get preventive/detective/mitigative controls from KB heuristics
+- fmea_map_health_check: Map health check to failure mode ID
+
 **Development**
 - reload_modules: Hot-reload Python modules without restart
 
@@ -2231,6 +2237,152 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- FMEA Operations ---
+    # Failure Mode and Effects Analysis for RPN-based risk assessment
+
+    @server.tool()
+    async def fmea_catalog(category: str = "") -> str:
+        """List FMEA failure modes from the catalog.
+
+        Shows all failure modes with their base RPN scores.
+
+        Args:
+            category: Filter by category (gpu, vllm, model_quality, evolution, emergent, resource, infra)
+        """
+        try:
+            from .health.fmea import FMEAEngine
+
+            engine = FMEAEngine()
+            client = await _get_engine_client()
+
+            if not client:
+                return json.dumps({"error": "Database not available"}, indent=2)
+
+            pool = await client._get_pool() if hasattr(client, "_get_pool") else None
+            if pool:
+                async with pool.acquire() as conn:
+                    if category:
+                        from .health.fmea.loader import get_failure_modes_by_category
+                        modes = await get_failure_modes_by_category(conn, category)
+                    else:
+                        from .health.fmea.loader import load_all_failure_modes
+                        modes = await load_all_failure_modes(conn)
+
+                    return json.dumps({
+                        "total": len(modes),
+                        "failure_modes": [m.to_dict() for m in modes],
+                    }, indent=2)
+            else:
+                return json.dumps({"error": "Database pool not available"}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def fmea_calculate_rpn(failure_mode_id: str, context: str = "{}") -> str:
+        """Calculate RPN score for a failure mode with context.
+
+        RPN = Severity × Occurrence × Detection (max 1000)
+
+        Args:
+            failure_mode_id: Failure mode ID (e.g., GPU_001, VLLM_001)
+            context: JSON context for score adjustments (e.g., {"unhealthy_endpoints": ["reasoning"]})
+        """
+        try:
+            from .health.fmea import FMEAEngine
+
+            engine = FMEAEngine()
+            context_dict = json.loads(context) if context else {}
+
+            rpn = await engine.calculate_rpn(
+                failure_mode_id,
+                context=context_dict,
+            )
+
+            # Get policy
+            policy = engine.determine_action(rpn)
+
+            # Get KB heuristic if available
+            heuristic = await engine.get_heuristics_for_failure_mode(failure_mode_id)
+
+            result = {
+                "rpn_score": rpn.to_dict(),
+                "policy": policy.to_dict(),
+            }
+
+            if heuristic.get("found"):
+                result["heuristic"] = {
+                    "path": heuristic.get("path"),
+                    "automation_level": heuristic.get("automation_level"),
+                    "symptom": heuristic.get("symptom", "")[:200],  # Truncate
+                }
+
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def fmea_get_controls(failure_mode_id: str) -> str:
+        """Get FMEA controls from KB heuristics for a failure mode.
+
+        Extracts preventive, detective, and mitigative controls from
+        the KB heuristics that map to the specified failure mode.
+
+        Args:
+            failure_mode_id: Failure mode ID (e.g., GPU_001, VLLM_001)
+        """
+        try:
+            from .health.fmea import FMEAEngine
+
+            engine = FMEAEngine()
+
+            # Get controls from heuristic
+            controls = await engine.get_controls_from_heuristic(failure_mode_id)
+
+            # Get full heuristic info
+            heuristic = await engine.get_heuristics_for_failure_mode(failure_mode_id)
+
+            result = {
+                "failure_mode_id": failure_mode_id,
+                "controls": controls,
+            }
+
+            if heuristic.get("found"):
+                result["heuristic_path"] = heuristic.get("path")
+                result["automation_level"] = heuristic.get("automation_level")
+                result["symptom"] = heuristic.get("symptom", "")[:300]
+                result["cause"] = heuristic.get("cause", "")[:300]
+
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def fmea_map_health_check(check_name: str) -> str:
+        """Map a health check name to its FMEA failure mode.
+
+        Args:
+            check_name: Name of the health check (e.g., gpu_memory, stuck_endpoints)
+        """
+        try:
+            from .health.fmea import map_health_check_to_failure_mode, HEALTH_CHECK_TO_FMEA
+
+            failure_mode_id = map_health_check_to_failure_mode(check_name)
+
+            if not failure_mode_id:
+                return json.dumps({
+                    "check_name": check_name,
+                    "failure_mode_id": None,
+                    "message": f"No FMEA mapping found for '{check_name}'",
+                    "available_mappings": list(HEALTH_CHECK_TO_FMEA.keys()),
+                }, indent=2)
+
+            return json.dumps({
+                "check_name": check_name,
+                "failure_mode_id": failure_mode_id,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- Cognition Operations ---
     # Background thinking and thought generation
 
@@ -3617,6 +3769,138 @@ Domain: {domain or 'general'}
                 },
                 indent=2,
             )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- AIOps / MLOps Tools ---
+
+    @server.tool()
+    async def aiops_report() -> str:
+        """Generate AIOps health report with action links.
+
+        Creates a KB scratch document with GPU health, endpoint status,
+        and action links for remediation. Returns the report path.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._generate_aiops_report()
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def aiops_status() -> str:
+        """Get pending AIOps remediation approvals.
+
+        Shows high-severity actions awaiting user approval.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._aiops_pending_approvals()
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def aiops_approve(approval_id: int) -> str:
+        """Approve a pending AIOps remediation action.
+
+        Args:
+            approval_id: ID of the approval to confirm
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._aiops_approve(str(approval_id))
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def aiops_history() -> str:
+        """Get recent AIOps event history.
+
+        Shows infrastructure health events and remediations.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._aiops_history()
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def mlops_report() -> str:
+        """Generate MLOps model lifecycle report.
+
+        Creates a KB scratch document with agent versions, evolution status,
+        and action links for model management. Returns the report path.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._generate_mlops_report()
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def mlops_agents() -> str:
+        """Get agent version status.
+
+        Shows active versions, scores, and evaluation counts.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._mlops_agent_status()
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def mlops_evolution() -> str:
+        """Get evolution daemon status and metrics.
+
+        Shows daemon state, cycle counts, and GPU utilization.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._mlops_evolution_metrics()
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def mlops_promote(version_id: str) -> str:
+        """Promote an agent version to active.
+
+        Args:
+            version_id: Version ID to promote
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._mlops_promote(version_id)
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def mlops_history() -> str:
+        """Get recent MLOps event history.
+
+        Shows model lifecycle events like promotions, rollbacks, drift detection.
+        """
+        try:
+            from .cli import GaiusCLI
+            cli = GaiusCLI()
+            result = await cli._mlops_history()
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

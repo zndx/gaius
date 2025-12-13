@@ -23,6 +23,7 @@ import asyncio
 import logging
 
 if TYPE_CHECKING:
+    from asyncpg import Pool
     from gaius.engine.services.orchestrator_service import OrchestratorService
     from gaius.inference.recovery import RecoveryManager
 
@@ -1377,3 +1378,281 @@ class SelfHealingCoordinator:
         # Sort by timestamp and limit
         all_history.sort(key=lambda r: r.timestamp, reverse=True)
         return [r.to_dict() for r in all_history[:limit]]
+
+
+class FMEASelfHealingCoordinator(SelfHealingCoordinator):
+    """FMEA-enhanced self-healing coordinator.
+
+    Uses Failure Mode and Effects Analysis (FMEA) to determine
+    remediation tier based on Risk Priority Number (RPN = S × O × D).
+
+    RPN Thresholds:
+    - RPN < 100: Auto-remediate immediately (Tier 0)
+    - RPN 100-200: Auto-remediate with agent validation (Tier 1)
+    - RPN 200-400: Require approval (Tier 2)
+    - RPN > 400: Manual intervention required
+    """
+
+    def __init__(
+        self,
+        orchestrator_service: "OrchestratorService",
+        pool: "Pool | None" = None,
+        tier0_config: dict | None = None,
+        tier1_config: dict | None = None,
+        tier2_config: dict | None = None,
+    ):
+        """Initialize the FMEA-enhanced coordinator.
+
+        Args:
+            orchestrator_service: Orchestrator for endpoint management
+            pool: Database connection pool for FMEA data
+            tier0_config: Config for procedural tier
+            tier1_config: Config for local agent tier
+            tier2_config: Config for remote escalation tier
+        """
+        super().__init__(
+            orchestrator_service,
+            tier0_config,
+            tier1_config,
+            tier2_config,
+        )
+        self._pool = pool
+        self._fmea_engine = None
+        self._adaptive_learner = None
+
+        logger.info("FMEASelfHealingCoordinator initialized with RPN-based tier selection")
+
+    def _get_fmea_engine(self):
+        """Lazy-load FMEA engine."""
+        if self._fmea_engine is None:
+            from gaius.health.fmea import FMEAEngine
+            self._fmea_engine = FMEAEngine(pool=self._pool)
+        return self._fmea_engine
+
+    def _get_adaptive_learner(self):
+        """Lazy-load adaptive learner."""
+        if self._adaptive_learner is None:
+            from gaius.health.fmea.learning import AdaptiveLearner
+            self._adaptive_learner = AdaptiveLearner(pool=self._pool)
+        return self._adaptive_learner
+
+    async def handle_health_issue(self, issue: HealthIssue) -> HealingResult:
+        """Handle health issue using FMEA-based tier selection.
+
+        Instead of sequential tier escalation, we calculate RPN
+        and directly select the appropriate tier based on risk.
+
+        Args:
+            issue: The health issue to address
+
+        Returns:
+            HealingResult with outcome and FMEA context
+        """
+        start_time = datetime.now()
+
+        # Check global circuit breaker
+        if self._global_cooldown_until and datetime.now() < self._global_cooldown_until:
+            return HealingResult(
+                action="global_cooldown",
+                deferred=True,
+                reason=f"Global cooldown until {self._global_cooldown_until}",
+            )
+
+        state = self._get_or_create_state(issue.endpoint)
+
+        # Check endpoint-specific cooldown
+        if state.cooldown_until and datetime.now() < state.cooldown_until:
+            return HealingResult(
+                action="cooldown",
+                deferred=True,
+                reason=f"Endpoint cooldown until {state.cooldown_until}",
+            )
+
+        # Map health check to failure mode
+        from gaius.health.fmea.loader import map_health_check_to_failure_mode
+        failure_mode_id = map_health_check_to_failure_mode(
+            issue.check_name or issue.issue_type
+        )
+
+        if not failure_mode_id:
+            # Unknown failure mode, use default sequential escalation
+            logger.warning(
+                f"No FMEA mapping for check '{issue.check_name}', "
+                f"using default tier escalation"
+            )
+            return await super().handle_health_issue(issue)
+
+        # Calculate RPN
+        fmea_engine = self._get_fmea_engine()
+        rpn_score = await fmea_engine.calculate_rpn(
+            failure_mode_id,
+            context=issue.context,
+            endpoint=issue.endpoint,
+        )
+
+        # Get failure mode for recommended actions
+        failure_mode = await fmea_engine._get_failure_mode(failure_mode_id)
+
+        # Determine action policy based on RPN
+        policy = fmea_engine.determine_action(rpn_score, failure_mode)
+
+        logger.info(
+            f"FMEA: {failure_mode_id} RPN={rpn_score.rpn} → Tier {policy.tier.name} "
+            f"(S={rpn_score.severity}, O={rpn_score.occurrence}, D={rpn_score.detection})"
+        )
+
+        # Select tier based on RPN
+        if policy.manual_required:
+            # RPN > 400: Manual intervention
+            logger.critical(
+                f"FMEA: {issue.endpoint} requires manual intervention "
+                f"(RPN={rpn_score.rpn})"
+            )
+            return HealingResult(
+                success=False,
+                action="manual_intervention_required",
+                tier=HealingTierType.REMOTE_ESCALATION,
+                reason=f"RPN {rpn_score.rpn} exceeds auto-remediation threshold",
+            )
+
+        if policy.requires_approval:
+            # RPN 200-400: Tier 2 with approval
+            logger.warning(
+                f"FMEA: {issue.endpoint} requires approval "
+                f"(RPN={rpn_score.rpn})"
+            )
+            # Record pending approval
+            await self._record_pending_approval(
+                issue, rpn_score, failure_mode, policy
+            )
+            return HealingResult(
+                success=False,
+                action="approval_required",
+                tier=HealingTierType.TIER_2,
+                reason=f"RPN {rpn_score.rpn} requires user approval",
+            )
+
+        # Select tier based on RPN
+        tier_index = rpn_score.tier.value  # TIER_0=0, TIER_1=1, TIER_2=2
+        tier_index = min(tier_index, 2)  # Cap at Tier 2
+
+        # Override state's current tier with FMEA-determined tier
+        state.current_tier = tier_index
+
+        # Attempt healing at the FMEA-determined tier
+        tier = self.tiers[tier_index]
+
+        if not tier.is_available():
+            # Fallback to next available tier
+            for i in range(tier_index + 1, 3):
+                if self.tiers[i].is_available():
+                    tier = self.tiers[i]
+                    tier_index = i
+                    state.current_tier = i
+                    break
+            else:
+                return HealingResult(
+                    success=False,
+                    reason="No healing tier available",
+                )
+
+        logger.info(
+            f"FMEA: Executing Tier {tier_index} for {issue.endpoint} "
+            f"(RPN={rpn_score.rpn})"
+        )
+
+        result = await tier.attempt_healing(issue, state)
+
+        duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+        # Record outcome for adaptive learning
+        if self._pool:
+            try:
+                learner = self._get_adaptive_learner()
+                await learner.update_from_outcome(
+                    failure_mode_id=failure_mode_id,
+                    rpn_score=rpn_score,
+                    success=result.success,
+                    duration_ms=duration_ms,
+                    endpoint=issue.endpoint,
+                )
+
+                # Also record in fmea_outcomes
+                await fmea_engine.record_outcome(
+                    failure_mode_id=failure_mode_id,
+                    rpn_score=rpn_score,
+                    success=result.success,
+                    action_taken=result.action,
+                    tier_used=tier_index,
+                    duration_ms=duration_ms,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record FMEA outcome: {e}")
+
+        if result.success:
+            self._reset_state(issue.endpoint)
+        else:
+            self._global_failures += 1
+            if self._global_failures >= self._global_failure_threshold:
+                self._global_cooldown_until = datetime.now() + timedelta(minutes=5)
+
+        return result
+
+    async def _record_pending_approval(
+        self,
+        issue: HealthIssue,
+        rpn_score,
+        failure_mode,
+        policy,
+    ) -> None:
+        """Record a pending approval in the database.
+
+        Args:
+            issue: The health issue
+            rpn_score: Calculated RPN score
+            failure_mode: Failure mode from catalog
+            policy: Action policy with recommended actions
+        """
+        if not self._pool:
+            return
+
+        try:
+            async with self._pool.acquire() as conn:
+                # Get recommended action
+                recommended_action = (
+                    policy.recommended_actions[0]
+                    if policy.recommended_actions
+                    else "investigate"
+                )
+
+                await conn.execute(
+                    """
+                    INSERT INTO remediation_approvals (
+                        source_type, source_id, action_type, action_params,
+                        failure_mode_id, rpn_score, rpn_breakdown,
+                        description, status, requested_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', NOW())
+                    """,
+                    "fmea",
+                    issue.endpoint,
+                    recommended_action,
+                    issue.context,
+                    rpn_score.failure_mode_id,
+                    rpn_score.rpn,
+                    {
+                        "severity": rpn_score.severity,
+                        "occurrence": rpn_score.occurrence,
+                        "detection": rpn_score.detection,
+                        "adjustments": rpn_score.context_adjustments,
+                    },
+                    f"FMEA: {failure_mode.name if failure_mode else rpn_score.failure_mode_id} - {issue.issue_type}",
+                )
+        except Exception as e:
+            logger.error(f"Failed to record pending approval: {e}")
+
+    def get_status(self) -> dict[str, Any]:
+        """Get current self-healing status with FMEA info."""
+        base_status = super().get_status()
+        base_status["fmea_enabled"] = True
+        base_status["fmea_pool_connected"] = self._pool is not None
+        return base_status
