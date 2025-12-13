@@ -585,78 +585,115 @@ Output ONLY the new system prompt."""
         config: CandidateConfig,
         examples: list[TaskExample],
     ) -> list[float]:
-        """Evaluate a config against examples using local model."""
-        from ..inference import get_client, Message
+        """Evaluate a config against examples using engine via AgentRunner.
 
-        client = get_client()
+        Uses the new AgentRunner which routes through the engine's scheduler,
+        ensuring proper GPU management and output validation.
+
+        Key change from previous version:
+        - Empty outputs score 0.0 (not default 0.5)
+        - Uses engine infrastructure instead of direct client
+        """
+        from ..agents.evolution.runner import get_runner
+        from ..models.versioning import AgentConfig
+
+        runner = await get_runner()
         scores = []
 
+        # Create AgentConfig from CandidateConfig
+        agent_config = AgentConfig(
+            system_prompt=config.system_prompt,
+            temperature=config.temperature,
+            model=config.model,
+            max_tokens=1024,
+        )
+
         for example in examples:
-            # Generate output with candidate config
-            result = await client.complete(
-                [
-                    Message(role="system", content=config.system_prompt),
-                    Message(role="user", content=example.input_prompt),
-                ],
-                temperature=config.temperature,
-                max_tokens=1024,
-            )
+            # Generate output with candidate config via engine
+            result = await runner.invoke(agent_config, example.input_prompt)
+
+            # CRITICAL: Empty output = score 0.0 (not 0.5)
+            if not result.success or not result.content.strip():
+                scores.append(0.0)
+                continue
+
             output = result.content
 
-            # Evaluate output
-            if example.expected_output:
-                # Compare to expected output
-                eval_prompt = f"""Rate this output on a scale of 0-1.
-
-Task: {example.input_prompt[:500]}
-
-Expected output: {example.expected_output[:500]}
-
-Actual output: {output[:500]}
-
-{f"Evaluation criteria: {example.evaluation_criteria}" if example.evaluation_criteria else ""}
-
-Respond with ONLY a number between 0 and 1."""
-
-                eval_result = await client.complete(
-                    [Message(role="user", content=eval_prompt)],
-                    temperature=0.1,
-                    max_tokens=10,
-                )
-
-                try:
-                    score = float(eval_result.content.strip())
-                    score = max(0.0, min(1.0, score))
-                except ValueError:
-                    score = 0.5
-
-            else:
-                # Self-evaluate without reference
-                eval_prompt = f"""Rate the quality of this output on a scale of 0-1.
-
-Task: {example.input_prompt[:500]}
-
-Output: {output[:500]}
-
-{f"Evaluation criteria: {example.evaluation_criteria}" if example.evaluation_criteria else "Consider: accuracy, completeness, clarity, relevance."}
-
-Respond with ONLY a number between 0 and 1."""
-
-                eval_result = await client.complete(
-                    [Message(role="user", content=eval_prompt)],
-                    temperature=0.1,
-                    max_tokens=10,
-                )
-
-                try:
-                    score = float(eval_result.content.strip())
-                    score = max(0.0, min(1.0, score))
-                except ValueError:
-                    score = 0.5
-
+            # Score the output
+            score = await self._score_output(output, example)
             scores.append(score)
 
         return scores
+
+    async def _score_output(
+        self,
+        output: str,
+        example: TaskExample,
+    ) -> float:
+        """Score an output against an example.
+
+        Uses heuristic scoring to avoid circular LLM evaluation.
+        For more robust scoring, use the tiered evaluator separately.
+
+        Args:
+            output: Generated output
+            example: Task example
+
+        Returns:
+            Score 0.0-1.0
+        """
+        # Empty check (should not reach here due to validation above)
+        if not output or not output.strip():
+            return 0.0
+
+        output_lower = output.lower()
+
+        # If we have expected output, compare
+        if example.expected_output:
+            expected_lower = example.expected_output.lower()
+
+            # Simple overlap scoring
+            output_words = set(output_lower.split())
+            expected_words = set(expected_lower.split())
+
+            if not expected_words:
+                return 0.5  # No expected words to compare
+
+            overlap = len(output_words & expected_words)
+            coverage = overlap / len(expected_words)
+
+            # Combine coverage with length factor
+            length_ratio = min(len(output.split()) / max(len(example.expected_output.split()), 1), 2.0) / 2.0
+
+            return min((coverage + length_ratio) / 2, 1.0)
+
+        # Self-evaluation without reference
+        # Check for substantive response
+        word_count = len(output.split())
+        has_structure = any(marker in output for marker in [
+            "1.", "2.", "•", "-", "First", "Second", ":", "\n\n"
+        ])
+
+        # Length score (prefer 50-300 words)
+        if word_count < 20:
+            length_score = 0.2
+        elif word_count < 50:
+            length_score = 0.4
+        elif word_count < 300:
+            length_score = 0.8
+        else:
+            length_score = 0.6  # Slightly penalize very long
+
+        # Structure score
+        structure_score = 0.7 if has_structure else 0.3
+
+        # Relevance check - look for prompt keywords in output
+        prompt_words = set(example.input_prompt.lower().split())
+        output_words = set(output_lower.split())
+        relevance = len(prompt_words & output_words) / max(len(prompt_words), 1)
+        relevance_score = min(relevance * 2, 1.0)
+
+        return (length_score + structure_score + relevance_score) / 3
 
     async def _evaluate_config_parallel(
         self,
@@ -667,6 +704,10 @@ Respond with ONLY a number between 0 and 1."""
 
         Uses the parallel inference client to distribute evaluations
         across all available GPU endpoints for ~6x speedup.
+
+        Updated to match sequential evaluation:
+        - Empty outputs score 0.0 (not 0.5)
+        - Uses heuristic scoring instead of LLM self-evaluation
         """
         from ..inference.parallel import get_parallel_client
 
@@ -689,58 +730,23 @@ Respond with ONLY a number between 0 and 1."""
             max_tokens=1024,
         )
 
-        # Phase 2: Evaluate all outputs in parallel
-        eval_messages = []
-        for i, (example, gen_result) in enumerate(zip(examples, generate_results)):
+        # Phase 2: Score outputs using heuristics (no LLM self-eval)
+        scores = []
+        for example, gen_result in zip(examples, generate_results):
+            # CRITICAL: Failed generation = score 0.0 (not 0.5)
             if not gen_result.success:
-                # Will use 0.5 as default score
-                eval_messages.append([{"role": "user", "content": "Rate: 0.5"}])
+                scores.append(0.0)
                 continue
 
             output = gen_result.content
 
-            if example.expected_output:
-                eval_prompt = f"""Rate this output on a scale of 0-1.
+            # CRITICAL: Empty output = score 0.0 (not 0.5)
+            if not output or not output.strip():
+                scores.append(0.0)
+                continue
 
-Task: {example.input_prompt[:500]}
-
-Expected output: {example.expected_output[:500]}
-
-Actual output: {output[:500]}
-
-{f"Evaluation criteria: {example.evaluation_criteria}" if example.evaluation_criteria else ""}
-
-Respond with ONLY a number between 0 and 1."""
-            else:
-                eval_prompt = f"""Rate the quality of this output on a scale of 0-1.
-
-Task: {example.input_prompt[:500]}
-
-Output: {output[:500]}
-
-{f"Evaluation criteria: {example.evaluation_criteria}" if example.evaluation_criteria else "Consider: accuracy, completeness, clarity, relevance."}
-
-Respond with ONLY a number between 0 and 1."""
-
-            eval_messages.append([{"role": "user", "content": eval_prompt}])
-
-        eval_results = await client.parallel_complete(
-            eval_messages,
-            temperature=0.1,
-            max_tokens=10,
-        )
-
-        # Parse scores
-        scores = []
-        for eval_result in eval_results:
-            if eval_result.success:
-                try:
-                    score = float(eval_result.content.strip())
-                    score = max(0.0, min(1.0, score))
-                except ValueError:
-                    score = 0.5
-            else:
-                score = 0.5
+            # Use same heuristic scoring as sequential
+            score = await self._score_output(output, example)
             scores.append(score)
 
         return scores

@@ -69,6 +69,30 @@ class EvolutionConfig:
         "evo0", "evo1", "evo2", "evo3", "evo4", "evo5"
     ])
 
+    # Task ideation settings
+    task_ideation_enabled: bool = True
+
+    # Run ideation every N evolution cycles (e.g., every 5th cycle)
+    ideation_cycle_interval: int = 5
+
+    # Maximum task concepts to generate per ideation cycle
+    max_ideation_concepts: int = 2
+
+    # Minimum novelty score for task concepts
+    min_novelty_threshold: float = 0.5
+
+    # Model merging settings
+    merge_enabled: bool = True
+
+    # Run merge every N evolution cycles (e.g., every 10th cycle)
+    merge_cycle_interval: int = 10
+
+    # Minimum version score to consider for merging
+    merge_min_score: float = 0.7
+
+    # Minimum improvement threshold for merged models (percent)
+    merge_min_improvement: float = 2.0
+
 
 @dataclass
 class EvolutionCycleResult:
@@ -119,6 +143,18 @@ class EvolutionDaemon:
         self._total_improvement = 0.0
         self._last_cycle_at: datetime | None = None
         self._agent_index = 0  # Current position in rotation
+
+        # Task ideation state
+        self._ideation_agent = None  # Lazy-loaded
+        self._ideation_cycles_completed = 0
+        self._last_ideation_at: datetime | None = None
+        self._drafts_created = 0
+
+        # Model merge state
+        self._merge_coordinator = None  # Lazy-loaded
+        self._merge_cycles_completed = 0
+        self._last_merge_at: datetime | None = None
+        self._models_merged = 0
 
         # Callbacks
         self._on_cycle_complete: list[Callable[[EvolutionCycleResult], Awaitable[None]]] = []
@@ -280,6 +316,34 @@ class EvolutionDaemon:
             "next_agent": self.next_agent,
             "parallel": self.config.parallel,
             "parallel_endpoints": parallel_endpoints,
+            # Task ideation metrics
+            "ideation": {
+                "enabled": self.config.task_ideation_enabled,
+                "cycles_completed": self._ideation_cycles_completed,
+                "drafts_created": self._drafts_created,
+                "last_ideation_at": (
+                    self._last_ideation_at.isoformat()
+                    if self._last_ideation_at else None
+                ),
+                "next_ideation_in": (
+                    self.config.ideation_cycle_interval -
+                    (self._cycles_completed % self.config.ideation_cycle_interval)
+                ) if self.config.task_ideation_enabled else None,
+            },
+            # Model merging metrics
+            "merging": {
+                "enabled": self.config.merge_enabled,
+                "cycles_completed": self._merge_cycles_completed,
+                "models_merged": self._models_merged,
+                "last_merge_at": (
+                    self._last_merge_at.isoformat()
+                    if self._last_merge_at else None
+                ),
+                "next_merge_in": (
+                    self.config.merge_cycle_interval -
+                    (self._cycles_completed % self.config.merge_cycle_interval)
+                ) if self.config.merge_enabled else None,
+            },
             "config": {
                 "idle_threshold": self.config.idle_threshold,
                 "poll_interval": self.config.poll_interval,
@@ -318,6 +382,22 @@ class EvolutionDaemon:
 
                             # Advance rotation
                             self._agent_index = (self._agent_index + 1) % len(self.config.agents)
+
+                            # Check if it's time for task ideation
+                            if (
+                                self.config.task_ideation_enabled and
+                                self._cycles_completed > 0 and
+                                self._cycles_completed % self.config.ideation_cycle_interval == 0
+                            ):
+                                await self._run_ideation_cycle()
+
+                            # Check if it's time for model merging
+                            if (
+                                self.config.merge_enabled and
+                                self._cycles_completed > 0 and
+                                self._cycles_completed % self.config.merge_cycle_interval == 0
+                            ):
+                                await self._run_merge_cycle()
 
                         except PreemptedError as e:
                             logger.info(f"Evolution preempted: {e.reason}")
@@ -402,6 +482,10 @@ class EvolutionDaemon:
     async def _run_evolution_cycle(self, agent_id: str) -> EvolutionCycleResult:
         """Run one evolution cycle for an agent.
 
+        Delegates to EvolutionEngine for actual execution. The engine
+        handles all inference via AgentRunner, ensuring proper GPU
+        management and output validation.
+
         Args:
             agent_id: Agent to optimize
 
@@ -411,31 +495,38 @@ class EvolutionDaemon:
         start_time = datetime.now()
 
         try:
-            # Collect training examples
-            from .collector import get_training_collector
+            # Use EvolutionEngine for the actual cycle
+            from .engine import get_engine
 
-            collector = get_training_collector()
-            examples = await collector.collect_examples(
-                agent_id=agent_id,
-                max_examples=20,
+            engine = await get_engine()
+
+            # Run with preemption support
+            async def run_cycle():
+                return await engine.run_evolution_cycle(
+                    agent_id=agent_id,
+                    num_items=10,  # Use reasonable sample size
+                )
+
+            cycle_result = await self._preemption_manager.run_with_preemption(
+                run_cycle(),
+                timeout=300,
             )
 
-            if len(examples) < self.config.min_examples:
-                logger.info(
-                    f"Insufficient examples for {agent_id}: "
-                    f"{len(examples)} < {self.config.min_examples}"
-                )
-                return EvolutionCycleResult(
-                    agent_id=agent_id,
-                    success=False,
-                    error=f"Only {len(examples)} examples available",
-                    examples_used=len(examples),
-                )
-
-            # Run optimization with preemption support
-            result = await self._optimize_with_preemption(agent_id, examples)
-
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            # Convert engine CycleResult to daemon EvolutionCycleResult
+            result = EvolutionCycleResult(
+                agent_id=agent_id,
+                success=cycle_result.success,
+                improvement_percent=cycle_result.improvement_percent,
+                new_version_id=cycle_result.new_version_id,
+                baseline_score=cycle_result.baseline_score,
+                best_score=cycle_result.best_score,
+                examples_used=cycle_result.trajectories_run,
+                candidates_evaluated=cycle_result.trajectories_succeeded,
+                duration_ms=duration_ms,
+                error=cycle_result.error,
+            )
 
             if result.success and result.improvement_percent >= self.config.min_improvement:
                 self._cycles_completed += 1
@@ -449,11 +540,10 @@ class EvolutionDaemon:
                 )
             else:
                 logger.info(
-                    f"Evolution cycle for {agent_id}: no improvement "
+                    f"Evolution cycle for {agent_id}: "
+                    f"{'no improvement' if result.success else 'failed'} "
                     f"({result.improvement_percent:.1f}%)"
                 )
-
-            result.duration_ms = duration_ms
 
             # Log to database for tracking
             await self._log_cycle_to_db(result, trigger_type="idle")
@@ -598,6 +688,211 @@ class EvolutionDaemon:
         except Exception as e:
             # Don't fail the cycle just because logging failed
             logger.warning(f"Failed to log cycle to DB: {e}")
+
+    async def _run_ideation_cycle(self) -> None:
+        """Run a task ideation cycle.
+
+        Generates new reasoning task concepts and creates drafts.
+        Called periodically based on ideation_cycle_interval.
+        """
+        logger.info("Starting task ideation cycle")
+
+        try:
+            # Lazy-load the ideation agent
+            if self._ideation_agent is None:
+                from .task_ideation import get_task_ideation_agent
+                self._ideation_agent = await get_task_ideation_agent()
+
+            # Run ideation with preemption support
+            async def run_ideation():
+                return await self._ideation_agent.run_ideation_cycle(
+                    max_concepts=self.config.max_ideation_concepts,
+                    novelty_threshold=self.config.min_novelty_threshold,
+                    save_drafts=True,
+                )
+
+            drafts = await self._preemption_manager.run_with_preemption(
+                run_ideation(),
+                timeout=300,  # 5 minute timeout for ideation
+            )
+
+            # Update metrics
+            self._ideation_cycles_completed += 1
+            self._last_ideation_at = datetime.now()
+            self._drafts_created += len(drafts)
+
+            if drafts:
+                logger.info(
+                    f"Ideation cycle created {len(drafts)} task drafts: "
+                    f"{', '.join(d.name for d in drafts)}"
+                )
+
+                # Generate TASK_IDEA thoughts for cognition
+                await self._generate_task_idea_thoughts(drafts)
+            else:
+                logger.info("Ideation cycle completed - no novel tasks generated")
+
+        except PreemptedError as e:
+            logger.info(f"Ideation preempted: {e.reason}")
+        except Exception as e:
+            logger.error(f"Ideation cycle failed: {e}")
+
+    async def _generate_task_idea_thoughts(self, drafts: list) -> None:
+        """Generate TASK_IDEA thoughts for created drafts.
+
+        Args:
+            drafts: List of ReasoningTaskDraft created during ideation
+        """
+        try:
+            from ..cognition import ThoughtType, Thought, get_cognition_agent
+
+            agent = get_cognition_agent()
+
+            for draft in drafts:
+                thought = Thought(
+                    thought_type=ThoughtType.TASK_IDEA,
+                    title=f"New reasoning task: {draft.name}",
+                    content=(
+                        f"Generated a new reasoning task concept:\n\n"
+                        f"**{draft.name}**\n\n"
+                        f"{draft.description}\n\n"
+                        f"Tags: {', '.join(draft.tags)}\n"
+                        f"Examples: {len(draft.examples)}"
+                    ),
+                    summary=f"Created task '{draft.name}' targeting {draft.tags[0] if draft.tags else 'reasoning'}",
+                    domains=["reasoning"],
+                    salience=0.7,
+                    confidence=0.8,
+                    novelty=0.9,
+                )
+
+                await agent._save_thought(thought)
+                logger.debug(f"Generated TASK_IDEA thought for {draft.name}")
+
+        except Exception as e:
+            # Don't fail ideation if thought generation fails
+            logger.warning(f"Failed to generate task idea thoughts: {e}")
+
+    async def _run_merge_cycle(self) -> None:
+        """Run a model merge cycle.
+
+        Merges top-performing agent versions to create improved models.
+        Called periodically based on merge_cycle_interval.
+        """
+        logger.info("Starting model merge cycle")
+
+        try:
+            # Lazy-load the merge coordinator
+            if self._merge_coordinator is None:
+                from .merge_coordinator import get_merge_coordinator, MergeCoordinatorConfig
+                self._merge_coordinator = get_merge_coordinator(
+                    MergeCoordinatorConfig(
+                        min_version_score=self.config.merge_min_score,
+                        min_improvement=self.config.merge_min_improvement,
+                    )
+                )
+
+            # Run merge cycle for each agent in rotation
+            results = []
+            for agent_id in self.config.agents:
+                async def run_merge():
+                    return await self._merge_coordinator.run_merge_cycle(agent_id)
+
+                try:
+                    result = await self._preemption_manager.run_with_preemption(
+                        run_merge(),
+                        timeout=300,  # 5 minute timeout for merge
+                    )
+                    results.append(result)
+                except PreemptedError as e:
+                    logger.info(f"Merge preempted for {agent_id}: {e.reason}")
+                    break
+
+            # Update metrics
+            self._merge_cycles_completed += 1
+            self._last_merge_at = datetime.now()
+            successful = [r for r in results if r.success]
+            self._models_merged += len(successful)
+
+            if successful:
+                logger.info(
+                    f"Merge cycle completed: {len(successful)}/{len(results)} agents merged"
+                )
+            else:
+                logger.info("Merge cycle completed - no agents had enough candidates")
+
+        except PreemptedError as e:
+            logger.info(f"Merge preempted: {e.reason}")
+        except Exception as e:
+            logger.error(f"Merge cycle failed: {e}")
+
+    async def force_merge_cycle(self, agent_id: str | None = None) -> dict:
+        """Force an immediate merge cycle.
+
+        Bypasses the interval check and runs merge immediately.
+
+        Args:
+            agent_id: Specific agent to merge (None = all agents)
+
+        Returns:
+            Dict with merge results
+        """
+        logger.info(f"Forcing merge cycle{f' for {agent_id}' if agent_id else ''}")
+
+        if self._merge_coordinator is None:
+            from .merge_coordinator import get_merge_coordinator, MergeCoordinatorConfig
+            self._merge_coordinator = get_merge_coordinator(
+                MergeCoordinatorConfig(
+                    min_version_score=self.config.merge_min_score,
+                    min_improvement=self.config.merge_min_improvement,
+                )
+            )
+
+        results = {}
+        agents = [agent_id] if agent_id else self.config.agents
+
+        for agent in agents:
+            result = await self._merge_coordinator.run_merge_cycle(agent)
+            results[agent] = result.to_dict()
+
+            if result.success:
+                self._models_merged += 1
+
+        # Update metrics
+        self._merge_cycles_completed += 1
+        self._last_merge_at = datetime.now()
+
+        return results
+
+    async def force_ideation_cycle(self) -> list:
+        """Force an immediate ideation cycle.
+
+        Bypasses the interval check and runs ideation immediately.
+
+        Returns:
+            List of ReasoningTaskDraft created
+        """
+        logger.info("Forcing task ideation cycle")
+
+        if self._ideation_agent is None:
+            from .task_ideation import get_task_ideation_agent
+            self._ideation_agent = await get_task_ideation_agent()
+
+        drafts = await self._ideation_agent.run_ideation_cycle(
+            max_concepts=self.config.max_ideation_concepts,
+            novelty_threshold=self.config.min_novelty_threshold,
+            save_drafts=True,
+        )
+
+        # Update metrics
+        self._ideation_cycles_completed += 1
+        self._last_ideation_at = datetime.now()
+        self._drafts_created += len(drafts)
+
+        if drafts:
+            await self._generate_task_idea_thoughts(drafts)
+
+        return drafts
 
 
 # Module-level singleton

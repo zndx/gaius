@@ -55,6 +55,25 @@ from .optimization import (
     get_optimizer,
     optimize_agent,
 )
+from .merging import (
+    MergeMethod,
+    ModelSource,
+    MergeConfig,
+    MergeResult,
+    ModelMerger,
+    slerp,
+    ties_merge,
+    dare_sparsify,
+    dare_ties_merge,
+    linear_merge,
+    get_merger,
+)
+from .lineage import (
+    ModelLineageEntry,
+    ModelLineageTracker,
+    get_lineage_tracker,
+    record_merge_lineage,
+)
 
 __all__ = [
     # Registry
@@ -96,4 +115,21 @@ __all__ = [
     "compute_pareto_front",
     "get_optimizer",
     "optimize_agent",
+    # Model Merging
+    "MergeMethod",
+    "ModelSource",
+    "MergeConfig",
+    "MergeResult",
+    "ModelMerger",
+    "slerp",
+    "ties_merge",
+    "dare_sparsify",
+    "dare_ties_merge",
+    "linear_merge",
+    "get_merger",
+    # Model Lineage
+    "ModelLineageEntry",
+    "ModelLineageTracker",
+    "get_lineage_tracker",
+    "record_merge_lineage",
 ]
