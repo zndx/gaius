@@ -1,4 +1,4 @@
-\restrict UOZF6A1YKA0ahbvEWk0x1R6lfuDfoHgch4rnEsWbiBm1bWfb1ZFVkVUPmcmh9JR
+\restrict u5A4vrZ2YT6QBQFLNRCvgzvn5QsncICI3iVD6Ftw02t1s2trJjG4CsH80CQhSo8
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -2114,6 +2114,179 @@ CREATE TABLE public.iceberg_tables (
 
 
 --
+-- Name: kb_sync_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.kb_sync_runs (
+    id integer NOT NULL,
+    target_id integer,
+    started_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone,
+    status character varying(32) NOT NULL,
+    files_scanned integer DEFAULT 0,
+    files_uploaded integer DEFAULT 0,
+    files_skipped integer DEFAULT 0,
+    files_failed integer DEFAULT 0,
+    bytes_uploaded bigint DEFAULT 0,
+    orphans_found integer DEFAULT 0,
+    resume_token character varying(255),
+    error_message text,
+    config_snapshot jsonb
+);
+
+
+--
+-- Name: TABLE kb_sync_runs; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.kb_sync_runs IS 'Audit trail of sync operations';
+
+
+--
+-- Name: COLUMN kb_sync_runs.resume_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.kb_sync_runs.resume_token IS 'Checkpoint for resuming interrupted syncs';
+
+
+--
+-- Name: kb_sync_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.kb_sync_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: kb_sync_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.kb_sync_runs_id_seq OWNED BY public.kb_sync_runs.id;
+
+
+--
+-- Name: kb_sync_state; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.kb_sync_state (
+    id integer NOT NULL,
+    target_id integer,
+    file_path character varying(1024) NOT NULL,
+    content_hash character varying(64) NOT NULL,
+    size_bytes bigint NOT NULL,
+    local_mtime timestamp with time zone NOT NULL,
+    remote_etag character varying(64),
+    synced_at timestamp with time zone,
+    sync_status character varying(32) NOT NULL,
+    error_message text
+);
+
+
+--
+-- Name: TABLE kb_sync_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.kb_sync_state IS 'Per-file sync state for incremental sync';
+
+
+--
+-- Name: COLUMN kb_sync_state.content_hash; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.kb_sync_state.content_hash IS 'SHA-256 hash of file content';
+
+
+--
+-- Name: COLUMN kb_sync_state.remote_etag; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.kb_sync_state.remote_etag IS 'S3/Minio ETag after upload';
+
+
+--
+-- Name: kb_sync_state_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.kb_sync_state_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: kb_sync_state_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.kb_sync_state_id_seq OWNED BY public.kb_sync_state.id;
+
+
+--
+-- Name: kb_sync_targets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.kb_sync_targets (
+    id integer NOT NULL,
+    name character varying(64) NOT NULL,
+    target_type character varying(32) NOT NULL,
+    endpoint character varying(255) NOT NULL,
+    bucket character varying(255) NOT NULL,
+    region character varying(64),
+    is_active boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT now(),
+    config jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE kb_sync_targets; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.kb_sync_targets IS 'S3-compatible sync targets for KB replication';
+
+
+--
+-- Name: COLUMN kb_sync_targets.target_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.kb_sync_targets.target_type IS 'minio for local, s3 for AWS';
+
+
+--
+-- Name: COLUMN kb_sync_targets.config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.kb_sync_targets.config IS 'Extra config: secure, prefix, storage_class';
+
+
+--
+-- Name: kb_sync_targets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.kb_sync_targets_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: kb_sync_targets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.kb_sync_targets_id_seq OWNED BY public.kb_sync_targets.id;
+
+
+--
 -- Name: lineage_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2930,6 +3103,27 @@ ALTER TABLE ONLY public.held_out_queries ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
+-- Name: kb_sync_runs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_runs ALTER COLUMN id SET DEFAULT nextval('public.kb_sync_runs_id_seq'::regclass);
+
+
+--
+-- Name: kb_sync_state id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_state ALTER COLUMN id SET DEFAULT nextval('public.kb_sync_state_id_seq'::regclass);
+
+
+--
+-- Name: kb_sync_targets id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_targets ALTER COLUMN id SET DEFAULT nextval('public.kb_sync_targets_id_seq'::regclass);
+
+
+--
 -- Name: lineage_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3256,6 +3450,46 @@ ALTER TABLE ONLY public.iceberg_namespace_properties
 
 ALTER TABLE ONLY public.iceberg_tables
     ADD CONSTRAINT iceberg_tables_pkey PRIMARY KEY (catalog_name, table_namespace, table_name);
+
+
+--
+-- Name: kb_sync_runs kb_sync_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_runs
+    ADD CONSTRAINT kb_sync_runs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: kb_sync_state kb_sync_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_state
+    ADD CONSTRAINT kb_sync_state_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: kb_sync_state kb_sync_state_target_id_file_path_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_state
+    ADD CONSTRAINT kb_sync_state_target_id_file_path_key UNIQUE (target_id, file_path);
+
+
+--
+-- Name: kb_sync_targets kb_sync_targets_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_targets
+    ADD CONSTRAINT kb_sync_targets_name_key UNIQUE (name);
+
+
+--
+-- Name: kb_sync_targets kb_sync_targets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_targets
+    ADD CONSTRAINT kb_sync_targets_pkey PRIMARY KEY (id);
 
 
 --
@@ -3984,6 +4218,27 @@ CREATE INDEX idx_summary_run ON public.summary_lineage USING btree (lineage_run_
 
 
 --
+-- Name: idx_sync_runs_target; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sync_runs_target ON public.kb_sync_runs USING btree (target_id, started_at DESC);
+
+
+--
+-- Name: idx_sync_state_path; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sync_state_path ON public.kb_sync_state USING btree (file_path);
+
+
+--
+-- Name: idx_sync_state_target; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sync_state_target ON public.kb_sync_state USING btree (target_id, sync_status);
+
+
+--
 -- Name: idx_thoughts_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4196,6 +4451,22 @@ ALTER TABLE ONLY public.grid_tda_features
 
 
 --
+-- Name: kb_sync_runs kb_sync_runs_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_runs
+    ADD CONSTRAINT kb_sync_runs_target_id_fkey FOREIGN KEY (target_id) REFERENCES public.kb_sync_targets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: kb_sync_state kb_sync_state_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.kb_sync_state
+    ADD CONSTRAINT kb_sync_state_target_id_fkey FOREIGN KEY (target_id) REFERENCES public.kb_sync_targets(id) ON DELETE CASCADE;
+
+
+--
 -- Name: optimization_runs optimization_runs_best_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4263,7 +4534,7 @@ ALTER TABLE ONLY public.summary_lineage
 -- PostgreSQL database dump complete
 --
 
-\unrestrict UOZF6A1YKA0ahbvEWk0x1R6lfuDfoHgch4rnEsWbiBm1bWfb1ZFVkVUPmcmh9JR
+\unrestrict u5A4vrZ2YT6QBQFLNRCvgzvn5QsncICI3iVD6Ftw02t1s2trJjG4CsH80CQhSo8
 
 
 --
@@ -4287,4 +4558,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251210000001'),
     ('20251212000001'),
     ('20251212001000'),
-    ('20251214000001');
+    ('20251214000001'),
+    ('20251214000002');

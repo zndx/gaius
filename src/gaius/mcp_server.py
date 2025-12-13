@@ -378,6 +378,105 @@ def create_server() -> "FastMCP":
             "total": len(result["entries"]),
         }, indent=2)
 
+    # --- KB Sync Operations ---
+
+    @server.tool()
+    async def kb_sync(
+        target: str = "minio-local",
+        dry_run: bool = False,
+        resume: bool = False,
+    ) -> str:
+        """Sync filesystem KB to S3 storage.
+
+        Syncs all KB files from local filesystem to Minio/S3.
+        Uses SHA-256 content hashing for incremental sync.
+
+        Args:
+            target: Sync target name (default: minio-local)
+            dry_run: If True, show what would sync without uploading
+            resume: Resume from last checkpoint if interrupted
+        """
+        from .storage.sync_engine import SyncEngine, get_sync_target
+        from .storage.grid_state import get_database_url
+
+        db_url = get_database_url()
+        sync_target = await get_sync_target(target, db_url)
+
+        if not sync_target:
+            return json.dumps({"error": f"Unknown sync target: {target}"})
+
+        kb_root = get_kb_root()
+        engine = SyncEngine(
+            source_root=str(kb_root),
+            target=sync_target,
+            db_url=db_url,
+        )
+
+        result = await engine.sync(dry_run=dry_run, resume=resume)
+
+        return json.dumps({
+            "target": target,
+            "dry_run": dry_run,
+            "files_scanned": result.files_scanned,
+            "files_uploaded": result.files_uploaded,
+            "files_skipped": result.files_skipped,
+            "files_failed": result.files_failed,
+            "bytes_uploaded": result.bytes_uploaded,
+            "orphans_found": result.orphans_found,
+            "duration_ms": result.duration_ms,
+            "errors": result.errors[:10] if result.errors else [],
+        }, indent=2)
+
+    @server.tool()
+    async def kb_sync_status(target: str = "minio-local") -> str:
+        """Get sync status for a target.
+
+        Shows sync state summary and last run info.
+
+        Args:
+            target: Sync target name
+        """
+        from .storage.sync_engine import get_sync_status
+        from .storage.grid_state import get_database_url
+
+        db_url = get_database_url()
+        status = await get_sync_status(target, db_url)
+        return json.dumps(status, indent=2)
+
+    @server.tool()
+    async def kb_sync_targets() -> str:
+        """List configured sync targets.
+
+        Returns all S3-compatible sync targets (Minio, AWS S3, etc.)
+        """
+        from .storage.sync_engine import list_sync_targets
+        from .storage.grid_state import get_database_url
+
+        db_url = get_database_url()
+        targets = await list_sync_targets(db_url)
+        return json.dumps({"targets": targets}, indent=2)
+
+    @server.tool()
+    async def kb_sync_verify(
+        target: str = "minio-local",
+        sample_size: int = 20,
+    ) -> str:
+        """Verify synced files match local content.
+
+        Downloads and re-hashes a sample of synced files to verify integrity.
+
+        Args:
+            target: Sync target name
+            sample_size: Number of files to verify
+        """
+        from .storage.sync_engine import verify_sync
+        from .storage.grid_state import get_database_url
+
+        kb_root = get_kb_root()
+        db_url = get_database_url()
+        result = await verify_sync(target, str(kb_root), db_url, sample_size)
+        return json.dumps(result, indent=2)
+
     # --- Inference Operations ---
 
     @server.tool()

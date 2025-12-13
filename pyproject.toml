@@ -42,6 +42,7 @@ dependencies = [
     "sentence-transformers>=5.1.2",
     "opentelemetry-exporter-otlp>=1.39.0",
     "fastembed>=0.7.4",
+    "minio>=7.2.0",  # S3-compatible storage client for KB sync
 ]
 
 [project.optional-dependencies]
