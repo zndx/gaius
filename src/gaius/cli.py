@@ -1132,7 +1132,7 @@ class GaiusCLI:
                 "eval <path>": "Evaluate a Zettelkasten note",
                 "eval-stats": "Show aggregate evaluation statistics",
                 "technique [name]": "Set or show optillm technique",
-                "kb <subcommand>": "KB operations (list, read <path>, search <query>)",
+                "kb <subcommand>": "KB operations (list, read, search, sync [--dry-run])",
                 # Scheduler commands
                 "scheduler [cmd]": "Scheduler ops (status, health, metrics, start, stop)",
                 "submit [flags] <prompt>": "Submit job (flags: priority:high model:name)",
@@ -4113,13 +4113,20 @@ Respond with:
             list [directory] - List KB entries (optionally filter by directory)
             read <path>      - Read a KB entry
             search <query>   - Search KB by filename or content
+            sync [target]    - Sync KB to S3 (default: minio-local)
+            sync status      - Show sync status
+            sync targets     - List configured targets
+            sync verify      - Verify remote integrity
         """
         import asyncio
         parts = args.split(maxsplit=1)
         subcmd = parts[0] if parts else "list"
         subargs = parts[1] if len(parts) > 1 else ""
 
-        if subcmd == "list":
+        if subcmd == "sync":
+            return self._run_async(self._cmd_kb_sync(subargs))
+
+        elif subcmd == "list":
             from .storage.kb_ops import list_kb
             # subargs is optional directory filter (e.g., "scratch" or "current")
             result = asyncio.get_event_loop().run_until_complete(list_kb(subargs.strip()))
@@ -4147,7 +4154,106 @@ Respond with:
             }
 
         else:
-            return {"error": f"Unknown kb subcommand: {subcmd}. Use: list, read, search"}
+            return {"error": f"Unknown kb subcommand: {subcmd}. Use: list, read, search, sync"}
+
+    async def _cmd_kb_sync(self, args: str) -> dict:
+        """Sync KB to S3 storage.
+
+        Usage:
+            /kb sync [target]           - Sync to target (default: minio-local)
+            /kb sync status [target]    - Show sync status
+            /kb sync targets            - List configured targets
+            /kb sync verify [target]    - Verify remote integrity
+            /kb sync --dry-run          - Show what would sync
+            /kb sync --resume           - Resume interrupted sync
+        """
+        from .storage.sync_engine import (
+            SyncEngine,
+            get_sync_target,
+            get_sync_status,
+            list_sync_targets,
+            verify_sync,
+        )
+        from .storage.grid_state import get_database_url
+
+        parts = args.split()
+        db_url = get_database_url()
+
+        # Parse subcommand
+        if "status" in parts:
+            idx = parts.index("status")
+            target_name = parts[idx + 1] if len(parts) > idx + 1 else "minio-local"
+            return await get_sync_status(target_name, db_url)
+
+        elif "targets" in parts:
+            targets = await list_sync_targets(db_url)
+            return {"targets": targets}
+
+        elif "verify" in parts:
+            idx = parts.index("verify")
+            target_name = parts[idx + 1] if len(parts) > idx + 1 else "minio-local"
+            return await verify_sync(
+                target_name,
+                self.config.kb.root,
+                db_url,
+                sample_size=20,
+            )
+
+        else:
+            # Actual sync
+            target_name = "minio-local"
+            dry_run = "--dry-run" in parts or "-n" in parts
+            resume = "--resume" in parts
+
+            # Find target name if specified (non-flag argument)
+            for p in parts:
+                if not p.startswith("-"):
+                    target_name = p
+                    break
+
+            target = await get_sync_target(target_name, db_url)
+            if not target:
+                return {"error": f"Unknown sync target: {target_name}"}
+
+            engine = SyncEngine(
+                source_root=self.config.kb.root,
+                target=target,
+                db_url=db_url,
+            )
+
+            # Progress callback
+            def progress(current: int, total: int, path: str, action: str) -> None:
+                if self.format == "text":
+                    # Truncate path for display
+                    display_path = path[:50] + "..." if len(path) > 50 else path
+                    print(
+                        f"\r[{current}/{total}] {action}: {display_path:<55}",
+                        end="",
+                        file=self.error,
+                        flush=True,
+                    )
+
+            result = await engine.sync(
+                progress_callback=progress if self.format == "text" else None,
+                resume=resume,
+                dry_run=dry_run,
+            )
+
+            if self.format == "text":
+                print("", file=self.error)  # Newline after progress
+
+            return {
+                "target": target_name,
+                "dry_run": dry_run,
+                "files_scanned": result.files_scanned,
+                "files_uploaded": result.files_uploaded,
+                "files_skipped": result.files_skipped,
+                "files_failed": result.files_failed,
+                "bytes_uploaded": result.bytes_uploaded,
+                "orphans_found": result.orphans_found,
+                "duration_ms": result.duration_ms,
+                "errors": result.errors[:10] if result.errors else [],
+            }
 
     def _parse_coord(self, coord: str) -> tuple[int, int]:
         """Parse coordinate string like 'K10' to (x, y)."""
