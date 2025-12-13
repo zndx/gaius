@@ -2824,6 +2824,182 @@ Domain: {domain or 'general'}
             return json.dumps({"error": str(e)}, indent=2)
 
     @server.tool()
+    async def trigger_task_ideation(
+        max_concepts: int = 2,
+        min_novelty: float = 0.5,
+    ) -> str:
+        """Trigger a task ideation cycle to generate new reasoning tasks.
+
+        Analyzes capability gaps and generates novel task concepts
+        that can be converted to Nous Research format for training.
+
+        Args:
+            max_concepts: Maximum task concepts to generate per cycle
+            min_novelty: Minimum novelty threshold (0-1) for accepting tasks
+        """
+        try:
+            from .agents.evolution import get_evolution_daemon
+
+            daemon = get_evolution_daemon()
+            drafts = await daemon.force_ideation_cycle()
+
+            # Format results
+            results = []
+            for draft in drafts:
+                results.append({
+                    "name": draft.name,
+                    "description": draft.description[:200] if draft.description else None,
+                    "modality": draft.modality,
+                    "tags": draft.tags,
+                    "example_count": len(draft.examples),
+                })
+
+            return json.dumps(
+                {
+                    "success": True,
+                    "drafts_generated": len(drafts),
+                    "drafts": results,
+                    "message": f"Generated {len(drafts)} task drafts"
+                    if drafts
+                    else "No novel tasks generated (may need more capability gaps)",
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_capability_gaps() -> str:
+        """Analyze capability coverage gaps in the reasoning task pool.
+
+        Returns analysis of which capabilities are underrepresented
+        in the current task pool, guiding task ideation priorities.
+        """
+        try:
+            from .agents.evolution import get_task_ideation_agent
+
+            agent = await get_task_ideation_agent()
+            gap_analysis = await agent.identify_gaps(refresh=True)
+
+            # Calculate coverage from taxonomy
+            all_capabilities = set()
+            for caps in agent.CAPABILITY_TAXONOMY.values():
+                all_capabilities.update(caps)
+            total = len(all_capabilities)
+            covered = len(gap_analysis.existing_capabilities)
+
+            return json.dumps(
+                {
+                    "total_capabilities": total,
+                    "covered_count": covered,
+                    "coverage_percent": round(covered / total * 100, 1) if total > 0 else 0,
+                    "existing_categories": sorted(gap_analysis.existing_categories)[:10],
+                    "identified_gaps": gap_analysis.identified_gaps[:10],
+                    "gap_rationales": dict(list(gap_analysis.gap_rationales.items())[:5]),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def trigger_model_merge(agent_id: str = "") -> str:
+        """Trigger a model merge cycle for agent versions.
+
+        Merges top-performing agent versions using TIES/DARE algorithms
+        to create improved combined models. Records lineage in the database.
+
+        Args:
+            agent_id: Specific agent to merge (empty for all agents)
+        """
+        try:
+            from .agents.evolution import get_evolution_daemon
+
+            daemon = get_evolution_daemon()
+            results = await daemon.force_merge_cycle(agent_id if agent_id else None)
+
+            # Summarize results
+            successful = sum(1 for r in results.values() if r.get("success"))
+            total = len(results)
+
+            return json.dumps(
+                {
+                    "success": True,
+                    "agents_merged": successful,
+                    "total_attempted": total,
+                    "results": results,
+                    "message": (
+                        f"Merged {successful}/{total} agents"
+                        if successful
+                        else "No agents had enough candidates for merging"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_merge_candidates(agent_id: str) -> str:
+        """Get candidate versions available for merging.
+
+        Shows which agent versions have sufficient scores and evaluations
+        to be considered for model merging.
+
+        Args:
+            agent_id: Agent to check candidates for
+        """
+        try:
+            from .agents.evolution import get_merge_coordinator
+
+            coordinator = get_merge_coordinator()
+            candidates = await coordinator.get_merge_candidates(agent_id)
+
+            return json.dumps(
+                {
+                    "agent_id": agent_id,
+                    "candidate_count": len(candidates),
+                    "candidates": candidates,
+                    "message": (
+                        f"Found {len(candidates)} candidates for merging"
+                        if candidates
+                        else "Not enough high-quality versions for merging"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def get_model_lineage(model_id: str) -> str:
+        """Get lineage information for a model.
+
+        Shows the ancestry of a model, including parent models
+        and merge operations that created it.
+
+        Args:
+            model_id: Model ID to trace lineage for
+        """
+        try:
+            from .models.lineage import get_lineage_tracker
+
+            tracker = get_lineage_tracker()
+            lineage = await tracker.get_model_lineage(model_id)
+
+            return json.dumps(
+                {
+                    "model_id": model_id,
+                    "lineage_events": len(lineage),
+                    "lineage": lineage,
+                },
+                indent=2,
+                default=str,  # Handle datetime serialization
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
     async def latent_memory_stats() -> str:
         """Get Qdrant latent memory statistics.
 

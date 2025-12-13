@@ -53,6 +53,10 @@ class ThoughtType(str, Enum):
     ENGINE_AUDIT = "engine_audit"          # Observations about engine health
     META_REFLECTION = "meta_reflection"    # Higher-order pattern recognition
 
+    # Evolution thought types
+    TASK_IDEA = "task_idea"                # New reasoning task concepts
+    EVOLUTION_INSIGHT = "evolution_insight"  # Observations about agent improvement
+
 
 class ThoughtStatus(str, Enum):
     """Lifecycle status of a thought."""
@@ -107,6 +111,8 @@ class Thought:
             ThoughtType.SELF_OBSERVATION: "🪞",
             ThoughtType.ENGINE_AUDIT: "⚙️",
             ThoughtType.META_REFLECTION: "🔮",
+            ThoughtType.TASK_IDEA: "🧪",
+            ThoughtType.EVOLUTION_INSIGHT: "🧬",
         }.get(self.thought_type, "💭")
 
         lines = [f"### {emoji} {self.title}"]
