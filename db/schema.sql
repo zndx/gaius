@@ -1,4 +1,4 @@
-\restrict 2xdNuZUjxfNKbAw4vySih6Eh8aGWRb8dmSsR1u9fO0eUTld3AUsw8WJh4fr2jRi
+\restrict UOZF6A1YKA0ahbvEWk0x1R6lfuDfoHgch4rnEsWbiBm1bWfb1ZFVkVUPmcmh9JR
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -177,6 +177,94 @@ BEGIN
     RETURN archived_count;
 END;
 $$;
+
+
+--
+-- Name: check_content_diversity(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_content_diversity() RETURNS TABLE(should_trigger boolean, reason text, new_content_items integer, new_thoughts integer, domains_active integer, external_ingested integer, days_since_last integer)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    last_evolution TIMESTAMPTZ;
+    v_new_content INTEGER;
+    v_new_thoughts INTEGER;
+    v_domains INTEGER;
+    v_external INTEGER;
+    v_days INTEGER;
+    -- Configurable thresholds (extended for long-term operation)
+    min_content_items INTEGER := 100;  -- New content items with kb_path
+    min_thoughts INTEGER := 50;        -- New cognition thoughts
+    min_domains INTEGER := 3;          -- Unique domains active
+    min_external INTEGER := 50;        -- External content ingested
+    min_days INTEGER := 7;             -- Minimum days between cycles
+    max_days INTEGER := 30;            -- Force trigger after this
+BEGIN
+    -- Find last successful evolution cycle
+    SELECT MAX(completed_at) INTO last_evolution
+    FROM evolution_cycles
+    WHERE success = true;
+
+    -- Default to 30 days ago if no evolution yet
+    last_evolution := COALESCE(last_evolution, NOW() - INTERVAL '30 days');
+
+    -- Count new content items written to KB
+    SELECT COUNT(*) INTO v_new_content
+    FROM content_items
+    WHERE fetched_at > last_evolution
+      AND kb_path IS NOT NULL;
+
+    -- Count new cognition thoughts
+    SELECT COUNT(*) INTO v_new_thoughts
+    FROM cognition_thoughts
+    WHERE created_at > last_evolution;
+
+    -- Count active domains from activity events
+    SELECT COUNT(DISTINCT domain) INTO v_domains
+    FROM activity_events
+    WHERE created_at > last_evolution
+      AND domain IS NOT NULL;
+
+    -- Count external content ingested (processed_at indicates ingestion)
+    SELECT COUNT(*) INTO v_external
+    FROM content_items
+    WHERE processed_at > last_evolution;
+
+    -- Days since last evolution
+    v_days := EXTRACT(DAY FROM NOW() - last_evolution)::INTEGER;
+
+    -- Determine if we should trigger
+    IF v_days >= max_days THEN
+        RETURN QUERY SELECT true, 'Max days exceeded - forcing evolution'::TEXT,
+            v_new_content, v_new_thoughts, v_domains, v_external, v_days;
+    ELSIF v_days >= min_days AND
+          v_new_content >= min_content_items AND
+          v_domains >= min_domains AND
+          v_external >= min_external THEN
+        RETURN QUERY SELECT true, 'Diversity thresholds met'::TEXT,
+            v_new_content, v_new_thoughts, v_domains, v_external, v_days;
+    ELSE
+        RETURN QUERY SELECT false,
+            format('Waiting: content=%s/%s, thoughts=%s/%s, domains=%s/%s, external=%s/%s, days=%s/%s',
+                   v_new_content, min_content_items,
+                   v_new_thoughts, min_thoughts,
+                   v_domains, min_domains,
+                   v_external, min_external,
+                   v_days, min_days)::TEXT,
+            v_new_content, v_new_thoughts, v_domains, v_external, v_days;
+    END IF;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION check_content_diversity(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.check_content_diversity() IS 'Checks if enough new content has accumulated to trigger evolution.
+Returns should_trigger=true if diversity thresholds are met or max_days exceeded.
+Called twice daily by pg_cron as the PRIMARY driver of evolution.';
 
 
 --
@@ -371,6 +459,43 @@ BEGIN
     WHERE sl.kb_path = p_kb_path;
 END;
 $$;
+
+
+--
+-- Name: get_scheduled_jobs_status(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_scheduled_jobs_status() RETURNS TABLE(jobid bigint, jobname text, schedule text, command text, nodename text, active boolean)
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+BEGIN
+    -- Check if cron schema exists (pg_cron installed)
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'cron') THEN
+        RETURN QUERY
+        SELECT
+            j.jobid,
+            j.jobname::text,
+            j.schedule::text,
+            j.command::text,
+            j.nodename::text,
+            j.active
+        FROM cron.job j
+        WHERE j.database = current_database()
+        ORDER BY j.jobname;
+    ELSE
+        -- Return empty if pg_cron not installed
+        RETURN;
+    END IF;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION get_scheduled_jobs_status(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.get_scheduled_jobs_status() IS 'Returns all pg_cron jobs for this database. Use: SELECT * FROM get_scheduled_jobs_status();
+Uses SECURITY DEFINER to allow access regardless of cron schema permissions.';
 
 
 --
@@ -2527,6 +2652,28 @@ ALTER SEQUENCE public.user_interests_id_seq OWNED BY public.user_interests.id;
 
 
 --
+-- Name: v_scheduled_jobs_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_scheduled_jobs_status AS
+ SELECT jobid,
+    jobname,
+    schedule,
+    command,
+    nodename,
+    active
+   FROM public.get_scheduled_jobs_status() get_scheduled_jobs_status(jobid, jobname, schedule, command, nodename, active);
+
+
+--
+-- Name: VIEW v_scheduled_jobs_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.v_scheduled_jobs_status IS 'View of all pg_cron jobs for this database. Use SELECT * FROM v_scheduled_jobs_status;
+Backed by get_scheduled_jobs_status() function with SECURITY DEFINER.';
+
+
+--
 -- Name: v_source_status; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -4116,7 +4263,7 @@ ALTER TABLE ONLY public.summary_lineage
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 2xdNuZUjxfNKbAw4vySih6Eh8aGWRb8dmSsR1u9fO0eUTld3AUsw8WJh4fr2jRi
+\unrestrict UOZF6A1YKA0ahbvEWk0x1R6lfuDfoHgch4rnEsWbiBm1bWfb1ZFVkVUPmcmh9JR
 
 
 --
@@ -4139,4 +4286,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251208000002'),
     ('20251210000001'),
     ('20251212000001'),
-    ('20251212001000');
+    ('20251212001000'),
+    ('20251214000001');
