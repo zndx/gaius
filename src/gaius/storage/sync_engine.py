@@ -40,6 +40,7 @@ def _get_asyncpg():
 
 
 def _get_minio():
+    """Get minio client class (deferred import for faster startup)."""
     global _minio
     if _minio is None:
         from minio import Minio

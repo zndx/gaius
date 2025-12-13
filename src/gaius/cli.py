@@ -241,6 +241,15 @@ class GaiusCLI:
                 # Execute via Engine's CommandService (unified entry point)
                 elif command == "exec":
                     result["data"] = self._run_async(self._cmd_exec(args))
+                # AIOps - infrastructure health management with KB reports
+                elif command == "aiops":
+                    result["data"] = self._run_async(self._cmd_aiops(args))
+                # MLOps - model lifecycle management with KB reports
+                elif command == "mlops":
+                    result["data"] = self._run_async(self._cmd_mlops(args))
+                # FMEA - Failure Mode and Effects Analysis
+                elif command == "fmea":
+                    result["data"] = self._run_async(self._cmd_fmea(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -5276,6 +5285,1088 @@ Respond with:
                 else:
                     lines.append(f"{key}: {value}")
             return "\n".join(lines)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # AIOps / MLOps Commands
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _cmd_aiops(self, args: str) -> dict:
+        """AIOps: Infrastructure health management with KB reports.
+
+        Generates reports as scratch KB documents with action links.
+
+        Usage:
+            /aiops              - Generate AIOps health report
+            /aiops status       - Show pending remediations
+            /aiops approve <id> - Approve pending remediation
+            /aiops history      - Show recent events
+        """
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "report"
+        subargs = parts[1:] if len(parts) > 1 else []
+
+        if subcmd == "report" or not args.strip():
+            return await self._generate_aiops_report()
+        elif subcmd == "status":
+            return await self._aiops_pending_approvals()
+        elif subcmd == "approve" and subargs:
+            return await self._aiops_approve(subargs[0])
+        elif subcmd == "history":
+            return await self._aiops_history()
+        else:
+            return {"error": "Usage: /aiops [report|status|approve <id>|history]"}
+
+    async def _generate_aiops_report(self) -> dict:
+        """Generate AIOps health report as KB scratch document."""
+        from datetime import datetime
+        from pathlib import Path
+        import os
+
+        # Collect health data
+        gpu_health = await self._get_gpu_health_data()
+        endpoint_status = await self._get_endpoint_status_data()
+        pending_approvals = await self._get_pending_approvals("aiops")
+        recent_events = await self._get_recent_aiops_events(limit=10)
+
+        # Build report markdown
+        now = datetime.now()
+        report = f"""# AIOps Health Report
+
+Generated: {now.isoformat()}
+
+## GPU Health
+
+| GPU | Temp | VRAM Used | Utilization | Status |
+|-----|------|-----------|-------------|--------|
+"""
+        for gpu in gpu_health:
+            status_icon = "✓" if gpu.get("healthy", True) else "⚠"
+            report += f"| {gpu.get('index', '?')} | {gpu.get('temp', '?')}°C | {gpu.get('vram_used', '?'):.1f}/{gpu.get('vram_total', '?'):.1f}GB | {gpu.get('util', '?')}% | {status_icon} |\n"
+
+        report += f"""
+## Endpoint Status
+
+| Endpoint | Status | PID | Uptime | GPU |
+|----------|--------|-----|--------|-----|
+"""
+        for ep in endpoint_status:
+            uptime = ep.get('uptime', 'N/A')
+            if isinstance(uptime, (int, float)):
+                uptime = f"{uptime:.0f}s"
+            report += f"| {ep.get('name', '?')} | {ep.get('status', '?')} | {ep.get('pid', 'N/A')} | {uptime} | {ep.get('gpu_ids', [])} |\n"
+
+        # Add action links for issues
+        unhealthy_endpoints = [ep for ep in endpoint_status if ep.get("status") in ("UNHEALTHY", "FAILED", "unhealthy", "failed")]
+        if pending_approvals or unhealthy_endpoints:
+            report += "\n## Required Actions\n\n"
+
+            for ep in unhealthy_endpoints:
+                ep_name = ep.get('name', 'unknown')
+                if ep.get("status") in ("UNHEALTHY", "unhealthy"):
+                    report += f"- [[action:/health fix {ep_name}]] - Restart unhealthy endpoint\n"
+                elif ep.get("status") in ("FAILED", "failed"):
+                    report += f"- [[action:/gpu restart {ep_name}]] - Force restart failed endpoint\n"
+
+            for approval in pending_approvals:
+                report += f"- [[action:/aiops approve {approval.get('id', '?')}]] - {approval.get('description', 'Pending action')}\n"
+
+        report += f"""
+## Recent Events
+
+| Time | Category | Severity | Endpoint | Status |
+|------|----------|----------|----------|--------|
+"""
+        for event in recent_events:
+            created = event.get('created_at', '')
+            if hasattr(created, 'strftime'):
+                created = created.strftime('%H:%M:%S')
+            report += f"| {created} | {event.get('category', '?')} | {event.get('severity', '?')} | {event.get('endpoint', '-')} | {event.get('status', '?')} |\n"
+
+        if not recent_events:
+            report += "| - | - | - | - | No recent events |\n"
+
+        report += """
+---
+*Generated by /aiops command. Action links execute on Enter when selected in the graph panel.*
+"""
+
+        # Save to KB scratch
+        today = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")
+
+        kb_base = Path(os.environ.get("GAIUS_KB_PATH", "build/dev/scratch"))
+        save_dir = kb_base / today
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{timestamp}_aiops_report.md"
+        filepath = save_dir / filename
+        filepath.write_text(report)
+
+        return {
+            "report_path": str(filepath),
+            "gpu_count": len(gpu_health),
+            "endpoints": len(endpoint_status),
+            "unhealthy_endpoints": len(unhealthy_endpoints),
+            "pending_actions": len(pending_approvals),
+            "recent_events": len(recent_events),
+            "message": f"Report saved to {filepath}",
+        }
+
+    async def _get_gpu_health_data(self) -> list[dict]:
+        """Get GPU health metrics."""
+        gpus = []
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            device_count = pynvml.nvmlDeviceGetCount()
+
+            for i in range(device_count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+
+                gpus.append({
+                    "index": i,
+                    "temp": temp,
+                    "vram_used": memory.used / (1024**3),
+                    "vram_total": memory.total / (1024**3),
+                    "util": util.gpu,
+                    "healthy": temp < 85 and memory.used < memory.total * 0.95,
+                })
+
+            pynvml.nvmlShutdown()
+        except ImportError:
+            gpus.append({"index": 0, "error": "pynvml not available"})
+        except Exception as e:
+            gpus.append({"index": 0, "error": str(e)})
+
+        return gpus
+
+    async def _get_endpoint_status_data(self) -> list[dict]:
+        """Get endpoint status from orchestrator."""
+        endpoints = []
+        try:
+            # Try to get status from engine via gRPC
+            from .engine.client import get_engine_client
+            client = get_engine_client()
+
+            if client and await client.ping():
+                status = await client.orchestrator_status()
+                for ep in status.get("endpoints", []):
+                    endpoints.append({
+                        "name": ep.get("agent_alias", ep.get("name", "?")),
+                        "status": ep.get("status", "UNKNOWN"),
+                        "pid": ep.get("pid"),
+                        "uptime": ep.get("uptime_seconds", "N/A"),
+                        "gpu_ids": ep.get("gpu_ids", []),
+                    })
+        except Exception as e:
+            # Fallback: check vLLM processes directly
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["pgrep", "-a", "-f", "vllm.entrypoints"],
+                    capture_output=True, text=True
+                )
+                if result.stdout:
+                    for line in result.stdout.strip().split("\n"):
+                        parts = line.split(maxsplit=1)
+                        if parts:
+                            endpoints.append({
+                                "name": "vllm",
+                                "status": "running",
+                                "pid": int(parts[0]),
+                            })
+            except Exception:
+                pass
+
+        return endpoints
+
+    async def _get_pending_approvals(self, event_type: str) -> list[dict]:
+        """Get pending remediation approvals from database."""
+        approvals = []
+        try:
+            import asyncpg
+            import os
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, action_command, description, severity, created_at, expires_at
+                    FROM remediation_approvals
+                    WHERE event_type = $1 AND status = 'pending' AND expires_at > NOW()
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                    """,
+                    event_type
+                )
+                for row in rows:
+                    approvals.append({
+                        "id": row["id"],
+                        "action": row["action_command"],
+                        "description": row["description"],
+                        "severity": row["severity"],
+                        "created_at": row["created_at"],
+                        "expires_at": row["expires_at"],
+                    })
+            finally:
+                await conn.close()
+        except Exception:
+            pass
+
+        return approvals
+
+    async def _get_recent_aiops_events(self, limit: int = 10) -> list[dict]:
+        """Get recent AIOps events from database."""
+        events = []
+        try:
+            import asyncpg
+            import os
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, category, severity, status, endpoint, description, created_at
+                    FROM aiops_events
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit
+                )
+                for row in rows:
+                    events.append({
+                        "id": row["id"],
+                        "category": row["category"],
+                        "severity": row["severity"],
+                        "status": row["status"],
+                        "endpoint": row["endpoint"],
+                        "description": row["description"],
+                        "created_at": row["created_at"],
+                    })
+            finally:
+                await conn.close()
+        except Exception:
+            pass
+
+        return events
+
+    async def _aiops_pending_approvals(self) -> dict:
+        """Show pending remediation approvals."""
+        approvals = await self._get_pending_approvals("aiops")
+        return {
+            "pending_count": len(approvals),
+            "approvals": approvals,
+        }
+
+    async def _aiops_approve(self, approval_id: str) -> dict:
+        """Approve a pending remediation action."""
+        try:
+            import asyncpg
+            import os
+            from datetime import datetime
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                # Get the approval
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, action_command, event_type, event_id
+                    FROM remediation_approvals
+                    WHERE id = $1 AND status = 'pending'
+                    """,
+                    int(approval_id)
+                )
+
+                if not row:
+                    return {"error": f"Approval {approval_id} not found or already processed"}
+
+                # Mark as approved
+                await conn.execute(
+                    """
+                    UPDATE remediation_approvals
+                    SET status = 'approved', approved_by = 'user', approved_at = $1
+                    WHERE id = $2
+                    """,
+                    datetime.now(),
+                    int(approval_id)
+                )
+
+                # Execute the action
+                action_cmd = row["action_command"]
+                result = self.execute(action_cmd)
+
+                return {
+                    "approved": True,
+                    "action": action_cmd,
+                    "result": result,
+                }
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _aiops_history(self) -> dict:
+        """Show recent AIOps event history."""
+        events = await self._get_recent_aiops_events(limit=20)
+        return {
+            "event_count": len(events),
+            "events": events,
+        }
+
+    async def _cmd_mlops(self, args: str) -> dict:
+        """MLOps: Model lifecycle management with KB reports.
+
+        Generates reports as scratch KB documents with action links.
+
+        Usage:
+            /mlops              - Generate MLOps model report
+            /mlops agents       - Show agent version status
+            /mlops evolution    - Show evolution metrics
+            /mlops promote <id> - Promote agent version
+            /mlops history      - Show recent events
+        """
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "report"
+        subargs = parts[1:] if len(parts) > 1 else []
+
+        if subcmd == "report" or not args.strip():
+            return await self._generate_mlops_report()
+        elif subcmd == "agents":
+            return await self._mlops_agent_status()
+        elif subcmd == "evolution":
+            return await self._mlops_evolution_metrics()
+        elif subcmd == "promote" and subargs:
+            return await self._mlops_promote(subargs[0])
+        elif subcmd == "history":
+            return await self._mlops_history()
+        else:
+            return {"error": "Usage: /mlops [report|agents|evolution|promote <id>|history]"}
+
+    async def _generate_mlops_report(self) -> dict:
+        """Generate MLOps model lifecycle report as KB scratch document."""
+        from datetime import datetime
+        from pathlib import Path
+        import os
+
+        # Collect MLOps data
+        agent_versions = await self._get_agent_versions()
+        evolution_status = await self._get_evolution_status()
+        recent_events = await self._get_recent_mlops_events(limit=10)
+
+        # Build report markdown
+        now = datetime.now()
+        report = f"""# MLOps Model Lifecycle Report
+
+Generated: {now.isoformat()}
+
+## Agent Versions
+
+| Agent | Active Version | Score | Evaluations | Last Updated |
+|-------|----------------|-------|-------------|--------------|
+"""
+        for agent in agent_versions:
+            report += f"| {agent.get('agent_id', '?')} | {agent.get('version_id', 'N/A')[:12] if agent.get('version_id') else 'N/A'} | {agent.get('avg_score', 'N/A'):.2f if isinstance(agent.get('avg_score'), (int, float)) else 'N/A'} | {agent.get('eval_count', 0)} | {agent.get('created_at', 'N/A')} |\n"
+
+        if not agent_versions:
+            report += "| - | - | - | - | No agent versions found |\n"
+
+        report += f"""
+## Evolution Status
+
+| Metric | Value |
+|--------|-------|
+| Daemon Running | {evolution_status.get('daemon_running', 'Unknown')} |
+| Total Cycles | {evolution_status.get('total_cycles', 0)} |
+| Last Cycle | {evolution_status.get('last_cycle', 'N/A')} |
+| Next Agent | {evolution_status.get('next_agent', 'N/A')} |
+| GPU Idle | {evolution_status.get('gpu_idle', 'Unknown')} |
+"""
+
+        # Add action links for improvements
+        report += "\n## Available Actions\n\n"
+        for agent in agent_versions:
+            agent_id = agent.get('agent_id', 'unknown')
+            report += f"- [[action:/evolve trigger {agent_id}]] - Trigger evolution for {agent_id}\n"
+
+        if evolution_status.get('daemon_running') == 'stopped':
+            report += "- [[action:/evolve start]] - Start evolution daemon\n"
+
+        report += f"""
+## Recent Events
+
+| Time | Category | Agent | Severity | Status |
+|------|----------|-------|----------|--------|
+"""
+        for event in recent_events:
+            created = event.get('created_at', '')
+            if hasattr(created, 'strftime'):
+                created = created.strftime('%H:%M:%S')
+            report += f"| {created} | {event.get('category', '?')} | {event.get('agent_id', '-')} | {event.get('severity', '?')} | {event.get('status', '?')} |\n"
+
+        if not recent_events:
+            report += "| - | - | - | - | No recent events |\n"
+
+        report += """
+---
+*Generated by /mlops command. Action links execute on Enter when selected in the graph panel.*
+"""
+
+        # Save to KB scratch
+        today = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")
+
+        kb_base = Path(os.environ.get("GAIUS_KB_PATH", "build/dev/scratch"))
+        save_dir = kb_base / today
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{timestamp}_mlops_report.md"
+        filepath = save_dir / filename
+        filepath.write_text(report)
+
+        return {
+            "report_path": str(filepath),
+            "agents": len(agent_versions),
+            "evolution_running": evolution_status.get('daemon_running', False),
+            "recent_events": len(recent_events),
+            "message": f"Report saved to {filepath}",
+        }
+
+    async def _get_agent_versions(self) -> list[dict]:
+        """Get agent version information from database."""
+        versions = []
+        try:
+            import asyncpg
+            import os
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT agent_id, version_id, avg_overall_score, total_evaluations, created_at, is_active
+                    FROM agent_versions
+                    WHERE is_active = true
+                    ORDER BY agent_id
+                    """
+                )
+                for row in rows:
+                    created = row["created_at"]
+                    if hasattr(created, 'strftime'):
+                        created = created.strftime('%Y-%m-%d %H:%M')
+                    versions.append({
+                        "agent_id": row["agent_id"],
+                        "version_id": row["version_id"],
+                        "avg_score": row["avg_overall_score"],
+                        "eval_count": row["total_evaluations"],
+                        "created_at": created,
+                        "is_active": row["is_active"],
+                    })
+            finally:
+                await conn.close()
+        except Exception:
+            pass
+
+        return versions
+
+    async def _get_evolution_status(self) -> dict:
+        """Get evolution daemon status."""
+        status = {
+            "daemon_running": "unknown",
+            "total_cycles": 0,
+            "last_cycle": "N/A",
+            "next_agent": "N/A",
+            "gpu_idle": "unknown",
+        }
+
+        try:
+            # Try to get status from engine
+            from .engine.client import get_engine_client
+            client = get_engine_client()
+
+            if client and await client.ping():
+                evo_status = await client.evolution_status()
+                status.update({
+                    "daemon_running": "running" if evo_status.get("daemon_running") else "stopped",
+                    "total_cycles": evo_status.get("cycles_completed", 0),
+                    "last_cycle": evo_status.get("last_cycle_time", "N/A"),
+                    "next_agent": evo_status.get("next_agent", "N/A"),
+                    "gpu_idle": "yes" if evo_status.get("gpu_idle") else "no",
+                })
+        except Exception:
+            pass
+
+        return status
+
+    async def _get_recent_mlops_events(self, limit: int = 10) -> list[dict]:
+        """Get recent MLOps events from database."""
+        events = []
+        try:
+            import asyncpg
+            import os
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, category, severity, status, agent_id, description, created_at
+                    FROM mlops_events
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit
+                )
+                for row in rows:
+                    events.append({
+                        "id": row["id"],
+                        "category": row["category"],
+                        "severity": row["severity"],
+                        "status": row["status"],
+                        "agent_id": row["agent_id"],
+                        "description": row["description"],
+                        "created_at": row["created_at"],
+                    })
+            finally:
+                await conn.close()
+        except Exception:
+            pass
+
+        return events
+
+    async def _mlops_agent_status(self) -> dict:
+        """Show agent version status."""
+        versions = await self._get_agent_versions()
+        return {
+            "agent_count": len(versions),
+            "agents": versions,
+        }
+
+    async def _mlops_evolution_metrics(self) -> dict:
+        """Show evolution metrics and trends."""
+        status = await self._get_evolution_status()
+        return status
+
+    async def _mlops_promote(self, version_id: str) -> dict:
+        """Promote an agent version to active."""
+        try:
+            import asyncpg
+            import os
+            from datetime import datetime
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                # Get the version
+                row = await conn.fetchrow(
+                    """
+                    SELECT agent_id, version_id
+                    FROM agent_versions
+                    WHERE version_id = $1
+                    """,
+                    version_id
+                )
+
+                if not row:
+                    return {"error": f"Version {version_id} not found"}
+
+                agent_id = row["agent_id"]
+
+                # Deactivate other versions for this agent
+                await conn.execute(
+                    """
+                    UPDATE agent_versions
+                    SET is_active = false
+                    WHERE agent_id = $1 AND is_active = true
+                    """,
+                    agent_id
+                )
+
+                # Activate this version
+                await conn.execute(
+                    """
+                    UPDATE agent_versions
+                    SET is_active = true
+                    WHERE version_id = $1
+                    """,
+                    version_id
+                )
+
+                return {
+                    "promoted": True,
+                    "agent_id": agent_id,
+                    "version_id": version_id,
+                }
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _mlops_history(self) -> dict:
+        """Show recent MLOps event history."""
+        events = await self._get_recent_mlops_events(limit=20)
+        return {
+            "event_count": len(events),
+            "events": events,
+        }
+
+    # =========================================================================
+    # FMEA Commands - Failure Mode and Effects Analysis
+    # =========================================================================
+
+    async def _cmd_fmea(self, args: str) -> dict:
+        """
+        /fmea                - Show FMEA summary (top RPN issues)
+        /fmea catalog        - List all failure modes
+        /fmea detail <id>    - Show failure mode details
+        /fmea history        - Recent FMEA incidents
+        /fmea approve <id>   - Approve pending remediation
+        """
+        parts = args.strip().split() if args else []
+        subcmd = parts[0] if parts else "summary"
+
+        if subcmd == "summary" or subcmd == "":
+            return await self._fmea_summary()
+        elif subcmd == "catalog":
+            return await self._fmea_catalog()
+        elif subcmd == "detail" and len(parts) > 1:
+            return await self._fmea_detail(parts[1])
+        elif subcmd == "history":
+            return await self._fmea_history()
+        elif subcmd == "approve" and len(parts) > 1:
+            return await self._fmea_approve(parts[1])
+        else:
+            return {"error": "Usage: /fmea [summary|catalog|detail <id>|history|approve <id>]"}
+
+    async def _fmea_summary(self) -> dict:
+        """Generate FMEA summary with top RPN issues."""
+        from datetime import datetime
+        import asyncpg
+
+        try:
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                # Check if fmea_catalog table exists
+                table_exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = 'fmea_catalog'
+                    )
+                    """
+                )
+
+                if not table_exists:
+                    return {
+                        "error": "FMEA not initialized. Run migrations and seed the catalog.",
+                        "hint": "DATABASE_URL=... dbmate migrate && psql $DATABASE_URL -f db/seeds/fmea_catalog.sql"
+                    }
+
+                # Get top RPN issues from recent events
+                top_issues = await conn.fetch(
+                    """
+                    SELECT
+                        ae.id,
+                        ae.failure_mode_id,
+                        ae.rpn_score,
+                        ae.runtime_severity as s,
+                        ae.runtime_occurrence as o,
+                        ae.runtime_detection as d,
+                        ae.status,
+                        ae.category,
+                        ae.description,
+                        ae.created_at
+                    FROM aiops_events ae
+                    WHERE ae.rpn_score IS NOT NULL
+                    ORDER BY ae.rpn_score DESC, ae.created_at DESC
+                    LIMIT 10
+                    """
+                )
+
+                # Get pending approvals with high RPN
+                pending = await conn.fetch(
+                    """
+                    SELECT
+                        ra.id,
+                        ra.failure_mode_id,
+                        ra.rpn_score,
+                        ra.action_command,
+                        ra.description,
+                        ra.created_at
+                    FROM remediation_approvals ra
+                    WHERE ra.status = 'pending'
+                    AND ra.expires_at > NOW()
+                    ORDER BY ra.rpn_score DESC NULLS LAST
+                    LIMIT 5
+                    """
+                )
+
+                # Get failure mode catalog stats
+                catalog_stats = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) as total_modes,
+                        COUNT(*) FILTER (WHERE base_severity * base_occurrence * base_detection >= 200) as high_rpn_modes
+                    FROM fmea_catalog
+                    """
+                )
+
+                # Build summary report
+                now = datetime.now()
+                report = f"""# FMEA Health Summary
+
+Generated: {now.isoformat()}
+
+## Catalog Overview
+
+- Total Failure Modes: {catalog_stats['total_modes']}
+- High RPN Modes (>=200): {catalog_stats['high_rpn_modes']}
+
+## Top RPN Issues (Requires Attention)
+
+| ID | Failure Mode | RPN | S×O×D | Status | Category |
+|----|--------------|-----|-------|--------|----------|
+"""
+                for issue in top_issues:
+                    fm_id = issue['failure_mode_id'] or issue['category']
+                    s = issue['s'] or '?'
+                    o = issue['o'] or '?'
+                    d = issue['d'] or '?'
+                    rpn = issue['rpn_score'] or 0
+                    report += f"| {issue['id']} | {fm_id} | {rpn} | {s}×{o}×{d} | {issue['status']} | {issue['category']} |\n"
+
+                if not top_issues:
+                    report += "| - | No FMEA events recorded | - | - | - | - |\n"
+
+                if pending:
+                    report += "\n## Pending Approvals\n\n"
+                    for p in pending:
+                        fm_id = p['failure_mode_id'] or 'N/A'
+                        rpn = p['rpn_score'] or 'N/A'
+                        report += f"- [[action:/fmea approve {p['id']}]] - {p['description']} (RPN={rpn})\n"
+
+                report += "\n## RPN Thresholds\n\n"
+                report += "| RPN Range | Tier | Action |\n"
+                report += "|-----------|------|--------|\n"
+                report += "| 1-100 | Tier 0 | Auto-remediate immediately |\n"
+                report += "| 101-200 | Tier 1 | Auto-remediate with logging |\n"
+                report += "| 201-400 | Tier 2 | Require user approval |\n"
+                report += "| 401-1000 | Manual | Human intervention required |\n"
+
+                # Save to KB scratch
+                report_path = await self._save_to_kb("FMEA Summary", report, "fmea")
+
+                return {
+                    "report_path": str(report_path),
+                    "total_failure_modes": catalog_stats['total_modes'],
+                    "high_rpn_modes": catalog_stats['high_rpn_modes'],
+                    "top_rpn_count": len(top_issues),
+                    "pending_approvals": len(pending),
+                }
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _fmea_catalog(self) -> dict:
+        """List all failure modes in the FMEA catalog."""
+        import asyncpg
+
+        try:
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        failure_mode_id,
+                        category,
+                        name,
+                        base_severity,
+                        base_occurrence,
+                        base_detection,
+                        (base_severity * base_occurrence * base_detection) as base_rpn,
+                        escalation_tier
+                    FROM fmea_catalog
+                    ORDER BY category, base_severity * base_occurrence * base_detection DESC
+                    """
+                )
+
+                # Group by category
+                categories: dict = {}
+                for row in rows:
+                    cat = row['category']
+                    if cat not in categories:
+                        categories[cat] = []
+                    categories[cat].append({
+                        "id": row['failure_mode_id'],
+                        "name": row['name'],
+                        "base_rpn": row['base_rpn'],
+                        "s": row['base_severity'],
+                        "o": row['base_occurrence'],
+                        "d": row['base_detection'],
+                        "tier": row['escalation_tier'],
+                    })
+
+                return {
+                    "total_modes": len(rows),
+                    "categories": categories,
+                }
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _fmea_detail(self, failure_mode_id: str) -> dict:
+        """Show detailed information about a failure mode."""
+        import asyncpg
+
+        try:
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                # Get failure mode from catalog
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM fmea_catalog
+                    WHERE failure_mode_id = $1
+                    """,
+                    failure_mode_id.upper()
+                )
+
+                if not row:
+                    return {"error": f"Failure mode {failure_mode_id} not found"}
+
+                # Get occurrence history
+                occurrences = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE occurred_at > NOW() - INTERVAL '24 hours') as last_24h,
+                        COUNT(*) FILTER (WHERE occurred_at > NOW() - INTERVAL '7 days') as last_7d,
+                        COUNT(*) FILTER (WHERE occurred_at > NOW() - INTERVAL '30 days') as last_30d
+                    FROM fmea_occurrences
+                    WHERE failure_mode_id = $1
+                    """,
+                    failure_mode_id.upper()
+                )
+
+                # Get outcome stats
+                outcomes = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) as total,
+                        COUNT(*) FILTER (WHERE success) as successes,
+                        AVG(duration_ms)::int as avg_duration_ms,
+                        AVG(downtime_seconds)::int as avg_downtime_s
+                    FROM fmea_outcomes
+                    WHERE failure_mode_id = $1
+                    """,
+                    failure_mode_id.upper()
+                )
+
+                base_rpn = row['base_severity'] * row['base_occurrence'] * row['base_detection']
+
+                return {
+                    "failure_mode_id": row['failure_mode_id'],
+                    "category": row['category'],
+                    "name": row['name'],
+                    "description": row['description'],
+                    "base_scores": {
+                        "severity": row['base_severity'],
+                        "occurrence": row['base_occurrence'],
+                        "detection": row['base_detection'],
+                        "rpn": base_rpn,
+                    },
+                    "detection_method": row['detection_method'],
+                    "recommended_actions": row['recommended_actions'],
+                    "escalation_tier": row['escalation_tier'],
+                    "occurrences": {
+                        "last_24h": occurrences['last_24h'] if occurrences else 0,
+                        "last_7d": occurrences['last_7d'] if occurrences else 0,
+                        "last_30d": occurrences['last_30d'] if occurrences else 0,
+                    },
+                    "outcomes": {
+                        "total": outcomes['total'] if outcomes else 0,
+                        "successes": outcomes['successes'] if outcomes else 0,
+                        "avg_duration_ms": outcomes['avg_duration_ms'] if outcomes else None,
+                        "avg_downtime_seconds": outcomes['avg_downtime_s'] if outcomes else None,
+                    },
+                }
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _fmea_history(self) -> dict:
+        """Show recent FMEA incident history."""
+        import asyncpg
+
+        try:
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                # Get recent AIOps events with FMEA data
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        ae.id,
+                        ae.failure_mode_id,
+                        ae.category,
+                        ae.rpn_score,
+                        ae.runtime_severity,
+                        ae.runtime_occurrence,
+                        ae.runtime_detection,
+                        ae.status,
+                        ae.endpoint,
+                        ae.description,
+                        ae.created_at
+                    FROM aiops_events ae
+                    WHERE ae.failure_mode_id IS NOT NULL OR ae.rpn_score IS NOT NULL
+                    ORDER BY ae.created_at DESC
+                    LIMIT 20
+                    """
+                )
+
+                events = []
+                for row in rows:
+                    events.append({
+                        "id": row['id'],
+                        "failure_mode_id": row['failure_mode_id'],
+                        "category": row['category'],
+                        "rpn_score": row['rpn_score'],
+                        "severity": row['runtime_severity'],
+                        "occurrence": row['runtime_occurrence'],
+                        "detection": row['runtime_detection'],
+                        "status": row['status'],
+                        "endpoint": row['endpoint'],
+                        "description": row['description'][:80] if row['description'] else None,
+                        "created_at": row['created_at'].isoformat() if row['created_at'] else None,
+                    })
+
+                return {
+                    "event_count": len(events),
+                    "events": events,
+                }
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _fmea_approve(self, approval_id: str) -> dict:
+        """Approve a pending FMEA remediation action."""
+        import asyncpg
+
+        try:
+            approval_id_int = int(approval_id)
+        except ValueError:
+            return {"error": f"Invalid approval ID: {approval_id}"}
+
+        try:
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            )
+            conn = await asyncpg.connect(db_url)
+
+            try:
+                # Get the pending approval
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM remediation_approvals
+                    WHERE id = $1 AND status = 'pending'
+                    """,
+                    approval_id_int
+                )
+
+                if not row:
+                    return {"error": f"No pending approval with ID {approval_id}"}
+
+                # Check if expired
+                from datetime import datetime
+                if row['expires_at'] < datetime.now(row['expires_at'].tzinfo):
+                    return {"error": f"Approval {approval_id} has expired"}
+
+                # Approve it
+                await conn.execute(
+                    """
+                    UPDATE remediation_approvals
+                    SET status = 'approved', approved_by = 'cli', approved_at = NOW()
+                    WHERE id = $1
+                    """,
+                    approval_id_int
+                )
+
+                return {
+                    "approved": True,
+                    "id": approval_id_int,
+                    "action_command": row['action_command'],
+                    "failure_mode_id": row['failure_mode_id'],
+                    "message": f"Approved: {row['action_command']}",
+                }
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
 
 
 def main():
