@@ -36,6 +36,7 @@ except ImportError:
 import argparse
 import asyncio
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -250,6 +251,9 @@ class GaiusCLI:
                 # FMEA - Failure Mode and Effects Analysis
                 elif command == "fmea":
                     result["data"] = self._run_async(self._cmd_fmea(args))
+                # Metaflow pipeline management
+                elif command == "flow":
+                    result["data"] = self._run_async(self._cmd_flow(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -7097,6 +7101,211 @@ Generated: {now.isoformat()}
 
             finally:
                 await conn.close()
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _cmd_flow(self, args: str) -> dict:
+        """Metaflow pipeline management.
+
+        Usage:
+            /flow                    - Show available flows and status
+            /flow list               - List registered flows
+            /flow run <name> <url>   - Run a flow (e.g., /flow run docling https://arxiv.org/abs/...)
+            /flow lineage <kb_path>  - Query lineage for a KB file
+            /flow config [local|k8s] - Show/switch Metaflow configuration
+        """
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        if subcmd == "list":
+            return self._flow_list()
+
+        elif subcmd == "run":
+            if len(parts) < 3:
+                return {"error": "Usage: /flow run <flow_name> <args...>"}
+            flow_name = parts[1]
+            flow_args = parts[2:]
+            return await self._flow_run(flow_name, flow_args)
+
+        elif subcmd == "lineage":
+            if len(parts) < 2:
+                return {"error": "Usage: /flow lineage <kb_path>"}
+            kb_path = parts[1]
+            return await self._flow_lineage(kb_path)
+
+        elif subcmd == "config":
+            mode = parts[1] if len(parts) > 1 else None
+            return self._flow_config(mode)
+
+        else:
+            return {"error": f"Unknown flow subcommand: {subcmd}"}
+
+    def _flow_list(self) -> dict:
+        """List available flows."""
+        try:
+            from gaius.flows import FLOW_REGISTRY
+
+            flows = []
+            for name, flow_cls in FLOW_REGISTRY.items():
+                doc = flow_cls.__doc__ or ""
+                first_line = doc.split("\n")[0].strip() if doc else ""
+                flows.append({
+                    "name": name,
+                    "description": first_line,
+                    "class": f"{flow_cls.__module__}.{flow_cls.__name__}",
+                })
+
+            return {
+                "flows": flows,
+                "total": len(flows),
+                "message": f"Found {len(flows)} registered flow(s)" if flows else "No flows registered. Import gaius.flows.docling to register flows.",
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _flow_run(self, flow_name: str, flow_args: list[str]) -> dict:
+        """Run a Metaflow flow with GPU resource management.
+
+        For GPU-intensive flows (like docling), this will:
+        1. Check GPU memory availability
+        2. Evict idle vLLM endpoints if needed
+        3. Run the flow
+        4. Restore evicted endpoints after completion
+        """
+        try:
+            from gaius.flows import FLOW_REGISTRY
+            from gaius.flows.config import apply_metaflow_config
+
+            if flow_name not in FLOW_REGISTRY:
+                # Try to import the flow module to register it
+                if flow_name == "docling":
+                    from gaius.flows.docling import ArxivDoclingFlow  # noqa: F401
+                    from gaius.flows import FLOW_REGISTRY
+
+            if flow_name not in FLOW_REGISTRY:
+                return {
+                    "error": f"Unknown flow: {flow_name}",
+                    "available": list(FLOW_REGISTRY.keys()),
+                }
+
+            # Apply local config
+            apply_metaflow_config("local")
+
+            # For docling flow, we expect a URL
+            if flow_name == "docling":
+                if not flow_args:
+                    return {"error": "docling flow requires an arXiv URL argument"}
+
+                arxiv_url = flow_args[0]
+                archive_pdf = True
+                no_gpu = False
+
+                if "--no-archive" in flow_args:
+                    archive_pdf = False
+                if "--no-gpu" in flow_args:
+                    no_gpu = True
+
+                # Use GPU-aware runner
+                from gaius.flows.runner import run_flow_with_gpu_management
+                from gaius.flows.docling.flow import ArxivDoclingFlow
+
+                # Build flow args for subprocess
+                subprocess_args = [
+                    f"--arxiv_url={arxiv_url}",
+                    f"--archive_pdf={archive_pdf}",
+                ]
+
+                result = await run_flow_with_gpu_management(
+                    flow_class=ArxivDoclingFlow,
+                    flow_args=subprocess_args,
+                    require_gpu=not no_gpu,
+                    estimated_memory_mb=16000,  # Docling needs ~16GB
+                )
+
+                return {
+                    "flow": flow_name,
+                    "url": arxiv_url,
+                    "success": result.success,
+                    "workload_id": result.workload_id,
+                    "evicted_endpoints": result.evicted_endpoints,
+                    "restored_endpoints": result.restored_endpoints,
+                    "output_path": result.output_path,
+                    "duration_s": result.duration_s,
+                    "error": result.error,
+                    "gpu_management": not no_gpu,
+                }
+
+            return {"error": f"Flow {flow_name} not yet implemented via CLI"}
+
+        except Exception as e:
+            import traceback
+            return {"error": str(e), "traceback": traceback.format_exc()}
+
+    async def _flow_lineage(self, kb_path: str) -> dict:
+        """Query lineage for a KB file."""
+        try:
+            from gaius.hx.lineage.graph import LineageGraphQuery
+
+            query = LineageGraphQuery()
+            path = await query.get_kb_lineage(kb_path)
+
+            if not path.nodes:
+                return {
+                    "kb_path": kb_path,
+                    "lineage": None,
+                    "message": "No lineage found for this KB path",
+                }
+
+            return {
+                "kb_path": kb_path,
+                "nodes": [
+                    {"type": n.node_type, "id": n.id, "properties": n.properties}
+                    for n in path.nodes
+                ],
+                "edges": [
+                    {"type": e.edge_type, "from": e.from_id, "to": e.to_id}
+                    for e in path.edges
+                ],
+                "node_count": len(path.nodes),
+                "edge_count": len(path.edges),
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _flow_config(self, mode: str | None = None) -> dict:
+        """Show or switch Metaflow configuration."""
+        try:
+            from gaius.flows.config import load_metaflow_config, get_config_path
+
+            if mode:
+                config = load_metaflow_config(mode)
+                path = get_config_path(mode)
+                return {
+                    "mode": mode,
+                    "config_path": str(path),
+                    "config": config,
+                    "exists": path.exists(),
+                }
+
+            # Show both configs
+            local_config = load_metaflow_config("local")
+            k8s_config = load_metaflow_config("k8s")
+
+            return {
+                "local": {
+                    "path": str(get_config_path("local")),
+                    "exists": get_config_path("local").exists(),
+                    "config": local_config,
+                },
+                "k8s": {
+                    "path": str(get_config_path("k8s")),
+                    "exists": get_config_path("k8s").exists(),
+                    "config": k8s_config,
+                },
+            }
 
         except Exception as e:
             return {"error": str(e)}

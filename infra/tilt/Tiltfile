@@ -1,0 +1,222 @@
+# Gaius Metaflow Development Environment
+#
+# This Tiltfile configures Metaflow + UI on RKE2 Kubernetes, pointing to
+# devenv services (PostgreSQL, MinIO) running on the host.
+#
+# Prerequisites:
+#   1. RKE2 running: systemctl status rke2-server
+#   2. kubectl configured: export KUBECONFIG=~/.kube/config
+#   3. Devenv services up: devenv up postgres minio
+#   4. NodePort services applied: kubectl apply -f infra/k8s/devenv-services.yaml
+#
+# Usage:
+#   cd infra/tilt && tilt up
+#   # Open http://localhost:3000 for Metaflow UI
+
+version_settings(constraint='>=0.22.2')
+
+# Allow RKE2 context (default context name for RKE2)
+allow_k8s_contexts(['default', 'kubernetes-admin@kubernetes'])
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+# Devenv service endpoints (accessed via K8s Services pointing to host)
+DEVENV_POSTGRES_HOST = "devenv-postgres"
+DEVENV_POSTGRES_PORT = "5438"
+DEVENV_MINIO_HOST = "devenv-minio"
+DEVENV_MINIO_PORT = "9010"
+
+# Metaflow configuration
+metaflow_config = {
+    "METAFLOW_DEFAULT_METADATA": "service",
+    "METAFLOW_SERVICE_URL": "http://localhost:8080",
+    "METAFLOW_SERVICE_INTERNAL_URL": "http://metaflow-service.default.svc.cluster.local:8080",
+    "METAFLOW_DEFAULT_DATASTORE": "s3",
+    "METAFLOW_DATASTORE_SYSROOT_S3": "s3://metaflow-artifacts/metaflow",
+    "METAFLOW_S3_ENDPOINT_URL": "http://%s:%s" % (DEVENV_MINIO_HOST, DEVENV_MINIO_PORT),
+    "METAFLOW_KUBERNETES_NAMESPACE": "default",
+    "METAFLOW_KUBERNETES_SECRETS": "devenv-minio-credentials",
+}
+
+# ============================================================================
+# Load Extensions
+# ============================================================================
+
+load('ext://helm_resource', 'helm_resource', 'helm_repo')
+load('ext://helm_remote', 'helm_remote')
+
+# ============================================================================
+# Devenv Services (NodePort to host)
+# ============================================================================
+
+# Apply the NodePort services that point to host devenv
+k8s_yaml('../k8s/devenv-services.yaml')
+
+k8s_resource(
+    objects=['devenv-postgres:service', 'devenv-postgres:endpoints'],
+    new_name='devenv-postgres',
+    labels=['devenv'],
+)
+
+k8s_resource(
+    objects=['devenv-minio:service', 'devenv-minio:endpoints', 'devenv-minio-credentials:secret'],
+    new_name='devenv-minio',
+    labels=['devenv'],
+)
+
+# ============================================================================
+# Metaflow Metadata Service
+# ============================================================================
+
+helm_repo('metaflow-tools', 'https://outerbounds.github.io/metaflow-tools')
+
+helm_remote(
+    'metaflow-service',
+    repo_name='metaflow-tools',
+    set=[
+        'metadatadb.host=%s' % DEVENV_POSTGRES_HOST,
+        'metadatadb.port=%s' % DEVENV_POSTGRES_PORT,
+        'metadatadb.user=postgres',
+        'metadatadb.password=',
+        'metadatadb.database=metaflow',
+        'image.repository=public.ecr.aws/outerbounds/metaflow_metadata_service',
+        'image.tag=2.5.0',
+        'resources.requests.cpu=100m',
+        'resources.requests.memory=128Mi',
+        'resources.limits.cpu=500m',
+        'resources.limits.memory=512Mi',
+    ]
+)
+
+k8s_resource(
+    'metaflow-service',
+    port_forwards=['8080:8080'],
+    links=[link('http://localhost:8080/ping', 'Metaflow Service Health')],
+    labels=['metaflow'],
+    resource_deps=['devenv-postgres'],
+)
+
+# ============================================================================
+# Metaflow UI
+# ============================================================================
+
+helm_remote(
+    'metaflow-ui',
+    repo_name='metaflow-tools',
+    set=[
+        # Backend database
+        'uiBackend.metadatadb.host=%s' % DEVENV_POSTGRES_HOST,
+        'uiBackend.metadatadb.port=%s' % DEVENV_POSTGRES_PORT,
+        'uiBackend.metadatadb.user=postgres',
+        'uiBackend.metadatadb.password=',
+        'uiBackend.metadatadb.name=metaflow',
+        # S3 datastore
+        'uiBackend.metaflowDatastoreSysRootS3=s3://metaflow-artifacts/metaflow',
+        'uiBackend.metaflowS3EndpointURL=http://%s:%s' % (DEVENV_MINIO_HOST, DEVENV_MINIO_PORT),
+        # Backend image
+        'uiBackend.image.name=public.ecr.aws/outerbounds/metaflow_metadata_service',
+        'uiBackend.image.tag=2.5.0',
+        # MinIO credentials
+        'uiBackend.env[0].name=AWS_ACCESS_KEY_ID',
+        'uiBackend.env[0].value=minioadmin',
+        'uiBackend.env[1].name=AWS_SECRET_ACCESS_KEY',
+        'uiBackend.env[1].value=minioadmin',
+        # Resource limits
+        'uiBackend.resources.requests.cpu=100m',
+        'uiBackend.resources.requests.memory=256Mi',
+        'uiBackend.resources.limits.cpu=500m',
+        'uiBackend.resources.limits.memory=512Mi',
+        # Static UI
+        'uiStatic.metaflowUIBackendURL=http://localhost:8083/api',
+        'uiStatic.image.name=public.ecr.aws/outerbounds/metaflow_ui',
+        'uiStatic.image.tag=v1.3.14',
+        'uiStatic.resources.requests.cpu=50m',
+        'uiStatic.resources.requests.memory=64Mi',
+        'uiStatic.resources.limits.cpu=200m',
+        'uiStatic.resources.limits.memory=256Mi',
+    ]
+)
+
+k8s_resource(
+    'metaflow-ui-static',
+    port_forwards=['3000:3000'],
+    links=[link('http://localhost:3000', 'Metaflow UI')],
+    labels=['metaflow-ui'],
+    resource_deps=['devenv-postgres', 'devenv-minio'],
+)
+
+k8s_resource(
+    'metaflow-ui',
+    port_forwards=['8083:8083'],
+    labels=['metaflow-ui'],
+    resource_deps=['devenv-postgres', 'devenv-minio'],
+)
+
+# ============================================================================
+# Argo Workflows (for K8s execution backend)
+# ============================================================================
+
+helm_repo('argo', 'https://argoproj.github.io/argo-helm')
+
+helm_resource(
+    'argo-workflows',
+    'argo/argo-workflows',
+    flags=[
+        '--set', 'server.serviceType=ClusterIP',
+        '--set', 'controller.workflowNamespaces[0]=default',
+        '--set', 'controller.resources.requests.cpu=100m',
+        '--set', 'controller.resources.requests.memory=128Mi',
+    ],
+    labels=['argo'],
+)
+
+k8s_resource(
+    'argo-workflows-workflow-controller',
+    labels=['argo'],
+)
+
+k8s_resource(
+    'argo-workflows-server',
+    port_forwards=['2746:2746'],
+    links=[link('http://localhost:2746', 'Argo Workflows UI')],
+    labels=['argo'],
+)
+
+# ============================================================================
+# Config File Generation
+# ============================================================================
+
+# Generate Metaflow config for local client
+local_resource(
+    name='generate-metaflow-config',
+    cmd='''
+    cat > ../../config/metaflow/k8s.json << 'EOF'
+%s
+EOF
+    echo "Generated config/metaflow/k8s.json"
+    ''' % encode_json(metaflow_config),
+    resource_deps=['metaflow-service'],
+    labels=['config'],
+)
+
+# ============================================================================
+# Summary
+# ============================================================================
+
+if config.tilt_subcommand == 'up':
+    print("")
+    print("========================================")
+    print("  Gaius Metaflow Development Environment")
+    print("========================================")
+    print("")
+    print("Services:")
+    print("  Metaflow Service: http://localhost:8080")
+    print("  Metaflow UI:      http://localhost:3000")
+    print("  Argo Workflows:   http://localhost:2746")
+    print("")
+    print("Devenv (host):")
+    print("  PostgreSQL:       localhost:5438")
+    print("  MinIO:            localhost:9010")
+    print("")
