@@ -21,6 +21,7 @@ Layout:
 
 import asyncio
 import logging
+import math
 from typing import Optional, TYPE_CHECKING
 
 from rich.panel import Panel
@@ -43,6 +44,27 @@ if TYPE_CHECKING:
     from ..core.state import AppState
 
 logger = logging.getLogger(__name__)
+
+
+def format_compact(value: float, precision: int = 1) -> str:
+    """Format large numbers in compact notation (K, M, B).
+
+    Examples:
+        1234 -> "1.2K"
+        1234567 -> "1.2M"
+        1234567890 -> "1.2B"
+        123 -> "123"
+    """
+    if abs(value) >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.{precision}f}B"
+    elif abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.{precision}f}M"
+    elif abs(value) >= 10_000:
+        return f"{value / 1_000:.{precision}f}K"
+    elif abs(value) >= 1_000:
+        return f"{value / 1_000:.{precision}f}K"
+    else:
+        return f"{value:.{precision}f}"
 
 
 class ObservePanel(Widget):
@@ -233,7 +255,7 @@ class ObservePanel(Widget):
         )
 
     def _render_endpoint_status(self) -> Text:
-        """Render compact endpoint status line."""
+        """Render compact endpoint status line showing unhealthy endpoints."""
         line = Text()
         line.append("Endpoints   ", style="bold")
 
@@ -241,10 +263,11 @@ class ObservePanel(Widget):
             line.append("--", style="dim")
             return line
 
-        # Count by status
+        # Count by status and track unhealthy names
         healthy = 0
         starting = 0
         unhealthy = 0
+        unhealthy_names = []
         total = 0
 
         for name, ep_data in self._endpoint_status.items():
@@ -257,22 +280,26 @@ class ObservePanel(Widget):
                     starting += 1
                 else:
                     unhealthy += 1
+                    unhealthy_names.append(name)
 
-        # Compact format: "3/5 ready" or "2● 1◎ 2○"
+        # Compact format: "3/4 ready" or "3● 1○ (embedding)"
         if starting == 0 and unhealthy == 0:
             # All healthy
             line.append(f"{healthy}/{total}", style="green")
             line.append(" ready", style="dim")
         else:
-            # Show breakdown
-            if healthy > 0:
-                line.append(f"{healthy}●", style="green")
-                line.append(" ", style="dim")
+            # Show breakdown with unhealthy names
+            line.append(f"{healthy}●", style="green")
             if starting > 0:
-                line.append(f"{starting}◎", style="yellow")
-                line.append(" ", style="dim")
+                line.append(f" {starting}◎", style="yellow")
             if unhealthy > 0:
-                line.append(f"{unhealthy}○", style="red")
+                line.append(f" {unhealthy}○", style="red")
+                # Show which endpoints are down (truncate if too long)
+                if unhealthy_names:
+                    names_str = ",".join(unhealthy_names[:2])  # Max 2 names
+                    if len(unhealthy_names) > 2:
+                        names_str += "..."
+                    line.append(f" ({names_str})", style="red dim")
 
         return line
 
@@ -315,23 +342,29 @@ class ObservePanel(Widget):
             return row
 
         current = series.current
+
+        # Handle NaN values (e.g., from histogram_quantile with no data)
+        if math.isnan(current):
+            row.append("  --", style="dim")
+            return row
         color = defn.get_color(current)
 
         if defn.display == MetricDisplay.SPARKLINE:
-            # Sparkline + current value
+            # Sparkline + current value (compact notation for large numbers)
             sparkline = render_sparkline(
                 series.sparkline_data,
                 width=defn.width,
                 color=color,
             )
             row.append(sparkline)
-            row.append(f"  {current:.{defn.precision}f}{defn.unit}", style=color)
+            formatted = format_compact(current, defn.precision)
+            row.append(f"  {formatted}{defn.unit}", style=color)
 
         elif defn.display == MetricDisplay.GAUGE:
             # Horizontal gauge bar
             gauge = render_gauge(
                 current,
-                max_value=100,
+                max_value=defn.max_value,
                 width=defn.width,
                 unit=defn.unit,
                 warning_threshold=defn.warning_threshold,
