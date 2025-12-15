@@ -1,0 +1,12 @@
+{
+  "METAFLOW_DEFAULT_METADATA": "service",
+  "METAFLOW_SERVICE_URL": "http://localhost:8080",
+  "METAFLOW_SERVICE_INTERNAL_URL": "http://metaflow-service.default.svc.cluster.local:8080",
+  "METAFLOW_DEFAULT_DATASTORE": "s3",
+  "METAFLOW_DATASTORE_SYSROOT_S3": "s3://metaflow-artifacts/metaflow",
+  "METAFLOW_S3_ENDPOINT_URL": "http://devenv-minio:9010",
+  "METAFLOW_KUBERNETES_NAMESPACE": "default",
+  "METAFLOW_KUBERNETES_SECRETS": "devenv-minio-credentials",
+  "AWS_ACCESS_KEY_ID": "minioadmin",
+  "AWS_SECRET_ACCESS_KEY": "minioadmin"
+}

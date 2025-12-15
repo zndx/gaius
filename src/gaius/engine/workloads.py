@@ -41,6 +41,7 @@ class WorkloadType(Enum):
     INFERENCE = auto()  # Single inference request
     EMBEDDING = auto()  # Embedding generation
     EVOLUTION = auto()  # Agent evolution/optimization
+    FLOW = auto()  # Metaflow pipeline execution (docling, etc.)
 
 
 @dataclass
@@ -209,6 +210,8 @@ DEFAULT_MEMORY_ESTIMATES = {
     # Coding models
     "Qwen/Qwen3-Coder-30B-A3B-Instruct": 20000,
     "mistralai/Devstral-Small-2-24B-Instruct-2512": 15000,
+    # Document processing (docling uses vision-language models)
+    "docling": 16000,  # Uses layout/OCR models that need ~16GB
 }
 
 

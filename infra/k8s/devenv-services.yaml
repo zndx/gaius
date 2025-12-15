@@ -1,0 +1,94 @@
+# NodePort Services for Exposing Devenv Services to Kubernetes
+#
+# These services allow K8s pods (e.g., Metaflow jobs, Argo workflows) to access
+# the devenv PostgreSQL and MinIO instances running on the host.
+#
+# Usage:
+#   1. Get your RKE2 node IP: kubectl get nodes -o wide
+#   2. Replace ${NODE_IP} below with the actual IP
+#   3. Apply: kubectl apply -f infra/k8s/devenv-services.yaml
+#
+# Services:
+#   - devenv-postgres: PostgreSQL on 5438 -> NodePort 30438
+#   - devenv-minio: MinIO on 9010 -> NodePort 30910
+
+---
+# PostgreSQL Service (for Metaflow metadata, Gaius lineage)
+apiVersion: v1
+kind: Service
+metadata:
+  name: devenv-postgres
+  labels:
+    app: devenv-postgres
+    component: database
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5438
+      targetPort: 5438
+      protocol: TCP
+      name: postgres
+
+---
+# PostgreSQL Endpoints (pointing to host)
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: devenv-postgres
+subsets:
+  - addresses:
+      # TODO: Replace with actual RKE2 node IP
+      # Get with: kubectl get nodes -o wide
+      - ip: "10.0.0.1"  # REPLACE WITH NODE IP
+    ports:
+      - port: 5438
+        name: postgres
+
+---
+# MinIO Service (for Metaflow artifacts, KB storage)
+apiVersion: v1
+kind: Service
+metadata:
+  name: devenv-minio
+  labels:
+    app: devenv-minio
+    component: storage
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9010
+      targetPort: 9010
+      protocol: TCP
+      name: api
+    - port: 9011
+      targetPort: 9011
+      protocol: TCP
+      name: console
+
+---
+# MinIO Endpoints (pointing to host)
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: devenv-minio
+subsets:
+  - addresses:
+      # TODO: Replace with actual RKE2 node IP
+      - ip: "10.0.0.1"  # REPLACE WITH NODE IP
+    ports:
+      - port: 9010
+        name: api
+      - port: 9011
+        name: console
+
+---
+# MinIO credentials secret (for Metaflow S3 access)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: devenv-minio-credentials
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "minioadmin"
+  AWS_SECRET_ACCESS_KEY: "minioadmin"
+  AWS_ENDPOINT_URL_S3: "http://devenv-minio:9010"
