@@ -38,6 +38,7 @@ class MetricDefinition:
         threshold_direction: "above" (default) or "below"
         width: Width for sparkline/gauge rendering
         precision: Decimal places for value display
+        max_value: Maximum value for GAUGE display (default 100)
     """
 
     id: str
@@ -51,6 +52,7 @@ class MetricDefinition:
     threshold_direction: str = "above"  # "above" or "below"
     width: int = 20
     precision: int = 1
+    max_value: float = 100.0  # For GAUGE display
 
     def get_color(self, value: Optional[float]) -> str:
         """Determine color based on value and thresholds.
@@ -84,11 +86,12 @@ class MetricDefinition:
 #   - "gaius." from SDK metric naming (becomes "gaius_" after export)
 OBSERVE_METRICS: list[MetricDefinition] = [
     # --- Prometheus metrics (time series with sparklines) ---
+    # Note: Metric names follow the pattern gaius_gaius_<name>_<unit> from OTel export
     MetricDefinition(
         id="inference_latency_p95",
         name="Latency p95",
         source="prometheus",
-        query='histogram_quantile(0.95, rate(gaius_gaius_inference_latency_bucket[5m]))',
+        query='histogram_quantile(0.95, rate(gaius_gaius_inference_latency_milliseconds_bucket[5m]))',
         display=MetricDisplay.SPARKLINE,
         unit="ms",
         warning_threshold=500,
@@ -96,22 +99,26 @@ OBSERVE_METRICS: list[MetricDefinition] = [
     ),
     MetricDefinition(
         id="inference_rate",
-        name="Infer/min",
+        name="Infer/hr",
         source="prometheus",
-        query='rate(gaius_gaius_inference_count_total[1m]) * 60',
+        query='sum(rate(gaius_gaius_inference_count_total[1m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         unit="",
         width=15,
+        # Run rate: current minute's rate extrapolated to hourly
     ),
     MetricDefinition(
-        id="search_rate",
-        name="Search/min",
+        id="tokens_rate",
+        name="Tokens/hr",
         source="prometheus",
-        query='rate(gaius_gaius_search_count_total[1m]) * 60',
+        query='sum(rate(gaius_gaius_inference_tokens_total[1m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         unit="",
         width=15,
+        # Run rate: current minute's rate extrapolated to hourly
     ),
+    # Note: Search/min metric available but not displayed in panel
+    # query='rate(gaius_gaius_search_count_total[1m]) * 60'
     MetricDefinition(
         id="error_rate",
         name="Errors",
@@ -124,36 +131,20 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         precision=2,
     ),
     # --- Engine metrics (gauges for current state) ---
+    # Compute capacity: % of GPU compute that is functional (not just "process alive")
+    # This accounts for GPUs per endpoint and shows capacity relative to total
     MetricDefinition(
-        id="gpu_memory_0",
-        name="GPU 0 Mem",
+        id="compute_capacity",
+        name="Compute",
         source="engine",
-        query="gpu_memory:0",
+        query="compute_capacity",
         display=MetricDisplay.GAUGE,
         unit="%",
-        warning_threshold=85,
-        critical_threshold=95,
-        width=12,
-    ),
-    MetricDefinition(
-        id="gpu_memory_1",
-        name="GPU 1 Mem",
-        source="engine",
-        query="gpu_memory:1",
-        display=MetricDisplay.GAUGE,
-        unit="%",
-        warning_threshold=85,
-        critical_threshold=95,
-        width=12,
-    ),
-    MetricDefinition(
-        id="endpoints",
-        name="Endpoints",
-        source="engine",
-        query="endpoint_count",
-        display=MetricDisplay.COUNTER,
-        unit=" healthy",
+        warning_threshold=80,
+        critical_threshold=50,
+        threshold_direction="below",  # Below 50% is red, below 80% is yellow
         precision=0,
+        max_value=100.0,
     ),
     MetricDefinition(
         id="evolution",
@@ -162,6 +153,52 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         query="evolution_cycles",
         display=MetricDisplay.COUNTER,
         unit=" cycles",
+        precision=0,
+    ),
+    # --- Healing metrics (self-healing observability) ---
+    # These use gaius_gaius_healing_* metrics from healing_metrics.py or engine/metrics.py
+    MetricDefinition(
+        id="healing_success_rate",
+        name="Heal Rate",
+        source="prometheus",
+        query='sum(rate(gaius_gaius_healing_success_total[5m])) / (sum(rate(gaius_gaius_healing_attempts_total[5m])) + 0.0001) * 100',
+        display=MetricDisplay.PERCENTAGE,
+        unit="%",
+        warning_threshold=80,
+        critical_threshold=50,
+        threshold_direction="below",
+        precision=0,
+    ),
+    MetricDefinition(
+        id="healing_attempts_rate",
+        name="Heals/hr",
+        source="prometheus",
+        query='sum(rate(gaius_gaius_healing_attempts_total[1m])) * 3600',
+        display=MetricDisplay.SPARKLINE,
+        warning_threshold=60,   # 1/min average = concerning
+        critical_threshold=120,  # 2/min average = critical
+        width=15,
+    ),
+    MetricDefinition(
+        id="healing_escalations",
+        name="Escalations",
+        source="prometheus",
+        query='sum(increase(gaius_gaius_healing_escalations_total[1h]))',
+        display=MetricDisplay.COUNTER,
+        warning_threshold=3,
+        critical_threshold=5,
+        precision=0,
+    ),
+    # FMEA metrics - these need to be exported from the engine when RPN is calculated
+    # For now, show 0 if no data
+    MetricDefinition(
+        id="fmea_high_rpn",
+        name="High RPN",
+        source="prometheus",
+        query='count(gaius_gaius_fmea_rpn_score > 200) or vector(0)',
+        display=MetricDisplay.COUNTER,
+        warning_threshold=1,
+        critical_threshold=3,
         precision=0,
     ),
 ]

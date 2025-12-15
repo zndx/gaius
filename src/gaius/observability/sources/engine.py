@@ -24,6 +24,9 @@ class EngineSource(MetricSource):
 
     Maps metric query names to gRPC proxy method calls:
     - gpu_memory:N - GPU N memory percentage
+    - gpu_memory_min - Minimum GPU memory percentage across all GPUs
+    - gpu_memory_max - Maximum GPU memory percentage across all GPUs
+    - gpu_utilization:N - GPU N compute utilization percentage
     - endpoint_count - Number of healthy endpoints
     - scheduler_queue - Queue depth
     - evolution_cycles - Completed evolution cycles
@@ -57,6 +60,8 @@ class EngineSource(MetricSource):
 
         Supported queries:
         - gpu_memory:N - GPU N memory percentage (0-100)
+        - gpu_memory_min - Minimum GPU memory percentage across all GPUs
+        - gpu_memory_max - Maximum GPU memory percentage across all GPUs
         - gpu_utilization:N - GPU N compute utilization (0-100)
         - endpoint_count - Number of healthy endpoints
         - scheduler_queue - Pending jobs in scheduler
@@ -83,11 +88,17 @@ class EngineSource(MetricSource):
             if metric_name == "gpu_memory":
                 gpu_idx = int(param) if param else 0
                 value = await self._get_gpu_memory(client, gpu_idx)
+            elif metric_name == "gpu_memory_min":
+                value = await self._get_gpu_memory_minmax(client, use_max=False)
+            elif metric_name == "gpu_memory_max":
+                value = await self._get_gpu_memory_minmax(client, use_max=True)
             elif metric_name == "gpu_utilization":
                 gpu_idx = int(param) if param else 0
                 value = await self._get_gpu_utilization(client, gpu_idx)
             elif metric_name == "endpoint_count":
                 value = await self._get_endpoint_count(client)
+            elif metric_name == "compute_capacity":
+                value = await self._get_compute_capacity(client)
             elif metric_name == "scheduler_queue":
                 value = await self._get_scheduler_queue(client)
             elif metric_name == "evolution_cycles":
@@ -145,7 +156,7 @@ class EngineSource(MetricSource):
 
         try:
             # Try to get scheduler status as health check
-            status = await client.scheduler_proxy.get_status()
+            status = await client.call("Scheduler", "status")
             return status is not None
         except Exception:
             return False
@@ -165,7 +176,8 @@ class EngineSource(MetricSource):
     async def _get_gpu_memory(self, client: "GrpcEngineClient", gpu_idx: int) -> Optional[float]:
         """Get GPU memory utilization percentage."""
         try:
-            health = await client.health_proxy.get_gpu_health()
+            # Use client.call() to call Health.check which includes GPU info
+            health = await client.call("Health", "check")
             if health and "gpus" in health:
                 gpus = health["gpus"]
                 if gpu_idx < len(gpus):
@@ -177,10 +189,30 @@ class EngineSource(MetricSource):
             logger.debug(f"GPU memory fetch failed: {e}")
         return None
 
+    async def _get_gpu_memory_minmax(self, client: "GrpcEngineClient", use_max: bool) -> Optional[float]:
+        """Get min or max GPU memory utilization across all GPUs."""
+        try:
+            health = await client.call("Health", "check")
+            if health and "gpus" in health:
+                gpus = health["gpus"]
+                if not gpus:
+                    return None
+                percentages = []
+                for gpu in gpus:
+                    used = gpu.get("memory_used_mb", 0)
+                    total = gpu.get("memory_total_mb", 1)
+                    if total > 0:
+                        percentages.append((used / total) * 100)
+                if percentages:
+                    return max(percentages) if use_max else min(percentages)
+        except Exception as e:
+            logger.debug(f"GPU memory min/max fetch failed: {e}")
+        return None
+
     async def _get_gpu_utilization(self, client: "GrpcEngineClient", gpu_idx: int) -> Optional[float]:
         """Get GPU compute utilization percentage."""
         try:
-            health = await client.health_proxy.get_gpu_health()
+            health = await client.call("Health", "check")
             if health and "gpus" in health:
                 gpus = health["gpus"]
                 if gpu_idx < len(gpus):
@@ -192,18 +224,62 @@ class EngineSource(MetricSource):
     async def _get_endpoint_count(self, client: "GrpcEngineClient") -> Optional[float]:
         """Get number of healthy endpoints."""
         try:
-            status = await client.scheduler_proxy.get_status()
+            # Use Orchestrator.status which has endpoint list with status
+            status = await client.call("Orchestrator", "status")
             if status and "endpoints" in status:
-                healthy = sum(1 for ep in status["endpoints"] if ep.get("healthy", False))
+                healthy = sum(
+                    1 for ep in status["endpoints"]
+                    if ep.get("status") == "healthy"
+                )
                 return float(healthy)
         except Exception as e:
             logger.debug(f"Endpoint count fetch failed: {e}")
         return None
 
+    async def _get_compute_capacity(self, client: "GrpcEngineClient") -> Optional[float]:
+        """Get percentage of GPU compute capacity that is functional.
+
+        This metric weights endpoints by their GPU allocation. A 4-GPU endpoint
+        crashing is a much bigger capacity loss than a 1-GPU endpoint.
+
+        Capacity = (healthy GPUs / total allocated GPUs) * 100
+
+        Returns:
+            Percentage (0-100) of allocated GPU capacity that is functional
+        """
+        try:
+            status = await client.call("Orchestrator", "status")
+            if not status:
+                return None
+
+            endpoints = status.get("endpoints", [])
+            if not endpoints:
+                return 0.0
+
+            total_gpus = 0
+            healthy_gpus = 0
+
+            for ep in endpoints:
+                # Get GPU count for this endpoint (default to 1 if not specified)
+                gpu_ids = ep.get("gpu_ids", [])
+                gpu_count = len(gpu_ids) if gpu_ids else 1
+
+                total_gpus += gpu_count
+
+                if ep.get("status") == "healthy":
+                    healthy_gpus += gpu_count
+
+            # Return percentage of GPU capacity that is healthy
+            return (healthy_gpus / total_gpus) * 100 if total_gpus > 0 else 0.0
+
+        except Exception as e:
+            logger.debug(f"Compute capacity fetch failed: {e}")
+        return None
+
     async def _get_scheduler_queue(self, client: "GrpcEngineClient") -> Optional[float]:
         """Get scheduler queue depth."""
         try:
-            status = await client.scheduler_proxy.get_status()
+            status = await client.call("Scheduler", "status")
             if status:
                 return float(status.get("queue_depth", 0))
         except Exception as e:
@@ -213,7 +289,7 @@ class EngineSource(MetricSource):
     async def _get_evolution_cycles(self, client: "GrpcEngineClient") -> Optional[float]:
         """Get completed evolution cycles."""
         try:
-            status = await client.evolution_proxy.get_status()
+            status = await client.call("Evolution", "status")
             if status:
                 return float(status.get("cycles_completed", 0))
         except Exception as e:
