@@ -72,8 +72,16 @@ def _create_sql_catalog(config: HxConfig) -> Catalog:
     try:
         from pyiceberg.catalog.sql import SqlCatalog
     except ImportError as e:
+        # More specific error message based on the actual missing dependency
+        error_msg = str(e)
+        if "sqlalchemy" in error_msg.lower():
+            raise ImportError(
+                "SQLAlchemy required for PyIceberg SQL catalog. "
+                "Install with: uv add 'pyiceberg[sql-postgres]'"
+            ) from e
         raise ImportError(
-            "PyIceberg not installed. Install with: uv sync --extra hx"
+            f"PyIceberg SQL catalog not available: {e}. "
+            "Ensure pyiceberg[sql-postgres] is installed."
         ) from e
 
     # Build catalog properties

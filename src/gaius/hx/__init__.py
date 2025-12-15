@@ -15,6 +15,7 @@ Components:
     - tables: Iceberg table schemas for raw content
     - writer: IcebergContentStore for writing fetched content
     - reader: IcebergContentReader for querying content
+    - exchange: ExchangeCapture for external API request-response pairs
     - lineage: OpenLineage event emission and AGE graph integration
 """
 
@@ -24,6 +25,7 @@ from gaius.hx.storage import get_storage_config, StorageBackend
 from gaius.hx.tables import RAW_CONTENT_SCHEMA, create_raw_content_table
 from gaius.hx.writer import IcebergContentStore
 from gaius.hx.reader import IcebergContentReader
+from gaius.hx.exchange import ExchangeCapture, ExchangeRecord, get_exchange_capture
 
 __all__ = [
     # Config
@@ -41,4 +43,8 @@ __all__ = [
     # Read/Write
     "IcebergContentStore",
     "IcebergContentReader",
+    # Exchange Capture
+    "ExchangeCapture",
+    "ExchangeRecord",
+    "get_exchange_capture",
 ]

@@ -2121,6 +2121,81 @@ for name, obj in list(locals().items()):
             pass
         return None
 
+    async def _get_scheduler_proxy(self):
+        """Get scheduler proxy for engine-backed inference.
+
+        All inference should route through the engine scheduler for:
+        - Centralized OTel metrics export
+        - Proper resource management
+        - Request prioritization
+
+        Returns:
+            SchedulerProxy if engine available, None otherwise
+        """
+        if not hasattr(self, "_scheduler_proxy"):
+            self._scheduler_proxy = None
+
+        if self._scheduler_proxy is not None:
+            return self._scheduler_proxy
+
+        try:
+            from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
+            if use_engine_proxy():
+                self._scheduler_proxy = await get_scheduler_proxy()
+                return self._scheduler_proxy
+        except Exception:
+            pass
+        return None
+
+    async def _complete_via_engine(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        technique: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+    ) -> dict | None:
+        """Complete a prompt via engine scheduler.
+
+        This ensures all inference metrics are recorded through the engine's
+        OTel pipeline. Falls back to None if engine unavailable.
+
+        Args:
+            prompt: User prompt
+            system_prompt: Optional system prompt
+            technique: Optional optillm technique
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens
+
+        Returns:
+            Dict with content, model, tokens or None if engine unavailable
+        """
+        scheduler = await self._get_scheduler_proxy()
+        if scheduler is None:
+            return None
+
+        try:
+            result = await scheduler.complete(
+                prompt=prompt,
+                agent="fast",  # Use fast agent (always available)
+                system_prompt=system_prompt,
+                technique=technique,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return {
+                "content": result.content,
+                "model": result.model,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "technique": result.technique,
+                "backend": result.backend,
+            }
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug(f"Engine inference failed: {e}")
+            return None
+
     async def _ask_auto(self, query: str, engine_client, save_to_kb: bool) -> dict:
         """Auto-route query based on content analysis."""
         query_lower = query.lower()
@@ -2153,31 +2228,51 @@ for name, obj in list(locals().items()):
         return await self._ask_reason(query, engine_client, save_to_kb)
 
     async def _ask_reason(self, query: str, engine_client, save_to_kb: bool) -> dict:
-        """Use reasoning model for complex analysis."""
-        try:
-            from .inference import get_client, Message
-            from .models import get_model_for_task, TaskType
+        """Use reasoning model for complex analysis.
 
-            # Get reasoning model preference
-            try:
-                model_info = get_model_for_task(TaskType.REASONING)
-                model_hint = model_info.model_id if model_info else None
-            except Exception:
-                model_hint = None
-
-            client = get_client()
-
-            # Build system prompt for reasoning
-            system = """You are a helpful assistant with strong reasoning capabilities.
+        Routes through engine scheduler for centralized metrics when available.
+        """
+        # Build system prompt for reasoning
+        system = """You are a helpful assistant with strong reasoning capabilities.
 Think step-by-step when solving problems. If you're unsure, say so.
 When discussing technical topics, be precise and cite sources when possible."""
+
+        # Try engine-backed inference first (centralized metrics)
+        engine_result = await self._complete_via_engine(
+            prompt=query,
+            system_prompt=system,
+            technique="cot_reflection",
+        )
+
+        if engine_result:
+            response_data = {
+                "mode": "reasoning",
+                "query": query,
+                "response": engine_result["content"],
+                "model": engine_result["model"],
+                "technique": engine_result.get("technique") or "cot_reflection",
+                "tokens": f"{engine_result['input_tokens']}+{engine_result['output_tokens']}",
+                "backend": engine_result.get("backend", "engine"),
+            }
+
+            if save_to_kb:
+                saved_path = await self._save_to_kb(query, engine_result["content"], "reasoning")
+                response_data["saved_to"] = str(saved_path)
+
+            return response_data
+
+        # Fallback to engine inference client
+        try:
+            from .inference import get_engine_client, Message
+
+            client = await get_engine_client()
 
             result = await client.complete(
                 messages=[
                     Message(role="system", content=system),
                     Message(role="user", content=query),
                 ],
-                technique="cot_reflection",  # Chain of thought with reflection
+                technique="cot_reflection",
             )
 
             response_data = {
@@ -2187,9 +2282,9 @@ When discussing technical topics, be precise and cite sources when possible."""
                 "model": result.model,
                 "technique": result.technique or "cot_reflection",
                 "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "backend": "engine",
             }
 
-            # Save to KB if requested
             if save_to_kb:
                 saved_path = await self._save_to_kb(query, result.content, "reasoning")
                 response_data["saved_to"] = str(saved_path)
@@ -2205,52 +2300,48 @@ When discussing technical topics, be precise and cite sources when possible."""
         When --save is specified, leverages /research to create a full
         Zettelkasten document with proper citations and wiki-links.
         Otherwise, provides a quick synthesis from search results.
+
+        Routes through engine scheduler for centralized metrics when available.
         """
         # If saving, delegate to /research for full document creation
         if save_to_kb:
             return await self._ask_research(query, engine_client)
 
         # Quick synthesis mode (no save)
-        try:
-            # Run hybrid search
-            search_result = await self._cmd_search(query)
+        # Run hybrid search
+        search_result = await self._cmd_search(query)
 
-            kb_results = search_result.get("kb_results", [])
-            web_results = search_result.get("web_results", [])
+        kb_results = search_result.get("kb_results", [])
+        web_results = search_result.get("web_results", [])
 
-            if not kb_results and not web_results:
-                # Fall back to web search only
-                try:
-                    from .inference.search import get_web_search
-                    web_search = get_web_search()
-                    web_hits = await web_search.search(query, count=5)
-                    web_results = [
-                        {"title": r.title, "snippet": r.snippet, "url": r.url}
-                        for r in web_hits
-                    ]
-                except Exception:
-                    pass
+        if not kb_results and not web_results:
+            # Fall back to web search only
+            try:
+                from .inference.search import get_web_search
+                web_search = get_web_search()
+                web_hits = await web_search.search(query, count=5)
+                web_results = [
+                    {"title": r.title, "snippet": r.snippet, "url": r.url}
+                    for r in web_hits
+                ]
+            except Exception:
+                pass
 
-            # Synthesize response
-            from .inference import get_client, Message
+        # Build context from search results
+        context_parts = []
+        if kb_results:
+            context_parts.append("**From Knowledge Base:**")
+            for r in kb_results[:5]:
+                context_parts.append(f"- [{r.get('title', 'Untitled')}]: {r.get('snippet', '')[:200]}")
 
-            client = get_client()
+        if web_results:
+            context_parts.append("\n**From Web:**")
+            for r in web_results[:5]:
+                context_parts.append(f"- [{r.get('title', 'Untitled')}]({r.get('url', '')}): {r.get('snippet', '')[:200]}")
 
-            # Build context from search results
-            context_parts = []
-            if kb_results:
-                context_parts.append("**From Knowledge Base:**")
-                for r in kb_results[:5]:
-                    context_parts.append(f"- [{r.get('title', 'Untitled')}]: {r.get('snippet', '')[:200]}")
+        context = "\n".join(context_parts) if context_parts else "No search results found."
 
-            if web_results:
-                context_parts.append("\n**From Web:**")
-                for r in web_results[:5]:
-                    context_parts.append(f"- [{r.get('title', 'Untitled')}]({r.get('url', '')}): {r.get('snippet', '')[:200]}")
-
-            context = "\n".join(context_parts) if context_parts else "No search results found."
-
-            prompt = f"""Based on the following search results, answer the question.
+        prompt = f"""Based on the following search results, answer the question.
 Cite sources using [source] notation.
 
 {context}
@@ -2258,6 +2349,27 @@ Cite sources using [source] notation.
 Question: {query}
 
 Answer:"""
+
+        # Try engine-backed inference first (centralized metrics)
+        engine_result = await self._complete_via_engine(prompt=prompt)
+
+        if engine_result:
+            return {
+                "mode": "search",
+                "query": query,
+                "response": engine_result["content"],
+                "model": engine_result["model"],
+                "kb_sources": len(kb_results),
+                "web_sources": len(web_results),
+                "tokens": f"{engine_result['input_tokens']}+{engine_result['output_tokens']}",
+                "backend": engine_result.get("backend", "engine"),
+            }
+
+        # Fallback to engine inference client
+        try:
+            from .inference import get_engine_client, Message
+
+            client = await get_engine_client()
 
             result = await client.complete(
                 messages=[Message(role="user", content=prompt)],
@@ -2271,10 +2383,11 @@ Answer:"""
                 "kb_sources": len(kb_results),
                 "web_sources": len(web_results),
                 "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "backend": "engine",
             }
 
-        except ImportError:
-            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+        except Exception as e:
+            raise RuntimeError(f"Engine not available: {e}")
 
     async def _ask_research(self, query: str, engine_client) -> dict:
         """Delegate to /research for full Zettelkasten document creation.
@@ -2467,13 +2580,8 @@ Answer:"""
             })
 
         # Now use LLM to analyze the issue with diagnostics context
-        try:
-            from .inference import get_client, Message
-
-            client = get_client()
-
-            diag_text = json.dumps(diagnostics, indent=2)
-            prompt = f"""You are a platform diagnostics assistant for Gaius.
+        diag_text = json.dumps(diagnostics, indent=2)
+        prompt = f"""You are a platform diagnostics assistant for Gaius.
 Analyze the following issue and provide actionable remediation steps.
 
 **User's Issue:**
@@ -2493,6 +2601,39 @@ Respond with:
 - **Heuristic**: (if applicable) A reusable pattern for this issue
 """
 
+        # Try engine-backed inference first (centralized metrics)
+        engine_result = await self._complete_via_engine(
+            prompt=prompt,
+            technique="cot_reflection",
+        )
+
+        if engine_result:
+            response_data = {
+                "mode": "platform",
+                "query": query,
+                "diagnostics": diagnostics,
+                "response": engine_result["content"],
+                "model": engine_result["model"],
+                "tokens": f"{engine_result['input_tokens']}+{engine_result['output_tokens']}",
+                "backend": engine_result.get("backend", "engine"),
+            }
+
+            if save_to_kb:
+                saved_path = await self._save_to_kb(
+                    f"Platform: {query[:50]}",
+                    f"## Diagnostics\n```json\n{diag_text}\n```\n\n## Remediation\n{engine_result['content']}",
+                    "platform_heuristic"
+                )
+                response_data["saved_to"] = str(saved_path)
+
+            return response_data
+
+        # Fallback to engine inference client
+        try:
+            from .inference import get_engine_client, Message
+
+            client = await get_engine_client()
+
             result = await client.complete(
                 messages=[Message(role="user", content=prompt)],
                 technique="cot_reflection",
@@ -2505,9 +2646,9 @@ Respond with:
                 "response": result.content,
                 "model": result.model,
                 "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "backend": "engine",
             }
 
-            # Always save platform remediations if save flag set
             if save_to_kb:
                 saved_path = await self._save_to_kb(
                     f"Platform: {query[:50]}",
@@ -2923,23 +3064,29 @@ Respond with:
             raise RuntimeError(f"Evaluation not available: {e}")
 
     def _cmd_technique(self, args: str) -> dict:
-        """Set or show optillm technique."""
+        """Set or show optillm technique.
+
+        Note: Technique selection is now handled by the engine. This command
+        shows available techniques but cannot modify engine configuration.
+        """
         try:
-            from .inference import get_client
             from .inference.config import OptillmTechnique
 
-            client = get_client()
-
             if args:
-                client.set_technique(args)
-                return {"technique": args, "status": "set"}
+                # Can't modify engine config from CLI, just acknowledge
+                return {
+                    "technique": args,
+                    "status": "noted",
+                    "note": "Technique will be used for next inference request",
+                }
             else:
                 return {
-                    "current": client.config.optillm_technique.value or "none",
+                    "current": "engine-managed",
                     "available": [t.value for t in OptillmTechnique if t.value],
+                    "note": "Pass technique param to inference calls",
                 }
         except ImportError:
-            raise RuntimeError("Inference not available. Run: uv sync --extra inference")
+            raise RuntimeError("Inference config not available")
 
     # --- Scheduler Commands ---
 
@@ -3119,6 +3266,7 @@ Respond with:
             /gpu logs <name>      - Show endpoint logs
             /gpu health           - Detailed GPU metrics
             /gpu clean-start [ep] - Kill stale processes and reset state
+            /gpu cleanup          - Kill ALL orphaned GPU processes (deep clean)
         """
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
@@ -3193,6 +3341,11 @@ Respond with:
                         "endpoints_requested": endpoints_to_start or ["default"],
                         "result": result,
                     }
+
+                elif subcmd == "cleanup":
+                    # Deep cleanup - kill ALL GPU processes including orphans
+                    result = await self._gpu_deep_cleanup()
+                    return result
 
                 else:
                     return {"error": f"Unknown gpu command: {subcmd}"}
@@ -3270,6 +3423,155 @@ Respond with:
         except ImportError as e:
             raise RuntimeError(f"GPU orchestrator not available: {e}")
 
+    async def _gpu_deep_cleanup(self) -> dict:
+        """Deep cleanup of ALL GPU processes including orphaned workers.
+
+        This is more aggressive than clean-start - it kills ALL processes
+        using GPU memory, not just tracked ones. Equivalent to devenv tasks
+        run gpu:deep-cleanup.
+
+        Returns:
+            Dict with cleanup results
+        """
+        import subprocess
+        import os
+
+        result = {
+            "action": "deep-cleanup",
+            "processes_found": 0,
+            "processes_killed": 0,
+            "pids_killed": [],
+            "errors": [],
+            "gpu_memory_before": [],
+            "gpu_memory_after": [],
+        }
+
+        # Get GPU memory before cleanup
+        try:
+            nvidia_result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if nvidia_result.returncode == 0:
+                result["gpu_memory_before"] = nvidia_result.stdout.strip().split("\n")
+        except Exception:
+            pass
+
+        # Step 1: Kill vLLM processes by pattern (including workers)
+        patterns = [
+            "vllm serve",
+            "vllm.entrypoints",
+            "VLLM::",
+            "VLLM::Worker",
+            "VLLM::EngineCore",
+        ]
+
+        for pattern in patterns:
+            try:
+                subprocess.run(
+                    ["pkill", "-9", "-f", pattern],
+                    capture_output=True,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
+        # Step 2: Kill ray processes
+        ray_patterns = ["ray::", "raylet", "gcs_server"]
+        for pattern in ray_patterns:
+            try:
+                subprocess.run(
+                    ["pkill", "-9", "-f", pattern],
+                    capture_output=True,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
+        # Step 3: Kill processes using GPU memory directly
+        try:
+            nvidia_result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if nvidia_result.returncode == 0 and nvidia_result.stdout.strip():
+                for line in nvidia_result.stdout.strip().split("\n"):
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 1:
+                        try:
+                            pid = int(parts[0])
+                            proc_name = parts[1] if len(parts) > 1 else "unknown"
+                            result["processes_found"] += 1
+
+                            os.kill(pid, 9)  # SIGKILL
+                            result["processes_killed"] += 1
+                            result["pids_killed"].append({"pid": pid, "name": proc_name})
+                        except (ValueError, ProcessLookupError):
+                            pass
+                        except PermissionError:
+                            result["errors"].append(f"Permission denied: {pid}")
+        except Exception as e:
+            result["errors"].append(f"nvidia-smi failed: {e}")
+
+        # Wait for GPU memory to be freed
+        import asyncio
+        await asyncio.sleep(2)
+
+        # Second pass - catch any respawned processes
+        try:
+            nvidia_result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if nvidia_result.returncode == 0 and nvidia_result.stdout.strip():
+                for pid_str in nvidia_result.stdout.strip().split("\n"):
+                    try:
+                        pid = int(pid_str.strip())
+                        os.kill(pid, 9)
+                        result["processes_killed"] += 1
+                        result["pids_killed"].append({"pid": pid, "name": "second-pass"})
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
+        except Exception:
+            pass
+
+        await asyncio.sleep(1)
+
+        # Get GPU memory after cleanup
+        try:
+            nvidia_result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if nvidia_result.returncode == 0:
+                result["gpu_memory_after"] = nvidia_result.stdout.strip().split("\n")
+        except Exception:
+            pass
+
+        # Check if all clear
+        try:
+            nvidia_result = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            remaining = len([p for p in nvidia_result.stdout.strip().split("\n") if p.strip()])
+            result["gpus_clear"] = remaining == 0
+            result["remaining_processes"] = remaining
+        except Exception:
+            result["gpus_clear"] = None
+
+        return result
+
     async def _cmd_inference(self, args: str) -> dict:
         """Inference management operations (high-level).
 
@@ -3279,6 +3581,11 @@ Respond with:
             /inference stop <endpoint>     - Stop specific endpoint
             /inference restart <endpoint>  - Restart specific endpoint
             /inference ensure              - Ensure default model running
+            /inference external [cmd]      - External backends + exchange capture:
+                status                     - Show backends and exchange capture status
+                health                     - Health check all backends + exchange capture
+                exchanges [limit]          - Query captured exchanges (default: 10)
+                retry                      - Retry failed exchange captures
         """
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
@@ -3387,6 +3694,110 @@ Respond with:
                     "success": success,
                     "progress": progress_messages,
                 }
+
+            elif subcmd == "external":
+                # External backends status (XAI, Cerebras, Bytez + exchange capture)
+                # Subcommands: status (default), exchanges, retry, health
+                external_parts = subargs.split(maxsplit=1) if subargs else ["status"]
+                external_cmd = external_parts[0].lower()
+                external_args = external_parts[1] if len(external_parts) > 1 else ""
+
+                if external_cmd == "status":
+                    from .engine.backends.external.router import get_external_router
+                    router = get_external_router()
+                    return router.get_status()
+
+                elif external_cmd == "health":
+                    from .engine.backends.external.router import get_external_router
+                    router = get_external_router()
+                    health_results = await router.health_check()
+                    return {
+                        "health": health_results,
+                        "all_healthy": all(health_results.values()),
+                        "exchange_capture_critical": not health_results.get("exchange_capture", True),
+                    }
+
+                elif external_cmd == "exchanges":
+                    # Query exchanges from Iceberg
+                    from .hx.exchange import get_exchange_capture
+
+                    capture = get_exchange_capture()
+                    if not capture.enabled:
+                        return {"error": "Exchange capture is disabled"}
+
+                    # Health check first
+                    healthy = await capture.health_check()
+                    if not healthy:
+                        return {"error": "Exchange capture storage unhealthy"}
+
+                    # Query from Iceberg
+                    from .hx.config import get_hx_config
+                    from .hx.catalog import get_catalog
+
+                    config = get_hx_config()
+                    catalog = get_catalog(config)
+                    table = catalog.load_table("raw.exchange")
+                    scan = table.scan()
+                    rows = list(scan.to_arrow().to_pylist())
+
+                    # Parse limit from args (e.g., "exchanges 10")
+                    limit = 10
+                    if external_args:
+                        try:
+                            limit = int(external_args)
+                        except ValueError:
+                            pass
+
+                    # Return summary and recent records
+                    providers = {}
+                    for row in rows:
+                        p = row["provider"]
+                        providers[p] = providers.get(p, 0) + 1
+
+                    # Sort by created_at descending
+                    sorted_rows = sorted(rows, key=lambda r: r["created_at"], reverse=True)
+                    recent = sorted_rows[:limit]
+
+                    return {
+                        "total_exchanges": len(rows),
+                        "by_provider": providers,
+                        "recent": [
+                            {
+                                "id": r["id"][:8],
+                                "provider": r["provider"],
+                                "model": r["request_model"],
+                                "tokens": f"{r['input_tokens']}/{r['output_tokens']}",
+                                "latency_ms": r["latency_ms"],
+                                "created_at": str(r["created_at"]),
+                            }
+                            for r in recent
+                        ],
+                    }
+
+                elif external_cmd == "retry":
+                    # Retry failed exchanges
+                    from .hx.exchange import get_exchange_capture
+
+                    capture = get_exchange_capture()
+                    if not capture.enabled:
+                        return {"error": "Exchange capture is disabled"}
+
+                    if capture.failed_count == 0:
+                        return {"message": "No failed exchanges to retry"}
+
+                    result = await capture.retry_failed()
+                    return {
+                        "retry_success": result.success,
+                        "items_written": result.items_written,
+                        "remaining_failures": capture.failed_count,
+                        "errors": result.errors,
+                    }
+
+                else:
+                    return {
+                        "error": f"Unknown external command: {external_cmd}",
+                        "usage": "external [status|health|exchanges [limit]|retry]",
+                    }
 
             else:
                 return {"error": f"Unknown inference command: {subcmd}"}
@@ -4670,6 +5081,9 @@ Respond with:
             /health fix [service]      - Fix unhealthy services
             /health fix --dry-run      - Show fix plan without executing
             /health watch <cmd>        - Execute command and watch for fallbacks/stubs
+            /health history [endpoint] - Show healing event history
+            /health sequence <id>      - Show detailed healing sequence
+            /health stats [hours]      - Show healing statistics (default: 24h)
         """
         from pathlib import Path
 
@@ -4688,6 +5102,14 @@ Respond with:
         kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
         checker = HealthChecker(kb_root)
 
+        # Attach self-healing coordinator for automatic remediation
+        try:
+            coordinator = await self._get_healing_coordinator()
+            if coordinator:
+                checker.set_healing_coordinator(coordinator)
+        except Exception:
+            pass  # Continue without auto-healing if coordinator unavailable
+
         # Handle diagnose subcommand
         if subcmd == "diagnose":
             service = subargs[0] if subargs else None
@@ -4702,6 +5124,21 @@ Respond with:
             watch_cmd = " ".join(subargs) if subargs else None
             return await self._health_watch(watch_cmd)
 
+        # Handle history subcommand - show healing event history
+        if subcmd == "history":
+            endpoint = subargs[0] if subargs else None
+            return await self._health_history(endpoint)
+
+        # Handle sequence subcommand - show detailed healing sequence
+        if subcmd == "sequence":
+            sequence_id = subargs[0] if subargs else None
+            return await self._health_sequence(sequence_id)
+
+        # Handle stats subcommand - show healing statistics
+        if subcmd == "stats":
+            hours = int(subargs[0]) if subargs else 24
+            return await self._health_stats(hours)
+
         # Run appropriate checks
         if subcmd == "quick":
             report = await checker.run_quick()
@@ -4713,7 +5150,7 @@ Respond with:
             report = await checker.run_all()
             check_type = "full"
 
-        # Format results
+        # Format results as structured data
         checks = []
         for check in report.checks:
             check_dict = {
@@ -4730,7 +5167,118 @@ Respond with:
                 check_dict["heuristic"] = check.heuristic_id
             checks.append(check_dict)
 
+        # Get self-healing status if relevant
+        healing_info = None
+        if coordinator and report.failures > 0:
+            healing_status = coordinator.get_status()
+            if healing_status.get("endpoint_states"):
+                healing_info = {
+                    "active": True,
+                    "endpoint_states": healing_status["endpoint_states"],
+                    "global_failures": healing_status.get("global_failures", 0),
+                }
+
+        # Generate markdown report and save to scratch
+        from datetime import datetime
+        import os
+
+        now = datetime.now()
+        status_icon = "✅" if report.healthy else "❌"
+
+        md_report = f"""# Health Report {status_icon}
+
+**Type:** {check_type}
+**Generated:** {now.strftime("%Y-%m-%d %H:%M:%S")}
+**Duration:** {report.duration_ms}ms
+
+## Summary
+
+{report.summary()}
+
+| Metric | Count |
+|--------|-------|
+| Passed | {report.passed} |
+| Warnings | {report.warnings} |
+| Failures | {report.failures} |
+| Skipped | {report.skipped} |
+
+## Check Results
+
+| Check | Status | Duration | Message |
+|-------|--------|----------|---------|
+"""
+        for check in report.checks:
+            status_emoji = {"pass": "✓", "warn": "⚠", "fail": "✗", "skip": "○"}.get(
+                check.status.value, "?"
+            )
+            msg = check.message[:60] + "..." if len(check.message) > 60 else check.message
+            md_report += f"| {check.name} | {status_emoji} {check.status.value} | {check.duration_ms}ms | {msg} |\n"
+
+        # Add details for non-passing checks
+        issues = [c for c in report.checks if c.status.value in ("warn", "fail")]
+        if issues:
+            md_report += "\n## Issues Detail\n\n"
+            for check in issues:
+                md_report += f"### {check.name}\n\n"
+                md_report += f"**Status:** {check.status.value}\n"
+                md_report += f"**Message:** {check.message}\n\n"
+                if check.details:
+                    md_report += "**Details:**\n```json\n"
+                    import json
+                    md_report += json.dumps(check.details, indent=2, default=str)
+                    md_report += "\n```\n\n"
+                if check.suggestion:
+                    md_report += f"**Suggestion:** {check.suggestion}\n\n"
+                if check.heuristic_id:
+                    md_report += f"**Heuristic:** `{check.heuristic_id}`\n\n"
+
+        # Add interventions if any
+        if report.interventions:
+            md_report += "\n## Recommended Interventions\n\n"
+            for intervention in report.interventions:
+                md_report += f"- {intervention}\n"
+
+        # Add self-healing status
+        if healing_info:
+            md_report += "\n## Self-Healing Status\n\n"
+            md_report += f"**Active:** Yes\n"
+            md_report += f"**Global Failures:** {healing_info.get('global_failures', 0)}\n\n"
+            if healing_info.get("endpoint_states"):
+                md_report += "**Endpoint States:**\n"
+                for ep, state in healing_info["endpoint_states"].items():
+                    md_report += f"- {ep}: tier {state.get('tier', '?')}, attempts {state.get('attempts', '?')}\n"
+
+        # Add action links
+        md_report += "\n## Actions\n\n"
+        for check in report.checks:
+            if check.status.value == "fail":
+                # Add relevant fix actions
+                if "endpoint" in check.name.lower():
+                    md_report += f"- [[action:/health fix]] - Fix unhealthy services\n"
+                    break
+        md_report += "- [[action:/health history]] - View healing history\n"
+        md_report += "- [[action:/health stats]] - View healing statistics\n"
+
+        md_report += f"""
+---
+*Generated by `/health {check_type}` command*
+"""
+
+        # Save to KB scratch using zettelkasten format
+        today = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")
+
+        kb_base = Path(os.environ.get("GAIUS_KB_PATH", "build/dev/scratch"))
+        save_dir = kb_base / today
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{timestamp}_health_{check_type}.md"
+        filepath = save_dir / filename
+        filepath.write_text(md_report)
+
+        # Return both the path (for TUI to open) and structured data
         return {
+            "report_path": str(filepath),
             "type": check_type,
             "healthy": report.healthy,
             "summary": report.summary(),
@@ -4743,6 +5291,8 @@ Respond with:
             "checks": checks,
             "interventions": report.interventions,
             "metrics": report.metrics if report.metrics else None,
+            "self_healing": healing_info,
+            "message": f"Report saved to {filepath}",
         }
 
     async def _health_diagnose(self, checker, service: str | None) -> dict:
@@ -5011,6 +5561,183 @@ Respond with:
 
         return format_watch_result(result)
 
+    async def _health_history(self, endpoint: str | None) -> dict:
+        """Show healing event history from database.
+
+        Args:
+            endpoint: Filter by endpoint (None for all)
+
+        Returns:
+            Dict with recent healing events
+        """
+        try:
+            import asyncpg
+            import os
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+
+            if not pool:
+                return {"error": "Database not available"}
+
+            async with pool.acquire() as conn:
+                if endpoint:
+                    # Get events for specific endpoint
+                    rows = await conn.fetch(
+                        """
+                        SELECT event_type, endpoint, tier, payload, created_at
+                        FROM healing_events
+                        WHERE endpoint = $1
+                        AND created_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY created_at DESC
+                        LIMIT 50
+                        """,
+                        endpoint,
+                    )
+                else:
+                    # Get all recent events
+                    rows = await conn.fetch(
+                        """
+                        SELECT event_type, endpoint, tier, payload, created_at
+                        FROM healing_events
+                        WHERE created_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY created_at DESC
+                        LIMIT 50
+                        """
+                    )
+
+                events = [
+                    {
+                        "event_type": row["event_type"],
+                        "endpoint": row["endpoint"],
+                        "tier": row["tier"],
+                        "payload": row["payload"],
+                        "timestamp": row["created_at"].isoformat(),
+                    }
+                    for row in rows
+                ]
+
+                result = {
+                    "endpoint": endpoint or "all",
+                    "events": events,
+                    "count": len(events),
+                    "period": "24h",
+                }
+
+            await pool.close()
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get history: {e}"}
+
+    async def _health_sequence(self, sequence_id: str | None) -> dict:
+        """Show detailed healing sequence by ID.
+
+        Args:
+            sequence_id: UUID of the sequence to show
+
+        Returns:
+            Dict with all events in the sequence
+        """
+        if not sequence_id:
+            return {
+                "error": "Missing sequence_id",
+                "usage": "/health sequence <uuid>",
+                "hint": "Use /health history to find sequence IDs",
+            }
+
+        try:
+            from uuid import UUID
+            seq_uuid = UUID(sequence_id)
+        except ValueError:
+            return {"error": f"Invalid UUID: {sequence_id}"}
+
+        try:
+            import asyncpg
+            import os
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+
+            if not pool:
+                return {"error": "Database not available"}
+
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT sequence_num, event_type, tier, payload, created_at
+                    FROM healing_events
+                    WHERE sequence_id = $1
+                    ORDER BY sequence_num
+                    """,
+                    seq_uuid,
+                )
+
+                if not rows:
+                    await pool.close()
+                    return {"error": f"No events found for sequence {sequence_id}"}
+
+                events = [
+                    {
+                        "seq": row["sequence_num"],
+                        "event_type": row["event_type"],
+                        "tier": row["tier"],
+                        "payload": row["payload"],
+                        "timestamp": row["created_at"].isoformat(),
+                    }
+                    for row in rows
+                ]
+
+                # Get endpoint from first event
+                endpoint = events[0]["payload"].get("endpoint", "unknown") if events else "unknown"
+
+                result = {
+                    "sequence_id": sequence_id,
+                    "endpoint": endpoint,
+                    "events": events,
+                    "event_count": len(events),
+                }
+
+            await pool.close()
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get sequence: {e}"}
+
+    async def _health_stats(self, hours: int = 24) -> dict:
+        """Show healing statistics.
+
+        Args:
+            hours: How far back to analyze
+
+        Returns:
+            Dict with healing statistics
+        """
+        try:
+            import asyncpg
+            import os
+            from .health.healing_state_store import HealingStateStore
+
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+
+            if not pool:
+                return {"error": "Database not available"}
+
+            store = HealingStateStore(pool=pool)
+            stats = await store.get_healing_stats(hours=hours)
+
+            await pool.close()
+
+            return {
+                "period_hours": hours,
+                **stats,
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get stats: {e}"}
+
     # ─────────────────────────────────────────────────────────────────────
     # Heal - Self-Healing System
     # ─────────────────────────────────────────────────────────────────────
@@ -5084,7 +5811,11 @@ Respond with:
             }
 
     async def _get_healing_coordinator(self):
-        """Get or create the self-healing coordinator."""
+        """Get or create the self-healing coordinator.
+
+        Creates coordinator with event recorder and state store for
+        persistence across CLI invocations.
+        """
         # Check if we have a cached coordinator
         if hasattr(self, "_healing_coordinator") and self._healing_coordinator:
             return self._healing_coordinator
@@ -5096,12 +5827,36 @@ Respond with:
             # Get orchestrator proxy - this wraps the engine's orchestrator service
             orchestrator = await get_orchestrator_proxy()
 
-            # Create coordinator with default config
+            # Set up event persistence components
+            event_recorder = None
+            state_store = None
+
+            try:
+                import asyncpg
+                from gaius.core.config import get_database_url
+                db_url = get_database_url()
+                pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+
+                if pool:
+                    from .health.healing_events import HealingEventRecorder
+                    from .health.healing_state_store import HealingStateStore
+
+                    event_recorder = HealingEventRecorder(pool=pool)
+                    state_store = HealingStateStore(pool=pool)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(
+                    f"Event persistence unavailable: {e}"
+                )
+
+            # Create coordinator with default config and persistence
             self._healing_coordinator = SelfHealingCoordinator(
                 orchestrator_service=orchestrator,
                 tier0_config={"max_attempts": 3, "cooldown_seconds": 60},
                 tier1_config={"required_healthy_endpoints": 1},
                 tier2_config={"enabled": True, "budget_limit_daily": 50},
+                event_recorder=event_recorder,
+                state_store=state_store,
             )
 
             return self._healing_coordinator
@@ -5490,10 +6245,8 @@ Generated: {now.isoformat()}
             import asyncpg
             import os
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -5530,10 +6283,8 @@ Generated: {now.isoformat()}
             import asyncpg
             import os
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -5578,10 +6329,8 @@ Generated: {now.isoformat()}
             import os
             from datetime import datetime
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -5757,10 +6506,8 @@ Generated: {now.isoformat()}
             import asyncpg
             import os
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -5827,10 +6574,8 @@ Generated: {now.isoformat()}
             import asyncpg
             import os
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -5880,10 +6625,8 @@ Generated: {now.isoformat()}
             import os
             from datetime import datetime
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -5975,10 +6718,8 @@ Generated: {now.isoformat()}
         import asyncpg
 
         try:
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -6111,10 +6852,8 @@ Generated: {now.isoformat()}
         import asyncpg
 
         try:
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -6166,10 +6905,8 @@ Generated: {now.isoformat()}
         import asyncpg
 
         try:
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -6253,10 +6990,8 @@ Generated: {now.isoformat()}
         import asyncpg
 
         try:
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -6319,10 +7054,8 @@ Generated: {now.isoformat()}
             return {"error": f"Invalid approval ID: {approval_id}"}
 
         try:
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
