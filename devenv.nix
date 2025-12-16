@@ -37,10 +37,12 @@
 
   # Kubernetes configuration for RKE2
   # For non-root access, copy the kubeconfig:
-  #   sudo cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
-  #   sudo chown $USER:$USER ~/.kube/config
-  #   chmod 600 ~/.kube/config
-  env.KUBECONFIG = "$HOME/.kube/config";
+  #   sudo cp /etc/rancher/rke2/rke2.yaml ~/.config/kube/rke2.yaml
+  #   sudo chown $USER:$USER ~/.config/kube/rke2.yaml
+  #   chmod 600 ~/.config/kube/rke2.yaml
+  enterShell = ''
+    export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
+  '';
 
   # https://devenv.sh/packages/
   packages = with pkgs; [
@@ -92,7 +94,7 @@
       { name = "metaflow"; }
     ];
     port = 5438;
-    listen_addresses = "127.0.0.1";  # Enable TCP for dbmate/asyncpg
+    listen_addresses = "*";  # Enable TCP from K8s pods and local clients
     settings = {
       shared_preload_libraries = "pg_cron,age";
       "cron.database_name" = "zndx_gaius";

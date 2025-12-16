@@ -37,9 +37,8 @@ metadata:
   name: devenv-postgres
 subsets:
   - addresses:
-      # TODO: Replace with actual RKE2 node IP
-      # Get with: kubectl get nodes -o wide
-      - ip: "10.0.0.1"  # REPLACE WITH NODE IP
+      # Host IP for tinybox (where devenv postgres runs)
+      - ip: "192.168.1.55"
     ports:
       - port: 5438
         name: postgres
@@ -73,8 +72,8 @@ metadata:
   name: devenv-minio
 subsets:
   - addresses:
-      # TODO: Replace with actual RKE2 node IP
-      - ip: "10.0.0.1"  # REPLACE WITH NODE IP
+      # Host IP for tinybox (where devenv minio runs)
+      - ip: "192.168.1.55"
     ports:
       - port: 9010
         name: api

@@ -1,0 +1,46 @@
+# Metaflow UI Helm Values for devenv
+# Uses PostgreSQL and MinIO from host devenv (via NodePort services)
+
+uiBackend:
+  metadatadb:
+    host: devenv-postgres
+    port: "5438"
+    user: postgres
+    password: ""  # Empty password for devenv postgres
+    name: metaflow
+
+  metaflowDatastoreSysRootS3: "s3://metaflow-artifacts/metaflow"
+  metaflowS3EndpointURL: "http://devenv-minio:9010"
+
+  image:
+    name: public.ecr.aws/outerbounds/metaflow_metadata_service
+    tag: "2.5.0"
+
+  env:
+    - name: AWS_ACCESS_KEY_ID
+      value: minioadmin
+    - name: AWS_SECRET_ACCESS_KEY
+      value: minioadmin
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+uiStatic:
+  metaflowUIBackendURL: "http://localhost:8083/api"
+
+  image:
+    name: public.ecr.aws/outerbounds/metaflow_ui
+    tag: v1.3.14
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
