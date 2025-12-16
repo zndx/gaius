@@ -1,0 +1,104 @@
+---
+# Configure AWS S3 Access from LambdaLabs
+# Sets up AWS CLI and credentials for KB sync to S3
+#
+# Usage:
+#   ansible-playbook -i ../inventory/hosts.yml configure_aws_access.yml
+#
+# Required environment variables:
+#   GAIUS_SYNC_AWS_PROD_ACCESS_KEY
+#   GAIUS_SYNC_AWS_PROD_SECRET_KEY
+#
+
+- name: Configure AWS S3 Access from LambdaLabs
+  hosts: lambdalabs
+  become: yes
+  vars:
+    aws_region: "{{ lookup('env', 'AWS_REGION') | default('us-west-2') }}"
+    aws_access_key: "{{ lookup('env', 'GAIUS_SYNC_AWS_PROD_ACCESS_KEY') }}"
+    aws_secret_key: "{{ lookup('env', 'GAIUS_SYNC_AWS_PROD_SECRET_KEY') }}"
+    s3_bucket: "{{ lookup('env', 'GAIUS_S3_BUCKET') | default('gaius-kb-prod') }}"
+    ansible_user_home: "{{ lookup('env', 'HOME') }}"
+
+  tasks:
+    - name: Verify AWS credentials are set
+      ansible.builtin.assert:
+        that:
+          - aws_access_key | length > 0
+          - aws_secret_key | length > 0
+        fail_msg: "AWS credentials not set. Set GAIUS_SYNC_AWS_PROD_ACCESS_KEY and GAIUS_SYNC_AWS_PROD_SECRET_KEY"
+
+    - name: Check if nix is available
+      ansible.builtin.command: which nix
+      register: nix_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install AWS CLI via nix (if available)
+      ansible.builtin.command: nix-env -iA nixpkgs.awscli2
+      when: nix_check.rc == 0
+
+    - name: Install AWS CLI via pip (fallback)
+      ansible.builtin.pip:
+        name: awscli
+        state: present
+      when: nix_check.rc != 0
+
+    - name: Create AWS credentials directory
+      ansible.builtin.file:
+        path: "{{ ansible_user_home }}/.aws"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Configure AWS credentials
+      ansible.builtin.template:
+        src: templates/aws_credentials.j2
+        dest: "{{ ansible_user_home }}/.aws/credentials"
+        mode: '0600'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Configure AWS config
+      ansible.builtin.copy:
+        content: |
+          [default]
+          region = {{ aws_region }}
+          output = json
+        dest: "{{ ansible_user_home }}/.aws/config"
+        mode: '0600'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Verify S3 access
+      ansible.builtin.command: aws s3 ls s3://{{ s3_bucket }} --region {{ aws_region }}
+      register: s3_test
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Report S3 access status
+      ansible.builtin.debug:
+        msg: >
+          S3 Access:
+          {% if s3_test.rc == 0 %}
+          SUCCESS - Can access s3://{{ s3_bucket }}
+          {% else %}
+          FAILED - {{ s3_test.stderr | default('unknown error') }}
+          {% endif %}
+
+    - name: Set up Gaius KB sync target
+      ansible.builtin.shell: |
+        # Add AWS S3 target to Gaius database
+        psql $GAIUS_DATABASE_URL -c "
+          INSERT INTO kb_sync_targets (name, target_type, endpoint, bucket, region, config)
+          VALUES ('aws-prod', 's3', 's3.{{ aws_region }}.amazonaws.com', '{{ s3_bucket }}', '{{ aws_region }}',
+                  '{\"storage_class\": \"INTELLIGENT_TIERING\"}'::jsonb)
+          ON CONFLICT (name) DO UPDATE SET
+            endpoint = EXCLUDED.endpoint,
+            bucket = EXCLUDED.bucket,
+            region = EXCLUDED.region,
+            config = EXCLUDED.config;
+        "
+      when: s3_test.rc == 0
+      ignore_errors: yes

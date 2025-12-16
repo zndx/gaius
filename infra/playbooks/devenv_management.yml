@@ -1,0 +1,95 @@
+---
+# DevEnv Environment Management
+# Manages nixpkgs, devenv, and Python dependencies
+#
+# Usage:
+#   ansible-playbook -i ../inventory/hosts.yml devenv_management.yml \
+#     -e "action=update"
+#
+# Actions: install, update, sync, migrate
+#
+
+- name: Manage DevEnv Environment
+  hosts: all
+  vars:
+    gaius_root: "{{ lookup('env', 'GAIUS_ROOT') | default('/home/rch/local/src/zndx/gaius') }}"
+    database_url: "{{ lookup('env', 'DATABASE_URL') | default('postgres://localhost:5438/zndx_gaius?sslmode=disable') }}"
+    action: "{{ devenv_action | default('update') }}"
+
+  tasks:
+    # --- Install devenv if not present ---
+    - name: Check if devenv is installed
+      ansible.builtin.command: which devenv
+      register: devenv_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install nix if not present
+      ansible.builtin.shell: |
+        if ! command -v nix &> /dev/null; then
+          curl -L https://nixos.org/nix/install | sh -s -- --daemon
+        fi
+      when: devenv_check.rc != 0 and action == 'install'
+
+    - name: Install devenv via nix
+      ansible.builtin.shell: |
+        nix-env -iA cachix -f https://cachix.org/api/v1/install
+        cachix use devenv
+        nix-env -if https://install.devenv.sh/latest
+      when: devenv_check.rc != 0 and action == 'install'
+      environment:
+        NIX_INSTALLER_NO_CONFIRM: "1"
+
+    # --- Update devenv environment ---
+    - name: Update devenv flake inputs
+      ansible.builtin.command:
+        cmd: devenv update
+        chdir: "{{ gaius_root }}"
+      when: action in ['update', 'install']
+      register: devenv_update
+      changed_when: "'Updated' in devenv_update.stdout"
+
+    # --- Sync Python dependencies ---
+    - name: Sync uv dependencies
+      ansible.builtin.command:
+        cmd: uv sync --all-extras
+        chdir: "{{ gaius_root }}"
+      when: action in ['sync', 'update', 'install']
+      register: uv_sync
+      changed_when: "'Installed' in uv_sync.stdout or 'Updated' in uv_sync.stdout"
+
+    # --- Run database migrations ---
+    - name: Check database connectivity
+      ansible.builtin.command:
+        cmd: pg_isready -d {{ database_url }}
+      register: db_check
+      when: action in ['migrate', 'install']
+      ignore_errors: yes
+
+    - name: Run database migrations
+      ansible.builtin.command:
+        cmd: dbmate migrate
+        chdir: "{{ gaius_root }}"
+      environment:
+        DATABASE_URL: "{{ database_url }}"
+      when: action in ['migrate', 'install'] and db_check.rc == 0
+      register: dbmate_result
+      changed_when: "'Applying' in dbmate_result.stdout"
+
+    # --- Verify installation ---
+    - name: Verify gaius-cli works
+      ansible.builtin.command:
+        cmd: uv run gaius-cli --cmd "/help" --format json
+        chdir: "{{ gaius_root }}"
+      when: action in ['update', 'install', 'sync']
+      register: gaius_test
+      changed_when: false
+
+    - name: Report installation status
+      ansible.builtin.debug:
+        msg: |
+          DevEnv Status:
+          - devenv: {{ 'installed' if devenv_check.rc == 0 or action == 'install' else 'not found' }}
+          - uv sync: {{ 'complete' if uv_sync is defined and uv_sync.rc == 0 else 'skipped' }}
+          - migrations: {{ 'applied' if dbmate_result is defined and dbmate_result.rc == 0 else 'skipped' }}
+          - gaius-cli: {{ 'working' if gaius_test is defined and gaius_test.rc == 0 else 'not tested' }}

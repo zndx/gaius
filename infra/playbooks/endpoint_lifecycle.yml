@@ -1,0 +1,114 @@
+---
+# Endpoint Lifecycle Management
+# Manages vLLM endpoint start/stop/restart via devenv or direct control
+#
+# Usage:
+#   ansible-playbook -i ../inventory/hosts.yml endpoint_lifecycle.yml \
+#     -e "endpoint=reasoning action=restart"
+#
+# Actions: start, stop, restart, gpu_reset, health_check
+#
+
+- name: Manage vLLM Endpoint Lifecycle
+  hosts: gpu_nodes
+  become: yes
+  vars:
+    endpoint_name: "{{ endpoint | default('reasoning') }}"
+    action: "{{ lifecycle_action | default('restart') }}"
+    gaius_root: "{{ lookup('env', 'GAIUS_ROOT') | default('/home/rch/local/src/zndx/gaius') }}"
+    health_check_url: "http://localhost:{{ endpoint_port | default(8000) }}/health"
+    health_check_retries: 30
+    health_check_delay: 10
+    startup_timeout: 300
+
+  tasks:
+    # --- Stop Endpoint ---
+    - name: Stop endpoint via devenv
+      ansible.builtin.command:
+        cmd: devenv processes stop {{ endpoint_name }}
+        chdir: "{{ gaius_root }}"
+      when: action in ['stop', 'restart']
+      register: stop_result
+      ignore_errors: yes
+
+    - name: Wait for endpoint to stop
+      ansible.builtin.wait_for:
+        port: "{{ endpoint_port | default(8000) }}"
+        state: stopped
+        timeout: 60
+      when: action in ['stop', 'restart']
+      ignore_errors: yes
+
+    # --- GPU Reset (high severity - requires approval) ---
+    - name: Clear CUDA cache and reset GPU
+      ansible.builtin.shell: |
+        # Clear page cache
+        sync && echo 3 > /proc/sys/vm/drop_caches
+
+        # Kill any zombie CUDA processes
+        pkill -9 -f "vllm.entrypoints" || true
+
+        # Reset GPU if nvidia-smi supports it
+        nvidia-smi --gpu-reset -i {{ gpu_id | default(0) }} 2>/dev/null || true
+
+        # Wait for GPU to stabilize
+        sleep 5
+      when: action == 'gpu_reset'
+      become: yes
+
+    # --- Start Endpoint ---
+    - name: Start endpoint via devenv
+      ansible.builtin.command:
+        cmd: devenv processes start {{ endpoint_name }}
+        chdir: "{{ gaius_root }}"
+      when: action in ['start', 'restart']
+      register: start_result
+      async: "{{ startup_timeout }}"
+      poll: 0
+
+    - name: Wait for endpoint startup
+      ansible.builtin.async_status:
+        jid: "{{ start_result.ansible_job_id }}"
+      register: job_result
+      until: job_result.finished
+      retries: "{{ (startup_timeout / 10) | int }}"
+      delay: 10
+      when: action in ['start', 'restart']
+
+    # --- Health Check ---
+    - name: Wait for endpoint health
+      ansible.builtin.uri:
+        url: "{{ health_check_url }}"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: health_check
+      retries: "{{ health_check_retries }}"
+      delay: "{{ health_check_delay }}"
+      when: action in ['start', 'restart', 'health_check']
+      ignore_errors: yes
+
+    - name: Report health status
+      ansible.builtin.debug:
+        msg: >
+          Endpoint {{ endpoint_name }}:
+          {% if health_check.status is defined and health_check.status == 200 %}
+          HEALTHY - responded with {{ health_check.status }}
+          {% else %}
+          UNHEALTHY - {{ health_check.msg | default('no response') }}
+          {% endif %}
+      when: action in ['start', 'restart', 'health_check']
+
+  handlers:
+    - name: Record AIOps event
+      ansible.builtin.uri:
+        url: "http://localhost:5438/api/aiops/event"
+        method: POST
+        body_format: json
+        body:
+          category: "endpoint_lifecycle"
+          severity: "{{ 'high' if action == 'gpu_reset' else 'low' }}"
+          endpoint: "{{ endpoint_name }}"
+          description: "{{ action }} via ansible"
+        status_code: [200, 201]
+      ignore_errors: yes
