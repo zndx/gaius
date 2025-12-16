@@ -130,7 +130,7 @@ uv run gaius-cli --cmd "/state" --format json
 
 **Grid Visualization**
 - KB entries projected onto 19×19 board via UMAP
-- View modes: Go, Pension, Swarm
+- View modes: Go, Theta, Swarm
 - Overlays: Risk, H1/H2 homology, Agents, Temporal
 
 **Orthographic Mini-Grids (9×9)**
