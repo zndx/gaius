@@ -75,19 +75,7 @@ helm_repo('metaflow-tools', 'https://outerbounds.github.io/metaflow-tools')
 helm_remote(
     'metaflow-service',
     repo_name='metaflow-tools',
-    set=[
-        'metadatadb.host=%s' % DEVENV_POSTGRES_HOST,
-        'metadatadb.port=%s' % DEVENV_POSTGRES_PORT,
-        'metadatadb.user=postgres',
-        'metadatadb.password=',
-        'metadatadb.database=metaflow',
-        'image.repository=public.ecr.aws/outerbounds/metaflow_metadata_service',
-        'image.tag=2.5.0',
-        'resources.requests.cpu=100m',
-        'resources.requests.memory=128Mi',
-        'resources.limits.cpu=500m',
-        'resources.limits.memory=512Mi',
-    ]
+    values=['./metaflow-service-values.yaml'],
 )
 
 k8s_resource(
@@ -105,38 +93,7 @@ k8s_resource(
 helm_remote(
     'metaflow-ui',
     repo_name='metaflow-tools',
-    set=[
-        # Backend database
-        'uiBackend.metadatadb.host=%s' % DEVENV_POSTGRES_HOST,
-        'uiBackend.metadatadb.port=%s' % DEVENV_POSTGRES_PORT,
-        'uiBackend.metadatadb.user=postgres',
-        'uiBackend.metadatadb.password=',
-        'uiBackend.metadatadb.name=metaflow',
-        # S3 datastore
-        'uiBackend.metaflowDatastoreSysRootS3=s3://metaflow-artifacts/metaflow',
-        'uiBackend.metaflowS3EndpointURL=http://%s:%s' % (DEVENV_MINIO_HOST, DEVENV_MINIO_PORT),
-        # Backend image
-        'uiBackend.image.name=public.ecr.aws/outerbounds/metaflow_metadata_service',
-        'uiBackend.image.tag=2.5.0',
-        # MinIO credentials
-        'uiBackend.env[0].name=AWS_ACCESS_KEY_ID',
-        'uiBackend.env[0].value=minioadmin',
-        'uiBackend.env[1].name=AWS_SECRET_ACCESS_KEY',
-        'uiBackend.env[1].value=minioadmin',
-        # Resource limits
-        'uiBackend.resources.requests.cpu=100m',
-        'uiBackend.resources.requests.memory=256Mi',
-        'uiBackend.resources.limits.cpu=500m',
-        'uiBackend.resources.limits.memory=512Mi',
-        # Static UI
-        'uiStatic.metaflowUIBackendURL=http://localhost:8083/api',
-        'uiStatic.image.name=public.ecr.aws/outerbounds/metaflow_ui',
-        'uiStatic.image.tag=v1.3.14',
-        'uiStatic.resources.requests.cpu=50m',
-        'uiStatic.resources.requests.memory=64Mi',
-        'uiStatic.resources.limits.cpu=200m',
-        'uiStatic.resources.limits.memory=256Mi',
-    ]
+    values=['./metaflow-ui-values.yaml'],
 )
 
 k8s_resource(
@@ -172,13 +129,10 @@ helm_resource(
     labels=['argo'],
 )
 
+# Note: argo-workflows helm chart creates the 'argo-workflows' resource
+# which includes both the controller and server. We just set labels here.
 k8s_resource(
-    'argo-workflows-workflow-controller',
-    labels=['argo'],
-)
-
-k8s_resource(
-    'argo-workflows-server',
+    'argo-workflows',
     port_forwards=['2746:2746'],
     links=[link('http://localhost:2746', 'Argo Workflows UI')],
     labels=['argo'],

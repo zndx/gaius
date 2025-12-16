@@ -1,0 +1,27 @@
+# Metaflow Service Helm Values for devenv
+# Uses PostgreSQL from host devenv (via NodePort service)
+
+metadatadb:
+  host: devenv-postgres
+  port: "5438"
+  user: postgres
+  password: ""  # Empty password for devenv postgres (no auth required)
+  database: metaflow
+
+image:
+  repository: public.ecr.aws/outerbounds/metaflow_metadata_service
+  tag: "2.5.0"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Extra env vars needed because the chart only sets MF_METADATA_DB_PSWD if password is non-empty
+# but the init container requires it to exist
+env:
+  - name: MF_METADATA_DB_PSWD
+    value: ""
