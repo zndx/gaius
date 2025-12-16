@@ -2,7 +2,7 @@
 
 A terminal interface for navigating graph-oriented data domains. Projects high-dimensional embeddings onto a 19×19 grid.
 
-![Gaius TUI](docs/src/img/risk_md.png)
+![Gaius TUI](docs/current/src/img/risk_md.png)
 
 ## Overview
 
