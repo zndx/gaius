@@ -25,13 +25,14 @@ uiBackend:
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
       memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
 
 uiStatic:
-  metaflowUIBackendURL: "http://localhost:8083/api"
+  # Use tinybox IP for external access from laptops
+  metaflowUIBackendURL: "http://192.168.1.55:8083/api"
 
   image:
     name: public.ecr.aws/outerbounds/metaflow_ui

@@ -35,6 +35,13 @@
   env.QDRANT__SERVICE__HTTP_PORT = "6339";  # Non-default to avoid conflicts
   env.QDRANT__SERVICE__GRPC_PORT = "6340";
 
+  # MinIO/S3 credentials for Metaflow (must override ~/.aws/credentials)
+  env.AWS_ACCESS_KEY_ID = "minioadmin";
+  env.AWS_SECRET_ACCESS_KEY = "minioadmin";
+
+  # Project-specific Metaflow config (instead of ~/.metaflowconfig)
+  env.METAFLOW_HOME = "${config.devenv.root}/.metaflow";
+
   # Kubernetes configuration for RKE2
   # For non-root access, copy the kubeconfig:
   #   sudo cp /etc/rancher/rke2/rke2.yaml ~/.config/kube/rke2.yaml
@@ -78,8 +85,8 @@
   services.minio = {
     enable = true;
     buckets = ["zndx-gaius" "metaflow-artifacts"];
-    listenAddress = "127.0.0.1:9010";   # Non-default to avoid conflicts
-    consoleAddress = "127.0.0.1:9011";
+    listenAddress = "0.0.0.0:9010";   # All interfaces for K8s access
+    consoleAddress = "0.0.0.0:9011";
   };
 
   services.postgres = {
@@ -580,8 +587,70 @@
         postgres.condition = "process_healthy";
         metaflow-db-setup.condition = "process_completed_successfully";
       };
-      # Disabled by default - enable with `devenv processes up metaflow-ui`
-      disabled = true;
+      # Enabled - Metaflow UI is a core platform component
+      disabled = false;
+    };
+  };
+
+  # ============================================================================
+  # Metaflow Port Forwards - External access from laptops
+  # ============================================================================
+  #
+  # Tilt's port-forwards only bind to localhost. This process creates
+  # additional port-forwards bound to 0.0.0.0 for external access.
+
+  processes.metaflow-port-forwards = {
+    exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  METAFLOW PORT FORWARDS - External Access                    ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Wait for services to be ready
+      echo "Waiting for Metaflow services to be ready..."
+      until kubectl get svc metaflow-ui-static &>/dev/null; do
+        sleep 2
+      done
+      echo "✓ Services discovered"
+
+      # Kill any existing port-forwards on these ports
+      fuser -k 3000/tcp 2>/dev/null || true
+      fuser -k 8083/tcp 2>/dev/null || true
+      fuser -k 8180/tcp 2>/dev/null || true
+      sleep 1
+
+      echo ""
+      echo "Starting port-forwards on 0.0.0.0 for external access..."
+      echo "  Metaflow UI:        http://192.168.1.55:3000"
+      echo "  Metaflow UI API:    http://192.168.1.55:8083"
+      echo "  Metaflow Service:   http://192.168.1.55:8180"
+      echo ""
+
+      # Run port-forwards in parallel, restarting on failure
+      while true; do
+        kubectl port-forward --address 0.0.0.0 svc/metaflow-ui-static 3000:3000 &
+        PF1=$!
+        kubectl port-forward --address 0.0.0.0 svc/metaflow-ui 8083:8083 &
+        PF2=$!
+        kubectl port-forward --address 0.0.0.0 svc/metaflow-service 8180:8080 &
+        PF3=$!
+
+        # Wait for any to exit
+        wait -n $PF1 $PF2 $PF3 2>/dev/null || true
+        echo "Port-forward exited, restarting in 5s..."
+        kill $PF1 $PF2 $PF3 2>/dev/null || true
+        sleep 5
+      done
+    '';
+    process-compose = {
+      depends_on = {
+        metaflow-ui.condition = "process_started";
+      };
+      availability = {
+        restart = "always";
+      };
+      # Enabled by default for external access
+      disabled = false;
     };
   };
 
@@ -624,6 +693,77 @@
     process-compose = {
       depends_on.postgres.condition = "process_healthy";
     };
+  };
+
+  # ============================================================================
+  # Tasks - Run with: devenv tasks run <task-name>
+  # ============================================================================
+
+  # Clean up orphaned Kubernetes CNI IP allocations
+  # Usage: devenv tasks run k8s:cleanup
+  tasks."k8s:cleanup" = {
+    exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  K8S CLEANUP - Cleaning orphaned CNI IP allocations         ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      export KUBECONFIG=/home/rch/.config/kube/rke2.yaml
+      CNI_DIR="/var/lib/cni/networks/k8s-pod-network"
+
+      # Get active pod IPs
+      echo "Fetching active pod IPs..."
+      ACTIVE_IPS=$(/var/lib/rancher/rke2/bin/kubectl get pods -A \
+        -o jsonpath='{range .items[?(@.status.podIP)]}{.status.podIP}{"\n"}{end}' 2>/dev/null \
+        | grep "10.42" | sort -u)
+
+      echo "Active IPs:"
+      echo "$ACTIVE_IPS" | sed 's/^/  /'
+      echo ""
+
+      # Count orphaned IPs
+      TOTAL=$(ls -1 $CNI_DIR/10.42.0.* 2>/dev/null | wc -l)
+      ACTIVE=$(echo "$ACTIVE_IPS" | wc -l)
+      ORPHANED=$((TOTAL - ACTIVE))
+
+      echo "CNI IPAM status:"
+      echo "  Total allocated: $TOTAL"
+      echo "  Active pods:     $ACTIVE"
+      echo "  Orphaned:        $ORPHANED"
+      echo ""
+
+      if [ $ORPHANED -gt 0 ]; then
+        echo "Cleaning up orphaned IP allocations..."
+
+        # Backup active IPs
+        mkdir -p /tmp/cni-backup
+        rm -f /tmp/cni-backup/*
+        echo "$ACTIVE_IPS" | while read ip; do
+          if [ -f "$CNI_DIR/$ip" ]; then
+            sudo cp "$CNI_DIR/$ip" /tmp/cni-backup/
+          fi
+        done
+        sudo cp "$CNI_DIR/last_reserved_ip.0" /tmp/cni-backup/ 2>/dev/null || true
+        sudo cp "$CNI_DIR/lock" /tmp/cni-backup/ 2>/dev/null || true
+
+        # Delete all IP files
+        sudo rm -f $CNI_DIR/10.42.0.*
+
+        # Restore active IPs
+        sudo cp /tmp/cni-backup/* $CNI_DIR/
+
+        echo "✓ Cleaned up $ORPHANED orphaned IP allocations"
+
+        # Restart Canal to refresh IPAM
+        echo ""
+        echo "Restarting Canal CNI to refresh IPAM..."
+        /var/lib/rancher/rke2/bin/kubectl rollout restart ds/rke2-canal -n kube-system
+
+        echo "✓ Canal restarted"
+      else
+        echo "✓ No orphaned IPs to clean up"
+      fi
+    '';
   };
 }
 

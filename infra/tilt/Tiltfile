@@ -156,6 +156,32 @@ EOF
 )
 
 # ============================================================================
+# External Network Access (for laptop/remote access)
+# ============================================================================
+
+# Tilt's port-forwards bind to localhost. For external network access
+# (e.g., from a laptop at 192.168.1.55), we need 0.0.0.0 binding.
+
+local_resource(
+    name='external-port-forwards',
+    serve_cmd='''
+    # Kill any existing external port-forwards
+    pkill -f "kubectl.*port-forward.*--address 0.0.0.0" 2>/dev/null || true
+    sleep 1
+
+    # Start external port-forwards for Metaflow UI
+    kubectl port-forward --address 0.0.0.0 svc/metaflow-ui 8083:8083 &
+    kubectl port-forward --address 0.0.0.0 svc/metaflow-ui-static 3000:3000 &
+    kubectl port-forward --address 0.0.0.0 svc/metaflow-service 8080:8080 &
+
+    # Keep alive
+    wait
+    ''',
+    resource_deps=['metaflow-service', 'metaflow-ui', 'metaflow-ui-static'],
+    labels=['network'],
+)
+
+# ============================================================================
 # Summary
 # ============================================================================
 
@@ -169,6 +195,11 @@ if config.tilt_subcommand == 'up':
     print("  Metaflow Service: http://localhost:8080")
     print("  Metaflow UI:      http://localhost:3000")
     print("  Argo Workflows:   http://localhost:2746")
+    print("")
+    print("External Access (LAN):")
+    print("  Metaflow Service: http://<host-ip>:8080")
+    print("  Metaflow UI:      http://<host-ip>:3000")
+    print("  API Backend:      http://<host-ip>:8083")
     print("")
     print("Devenv (host):")
     print("  PostgreSQL:       localhost:5438")
