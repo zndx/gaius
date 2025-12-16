@@ -35,16 +35,24 @@
   env.QDRANT__SERVICE__HTTP_PORT = "6339";  # Non-default to avoid conflicts
   env.QDRANT__SERVICE__GRPC_PORT = "6340";
 
+  # Kubernetes configuration for RKE2
+  # For non-root access, copy the kubeconfig:
+  #   sudo cp /etc/rancher/rke2/rke2.yaml ~/.kube/config
+  #   sudo chown $USER:$USER ~/.kube/config
+  #   chmod 600 ~/.kube/config
+  env.KUBECONFIG = "$HOME/.kube/config";
+
   # https://devenv.sh/packages/
   packages = with pkgs; [
     aeron
-    awscli
+    awscli2
     cmake
     conftest
     d2
     dbmate
     git
     gh
+    graphviz
     imagemagick
     jq
     mdbook
@@ -56,6 +64,7 @@
     protobuf
     presenterm
     qdrant
+    tilt          # K8s development environment for Metaflow
     wrangler
     zlib  # Required for numpy C extensions
 
@@ -66,7 +75,7 @@
 
   services.minio = {
     enable = true;
-    buckets = ["zndx-gaius"];
+    buckets = ["zndx-gaius" "metaflow-artifacts"];
     listenAddress = "127.0.0.1:9010";   # Non-default to avoid conflicts
     consoleAddress = "127.0.0.1:9011";
   };
@@ -78,9 +87,10 @@
       ext.pg_cron  # Scheduled tasks
       ext.age      # Apache AGE - Graph database extension for lineage
     ];
-    initialDatabases = [{
-      name = "zndx_gaius";
-    }];
+    initialDatabases = [
+      { name = "zndx_gaius"; }
+      { name = "metaflow"; }
+    ];
     port = 5438;
     listen_addresses = "127.0.0.1";  # Enable TCP for dbmate/asyncpg
     settings = {
@@ -157,6 +167,7 @@
     scrapeConfigs = [
       {
         job_name = "otel-collector";
+        scrape_interval = "1s";  # 1s scraping for real-time ObservePanel
         static_configs = [{
           targets = ["localhost:8889"];
         }];
@@ -223,10 +234,15 @@
       echo "╚══════════════════════════════════════════════════════════════╝"
       echo ""
 
-      # 1. Kill vLLM processes by name pattern
+      # 1. Kill vLLM processes by name pattern (includes workers and engine)
       echo "Killing vLLM processes..."
       pkill -9 -f "vllm serve" 2>/dev/null || true
       pkill -9 -f "vllm.entrypoints" 2>/dev/null || true
+      # Kill vLLM worker processes (show as "VLLM::Worker_TP0" etc in nvidia-smi)
+      pkill -9 -f "VLLM::" 2>/dev/null || true
+      # Kill by process name pattern for workers that renamed themselves
+      pgrep -f "VLLM::Worker" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+      pgrep -f "VLLM::EngineCore" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
 
       # 2. Kill ray processes (vLLM uses ray internally)
       echo "Killing ray processes..."
@@ -246,15 +262,28 @@
       # Kill anything on port 8000 (default vLLM/optillm port)
       fuser -k 8000/tcp 2>/dev/null || true
 
-      # 5. Kill any GPU processes via nvidia-smi
-      echo "Killing GPU processes..."
+      # 5. Kill any GPU processes via nvidia-smi (catches orphaned processes)
+      echo "Killing GPU processes via nvidia-smi..."
       VLLM_PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
       if [ -n "$VLLM_PIDS" ]; then
         for pid in $VLLM_PIDS; do
-          if [ -n "$pid" ]; then
-            echo "  Killing GPU process PID $pid..."
+          if [ -n "$pid" ] && [ "$pid" != " " ]; then
+            PROC_NAME=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+            echo "  Killing GPU process PID $pid ($PROC_NAME)..."
             kill -9 "$pid" 2>/dev/null || true
           fi
+        done
+      else
+        echo "  No GPU processes found"
+      fi
+
+      # 6. Second pass - some processes may have respawned or been missed
+      sleep 1
+      REMAINING=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -v "^$" | wc -l)
+      if [ "$REMAINING" -gt 0 ]; then
+        echo "Second pass - killing $REMAINING remaining GPU processes..."
+        nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | while read pid; do
+          [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
         done
       fi
 
@@ -265,10 +294,19 @@
       echo "=== Verification ==="
       echo ""
       echo "Remaining vLLM/ray processes:"
-      ps aux | grep -E 'vllm|ray::' | grep -v grep || echo "  ✓ None"
+      ps aux | grep -E 'vllm|ray::|VLLM::' | grep -v grep || echo "  ✓ None"
       echo ""
       echo "Ports 8000, 808x-809x:"
       ss -tlnp 2>/dev/null | grep -E ':8000|808[0-9]|809[0-9]' || echo "  ✓ All clear"
+      echo ""
+      echo "GPU processes:"
+      nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>/dev/null | tail -n +2 || echo "  (nvidia-smi not available)"
+      GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -v "^$" | wc -l)
+      if [ "$GPU_PROCS" -eq 0 ]; then
+        echo "  ✓ All GPUs clear"
+      else
+        echo "  ⚠ $GPU_PROCS processes still on GPU"
+      fi
       echo ""
       echo "GPU Memory:"
       nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv 2>/dev/null || echo "  (nvidia-smi not available)"
@@ -423,6 +461,126 @@
     '';
     # Disabled by default - engine manages optillm dynamically
     process-compose.disabled = true;
+  };
+
+  # ============================================================================
+  # Metaflow Database Setup - Prepare database for metadata service
+  # ============================================================================
+  #
+  # The Metaflow metadata service runs via K8s/Tilt (see metaflow-ui process).
+  # This process only sets up the PostgreSQL database and user.
+
+  processes.metaflow-db-setup = {
+    exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  METAFLOW DATABASE SETUP                                     ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Wait for postgres to be ready
+      echo "Waiting for PostgreSQL..."
+      for i in $(seq 1 30); do
+        if pg_isready -h 127.0.0.1 -p 5438 -U gaius >/dev/null 2>&1; then
+          echo "✓ PostgreSQL ready"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: PostgreSQL not ready after 30s"
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Create metaflow user and database if they don't exist
+      # Use $USER (superuser) for initial setup since gaius doesn't have CREATEROLE
+      echo "Ensuring metaflow user and database exist..."
+      psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -tc \
+        "SELECT 1 FROM pg_roles WHERE rolname = 'metaflow'" | \
+        grep -q 1 || \
+        psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -c "CREATE USER metaflow WITH PASSWORD 'metaflow'"
+
+      psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -tc \
+        "SELECT 1 FROM pg_database WHERE datname = 'metaflow'" | \
+        grep -q 1 || \
+        psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -c "CREATE DATABASE metaflow OWNER metaflow"
+
+      # Grant permissions
+      psql -h 127.0.0.1 -p 5438 -U $USER -d metaflow -c "GRANT ALL PRIVILEGES ON DATABASE metaflow TO metaflow" 2>/dev/null || true
+      echo "✓ metaflow user and database ready"
+
+      # Ensure metaflow-artifacts bucket exists in MinIO
+      echo "Ensuring metaflow-artifacts bucket exists..."
+      mc alias set local http://localhost:9010 minioadmin minioadmin 2>/dev/null || true
+      mc mb --ignore-existing local/metaflow-artifacts 2>/dev/null || true
+      echo "✓ MinIO bucket ready"
+
+      echo ""
+      echo "Metaflow database setup complete."
+      echo "To start the full Metaflow stack (service + UI), run:"
+      echo "  devenv processes up metaflow-ui"
+      echo ""
+      echo "Or start Tilt manually:"
+      echo "  cd infra/tilt && tilt up"
+    '';
+    process-compose = {
+      depends_on.postgres.condition = "process_healthy";
+      # This is a one-shot setup task
+      availability.restart = "no";
+    };
+  };
+
+  # ============================================================================
+  # Metaflow UI - Web dashboard via Tilt on K8s
+  # ============================================================================
+
+  processes.metaflow-ui = {
+    exec = ''
+      if [ "''${DISABLE_METAFLOW_UI:-false}" == "true" ]; then
+        echo "Metaflow UI disabled (DISABLE_METAFLOW_UI=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  METAFLOW UI - Web Dashboard via Tilt                        ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Check for kubectl
+      if ! command -v kubectl &> /dev/null; then
+        echo "ERROR: kubectl not found. Install RKE2 or configure KUBECONFIG."
+        exit 1
+      fi
+
+      # Check K8s connectivity
+      echo "Checking Kubernetes connectivity..."
+      if ! kubectl cluster-info &> /dev/null; then
+        echo "ERROR: Cannot connect to Kubernetes cluster."
+        echo "Ensure RKE2 is running: systemctl status rke2-server"
+        exit 1
+      fi
+      echo "✓ Kubernetes cluster accessible"
+
+      # Apply NodePort services for devenv
+      echo "Applying NodePort services..."
+      kubectl apply -f infra/k8s/devenv-services.yaml
+      echo "✓ NodePort services applied"
+
+      echo ""
+      echo "Starting Tilt for Metaflow UI..."
+      echo "  Metaflow UI:      http://localhost:3000"
+      echo "  Argo Workflows:   http://localhost:2746"
+      echo ""
+      cd infra/tilt
+      exec tilt up --stream
+    '';
+    process-compose = {
+      depends_on = {
+        postgres.condition = "process_healthy";
+        metaflow-db-setup.condition = "process_completed_successfully";
+      };
+      # Disabled by default - enable with `devenv processes up metaflow-ui`
+      disabled = true;
+    };
   };
 
   # ============================================================================
