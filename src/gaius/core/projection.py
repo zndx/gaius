@@ -4,9 +4,11 @@ Transforms high-dimensional embeddings from Qdrant into 2D coordinates
 suitable for display on the Gaius grid. Supports UMAP and PCA projections.
 
 Multi-vector Architecture:
-    Uses ColBERT multi-vector embeddings via fastembed. Each document has
+    Uses ColNomic multi-vector embeddings (GPU-accelerated). Each document has
     multiple token vectors, aggregated to a single "agg" vector for projection.
     The aggregated vectors are stored in Qdrant's "agg" named vector.
+
+NO CPU FALLBACK: GPU failures are surfaced, not hidden.
 
 Usage:
     from gaius.core.projection import GridProjector, GridData
@@ -28,13 +30,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Import multi-vector search (ColBERT)
-try:
-    from ..inference.search.vector import VectorSearchMulti, get_vector_search
-except ImportError:
-    # Fallback: define minimal stubs if dependencies missing
-    VectorSearchMulti = None
-    get_vector_search = None
+# Import multi-vector search (ColNomic)
+from ..inference.search.vector import VectorSearchMulti, get_vector_search
 
 if TYPE_CHECKING:
     from .iso_features import IsoFeatures
@@ -201,7 +198,7 @@ class GridProjector:
     def _retrieve_embeddings(self) -> tuple[np.ndarray, list[dict]]:
         """Retrieve aggregated embeddings from Qdrant.
 
-        For multi-vector (ColBERT), fetches the "agg" named vector which is the
+        For multi-vector (ColNomic), fetches the "agg" named vector which is the
         mean-pooled aggregation of all token vectors. This provides a single
         128-dim vector per document for UMAP/TDA projection.
         """
@@ -491,9 +488,9 @@ class GridDataManager:
         return self.get_grid_data(force_refresh=True)
 
     def project_query(self, query: str) -> tuple[int, int] | None:
-        """Project a query to grid coordinates using ColBERT.
+        """Project a query to grid coordinates using ColNomic.
 
-        Uses the ColBERT embedder to generate multi-vectors for the query,
+        Uses the ColNomic embedder to generate multi-vectors for the query,
         aggregates them, then projects to grid coordinates.
 
         Args:
@@ -501,17 +498,19 @@ class GridDataManager:
 
         Returns:
             Grid coordinates (x, y) or None if projection fails
+
+        Raises:
+            RuntimeError: If GPU is not available
         """
         if self.vector_search is None:
             return None
 
         try:
-            # Use ColBERT embedder from vector_search
+            # Use ColNomic embedder from vector_search
             embedder = self.vector_search.embedder
 
             # Generate query embedding (multi-vector) and aggregate
-            query_multi_vecs = embedder.embed_query(query)
-            query_agg_vec = embedder.aggregate(query_multi_vecs)
+            query_multi_vecs, query_agg_vec = embedder.encode_text(query, prefix="search_query: ")
 
             # If we have fitted projector, use it
             if self.projector._fitted and self.projector._projector is not None:

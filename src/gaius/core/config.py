@@ -73,19 +73,19 @@ class DatabaseConfig:
 class VectorStoreConfig:
     """Qdrant vector store configuration.
 
-    Uses ColBERT multi-vector embeddings exclusively via fastembed.
-    Single-vector code paths have been removed - multi-vector is required
-    for high-quality semantic search with late interaction.
+    Uses ColNomic multi-vector embeddings (GPU-accelerated).
+    NO CPU FALLBACK - GPU failures are surfaced, not hidden.
     """
 
     host: str = "localhost"
     port: int = 6339
-    collection: str = "gaius_kb"  # ColBERT multi-vector collection
+    collection: str = "gaius_kb_colnomic"  # ColNomic multi-vector collection
 
-    # ColBERT embedding settings (via fastembed, CPU-based)
-    colbert_model: str = "colbert-ir/colbertv2.0"  # ColBERT v2 for multi-vector
+    # ColNomic embedding settings (GPU-accelerated via colpali-engine)
+    colnomic_model: str = "nomic-ai/colnomic-embed-multimodal-7b"
     aggregation: str = "mean"  # "mean", "max", or "first" for aggregated single vector
-    batch_size: int = 32  # Batch size for ColBERT (CPU-based, can be larger)
+    batch_size: int = 8  # Smaller batch size for GPU memory
+    device: str = "cuda:0"  # GPU device for embeddings
 
 
 @dataclass
@@ -468,11 +468,12 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     vector_store = VectorStoreConfig(
         host=g.get("vector_store.host", "localhost"),
         port=g.get("vector_store.port", 6339),
-        collection=g.get("vector_store.collection", "gaius_kb"),
-        # ColBERT multi-vector settings (via fastembed, CPU-based)
-        colbert_model=g.get("vector_store.colbert_model", "colbert-ir/colbertv2.0"),
+        collection=g.get("vector_store.collection", "gaius_kb_colnomic"),
+        # ColNomic multi-vector settings (GPU-accelerated)
+        colnomic_model=g.get("vector_store.colnomic_model", "nomic-ai/colnomic-embed-multimodal-7b"),
         aggregation=g.get("vector_store.aggregation", "mean"),
-        batch_size=int(g.get("vector_store.batch_size", 32)),
+        batch_size=int(g.get("vector_store.batch_size", 8)),
+        device=g.get("vector_store.device", "cuda:0"),
     )
 
     optillm = OptillmConfig(
