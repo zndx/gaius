@@ -99,6 +99,9 @@ class GaiusEngine:
         # Cognition service (manages scheduled tasks)
         self._cognition_service = None
 
+        # Flow scheduler service (autonomous Metaflow runs)
+        self._flow_scheduler_service = None
+
     async def start(self) -> None:
         """Start the engine daemon.
 
@@ -186,6 +189,10 @@ class GaiusEngine:
         if self.config.startup.auto_start_cognition:
             await self._init_controller.start_phase(InitPhase.COGNITION, "Starting cognition daemon")
             await self._autonomous_start_cognition()
+
+        # Autonomous startup: start flow scheduler if configured
+        if self.config.startup.auto_start_flow_scheduler and self.config.flow_scheduler.enabled:
+            await self._autonomous_start_flow_scheduler()
 
         # 9. Mark initialization complete
         await self._init_controller.complete_init()
@@ -435,6 +442,48 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to start cognition daemon: {e}")
 
+    async def _autonomous_start_flow_scheduler(self) -> None:
+        """Start the flow scheduler daemon automatically.
+
+        The flow scheduler monitors content_items for new arxiv papers
+        and triggers ArxivDoclingFlow for automatic PDF conversion and
+        topic extraction.
+        """
+        try:
+            from .services.flow_scheduler_service import FlowSchedulerService, FlowConfig
+
+            logger.info("Starting flow scheduler daemon automatically...")
+
+            # Create flow config from engine config
+            config = FlowConfig(
+                enabled=self.config.flow_scheduler.enabled,
+                poll_interval_seconds=self.config.flow_scheduler.poll_interval_seconds,
+                max_concurrent_flows=self.config.flow_scheduler.max_concurrent_flows,
+                batch_size=self.config.flow_scheduler.batch_size,
+                gpu_index=self.config.flow_scheduler.gpu_index,
+                enable_topics=self.config.flow_scheduler.enable_topics,
+                topic_model_type=self.config.flow_scheduler.topic_model_type,
+                enable_scoring=self.config.flow_scheduler.enable_scoring,
+            )
+
+            # Create and start service with orchestrator for GPU resource management
+            self._flow_scheduler_service = FlowSchedulerService(
+                config,
+                get_gpu_idle=lambda: True,  # TODO: wire up to health service
+                orchestrator=self._orchestrator_service,  # Enable transient workload coordination
+            )
+            await self._flow_scheduler_service.start()
+            logger.info("Flow scheduler daemon started")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service("flow_scheduler_service", self._flow_scheduler_service)
+
+        except ImportError as e:
+            logger.warning(f"Flow scheduler service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to start flow scheduler daemon: {e}")
+
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).
 
@@ -535,6 +584,13 @@ class GaiusEngine:
                 await self._evolution_daemon.stop()
             except Exception as e:
                 logger.warning(f"Error stopping evolution daemon: {e}")
+
+        # Stop flow scheduler service
+        if self._flow_scheduler_service:
+            try:
+                await self._flow_scheduler_service.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping flow scheduler: {e}")
 
         # Stop orchestrator service
         if self._orchestrator_service:

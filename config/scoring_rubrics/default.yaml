@@ -1,0 +1,58 @@
+# Default scoring rubric for paper relevance evaluation
+# Version: 1.0.0
+#
+# This rubric defines criteria for evaluating arXiv papers
+# for inclusion in the Gaius knowledge base.
+
+version: "1.0.0"
+model_preference: ensemble  # local, remote, ensemble
+local_model: null           # Use router default
+remote_model: null          # Use router default
+
+criteria:
+  - name: relevance_to_kb
+    weight: 0.30
+    description: >
+      How relevant is this paper to existing KB topics and research domains?
+      Consider alignment with: AI/ML architectures, distributed systems,
+      knowledge management, topology/geometry, and inference optimization.
+    examples:
+      - "Paper extends existing KB concepts on neural architectures"
+      - "Research addresses problems similar to Gaius system design"
+      - "Methodology applicable to current research threads"
+
+  - name: novelty
+    weight: 0.25
+    description: >
+      Does this paper introduce genuinely new concepts, methods, or insights?
+      Prefer papers that contribute original ideas rather than incremental
+      improvements or survey content.
+    examples:
+      - "Novel architecture not seen in existing KB entries"
+      - "First application of technique to this problem domain"
+      - "Original theoretical framework or formulation"
+      - "Unique combination of existing methods"
+
+  - name: technical_depth
+    weight: 0.25
+    description: >
+      Is this paper technically substantial with rigorous methodology?
+      Look for formal proofs, comprehensive experiments, ablation studies,
+      and thorough analysis rather than surface-level descriptions.
+    examples:
+      - "Includes formal proofs or mathematical derivations"
+      - "Comprehensive experimental evaluation with baselines"
+      - "Ablation studies demonstrating component contributions"
+      - "Reproducible methodology with implementation details"
+
+  - name: practical_applicability
+    weight: 0.20
+    description: >
+      Can insights from this paper be directly applied to Gaius development?
+      Consider whether algorithms, architectures, or techniques could be
+      implemented or adapted for the system.
+    examples:
+      - "Algorithm could improve inference routing"
+      - "Architecture pattern applicable to agent design"
+      - "Optimization technique for GPU scheduling"
+      - "Embedding approach for KB semantic search"

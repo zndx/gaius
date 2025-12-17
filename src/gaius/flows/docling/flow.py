@@ -5,11 +5,21 @@ This flow demonstrates Metaflow integration with Gaius:
 2. Download PDF from arXiv
 3. Optionally archive PDF to KB attachments
 4. Use docling to convert PDF to markdown
-5. Create zettelkasten note in KB with full lineage
+5. Score paper relevance using LLM with rubric
+6. Extract topics using LDA/LSA/HDP/BERTopic
+7. Create zettelkasten note in KB with full lineage
+
+Topic modeling:
+- Supports Gensim (LDA, LSA, HDP) and BERTopic
+- HDP and BERTopic auto-discover optimal topic count
+- Generates visual Metaflow cards with topic distributions
 
 Usage:
     # Local execution (requires devenv postgres/minio)
     python -m gaius.flows.docling.flow run --arxiv_url "https://arxiv.org/abs/2312.12345"
+
+    # With topic modeling
+    python -m gaius.flows.docling.flow run --arxiv_url "..." --enable_topics True --topic_model_type bertopic
 
     # K8s execution (via Argo Workflows)
     python -m gaius.flows.docling.flow argo-workflows create --arxiv_url "..."
@@ -29,7 +39,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
-from metaflow import FlowSpec, Parameter, current, kubernetes, retry, step
+from metaflow import FlowSpec, Parameter, card, current, kubernetes, retry, step
+from metaflow.cards import Markdown, Table, Image
 
 from gaius.flows import register_flow
 from gaius.flows.base import GaiusFlow, get_current_quarter, safe_filename
@@ -76,6 +87,48 @@ class ArxivDoclingFlow(GaiusFlow):
         "archive_pdf",
         help="Whether to save PDF to KB archive",
         default=True,
+        type=bool,
+    )
+
+    # Topic modeling parameters
+    enable_topics = Parameter(
+        "enable_topics",
+        help="Enable topic extraction (requires 5+ docs in corpus)",
+        default=True,
+        type=bool,
+    )
+
+    topic_model_type = Parameter(
+        "topic_model_type",
+        help="Topic model type: lda, lsa, hdp, bertopic",
+        default="bertopic",
+    )
+
+    num_topics = Parameter(
+        "num_topics",
+        help="Number of topics (ignored for hdp/bertopic which auto-discover)",
+        default=None,
+        type=int,
+    )
+
+    # Scoring parameters
+    enable_scoring = Parameter(
+        "enable_scoring",
+        help="Enable LLM-based relevance scoring",
+        default=True,
+        type=bool,
+    )
+
+    scoring_rubric = Parameter(
+        "scoring_rubric",
+        help="Scoring rubric name (from config/scoring_rubrics/)",
+        default="default",
+    )
+
+    use_remote_scoring = Parameter(
+        "use_remote_scoring",
+        help="Use remote model for scoring calibration",
+        default=False,
         type=bool,
     )
 
@@ -220,6 +273,242 @@ class ArxivDoclingFlow(GaiusFlow):
             # Clean up temp file
             Path(temp_pdf_path).unlink(missing_ok=True)
 
+        self.next(self.score_relevance)
+
+    @card(type="blank")
+    @step
+    def score_relevance(self):
+        """Score paper relevance using LLM with rubric."""
+        import asyncio
+
+        self.paper_score = None
+        self.rubric_version = None
+
+        if not self.enable_scoring:
+            print("Scoring disabled, skipping...")
+            self.next(self.extract_topics)
+            return
+
+        try:
+            from gaius.flows.topics.scoring import load_rubric, score_paper
+
+            rubric = load_rubric(self.scoring_rubric)
+            self.rubric_version = rubric.version
+
+            print(f"Scoring paper with rubric: {rubric.name} v{rubric.version}")
+
+            # Run async scoring in sync context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                self.paper_score = loop.run_until_complete(
+                    score_paper(
+                        self.abstract,
+                        rubric,
+                        arxiv_id=self.arxiv_id,
+                        use_local=True,
+                        use_remote=self.use_remote_scoring,
+                    )
+                )
+            finally:
+                loop.close()
+
+            print(f"Overall score: {self.paper_score.overall_score:.2f}")
+            for name, score in self.paper_score.criteria_scores.items():
+                print(f"  {name}: {score:.2f}")
+
+            # Build card content
+            current.card.append(Markdown(f"# Paper Relevance Score"))
+            current.card.append(Markdown(f"**arXiv ID:** {self.arxiv_id}"))
+            current.card.append(Markdown(f"**Title:** {self.title}"))
+            current.card.append(Markdown(f"**Overall Score:** {self.paper_score.overall_score:.2%}"))
+            current.card.append(Markdown(f"**Rubric:** {rubric.name} v{rubric.version}"))
+            current.card.append(Markdown(f"**Model:** {self.paper_score.model_used}"))
+
+            # Criteria table
+            rows = [[name, f"{score:.2%}"] for name, score in self.paper_score.criteria_scores.items()]
+            current.card.append(Markdown("## Criteria Scores"))
+            current.card.append(Table(rows, headers=["Criterion", "Score"]))
+
+            if self.paper_score.reasoning:
+                current.card.append(Markdown("## Reasoning"))
+                current.card.append(Markdown(self.paper_score.reasoning))
+
+        except Exception as e:
+            print(f"Scoring failed: {e}")
+            current.card.append(Markdown(f"# Scoring Failed"))
+            current.card.append(Markdown(f"Error: {e}"))
+
+        self.next(self.extract_topics)
+
+    @card(type="blank")
+    @step
+    def extract_topics(self):
+        """Extract topics from document using configured model."""
+        self.topic_result = None
+        self.topic_model_info = None
+
+        if not self.enable_topics:
+            print("Topic extraction disabled, skipping...")
+            self.next(self.create_zettelkasten)
+            return
+
+        try:
+            from gaius.flows.topics import (
+                CorpusState,
+                load_corpus_state,
+                tokenize_document,
+                train_topic_model,
+                get_document_topics,
+                save_corpus_state,
+            )
+
+            print(f"Extracting topics with {self.topic_model_type}...")
+
+            # Load existing corpus state
+            corpus_state = load_corpus_state()
+
+            # Combine abstract and markdown for topic extraction
+            full_text = f"{self.abstract}\n\n{self.markdown}"
+
+            # For first few documents, we just accumulate
+            # Topic model training requires 5+ documents
+            if corpus_state is None:
+                doc_count = 0
+            else:
+                doc_count = corpus_state.document_count
+
+            print(f"Corpus has {doc_count} documents")
+
+            if doc_count >= 4:  # This will be 5th+
+                # Load all accumulated documents from KB scratch folder
+                documents = [full_text]  # Start with current document
+
+                # Load previous arxiv documents from KB
+                try:
+                    kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+                    scratch_dir = Path(kb_root) / "scratch"
+                    if scratch_dir.exists():
+                        for md_file in scratch_dir.rglob("*arxiv*.md"):
+                            try:
+                                content = md_file.read_text()
+                                # Extract main content (skip YAML frontmatter)
+                                if "---" in content:
+                                    parts = content.split("---", 2)
+                                    if len(parts) >= 3:
+                                        content = parts[2]
+                                if len(content) > 500:  # Skip tiny files
+                                    documents.append(content)
+                            except Exception:
+                                pass
+                    print(f"Loaded {len(documents)} documents for topic modeling")
+                except Exception as e:
+                    print(f"Warning: Could not load KB documents: {e}")
+
+                topic_model = train_topic_model(
+                    documents,
+                    model_type=self.topic_model_type,
+                    num_topics=self.num_topics,
+                )
+
+                self.topic_result = get_document_topics(topic_model, full_text)
+                self.topic_model_info = {
+                    "model_type": topic_model.model_type.value,
+                    "num_topics": topic_model.num_topics,
+                    "coherence_score": topic_model.coherence_score,
+                }
+
+                print(f"Discovered {topic_model.num_topics} topics")
+                print(f"Document topics: {self.topic_result.topics[:3]}")
+
+                # Build card with visualizations
+                current.card.append(Markdown(f"# Topic Analysis"))
+                current.card.append(Markdown(f"**Model:** {self.topic_model_type.upper()}"))
+                current.card.append(Markdown(f"**Topics Discovered:** {topic_model.num_topics}"))
+
+                if topic_model.coherence_score:
+                    current.card.append(Markdown(f"**Coherence (C_v):** {topic_model.coherence_score:.4f}"))
+
+                # Topic assignments table
+                current.card.append(Markdown("## Document Topic Distribution"))
+                rows = []
+                for tid, weight in self.topic_result.topics[:5]:
+                    words = ", ".join(self.topic_result.top_words.get(tid, [])[:5])
+                    rows.append([str(tid), f"{weight:.2%}", words])
+                current.card.append(Table(rows, headers=["Topic", "Weight", "Top Words"]))
+
+                # BERTopic visualizations - render as PNG images
+                if self.topic_model_type == "bertopic":
+                    from metaflow.cards import Image
+                    import io
+
+                    # Show all discovered topics with their words
+                    current.card.append(Markdown("## All Topics"))
+                    all_topics = topic_model.get_all_topics()
+                    topic_rows = []
+                    for tid, words in sorted(all_topics.items()):
+                        topic_rows.append([str(tid), ", ".join(words[:8])])
+                    if topic_rows:
+                        current.card.append(Table(topic_rows, headers=["Topic ID", "Top Words"]))
+
+                    # Render Plotly figures as PNG images
+                    if topic_model.barchart_fig:
+                        try:
+                            current.card.append(Markdown("## Topic Term Importance"))
+                            img_bytes = topic_model.barchart_fig.to_image(
+                                format="png", width=900, height=500, scale=2
+                            )
+                            current.card.append(Image(img_bytes, label="Topic Barchart"))
+                            print("Added barchart visualization to card")
+                        except Exception as e:
+                            print(f"Could not render barchart: {e}")
+
+                    if topic_model.hierarchy_fig:
+                        try:
+                            current.card.append(Markdown("## Topic Hierarchy"))
+                            img_bytes = topic_model.hierarchy_fig.to_image(
+                                format="png", width=900, height=600, scale=2
+                            )
+                            current.card.append(Image(img_bytes, label="Topic Hierarchy"))
+                            print("Added hierarchy visualization to card")
+                        except Exception as e:
+                            print(f"Could not render hierarchy: {e}")
+
+                    if topic_model.similarity_matrix:
+                        try:
+                            current.card.append(Markdown("## Topic Similarity Heatmap"))
+                            img_bytes = topic_model.similarity_matrix.to_image(
+                                format="png", width=700, height=700, scale=2
+                            )
+                            current.card.append(Image(img_bytes, label="Topic Similarity"))
+                            print("Added similarity heatmap to card")
+                        except Exception as e:
+                            print(f"Could not render similarity matrix: {e}")
+
+            else:
+                current.card.append(Markdown(f"# Topic Analysis"))
+                current.card.append(Markdown(f"**Status:** Accumulating corpus ({doc_count + 1}/5 documents)"))
+                current.card.append(Markdown("Topic modeling will begin after 5 documents are processed."))
+                print(f"Need {5 - doc_count - 1} more documents for topic modeling")
+
+            # Save updated corpus state with incremented document count
+            import uuid
+            new_state = CorpusState(
+                version_id=str(uuid.uuid4()),
+                document_count=doc_count + 1,
+                vocabulary_size=0,  # Not tracking vocabulary yet
+                model_type=self.topic_model_type,
+            )
+            save_corpus_state(new_state)
+            print(f"Saved corpus state: {doc_count + 1} documents")
+
+        except Exception as e:
+            print(f"Topic extraction failed: {e}")
+            import traceback
+            traceback.print_exc()
+            current.card.append(Markdown(f"# Topic Extraction Failed"))
+            current.card.append(Markdown(f"Error: {e}"))
+
         self.next(self.create_zettelkasten)
 
     @step
@@ -260,6 +549,26 @@ class ArxivDoclingFlow(GaiusFlow):
         if self.archive_path_result:
             frontmatter_lines.append(f"pdf_archive: \"{self.archive_path_result}\"")
 
+        # Add scoring metadata
+        if self.paper_score:
+            frontmatter_lines.append(f"relevance_score: {self.paper_score.overall_score:.3f}")
+            frontmatter_lines.append(f"scoring_rubric: \"{self.scoring_rubric}\"")
+            frontmatter_lines.append(f"scoring_rubric_version: \"{self.rubric_version}\"")
+
+        # Add topic metadata
+        if self.topic_result:
+            topic_ids = [str(t[0]) for t, _ in zip(self.topic_result.topics[:3], range(3))]
+            frontmatter_lines.append(f"topics: [{', '.join(topic_ids)}]")
+            # Get keywords from top topic
+            if self.topic_result.topics:
+                top_topic_id = self.topic_result.topics[0][0]
+                keywords = self.topic_result.top_words.get(top_topic_id, [])[:5]
+                if keywords:
+                    kw_str = ", ".join(f'"{k}"' for k in keywords)
+                    frontmatter_lines.append(f"topic_keywords: [{kw_str}]")
+            if self.topic_model_info:
+                frontmatter_lines.append(f"topic_model: \"{self.topic_model_info['model_type']}\"")
+
         frontmatter_lines.append("---")
         frontmatter = "\n".join(frontmatter_lines)
 
@@ -292,6 +601,7 @@ class ArxivDoclingFlow(GaiusFlow):
 
         self.next(self.end)
 
+    @card(type="blank")
     @step
     def end(self):
         """Emit final lineage and report results."""
@@ -302,10 +612,52 @@ class ArxivDoclingFlow(GaiusFlow):
         if self.archive_path_result:
             outputs.append(Dataset.from_kb(self.archive_path_result))
 
+        # Add topic model as output if trained
+        if self.topic_model_info:
+            outputs.append(Dataset(
+                namespace="gaius.topics",
+                name=f"{self.topic_model_info['model_type']}:{current.run_id}",
+            ))
+
+        # Add rubric reference if scoring was used
+        if self.paper_score and self.rubric_version:
+            outputs.append(Dataset(
+                namespace="gaius.scoring",
+                name=f"rubric:{self.scoring_rubric}:{self.rubric_version}",
+            ))
+
         # Emit lineage COMPLETE
         self.emit_lineage_complete(outputs)
 
-        # Summary
+        # Build summary card
+        current.card.append(Markdown("# ArxivDoclingFlow Summary"))
+        current.card.append(Markdown(f"**arXiv ID:** [{self.arxiv_id}](https://arxiv.org/abs/{self.arxiv_id})"))
+        current.card.append(Markdown(f"**Title:** {self.title}"))
+        current.card.append(Markdown(f"**KB Note:** `{self.kb_path}`"))
+
+        # Stats table
+        stats = [
+            ["Markdown Size", f"{len(self.markdown):,} chars"],
+            ["PDF Size", f"{self.pdf_size:,} bytes"],
+        ]
+        if self.paper_score:
+            stats.append(["Relevance Score", f"{self.paper_score.overall_score:.1%}"])
+        if self.topic_model_info:
+            stats.append(["Topics Discovered", str(self.topic_model_info['num_topics'])])
+            stats.append(["Topic Model", self.topic_model_info['model_type'].upper()])
+        current.card.append(Markdown("## Statistics"))
+        current.card.append(Table(stats, headers=["Metric", "Value"]))
+
+        # Lineage
+        current.card.append(Markdown("## Lineage"))
+        lineage_items = [f"- Input: `arXiv:{self.arxiv_id}`", f"- Output: `{self.kb_path}`"]
+        if self.archive_path_result:
+            lineage_items.append(f"- Archive: `{self.archive_path_result}`")
+        if self.rubric_version:
+            lineage_items.append(f"- Rubric: `{self.scoring_rubric}` v{self.rubric_version}")
+        current.card.append(Markdown("\n".join(lineage_items)))
+
+        # Console summary
         print("")
         print("=" * 60)
         print("  ArxivDoclingFlow Complete")
@@ -316,6 +668,10 @@ class ArxivDoclingFlow(GaiusFlow):
         if self.archive_path_result:
             print(f"  PDF Archive:   {self.archive_path_result}")
         print(f"  Markdown:      {len(self.markdown):,} characters")
+        if self.paper_score:
+            print(f"  Relevance:     {self.paper_score.overall_score:.1%}")
+        if self.topic_model_info:
+            print(f"  Topics:        {self.topic_model_info['num_topics']} ({self.topic_model_info['model_type']})")
         print("")
         print(f"  Lineage: arXiv:{self.arxiv_id} → {self.kb_path}")
         print("=" * 60)

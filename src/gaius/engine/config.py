@@ -164,6 +164,22 @@ class EvolutionConfig:
 
 
 @dataclass
+class FlowSchedulerConfig:
+    """Flow scheduler daemon configuration for autonomous Metaflow runs."""
+
+    enabled: bool = True
+    poll_interval_seconds: float = 60.0  # How often to check for new items
+    max_concurrent_flows: int = 2  # Max parallel flow runs
+    batch_size: int = 5  # Max items per poll
+    gpu_index: str = "4,5"  # GPUs to use for flows (avoid vLLM GPUs 0-3)
+
+    # Flow-specific settings
+    enable_topics: bool = True
+    topic_model_type: str = "bertopic"
+    enable_scoring: bool = False  # Disable by default to avoid LLM costs
+
+
+@dataclass
 class StartupConfig:
     """Autonomous startup configuration."""
 
@@ -171,6 +187,7 @@ class StartupConfig:
     preload_endpoints: list[str] = field(default_factory=lambda: ["fast"])
     auto_start_evolution: bool = True  # Start evolution daemon if enabled
     auto_start_cognition: bool = True  # Start cognition daemon for scheduled tasks
+    auto_start_flow_scheduler: bool = True  # Start flow scheduler for Metaflow pipelines
     auto_restart_failed: bool = True  # Auto-restart failed endpoints
     max_restart_attempts: int = 3
 
@@ -189,6 +206,7 @@ class EngineConfig:
     gpus: GPUInventory = field(default_factory=GPUInventory)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
+    flow_scheduler: FlowSchedulerConfig = field(default_factory=FlowSchedulerConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
 
 
@@ -433,6 +451,29 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         else 6,
     )
 
+    # Parse flow scheduler config
+    flow_conf = get("gaius.flow_scheduler", {})
+    flow_scheduler = FlowSchedulerConfig(
+        enabled=flow_conf.get("enabled", True) if hasattr(flow_conf, "get") else True,
+        poll_interval_seconds=flow_conf.get("poll-interval-seconds", 60.0)
+        if hasattr(flow_conf, "get")
+        else 60.0,
+        max_concurrent_flows=flow_conf.get("max-concurrent-flows", 2)
+        if hasattr(flow_conf, "get")
+        else 2,
+        batch_size=flow_conf.get("batch-size", 5) if hasattr(flow_conf, "get") else 5,
+        gpu_index=flow_conf.get("gpu-index", "4,5") if hasattr(flow_conf, "get") else "4,5",
+        enable_topics=flow_conf.get("enable-topics", True)
+        if hasattr(flow_conf, "get")
+        else True,
+        topic_model_type=flow_conf.get("topic-model-type", "bertopic")
+        if hasattr(flow_conf, "get")
+        else "bertopic",
+        enable_scoring=flow_conf.get("enable-scoring", False)
+        if hasattr(flow_conf, "get")
+        else False,
+    )
+
     # Parse startup config
     startup_conf = get("gaius.startup", {})
     startup = StartupConfig(
@@ -446,6 +487,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         if hasattr(startup_conf, "get")
         else True,
         auto_start_cognition=startup_conf.get("auto-start-cognition", True)
+        if hasattr(startup_conf, "get")
+        else True,
+        auto_start_flow_scheduler=startup_conf.get("auto-start-flow-scheduler", True)
         if hasattr(startup_conf, "get")
         else True,
         auto_restart_failed=startup_conf.get("auto-restart-failed", True)
@@ -467,6 +511,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         gpus=gpus,
         scheduling=scheduling,
         evolution=evolution,
+        flow_scheduler=flow_scheduler,
         startup=startup,
     )
 

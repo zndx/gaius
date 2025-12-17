@@ -42,6 +42,11 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 **Swarm**
 - run_swarm: Execute swarm analysis
 
+**Flow Operations (Metaflow pipelines)**
+- fetch_paper: Fetch arXiv paper with PDF→markdown→topics→scoring→KB pipeline
+- list_flows: List available Metaflow pipelines
+- query_lineage: Query lineage graph for a KB entry
+
 **FMEA (Failure Mode and Effects Analysis)**
 - fmea_catalog: List failure modes with base RPN scores
 - fmea_calculate_rpn: Calculate RPN for a failure mode with context
@@ -482,6 +487,154 @@ def create_server() -> "FastMCP":
         db_url = get_database_url()
         result = await verify_sync(target, str(kb_root), db_url, sample_size)
         return json.dumps(result, indent=2)
+
+    # --- Flow Operations (Metaflow pipelines) ---
+
+    @server.tool()
+    async def fetch_paper(
+        arxiv_url: str,
+        enable_topics: bool = True,
+        topic_model: str = "bertopic",
+        num_topics: int | None = None,
+        enable_scoring: bool = True,
+        scoring_rubric: str = "default",
+        use_remote_scoring: bool = False,
+        archive_pdf: bool = True,
+    ) -> str:
+        """Fetch arXiv paper with topic modeling and LLM scoring.
+
+        Full pipeline: PDF → markdown → topics → scoring → KB zettelkasten.
+        Default behavior enables all features for comprehensive analysis.
+
+        Args:
+            arxiv_url: arXiv URL or ID (e.g., "https://arxiv.org/abs/2312.12345" or "2312.12345")
+            enable_topics: Enable topic extraction (default: True)
+            topic_model: Topic model type: bertopic, lda, lsa, hdp (default: bertopic)
+            num_topics: Number of topics (only for LDA/LSA, None=auto)
+            enable_scoring: Enable LLM relevance scoring (default: True)
+            scoring_rubric: Rubric name (default: "default")
+            use_remote_scoring: Use remote LLM for scoring (default: False, uses local)
+            archive_pdf: Save PDF to KB archive (default: True)
+        """
+        try:
+            from gaius.flows.config import apply_metaflow_config
+            from gaius.flows.runner import run_flow_with_gpu_management
+            from gaius.flows.docling.flow import ArxivDoclingFlow
+
+            # Apply local config
+            apply_metaflow_config("local")
+
+            # Build flow args
+            subprocess_args = [
+                f"--arxiv_url={arxiv_url}",
+                f"--archive_pdf={archive_pdf}",
+                f"--enable_topics={enable_topics}",
+                f"--topic_model_type={topic_model}",
+                f"--enable_scoring={enable_scoring}",
+                f"--scoring_rubric={scoring_rubric}",
+                f"--use_remote_scoring={use_remote_scoring}",
+            ]
+            if num_topics is not None:
+                subprocess_args.append(f"--num_topics={num_topics}")
+
+            result = await run_flow_with_gpu_management(
+                flow_class=ArxivDoclingFlow,
+                flow_args=subprocess_args,
+                require_gpu=True,
+                estimated_memory_mb=16000,
+            )
+
+            return json.dumps({
+                "success": result.success,
+                "arxiv_url": arxiv_url,
+                "output_path": result.output_path,
+                "workload_id": result.workload_id,
+                "duration_s": result.duration_s,
+                "evicted_endpoints": result.evicted_endpoints,
+                "restored_endpoints": result.restored_endpoints,
+                "options": {
+                    "topics": enable_topics,
+                    "topic_model": topic_model,
+                    "num_topics": num_topics,
+                    "scoring": enable_scoring,
+                    "rubric": scoring_rubric,
+                    "remote_scoring": use_remote_scoring,
+                },
+                "error": result.error,
+            }, indent=2)
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "success": False,
+                "arxiv_url": arxiv_url,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }, indent=2)
+
+    @server.tool()
+    async def list_flows() -> str:
+        """List available Metaflow pipelines.
+
+        Returns registered flows with descriptions.
+        """
+        try:
+            from gaius.flows import FLOW_REGISTRY
+
+            flows = []
+            for name, flow_cls in FLOW_REGISTRY.items():
+                doc = flow_cls.__doc__ or ""
+                first_line = doc.split("\n")[0].strip() if doc else ""
+                flows.append({
+                    "name": name,
+                    "description": first_line,
+                    "class": f"{flow_cls.__module__}.{flow_cls.__name__}",
+                })
+
+            return json.dumps({
+                "flows": flows,
+                "total": len(flows),
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @server.tool()
+    async def query_lineage(kb_path: str) -> str:
+        """Query lineage for a KB file.
+
+        Shows the full provenance chain from source to KB entry.
+
+        Args:
+            kb_path: Path to KB file (e.g., "scratch/2024-12-17/paper.md")
+        """
+        try:
+            from gaius.hx.lineage.graph import LineageGraphQuery
+
+            query = LineageGraphQuery()
+            path = await query.get_kb_lineage(kb_path)
+
+            if not path.nodes:
+                return json.dumps({
+                    "kb_path": kb_path,
+                    "lineage": None,
+                    "message": "No lineage found for this KB path",
+                })
+
+            return json.dumps({
+                "kb_path": kb_path,
+                "nodes": [
+                    {"type": n.node_type, "id": n.id, "properties": n.properties}
+                    for n in path.nodes
+                ],
+                "edges": [
+                    {"type": e.edge_type, "from": e.from_id, "to": e.to_id}
+                    for e in path.edges
+                ],
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
 
     # --- Inference Operations ---
 
