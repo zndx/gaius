@@ -234,8 +234,8 @@ class ColQwenEmbedder:
         """
         prefixed_text = prefix + text if prefix else text
 
-        # Process text
-        inputs = self.processor(text=[prefixed_text], return_tensors="pt")
+        # Process text using ColPali processor's process_queries method
+        inputs = self.processor.process_queries([prefixed_text])
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         # Generate embeddings
