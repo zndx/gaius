@@ -121,8 +121,8 @@ class ColPaliController:
         Uses device_map for model loading to place on specific GPUs.
     """
 
-    # Default ColPali model (compatible with colpali-engine 0.3.2)
-    DEFAULT_MODEL = "vidore/colqwen2-v0.1"
+    # Default ColPali model - ColNomic multimodal embeddings
+    DEFAULT_MODEL = "nomic-ai/colnomic-embed-multimodal-7b"
 
     def __init__(
         self,
@@ -430,15 +430,16 @@ class ColPaliController:
 
             # No existing endpoint - create one
             try:
-                from ...models.registry import get_registry, ModelSpec
+                from ...models.registry import get_model_registry, ModelSpec
 
-                registry = get_registry()
-                model_spec = registry.get_model(target_model)
+                registry = get_model_registry()
+                model_spec = registry.get(target_model)
                 if model_spec is None:
                     # Create ad-hoc spec for unknown model
                     model_spec = ModelSpec(
-                        huggingface_id=target_model,
-                        alias=target_model,
+                        model_id=target_model,
+                        name=target_model,
+                        provider="colpali",
                     )
 
                 # Load on first available GPU or CPU
