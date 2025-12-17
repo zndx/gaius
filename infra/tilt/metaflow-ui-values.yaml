@@ -21,6 +21,8 @@ uiBackend:
       value: minioadmin
     - name: AWS_SECRET_ACCESS_KEY
       value: minioadmin
+    - name: METAFLOW_CARD_S3ROOT
+      value: "s3://metaflow-artifacts/metaflow/cards"
 
   resources:
     requests:

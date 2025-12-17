@@ -254,6 +254,9 @@ class GaiusCLI:
                 # Metaflow pipeline management
                 elif command == "flow":
                     result["data"] = self._run_async(self._cmd_flow(args))
+                # Fetch paper shortcut (alias for /flow run docling)
+                elif command == "fetch":
+                    result["data"] = self._run_async(self._cmd_fetch(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -7114,6 +7117,17 @@ Generated: {now.isoformat()}
             /flow run <name> <url>   - Run a flow (e.g., /flow run docling https://arxiv.org/abs/...)
             /flow lineage <kb_path>  - Query lineage for a KB file
             /flow config [local|k8s] - Show/switch Metaflow configuration
+
+        Docling flow options (default: full run with all features enabled):
+            /flow run docling <url>              - Full run: PDF + topics + scoring
+            /flow run docling <url> --no-topics  - Disable topic modeling
+            /flow run docling <url> --no-scoring - Disable LLM scoring
+            /flow run docling <url> --no-archive - Don't save PDF to KB
+            /flow run docling <url> --no-gpu     - CPU-only mode
+            /flow run docling <url> --model=lda  - Use LDA instead of BERTopic
+            /flow run docling <url> --topics=10  - Set number of topics (LDA/LSA)
+            /flow run docling <url> --rubric=strict - Use alternative rubric
+            /flow run docling <url> --remote-scoring - Use remote LLM for scoring
         """
         parts = args.strip().split() if args else []
         subcmd = parts[0].lower() if parts else "list"
@@ -7199,23 +7213,46 @@ Generated: {now.isoformat()}
                     return {"error": "docling flow requires an arXiv URL argument"}
 
                 arxiv_url = flow_args[0]
-                archive_pdf = True
-                no_gpu = False
 
-                if "--no-archive" in flow_args:
-                    archive_pdf = False
-                if "--no-gpu" in flow_args:
-                    no_gpu = True
+                # Parse flags - defaults enable all features for full runs
+                archive_pdf = "--no-archive" not in flow_args
+                no_gpu = "--no-gpu" in flow_args
+                enable_topics = "--no-topics" not in flow_args
+                enable_scoring = "--no-scoring" not in flow_args
+                use_remote_scoring = "--remote-scoring" in flow_args
+
+                # Parse value-based options
+                topic_model_type = "bertopic"  # default: neural topics
+                scoring_rubric = "default"
+                num_topics = None
+
+                for arg in flow_args:
+                    if arg.startswith("--model="):
+                        topic_model_type = arg.split("=", 1)[1]
+                    elif arg.startswith("--rubric="):
+                        scoring_rubric = arg.split("=", 1)[1]
+                    elif arg.startswith("--topics="):
+                        try:
+                            num_topics = int(arg.split("=", 1)[1])
+                        except ValueError:
+                            pass
 
                 # Use GPU-aware runner
                 from gaius.flows.runner import run_flow_with_gpu_management
                 from gaius.flows.docling.flow import ArxivDoclingFlow
 
-                # Build flow args for subprocess
+                # Build flow args for subprocess - full run with all features
                 subprocess_args = [
                     f"--arxiv_url={arxiv_url}",
                     f"--archive_pdf={archive_pdf}",
+                    f"--enable_topics={enable_topics}",
+                    f"--topic_model_type={topic_model_type}",
+                    f"--enable_scoring={enable_scoring}",
+                    f"--scoring_rubric={scoring_rubric}",
+                    f"--use_remote_scoring={use_remote_scoring}",
                 ]
+                if num_topics is not None:
+                    subprocess_args.append(f"--num_topics={num_topics}")
 
                 result = await run_flow_with_gpu_management(
                     flow_class=ArxivDoclingFlow,
@@ -7235,6 +7272,14 @@ Generated: {now.isoformat()}
                     "duration_s": result.duration_s,
                     "error": result.error,
                     "gpu_management": not no_gpu,
+                    "options": {
+                        "topics": enable_topics,
+                        "topic_model": topic_model_type,
+                        "num_topics": num_topics,
+                        "scoring": enable_scoring,
+                        "rubric": scoring_rubric,
+                        "remote_scoring": use_remote_scoring,
+                    },
                 }
 
             return {"error": f"Flow {flow_name} not yet implemented via CLI"}
@@ -7309,6 +7354,35 @@ Generated: {now.isoformat()}
 
         except Exception as e:
             return {"error": str(e)}
+
+    async def _cmd_fetch(self, args: str) -> dict:
+        """Fetch arXiv paper with topic modeling and scoring.
+
+        Shortcut for /flow run docling. Default: full run with all features.
+
+        Usage:
+            /fetch <arxiv_url>              - Full run: PDF → markdown → topics → scoring → KB
+            /fetch <url> --no-topics        - Disable topic modeling
+            /fetch <url> --no-scoring       - Disable LLM scoring
+            /fetch <url> --model=lda        - Use LDA instead of BERTopic
+            /fetch <url> --topics=10        - Set number of topics (LDA/LSA only)
+            /fetch <url> --rubric=strict    - Use alternative rubric
+            /fetch <url> --remote-scoring   - Use remote LLM for scoring
+            /fetch <url> --no-gpu           - CPU-only mode (slower)
+
+        Examples:
+            /fetch https://arxiv.org/abs/2312.12345
+            /fetch 2312.12345 --model=bertopic --rubric=default
+        """
+        if not args.strip():
+            return {
+                "error": "Usage: /fetch <arxiv_url> [options]",
+                "help": self._cmd_fetch.__doc__,
+            }
+
+        # Delegate to /flow run docling with args
+        flow_args = f"run docling {args}"
+        return await self._cmd_flow(flow_args)
 
 
 def main():

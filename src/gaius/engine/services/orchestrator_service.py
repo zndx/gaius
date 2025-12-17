@@ -888,6 +888,98 @@ class OrchestratorService:
             activity.last_request_time = time.time()
 
     # ─────────────────────────────────────────────────────────────────────────
+    # GPU Memory-Based Eviction for Transient Workloads
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _evict_for_gpu_memory(
+        self,
+        workload_id: str,
+        required_memory_mb: int,
+        metadata: dict | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Evict vLLM endpoints to free GPU memory for transient CUDA workloads.
+
+        Used by flows like Docling that need raw GPU VRAM (not vLLM endpoints).
+        This identifies endpoints using the target GPUs and evicts them.
+
+        Args:
+            workload_id: ID of the requesting workload (for logging)
+            required_memory_mb: GPU memory required in MB
+            metadata: Workload metadata (may contain 'target_gpus' hint)
+
+        Returns:
+            Tuple of (evicted_endpoints, restore_plan)
+        """
+        evicted: list[str] = []
+        restore_plan: list[str] = []
+
+        # Determine target GPUs from metadata or flow scheduler config
+        # Default: GPUs 0-3 are for vLLM, flows use 4-5
+        # But if flow needs more memory, we may need to evict from 0-3
+        target_gpus: set[int] = set()
+
+        if metadata and "target_gpus" in metadata:
+            target_gpus = set(metadata["target_gpus"])
+        else:
+            # Check GPU memory availability across all GPUs
+            # For now, assume the flow will use GPUs specified in CUDA_VISIBLE_DEVICES
+            # We need to evict endpoints on those GPUs
+            from ..resources.gpu_monitor import get_gpu_memory_free
+
+            try:
+                gpu_free = await get_gpu_memory_free()
+            except Exception as e:
+                logger.warning(f"Could not query GPU memory: {e}")
+                gpu_free = {}
+
+            # Find GPUs with insufficient free memory
+            required_gb = required_memory_mb / 1024
+            for gpu_id, free_gb in gpu_free.items():
+                if free_gb < required_gb:
+                    target_gpus.add(gpu_id)
+
+        if not target_gpus:
+            logger.debug(f"No GPU eviction needed for workload {workload_id}")
+            return evicted, restore_plan
+
+        logger.info(
+            f"Workload {workload_id} needs {required_memory_mb}MB, "
+            f"checking GPUs: {sorted(target_gpus)}"
+        )
+
+        # Find endpoints using the target GPUs
+        for proc_name, proc in self._vllm._processes.items():
+            proc_gpus = set(proc.gpu_ids) if proc.gpu_ids else set()
+            if proc_gpus & target_gpus:
+                # This endpoint uses one of our target GPUs
+                logger.info(
+                    f"Endpoint {proc_name} uses GPUs {proc.gpu_ids}, "
+                    f"overlaps with target {target_gpus}"
+                )
+                evicted.append(proc_name)
+                restore_plan.append(proc_name)
+
+        if not evicted:
+            logger.debug(f"No endpoints to evict for workload {workload_id}")
+            return evicted, restore_plan
+
+        # Execute evictions
+        for name in evicted:
+            try:
+                logger.info(f"Evicting endpoint {name} for transient workload {workload_id}")
+                await self.stop_endpoint(name)
+                self._unregister_capability(name)
+            except Exception as e:
+                logger.error(f"Failed to evict endpoint {name}: {e}")
+
+        # Wait for GPU memory to be freed (vLLM unload takes a moment)
+        if evicted:
+            logger.info(f"Waiting for GPU memory to be freed after evicting {evicted}")
+            await asyncio.sleep(5)
+
+        return evicted, restore_plan
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Workload Management (Yunikorn-Style Makespan)
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -900,6 +992,11 @@ class OrchestratorService:
         Yunikorn-style makespan management: the workload declares what
         capabilities it needs and for how long. The orchestrator allocates
         resources, evicting idle endpoints if necessary.
+
+        For GPU memory-based workloads (like Docling flows), this will:
+        1. Check available GPU memory on target GPUs
+        2. Evict endpoints using those GPUs if memory insufficient
+        3. Track evicted endpoints for restoration after workload completes
 
         Args:
             request: WorkloadRequest with capabilities and resource requirements
@@ -923,6 +1020,15 @@ class OrchestratorService:
             f"Beginning workload {request.workload_id} "
             f"(type={request.workload_type.name}, priority={request.priority.name})"
         )
+
+        # Handle GPU memory-based workloads (e.g., Docling flows)
+        # These need raw GPU VRAM, not vLLM endpoints
+        if request.is_gpu_workload and not request.required_capabilities:
+            evicted, restore_plan = await self._evict_for_gpu_memory(
+                workload_id=request.workload_id,
+                required_memory_mb=request.estimated_memory_mb,
+                metadata=request.metadata,
+            )
 
         # Allocate endpoints for each required capability
         for task_type in request.required_capabilities:
