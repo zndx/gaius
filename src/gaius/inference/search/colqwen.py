@@ -143,8 +143,8 @@ class ColQwenEmbedder:
     - bf16: ~2GB VRAM (recommended)
     """
 
-    # Default to ColQwen2 model compatible with colpali-engine 0.3.2
-    DEFAULT_MODEL = "vidore/colqwen2-v0.1"
+    # Default to ColNomic multimodal embeddings model
+    DEFAULT_MODEL = "nomic-ai/colnomic-embed-multimodal-7b"
 
     def __init__(
         self,
@@ -261,8 +261,8 @@ class ColQwenEmbedder:
             - multi_vectors: (n_patches, 128) - for MaxSim search
             - aggregated_vector: (128,) - for UMAP/TDA
         """
-        # Process image
-        inputs = self.processor(images=[image], return_tensors="pt")
+        # Process image using the ColPali processor's process_images method
+        inputs = self.processor.process_images([image])
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         # Generate embeddings
