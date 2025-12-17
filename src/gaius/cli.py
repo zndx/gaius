@@ -846,7 +846,7 @@ class GaiusCLI:
 
         Pipeline:
         1. Scan KB for documents
-        2. Compute ColBERT embeddings
+        2. Compute ColNomic embeddings (GPU-accelerated)
         3. Project to 19x19 grid via UMAP
         4. Compute TDA features (H0/H1/H2)
         5. Save to Postgres (grid_snapshots + current_state)

@@ -575,7 +575,7 @@ class GaiusApp(App):
             # Check if cache is valid for current config
             if not check_cache_validity(
                 self.config.kb.root,
-                self.config.vector_store.colbert_model,
+                self.config.vector_store.colnomic_model,
                 self.config.tda.projection_method,
             ):
                 return False
@@ -815,7 +815,7 @@ class GaiusApp(App):
                 self.config.kb.root,
                 grid_data,
                 tda_features,
-                self.config.vector_store.colbert_model,
+                self.config.vector_store.colnomic_model,
                 self.config.tda.projection_method,
             )
 
@@ -995,7 +995,7 @@ class GaiusApp(App):
                     self.config.kb.root,
                     grid_data,
                     tda_features,
-                    self.config.vector_store.colbert_model,
+                    self.config.vector_store.colnomic_model,
                     self.config.tda.projection_method,
                 )
 
@@ -1116,7 +1116,7 @@ class GaiusApp(App):
                             self.config.kb.root,
                             grid_data,
                             tda_features,
-                            self.config.vector_store.colbert_model,
+                            self.config.vector_store.colnomic_model,
                             self.config.tda.projection_method,
                         )
                     except Exception:
@@ -1213,7 +1213,7 @@ class GaiusApp(App):
                             self.config.kb.root,
                             grid_data,
                             tda_features,
-                            self.config.vector_store.colbert_model,
+                            self.config.vector_store.colnomic_model,
                             self.config.tda.projection_method,
                         )
                     except Exception:

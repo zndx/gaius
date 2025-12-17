@@ -2185,14 +2185,14 @@ class GaiusServicer(GaiusServiceServicer):
                     geometry_features = None
 
             # 4. Save to Postgres (updates current_state table)
-            embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+            embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
             snapshot_id = await save_grid_state(
                 kb_root=kb_root,
                 grid_data=grid_data,
                 tda_features=tda_features,
                 embedding_model=embedding_model,
                 projection_method=grid_data.method,
-                embedding_type="multi",  # ColBERT multi-vector
+                embedding_type="multi",  # ColNomic multi-vector
                 geometry_features=geometry_features,
             )
 
@@ -2328,7 +2328,7 @@ class GaiusServicer(GaiusServiceServicer):
                 message="Saving state...",
             )
 
-            embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+            embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
             await save_grid_state(
                 kb_root=kb_root,
                 grid_data=grid_data,
@@ -2372,7 +2372,7 @@ class GaiusServicer(GaiusServiceServicer):
 
         Pipeline:
         1. Scan KB for documents
-        2. Compute ColBERT embeddings
+        2. Compute ColNomic embeddings
         3. Project to 19x19 grid via UMAP
         4. Compute TDA features (H0/H1/H2)
         5. Save to Postgres (grid_snapshots + current_state)
@@ -2381,7 +2381,7 @@ class GaiusServicer(GaiusServiceServicer):
         kb_root = request.kb_root or "build/dev"
         client_id = request.client_id or "grpc"
         force = request.force
-        embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+        embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
         projection_method = request.projection_method or "umap"
 
         logger.info(f"Init: kb_root={kb_root} force={force} from {client_id}")
@@ -2507,7 +2507,7 @@ class GaiusServicer(GaiusServiceServicer):
         kb_root = request.kb_root or "build/dev"
         client_id = request.client_id or "grpc"
         force = request.force
-        embedding_model = request.embedding_model or "colbert-ir/colbertv2.0"
+        embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
         projection_method = request.projection_method or "umap"
 
         logger.info(f"InitProgressStream: kb_root={kb_root} from {client_id}")
@@ -2558,7 +2558,7 @@ class GaiusServicer(GaiusServiceServicer):
             yield InitProgress(
                 phase=InitProgress.Phase.EMBEDDING,
                 progress=0.2,
-                message="Computing ColBERT embeddings...",
+                message="Computing ColNomic embeddings...",
             )
 
             # Run reindex (embedding + projection in one call)
