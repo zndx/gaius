@@ -64,10 +64,12 @@
     graphviz
     imagemagick
     jq
+    metabase
     mdbook
     mdbook-d2
     mdbook-katex
     mdbook-mermaid
+    nifi
     open-policy-agent
     opentofu
     protobuf
@@ -606,12 +608,30 @@
       echo "╚══════════════════════════════════════════════════════════════╝"
       echo ""
 
-      # Wait for services to be ready
-      echo "Waiting for Metaflow services to be ready..."
-      until kubectl get svc metaflow-ui-static &>/dev/null; do
-        sleep 2
+      # Wait for Kubernetes services to be created by Tilt
+      # This may take a minute or two on first startup
+      echo "Waiting for Metaflow K8s services to be ready..."
+      echo "(This may take 1-2 minutes on first startup)"
+      echo ""
+
+      MAX_WAIT=180
+      WAITED=0
+      while ! kubectl get svc metaflow-ui-static &>/dev/null; do
+        sleep 5
+        WAITED=$((WAITED + 5))
+        if [ $WAITED -ge $MAX_WAIT ]; then
+          echo "ERROR: Metaflow services not ready after ''${MAX_WAIT}s"
+          echo "Check metaflow-ui process logs or run: kubectl get svc"
+          exit 1
+        fi
+        echo "  Waiting for services... (''${WAITED}s)"
       done
-      echo "✓ Services discovered"
+      echo "✓ metaflow-ui-static service discovered"
+
+      # Wait for endpoints to be ready (pods running)
+      echo "Waiting for pods to be ready..."
+      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=metaflow-ui-static --timeout=120s 2>/dev/null || true
+      echo "✓ Pods ready"
 
       # Kill any existing port-forwards on these ports
       fuser -k 3000/tcp 2>/dev/null || true
@@ -651,6 +671,172 @@
       };
       # Enabled by default for external access
       disabled = false;
+    };
+  };
+
+  # ============================================================================
+  # Metabase - Business Intelligence Dashboard
+  # ============================================================================
+  #
+  # Provides analytics dashboards for agent metrics, evolution tracking,
+  # KB topology, and system health visualization.
+  #
+  # Access: http://tinybox.dev.vista.zndx.org:3100
+  # Initial setup: Create admin account on first launch
+
+  processes.metabase = {
+    exec = ''
+      if [ "''${DISABLE_METABASE:-false}" == "true" ]; then
+        echo "Metabase disabled (DISABLE_METABASE=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  METABASE - Business Intelligence Dashboard                  ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Wait for PostgreSQL to be ready
+      echo "Waiting for PostgreSQL..."
+      for i in $(seq 1 30); do
+        if pg_isready -h 127.0.0.1 -p 5438 -U postgres >/dev/null 2>&1; then
+          echo "✓ PostgreSQL ready"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "ERROR: PostgreSQL not ready after 30s"
+          exit 1
+        fi
+        sleep 1
+      done
+
+      # Metabase data directory
+      METABASE_DATA_DIR="${config.devenv.root}/.devenv/state/metabase"
+      mkdir -p "$METABASE_DATA_DIR"
+
+      echo ""
+      echo "Starting Metabase on port 3100..."
+      echo "  URL:        http://0.0.0.0:3100"
+      echo "  External:   http://tinybox.dev.vista.zndx.org:3100"
+      echo "  Data dir:   $METABASE_DATA_DIR"
+      echo ""
+
+      # Metabase configuration via environment variables
+      export MB_JETTY_HOST="0.0.0.0"
+      export MB_JETTY_PORT="3100"
+
+      # Use PostgreSQL for Metabase application database (not H2)
+      export MB_DB_TYPE="postgres"
+      export MB_DB_HOST="127.0.0.1"
+      export MB_DB_PORT="5438"
+      export MB_DB_DBNAME="zndx_gaius"
+      export MB_DB_USER="$USER"
+      export MB_DB_PASS=""
+
+      # Metabase stores its own metadata in 'metabase_*' tables
+      # This is separate from our 'meta' schema for analytics
+
+      exec ${pkgs.metabase}/bin/metabase
+    '';
+    process-compose = {
+      depends_on.postgres.condition = "process_healthy";
+      # Disabled by default - enable with: devenv processes up metabase
+      disabled = true;
+    };
+  };
+
+  # ============================================================================
+  # Apache NiFi - Data Flow Visualization
+  # ============================================================================
+  #
+  # Visualizes Metaflow pipeline steps as NiFi flows for monitoring and
+  # situational awareness. MetaAgent projects flows onto the NiFi canvas.
+  #
+  # Access: http://tinybox.dev.vista.zndx.org:8450/nifi
+  # Note: First startup may take 1-2 minutes to initialize.
+
+  processes.nifi = {
+    exec = ''
+      if [ "''${DISABLE_NIFI:-false}" == "true" ]; then
+        echo "NiFi disabled (DISABLE_NIFI=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  APACHE NIFI - Data Flow Visualization                       ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # NiFi requires a writable conf directory
+      NIFI_HOME="${config.devenv.root}/.devenv/state/nifi"
+      mkdir -p "$NIFI_HOME"/{conf,logs,database_repository,flowfile_repository,content_repository,provenance_repository,state,work}
+
+      # Copy default config if not present
+      NIFI_PACKAGE="${pkgs.nifi}"
+      if [ ! -f "$NIFI_HOME/conf/nifi.properties" ]; then
+        echo "Initializing NiFi configuration..."
+        cp -r "$NIFI_PACKAGE"/share/nifi/conf/* "$NIFI_HOME/conf/" 2>/dev/null || true
+
+        # Create nifi.properties with custom ports
+        cat > "$NIFI_HOME/conf/nifi.properties" << 'NIFI_PROPS'
+# NiFi Configuration for Gaius MetaAgent
+nifi.flow.configuration.file=./conf/flow.json.gz
+nifi.flow.configuration.archive.enabled=true
+nifi.flow.configuration.archive.dir=./conf/archive/
+nifi.flow.configuration.archive.max.time=30 days
+nifi.flow.configuration.archive.max.storage=500 MB
+
+# Web Properties - bind to all interfaces for external access
+nifi.web.http.host=0.0.0.0
+nifi.web.http.port=8450
+nifi.web.https.host=
+nifi.web.https.port=
+
+# Security - single-user mode for development
+nifi.security.user.login.identity.provider=single-user-provider
+nifi.security.user.authorizer=single-user-authorizer
+
+# Repository Directories
+nifi.database.directory=./database_repository
+nifi.flowfile.repository.directory=./flowfile_repository
+nifi.content.repository.directory.default=./content_repository
+nifi.provenance.repository.directory.default=./provenance_repository
+
+# State Management
+nifi.state.management.configuration.file=./conf/state-management.xml
+nifi.state.management.embedded.zookeeper.start=false
+
+# Cluster - standalone for dev
+nifi.cluster.is.node=false
+
+# Performance
+nifi.bored.yield.duration=10 millis
+nifi.queue.backpressure.count=10000
+nifi.queue.backpressure.size=1 GB
+NIFI_PROPS
+      fi
+
+      echo ""
+      echo "Starting NiFi on port 8450..."
+      echo "  URL:        http://0.0.0.0:8450/nifi"
+      echo "  External:   http://tinybox.dev.vista.zndx.org:8450/nifi"
+      echo "  Home:       $NIFI_HOME"
+      echo ""
+      echo "Note: First startup may take 1-2 minutes to initialize."
+      echo "      Check logs for single-user credentials."
+      echo ""
+
+      # Set NiFi home and run
+      export NIFI_HOME="$NIFI_HOME"
+      cd "$NIFI_HOME"
+
+      # Run NiFi in foreground mode
+      exec ${pkgs.nifi}/bin/nifi.sh run
+    '';
+    process-compose = {
+      # NiFi is independent of other services
+      # Disabled by default - enable with: devenv processes up nifi
+      disabled = true;
     };
   };
 

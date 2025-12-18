@@ -1,4 +1,4 @@
-\restrict ZxSmj0ECBdNOLeW0QN7iMvnpZGg57DL3hfjfreV1gu7oQZqxmU0hfAdAKblEY1Z
+\restrict sU0kahaNJb1CDLYyMRhqDr38SfdzHdmRwPcpEWex42mN9tduVyjRmJzwseWH1Q1
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -40,6 +40,20 @@ COMMENT ON EXTENSION pg_cron IS 'Job scheduler for PostgreSQL';
 --
 
 CREATE SCHEMA gaius_hx;
+
+
+--
+-- Name: meta; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA meta;
+
+
+--
+-- Name: SCHEMA meta; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA meta IS 'MetaAgent analytics tables for Metabase dashboards';
 
 
 --
@@ -1100,6 +1114,274 @@ CREATE SEQUENCE gaius_hx._label_id_seq
 
 
 --
+-- Name: agent_performance; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.agent_performance (
+    agent_id text NOT NULL,
+    date date NOT NULL,
+    active_version_id text,
+    evaluations_count integer DEFAULT 0,
+    avg_overall_score double precision,
+    evolution_cycles integer DEFAULT 0,
+    improvement_percent double precision
+);
+
+
+--
+-- Name: data_dependencies; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.data_dependencies (
+    id integer NOT NULL,
+    source_dataset_id text,
+    target_dataset_id text,
+    via_job_id text,
+    first_observed timestamp with time zone,
+    last_observed timestamp with time zone,
+    occurrence_count integer DEFAULT 1
+);
+
+
+--
+-- Name: data_dependencies_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.data_dependencies_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: data_dependencies_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.data_dependencies_id_seq OWNED BY meta.data_dependencies.id;
+
+
+--
+-- Name: dataset_catalog; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.dataset_catalog (
+    dataset_id text NOT NULL,
+    namespace text NOT NULL,
+    name text NOT NULL,
+    first_seen timestamp with time zone,
+    last_seen timestamp with time zone,
+    total_reads integer DEFAULT 0,
+    total_writes integer DEFAULT 0
+);
+
+
+--
+-- Name: document_clusters; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.document_clusters (
+    id integer NOT NULL,
+    snapshot_id integer,
+    cluster_id integer,
+    centroid_x integer,
+    centroid_y integer,
+    document_count integer,
+    dominant_domain text,
+    topic_keywords text[],
+    avg_persistence double precision
+);
+
+
+--
+-- Name: document_clusters_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.document_clusters_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: document_clusters_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.document_clusters_id_seq OWNED BY meta.document_clusters.id;
+
+
+--
+-- Name: flow_runs; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.flow_runs (
+    run_id uuid NOT NULL,
+    flow_type text NOT NULL,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    duration_ms integer,
+    status text,
+    inputs_count integer DEFAULT 0,
+    outputs_count integer DEFAULT 0,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: gpu_utilization; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.gpu_utilization (
+    "timestamp" timestamp with time zone NOT NULL,
+    gpu_index integer NOT NULL,
+    memory_used_mb integer,
+    memory_total_mb integer,
+    utilization_percent double precision,
+    temperature_c integer,
+    active_endpoint text
+);
+
+
+--
+-- Name: inference_throughput; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.inference_throughput (
+    hour timestamp with time zone NOT NULL,
+    model text NOT NULL,
+    requests_count integer DEFAULT 0,
+    tokens_generated bigint DEFAULT 0,
+    avg_latency_ms double precision,
+    p95_latency_ms double precision
+);
+
+
+--
+-- Name: job_catalog; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.job_catalog (
+    job_id text NOT NULL,
+    namespace text NOT NULL,
+    name text NOT NULL,
+    first_run timestamp with time zone,
+    last_run timestamp with time zone,
+    total_runs integer DEFAULT 0,
+    success_count integer DEFAULT 0,
+    failure_count integer DEFAULT 0,
+    avg_duration_ms double precision
+);
+
+
+--
+-- Name: kb_topology; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.kb_topology (
+    snapshot_id integer NOT NULL,
+    computed_at timestamp with time zone,
+    n_documents integer,
+    coverage double precision,
+    h0_count integer,
+    h1_count integer,
+    h2_count integer,
+    entropy double precision,
+    avg_curvature double precision,
+    avg_complexity double precision
+);
+
+
+--
+-- Name: nifi_flows; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.nifi_flows (
+    id integer NOT NULL,
+    flow_id text NOT NULL,
+    flow_name text NOT NULL,
+    process_group_id text,
+    metaflow_name text,
+    processor_count integer DEFAULT 0,
+    connection_count integer DEFAULT 0,
+    status text DEFAULT 'projected'::text,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: nifi_flows_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.nifi_flows_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: nifi_flows_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.nifi_flows_id_seq OWNED BY meta.nifi_flows.id;
+
+
+--
+-- Name: semantic_regions; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.semantic_regions (
+    region_id integer NOT NULL,
+    name text,
+    grid_bounds jsonb,
+    document_paths text[],
+    dominant_topics text[],
+    boundary_curvature double precision,
+    computed_at timestamp with time zone
+);
+
+
+--
+-- Name: semantic_regions_region_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.semantic_regions_region_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: semantic_regions_region_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.semantic_regions_region_id_seq OWNED BY meta.semantic_regions.region_id;
+
+
+--
+-- Name: sync_watermarks; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.sync_watermarks (
+    sync_type text NOT NULL,
+    last_sync_at timestamp with time zone,
+    last_event_id bigint,
+    records_synced integer DEFAULT 0
+);
+
+
+--
 -- Name: agent_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1625,6 +1907,48 @@ ALTER SEQUENCE public.content_items_id_seq OWNED BY public.content_items.id;
 
 
 --
+-- Name: corpus_versions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.corpus_versions (
+    id integer NOT NULL,
+    version_id character varying(128) NOT NULL,
+    document_count integer DEFAULT 0 NOT NULL,
+    vocabulary_size integer DEFAULT 0 NOT NULL,
+    minio_path text NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE corpus_versions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.corpus_versions IS 'Tracks corpus snapshots for incremental topic model training';
+
+
+--
+-- Name: corpus_versions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.corpus_versions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: corpus_versions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.corpus_versions_id_seq OWNED BY public.corpus_versions.id;
+
+
+--
 -- Name: current_state; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1731,6 +2055,47 @@ CREATE SEQUENCE public.daily_summaries_id_seq
 --
 
 ALTER SEQUENCE public.daily_summaries_id_seq OWNED BY public.daily_summaries.id;
+
+
+--
+-- Name: document_topics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.document_topics (
+    id integer NOT NULL,
+    document_id character varying(256) NOT NULL,
+    model_id integer,
+    topics jsonb NOT NULL,
+    top_words jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE document_topics; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.document_topics IS 'Topic assignments for documents';
+
+
+--
+-- Name: document_topics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.document_topics_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: document_topics_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.document_topics_id_seq OWNED BY public.document_topics.id;
 
 
 --
@@ -2351,6 +2716,79 @@ ALTER SEQUENCE public.grid_tda_features_id_seq OWNED BY public.grid_tda_features
 
 
 --
+-- Name: healing_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.healing_events (
+    id bigint NOT NULL,
+    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    sequence_id uuid NOT NULL,
+    sequence_num integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    event_type character varying(32) NOT NULL,
+    endpoint character varying(64) NOT NULL,
+    tier integer NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    aiops_event_id integer,
+    failure_mode_id character varying(32)
+);
+
+
+--
+-- Name: TABLE healing_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.healing_events IS 'Event-sourced audit log for self-healing attempts - append only';
+
+
+--
+-- Name: COLUMN healing_events.sequence_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.sequence_id IS 'Groups all events for one healing sequence (issue detection through resolution)';
+
+
+--
+-- Name: COLUMN healing_events.sequence_num; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.sequence_num IS 'Order within sequence, auto-incremented per sequence';
+
+
+--
+-- Name: COLUMN healing_events.event_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.event_type IS 'Event classification: sequence_started/completed, tier_entered/exhausted, attempt_started/succeeded/failed, cooldown_started/cleared, circuit_breaker_tripped/reset';
+
+
+--
+-- Name: COLUMN healing_events.payload; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.payload IS 'Event-specific data varying by event_type';
+
+
+--
+-- Name: healing_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.healing_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: healing_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.healing_events_id_seq OWNED BY public.healing_events.id;
+
+
+--
 -- Name: health_loop_state; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2364,7 +2802,8 @@ CREATE TABLE public.health_loop_state (
     stuck_detections jsonb DEFAULT '{}'::jsonb,
     total_auto_remediations integer DEFAULT 0,
     total_pending_approvals integer DEFAULT 0,
-    last_remediation_at timestamp with time zone
+    last_remediation_at timestamp with time zone,
+    circuit_breaker jsonb DEFAULT '{}'::jsonb
 );
 
 
@@ -2373,6 +2812,13 @@ CREATE TABLE public.health_loop_state (
 --
 
 COMMENT ON TABLE public.health_loop_state IS 'Persistent state for autonomous health loop';
+
+
+--
+-- Name: COLUMN health_loop_state.circuit_breaker; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.health_loop_state.circuit_breaker IS 'Global circuit breaker state: {global_failures, global_cooldown_until}';
 
 
 --
@@ -2829,6 +3275,51 @@ ALTER SEQUENCE public.optimization_runs_id_seq OWNED BY public.optimization_runs
 
 
 --
+-- Name: paper_scores; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.paper_scores (
+    id integer NOT NULL,
+    arxiv_id character varying(64) NOT NULL,
+    rubric_id integer,
+    overall_score double precision NOT NULL,
+    criteria_scores jsonb NOT NULL,
+    model_used character varying(64) NOT NULL,
+    reasoning text,
+    confidence double precision,
+    metaflow_run_id character varying(128),
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE paper_scores; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.paper_scores IS 'LLM-scored paper relevance with rubric lineage';
+
+
+--
+-- Name: paper_scores_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.paper_scores_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: paper_scores_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.paper_scores_id_seq OWNED BY public.paper_scores.id;
+
+
+--
 -- Name: profile_content; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3119,6 +3610,47 @@ CREATE TABLE public.schema_migrations (
 
 
 --
+-- Name: scoring_rubrics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scoring_rubrics (
+    id integer NOT NULL,
+    name character varying(128) NOT NULL,
+    version character varying(32) NOT NULL,
+    config jsonb NOT NULL,
+    model_preference character varying(32) DEFAULT 'ensemble'::character varying,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE scoring_rubrics; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.scoring_rubrics IS 'Versioned scoring rubrics for LLM paper evaluation';
+
+
+--
+-- Name: scoring_rubrics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.scoring_rubrics_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: scoring_rubrics_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
+
+
+--
 -- Name: sessions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3236,6 +3768,51 @@ CREATE SEQUENCE public.summary_lineage_id_seq
 --
 
 ALTER SEQUENCE public.summary_lineage_id_seq OWNED BY public.summary_lineage.id;
+
+
+--
+-- Name: topic_models; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.topic_models (
+    id integer NOT NULL,
+    model_id character varying(128) NOT NULL,
+    model_type character varying(32) NOT NULL,
+    corpus_version_id integer,
+    num_topics integer,
+    discovered_topics integer,
+    coherence_cv double precision,
+    minio_path text NOT NULL,
+    training_params jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE topic_models; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.topic_models IS 'Trained topic models (LDA, LSA, HDP, BERTopic) with lineage';
+
+
+--
+-- Name: topic_models_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.topic_models_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: topic_models_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.topic_models_id_seq OWNED BY public.topic_models.id;
 
 
 --
@@ -3459,6 +4036,34 @@ ALTER TABLE ONLY gaius_hx._ag_label_vertex ALTER COLUMN id SET DEFAULT ag_catalo
 
 
 --
+-- Name: data_dependencies id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.data_dependencies ALTER COLUMN id SET DEFAULT nextval('meta.data_dependencies_id_seq'::regclass);
+
+
+--
+-- Name: document_clusters id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.document_clusters ALTER COLUMN id SET DEFAULT nextval('meta.document_clusters_id_seq'::regclass);
+
+
+--
+-- Name: nifi_flows id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.nifi_flows ALTER COLUMN id SET DEFAULT nextval('meta.nifi_flows_id_seq'::regclass);
+
+
+--
+-- Name: semantic_regions region_id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.semantic_regions ALTER COLUMN region_id SET DEFAULT nextval('meta.semantic_regions_region_id_seq'::regclass);
+
+
+--
 -- Name: activity_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3501,6 +4106,13 @@ ALTER TABLE ONLY public.content_items ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
+-- Name: corpus_versions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.corpus_versions ALTER COLUMN id SET DEFAULT nextval('public.corpus_versions_id_seq'::regclass);
+
+
+--
 -- Name: daily_eval_summaries id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3512,6 +4124,13 @@ ALTER TABLE ONLY public.daily_eval_summaries ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.daily_summaries ALTER COLUMN id SET DEFAULT nextval('public.daily_summaries_id_seq'::regclass);
+
+
+--
+-- Name: document_topics id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_topics ALTER COLUMN id SET DEFAULT nextval('public.document_topics_id_seq'::regclass);
 
 
 --
@@ -3606,6 +4225,13 @@ ALTER TABLE ONLY public.grid_tda_features ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: healing_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.healing_events ALTER COLUMN id SET DEFAULT nextval('public.healing_events_id_seq'::regclass);
+
+
+--
 -- Name: health_loop_state id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3662,6 +4288,13 @@ ALTER TABLE ONLY public.optimization_runs ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: paper_scores id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_scores ALTER COLUMN id SET DEFAULT nextval('public.paper_scores_id_seq'::regclass);
+
+
+--
 -- Name: profiles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3683,6 +4316,13 @@ ALTER TABLE ONLY public.scheduled_tasks ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: scoring_rubrics id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scoring_rubrics ALTER COLUMN id SET DEFAULT nextval('public.scoring_rubrics_id_seq'::regclass);
+
+
+--
 -- Name: state_changes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -3694,6 +4334,13 @@ ALTER TABLE ONLY public.state_changes ALTER COLUMN id SET DEFAULT nextval('publi
 --
 
 ALTER TABLE ONLY public.summary_lineage ALTER COLUMN id SET DEFAULT nextval('public.summary_lineage_id_seq'::regclass);
+
+
+--
+-- Name: topic_models id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topic_models ALTER COLUMN id SET DEFAULT nextval('public.topic_models_id_seq'::regclass);
 
 
 --
@@ -3717,6 +4364,118 @@ ALTER TABLE ONLY gaius_hx._ag_label_edge
 
 ALTER TABLE ONLY gaius_hx._ag_label_vertex
     ADD CONSTRAINT _ag_label_vertex_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: agent_performance agent_performance_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.agent_performance
+    ADD CONSTRAINT agent_performance_pkey PRIMARY KEY (agent_id, date);
+
+
+--
+-- Name: data_dependencies data_dependencies_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.data_dependencies
+    ADD CONSTRAINT data_dependencies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: data_dependencies data_dependencies_source_dataset_id_target_dataset_id_via_j_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.data_dependencies
+    ADD CONSTRAINT data_dependencies_source_dataset_id_target_dataset_id_via_j_key UNIQUE (source_dataset_id, target_dataset_id, via_job_id);
+
+
+--
+-- Name: dataset_catalog dataset_catalog_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.dataset_catalog
+    ADD CONSTRAINT dataset_catalog_pkey PRIMARY KEY (dataset_id);
+
+
+--
+-- Name: document_clusters document_clusters_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.document_clusters
+    ADD CONSTRAINT document_clusters_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: flow_runs flow_runs_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.flow_runs
+    ADD CONSTRAINT flow_runs_pkey PRIMARY KEY (run_id);
+
+
+--
+-- Name: gpu_utilization gpu_utilization_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.gpu_utilization
+    ADD CONSTRAINT gpu_utilization_pkey PRIMARY KEY ("timestamp", gpu_index);
+
+
+--
+-- Name: inference_throughput inference_throughput_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.inference_throughput
+    ADD CONSTRAINT inference_throughput_pkey PRIMARY KEY (hour, model);
+
+
+--
+-- Name: job_catalog job_catalog_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.job_catalog
+    ADD CONSTRAINT job_catalog_pkey PRIMARY KEY (job_id);
+
+
+--
+-- Name: kb_topology kb_topology_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.kb_topology
+    ADD CONSTRAINT kb_topology_pkey PRIMARY KEY (snapshot_id);
+
+
+--
+-- Name: nifi_flows nifi_flows_flow_id_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.nifi_flows
+    ADD CONSTRAINT nifi_flows_flow_id_key UNIQUE (flow_id);
+
+
+--
+-- Name: nifi_flows nifi_flows_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.nifi_flows
+    ADD CONSTRAINT nifi_flows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: semantic_regions semantic_regions_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.semantic_regions
+    ADD CONSTRAINT semantic_regions_pkey PRIMARY KEY (region_id);
+
+
+--
+-- Name: sync_watermarks sync_watermarks_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.sync_watermarks
+    ADD CONSTRAINT sync_watermarks_pkey PRIMARY KEY (sync_type);
 
 
 --
@@ -3800,6 +4559,22 @@ ALTER TABLE ONLY public.content_items
 
 
 --
+-- Name: corpus_versions corpus_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.corpus_versions
+    ADD CONSTRAINT corpus_versions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: corpus_versions corpus_versions_version_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.corpus_versions
+    ADD CONSTRAINT corpus_versions_version_id_key UNIQUE (version_id);
+
+
+--
 -- Name: current_state current_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3837,6 +4612,14 @@ ALTER TABLE ONLY public.daily_summaries
 
 ALTER TABLE ONLY public.daily_summaries
     ADD CONSTRAINT daily_summaries_summary_date_key UNIQUE (summary_date);
+
+
+--
+-- Name: document_topics document_topics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_topics
+    ADD CONSTRAINT document_topics_pkey PRIMARY KEY (id);
 
 
 --
@@ -4000,6 +4783,30 @@ ALTER TABLE ONLY public.grid_tda_features
 
 
 --
+-- Name: healing_events healing_events_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.healing_events
+    ADD CONSTRAINT healing_events_event_id_key UNIQUE (event_id);
+
+
+--
+-- Name: healing_events healing_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.healing_events
+    ADD CONSTRAINT healing_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: healing_events healing_events_sequence_id_sequence_num_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.healing_events
+    ADD CONSTRAINT healing_events_sequence_id_sequence_num_key UNIQUE (sequence_id, sequence_num);
+
+
+--
 -- Name: health_loop_state health_loop_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4120,6 +4927,14 @@ ALTER TABLE ONLY public.optimization_runs
 
 
 --
+-- Name: paper_scores paper_scores_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_scores
+    ADD CONSTRAINT paper_scores_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: profile_content profile_content_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4200,6 +5015,22 @@ ALTER TABLE ONLY public.schema_migrations
 
 
 --
+-- Name: scoring_rubrics scoring_rubrics_name_version_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scoring_rubrics
+    ADD CONSTRAINT scoring_rubrics_name_version_key UNIQUE (name, version);
+
+
+--
+-- Name: scoring_rubrics scoring_rubrics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scoring_rubrics
+    ADD CONSTRAINT scoring_rubrics_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4232,6 +5063,22 @@ ALTER TABLE ONLY public.summary_lineage
 
 
 --
+-- Name: topic_models topic_models_model_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topic_models
+    ADD CONSTRAINT topic_models_model_id_key UNIQUE (model_id);
+
+
+--
+-- Name: topic_models topic_models_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topic_models
+    ADD CONSTRAINT topic_models_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: ui_preferences ui_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4253,6 +5100,83 @@ ALTER TABLE ONLY public.user_interests
 
 ALTER TABLE ONLY public.user_interests
     ADD CONSTRAINT user_interests_profile_name_topic_key UNIQUE (profile_name, topic);
+
+
+--
+-- Name: idx_meta_agent_perf_date; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_agent_perf_date ON meta.agent_performance USING btree (date DESC);
+
+
+--
+-- Name: idx_meta_clusters_snapshot; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_clusters_snapshot ON meta.document_clusters USING btree (snapshot_id);
+
+
+--
+-- Name: idx_meta_dataset_namespace; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_dataset_namespace ON meta.dataset_catalog USING btree (namespace);
+
+
+--
+-- Name: idx_meta_deps_source; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_deps_source ON meta.data_dependencies USING btree (source_dataset_id);
+
+
+--
+-- Name: idx_meta_deps_target; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_deps_target ON meta.data_dependencies USING btree (target_dataset_id);
+
+
+--
+-- Name: idx_meta_flow_runs_status; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_runs_status ON meta.flow_runs USING btree (status);
+
+
+--
+-- Name: idx_meta_flow_runs_type; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_runs_type ON meta.flow_runs USING btree (flow_type, started_at DESC);
+
+
+--
+-- Name: idx_meta_gpu_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_gpu_time ON meta.gpu_utilization USING btree ("timestamp" DESC);
+
+
+--
+-- Name: idx_meta_job_namespace; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_job_namespace ON meta.job_catalog USING btree (namespace);
+
+
+--
+-- Name: idx_meta_kb_topology_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_kb_topology_time ON meta.kb_topology USING btree (computed_at DESC);
+
+
+--
+-- Name: idx_meta_nifi_flows_status; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_nifi_flows_status ON meta.nifi_flows USING btree (status);
 
 
 --
@@ -4480,6 +5404,13 @@ CREATE INDEX idx_content_unsummarized ON public.content_items USING btree (fetch
 
 
 --
+-- Name: idx_corpus_versions_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_corpus_versions_created ON public.corpus_versions USING btree (created_at DESC);
+
+
+--
 -- Name: idx_cycles_recent; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4491,6 +5422,20 @@ CREATE INDEX idx_cycles_recent ON public.cognition_cycles USING btree (profile_n
 --
 
 CREATE INDEX idx_daily_summaries_date ON public.daily_summaries USING btree (summary_date DESC);
+
+
+--
+-- Name: idx_document_topics_doc; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_document_topics_doc ON public.document_topics USING btree (document_id);
+
+
+--
+-- Name: idx_document_topics_model; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_document_topics_model ON public.document_topics USING btree (model_id);
 
 
 --
@@ -4662,6 +5607,55 @@ CREATE INDEX idx_grid_snapshots_generation ON public.grid_snapshots USING btree 
 
 
 --
+-- Name: idx_healing_events_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_active ON public.healing_events USING btree (endpoint, sequence_id, created_at) WHERE ((event_type)::text = 'sequence_started'::text);
+
+
+--
+-- Name: idx_healing_events_aiops; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_aiops ON public.healing_events USING btree (aiops_event_id) WHERE (aiops_event_id IS NOT NULL);
+
+
+--
+-- Name: idx_healing_events_endpoint; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_endpoint ON public.healing_events USING btree (endpoint, created_at DESC);
+
+
+--
+-- Name: idx_healing_events_fmea; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_fmea ON public.healing_events USING btree (failure_mode_id) WHERE (failure_mode_id IS NOT NULL);
+
+
+--
+-- Name: idx_healing_events_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_recent ON public.healing_events USING btree (created_at DESC);
+
+
+--
+-- Name: idx_healing_events_sequence; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_sequence ON public.healing_events USING btree (sequence_id, sequence_num);
+
+
+--
+-- Name: idx_healing_events_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_healing_events_type ON public.healing_events USING btree (event_type, created_at DESC);
+
+
+--
 -- Name: idx_held_out_category; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4816,6 +5810,27 @@ CREATE INDEX idx_optimization_runs_status ON public.optimization_runs USING btre
 
 
 --
+-- Name: idx_paper_scores_arxiv; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_paper_scores_arxiv ON public.paper_scores USING btree (arxiv_id);
+
+
+--
+-- Name: idx_paper_scores_overall; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_paper_scores_overall ON public.paper_scores USING btree (overall_score DESC);
+
+
+--
+-- Name: idx_paper_scores_run; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_paper_scores_run ON public.paper_scores USING btree (metaflow_run_id);
+
+
+--
 -- Name: idx_profile_content_score; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4904,6 +5919,13 @@ CREATE INDEX idx_scheduler_jobs_retry ON public.scheduler_jobs USING btree (crea
 --
 
 CREATE INDEX idx_scheduler_jobs_status ON public.scheduler_jobs USING btree (status);
+
+
+--
+-- Name: idx_scoring_rubrics_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_scoring_rubrics_name ON public.scoring_rubrics USING btree (name);
 
 
 --
@@ -5061,6 +6083,20 @@ CREATE INDEX idx_threads_domain ON public.research_threads USING btree (domain) 
 
 
 --
+-- Name: idx_topic_models_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_topic_models_created ON public.topic_models USING btree (created_at DESC);
+
+
+--
+-- Name: idx_topic_models_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_topic_models_type ON public.topic_models USING btree (model_type);
+
+
+--
 -- Name: v_source_status _RETURN; Type: RULE; Schema: public; Owner: -
 --
 
@@ -5097,6 +6133,38 @@ CREATE OR REPLACE VIEW public.v_source_status AS
 --
 
 CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+
+
+--
+-- Name: data_dependencies data_dependencies_source_dataset_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.data_dependencies
+    ADD CONSTRAINT data_dependencies_source_dataset_id_fkey FOREIGN KEY (source_dataset_id) REFERENCES meta.dataset_catalog(dataset_id);
+
+
+--
+-- Name: data_dependencies data_dependencies_target_dataset_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.data_dependencies
+    ADD CONSTRAINT data_dependencies_target_dataset_id_fkey FOREIGN KEY (target_dataset_id) REFERENCES meta.dataset_catalog(dataset_id);
+
+
+--
+-- Name: data_dependencies data_dependencies_via_job_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.data_dependencies
+    ADD CONSTRAINT data_dependencies_via_job_id_fkey FOREIGN KEY (via_job_id) REFERENCES meta.job_catalog(job_id);
+
+
+--
+-- Name: document_clusters document_clusters_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.document_clusters
+    ADD CONSTRAINT document_clusters_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.kb_topology(snapshot_id);
 
 
 --
@@ -5145,6 +6213,14 @@ ALTER TABLE ONLY public.content_items
 
 ALTER TABLE ONLY public.current_state
     ADD CONSTRAINT current_state_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE SET NULL;
+
+
+--
+-- Name: document_topics document_topics_model_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.document_topics
+    ADD CONSTRAINT document_topics_model_id_fkey FOREIGN KEY (model_id) REFERENCES public.topic_models(id);
 
 
 --
@@ -5244,6 +6320,22 @@ ALTER TABLE ONLY public.grid_tda_features
 
 
 --
+-- Name: healing_events healing_events_aiops_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.healing_events
+    ADD CONSTRAINT healing_events_aiops_event_id_fkey FOREIGN KEY (aiops_event_id) REFERENCES public.aiops_events(id);
+
+
+--
+-- Name: healing_events healing_events_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.healing_events
+    ADD CONSTRAINT healing_events_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
 -- Name: kb_sync_runs kb_sync_runs_target_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5273,6 +6365,14 @@ ALTER TABLE ONLY public.mlops_events
 
 ALTER TABLE ONLY public.optimization_runs
     ADD CONSTRAINT optimization_runs_best_version_id_fkey FOREIGN KEY (best_version_id) REFERENCES public.agent_versions(version_id);
+
+
+--
+-- Name: paper_scores paper_scores_rubric_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.paper_scores
+    ADD CONSTRAINT paper_scores_rubric_id_fkey FOREIGN KEY (rubric_id) REFERENCES public.scoring_rubrics(id);
 
 
 --
@@ -5340,10 +6440,18 @@ ALTER TABLE ONLY public.summary_lineage
 
 
 --
+-- Name: topic_models topic_models_corpus_version_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.topic_models
+    ADD CONSTRAINT topic_models_corpus_version_id_fkey FOREIGN KEY (corpus_version_id) REFERENCES public.corpus_versions(id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ZxSmj0ECBdNOLeW0QN7iMvnpZGg57DL3hfjfreV1gu7oQZqxmU0hfAdAKblEY1Z
+\unrestrict sU0kahaNJb1CDLYyMRhqDr38SfdzHdmRwPcpEWex42mN9tduVyjRmJzwseWH1Q1
 
 
 --
@@ -5370,4 +6478,7 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251214000001'),
     ('20251214000002'),
     ('20251214000003'),
-    ('20251215000001');
+    ('20251215000001'),
+    ('20251215000002'),
+    ('20251217000001'),
+    ('20251218000001');
