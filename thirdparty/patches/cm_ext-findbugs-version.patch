@@ -1,0 +1,24 @@
+diff --git a/cm-schema/pom.xml b/cm-schema/pom.xml
+--- a/cm-schema/pom.xml
++++ b/cm-schema/pom.xml
+@@ -194,7 +194,7 @@
+       <plugin>
+         <groupId>org.codehaus.mojo</groupId>
+         <artifactId>findbugs-maven-plugin</artifactId>
+-        <version>${findbugsVersion}</version>
++        <version>3.0.0</version>
+         <configuration>
+           <effort>Max</effort>
+           <threshold>Low</threshold>
+diff --git a/validator/pom.xml b/validator/pom.xml
+--- a/validator/pom.xml
++++ b/validator/pom.xml
+@@ -187,7 +187,7 @@
+       <plugin>
+         <groupId>org.codehaus.mojo</groupId>
+         <artifactId>findbugs-maven-plugin</artifactId>
+-        <version>${findbugsVersion}</version>
++        <version>3.0.0</version>
+         <configuration>
+           <effort>Max</effort>
+           <threshold>Low</threshold>

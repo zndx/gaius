@@ -104,16 +104,27 @@ build_cm_ext() {
 
     cd "${CM_EXT_SOURCE}"
 
+    # Apply patches if needed
+    PATCHES_DIR="${SCRIPT_DIR}/patches"
+    if [ -f "${PATCHES_DIR}/cm_ext-findbugs-version.patch" ]; then
+        log_info "Applying patches..."
+        git checkout -- . 2>/dev/null || true  # Reset any previous patches
+        patch -p1 < "${PATCHES_DIR}/cm_ext-findbugs-version.patch" || {
+            log_warn "Patch may have already been applied"
+        }
+    fi
+
     # Step 1: Build cm-schema first (required dependency)
+    # Skip tests and javadoc (JDK 11 has stricter javadoc rules that fail on old code)
     log_info "Building cm-schema..."
     cd cm-schema
-    mvn clean install -DskipTests -q
+    mvn clean install -DskipTests -Dmaven.javadoc.skip=true -q
     cd ..
 
     # Step 2: Build the validator
     log_info "Building validator..."
     cd validator
-    mvn clean package -DskipTests -q
+    mvn clean package -DskipTests -Dmaven.javadoc.skip=true -q
     cd ..
 
     # Step 3: Copy the built JAR to installed location
