@@ -1,0 +1,8 @@
+# Downloaded source code
+/src/
+
+# Build artifacts
+/build/
+
+# Installed binaries and JARs
+/installed/
