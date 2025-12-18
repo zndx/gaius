@@ -194,9 +194,20 @@
     venv.enable = true;
   };
 
+  # Java for building Cloudera parcel validator (thirdparty/cm_ext)
+  languages.java = {
+    enable = true;
+    jdk.package = pkgs.jdk11;  # Java 11 for cm_ext compatibility
+    maven.enable = true;
+  };
+
   tasks = {
     "docs:build".exec = "mdbook build docs";
     "docs:open".exec = "mdbook build docs --open";
+
+    # Third-party build tasks
+    "thirdparty:download".exec = "cd thirdparty && ./download-thirdparty.sh";
+    "thirdparty:build".exec = "cd thirdparty && ./build-thirdparty.sh";
 
     # MCP server tasks
     "mcp:test".exec = ''
