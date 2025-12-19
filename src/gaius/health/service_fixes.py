@@ -682,6 +682,196 @@ asyncio.run(start_evolution())
         return actions
 
 
+class DatasetFixStrategy(ServiceFixStrategy):
+    """Fix strategy for DatasetService (NiFi SoM/ToM generation).
+
+    Guru Meditation: #DS.00000001.SVCNOTINIT
+    The DatasetService failed to initialize in the engine. This typically
+    means the engine process is stale (running old code) or encountered
+    an error during service initialization.
+    """
+
+    def __init__(self):
+        super().__init__("dataset")
+        self.port = int(os.getenv("GAIUS_ENGINE_PORT", "50051"))
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix DatasetService issues."""
+        actions = []
+
+        # Step 1: Check if there are multiple engine processes (common cause)
+        actions.append(
+            RemediationAction(
+                name="Check for stale engine processes",
+                description="Guru Meditation #DS.00000001.SVCNOTINIT - Identify stale processes",
+                code='''
+import subprocess
+import os
+
+print("Guru Meditation #DS.00000001.SVCNOTINIT")
+print("Checking for stale gaius-engine processes...")
+
+# Find all gaius-engine processes
+result = subprocess.run(
+    ["pgrep", "-af", "gaius-engine"],
+    capture_output=True, text=True
+)
+
+if result.returncode == 0:
+    lines = result.stdout.strip().split("\\n")
+    print(f"Found {len(lines)} gaius-engine process(es):")
+    for line in lines:
+        print(f"  {line}")
+    if len(lines) > 1:
+        print("\\nWARNING: Multiple engine processes detected!")
+        print("This is the likely cause of DatasetService not initialized.")
+else:
+    print("No gaius-engine processes found.")
+    print("Engine needs to be started.")
+
+# Check what's listening on port 50051
+result = subprocess.run(
+    ["ss", "-tlnp"],
+    capture_output=True, text=True
+)
+if "50051" in result.stdout:
+    for line in result.stdout.split("\\n"):
+        if "50051" in line:
+            print(f"\\nPort 50051: {line}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=10,
+            )
+        )
+
+        # Step 2: Kill all engine processes and verify port is free
+        actions.append(
+            RemediationAction(
+                name="Clean up stale engine processes",
+                description="Kill all gaius-engine processes to ensure clean state",
+                command="pkill -9 -f gaius-engine; sleep 2; ss -tlnp | grep 50051 || echo 'Port 50051 is free'",
+                safety=SafetyLevel.CAUTION,
+                timeout=15,
+            )
+        )
+
+        # Step 3: Restart engine via process-compose (preferred)
+        actions.append(
+            RemediationAction(
+                name="Restart engine via process-compose",
+                description="Start fresh engine with DatasetService initialized",
+                command="process-compose process restart gaius-engine",
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 4: Wait for engine and DatasetService to initialize
+        actions.append(
+            RemediationAction(
+                name="Wait for DatasetService initialization",
+                description="Verify DatasetService is responding",
+                code='''
+import time
+import subprocess
+
+print("Waiting for engine startup...")
+time.sleep(8)
+
+print("Verifying DatasetService...")
+result = subprocess.run(
+    ["uv", "run", "python", "-c", """
+import grpc
+from gaius.engine.generated import gaius_service_pb2_grpc, GetDatasetJobRequest
+channel = grpc.insecure_channel('localhost:50051')
+stub = gaius_service_pb2_grpc.GaiusServiceStub(channel)
+try:
+    stub.GetDatasetJobStatus(GetDatasetJobRequest(job_id='health-check'))
+    print('DatasetService: READY')
+except grpc.RpcError as e:
+    if 'not initialized' in str(e.details()):
+        print('DatasetService: NOT INITIALIZED (fix may need retry)')
+    elif 'NOT_FOUND' in str(e.code()):
+        print('DatasetService: READY (job not found is expected)')
+    else:
+        print(f'DatasetService: ERROR - {e.code()}')
+"""],
+    capture_output=True, text=True, timeout=30
+)
+print(result.stdout)
+if result.stderr:
+    print(result.stderr)
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=45,
+            )
+        )
+
+        return actions
+
+
+class NiFiFixStrategy(ServiceFixStrategy):
+    """Fix strategy for NiFi (screenshot capture backend).
+
+    Guru Meditation: #NF.00000001.UNREACHABLE
+    NiFi is required for capturing real screenshots of the NiFi canvas.
+    """
+
+    def __init__(self):
+        super().__init__("nifi")
+        self.port = int(os.getenv("NIFI_WEB_HTTP_PORT", "8450"))
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix NiFi issues."""
+        actions = []
+
+        # Restart NiFi via process-compose
+        actions.append(
+            RemediationAction(
+                name="Restart NiFi",
+                description="Guru Meditation #NF.00000001.UNREACHABLE - Start NiFi service",
+                command="process-compose process restart nifi",
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Wait for NiFi to be ready
+        actions.append(
+            RemediationAction(
+                name="Wait for NiFi startup",
+                description="NiFi takes time to initialize (30-60 seconds)",
+                code=f'''
+import time
+import subprocess
+
+print("Waiting for NiFi to start (up to 60 seconds)...")
+for i in range(12):
+    result = subprocess.run(
+        ["curl", "-s", f"http://localhost:{self.port}/nifi-api/flow/cluster/summary"],
+        capture_output=True, text=True, timeout=5
+    )
+    if result.returncode == 0 and "clusterSummary" in result.stdout:
+        print(f"NiFi ready after {{(i+1)*5}} seconds")
+        break
+    time.sleep(5)
+    print(f"  Waiting... {{(i+1)*5}}s")
+else:
+    print("NiFi did not start within 60 seconds")
+    print("Check: process-compose process logs nifi")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=70,
+            )
+        )
+
+        return actions
+
+
 # Service registry - maps service names to strategies
 SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "engine": EngineFixStrategy(),
@@ -698,6 +888,9 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "inference": EndpointFixStrategy(),  # Alias
     "evolution": EvolutionFixStrategy(),
     "evolve": EvolutionFixStrategy(),  # Alias
+    "dataset": DatasetFixStrategy(),
+    "datasetservice": DatasetFixStrategy(),  # Alias
+    "nifi": NiFiFixStrategy(),
 }
 
 

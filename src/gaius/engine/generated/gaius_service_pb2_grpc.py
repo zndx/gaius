@@ -224,6 +224,31 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.ExplainRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.ExplainResponse.FromString,
                 _registered_method=True)
+        self.SubmitDatasetJob = channel.unary_unary(
+                '/gaius.engine.GaiusService/SubmitDatasetJob',
+                request_serializer=gaius__service__pb2.DatasetGenerationRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.DatasetJobStatus.FromString,
+                _registered_method=True)
+        self.GetDatasetJobStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetDatasetJobStatus',
+                request_serializer=gaius__service__pb2.GetDatasetJobRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.DatasetJobStatus.FromString,
+                _registered_method=True)
+        self.CancelDatasetJob = channel.unary_unary(
+                '/gaius.engine.GaiusService/CancelDatasetJob',
+                request_serializer=gaius__service__pb2.CancelDatasetJobRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.DatasetJobStatus.FromString,
+                _registered_method=True)
+        self.DatasetProgressStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/DatasetProgressStream',
+                request_serializer=gaius__service__pb2.GetDatasetJobRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.DatasetProgressEvent.FromString,
+                _registered_method=True)
+        self.GetDatasetLineage = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetDatasetLineage',
+                request_serializer=gaius__service__pb2.DatasetLineageRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.DatasetLineageResponse.FromString,
+                _registered_method=True)
         self.HealthStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/HealthStream',
                 request_serializer=gaius__service__pb2.HealthStreamRequest.SerializeToString,
@@ -509,6 +534,39 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SubmitDatasetJob(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Dataset Generation
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDatasetJobStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CancelDatasetJob(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DatasetProgressStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetDatasetLineage(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HealthStream(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Streaming
@@ -720,6 +778,31 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.Explain,
                     request_deserializer=gaius__service__pb2.ExplainRequest.FromString,
                     response_serializer=gaius__service__pb2.ExplainResponse.SerializeToString,
+            ),
+            'SubmitDatasetJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitDatasetJob,
+                    request_deserializer=gaius__service__pb2.DatasetGenerationRequest.FromString,
+                    response_serializer=gaius__service__pb2.DatasetJobStatus.SerializeToString,
+            ),
+            'GetDatasetJobStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDatasetJobStatus,
+                    request_deserializer=gaius__service__pb2.GetDatasetJobRequest.FromString,
+                    response_serializer=gaius__service__pb2.DatasetJobStatus.SerializeToString,
+            ),
+            'CancelDatasetJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.CancelDatasetJob,
+                    request_deserializer=gaius__service__pb2.CancelDatasetJobRequest.FromString,
+                    response_serializer=gaius__service__pb2.DatasetJobStatus.SerializeToString,
+            ),
+            'DatasetProgressStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.DatasetProgressStream,
+                    request_deserializer=gaius__service__pb2.GetDatasetJobRequest.FromString,
+                    response_serializer=gaius__service__pb2.DatasetProgressEvent.SerializeToString,
+            ),
+            'GetDatasetLineage': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDatasetLineage,
+                    request_deserializer=gaius__service__pb2.DatasetLineageRequest.FromString,
+                    response_serializer=gaius__service__pb2.DatasetLineageResponse.SerializeToString,
             ),
             'HealthStream': grpc.unary_stream_rpc_method_handler(
                     servicer.HealthStream,
@@ -1740,6 +1823,141 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/Explain',
             gaius__service__pb2.ExplainRequest.SerializeToString,
             gaius__service__pb2.ExplainResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubmitDatasetJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubmitDatasetJob',
+            gaius__service__pb2.DatasetGenerationRequest.SerializeToString,
+            gaius__service__pb2.DatasetJobStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDatasetJobStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetDatasetJobStatus',
+            gaius__service__pb2.GetDatasetJobRequest.SerializeToString,
+            gaius__service__pb2.DatasetJobStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CancelDatasetJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CancelDatasetJob',
+            gaius__service__pb2.CancelDatasetJobRequest.SerializeToString,
+            gaius__service__pb2.DatasetJobStatus.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DatasetProgressStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/DatasetProgressStream',
+            gaius__service__pb2.GetDatasetJobRequest.SerializeToString,
+            gaius__service__pb2.DatasetProgressEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDatasetLineage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetDatasetLineage',
+            gaius__service__pb2.DatasetLineageRequest.SerializeToString,
+            gaius__service__pb2.DatasetLineageResponse.FromString,
             options,
             channel_credentials,
             insecure,

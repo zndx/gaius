@@ -66,6 +66,9 @@ class ServiceRegistry:
     # Cognition service for thought generation
     cognition_service: Any = None
 
+    # Dataset service for NiFi SoM/ToM generation
+    dataset_service: Any = None
+
     # Engine config
     config: Any = None
 
@@ -102,6 +105,7 @@ class GrpcServer:
         backend_router: Any = None,
         orchestrator_service: Any = None,
         cognition_service: Any = None,
+        dataset_service: Any = None,
         config: Any = None,
         start_time: Optional[float] = None,
         get_health_metrics: Optional[Callable] = None,
@@ -117,6 +121,7 @@ class GrpcServer:
             backend_router: BackendRouter instance for inference
             orchestrator_service: OrchestratorService for endpoint management
             cognition_service: CognitionService for thought generation
+            dataset_service: DatasetService for NiFi SoM/ToM generation
             config: EngineConfig instance
             start_time: Engine start timestamp
             get_health_metrics: Callback to get current health metrics
@@ -129,6 +134,7 @@ class GrpcServer:
         self._services.backend_router = backend_router
         self._services.orchestrator_service = orchestrator_service
         self._services.cognition_service = cognition_service
+        self._services.dataset_service = dataset_service
         self._services.config = config
         self._services.start_time = start_time
         self._services.get_health_metrics = get_health_metrics
