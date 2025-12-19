@@ -102,6 +102,9 @@ class GaiusEngine:
         # Flow scheduler service (autonomous Metaflow runs)
         self._flow_scheduler_service = None
 
+        # Dataset service (NiFi SoM/ToM generation)
+        self._dataset_service = None
+
     async def start(self) -> None:
         """Start the engine daemon.
 
@@ -193,6 +196,9 @@ class GaiusEngine:
         # Autonomous startup: start flow scheduler if configured
         if self.config.startup.auto_start_flow_scheduler and self.config.flow_scheduler.enabled:
             await self._autonomous_start_flow_scheduler()
+
+        # Always start dataset service (lightweight, fail-fast by design)
+        await self._init_dataset_service()
 
         # 9. Mark initialization complete
         await self._init_controller.complete_init()
@@ -484,6 +490,39 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to start flow scheduler daemon: {e}")
 
+    async def _init_dataset_service(self) -> None:
+        """Initialize dataset generation service.
+
+        The DatasetService is lightweight and fail-fast by design.
+        It doesn't preload models or hold GPU resources - it delegates
+        to backends when jobs are submitted.
+        """
+        try:
+            from .services.dataset_service import DatasetService, DatasetServiceConfig
+
+            logger.info("Initializing dataset service...")
+
+            # Create service config with defaults
+            config = DatasetServiceConfig()
+
+            # Create and start service with dependencies
+            self._dataset_service = DatasetService(
+                config=config,
+                backend_router=self._backend_router,
+                orchestrator_service=self._orchestrator_service,
+            )
+            await self._dataset_service.start()
+            logger.info("Dataset service initialized")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service("dataset_service", self._dataset_service)
+
+        except ImportError as e:
+            logger.warning(f"Dataset service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize dataset service: {e}")
+
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).
 
@@ -591,6 +630,13 @@ class GaiusEngine:
                 await self._flow_scheduler_service.stop()
             except Exception as e:
                 logger.warning(f"Error stopping flow scheduler: {e}")
+
+        # Stop dataset service
+        if self._dataset_service:
+            try:
+                await self._dataset_service.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping dataset service: {e}")
 
         # Stop orchestrator service
         if self._orchestrator_service:

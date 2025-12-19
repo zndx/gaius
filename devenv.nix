@@ -79,6 +79,10 @@
     wrangler
     zlib  # Required for numpy C extensions
 
+    # Browser automation for dataset generation (selenium + chromedriver)
+    chromium
+    chromedriver
+
     # Gaius Engine dependencies
     aeron-cpp      # Aeron C++ library and aeronmd media driver
     flatbuffers    # FlatBuffers compiler for schema generation

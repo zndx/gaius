@@ -785,6 +785,93 @@ message TDAResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Dataset Service Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+message DatasetGenerationRequest {
+  string flow_name = 1;
+  repeated string steps = 2;
+  string mode = 3;                    // "som" or "tom"
+  string dataset_id = 4;              // e.g., "nifi-som-v1"
+  int32 variants_per_action = 5;      // LLM candidates per action (default: 5)
+  float min_quality_score = 6;        // Threshold (default: 0.6)
+  bool enable_calibration = 7;        // XAI calibration (default: false)
+  float calibration_sample_rate = 8;  // Sample rate (default: 0.1)
+  bool export_calibration = 9;        // Export to Iceberg
+  string storage_backend = 10;        // "minio" or "filesystem"
+}
+
+message DatasetJobStatus {
+  string job_id = 1;
+  string status = 2;                  // "queued", "running", "completed", "failed"
+  int32 total_examples = 3;
+  int32 completed_examples = 4;
+  int32 accepted_examples = 5;
+  int32 rejected_examples = 6;
+  float progress = 7;                 // 0.0 to 1.0
+  string current_phase = 8;           // "capture", "annotate", "generate", "calibrate", "export"
+  string error = 9;
+}
+
+message DatasetProgressEvent {
+  enum Type {
+    QUEUED = 0;
+    STARTED = 1;
+    PHASE_STARTED = 2;
+    EXAMPLE_STARTED = 3;
+    EXAMPLE_COMPLETED = 4;
+    EXAMPLE_REJECTED = 5;
+    PHASE_COMPLETED = 6;
+    CALIBRATION_STARTED = 7;
+    CALIBRATION_COMPLETED = 8;
+    EXPORT_STARTED = 9;
+    COMPLETED = 10;
+    FAILED = 11;
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string job_id = 3;
+  float progress = 4;
+  string message = 5;
+  string phase = 6;
+  string example_id = 7;
+  bytes data = 8;                     // JSON payload for rich events
+}
+
+message GetDatasetJobRequest {
+  string job_id = 1;
+}
+
+message CancelDatasetJobRequest {
+  string job_id = 1;
+}
+
+message DatasetLineageRequest {
+  string dataset_id = 1;
+}
+
+message DatasetLineageResponse {
+  string dataset_id = 1;
+  int32 total_examples = 2;
+  repeated LineageNode nodes = 3;
+  repeated LineageEdge edges = 4;
+}
+
+message LineageNode {
+  string id = 1;
+  string type = 2;                    // "Dataset", "Job", "Run"
+  string namespace = 3;
+  string name = 4;
+  bytes properties = 5;               // JSON
+}
+
+message LineageEdge {
+  string type = 1;                    // "INPUT_TO", "OUTPUTS", "EXECUTES"
+  string from_id = 2;
+  string to_id = 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -876,6 +963,15 @@ service GaiusService {
   // Explain (Grid Position Interpretation)
   // ─────────────────────────────────────────────────────────────────────────
   rpc Explain(ExplainRequest) returns (ExplainResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Dataset Generation
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc SubmitDatasetJob(DatasetGenerationRequest) returns (DatasetJobStatus);
+  rpc GetDatasetJobStatus(GetDatasetJobRequest) returns (DatasetJobStatus);
+  rpc CancelDatasetJob(CancelDatasetJobRequest) returns (DatasetJobStatus);
+  rpc DatasetProgressStream(GetDatasetJobRequest) returns (stream DatasetProgressEvent);
+  rpc GetDatasetLineage(DatasetLineageRequest) returns (DatasetLineageResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Streaming

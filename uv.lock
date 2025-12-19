@@ -2078,6 +2078,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+dataset = [
+    { name = "pillow" },
+    { name = "selenium" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -2274,6 +2278,7 @@ requires-dist = [
     { name = "optillm", specifier = ">=0.3.9" },
     { name = "ortools", marker = "extra == 'scheduler'", specifier = ">=9.8.0" },
     { name = "owlready2", specifier = ">=0.49" },
+    { name = "pillow", marker = "extra == 'dataset'", specifier = ">=10.0.0" },
     { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=10.0.0" },
     { name = "protobuf", marker = "extra == 'grpc'", specifier = ">=4.25.0" },
     { name = "pyarrow", marker = "extra == 'hx'", specifier = ">=14.0.0" },
@@ -2291,6 +2296,7 @@ requires-dist = [
     { name = "ripser", marker = "extra == 'tda'", specifier = ">=0.6.12" },
     { name = "s3fs", marker = "extra == 'hx'", specifier = ">=2024.2.0" },
     { name = "scikit-learn", marker = "extra == 'tda'", specifier = ">=1.3.0" },
+    { name = "selenium", marker = "extra == 'dataset'", specifier = ">=4.15.0" },
     { name = "sentence-transformers", specifier = ">=5.1.2" },
     { name = "sentence-transformers", marker = "extra == 'search'", specifier = ">=3.0.0" },
     { name = "stemming", specifier = ">=1.0.1" },
@@ -2298,7 +2304,7 @@ requires-dist = [
     { name = "umap-learn", specifier = ">=0.5.7" },
     { name = "vllm", specifier = ">=0.12.0" },
 ]
-provides-extras = ["tda", "swarm", "full", "inference", "scheduler", "gpu", "orchestrator", "search", "multimodal", "mcp", "workers", "optimization", "ontology", "eval", "dev", "engine", "hx", "engine-aeron", "grpc", "engine-grpc"]
+provides-extras = ["tda", "swarm", "full", "inference", "scheduler", "gpu", "orchestrator", "search", "multimodal", "dataset", "mcp", "workers", "optimization", "ontology", "eval", "dev", "engine", "hx", "engine-aeron", "grpc", "engine-grpc"]
 
 [package.metadata.requires-dev]
 dev = [

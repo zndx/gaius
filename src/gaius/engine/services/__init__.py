@@ -29,6 +29,17 @@ from .cognition_service import (
     CognitionConfig,
     CognitionService,
 )
+from .dataset_service import (
+    BackendNotAvailableError,
+    DatasetJob,
+    DatasetJobConfig,
+    DatasetService,
+    DatasetServiceConfig,
+    DatasetServiceError,
+    GenerationError,
+    ProgressEvent,
+    ProgressEventType,
+)
 
 __all__ = [
     # Orchestrator
@@ -55,4 +66,14 @@ __all__ = [
     # Cognition
     "CognitionConfig",
     "CognitionService",
+    # Dataset
+    "BackendNotAvailableError",
+    "DatasetJob",
+    "DatasetJobConfig",
+    "DatasetService",
+    "DatasetServiceConfig",
+    "DatasetServiceError",
+    "GenerationError",
+    "ProgressEvent",
+    "ProgressEventType",
 ]

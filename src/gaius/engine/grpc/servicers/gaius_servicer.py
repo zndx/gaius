@@ -117,6 +117,16 @@ from ...generated import (
     ReindexRequest,
     ReindexResponse,
     ReindexProgress,
+    # Dataset Generation
+    DatasetGenerationRequest,
+    DatasetJobStatus,
+    DatasetProgressEvent,
+    GetDatasetJobRequest,
+    CancelDatasetJobRequest,
+    DatasetLineageRequest,
+    DatasetLineageResponse,
+    LineageNode,
+    LineageEdge,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -1750,6 +1760,192 @@ class GaiusServicer(GaiusServiceServicer):
                 x=cx, y=cy,
                 duration_ms=int((time.time() - start_time) * 1000),
             )
+
+    # =========================================================================
+    # Dataset Generation
+    # =========================================================================
+
+    async def SubmitDatasetJob(
+        self,
+        request: DatasetGenerationRequest,
+        context: aio.ServicerContext,
+    ) -> DatasetJobStatus:
+        """Submit a dataset generation job.
+
+        Performs fail-fast checks before queueing. Errors include
+        actionable /health fix suggestions.
+        """
+        dataset_service = self._services.dataset_service
+
+        if not dataset_service:
+            error_msg = (
+                "DatasetService not initialized.\n"
+                "  Try: /health fix dataset\n"
+                "  Or:  process-compose process restart gaius-engine"
+            )
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(error_msg)
+            return DatasetJobStatus(status="failed", error=error_msg)
+
+        try:
+            from ...services.dataset_service import DatasetJobConfig
+
+            config = DatasetJobConfig(
+                flow_name=request.flow_name or "TestFlow",
+                steps=list(request.steps) if request.steps else ["start", "process", "end"],
+                mode=request.mode or "som",
+                dataset_id=request.dataset_id or "nifi-som-v1",
+                variants_per_action=request.variants_per_action or 5,
+                min_quality_score=request.min_quality_score or 0.6,
+                enable_calibration=request.enable_calibration,  # Default False
+                calibration_sample_rate=request.calibration_sample_rate or 0.1,
+                export_calibration=request.export_calibration,
+                storage_backend=request.storage_backend or "minio",
+            )
+
+            job = await dataset_service.submit_job(config)
+            return self._job_to_status(job)
+
+        except Exception as e:
+            # Fail-fast: no fallbacks - include error message with hints
+            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+            context.set_details(str(e))
+            return DatasetJobStatus(status="failed", error=str(e))
+
+    async def GetDatasetJobStatus(
+        self,
+        request: GetDatasetJobRequest,
+        context: aio.ServicerContext,
+    ) -> DatasetJobStatus:
+        """Get status of a dataset generation job."""
+        dataset_service = self._services.dataset_service
+
+        if not dataset_service:
+            error_msg = (
+                "DatasetService not initialized.\n"
+                "  Try: /health fix dataset\n"
+                "  Or:  process-compose process restart gaius-engine"
+            )
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(error_msg)
+            return DatasetJobStatus()
+
+        job = await dataset_service.get_job_status(request.job_id)
+        if job is None:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Job not found: {request.job_id}")
+            return DatasetJobStatus()
+
+        return self._job_to_status(job)
+
+    async def CancelDatasetJob(
+        self,
+        request: CancelDatasetJobRequest,
+        context: aio.ServicerContext,
+    ) -> DatasetJobStatus:
+        """Cancel a dataset generation job."""
+        dataset_service = self._services.dataset_service
+
+        if not dataset_service:
+            error_msg = (
+                "DatasetService not initialized.\n"
+                "  Try: /health fix dataset\n"
+                "  Or:  process-compose process restart gaius-engine"
+            )
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(error_msg)
+            return DatasetJobStatus()
+
+        job = await dataset_service.cancel_job(request.job_id)
+        if job is None:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Job not found: {request.job_id}")
+            return DatasetJobStatus()
+
+        return self._job_to_status(job)
+
+    async def DatasetProgressStream(
+        self,
+        request: GetDatasetJobRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[DatasetProgressEvent]:
+        """Stream dataset generation progress."""
+        dataset_service = self._services.dataset_service
+
+        if not dataset_service:
+            return
+
+        try:
+            async for event in dataset_service.subscribe_progress(request.job_id):
+                yield DatasetProgressEvent(
+                    type=event.type.value,
+                    timestamp_ms=event.timestamp_ms,
+                    job_id=event.job_id,
+                    progress=event.progress,
+                    message=event.message,
+                    phase=event.phase,
+                    example_id=event.example_id,
+                    data=event.data,
+                )
+        except asyncio.CancelledError:
+            logger.debug(f"Dataset progress stream cancelled for {request.job_id}")
+
+    async def GetDatasetLineage(
+        self,
+        request: DatasetLineageRequest,
+        context: aio.ServicerContext,
+    ) -> DatasetLineageResponse:
+        """Get lineage information for a dataset."""
+        dataset_service = self._services.dataset_service
+
+        if not dataset_service:
+            error_msg = (
+                "DatasetService not initialized.\n"
+                "  Try: /health fix dataset\n"
+                "  Or:  process-compose process restart gaius-engine"
+            )
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(error_msg)
+            return DatasetLineageResponse()
+
+        lineage = await dataset_service.get_lineage(request.dataset_id)
+
+        return DatasetLineageResponse(
+            dataset_id=lineage["dataset_id"],
+            total_examples=lineage["total_examples"],
+            nodes=[
+                LineageNode(
+                    id=n["id"],
+                    type=n["type"],
+                    namespace=n["namespace"],
+                    name=n["name"],
+                    properties=n.get("properties", b"{}"),
+                )
+                for n in lineage.get("nodes", [])
+            ],
+            edges=[
+                LineageEdge(
+                    type=e["type"],
+                    from_id=e["from_id"],
+                    to_id=e["to_id"],
+                )
+                for e in lineage.get("edges", [])
+            ],
+        )
+
+    def _job_to_status(self, job) -> DatasetJobStatus:
+        """Convert DatasetJob to proto DatasetJobStatus."""
+        return DatasetJobStatus(
+            job_id=job.id,
+            status=job.status.value,
+            total_examples=job.examples_total,
+            completed_examples=job.examples_completed,
+            accepted_examples=job.examples_accepted,
+            rejected_examples=job.examples_rejected,
+            progress=job.progress,
+            current_phase=job.current_phase.value,
+            error=job.error or "",
+        )
 
     # =========================================================================
     # Streaming
