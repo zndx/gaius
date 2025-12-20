@@ -176,9 +176,10 @@ def step_command_fails(context):
     step_result_has_error(context)
 
 
-@then('the error should mention "{text}"')
-def step_error_mentions(context, text):
-    """Assert error message contains text."""
+# Note: step 'the error should mention "{text}"' is defined in self_healing_steps.py
+# Removed duplicate to avoid AmbiguousStep error
+def _step_error_mentions_impl(context, text):
+    """Assert error message contains text (implementation only, step defined elsewhere)."""
     result = _get_result(context)
     error_msg = ""
     if isinstance(result, dict):
