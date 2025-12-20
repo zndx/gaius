@@ -1,5 +1,11 @@
-Metaflow
+# Runtime Artifacts
+result
+
+# Metaflow
 .metaflow
+
+# Metabase
+plugins/
 
 # Devenv
 .devenv*
