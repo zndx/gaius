@@ -14,6 +14,11 @@ Topic modeling:
 - HDP and BERTopic auto-discover optimal topic count
 - Generates visual Metaflow cards with topic distributions
 
+OpenTelemetry Integration:
+- Inherits from TracedFlow for automatic span creation
+- Emits semantic events for key operations (pdf.extraction, topics.extracted, etc.)
+- correlation_id links Metaflow execution to NiFi FlowFiles
+
 Usage:
     # Local execution (requires devenv postgres/minio)
     python -m gaius.flows.docling.flow run --arxiv_url "https://arxiv.org/abs/2312.12345"
@@ -42,6 +47,8 @@ from urllib.parse import urlencode
 from metaflow import FlowSpec, Parameter, card, current, kubernetes, retry, step
 from metaflow.cards import Markdown, Table, Image
 
+from gaius.agents.metaagent.telemetry import TracedFlow, traced_step
+from gaius.agents.metaagent.telemetry.attributes import EventNames
 from gaius.flows import register_flow
 from gaius.flows.base import GaiusFlow, get_current_quarter, safe_filename
 from gaius.flows.config import apply_metaflow_config
@@ -71,10 +78,15 @@ def extract_arxiv_id(url_or_id: str) -> str | None:
 
 
 @register_flow("docling")
-class ArxivDoclingFlow(GaiusFlow):
+class ArxivDoclingFlow(TracedFlow, GaiusFlow):
     """Fetch arXiv paper, convert PDF to markdown, save to KB.
 
     Tracks full lineage: arXiv URL → PDF → markdown → KB zettelkasten
+
+    OTel Integration:
+        - Inherits from TracedFlow for automatic span creation per step
+        - Emits semantic events: pdf.extraction.*, topics.extracted, scoring.completed
+        - correlation_id links this run to NiFi FlowFiles for end-to-end tracing
     """
 
     arxiv_url = Parameter(
@@ -132,11 +144,18 @@ class ArxivDoclingFlow(GaiusFlow):
         type=bool,
     )
 
+    @traced_step
     @step
     def start(self):
         """Parse arXiv URL and fetch paper metadata."""
         import feedparser
         import httpx
+
+        # Emit semantic event for paper processing start
+        self.emit_event("paper.processing.started", {
+            "arxiv_url": self.arxiv_url,
+            "correlation_id": self.correlation_id,
+        })
 
         # Extract arXiv ID
         self.arxiv_id = extract_arxiv_id(self.arxiv_url)
@@ -203,11 +222,17 @@ class ArxivDoclingFlow(GaiusFlow):
 
         self.next(self.fetch_pdf)
 
+    @traced_step
     @retry(times=3)
     @step
     def fetch_pdf(self):
         """Download PDF from arXiv."""
         import httpx
+
+        self.emit_event(EventNames.PDF_EXTRACTION_STARTED, {
+            "arxiv_id": self.arxiv_id,
+            "pdf_url": self.pdf_url,
+        })
 
         print(f"Downloading PDF from {self.pdf_url}...")
 
@@ -218,10 +243,16 @@ class ArxivDoclingFlow(GaiusFlow):
         self.pdf_bytes = response.content
         self.pdf_size = len(self.pdf_bytes)
 
+        self.emit_event(EventNames.PDF_EXTRACTION_COMPLETED, {
+            "arxiv_id": self.arxiv_id,
+            "pdf_size_bytes": self.pdf_size,
+        })
+
         print(f"Downloaded {self.pdf_size:,} bytes")
 
         self.next(self.archive_step)
 
+    @traced_step
     @step
     def archive_step(self):
         """Optionally save PDF to KB archive."""
@@ -241,16 +272,27 @@ class ArxivDoclingFlow(GaiusFlow):
             with open(full_path, "wb") as f:
                 f.write(self.pdf_bytes)
 
+            self.emit_event("pdf.archived", {
+                "arxiv_id": self.arxiv_id,
+                "archive_path": self.archive_path_result,
+            })
+
             print(f"Archived PDF to: {self.archive_path_result}")
 
         self.next(self.convert_to_markdown)
 
     # Note: @kubernetes decorator would be used for K8s execution
     # @kubernetes(cpu=2, memory=4096)
+    @traced_step
     @step
     def convert_to_markdown(self):
         """Use docling to convert PDF to markdown."""
         from docling.document_converter import DocumentConverter
+
+        self.emit_event("docling.conversion.started", {
+            "arxiv_id": self.arxiv_id,
+            "pdf_size_bytes": self.pdf_size,
+        })
 
         print("Converting PDF to markdown with docling...")
 
@@ -267,6 +309,11 @@ class ArxivDoclingFlow(GaiusFlow):
             # Export to markdown
             self.markdown = result.document.export_to_markdown()
 
+            self.emit_event("docling.conversion.completed", {
+                "arxiv_id": self.arxiv_id,
+                "markdown_chars": len(self.markdown),
+            })
+
             print(f"Extracted {len(self.markdown):,} characters of markdown")
 
         finally:
@@ -275,6 +322,7 @@ class ArxivDoclingFlow(GaiusFlow):
 
         self.next(self.score_relevance)
 
+    @traced_step
     @card(type="blank")
     @step
     def score_relevance(self):
@@ -288,6 +336,11 @@ class ArxivDoclingFlow(GaiusFlow):
             print("Scoring disabled, skipping...")
             self.next(self.extract_topics)
             return
+
+        self.emit_event(EventNames.SCORING_STARTED, {
+            "arxiv_id": self.arxiv_id,
+            "rubric": self.scoring_rubric,
+        })
 
         try:
             from gaius.flows.topics.scoring import load_rubric, score_paper
@@ -312,6 +365,13 @@ class ArxivDoclingFlow(GaiusFlow):
                 )
             finally:
                 loop.close()
+
+            self.emit_event(EventNames.SCORING_COMPLETED, {
+                "arxiv_id": self.arxiv_id,
+                "overall_score": self.paper_score.overall_score,
+                "rubric": self.scoring_rubric,
+                "model_used": self.paper_score.model_used,
+            })
 
             print(f"Overall score: {self.paper_score.overall_score:.2f}")
             for name, score in self.paper_score.criteria_scores.items():
@@ -341,6 +401,7 @@ class ArxivDoclingFlow(GaiusFlow):
 
         self.next(self.extract_topics)
 
+    @traced_step
     @card(type="blank")
     @step
     def extract_topics(self):
@@ -352,6 +413,11 @@ class ArxivDoclingFlow(GaiusFlow):
             print("Topic extraction disabled, skipping...")
             self.next(self.create_zettelkasten)
             return
+
+        self.emit_event("topics.extraction.started", {
+            "arxiv_id": self.arxiv_id,
+            "model_type": self.topic_model_type,
+        })
 
         try:
             from gaius.flows.topics import (
@@ -417,6 +483,13 @@ class ArxivDoclingFlow(GaiusFlow):
                     "num_topics": topic_model.num_topics,
                     "coherence_score": topic_model.coherence_score,
                 }
+
+                self.emit_event(EventNames.TOPICS_EXTRACTED, {
+                    "arxiv_id": self.arxiv_id,
+                    "num_topics": topic_model.num_topics,
+                    "model_type": self.topic_model_type,
+                    "coherence_score": topic_model.coherence_score,
+                })
 
                 print(f"Discovered {topic_model.num_topics} topics")
                 print(f"Document topics: {self.topic_result.topics[:3]}")
@@ -511,6 +584,7 @@ class ArxivDoclingFlow(GaiusFlow):
 
         self.next(self.create_zettelkasten)
 
+    @traced_step
     @step
     def create_zettelkasten(self):
         """Create KB note with YAML frontmatter."""
@@ -597,15 +671,28 @@ class ArxivDoclingFlow(GaiusFlow):
         with open(full_path, "w") as f:
             f.write(self.document)
 
+        self.emit_event(EventNames.ZETTELKASTEN_CREATED, {
+            "arxiv_id": self.arxiv_id,
+            "kb_path": self.kb_path,
+            "document_size": len(self.document),
+        })
+
         print(f"Created zettelkasten note: {self.kb_path}")
 
         self.next(self.end)
 
+    @traced_step
     @card(type="blank")
     @step
     def end(self):
         """Emit final lineage and report results."""
         from gaius.hx.lineage.events import Dataset
+
+        self.emit_event("paper.processing.completed", {
+            "arxiv_id": self.arxiv_id,
+            "kb_path": self.kb_path,
+            "correlation_id": self.correlation_id,
+        })
 
         # Collect outputs
         outputs = [Dataset.from_kb(self.kb_path)]

@@ -154,13 +154,19 @@
           resource_to_telemetry_conversion.enabled = true;
         };
         debug.verbosity = "basic";
+        # Forward traces to NiFi ListenOTLP for flow visualization
+        # NiFi receives OTel data on port 4319 via ListenOTLP processor
+        otlphttp = {
+          endpoint = "http://localhost:4319";
+          tls.insecure = true;
+        };
       };
       service = {
         pipelines = {
           traces = {
             receivers = ["otlp"];
             processors = ["batch"];
-            exporters = ["debug"];
+            exporters = ["debug" "otlphttp"];  # Forward to NiFi
           };
           metrics = {
             receivers = ["otlp"];
