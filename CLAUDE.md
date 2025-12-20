@@ -211,13 +211,128 @@ grep -rn "240, 240, 240" src/gaius/  # Placeholder image color
 ## Testing Methodology
 
 After every code change, re-test via CLI before declaring success.
- 
+
 The CLI is the product. Previous test outputs are invalidated by code changes. Don't reason from stale context - run the command again.
- 
+
 # After editing orchestrated.py:
 # BAD: "The fix should work based on my analysis"
 # GOOD: Actually run it
 uv run gaius-cli --cmd "/evolve status" --format json
- 
+
 This isn't redundant tool use - it's verifying the product works.
 - you can use devenv processes down and devenv processes up to control the gaius platform components
+
+## RASE Metamodel (Rapid Agentic Systems Engineering)
+
+The `gaius.rase` package implements a Python-native MBSE metamodel for verifiable agent training. **This is safety-critical infrastructure** - the verifier is a first-class artifact that must be maintained with the same rigor as production code.
+
+### Package Structure
+
+```
+src/gaius/rase/
+├── traceability.py       # TraceableId, DigitalThread (the spine)
+├── ssm/                  # System State Model (NiFi as typed graph)
+├── osm/                  # Operational Scenario Model (BDD scenarios)
+├── uom/                  # UI Observation Model (SoM/ToM marks)
+└── vm/                   # Verifier Model (requirements, oracle, rewards)
+```
+
+### Four Coupled Models - Maintain Coherence
+
+The four models (OSM, SSM, UOM, VM) are **tightly coupled by design**. Changes to one model often require updates to others:
+
+| If you change... | Also update... |
+|------------------|----------------|
+| SSM (NiFi state) | VM constraints that reference state structure |
+| OSM (scenarios) | VM requirements derived from scenarios |
+| UOM (marks/traces) | VM verification cases that consume traces |
+| VM (verification) | Ensure reward strategies align with constraint semantics |
+
+### TraceableId - The Digital Thread
+
+`TraceableId` is the **traceability spine** linking all artifacts. Every model element should have a traceable ID:
+
+```python
+# BDD scenario
+TraceableId.from_bdd("basic_flows", scenario="CreateFlow")
+# → bdd://features/basic_flows#Scenario:CreateFlow
+
+# NiFi element
+TraceableId.from_nifi("root", processor_id="abc123")
+# → nifi://root/processors/abc123
+
+# Generated artifacts
+TraceableId.generate(scheme="rase", prefix="verify")
+# → rase://verify_<uuid>
+```
+
+**Rule**: When adding new model elements, always include a `TraceableId`. When creating relationships, use `DigitalThread` to capture provenance.
+
+### Constraint Design Principles
+
+SSM constraints (`src/gaius/rase/ssm/constraints.py`) follow these rules:
+
+1. **Declarative**: Describe *what* to check, not *how*
+2. **Composable**: Support `AllOf`, `AnyOf`, `Not` composition
+3. **Debuggable**: Return `ConstraintResult` with rich failure messages
+4. **Immutable**: Use `frozen=True` for safe concurrent use
+
+When adding new constraints:
+```python
+class NewConstraint(Constraint):
+    # Fields with Pydantic types
+    some_param: str
+
+    @property
+    def name(self) -> str:
+        return f"NewConstraint({self.some_param})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        # Return ConstraintResult.success() or .failure()
+```
+
+### Verification and Reward Invariants
+
+The VM module (`src/gaius/rase/vm/`) implements RLVR (Reinforcement Learning with Verifiable Reward):
+
+1. **VerdictKind**: Only four outcomes - PASS, FAIL, INCONCLUSIVE, ERROR
+2. **Accuracy**: Always 0.0-1.0, representing proportion of constraints satisfied
+3. **Reward strategies**: Must produce values suitable for RL training
+   - `BinaryReward`: Sparse signal (0 or 1)
+   - `GradedReward`: Dense signal with partial credit
+
+**Rule**: The Oracle uses API (ground truth), never UI observations, for verification. UI traces are the *training target*, not the oracle.
+
+### Testing RASE Changes
+
+Before committing changes to `gaius.rase`:
+
+```bash
+# Verify all imports work
+uv run python -c "from gaius.rase import *"
+
+# Run comprehensive smoke test
+uv run python -c "
+from gaius.rase import (
+    TraceableId, NiFiInstance, ProcessorGroup, Processor,
+    Scenario, StepType, ScreenshotWithSoM, Mark,
+    ScenarioRequirement, VerdictKind, compute_reward,
+)
+# ... test object creation and constraint evaluation
+"
+```
+
+### SysML v2 Semantic Alignment
+
+The RASE metamodel mirrors SysML v2 semantics without requiring external tooling:
+
+| SysML v2 Concept | RASE Implementation |
+|------------------|---------------------|
+| `requirement def` | `Requirement`, `ScenarioRequirement` |
+| `verification def` | `VerificationCase`, `APIVerificationCase` |
+| `constraint def` | `Constraint` subclasses |
+| `action def` | `StepDef` with `@given`, `@when`, `@then` |
+| `part def` | `Processor`, `ProcessorGroup`, `NiFiInstance` |
+| Human ID `<'scheme:path'>` | `TraceableId.uri` |
+
+When extending the metamodel, consult `docs/scratch/2025-12-19/150000_rase_mbse_framework.md` for the formal SysML v2 mappings.
