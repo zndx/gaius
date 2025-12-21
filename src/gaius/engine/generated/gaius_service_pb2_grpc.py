@@ -114,6 +114,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.EmbedTextsRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.EmbedTextsResponse.FromString,
                 _registered_method=True)
+        self.SemanticSearch = channel.unary_unary(
+                '/gaius.engine.GaiusService/SemanticSearch',
+                request_serializer=gaius__service__pb2.SemanticSearchRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SemanticSearchResponse.FromString,
+                _registered_method=True)
         self.EvolutionStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/EvolutionStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -373,6 +378,15 @@ class GaiusServiceServicer(object):
     def EmbedTexts(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Embeddings (Engine-Managed)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SemanticSearch(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Semantic Search
         ─────────────────────────────────────────────────────────────────────────
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -668,6 +682,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.EmbedTexts,
                     request_deserializer=gaius__service__pb2.EmbedTextsRequest.FromString,
                     response_serializer=gaius__service__pb2.EmbedTextsResponse.SerializeToString,
+            ),
+            'SemanticSearch': grpc.unary_unary_rpc_method_handler(
+                    servicer.SemanticSearch,
+                    request_deserializer=gaius__service__pb2.SemanticSearchRequest.FromString,
+                    response_serializer=gaius__service__pb2.SemanticSearchResponse.SerializeToString,
             ),
             'EvolutionStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.EvolutionStatus,
@@ -1229,6 +1248,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/EmbedTexts',
             gaius__service__pb2.EmbedTextsRequest.SerializeToString,
             gaius__service__pb2.EmbedTextsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SemanticSearch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SemanticSearch',
+            gaius__service__pb2.SemanticSearchRequest.SerializeToString,
+            gaius__service__pb2.SemanticSearchResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -52,22 +52,18 @@ from .gaius_service_pb2 import (
     GetJobResultRequest,
     GetJobResultResponse,
     SchedulerStatusResponse,
-    # Workload Management
+    # Workload
+    WorkloadType,
     BeginWorkloadRequest,
     BeginWorkloadResponse,
     CompleteWorkloadRequest,
     EndpointAllocationInfo,
     ActiveWorkloadInfo,
     GetActiveWorkloadsResponse,
-    WorkloadType,
     # Embeddings
     EmbedTextsRequest,
     EmbedTextsResponse,
     EmbeddingVector,
-    # Evolution
-    EvolutionStatusResponse,
-    TriggerEvolutionRequest,
-    EvolutionCycleResponse,
     # Cognition
     CognitionStatusResponse,
     ThoughtMessage,
@@ -76,7 +72,7 @@ from .gaius_service_pb2 import (
     TriggerCognitionRequest,
     TriggerCognitionResponse,
     CognitionActivityResponse,
-    # State Service (Thin Client Architecture)
+    # State Service
     GetStateRequest,
     GridState,
     TDAFeatures,
@@ -90,6 +86,17 @@ from .gaius_service_pb2 import (
     SavePreferencesRequest,
     PruneSnapshotsRequest,
     PruneSnapshotsResponse,
+    # Init/Reindex
+    InitRequest,
+    InitResponse,
+    InitProgress,
+    ReindexRequest,
+    ReindexResponse,
+    ReindexProgress,
+    # Evolution
+    EvolutionStatusResponse,
+    TriggerEvolutionRequest,
+    EvolutionCycleResponse,
     # Health
     HealthStreamRequest,
     HealthMetrics,
@@ -114,21 +121,18 @@ from .gaius_service_pb2 import (
     # Init streaming
     InitCommand,
     InitEvent,
-    # Command Service (Unified Entry Point)
-    ExecuteCommandRequest,
-    ExecuteCommandResponse,
-    # Init/Reindex (Heavy Compute)
-    InitRequest,
-    InitResponse,
-    InitProgress,
-    ReindexRequest,
-    ReindexResponse,
-    ReindexProgress,
     # Swarm streaming
     SwarmStreamRequest,
     SwarmEvent,
     SwarmResult,
-    # Dataset generation
+    # Semantic Search
+    SemanticSearchRequest,
+    SearchResult,
+    SemanticSearchResponse,
+    # Command Execution
+    ExecuteCommandRequest,
+    ExecuteCommandResponse,
+    # Dataset Service
     DatasetGenerationRequest,
     DatasetJobStatus,
     DatasetProgressEvent,
@@ -165,7 +169,7 @@ __all__ = [
     "GRPCInferenceServiceStub",
     "GRPCInferenceServiceServicer",
     "add_GRPCInferenceServiceServicer_to_server",
-    # Gaius - Orchestrator
+    # Gaius
     "OrchestratorStatusResponse",
     "GPUAllocation",
     "EndpointInfo",
@@ -176,7 +180,6 @@ __all__ = [
     "CleanStartResponse",
     "EndpointResponse",
     "EnsureEndpointResponse",
-    # Gaius - Scheduler
     "CompleteRequest",
     "CompleteResponse",
     "SubmitJobRequest",
@@ -184,23 +187,19 @@ __all__ = [
     "GetJobResultRequest",
     "GetJobResultResponse",
     "SchedulerStatusResponse",
-    # Gaius - Workload Management
+    # Workload
+    "WorkloadType",
     "BeginWorkloadRequest",
     "BeginWorkloadResponse",
     "CompleteWorkloadRequest",
     "EndpointAllocationInfo",
     "ActiveWorkloadInfo",
     "GetActiveWorkloadsResponse",
-    "WorkloadType",
-    # Gaius - Embeddings
+    # Embeddings
     "EmbedTextsRequest",
     "EmbedTextsResponse",
     "EmbeddingVector",
-    # Gaius - Evolution
-    "EvolutionStatusResponse",
-    "TriggerEvolutionRequest",
-    "EvolutionCycleResponse",
-    # Gaius - Cognition
+    # Cognition
     "CognitionStatusResponse",
     "ThoughtMessage",
     "GetRecentThoughtsRequest",
@@ -208,7 +207,7 @@ __all__ = [
     "TriggerCognitionRequest",
     "TriggerCognitionResponse",
     "CognitionActivityResponse",
-    # Gaius - State Service
+    # State Service
     "GetStateRequest",
     "GridState",
     "TDAFeatures",
@@ -222,45 +221,53 @@ __all__ = [
     "SavePreferencesRequest",
     "PruneSnapshotsRequest",
     "PruneSnapshotsResponse",
-    # Gaius - Health
-    "HealthStreamRequest",
-    "HealthMetrics",
-    "GPUMetrics",
-    "EndpointHealth",
-    # Gaius - Events
-    "EventStreamRequest",
-    "Event",
-    # Gaius - Grid
-    "ProjectEmbeddingsRequest",
-    "GridPosition",
-    "ProjectEmbeddingsResponse",
-    "ProjectQueryRequest",
-    "ProjectQueryResponse",
-    # Gaius - TDA
-    "ComputeTDARequest",
-    "PersistenceInterval",
-    "TDAResponse",
-    # Gaius - Explain
-    "ExplainRequest",
-    "ExplainResponse",
-    # Gaius - Init streaming
-    "InitCommand",
-    "InitEvent",
-    # Gaius - Command Service
-    "ExecuteCommandRequest",
-    "ExecuteCommandResponse",
-    # Gaius - Init/Reindex
+    # Init/Reindex
     "InitRequest",
     "InitResponse",
     "InitProgress",
     "ReindexRequest",
     "ReindexResponse",
     "ReindexProgress",
-    # Gaius - Swarm streaming
+    # Evolution
+    "EvolutionStatusResponse",
+    "TriggerEvolutionRequest",
+    "EvolutionCycleResponse",
+    # Health
+    "HealthStreamRequest",
+    "HealthMetrics",
+    "GPUMetrics",
+    "EndpointHealth",
+    # Events
+    "EventStreamRequest",
+    "Event",
+    # Grid
+    "ProjectEmbeddingsRequest",
+    "GridPosition",
+    "ProjectEmbeddingsResponse",
+    "ProjectQueryRequest",
+    "ProjectQueryResponse",
+    # TDA
+    "ComputeTDARequest",
+    "PersistenceInterval",
+    "TDAResponse",
+    # Explain
+    "ExplainRequest",
+    "ExplainResponse",
+    # Init streaming
+    "InitCommand",
+    "InitEvent",
+    # Swarm streaming
     "SwarmStreamRequest",
     "SwarmEvent",
     "SwarmResult",
-    # Gaius - Dataset generation
+    # Semantic Search
+    "SemanticSearchRequest",
+    "SearchResult",
+    "SemanticSearchResponse",
+    # Command Execution
+    "ExecuteCommandRequest",
+    "ExecuteCommandResponse",
+    # Dataset Service
     "DatasetGenerationRequest",
     "DatasetJobStatus",
     "DatasetProgressEvent",
@@ -270,7 +277,7 @@ __all__ = [
     "DatasetLineageResponse",
     "LineageNode",
     "LineageEdge",
-    # Service stubs
+    # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",
     "add_GaiusServiceServicer_to_server",

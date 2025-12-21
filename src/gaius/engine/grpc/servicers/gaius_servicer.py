@@ -57,6 +57,10 @@ from ...generated import (
     EmbedTextsRequest,
     EmbedTextsResponse,
     EmbeddingVector,
+    # Semantic Search
+    SemanticSearchRequest,
+    SearchResult,
+    SemanticSearchResponse,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
@@ -147,6 +151,34 @@ class GaiusServicer(GaiusServiceServicer):
     def __init__(self, services: "ServiceRegistry"):
         self._services = services
         self._event_subscribers: list[asyncio.Queue] = []
+
+    def _get_free_gpu(self) -> int:
+        """Get a free GPU from ResourceManager.
+
+        Uses the orchestrator's ResourceManager to find unallocated GPUs,
+        which is more reliable than parsing nvidia-smi output.
+
+        Returns:
+            GPU index that is free, or highest-numbered GPU as fallback.
+        """
+        orchestrator = self._services.orchestrator_service
+        if orchestrator and hasattr(orchestrator, "resource_manager"):
+            free_gpus = orchestrator.resource_manager.get_free_gpus()
+            if free_gpus:
+                # Prefer highest-numbered GPU (vLLM endpoints use lower ones)
+                gpu = max(free_gpus)
+                logger.debug(f"ResourceManager selected GPU {gpu} from free: {free_gpus}")
+                return gpu
+
+        # Fallback: use highest GPU (likely free since vLLM uses 0,1,2,3)
+        config = self._services.config
+        if config and hasattr(config, "gpus"):
+            fallback = config.gpus.total - 1
+            logger.debug(f"No ResourceManager, falling back to GPU {fallback}")
+            return fallback
+
+        logger.debug("No config available, falling back to GPU 0")
+        return 0
 
     # =========================================================================
     # Orchestrator
@@ -688,6 +720,73 @@ class GaiusServicer(GaiusServiceServicer):
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return EmbedTextsResponse()
+
+    # =========================================================================
+    # Semantic Search
+    # =========================================================================
+
+    async def SemanticSearch(
+        self,
+        request: SemanticSearchRequest,
+        context: aio.ServicerContext,
+    ) -> SemanticSearchResponse:
+        """Perform semantic search using ColNomic multi-vectors with MaxSim.
+
+        Uses VectorSearchMulti for GPU-accelerated MaxSim search over
+        the KB Qdrant collection indexed with ColNomic embeddings.
+        """
+        import time
+
+        start_time = time.time()
+
+        try:
+            from gaius.inference.search.vector_multi import get_vector_search_multi
+
+            # Get a free GPU from ResourceManager
+            free_gpu = self._get_free_gpu()
+            device = f"cuda:{free_gpu}"
+            logger.debug(f"SemanticSearch using {device}")
+
+            # Get or create vector search instance with selected GPU
+            vector_search = get_vector_search_multi(device=device)
+
+            # Execute search
+            results = vector_search.search(
+                query=request.query,
+                top_k=request.limit if request.limit > 0 else 10,
+                min_score=request.min_score,
+                use_maxsim=request.use_maxsim if request.use_maxsim else True,
+                content_type=request.content_type or None,
+            )
+
+            # Convert to proto results
+            proto_results = [
+                SearchResult(
+                    path=r.path,
+                    title=r.title,
+                    score=r.score,
+                    snippet=r.snippet[:500] if r.snippet else "",
+                    chunk_id=r.chunk_id,
+                    content_type=r.content_type,
+                )
+                for r in results
+            ]
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            return SemanticSearchResponse(
+                results=proto_results,
+                total=len(proto_results),
+                collection=vector_search.collection_name,
+                embedding_model="colnomic",
+                latency_ms=latency_ms,
+            )
+
+        except Exception as e:
+            logger.error(f"SemanticSearch failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return SemanticSearchResponse()
 
     # =========================================================================
     # Swarm Streaming

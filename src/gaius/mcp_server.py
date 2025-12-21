@@ -1334,32 +1334,33 @@ Domain: {domain or 'general'}
     async def semantic_search(query: str, collection: str = "kb", limit: int = 10) -> str:
         """Perform semantic similarity search.
 
+        Uses ColNomic multi-vector embeddings with MaxSim late-interaction
+        scoring for high-quality semantic retrieval via the engine gRPC.
+
         Args:
             query: Search query
             collection: Collection to search (kb, research, etc.)
             limit: Maximum results
         """
         try:
-            from .search import get_vector_search
+            client = await _get_engine_client()
+            if client is None:
+                return json.dumps(
+                    {"error": "Engine not available. Start with: devenv processes up"},
+                    indent=2,
+                )
 
-            search = get_vector_search()
-            results = await search.search(query, collection=collection, limit=limit)
-
-            return json.dumps(
+            result = await client.call(
+                "Search",
+                "semantic",
                 {
-                    "results": [
-                        {
-                            "id": r.id,
-                            "content": r.content[:500],
-                            "score": r.score,
-                            "metadata": r.metadata,
-                        }
-                        for r in results
-                    ],
-                    "total": len(results),
+                    "query": query,
+                    "collection": collection,
+                    "limit": limit,
+                    "use_maxsim": True,
                 },
-                indent=2,
             )
+            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

@@ -330,6 +330,36 @@ message EmbedTextsResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Semantic Search Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+message SemanticSearchRequest {
+  string query = 1;                    // Search query text
+  string collection = 2;               // Collection name (default: "kb")
+  int32 limit = 3;                     // Max results (default: 10)
+  float min_score = 4;                 // Minimum score threshold
+  bool use_maxsim = 5;                 // Use MaxSim scoring (default: true)
+  string content_type = 6;             // Filter: "text", "image", or "" for all
+}
+
+message SearchResult {
+  string path = 1;                     // KB path
+  string title = 2;                    // Document title
+  float score = 3;                     // MaxSim similarity score
+  string snippet = 4;                  // Content preview (truncated)
+  string chunk_id = 5;                 // Chunk identifier for citation
+  string content_type = 6;             // "text" or "image"
+}
+
+message SemanticSearchResponse {
+  repeated SearchResult results = 1;
+  int32 total = 2;
+  string collection = 3;
+  string embedding_model = 4;          // "colnomic"
+  int32 latency_ms = 5;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Health Streaming Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -909,6 +939,11 @@ service GaiusService {
   // Embeddings (Engine-Managed)
   // ─────────────────────────────────────────────────────────────────────────
   rpc EmbedTexts(EmbedTextsRequest) returns (EmbedTextsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Semantic Search
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc SemanticSearch(SemanticSearchRequest) returns (SemanticSearchResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Evolution

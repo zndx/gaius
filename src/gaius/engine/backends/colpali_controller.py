@@ -442,12 +442,15 @@ class ColPaliController:
                         provider="colpali",
                     )
 
-                # Load on first available GPU or CPU
-                # In production, engine orchestrator handles GPU allocation
+                # Find a free GPU by checking nvidia-smi
+                # Prefer GPU with least memory usage
+                gpu_id = self._find_free_gpu()
+                logger.info(f"ColPali: selected GPU {gpu_id} for {target_model}")
+
                 endpoint = ColPaliEndpoint(
                     name=f"colpali-{target_model.split('/')[-1]}",
                     model_name=target_model,
-                    gpu_ids=[0],  # Default to GPU 0
+                    gpu_ids=[gpu_id],
                     status=ColPaliStatus.LOADING,
                 )
                 self._endpoints[endpoint.name] = endpoint
@@ -455,7 +458,7 @@ class ColPaliController:
                 # Load in thread pool
                 model, processor = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self._load_model_sync(target_model, [0]),
+                    lambda: self._load_model_sync(target_model, [gpu_id]),
                 )
                 endpoint.model = model
                 endpoint.processor = processor
@@ -466,6 +469,38 @@ class ColPaliController:
             except Exception as e:
                 logger.error(f"Failed to create ColPali endpoint: {e}")
                 return None
+
+    def _find_free_gpu(self) -> int:
+        """Find GPU with least memory usage.
+
+        Returns:
+            GPU index with most free memory, or 0 if unable to determine
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                # Parse output: "0, 1234\n1, 5678\n..."
+                best_gpu = 0
+                best_free = 0
+                for line in result.stdout.strip().split("\n"):
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        gpu_idx = int(parts[0].strip())
+                        free_mb = int(parts[1].strip())
+                        if free_mb > best_free:
+                            best_free = free_mb
+                            best_gpu = gpu_idx
+                logger.debug(f"Found GPU {best_gpu} with {best_free}MB free")
+                return best_gpu
+        except Exception as e:
+            logger.warning(f"Failed to query nvidia-smi: {e}")
+        return 0  # Default to GPU 0
 
     def get_endpoint_info(self, name: str) -> Optional[dict]:
         """Get information about an endpoint.
