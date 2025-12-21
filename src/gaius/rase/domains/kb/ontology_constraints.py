@@ -368,6 +368,10 @@ class TopicsRecoverable(Constraint[KBState]):
                 # Use verbalizations as synthetic corpus
                 documents = [v["verbalization"] for v in verbalizations]
 
+            # For very small corpora, UMAP/BERTopic will fail due to k-NN constraints
+            # Fall back to keyword-based self-alignment for small ontologies
+            MIN_DOCS_FOR_TOPIC_MODEL = 15
+
             if len(documents) < 5:
                 return ConstraintResult.failure(
                     self.name,
@@ -375,7 +379,44 @@ class TopicsRecoverable(Constraint[KBState]):
                     {"document_count": len(documents)},
                 )
 
-            # Try to train topic model
+            if len(documents) < MIN_DOCS_FOR_TOPIC_MODEL:
+                # Small corpus: use keyword overlap between verbalizations as proxy
+                # This checks that verbalizations share vocabulary (concept coherence)
+                all_words = []
+                for v in verbalizations:
+                    words = set(v["verbalization"].lower().split())
+                    # Filter common words
+                    words = {w for w in words if len(w) > 3}
+                    all_words.append(words)
+
+                # Check vocabulary overlap between verbalizations
+                overlap_count = 0
+                for i, words_i in enumerate(all_words):
+                    for j, words_j in enumerate(all_words):
+                        if i < j:
+                            overlap = len(words_i & words_j)
+                            if overlap >= 2:
+                                overlap_count += 1
+
+                total_pairs = len(all_words) * (len(all_words) - 1) // 2
+                if total_pairs > 0:
+                    coherence = overlap_count / total_pairs
+                else:
+                    coherence = 1.0
+
+                if coherence >= self.min_alignment:
+                    return ConstraintResult.success(
+                        self.name,
+                        f"Small corpus ({len(documents)} docs): keyword coherence {coherence:.1%} (topic modeling skipped)",
+                    )
+                else:
+                    return ConstraintResult.failure(
+                        self.name,
+                        f"Small corpus keyword coherence {coherence:.1%} < {self.min_alignment:.0%}",
+                        {"coherence": coherence, "document_count": len(documents)},
+                    )
+
+            # Try to train topic model for larger corpora
             try:
                 from gaius.flows.topics.models import train_topic_model
 
