@@ -105,6 +105,9 @@ class GaiusEngine:
         # Dataset service (NiFi SoM/ToM generation)
         self._dataset_service = None
 
+        # Reconciliation service (FSM-based state observation)
+        self._reconciliation_service = None
+
     async def start(self) -> None:
         """Start the engine daemon.
 
@@ -199,6 +202,9 @@ class GaiusEngine:
 
         # Always start dataset service (lightweight, fail-fast by design)
         await self._init_dataset_service()
+
+        # Start reconciliation service (FSM-based state observation)
+        await self._init_reconciliation_service()
 
         # 9. Mark initialization complete
         await self._init_controller.complete_init()
@@ -523,6 +529,45 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to initialize dataset service: {e}")
 
+    async def _init_reconciliation_service(self) -> None:
+        """Initialize FSM-based reconciliation service.
+
+        The ReconciliationService periodically observes:
+        - nvidia-smi (GPU processes and memory)
+        - ss/netstat (port listeners)
+        - HTTP health checks (/health, /v1/models)
+
+        It compares observations to expected state, detects drift,
+        and automatically remediates issues (kill orphans, restart unhealthy).
+        """
+        try:
+            from .resources import ReconciliationService
+
+            logger.info("Initializing reconciliation service...")
+
+            # Create service with resource manager and config
+            # Remediation ENABLED by default - self-healing is the point
+            self._reconciliation_service = ReconciliationService(
+                resource_manager=self._resource_manager,
+                config=self.config,
+                observe_interval_seconds=10.0,  # Check every 10 seconds
+                remediate=True,  # Auto-remediate drift (orphans, unhealthy)
+                orchestrator_service=self._orchestrator_service,  # For restarts
+            )
+            await self._reconciliation_service.start()
+            logger.info("Reconciliation service started with auto-remediation enabled")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "reconciliation_service", self._reconciliation_service
+                )
+
+        except ImportError as e:
+            logger.warning(f"Reconciliation service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize reconciliation service: {e}")
+
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).
 
@@ -637,6 +682,13 @@ class GaiusEngine:
                 await self._dataset_service.stop()
             except Exception as e:
                 logger.warning(f"Error stopping dataset service: {e}")
+
+        # Stop reconciliation service
+        if self._reconciliation_service:
+            try:
+                await self._reconciliation_service.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping reconciliation service: {e}")
 
         # Stop orchestrator service
         if self._orchestrator_service:
@@ -1045,9 +1097,62 @@ class GaiusEngine:
                 )
 
             elif action == "reconcile":
-                # State reconciliation - compare desired vs actual and fix
-                result = await self._orchestrator_service.reconcile_state()
-                return Response.success(request.id, result)
+                # State reconciliation using FSM-based service
+                if self._reconciliation_service:
+                    results = await self._reconciliation_service.observe_once()
+                    # Convert results to dict format
+                    result = {
+                        "endpoints": {
+                            name: {
+                                "expected": r.expected_state.value,
+                                "actual": r.actual_state.value,
+                                "drifted": r.is_drifted,
+                            }
+                            for name, r in results.items()
+                        },
+                        "drift_detected": any(r.is_drifted for r in results.values()),
+                    }
+                    return Response.success(request.id, result)
+                else:
+                    # Fallback to legacy reconciliation
+                    result = await self._orchestrator_service.reconcile_state()
+                    return Response.success(request.id, result)
+
+            elif action == "reconcile_status":
+                # Get reconciliation service status
+                if self._reconciliation_service:
+                    status = self._reconciliation_service.get_status()
+                    return Response.success(request.id, status)
+                else:
+                    return Response.failure(
+                        request.id,
+                        code=503,
+                        message="Reconciliation service not initialized",
+                    )
+
+            elif action == "enable_remediation":
+                # Enable or disable automatic remediation
+                if self._reconciliation_service:
+                    enable = request.payload.get("enable", True)
+                    self._reconciliation_service.enable_remediation(enable)
+                    # Also set the orchestrator service for UNHEALTHY remediation
+                    if enable and self._orchestrator_service:
+                        self._reconciliation_service.set_orchestrator_service(
+                            self._orchestrator_service
+                        )
+                    return Response.success(
+                        request.id,
+                        {
+                            "remediation_enabled": enable,
+                            "message": f"Remediation {'enabled' if enable else 'disabled'}",
+                        },
+                    )
+                else:
+                    return Response.failure(
+                        request.id,
+                        code=503,
+                        message="Reconciliation service not initialized",
+                    )
 
             elif action == "discover":
                 # Discover what's actually running (diagnostic)

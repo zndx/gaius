@@ -255,6 +255,24 @@ class OrchestratorService:
                 status="optillm",  # Uses shared optillm, always available
             )
 
+        # ColPali backend for multi-vector embeddings (ColNomic)
+        if backend == "colpali":
+            # Check if ColPali endpoint already exists
+            from ..backends.colpali_controller import get_colpali_controller
+            controller = get_colpali_controller()
+            endpoints = controller.list_endpoints()
+            for ep in endpoints:
+                if ep and ep.get("status") == "ready":
+                    return EndpointStatus(
+                        agent_alias=agent_alias,
+                        model=agent_config.model,
+                        port=None,  # ColPali doesn't use HTTP
+                        gpu_ids=ep.get("gpu_ids", []),
+                        status="healthy",
+                    )
+            # Not loaded yet, start it
+            return await self._start_colpali_endpoint(agent_alias, agent_config)
+
         # Note: sentence-transformers backend is deprecated.
         # Use backend = "vllm" with endpoint.task = "embed" instead.
         # vLLM handles embedding models directly with --task embed flag.
@@ -343,6 +361,10 @@ class OrchestratorService:
                 gpu_ids=[],
                 status="optillm",  # Uses optillm, no dedicated endpoint
             )
+
+        # ColPali backend for multi-vector embeddings (ColNomic)
+        if backend == "colpali":
+            return await self._start_colpali_endpoint(agent_alias, agent_config)
 
         # Note: sentence-transformers backend is deprecated.
         # Use backend = "vllm" with endpoint.task = "embed" instead.
@@ -459,6 +481,85 @@ class OrchestratorService:
                 startup_message=f"Failed: {e}",
             )
 
+    async def _start_colpali_endpoint(
+        self,
+        agent_alias: str,
+        agent_config: "AgentConfig",
+    ) -> EndpointStatus:
+        """Start a ColPali multi-vector embedding endpoint.
+
+        Uses the ColPaliController to load ColNomic or other ColPali models.
+        ColPali produces multi-vector embeddings (one per token) for
+        late-interaction retrieval patterns.
+
+        Args:
+            agent_alias: Agent identifier
+            agent_config: Agent configuration
+
+        Returns:
+            EndpointStatus with startup state
+        """
+        from ..backends.colpali_controller import get_colpali_controller
+        from gaius.models.registry import ModelSpec
+
+        try:
+            controller = get_colpali_controller()
+
+            # Create ModelSpec from agent config
+            model_spec = ModelSpec(
+                model_id=agent_config.model,
+                name=agent_alias,
+                provider="colpali",
+            )
+
+            # Allocate GPU for ColPali model
+            required_gpus = agent_config.resources.gpus
+            free_gpus = self.resource_manager.get_free_gpus()
+
+            if len(free_gpus) < required_gpus:
+                return EndpointStatus(
+                    agent_alias=agent_alias,
+                    model=agent_config.model,
+                    port=None,
+                    gpu_ids=[],
+                    status="insufficient_resources",
+                    startup_message=f"Need {required_gpus} GPUs, only {len(free_gpus)} free",
+                )
+
+            gpu_ids = free_gpus[:required_gpus]
+
+            logger.info(f"Starting ColPali endpoint {agent_alias} on GPUs {gpu_ids}")
+
+            # Start ColPali endpoint
+            endpoint = await controller.start_colpali_endpoint(
+                model_spec=model_spec,
+                gpu_ids=gpu_ids,
+                endpoint_name=agent_alias,
+            )
+
+            # Track the allocation
+            self.resource_manager.allocate(agent_alias, gpu_ids)
+
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,  # ColPali endpoints don't use HTTP
+                gpu_ids=gpu_ids,
+                status="healthy" if endpoint.status.value == "ready" else endpoint.status.value,
+                startup_message=f"ColPali model {agent_config.model} loaded",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to start ColPali endpoint {agent_alias}: {e}")
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,
+                gpu_ids=[],
+                status="failed",
+                startup_message=f"Failed: {e}",
+            )
+
     def get_endpoint_status(self, agent_alias: str) -> Optional[EndpointStatus]:
         """Get status of a specific endpoint.
 
@@ -468,25 +569,46 @@ class OrchestratorService:
         Returns:
             EndpointStatus if exists
         """
+        # Check vLLM processes first
         proc = self._vllm.get_process(agent_alias)
-        if not proc:
-            return None
+        if proc:
+            # Get startup progress
+            message, progress = self._vllm.get_startup_progress(agent_alias)
 
-        # Get startup progress
-        message, progress = self._vllm.get_startup_progress(agent_alias)
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=proc.model,
+                port=proc.port,
+                gpu_ids=proc.gpu_ids,
+                status=proc.status.value,
+                pid=proc.pid,
+                started_at=proc.started_at,
+                requests_served=proc.requests_served,
+                startup_progress=progress,
+                startup_message=message,
+            )
 
-        return EndpointStatus(
-            agent_alias=agent_alias,
-            model=proc.model,
-            port=proc.port,
-            gpu_ids=proc.gpu_ids,
-            status=proc.status.value,
-            pid=proc.pid,
-            started_at=proc.started_at,
-            requests_served=proc.requests_served,
-            startup_progress=progress,
-            startup_message=message,
-        )
+        # Check ColPali endpoints if this is a colpali-backed agent
+        if agent_alias in self.config.agents:
+            agent_config = self.config.agents[agent_alias]
+            if agent_config.backend.lower() == "colpali":
+                try:
+                    from ..backends.colpali_controller import get_colpali_controller
+                    controller = get_colpali_controller()
+                    info = controller.get_endpoint_info(agent_alias)
+                    if info:
+                        return EndpointStatus(
+                            agent_alias=agent_alias,
+                            model=info.get("model", agent_config.model),
+                            port=None,
+                            gpu_ids=info.get("gpu_ids", []),
+                            status="healthy" if info.get("status") == "ready" else info.get("status", "unknown"),
+                            requests_served=info.get("requests_served", 0),
+                        )
+                except Exception:
+                    pass
+
+        return None
 
     def get_all_endpoint_status(self) -> dict[str, EndpointStatus]:
         """Get status of all endpoints.
