@@ -184,6 +184,12 @@ def objective_to_verification_case(
         ClaimsIdentified,
         ClaimsGrounded,
         NoHallucinations,
+        # Ontology constraints
+        OntologyLoads,
+        HasComplexClasses,
+        ClassesVerbalizable,
+        TopicsRecoverable,
+        CorpusGenerated,
     )
 
     # Map constraint type names to classes
@@ -206,6 +212,18 @@ def objective_to_verification_case(
         "ClaimsIdentified": ClaimsIdentified,
         "ClaimsGrounded": ClaimsGrounded,
         "NoHallucinations": NoHallucinations,
+        # Ontology constraints
+        "OntologyLoads": OntologyLoads,
+        "HasComplexClasses": HasComplexClasses,
+        "ClassesVerbalizable": ClassesVerbalizable,
+        "TopicsRecoverable": TopicsRecoverable,
+        "CorpusGenerated": CorpusGenerated,
+    }
+
+    # Ontology constraints use ontology_path instead of document_path
+    ontology_constraints = {
+        "OntologyLoads", "HasComplexClasses", "ClassesVerbalizable",
+        "TopicsRecoverable", "CorpusGenerated",
     }
 
     # Default to objective's own path
@@ -223,7 +241,20 @@ def objective_to_verification_case(
             continue
 
         # Build constraint params
-        params = {"document_path": document_path}
+        # Ontology constraints use ontology_path, document constraints use document_path
+        if gate.constraint_type in ontology_constraints:
+            # Get ontology_path from gate params, or construct from objective metadata
+            ontology_path = gate.params.get("ontology_path")
+            if not ontology_path:
+                # Try to get from objective metadata
+                if hasattr(objective, 'metadata') and objective.metadata:
+                    ontology_path = objective.metadata.get("ontology")
+                if not ontology_path:
+                    # Default to current/ontology/{objective.name}.owl
+                    ontology_path = f"current/ontology/{objective.name.replace('-', '_')}.owl"
+            params = {"ontology_path": ontology_path}
+        else:
+            params = {"document_path": document_path}
         params.update(gate.params)
 
         try:

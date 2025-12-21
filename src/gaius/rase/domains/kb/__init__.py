@@ -74,6 +74,15 @@ from .constraints import (
     NoHallucinations,
 )
 
+# Ontology constraints
+from .ontology_constraints import (
+    OntologyLoads,
+    HasComplexClasses,
+    ClassesVerbalizable,
+    TopicsRecoverable,
+    CorpusGenerated,
+)
+
 # Verification
 from .verification import (
     KBVerificationCase,
@@ -113,6 +122,12 @@ DOMAIN_SPEC = DomainSpec(
         "ClaimsIdentified": ClaimsIdentified,
         "ClaimsGrounded": ClaimsGrounded,
         "NoHallucinations": NoHallucinations,
+        # Ontology constraints
+        "OntologyLoads": OntologyLoads,
+        "HasComplexClasses": HasComplexClasses,
+        "ClassesVerbalizable": ClassesVerbalizable,
+        "TopicsRecoverable": TopicsRecoverable,
+        "CorpusGenerated": CorpusGenerated,
     },
     id_scheme=IdScheme.RASE,  # Uses rase:// scheme for KB objectives
     features_dir="features/kb",
@@ -152,6 +167,12 @@ __all__ = [
     "ClaimsIdentified",
     "ClaimsGrounded",
     "NoHallucinations",
+    # Ontology constraints
+    "OntologyLoads",
+    "HasComplexClasses",
+    "ClassesVerbalizable",
+    "TopicsRecoverable",
+    "CorpusGenerated",
     # Verification
     "KBVerificationCase",
     "objective_to_verification_case",
