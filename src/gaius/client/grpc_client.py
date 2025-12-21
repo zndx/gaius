@@ -209,6 +209,10 @@ class GrpcEngineClient:
         self._gaius_stub = None
         logger.info("Disconnected from engine (gRPC)")
 
+    async def close(self) -> None:
+        """Close the client connection (alias for disconnect)."""
+        await self.disconnect()
+
     async def call(
         self,
         service: str,
@@ -265,6 +269,8 @@ class GrpcEngineClient:
                 return await self._call_embedding(action, params, timeout)
             elif service == "Init":
                 return await self._call_init(action, params, timeout)
+            elif service == "Search":
+                return await self._call_search(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -749,6 +755,42 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Embedding action: {action}")
+
+    async def _call_search(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Search service calls via gRPC."""
+        from ..engine.generated import SemanticSearchRequest
+
+        if action == "semantic":
+            request = SemanticSearchRequest(
+                query=params.get("query", ""),
+                collection=params.get("collection", "kb"),
+                limit=params.get("limit", 10),
+                min_score=params.get("min_score", 0.0),
+                use_maxsim=params.get("use_maxsim", True),
+                content_type=params.get("content_type", ""),
+            )
+            response = await self._gaius_stub.SemanticSearch(request, timeout=timeout)
+
+            return {
+                "results": [
+                    {
+                        "path": r.path,
+                        "title": r.title,
+                        "score": r.score,
+                        "snippet": r.snippet,
+                        "chunk_id": r.chunk_id,
+                        "content_type": r.content_type,
+                    }
+                    for r in response.results
+                ],
+                "total": response.total,
+                "collection": response.collection,
+                "embedding_model": response.embedding_model,
+                "latency_ms": response.latency_ms,
+            }
+
+        else:
+            raise ValueError(f"Unknown Search action: {action}")
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.

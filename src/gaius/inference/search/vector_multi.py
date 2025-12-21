@@ -764,7 +764,8 @@ def get_vector_search_multi(
 
     Args:
         kb_root: KB root directory
-        device: GPU device (e.g., "cuda:0")
+        device: GPU device (e.g., "cuda:0"). If singleton exists with different
+                device, logs a warning but returns existing instance.
 
     Returns:
         VectorSearchMulti instance
@@ -775,4 +776,21 @@ def get_vector_search_multi(
     global _vector_search_multi
     if _vector_search_multi is None:
         _vector_search_multi = VectorSearchMulti(kb_root, device=device)
+    elif device is not None and _vector_search_multi._device != device:
+        # Warn if caller requested different device than singleton has
+        logger.warning(
+            f"VectorSearchMulti already initialized on {_vector_search_multi._device}, "
+            f"ignoring requested device {device}. Restart engine to change GPU."
+        )
     return _vector_search_multi
+
+
+def reset_vector_search_multi() -> None:
+    """Reset the singleton (for testing or GPU reallocation).
+
+    Use with caution - existing references will become stale.
+    """
+    global _vector_search_multi
+    if _vector_search_multi is not None:
+        logger.info("Resetting VectorSearchMulti singleton")
+        _vector_search_multi = None
