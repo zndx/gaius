@@ -82,6 +82,23 @@ from .merge_coordinator import (
     MergeCycleResult,
     get_merge_coordinator,
 )
+from .objective_generator import (
+    ObjectiveTask,
+    ObjectiveTaskGenerator,
+    objective_to_task_item,
+    get_objective_generator,
+)
+from .daemon_oracle import (
+    VerificationScore,
+    DaemonOracle,
+    get_daemon_oracle,
+)
+from .calibration import (
+    CalibrationResult,
+    CalibrationConfig,
+    CalibrationOracle,
+    get_calibration_oracle,
+)
 
 __all__ = [
     # Core preemption
@@ -139,4 +156,18 @@ __all__ = [
     "MergeCoordinatorConfig",
     "MergeCycleResult",
     "get_merge_coordinator",
+    # RASE Objective-based evolution
+    "ObjectiveTask",
+    "ObjectiveTaskGenerator",
+    "objective_to_task_item",
+    "get_objective_generator",
+    # Intrinsic verification oracle
+    "VerificationScore",
+    "DaemonOracle",
+    "get_daemon_oracle",
+    # Outer loop calibration
+    "CalibrationResult",
+    "CalibrationConfig",
+    "CalibrationOracle",
+    "get_calibration_oracle",
 ]

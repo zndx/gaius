@@ -93,6 +93,22 @@ class EvolutionConfig:
     # Minimum improvement threshold for merged models (percent)
     merge_min_improvement: float = 2.0
 
+    # RASE Intrinsic Verification Settings
+    # Use RASE objectives for intrinsic verification (no external models)
+    use_intrinsic_verification: bool = True
+
+    # KB root for objective loading
+    kb_root: str = "build/dev"
+
+    # Run calibration every N evolution cycles
+    calibration_cycle_interval: int = 20
+
+    # Prefer Cerebras over XAI for calibration
+    prefer_cerebras: bool = True
+
+    # Capture evidence to HX Iceberg tables
+    capture_evidence: bool = True
+
 
 @dataclass
 class EvolutionCycleResult:
@@ -156,6 +172,13 @@ class EvolutionDaemon:
         self._last_merge_at: datetime | None = None
         self._models_merged = 0
 
+        # RASE intrinsic verification state
+        self._daemon_oracle = None  # Lazy-loaded
+        self._objective_generator = None  # Lazy-loaded
+        self._calibration_oracle = None  # Lazy-loaded
+        self._calibration_cycles_completed = 0
+        self._last_calibration_at: datetime | None = None
+
         # Callbacks
         self._on_cycle_complete: list[Callable[[EvolutionCycleResult], Awaitable[None]]] = []
 
@@ -180,6 +203,39 @@ class EvolutionDaemon:
         if not self.config.agents:
             return ""
         return self.config.agents[self._agent_index % len(self.config.agents)]
+
+    @property
+    def daemon_oracle(self):
+        """Get daemon oracle for intrinsic verification (lazy-loaded)."""
+        if self._daemon_oracle is None and self.config.use_intrinsic_verification:
+            from .daemon_oracle import DaemonOracle
+            self._daemon_oracle = DaemonOracle(
+                kb_root=self.config.kb_root,
+                capture_evidence=self.config.capture_evidence,
+            )
+        return self._daemon_oracle
+
+    @property
+    def objective_generator(self):
+        """Get objective generator for task creation (lazy-loaded)."""
+        if self._objective_generator is None and self.config.use_intrinsic_verification:
+            from .objective_generator import ObjectiveTaskGenerator
+            self._objective_generator = ObjectiveTaskGenerator(
+                kb_root=self.config.kb_root,
+            )
+        return self._objective_generator
+
+    @property
+    def calibration_oracle(self):
+        """Get calibration oracle for outer loop (lazy-loaded)."""
+        if self._calibration_oracle is None:
+            from .calibration import CalibrationOracle, CalibrationConfig
+            self._calibration_oracle = CalibrationOracle(
+                CalibrationConfig(
+                    prefer_cerebras=self.config.prefer_cerebras,
+                )
+            )
+        return self._calibration_oracle
 
     async def start(self, parallel: bool | None = None) -> None:
         """Start the evolution daemon.
@@ -344,6 +400,22 @@ class EvolutionDaemon:
                     (self._cycles_completed % self.config.merge_cycle_interval)
                 ) if self.config.merge_enabled else None,
             },
+            # RASE intrinsic verification metrics
+            "intrinsic_verification": {
+                "enabled": self.config.use_intrinsic_verification,
+                "kb_root": self.config.kb_root,
+                "capture_evidence": self.config.capture_evidence,
+                "calibration_cycles_completed": self._calibration_cycles_completed,
+                "last_calibration_at": (
+                    self._last_calibration_at.isoformat()
+                    if self._last_calibration_at else None
+                ),
+                "next_calibration_in": (
+                    self.config.calibration_cycle_interval -
+                    (self._cycles_completed % self.config.calibration_cycle_interval)
+                ) if self.config.use_intrinsic_verification else None,
+                "prefer_cerebras": self.config.prefer_cerebras,
+            },
             "config": {
                 "idle_threshold": self.config.idle_threshold,
                 "poll_interval": self.config.poll_interval,
@@ -398,6 +470,14 @@ class EvolutionDaemon:
                                 self._cycles_completed % self.config.merge_cycle_interval == 0
                             ):
                                 await self._run_merge_cycle()
+
+                            # Check if it's time for calibration (outer loop)
+                            if (
+                                self.config.use_intrinsic_verification and
+                                self._cycles_completed > 0 and
+                                self._cycles_completed % self.config.calibration_cycle_interval == 0
+                            ):
+                                await self._run_calibration_cycle()
 
                         except PreemptedError as e:
                             logger.info(f"Evolution preempted: {e.reason}")
@@ -825,6 +905,121 @@ class EvolutionDaemon:
             logger.info(f"Merge preempted: {e.reason}")
         except Exception as e:
             logger.error(f"Merge cycle failed: {e}")
+
+    async def _run_calibration_cycle(self) -> None:
+        """Run a calibration cycle using external models.
+
+        Validates intrinsic verification scores against frontier model
+        judgments (Cerebras preferred, XAI fallback) to detect drift.
+        """
+        logger.info("Starting calibration cycle (outer loop)")
+
+        try:
+            # Generate held-out tasks from objectives
+            held_out_tasks = await self.objective_generator.get_held_out_tasks(
+                sample_size=20,
+            )
+
+            if len(held_out_tasks) < 10:
+                logger.info("Calibration skipped - insufficient held-out tasks")
+                return
+
+            # Compute intrinsic scores for held-out tasks
+            intrinsic_scores = []
+            for task in held_out_tasks:
+                # Simple intrinsic scoring - just check if task is verifiable
+                if task.context and task.context.startswith("objective:"):
+                    objective_name = task.context.split(":", 1)[1]
+                    try:
+                        score_result = await self.daemon_oracle.verify_objective(
+                            objective_name=objective_name,
+                        )
+                        intrinsic_scores.append(score_result.accuracy)
+                    except Exception as e:
+                        logger.debug(f"Intrinsic scoring failed: {e}")
+                        intrinsic_scores.append(0.5)
+                else:
+                    intrinsic_scores.append(0.5)
+
+            # Run calibration against external model
+            async def run_calibration():
+                return await self.calibration_oracle.run_calibration(
+                    held_out_tasks=held_out_tasks,
+                    intrinsic_scores=intrinsic_scores,
+                )
+
+            result = await self._preemption_manager.run_with_preemption(
+                run_calibration(),
+                timeout=300,
+            )
+
+            # Update metrics
+            self._calibration_cycles_completed += 1
+            self._last_calibration_at = datetime.now()
+
+            # Log results
+            if result.drift_detected:
+                logger.warning(
+                    f"Calibration detected drift: severity={result.drift_severity}, "
+                    f"correlation={result.correlation:.2f}, bias={result.bias:+.2f}"
+                )
+            else:
+                logger.info(
+                    f"Calibration complete: correlation={result.correlation:.2f}, "
+                    f"bias={result.bias:+.2f}, provider={result.external_provider}"
+                )
+
+            # Log to database
+            await self._log_calibration_to_db(result)
+
+        except PreemptedError as e:
+            logger.info(f"Calibration preempted: {e.reason}")
+        except Exception as e:
+            logger.error(f"Calibration cycle failed: {e}")
+
+    async def _log_calibration_to_db(self, result) -> None:
+        """Log calibration result to database.
+
+        Args:
+            result: CalibrationResult from calibration oracle
+        """
+        try:
+            import asyncpg
+            import json
+            import os
+
+            url = os.getenv(
+                "DATABASE_URL",
+                "postgresql://gaius:gaius@localhost:5432/gaius"
+            )
+
+            conn = await asyncpg.connect(url)
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO evolution_calibrations
+                    (tasks_evaluated, correlation, mean_absolute_error, bias,
+                     drift_detected, drift_severity, external_provider, external_model,
+                     duration_ms, calibrated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                    """,
+                    result.tasks_evaluated,
+                    result.correlation,
+                    result.mean_absolute_error,
+                    result.bias,
+                    result.drift_detected,
+                    result.drift_severity,
+                    result.external_provider,
+                    result.external_model,
+                    result.duration_ms,
+                )
+                logger.debug("Logged calibration result to DB")
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            # Don't fail calibration just because logging failed
+            logger.warning(f"Failed to log calibration to DB: {e}")
 
     async def force_merge_cycle(self, agent_id: str | None = None) -> dict:
         """Force an immediate merge cycle.

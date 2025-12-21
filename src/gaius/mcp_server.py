@@ -389,6 +389,64 @@ def create_server() -> "FastMCP":
             "total": len(result["entries"]),
         }, indent=2)
 
+    # --- RASE Objective Verification ---
+
+    @server.tool()
+    async def verify_objective(
+        objective_path: str,
+        document_path: str = "",
+    ) -> str:
+        """Verify an objective against KB state.
+
+        Loads an objective from the KB and verifies it using intrinsic
+        verification (the KB itself serves as the oracle).
+
+        Args:
+            objective_path: Path to objective file (e.g., "current/objectives/rsv.md")
+            document_path: Optional specific document to verify (defaults to objective itself)
+
+        Returns:
+            JSON with verdict, accuracy, reward, and constraint results
+        """
+        from .rase.domains.kb import Objective, KBOracle
+
+        kb_root = str(get_kb_root())
+
+        try:
+            # Load objective
+            objective = Objective.from_file(objective_path, kb_root=kb_root)
+        except FileNotFoundError:
+            return json.dumps({"error": f"Objective not found: {objective_path}"})
+        except ValueError as e:
+            return json.dumps({"error": f"Invalid objective: {e}"})
+
+        # Create oracle and verify
+        oracle = KBOracle(kb_root=kb_root)
+
+        doc_path = document_path if document_path else None
+        result = await oracle.verify_objective(objective, document_path=doc_path)
+
+        # Build response
+        return json.dumps({
+            "objective": objective.name,
+            "description": objective.description,
+            "verdict": result.verdict.value,
+            "accuracy": result.accuracy,
+            "reward": result.to_reward(),
+            "constraints": [
+                {
+                    "name": cr.constraint_name,
+                    "satisfied": cr.satisfied,
+                    "message": cr.message,
+                }
+                for cr in result.constraint_results
+            ],
+            "gates": {
+                "total": len(result.constraint_results),
+                "passed": sum(1 for cr in result.constraint_results if cr.satisfied),
+            },
+        }, indent=2)
+
     # --- KB Sync Operations ---
 
     @server.tool()
@@ -3762,6 +3820,233 @@ Domain: {domain or 'general'}
                 indent=2,
             )
 
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- RASE Calibration ---
+
+    @server.tool()
+    async def calibration_status(agent_id: str = "") -> str:
+        """Get calibration status for an agent or all agents.
+
+        Shows calibration health including drift detection, score correlation,
+        and whether recalibration is needed.
+
+        Args:
+            agent_id: Specific agent (empty for all agents)
+        """
+        try:
+            # Query calibration_health view
+            query = """
+                SELECT * FROM calibration_health
+            """
+            if agent_id:
+                query += f" WHERE agent_id = '{agent_id}'"
+
+            from .storage.database import _get_pool
+
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query)
+
+            results = []
+            for row in rows:
+                results.append({
+                    "agent_id": row["agent_id"],
+                    "total_calibrations": row["total_calibrations"],
+                    "drift_count": row["drift_count"],
+                    "avg_delta": round(row["avg_delta"], 3) if row["avg_delta"] else 0,
+                    "max_abs_delta": round(row["max_abs_delta"], 3) if row["max_abs_delta"] else 0,
+                    "score_correlation": round(row["score_correlation"], 3) if row["score_correlation"] else None,
+                    "calibration_status": row["calibration_status"],
+                    "last_calibration": row["last_calibration"].isoformat() if row["last_calibration"] else None,
+                })
+
+            return json.dumps(
+                {"agents": results, "total": len(results)},
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def trigger_calibration(
+        agent_id: str,
+        objective_name: str = "research-synthesis-verification",
+        provider: str = "cerebras",
+    ) -> str:
+        """Trigger a calibration cycle for an agent.
+
+        Runs verification with both local and frontier model to compare scores.
+        Records results in the calibration database for drift analysis.
+
+        Args:
+            agent_id: Agent to calibrate
+            objective_name: Objective to use for verification
+            provider: Frontier model provider (cerebras, xai)
+        """
+        try:
+            from .agents.evolution import get_calibration_oracle
+
+            oracle = await get_calibration_oracle()
+
+            # Run calibration
+            result = await oracle.run_calibration_cycle(
+                agent_id=agent_id,
+                objective_name=objective_name,
+                provider=provider,
+            )
+
+            return json.dumps(
+                {
+                    "agent_id": agent_id,
+                    "objective": objective_name,
+                    "provider": result.external_provider,
+                    "local_score": round(result.intrinsic_scores[0], 3) if result.intrinsic_scores else 0,
+                    "calibration_score": round(result.external_scores[0], 3) if result.external_scores else 0,
+                    "correlation": round(result.correlation, 3),
+                    "bias": round(result.bias, 3),
+                    "drift_detected": result.drift_detected,
+                    "drift_severity": result.drift_severity,
+                    "duration_ms": result.duration_ms,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def calibration_history(agent_id: str = "", limit: int = 20) -> str:
+        """Get calibration history for an agent.
+
+        Shows recent calibration runs with scores and drift status.
+
+        Args:
+            agent_id: Specific agent (empty for all)
+            limit: Maximum records to return
+        """
+        try:
+            query = """
+                SELECT
+                    id, agent_id, version_id, objective_name,
+                    provider, model_id,
+                    local_score, calibration_score, delta,
+                    drift_detected, drift_magnitude,
+                    created_at, latency_ms
+                FROM evolution_calibrations
+            """
+            if agent_id:
+                query += f" WHERE agent_id = '{agent_id}'"
+            query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+            from .storage.database import _get_pool
+
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query)
+
+            results = []
+            for row in rows:
+                results.append({
+                    "id": row["id"],
+                    "agent_id": row["agent_id"],
+                    "objective": row["objective_name"],
+                    "provider": row["provider"],
+                    "local_score": round(row["local_score"], 3),
+                    "calibration_score": round(row["calibration_score"], 3),
+                    "delta": round(row["delta"], 3),
+                    "drift_detected": row["drift_detected"],
+                    "created_at": row["created_at"].isoformat(),
+                })
+
+            return json.dumps({"calibrations": results}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def list_objectives() -> str:
+        """List available RASE objectives in the KB.
+
+        Returns all objectives with their gates and priority.
+        """
+        try:
+            from pathlib import Path
+            from .rase.domains.kb import Objective
+
+            kb_root = Path(KB_ROOT)
+            objectives_dir = kb_root / "current" / "objectives"
+
+            objectives = []
+            for obj_file in objectives_dir.glob("*.md"):
+                if obj_file.name.startswith("."):
+                    continue
+                try:
+                    rel_path = obj_file.relative_to(kb_root)
+                    obj = Objective.from_file(str(rel_path), kb_root=str(kb_root))
+                    objectives.append({
+                        "name": obj.name,
+                        "description": obj.frontmatter.description,
+                        "priority": obj.frontmatter.priority,
+                        "gates": len(obj.gates),
+                        "gate_names": [g.name for g in obj.gates],
+                        "path": str(rel_path),
+                    })
+                except Exception:
+                    pass
+
+            return json.dumps(
+                {"objectives": objectives, "total": len(objectives)},
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def verification_history(
+        objective_name: str = "",
+        limit: int = 20,
+    ) -> str:
+        """Get verification run history.
+
+        Shows recent verification runs with verdicts and accuracy.
+
+        Args:
+            objective_name: Filter by objective (empty for all)
+            limit: Maximum records to return
+        """
+        try:
+            query = """
+                SELECT
+                    run_id, objective_name, domain,
+                    document_path, verdict, accuracy, reward,
+                    gates_total, gates_passed,
+                    thread_id, started_at, duration_ms
+                FROM objective_verifications
+            """
+            if objective_name:
+                query += f" WHERE objective_name = '{objective_name}'"
+            query += f" ORDER BY started_at DESC LIMIT {limit}"
+
+            from .storage.database import _get_pool
+
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query)
+
+            results = []
+            for row in rows:
+                results.append({
+                    "run_id": row["run_id"],
+                    "objective": row["objective_name"],
+                    "document": row["document_path"],
+                    "verdict": row["verdict"],
+                    "accuracy": round(row["accuracy"], 3),
+                    "reward": round(row["reward"], 3),
+                    "gates": f"{row['gates_passed']}/{row['gates_total']}",
+                    "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                })
+
+            return json.dumps({"verifications": results}, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

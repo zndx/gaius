@@ -26,6 +26,7 @@ from gaius.hx.tables import RAW_CONTENT_SCHEMA, create_raw_content_table
 from gaius.hx.writer import IcebergContentStore
 from gaius.hx.reader import IcebergContentReader
 from gaius.hx.exchange import ExchangeCapture, ExchangeRecord, get_exchange_capture
+from gaius.hx.evidence import EvidenceCapture, EvidenceRecord, get_evidence_capture
 
 __all__ = [
     # Config
@@ -47,4 +48,8 @@ __all__ = [
     "ExchangeCapture",
     "ExchangeRecord",
     "get_exchange_capture",
+    # Evidence Capture (RASE)
+    "EvidenceCapture",
+    "EvidenceRecord",
+    "get_evidence_capture",
 ]

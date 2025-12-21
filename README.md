@@ -10,6 +10,14 @@ Gaius renders knowledge bases and document collections as spatial layouts, using
 
 Named after Gaius Plinius Secundus (Pliny the Elder).
 
+## Philosophy
+
+The Gaius Project deliberately supports continuous agent collaboration at every level. Dynamic agent interaction spans all components: from knowledge base analysis with local SLM swarms, to operations-oriented agents powered by special purpose models (Orchestrator-8B, Magma-8B), to periodic content-informed reasoning and reflection.
+
+This extends to long-term codebase development itself, in collaboration with Claude Code. This is a deliberate departure from the traditional paradigm where software is developed to a point release, then packaged for end users. Gaius is intended to be cloned, not packaged—engineered to provide a foundation for agent collaboration in any knowledge domain, such that the codebase and model suite can be adaptively co-developed *in situ* through Rapid Agent Systems Engineering (RASE).
+
+Central to RASE is *intrinsic verifiability*: the operational environment itself serves as the verification oracle, enabling autonomous capability development without external labeling dependencies.
+
 ## Prerequisites
 
 - Python 3.12+

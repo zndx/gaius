@@ -267,6 +267,14 @@ class HealthChecker:
                 description="Check capability-based routing quality",
                 check_fn="_check_routing_quality",
             ),
+            # RASE intrinsic verification checks
+            HealthCheck(
+                id="rase_objectives",
+                name="RASE Objectives",
+                category="rase",
+                description="Check KB objectives and intrinsic verification components",
+                check_fn="_check_rase_objectives",
+            ),
         ]
 
     async def run_all(self) -> HealthReport:
@@ -1631,6 +1639,121 @@ class HealthChecker:
                 name="Model Routing",
                 status=CheckStatus.WARN,
                 message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_rase_objectives(self) -> CheckResult:
+        """Check RASE intrinsic verification components.
+
+        Validates:
+        - KB objectives directory exists and has objectives
+        - KBOracle can be instantiated
+        - Evidence capture is available
+        - DaemonOracle is functional
+        """
+        start_time = time.time()
+
+        try:
+            from pathlib import Path
+
+            kb_root = str(self.kb_root)
+            objectives_dir = Path(kb_root) / "current" / "objectives"
+            issues = []
+            details = {}
+
+            # Check objectives directory
+            if not objectives_dir.exists():
+                return CheckResult(
+                    name="RASE Objectives",
+                    status=CheckStatus.WARN,
+                    message="Objectives directory not found",
+                    details={"path": str(objectives_dir)},
+                    suggestion="Run: /health fix rase",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # List objectives
+            objectives = list(objectives_dir.glob("*.md"))
+            details["objectives_count"] = len(objectives)
+            details["objectives"] = [o.stem for o in objectives]
+
+            if len(objectives) == 0:
+                issues.append("No objectives defined")
+
+            # Test KB domain imports
+            try:
+                from gaius.rase.domains.kb import KBState, KBOracle, Objective
+
+                details["kb_imports"] = "ok"
+
+                # Test KBState capture
+                state = KBState.capture(kb_root, paths=None)
+                details["kb_state_docs"] = len(state.documents)
+
+                # Test KBOracle creation
+                oracle = KBOracle(kb_root=kb_root, use_minio=False)
+                details["kb_oracle"] = "ok"
+
+            except ImportError as e:
+                issues.append(f"KB domain import failed: {e}")
+                details["kb_imports"] = str(e)
+            except Exception as e:
+                issues.append(f"KB component error: {e}")
+                details["kb_error"] = str(e)
+
+            # Test evolution daemon components
+            try:
+                from gaius.agents.evolution import (
+                    get_daemon_oracle,
+                    get_objective_generator,
+                    get_calibration_oracle,
+                )
+
+                details["evolution_imports"] = "ok"
+
+            except ImportError as e:
+                issues.append(f"Evolution import failed: {e}")
+                details["evolution_imports"] = str(e)
+
+            # Test evidence capture
+            try:
+                from gaius.hx import get_evidence_capture
+
+                capture = get_evidence_capture()
+                details["evidence_capture"] = "ok"
+
+            except ImportError as e:
+                issues.append(f"Evidence capture import failed: {e}")
+                details["evidence_imports"] = str(e)
+            except Exception as e:
+                # Non-critical - MinIO might not be available
+                details["evidence_capture"] = f"warn: {e}"
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            if issues:
+                return CheckResult(
+                    name="RASE Objectives",
+                    status=CheckStatus.WARN,
+                    message=f"{len(issues)} issue(s): {issues[0][:50]}",
+                    details=details,
+                    suggestion="Run: /health fix rase",
+                    duration_ms=duration_ms,
+                )
+
+            return CheckResult(
+                name="RASE Objectives",
+                status=CheckStatus.PASS,
+                message=f"{len(objectives)} objectives, components OK",
+                details=details,
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="RASE Objectives",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+                suggestion="Run: /health fix rase",
             )
 
     # =========================================================================

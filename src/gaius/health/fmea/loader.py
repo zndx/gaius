@@ -50,6 +50,17 @@ HEALTH_CHECK_TO_FMEA: dict[str, str] = {
     "disk_space": "RC_004",
     "scheduler_queue": "RC_001",
     "xai_budget": "RC_003",
+
+    # RASE (Intrinsic Verification)
+    "kb_oracle_state": "RASE_001",
+    "kb_objective_loading": "RASE_002",
+    "kb_verification_gates": "RASE_003",
+    "evidence_capture": "RASE_004",
+    "evidence_lineage": "RASE_005",
+    "calibration_drift": "RASE_006",
+    "calibration_provider": "RASE_007",
+    "daemon_oracle_scoring": "RASE_008",
+    "objective_task_generation": "RASE_009",
 }
 
 # Reverse mapping for lookup

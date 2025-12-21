@@ -872,6 +872,232 @@ else:
         return actions
 
 
+class RASEFixStrategy(ServiceFixStrategy):
+    """Fix strategy for RASE intrinsic verification components.
+
+    Handles issues with:
+    - KB Oracle state and objective loading
+    - Evidence capture to HX Iceberg storage
+    - Calibration loop with Cerebras/XAI
+    - Daemon Oracle scoring
+
+    Guru Meditation: #RASE.0000000X
+    """
+
+    def __init__(self):
+        super().__init__("rase")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix RASE component issues."""
+        actions = []
+
+        # Step 1: Validate KB objectives directory exists
+        actions.append(
+            RemediationAction(
+                name="Validate KB objectives",
+                description="Check objectives directory and validate objective files",
+                code='''
+import os
+from pathlib import Path
+
+kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+objectives_dir = Path(kb_root) / "current" / "objectives"
+
+print(f"Checking objectives directory: {objectives_dir}")
+
+if not objectives_dir.exists():
+    print(f"Creating objectives directory: {objectives_dir}")
+    objectives_dir.mkdir(parents=True, exist_ok=True)
+    print("✓ Directory created")
+else:
+    print(f"✓ Directory exists")
+
+# List objectives
+objectives = list(objectives_dir.glob("*.md"))
+print(f"Found {len(objectives)} objective files:")
+for obj in objectives:
+    print(f"  - {obj.name}")
+
+if not objectives:
+    print("⚠ No objectives found. Create objectives in current/objectives/")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=10,
+            )
+        )
+
+        # Step 2: Test KB Oracle initialization
+        actions.append(
+            RemediationAction(
+                name="Test KB Oracle",
+                description="Initialize and test KBOracle functionality",
+                code='''
+import asyncio
+import os
+
+async def test_oracle():
+    from gaius.rase.domains.kb import KBOracle, KBState
+
+    kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+    print(f"Testing KBOracle with kb_root={kb_root}")
+
+    # Test state capture
+    try:
+        state = KBState.capture(kb_root)
+        print(f"✓ KBState captured: {len(state.documents)} documents")
+        if state.is_stale():
+            print("⚠ State is stale, will refresh on next verification")
+    except Exception as e:
+        print(f"✗ KBState capture failed: {e}")
+        return False
+
+    # Test oracle creation
+    try:
+        oracle = KBOracle(kb_root=kb_root)
+        print(f"✓ KBOracle created")
+    except Exception as e:
+        print(f"✗ KBOracle creation failed: {e}")
+        return False
+
+    return True
+
+result = asyncio.run(test_oracle())
+print(f"\\nOracle test: {'PASS' if result else 'FAIL'}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 3: Test HX evidence capture
+        actions.append(
+            RemediationAction(
+                name="Test evidence capture",
+                description="Verify HX Iceberg evidence storage is accessible",
+                code='''
+import asyncio
+
+async def test_evidence():
+    try:
+        from gaius.hx import get_evidence_capture
+
+        capture = get_evidence_capture()
+        status = capture.get_status()
+        print(f"✓ EvidenceCapture singleton: {type(capture).__name__}")
+        print(f"  - enabled: {status['enabled']}")
+        print(f"  - namespace: {status['namespace']}")
+        print(f"  - table: {status['table_name']}")
+        print(f"  - kb_root: {status['kb_root']}")
+
+        # Test MinIO connectivity
+        from gaius.storage.minio_client import get_minio_client
+        try:
+            client = get_minio_client()
+            buckets = client.list_buckets()
+            print(f"✓ MinIO connected: {len(buckets)} buckets")
+        except Exception as e:
+            print(f"⚠ MinIO check failed (may not be critical): {e}")
+
+        return True
+    except Exception as e:
+        print(f"✗ Evidence capture test failed: {e}")
+        return False
+
+result = asyncio.run(test_evidence())
+print(f"\\nEvidence test: {'PASS' if result else 'FAIL'}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        # Step 4: Reset RASE singletons
+        actions.append(
+            RemediationAction(
+                name="Reset RASE singletons",
+                description="Clear cached RASE component instances",
+                code='''
+print("Resetting RASE singletons...")
+
+# Reset daemon oracle
+try:
+    from gaius.agents.evolution import daemon_oracle
+    daemon_oracle._daemon_oracle = None
+    print("✓ DaemonOracle singleton reset")
+except Exception as e:
+    print(f"⚠ DaemonOracle reset: {e}")
+
+# Reset objective generator
+try:
+    from gaius.agents.evolution import objective_generator
+    objective_generator._generator = None
+    print("✓ ObjectiveTaskGenerator singleton reset")
+except Exception as e:
+    print(f"⚠ ObjectiveTaskGenerator reset: {e}")
+
+# Reset calibration oracle
+try:
+    from gaius.agents.evolution import calibration
+    calibration._calibration_oracle = None
+    print("✓ CalibrationOracle singleton reset")
+except Exception as e:
+    print(f"⚠ CalibrationOracle reset: {e}")
+
+# Reset KB oracle (in domains)
+try:
+    from gaius.rase.domains.kb import oracle
+    if hasattr(oracle, '_kb_oracle'):
+        oracle._kb_oracle = None
+        print("✓ KBOracle singleton reset")
+except Exception as e:
+    print(f"⚠ KBOracle reset: {e}")
+
+print("\\nRASE singletons reset complete")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=10,
+            )
+        )
+
+        # Step 5: Verify calibration providers
+        actions.append(
+            RemediationAction(
+                name="Check calibration providers",
+                description="Verify Cerebras and XAI API keys are configured",
+                code='''
+import os
+
+print("Checking calibration provider configuration...")
+
+cerebras_key = os.environ.get("CEREBRAS_API_KEY", "")
+xai_key = os.environ.get("XAI_API_KEY", "")
+
+if cerebras_key:
+    print(f"✓ CEREBRAS_API_KEY configured ({len(cerebras_key)} chars)")
+else:
+    print("⚠ CEREBRAS_API_KEY not set (calibration will fall back to XAI)")
+
+if xai_key:
+    print(f"✓ XAI_API_KEY configured ({len(xai_key)} chars)")
+else:
+    print("⚠ XAI_API_KEY not set (calibration may not work)")
+
+if not cerebras_key and not xai_key:
+    print("\\n✗ No calibration providers configured!")
+    print("  Set CEREBRAS_API_KEY or XAI_API_KEY in environment")
+else:
+    print("\\n✓ At least one calibration provider available")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=5,
+            )
+        )
+
+        return actions
+
+
 # Service registry - maps service names to strategies
 SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "engine": EngineFixStrategy(),
@@ -891,6 +1117,10 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "dataset": DatasetFixStrategy(),
     "datasetservice": DatasetFixStrategy(),  # Alias
     "nifi": NiFiFixStrategy(),
+    "rase": RASEFixStrategy(),
+    "kb_oracle": RASEFixStrategy(),  # Alias
+    "intrinsic": RASEFixStrategy(),  # Alias
+    "objectives": RASEFixStrategy(),  # Alias
 }
 
 

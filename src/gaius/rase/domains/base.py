@@ -119,7 +119,7 @@ class DomainRegistry:
         This enables plugin-style domain registration.
         """
         # Known domains to discover
-        domain_names = ["nifi"]  # Add others as implemented
+        domain_names = ["nifi", "kb"]  # Add others as implemented
 
         for name in domain_names:
             try:
