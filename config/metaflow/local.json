@@ -1,6 +1,6 @@
 {
   "METAFLOW_DEFAULT_METADATA": "service",
-  "METAFLOW_SERVICE_URL": "http://localhost:8080",
+  "METAFLOW_SERVICE_URL": "http://localhost:9080",
   "METAFLOW_DEFAULT_DATASTORE": "s3",
   "METAFLOW_DATASTORE_SYSROOT_S3": "s3://metaflow-artifacts/metaflow",
   "METAFLOW_S3_ENDPOINT_URL": "http://localhost:9010",
