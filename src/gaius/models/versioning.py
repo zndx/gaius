@@ -51,6 +51,7 @@ class AgentConfig:
     # Task-specific
     task_type: str | None = None
     optillm_technique: str | None = None
+    technique_params: dict[str, Any] = field(default_factory=dict)  # e.g., {"n": 5} for BON
 
     # Metadata
     description: str = ""
@@ -68,6 +69,7 @@ class AgentConfig:
             "presence_penalty": self.presence_penalty,
             "task_type": self.task_type,
             "optillm_technique": self.optillm_technique,
+            "technique_params": self.technique_params,
             "description": self.description,
             "tags": self.tags,
         }
@@ -85,6 +87,7 @@ class AgentConfig:
             presence_penalty=data.get("presence_penalty", 0.0),
             task_type=data.get("task_type"),
             optillm_technique=data.get("optillm_technique"),
+            technique_params=data.get("technique_params", {}),
             description=data.get("description", ""),
             tags=data.get("tags", []),
         )

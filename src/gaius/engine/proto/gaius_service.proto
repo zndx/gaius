@@ -902,6 +902,51 @@ message LineageEdge {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// MetaAgent Messages (Multi-Agent Analytics)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// MetaAgent query request - natural language query across data domains
+message MetaAgentQueryRequest {
+  string query = 1;                   // Natural language question
+  bool include_dot = 2;               // Generate GraphViz DOT output
+  bool include_markdown = 3;          // Generate Markdown tables
+  repeated string domains = 4;        // Filter: lineage, ops, resources, topology
+  int32 max_agents = 5;               // Max parallel agents (default: 5)
+}
+
+// Streaming events during MetaAgent analysis
+message MetaAgentEvent {
+  enum Type {
+    AGENT_STARTED = 0;                // Agent began analysis
+    AGENT_QUERY = 1;                  // Agent generated query (Cypher or SQL)
+    AGENT_RESULT = 2;                 // Agent got query results
+    AGENT_COMPLETED = 3;              // Agent finished with insight
+    CORRELATION = 4;                  // Correlator synthesizing findings
+    COMPLETE = 5;                     // Final answer ready
+    ERROR = 6;                        // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string agent = 3;                   // Role name (LineageAnalyst, OpsAnalyst, etc.)
+  string domain = 4;                  // Data domain being queried
+  string message = 5;                 // Human-readable status
+  bytes data = 6;                     // JSON: {query, results, insight}
+}
+
+// MetaAgent query response - aggregated results from all agents
+message MetaAgentQueryResponse {
+  bool success = 1;
+  string answer = 2;                  // Natural language answer
+  string dot_graph = 3;               // GraphViz DOT visualization
+  repeated string markdown_tables = 4; // Per-domain tables
+  map<string, bytes> agent_insights = 5; // Role -> JSON {query, results, insight}
+  repeated string queries_executed = 6; // All Cypher/SQL queries run
+  int32 agents_used = 7;              // Number of agents that contributed
+  int32 duration_ms = 8;              // Total duration
+  string error = 9;                   // Error message if failed
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1007,6 +1052,12 @@ service GaiusService {
   rpc CancelDatasetJob(CancelDatasetJobRequest) returns (DatasetJobStatus);
   rpc DatasetProgressStream(GetDatasetJobRequest) returns (stream DatasetProgressEvent);
   rpc GetDatasetLineage(DatasetLineageRequest) returns (DatasetLineageResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MetaAgent (Multi-Agent Analytics)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc MetaAgentQuery(MetaAgentQueryRequest) returns (MetaAgentQueryResponse);
+  rpc MetaAgentQueryStream(MetaAgentQueryRequest) returns (stream MetaAgentEvent);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Streaming

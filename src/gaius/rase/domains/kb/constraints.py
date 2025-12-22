@@ -796,6 +796,188 @@ class NoHallucinations(Constraint[KBState]):
         )
 
 
+class SourceInSync(Constraint[KBState]):
+    """Verify KB resource is in sync with all upstream sources.
+
+    This is the unified "freshness" constraint that provides a single
+    boolean answer to "is this KB resource current?" regardless of
+    how many sources or what types they are.
+
+    The constraint:
+    1. Parses provenance from frontmatter
+    2. Checks each source for staleness (time-based)
+    3. Optionally checks upstream for changes (HTTP-based)
+
+    Attributes:
+        document_path: Path to document in KB
+        max_age_days: Maximum days since sync before considered stale
+        check_upstream: Whether to make HTTP requests to check upstream
+        require_hash: Whether content_hash must be present
+    """
+
+    document_path: str
+    max_age_days: int = 7
+    check_upstream: bool = False
+    require_hash: bool = False
+
+    @property
+    def name(self) -> str:
+        return f"SourceInSync({self.document_path})"
+
+    def evaluate(self, state: KBState) -> ConstraintResult:
+        from datetime import timedelta
+        from .provenance import KBResourceLineage
+
+        doc = state.get_document(self.document_path)
+
+        if doc is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Document not found: {self.document_path}",
+            )
+
+        # Parse lineage from frontmatter
+        lineage = KBResourceLineage.from_frontmatter(
+            self.document_path,
+            doc.frontmatter,
+        )
+
+        if not lineage.sources:
+            # No provenance metadata - can't verify sync
+            if self.require_hash:
+                return ConstraintResult.failure(
+                    self.name,
+                    "No provenance metadata found (missing source info in frontmatter)",
+                    {"document_path": self.document_path},
+                )
+            return ConstraintResult.success(
+                self.name,
+                "No provenance metadata - assuming fresh (manual/local content)",
+            )
+
+        # Check time-based staleness
+        max_age = timedelta(days=self.max_age_days)
+        stale_sources = []
+        fresh_sources = []
+
+        for source in lineage.sources:
+            if source.is_stale(max_age):
+                stale_sources.append({
+                    "uri": source.source_uri,
+                    "fetched_at": source.fetched_at.isoformat(),
+                    "age_days": (state.captured_at - source.fetched_at).days,
+                })
+            else:
+                fresh_sources.append(source.source_uri)
+
+        if stale_sources:
+            return ConstraintResult.failure(
+                self.name,
+                f"{len(stale_sources)} source(s) stale (>{self.max_age_days} days old)",
+                {
+                    "stale_sources": stale_sources,
+                    "max_age_days": self.max_age_days,
+                },
+            )
+
+        # Check hash requirement
+        if self.require_hash:
+            sources_without_hash = [
+                s.source_uri for s in lineage.sources if not s.content_hash
+            ]
+            if sources_without_hash:
+                return ConstraintResult.failure(
+                    self.name,
+                    f"{len(sources_without_hash)} source(s) missing content hash",
+                    {"sources_without_hash": sources_without_hash},
+                )
+
+        # Note: check_upstream=True would require async HTTP requests
+        # which we can't do in synchronous constraint evaluation.
+        # That check should be done externally and results cached.
+
+        source_count = len(lineage.sources)
+        version_info = ""
+        if lineage.sources and lineage.sources[0].upstream_version:
+            version_info = f" (version {lineage.sources[0].upstream_version})"
+
+        return ConstraintResult.success(
+            self.name,
+            f"All {source_count} source(s) in sync{version_info}",
+        )
+
+
+class ProvenanceComplete(Constraint[KBState]):
+    """Verify document has complete provenance metadata.
+
+    Ensures all required lineage fields are present for audit trail.
+
+    Attributes:
+        document_path: Path to document in KB
+        require_transform_chain: Whether transform history is required
+        require_version: Whether upstream version is required
+    """
+
+    document_path: str
+    require_transform_chain: bool = False
+    require_version: bool = False
+
+    @property
+    def name(self) -> str:
+        return f"ProvenanceComplete({self.document_path})"
+
+    def evaluate(self, state: KBState) -> ConstraintResult:
+        from .provenance import KBResourceLineage
+
+        doc = state.get_document(self.document_path)
+
+        if doc is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Document not found: {self.document_path}",
+            )
+
+        lineage = KBResourceLineage.from_frontmatter(
+            self.document_path,
+            doc.frontmatter,
+        )
+
+        errors = []
+
+        if not lineage.sources:
+            errors.append("No source information")
+        else:
+            for i, source in enumerate(lineage.sources):
+                if not source.content_hash:
+                    errors.append(f"Source {i+1} missing content_hash")
+                if self.require_version and not source.upstream_version:
+                    errors.append(f"Source {i+1} missing upstream_version")
+
+        if self.require_transform_chain and not lineage.transforms:
+            errors.append("Transform chain required but missing")
+
+        if errors:
+            return ConstraintResult.failure(
+                self.name,
+                f"Incomplete provenance: {'; '.join(errors)}",
+                {"errors": errors},
+            )
+
+        completeness = []
+        for source in lineage.sources:
+            fields = ["uri", "hash"]
+            if source.upstream_version:
+                fields.append("version")
+            if source.etag:
+                fields.append("etag")
+            completeness.append(f"{len(fields)} fields")
+
+        return ConstraintResult.success(
+            self.name,
+            f"Provenance complete ({len(lineage.sources)} sources, {len(lineage.transforms)} transforms)",
+        )
+
+
 __all__ = [
     "Constraint",
     "DocumentParses",
@@ -814,4 +996,7 @@ __all__ = [
     "ClaimsIdentified",
     "ClaimsGrounded",
     "NoHallucinations",
+    # Provenance/sync constraints
+    "SourceInSync",
+    "ProvenanceComplete",
 ]

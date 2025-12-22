@@ -52,6 +52,7 @@ dependencies = [
     "kaleido>=1.2.0",
     "pydantic>=2.12.5",
     "ty>=0.0.5",
+    "dspy>=3.0.4",
 ]
 
 [project.optional-dependencies]

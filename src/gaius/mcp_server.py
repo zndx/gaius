@@ -699,6 +699,137 @@ def create_server() -> "FastMCP":
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    @server.tool()
+    async def lineage_cypher(cypher: str, limit: int = 100) -> str:
+        """Execute a Cypher query on the lineage graph.
+
+        Enables code agents to write and execute graph queries for:
+        - Tracing KB resource provenance to original sources
+        - Understanding process dependencies
+        - Impact analysis for content changes
+        - Finding stale content by graph traversal
+
+        The graph follows OpenLineage standard with these elements:
+
+        Vertex Labels:
+        - Dataset: {dataset_id, namespace, name} - Data sources/sinks
+        - Job: {job_id, namespace, name} - Processing definitions
+        - Run: {run_id, state, event_time, job_namespace, job_name} - Executions
+
+        Edge Labels:
+        - INPUT_TO: Dataset consumed by Run
+        - OUTPUTS: Run produced Dataset
+        - EXECUTES: Job spawned Run
+        - PARENT: Run is child of another Run
+
+        Example queries:
+
+        # Count vertices by label
+        MATCH (n) RETURN labels(n)[0] as label, count(n) as cnt
+
+        # Find KB files from arxiv source
+        MATCH (s:Dataset)-[:INPUT_TO]->(:Run)-[:OUTPUTS]->(kb:Dataset)
+        WHERE s.namespace = 'gaius.source' AND s.name STARTS WITH 'arxiv:'
+        RETURN s.name as source, kb.name as kb_path
+
+        # Trace upstream sources for a KB file
+        MATCH path = (src:Dataset)-[:INPUT_TO|OUTPUTS*1..5]->(target:Dataset)
+        WHERE target.namespace = 'gaius.kb'
+          AND target.name CONTAINS 'attention_is_all_you_need'
+        RETURN src.namespace, src.name
+
+        Args:
+            cypher: Cypher query string (read-only - MATCH only)
+            limit: Max rows to return (safety limit, default 100)
+        """
+        import re
+
+        # Security: only allow read queries
+        cypher_upper = cypher.upper().strip()
+        disallowed = ["CREATE", "DELETE", "REMOVE", "SET", "MERGE", "DROP", "DETACH"]
+        for keyword in disallowed:
+            if re.search(rf'\b{keyword}\b', cypher_upper):
+                return json.dumps({
+                    "error": f"Write operations not allowed. Found: {keyword}",
+                    "hint": "Only MATCH/RETURN queries are permitted",
+                })
+
+        try:
+            import asyncpg
+            from gaius.core.config import get_config
+
+            config = get_config()
+            conn = await asyncpg.connect(config.database.url)
+
+            try:
+                # Set up AGE
+                await conn.execute("SET search_path = ag_catalog, public")
+
+                # Wrap cypher in SELECT FROM cypher()
+                # AGE requires declaring return types, so we use agtype
+                # Count columns in RETURN clause to determine result shape
+                return_match = re.search(r'\bRETURN\s+(.+?)(?:\s+ORDER\s|\s+LIMIT\s|$)', cypher, re.IGNORECASE | re.DOTALL)
+                if not return_match:
+                    return json.dumps({
+                        "error": "Query must have a RETURN clause",
+                        "hint": "Example: MATCH (n) RETURN n.name, n.namespace",
+                    })
+
+                return_clause = return_match.group(1).strip()
+                # Count commas to estimate column count (rough heuristic)
+                # This won't be perfect but AGE allows extra columns
+                col_count = return_clause.count(',') + 1
+
+                # Build column declarations
+                col_decls = ", ".join([f"c{i} agtype" for i in range(col_count)])
+
+                # Inject LIMIT if not present
+                if "LIMIT" not in cypher_upper:
+                    cypher = f"{cypher.rstrip().rstrip(';')} LIMIT {limit}"
+
+                # Execute via AGE cypher() function
+                age_query = f"""
+                    SELECT * FROM cypher('gaius_hx', $cypher$
+                        {cypher}
+                    $cypher$) AS ({col_decls});
+                """
+
+                rows = await conn.fetch(age_query)
+
+                # Parse results
+                results = []
+                for row in rows:
+                    row_data = {}
+                    for i, val in enumerate(row.values()):
+                        if val is not None:
+                            # AGE returns JSON strings for agtype
+                            try:
+                                import json as json_mod
+                                parsed = json_mod.loads(str(val))
+                                row_data[f"c{i}"] = parsed
+                            except (json.JSONDecodeError, TypeError):
+                                row_data[f"c{i}"] = str(val)
+                        else:
+                            row_data[f"c{i}"] = None
+                    results.append(row_data)
+
+                return json.dumps({
+                    "query": cypher,
+                    "row_count": len(results),
+                    "results": results,
+                }, indent=2)
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "hint": "Check Cypher syntax. AGE uses openCypher with some limitations.",
+            }, indent=2)
+
     # --- Cloudera Documentation Sync ---
 
     @server.tool()
@@ -2104,6 +2235,73 @@ Domain: {domain or 'general'}
                     "tokens_used": total_tokens,
                     "latency_ms": total_latency,
                     "saved_to": saved_path,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- MetaAgent Operations ---
+
+    @server.tool()
+    async def metaagent_query(
+        query: str,
+        domains: str = "",
+        include_dot: bool = True,
+        include_markdown: bool = True,
+    ) -> str:
+        """Run multi-agent analytics query.
+
+        MetaAgent coordinates specialist agents to answer natural language
+        questions by correlating data from multiple sources:
+        - Lineage: AGE graph for data provenance (Cypher queries)
+        - Operations: Flow runs, agent performance (SQL on meta.flow_runs)
+        - Resources: GPU utilization, inference throughput (SQL on meta.*)
+        - Topology: Document clusters, semantic regions (SQL on meta.kb_topology)
+
+        Args:
+            query: Natural language question (e.g., "Why are arxiv flows slow?")
+            domains: Comma-separated filter (lineage,ops,resources,topology) - empty for all
+            include_dot: Generate GraphViz DOT output for visualization
+            include_markdown: Generate Markdown tables for evidence
+
+        Returns:
+            JSON with answer, evidence, DOT graph, and agent insights
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps(
+                    {"error": "Gaius engine not running. Start with: devenv up -d"},
+                    indent=2,
+                )
+
+            # Parse domains
+            domain_list = [d.strip() for d in domains.split(",") if d.strip()] if domains else []
+
+            # Call engine gRPC
+            result = await client.call(
+                "Gaius",
+                "MetaAgentQuery",
+                {
+                    "query": query,
+                    "domains": domain_list,
+                    "include_dot": include_dot,
+                    "include_markdown": include_markdown,
+                },
+            )
+
+            # Format response
+            return json.dumps(
+                {
+                    "success": result.get("success", False),
+                    "answer": result.get("answer", ""),
+                    "dot_graph": result.get("dot_graph", ""),
+                    "markdown_tables": result.get("markdown_tables", []),
+                    "queries_executed": result.get("queries_executed", []),
+                    "agents_used": result.get("agents_used", 0),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "error": result.get("error", ""),
                 },
                 indent=2,
             )

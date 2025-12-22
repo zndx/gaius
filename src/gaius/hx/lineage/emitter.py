@@ -180,8 +180,8 @@ class LineageEmitter:
         pool = await self._get_pool()
 
         async with pool.acquire() as conn:
-            # Load AGE and set search path
-            await conn.execute("LOAD 'age'")
+            # Set search path for AGE - LOAD 'age' requires superuser, but
+            # setting search_path is sufficient when AGE is installed as extension
             await conn.execute("SET search_path = ag_catalog, \"$user\", public")
 
             # Create Run vertex

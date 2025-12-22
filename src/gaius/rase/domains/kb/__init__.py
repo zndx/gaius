@@ -72,6 +72,26 @@ from .constraints import (
     ClaimsIdentified,
     ClaimsGrounded,
     NoHallucinations,
+    # Provenance/sync constraints
+    SourceInSync,
+    ProvenanceComplete,
+)
+
+# Content provenance tracking
+from .provenance import (
+    SourceType,
+    TransformType,
+    Transform,
+    ContentSource,
+    KBResourceLineage,
+    FreshnessCheck,
+    check_source_freshness,
+    compute_content_hash,
+    extract_version_from_url,
+    # Database integration
+    get_lineage_from_db,
+    get_sync_state_from_db,
+    record_lineage_event,
 )
 
 # Ontology constraints
@@ -140,6 +160,9 @@ DOMAIN_SPEC = DomainSpec(
         "ClaimsIdentified": ClaimsIdentified,
         "ClaimsGrounded": ClaimsGrounded,
         "NoHallucinations": NoHallucinations,
+        # Provenance/sync constraints
+        "SourceInSync": SourceInSync,
+        "ProvenanceComplete": ProvenanceComplete,
         # Ontology constraints
         "OntologyLoads": OntologyLoads,
         "HasComplexClasses": HasComplexClasses,
@@ -185,6 +208,23 @@ __all__ = [
     "ClaimsIdentified",
     "ClaimsGrounded",
     "NoHallucinations",
+    # Provenance/sync constraints
+    "SourceInSync",
+    "ProvenanceComplete",
+    # Provenance tracking
+    "SourceType",
+    "TransformType",
+    "Transform",
+    "ContentSource",
+    "KBResourceLineage",
+    "FreshnessCheck",
+    "check_source_freshness",
+    "compute_content_hash",
+    "extract_version_from_url",
+    # Database integration
+    "get_lineage_from_db",
+    "get_sync_state_from_db",
+    "record_lineage_event",
     # Ontology constraints
     "OntologyLoads",
     "HasComplexClasses",

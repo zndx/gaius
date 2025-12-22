@@ -131,6 +131,10 @@ from ...generated import (
     DatasetLineageResponse,
     LineageNode,
     LineageEdge,
+    # MetaAgent
+    MetaAgentQueryRequest,
+    MetaAgentQueryResponse,
+    MetaAgentEvent,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -2964,4 +2968,196 @@ class GaiusServicer(GaiusServiceServicer):
                 phase=InitProgress.Phase.ERROR,
                 progress=0.0,
                 message=str(e),
+            )
+
+    # ==============================================================
+    # MetaAgent (Multi-Agent Analytics)
+    # ==============================================================
+
+    async def MetaAgentQuery(
+        self,
+        request: MetaAgentQueryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetaAgentQueryResponse:
+        """Run multi-agent analytics query.
+
+        Coordinates multiple analyst agents to answer natural language
+        questions by correlating AGE lineage, meta schema operations,
+        resources, and topology data.
+
+        Uses KB semantic search for entity resolution, allowing natural
+        language references like "CSA docs" to resolve to actual KB paths.
+        """
+        start_time = time.time()
+        try:
+            from ....agents.metaagent_swarm import MetaAgentManager
+
+            # Create inference function using backend router
+            async def inference_fn(system: str, user: str, temperature: float = 0.7) -> str:
+                if self._services.backend_router:
+                    result = await self._services.backend_router.complete(
+                        prompt=user,
+                        agent_alias="orchestrator",  # Use orchestrator for multi-agent reasoning
+                        system_prompt=system,
+                        temperature=temperature,
+                        max_tokens=4096,
+                    )
+                    return result.content or ""
+                return ""
+
+            # Create search function for entity resolution
+            async def search_fn(query: str, limit: int = 10) -> list[dict]:
+                if self._services.embedding_service:
+                    try:
+                        results = await self._services.embedding_service.semantic_search(
+                            query=query,
+                            collection="kb",
+                            limit=limit,
+                        )
+                        return [
+                            {"path": r.path, "title": r.title, "score": r.score}
+                            for r in results
+                        ]
+                    except Exception as e:
+                        logger.warning(f"Search failed: {e}")
+                return []
+
+            metaagent = MetaAgentManager(
+                inference_fn=inference_fn,
+                search_fn=search_fn,
+            )
+
+            # Run analysis
+            domains = list(request.domains) if request.domains else None
+            result = await metaagent.analyze(
+                question=request.query,
+                domains=domains,
+                include_dot=request.include_dot,
+                include_markdown=request.include_markdown,
+            )
+
+            # Convert agent insights to bytes for transport
+            agent_insights_bytes: dict[str, bytes] = {}
+            for role_name, insight in result.agent_insights.items():
+                insight_data = {
+                    "role": insight.role.value,
+                    "reasoning": insight.reasoning,
+                    "query": insight.query,
+                    "query_type": insight.query_type,
+                    "results": insight.results,
+                    "insight": insight.insight,
+                    "error": insight.error,
+                    "duration_ms": insight.duration_ms,
+                }
+                agent_insights_bytes[role_name] = json.dumps(insight_data).encode()
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return MetaAgentQueryResponse(
+                success=result.succeeded,
+                answer=result.answer,
+                dot_graph=result.dot_graph,
+                markdown_tables=result.markdown_tables,
+                agent_insights=agent_insights_bytes,
+                queries_executed=result.queries_executed,
+                agents_used=len(result.agent_insights),
+                duration_ms=duration_ms,
+                error=result.error or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"MetaAgentQuery failed: {e}")
+            duration_ms = int((time.time() - start_time) * 1000)
+            return MetaAgentQueryResponse(
+                success=False,
+                error=f"MetaAgent query failed: {e}",
+                duration_ms=duration_ms,
+            )
+
+    async def MetaAgentQueryStream(
+        self,
+        request: MetaAgentQueryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[MetaAgentEvent]:
+        """Stream multi-agent analytics query with real-time progress.
+
+        Yields MetaAgentEvent messages as each analyst runs and the
+        Correlator synthesizes results.
+        """
+        try:
+            from ....agents.metaagent_swarm import (
+                MetaAgentManager,
+                MetaAgentEventType as LocalEventType,
+            )
+
+            # Create inference function using backend router
+            async def inference_fn(system: str, user: str, temperature: float = 0.7) -> str:
+                if self._services.backend_router:
+                    result = await self._services.backend_router.complete(
+                        prompt=user,
+                        agent_alias="orchestrator",  # Use orchestrator for multi-agent reasoning
+                        system_prompt=system,
+                        temperature=temperature,
+                        max_tokens=4096,
+                    )
+                    return result.content or ""
+                return ""
+
+            # Create search function for entity resolution
+            async def search_fn(query: str, limit: int = 10) -> list[dict]:
+                if self._services.embedding_service:
+                    try:
+                        results = await self._services.embedding_service.semantic_search(
+                            query=query,
+                            collection="kb",
+                            limit=limit,
+                        )
+                        return [
+                            {"path": r.path, "title": r.title, "score": r.score}
+                            for r in results
+                        ]
+                    except Exception as e:
+                        logger.warning(f"Search failed: {e}")
+                return []
+
+            metaagent = MetaAgentManager(
+                inference_fn=inference_fn,
+                search_fn=search_fn,
+            )
+
+            # Map local event type to proto event type
+            type_map = {
+                LocalEventType.AGENT_STARTED: MetaAgentEvent.Type.AGENT_STARTED,
+                LocalEventType.AGENT_QUERY: MetaAgentEvent.Type.AGENT_QUERY,
+                LocalEventType.AGENT_RESULT: MetaAgentEvent.Type.AGENT_RESULT,
+                LocalEventType.AGENT_COMPLETED: MetaAgentEvent.Type.AGENT_COMPLETED,
+                LocalEventType.CORRELATION: MetaAgentEvent.Type.CORRELATION,
+                LocalEventType.COMPLETE: MetaAgentEvent.Type.COMPLETE,
+                LocalEventType.ERROR: MetaAgentEvent.Type.ERROR,
+            }
+
+            # Stream analysis events
+            domains = list(request.domains) if request.domains else None
+            async for event in metaagent.analyze_streaming(
+                question=request.query,
+                domains=domains,
+                include_dot=request.include_dot,
+                include_markdown=request.include_markdown,
+            ):
+                proto_event = MetaAgentEvent(
+                    type=type_map.get(event.type, MetaAgentEvent.Type.ERROR),
+                    timestamp_ms=int(event.timestamp.timestamp() * 1000),
+                    agent=event.agent,
+                    domain=event.domain,
+                    message=event.message,
+                    data=json.dumps(event.data).encode() if event.data else b"",
+                )
+                yield proto_event
+
+        except Exception as e:
+            logger.exception(f"MetaAgentQueryStream failed: {e}")
+            yield MetaAgentEvent(
+                type=MetaAgentEvent.Type.ERROR,
+                timestamp_ms=int(time.time() * 1000),
+                message=f"MetaAgent stream failed: {e}",
             )

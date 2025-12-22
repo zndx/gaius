@@ -192,6 +192,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_submit(args))
                 elif command == "swarm":
                     result["data"] = self._run_async(self._cmd_swarm(args))
+                elif command == "meta":
+                    result["data"] = self._run_async(self._cmd_meta(args))
                 # GPU Orchestrator commands
                 elif command == "gpu" or command == "orch":
                     result["data"] = self._run_async(self._cmd_gpu(args))
@@ -3353,6 +3355,82 @@ Respond with:
 
         except ImportError as e:
             raise RuntimeError(f"Engine proxy not available: {e}")
+
+    async def _cmd_meta(self, args: str) -> dict:
+        """MetaAgent: Multi-agent analytics query.
+
+        Usage: /meta <question>
+
+        Coordinates specialist agents to answer natural language questions
+        by correlating data from multiple sources:
+        - Lineage: AGE graph for data provenance (Cypher)
+        - Operations: Flow runs, agent performance (SQL)
+        - Resources: GPU utilization, inference throughput (SQL)
+        - Topology: Document clusters, semantic regions (SQL)
+
+        Examples:
+            /meta Why are arxiv flows slow?
+            /meta What sources feed into the CSA docs?
+            /meta Which agents have the best performance?
+        """
+        if not args:
+            return {
+                "error": "Usage: /meta <question>",
+                "examples": [
+                    "/meta Why are arxiv flows slow?",
+                    "/meta What sources feed into the CSA docs?",
+                    "/meta Which agents have the best performance?",
+                ],
+            }
+
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            if not client:
+                raise RuntimeError("Gaius engine not running. Start with: devenv up -d")
+
+            result = await client.call(
+                "Gaius",
+                "MetaAgentQuery",
+                {
+                    "query": args,
+                    "include_dot": True,
+                    "include_markdown": True,
+                },
+            )
+
+            # Format output
+            output = {
+                "question": args,
+                "success": result.get("success", False),
+                "answer": result.get("answer", "No answer generated"),
+                "agents_used": result.get("agents_used", 0),
+                "duration_ms": result.get("duration_ms", 0),
+            }
+
+            # Include queries if available
+            queries = result.get("queries_executed", [])
+            if queries:
+                output["queries_executed"] = queries
+
+            # Include markdown tables if available
+            tables = result.get("markdown_tables", [])
+            if tables:
+                output["evidence_tables"] = len(tables)
+
+            # Include DOT graph size
+            dot_graph = result.get("dot_graph", "")
+            if dot_graph:
+                output["dot_graph_bytes"] = len(dot_graph)
+
+            if result.get("error"):
+                output["error"] = result["error"]
+
+            return output
+
+        except Exception as e:
+            raise RuntimeError(f"MetaAgent query failed: {e}")
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.

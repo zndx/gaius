@@ -254,6 +254,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.DatasetLineageRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.DatasetLineageResponse.FromString,
                 _registered_method=True)
+        self.MetaAgentQuery = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetaAgentQuery',
+                request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentQueryResponse.FromString,
+                _registered_method=True)
+        self.MetaAgentQueryStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/MetaAgentQueryStream',
+                request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentEvent.FromString,
+                _registered_method=True)
         self.HealthStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/HealthStream',
                 request_serializer=gaius__service__pb2.HealthStreamRequest.SerializeToString,
@@ -581,6 +591,21 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MetaAgentQuery(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        MetaAgent (Multi-Agent Analytics)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetaAgentQueryStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HealthStream(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Streaming
@@ -822,6 +847,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.GetDatasetLineage,
                     request_deserializer=gaius__service__pb2.DatasetLineageRequest.FromString,
                     response_serializer=gaius__service__pb2.DatasetLineageResponse.SerializeToString,
+            ),
+            'MetaAgentQuery': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetaAgentQuery,
+                    request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentQueryResponse.SerializeToString,
+            ),
+            'MetaAgentQueryStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.MetaAgentQueryStream,
+                    request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentEvent.SerializeToString,
             ),
             'HealthStream': grpc.unary_stream_rpc_method_handler(
                     servicer.HealthStream,
@@ -2004,6 +2039,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/GetDatasetLineage',
             gaius__service__pb2.DatasetLineageRequest.SerializeToString,
             gaius__service__pb2.DatasetLineageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentQuery(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentQuery',
+            gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentQueryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentQueryStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentQueryStream',
+            gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentEvent.FromString,
             options,
             channel_credentials,
             insecure,

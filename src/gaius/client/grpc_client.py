@@ -271,6 +271,8 @@ class GrpcEngineClient:
                 return await self._call_init(action, params, timeout)
             elif service == "Search":
                 return await self._call_search(action, params, timeout)
+            elif service == "Gaius":
+                return await self._call_gaius(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -791,6 +793,44 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Search action: {action}")
+
+    async def _call_gaius(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Gaius-specific service calls (MetaAgent, etc.)."""
+        from ..engine.generated import MetaAgentQueryRequest
+
+        if action == "MetaAgentQuery":
+            request = MetaAgentQueryRequest(
+                query=params.get("query", ""),
+                domains=params.get("domains", []),
+                include_dot=params.get("include_dot", True),
+                include_markdown=params.get("include_markdown", True),
+                max_agents=params.get("max_agents", 5),
+            )
+            response = await self._gaius_stub.MetaAgentQuery(request, timeout=timeout)
+
+            # Decode agent insights bytes
+            agent_insights = {}
+            for role_name, insight_bytes in response.agent_insights.items():
+                import json
+                try:
+                    agent_insights[role_name] = json.loads(insight_bytes.decode())
+                except Exception:
+                    agent_insights[role_name] = {}
+
+            return {
+                "success": response.success,
+                "answer": response.answer,
+                "dot_graph": response.dot_graph,
+                "markdown_tables": list(response.markdown_tables),
+                "agent_insights": agent_insights,
+                "queries_executed": list(response.queries_executed),
+                "agents_used": response.agents_used,
+                "duration_ms": response.duration_ms,
+                "error": response.error,
+            }
+
+        else:
+            raise ValueError(f"Unknown Gaius action: {action}")
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.

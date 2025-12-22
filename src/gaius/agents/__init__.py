@@ -30,6 +30,13 @@ from .daily_summary import (
     get_daily_summary_agent,
     generate_daily_summary,
 )
+from .metaagent_swarm import (
+    MetaAgentManager,
+    MetaAgentResult,
+    MetaAgentEvent,
+    MetaAgentEventType,
+    AnalystInsight,
+)
 
 # Lazy imports for optional modules
 def get_latent_memory():
@@ -68,4 +75,10 @@ __all__ = [
     "DailySummaryNote",
     "get_daily_summary_agent",
     "generate_daily_summary",
+    # MetaAgent
+    "MetaAgentManager",
+    "MetaAgentResult",
+    "MetaAgentEvent",
+    "MetaAgentEventType",
+    "AnalystInsight",
 ]

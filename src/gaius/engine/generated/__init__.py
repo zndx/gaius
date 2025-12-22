@@ -142,6 +142,10 @@ from .gaius_service_pb2 import (
     DatasetLineageResponse,
     LineageNode,
     LineageEdge,
+    # MetaAgent
+    MetaAgentQueryRequest,
+    MetaAgentQueryResponse,
+    MetaAgentEvent,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -277,6 +281,10 @@ __all__ = [
     "DatasetLineageResponse",
     "LineageNode",
     "LineageEdge",
+    # MetaAgent
+    "MetaAgentQueryRequest",
+    "MetaAgentQueryResponse",
+    "MetaAgentEvent",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",
