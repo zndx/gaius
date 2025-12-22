@@ -257,6 +257,9 @@ class GaiusCLI:
                 # Fetch paper shortcut (alias for /flow run docling)
                 elif command == "fetch":
                     result["data"] = self._run_async(self._cmd_fetch(args))
+                # Docs sync - Cloudera documentation ETL
+                elif command == "docs-sync":
+                    result["data"] = self._cmd_docs_sync(args)
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -298,10 +301,99 @@ class GaiusCLI:
         return {"position": self._coord_string(x, y), "x": x, "y": y}
 
     def _cmd_domain(self, args: str) -> dict:
-        """Set or get domain."""
+        """Set or get domain within current profile.
+
+        Usage:
+            /domain           - Show current domain, list available
+            /domain csa       - Set domain (profile unchanged)
+            /domain open      - Clear domain constraint
+
+        Domains are profile-scoped focus areas. Setting a domain:
+        - Filters searches to domain-specific KB paths
+        - Loads domain_text for agent prompting context
+        - Persists to database for session continuity
+        """
+        import asyncio
+
+        try:
+            from gaius.storage.profile_ops import (
+                list_domains,
+                set_active_domain,
+                get_profile_context,
+            )
+        except ImportError:
+            # Fall back to simple in-memory domain if DB not available
+            if args:
+                domain = args.strip().lower()
+                self.state.domain = None if domain == "open" else domain
+            return {"domain": self.state.domain, "profile": self.config.profile}
+
+        profile = self.config.profile
+
         if args:
-            self.state.domain = args
-        return {"domain": self.state.domain}
+            domain = args.strip().lower()
+
+            # "open" clears the domain constraint
+            if domain == "open":
+                self.state.domain = None
+                try:
+                    asyncio.get_event_loop().run_until_complete(
+                        set_active_domain(profile, None)
+                    )
+                except Exception:
+                    pass
+                return {
+                    "domain": None,
+                    "profile": profile,
+                    "message": "Domain constraint cleared",
+                }
+
+            # Set the new domain
+            self.state.domain = domain
+            try:
+                asyncio.get_event_loop().run_until_complete(
+                    set_active_domain(profile, domain)
+                )
+                # Get the domain context for display
+                context = asyncio.get_event_loop().run_until_complete(
+                    get_profile_context(profile, domain)
+                )
+                return {
+                    "domain": domain,
+                    "profile": profile,
+                    "domain_text": context.domain_text if context else None,
+                    "kb_prefixes": context.domain_prefixes if context else [],
+                }
+            except Exception as e:
+                return {
+                    "domain": domain,
+                    "profile": profile,
+                    "warning": f"Domain set locally but DB update failed: {e}",
+                }
+        else:
+            # List available domains for current profile
+            try:
+                domains = asyncio.get_event_loop().run_until_complete(
+                    list_domains(profile)
+                )
+                available = [
+                    {
+                        "name": d.name,
+                        "display_name": d.display_name,
+                        "is_active": d.is_active,
+                    }
+                    for d in domains
+                ]
+                return {
+                    "domain": self.state.domain,
+                    "profile": profile,
+                    "available_domains": available,
+                }
+            except Exception:
+                return {
+                    "domain": self.state.domain,
+                    "profile": profile,
+                }
 
     def _cmd_overlay(self, args: str) -> dict:
         """Set or cycle overlay mode."""
@@ -4769,15 +4861,40 @@ Respond with:
         """Set or get active profile.
 
         Usage:
-            /profile              - Show current profile
-            /profile cloudera     - Switch to cloudera profile
+            /profile              - Show current profile, list available
+            /profile cloudera     - Switch to cloudera profile (resets domain to 'open')
             /profile weathership  - Switch to weathership profile
+
+        Switching profiles:
+        - Loads profile-specific configuration
+        - Resets domain to 'open' (no domain constraint)
+        - Executes profile startup commands
+        - Loads profile_text for agent prompting context
         """
+        import asyncio
+
         if args:
             profile_name = args.strip().lower()
             try:
                 from .core.config import load_config
                 self.config = load_config(profile=profile_name)
+
+                # Reset domain to "open" when switching profiles
+                self.state.domain = None
+
+                # Try to reset domain in database
+                try:
+                    from gaius.storage.profile_ops import set_active_domain, get_profile_context
+                    asyncio.get_event_loop().run_until_complete(
+                        set_active_domain(profile_name, None)
+                    )
+                    # Get profile context for display
+                    context = asyncio.get_event_loop().run_until_complete(
+                        get_profile_context(profile_name, None)
+                    )
+                    profile_text = context.profile_text if context else None
+                except Exception:
+                    profile_text = None
 
                 # Execute startup commands for the new profile
                 startup_results = []
@@ -4790,16 +4907,231 @@ Respond with:
 
                 return {
                     "profile": self.config.profile,
+                    "domain": None,  # Reset to open
                     "switched": True,
+                    "profile_text": profile_text,
                     "startup_commands": startup_results,
                 }
             except Exception as e:
                 raise ValueError(f"Failed to load profile '{profile_name}': {e}")
         else:
+            # Show current profile and list available
+            try:
+                from gaius.storage.profile_ops import list_profiles, get_profile_context
+
+                profiles = asyncio.get_event_loop().run_until_complete(list_profiles())
+                available = [
+                    {
+                        "name": p.name,
+                        "description": p.description,
+                        "active": p.name == self.config.profile,
+                    }
+                    for p in profiles
+                ]
+
+                # Get current profile context
+                context = asyncio.get_event_loop().run_until_complete(
+                    get_profile_context(self.config.profile, self.state.domain)
+                )
+
+                return {
+                    "profile": self.config.profile,
+                    "domain": self.state.domain,
+                    "profile_text": context.profile_text if context else None,
+                    "available_profiles": available,
+                    "startup_commands": list(self.config.startup.commands),
+                }
+            except Exception:
+                return {
+                    "profile": self.config.profile,
+                    "domain": self.state.domain,
+                    "startup_commands": list(self.config.startup.commands),
+                }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Docs Sync - Cloudera Documentation ETL
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _cmd_docs_sync(self, args: str) -> dict:
+        """Sync Cloudera documentation from docs.cloudera.com to KB.
+
+        Usage:
+            /docs-sync                   - Show sync status for all products
+            /docs-sync status            - Show sync status for all products
+            /docs-sync csa               - Sync CSA (Cloudera Streaming Analytics) docs
+            /docs-sync csa-operator      - Sync CSA Operator docs
+            /docs-sync all               - Sync all configured products
+            /docs-sync csa --progress    - Sync with live Rich progress bar
+            /docs-sync progress          - Live progress bar (updates continuously)
+            /docs-sync progress --once   - Single progress snapshot
+
+        Downloads ZIP archives, extracts HTML pages, converts to markdown
+        using docling, and saves to KB with version metadata.
+
+        Products with ARCHIVE sources (ZIP downloads):
+        - csa: Cloudera Streaming Analytics (Flink, SSB)
+        - csa-operator: CSA Kubernetes Operator
+
+        Products with HTML sources (crawling, not yet implemented):
+        - kudu, impala, cfm, cdp
+        """
+        from pathlib import Path
+
+        args_str = args.strip() if args else ""
+
+        # Parse --progress flag
+        show_progress = "--progress" in args_str
+        args_lower = args_str.replace("--progress", "").strip().lower()
+
+        # Status subcommand
+        if not args_lower or args_lower == "status":
+            from gaius.flows.cloudera_docs.sources import list_sources, SourceType
+
+            sources = list_sources()
+            products = []
+            for s in sources:
+                products.append({
+                    "name": s.name,
+                    "display_name": s.display_name,
+                    "domain": s.domain,
+                    "version": s.version,
+                    "source_type": s.source_type.value,
+                    "kb_prefix": s.kb_prefix,
+                    "archive_url": s.archive_url,
+                    "syncable": s.source_type == SourceType.ARCHIVE and s.archive_url is not None,
+                })
+
             return {
-                "profile": self.config.profile,
-                "startup_commands": list(self.config.startup.commands),
+                "status": "ok",
+                "products": products,
+                "syncable_count": sum(1 for p in products if p["syncable"]),
             }
+
+        # Progress subcommand - live updating progress display (default behavior)
+        # Use "progress --once" for a single snapshot
+        if args_lower in ("progress", "watch") or args_lower.startswith("progress"):
+            from gaius.flows.cloudera_docs.progress import (
+                get_sync_progress,
+                watch_progress_rich,
+            )
+
+            # Check for --once flag for single snapshot
+            once_mode = "--once" in args_str
+
+            # JSON format always returns single snapshot
+            if self.format != "text":
+                progress = get_sync_progress()
+                if progress is None:
+                    return {"status": "idle", "message": "No sync in progress"}
+                return {"status": "ok", "progress": progress}
+
+            # Text format: continuous updates by default
+            if once_mode:
+                from gaius.flows.cloudera_docs.progress import format_progress_human
+                progress = get_sync_progress()
+                if progress is None:
+                    return {"status": "idle", "message": "No sync in progress"}
+                print(format_progress_human(progress), file=self.output)
+                return {}
+
+            # Default: live Rich progress bar until sync completes
+            watch_progress_rich()
+            return {}
+
+        # Sync all products
+        if args_lower == "all":
+            from gaius.flows.cloudera_docs.flow import sync_all_products
+
+            kb_root = Path(self.config.kb.root)
+            results = sync_all_products(kb_root=kb_root)
+
+            return {
+                "synced": len(results),
+                "results": [
+                    {
+                        "product": r.product,
+                        "success": r.success,
+                        "pages_extracted": r.pages_extracted,
+                        "pages_skipped": r.pages_skipped,
+                        "kb_prefix": r.kb_prefix,
+                        "version": r.version,
+                        "duration_seconds": r.duration_seconds,
+                        "error": r.error,
+                    }
+                    for r in results
+                ],
+            }
+
+        # Sync specific product
+        from gaius.flows.cloudera_docs.sources import get_source, list_sources, SourceType
+        from gaius.flows.cloudera_docs.flow import sync_product_smart
+
+        source = get_source(args_lower)
+        if not source:
+            available = [s.name for s in list_sources()]
+            raise ValueError(
+                f"Unknown product: {args_lower}\n"
+                f"Available: {', '.join(available)}"
+            )
+
+        if source.source_type != SourceType.ARCHIVE:
+            raise ValueError(
+                f"Product '{args_lower}' uses {source.source_type.value} source type.\n"
+                f"Only ARCHIVE sources are currently supported."
+            )
+
+        if not source.archive_url:
+            raise ValueError(f"Product '{args_lower}' has no archive_url configured.")
+
+        kb_root = Path(self.config.kb.root)
+
+        # If --progress flag and text format, run with Rich progress display
+        if show_progress and self.format == "text":
+            import threading
+            from gaius.flows.cloudera_docs.progress import watch_progress_rich
+
+            sync_result: list = []
+            sync_error: list = []
+
+            def run_sync() -> None:
+                try:
+                    res = sync_product_smart(source, kb_root)
+                    sync_result.append(res)
+                except Exception as e:
+                    sync_error.append(e)
+
+            # Start sync in background thread
+            sync_thread = threading.Thread(target=run_sync, daemon=True)
+            sync_thread.start()
+
+            # Show Rich progress (blocks until sync completes)
+            watch_progress_rich()
+
+            # Wait for sync to finish
+            sync_thread.join()
+
+            if sync_error:
+                raise sync_error[0]
+
+            if not sync_result:
+                return {"error": "Sync did not produce a result"}
+
+            result = sync_result[0]
+        else:
+            # Use smart sync which auto-selects parallel mode for PDF-heavy archives
+            result = sync_product_smart(source, kb_root)
+
+        return {
+            "product": result.product,
+            "success": result.success,
+            "pages_extracted": result.pages_extracted,
+            "pages_skipped": result.pages_skipped,
+            "archive_hash": result.archive_hash[:16] if result.archive_hash else None,
+            "kb_prefix": result.kb_prefix,
+            "version": result.version,
+            "duration_seconds": result.duration_seconds,
+            "error": result.error,
+        }
 
     # ─────────────────────────────────────────────────────────────────────
     # Project Notes with Bidirectional Linking

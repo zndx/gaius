@@ -47,6 +47,11 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 - list_flows: List available Metaflow pipelines
 - query_lineage: Query lineage graph for a KB entry
 
+**Cloudera Documentation Sync**
+- sync_cloudera_docs: Download and convert Cloudera PDF docs to markdown KB
+- list_cloudera_sources: List available Cloudera product documentation sources
+- cloudera_sync_status: Get current sync status and document counts
+
 **FMEA (Failure Mode and Effects Analysis)**
 - fmea_catalog: List failure modes with base RPN scores
 - fmea_calculate_rpn: Calculate RPN for a failure mode with context
@@ -689,6 +694,248 @@ def create_server() -> "FastMCP":
                     {"type": e.edge_type, "from": e.from_id, "to": e.to_id}
                     for e in path.edges
                 ],
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    # --- Cloudera Documentation Sync ---
+
+    @server.tool()
+    async def sync_cloudera_docs(
+        product: str = "all",
+        num_gpus: int = 4,
+    ) -> str:
+        """Sync Cloudera documentation archives to KB.
+
+        Downloads PDF archives from docs.cloudera.com, converts them to
+        markdown using docling (GPU-accelerated PDF parsing), and stores
+        in the KB under current/cloudera/docs/{product}/{version}/.
+
+        This is a long-running operation. For large archives like CSA
+        (~500 PDFs), expect 30-60 minutes depending on GPU availability.
+
+        Args:
+            product: Product to sync (csa, csa-operator, or "all" for all archive products)
+            num_gpus: Number of GPUs to use for parallel processing (default: 4)
+        """
+        import asyncio
+        import hashlib
+        from pathlib import Path
+        from datetime import datetime
+
+        try:
+            from gaius.flows.cloudera_docs.sources import PRODUCT_SOURCES, SourceType
+            from gaius.flows.cloudera_docs.flow import download_archive, extract_doc_files
+            from gaius.flows.cloudera_docs.parallel import ParallelDocProcessor
+
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+            kb_prefix_path = kb_root / "current" / "cloudera" / "docs"
+
+            # Determine which sources to sync
+            if product.lower() == "all":
+                sources = [s for s in PRODUCT_SOURCES.values() if s.source_type == SourceType.ARCHIVE]
+            else:
+                source = PRODUCT_SOURCES.get(product.lower())
+                if not source:
+                    available = [n for n, s in PRODUCT_SOURCES.items() if s.source_type == SourceType.ARCHIVE]
+                    return json.dumps({
+                        "error": f"Unknown product: {product}",
+                        "available_archive_products": available,
+                    }, indent=2)
+                if source.source_type != SourceType.ARCHIVE:
+                    return json.dumps({
+                        "error": f"Product {product} uses HTML source, not archive",
+                        "source_type": source.source_type.value,
+                    }, indent=2)
+                sources = [source]
+
+            results = {}
+            start_time = datetime.now()
+
+            for source in sources:
+                source_start = datetime.now()
+
+                # Download archive
+                try:
+                    archive_bytes = download_archive(source.archive_url)
+                    archive_hash = hashlib.sha256(archive_bytes).hexdigest()[:16]
+                except Exception as e:
+                    results[source.name] = {
+                        "status": "download_failed",
+                        "error": str(e),
+                    }
+                    continue
+
+                # Extract PDFs
+                doc_files = extract_doc_files(archive_bytes)
+                if not doc_files:
+                    results[source.name] = {"status": "no_pdfs"}
+                    continue
+
+                # Process documents with parallel GPU processor
+                processor = ParallelDocProcessor(
+                    workload_id=f"cloudera-docs-{source.name}-sync",
+                    product_name=source.name,
+                    num_gpus=num_gpus,
+                    preemptible=False,
+                )
+
+                # Use high-numbered GPUs (avoid reasoning model on 0-3)
+                gpu_offset = 4
+                gpus = list(range(gpu_offset, gpu_offset + num_gpus))
+
+                def gpu_allocation():
+                    return True, gpus
+                processor.request_gpu_allocation = gpu_allocation
+
+                result = processor.process_documents(
+                    doc_files=doc_files,
+                    kb_prefix_path=str(kb_prefix_path),
+                    archive_name=source.name,
+                    archive_hash=archive_hash,
+                    exclude_check=source.should_exclude,
+                )
+
+                elapsed = (datetime.now() - source_start).total_seconds()
+                results[source.name] = {
+                    "status": "completed",
+                    "archive_url": source.archive_url,
+                    "archive_hash": archive_hash,
+                    "total_pdfs": len(doc_files),
+                    "completed": result["completed"],
+                    "failed": result["failed"],
+                    "skipped": result.get("skipped", 0),
+                    "elapsed_s": elapsed,
+                    "kb_prefix": str(kb_prefix_path / source.name),
+                }
+
+            total_elapsed = (datetime.now() - start_time).total_seconds()
+
+            return json.dumps({
+                "success": True,
+                "products_synced": list(results.keys()),
+                "total_elapsed_s": total_elapsed,
+                "results": results,
+            }, indent=2)
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }, indent=2)
+
+    @server.tool()
+    async def list_cloudera_sources() -> str:
+        """List available Cloudera documentation sources.
+
+        Shows all configured product sources with their types,
+        versions, and archive URLs.
+        """
+        try:
+            from gaius.flows.cloudera_docs.sources import PRODUCT_SOURCES
+
+            sources = []
+            for name, source in PRODUCT_SOURCES.items():
+                sources.append({
+                    "name": name,
+                    "display_name": source.display_name,
+                    "version": source.version,
+                    "source_type": source.source_type.value,
+                    "archive_url": source.archive_url,
+                    "kb_prefix": source.kb_prefix,
+                    "domain": source.domain,
+                })
+
+            return json.dumps({
+                "sources": sources,
+                "total": len(sources),
+                "archive_count": sum(1 for s in sources if s["source_type"] == "archive"),
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @server.tool()
+    async def cloudera_sync_status() -> str:
+        """Get status of Cloudera docs sync.
+
+        Shows which products have been synced and document counts.
+        """
+        import subprocess
+        from pathlib import Path
+
+        try:
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+            docs_path = kb_root / "current" / "cloudera" / "docs"
+
+            if not docs_path.exists():
+                return json.dumps({
+                    "synced": False,
+                    "message": "No Cloudera docs synced yet",
+                    "kb_path": str(docs_path),
+                })
+
+            # Count docs by product
+            products = {}
+            for product_dir in docs_path.iterdir():
+                if product_dir.is_dir():
+                    result = subprocess.run(
+                        ["find", str(product_dir), "-name", "*.md", "-type", "f"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    doc_count = len([l for l in result.stdout.strip().split("\n") if l])
+                    products[product_dir.name] = doc_count
+
+            total_docs = sum(products.values())
+
+            return json.dumps({
+                "synced": True,
+                "kb_path": str(docs_path),
+                "total_documents": total_docs,
+                "products": products,
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @server.tool()
+    async def cloudera_sync_progress() -> str:
+        """Get real-time progress of running Cloudera docs sync.
+
+        Returns live progress including:
+        - Percentage complete
+        - Documents completed/failed/remaining
+        - Rate (docs/sec) and ETA
+        - Recent files processed
+
+        Use this to monitor ongoing sync operations. For CLI display
+        with Rich progress bars, run:
+            uv run python -c "from gaius.flows.cloudera_docs.progress import watch_progress_rich; watch_progress_rich()"
+        """
+        try:
+            from gaius.flows.cloudera_docs.progress import (
+                get_sync_progress,
+                format_progress_human,
+            )
+
+            progress = get_sync_progress()
+            if progress is None:
+                return json.dumps({
+                    "running": False,
+                    "message": "No sync in progress",
+                    "hint": "Use sync_cloudera_docs() to start a sync",
+                }, indent=2)
+
+            # Include both structured data and human-readable format
+            progress["human_display"] = format_progress_human(progress)
+
+            return json.dumps({
+                "running": progress.get("status") == "running",
+                **progress,
             }, indent=2)
 
         except Exception as e:

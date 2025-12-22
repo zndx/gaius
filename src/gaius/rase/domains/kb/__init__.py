@@ -83,6 +83,24 @@ from .ontology_constraints import (
     CorpusGenerated,
 )
 
+# Corpus storage
+from .corpus import (
+    CorpusExample,
+    CorpusMetadata,
+    CorpusWriteResult,
+    CorpusStorage,
+    get_corpus_storage,
+    load_training_examples,
+    load_training_examples_async,
+)
+
+# Text classification for coherence validation
+from .text_classification import (
+    ClassificationResult,
+    OntologyCoherenceClassifier,
+    compute_coherence_score,
+)
+
 # Verification
 from .verification import (
     KBVerificationCase,
@@ -173,6 +191,16 @@ __all__ = [
     "ClassesVerbalizable",
     "TopicsRecoverable",
     "CorpusGenerated",
+    # Corpus storage
+    "CorpusExample",
+    "CorpusMetadata",
+    "CorpusWriteResult",
+    "CorpusStorage",
+    "get_corpus_storage",
+    # Text classification
+    "ClassificationResult",
+    "OntologyCoherenceClassifier",
+    "compute_coherence_score",
     # Verification
     "KBVerificationCase",
     "objective_to_verification_case",

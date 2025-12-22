@@ -370,7 +370,8 @@ class TopicsRecoverable(Constraint[KBState]):
 
             # For very small corpora, UMAP/BERTopic will fail due to k-NN constraints
             # Fall back to keyword-based self-alignment for small ontologies
-            MIN_DOCS_FOR_TOPIC_MODEL = 15
+            # Note: BERTopic requires at least 15-20 documents for stable UMAP embedding
+            MIN_DOCS_FOR_TOPIC_MODEL = 20
 
             if len(documents) < 5:
                 return ConstraintResult.failure(
@@ -380,39 +381,23 @@ class TopicsRecoverable(Constraint[KBState]):
                 )
 
             if len(documents) < MIN_DOCS_FOR_TOPIC_MODEL:
-                # Small corpus: use keyword overlap between verbalizations as proxy
-                # This checks that verbalizations share vocabulary (concept coherence)
-                all_words = []
-                for v in verbalizations:
-                    words = set(v["verbalization"].lower().split())
-                    # Filter common words
-                    words = {w for w in words if len(w) > 3}
-                    all_words.append(words)
+                # Small corpus: use text classification-based coherence validation
+                # This uses TF-IDF + keyword overlap to measure vocabulary coherence
+                from .text_classification import compute_coherence_score
 
-                # Check vocabulary overlap between verbalizations
-                overlap_count = 0
-                for i, words_i in enumerate(all_words):
-                    for j, words_j in enumerate(all_words):
-                        if i < j:
-                            overlap = len(words_i & words_j)
-                            if overlap >= 2:
-                                overlap_count += 1
+                is_coherent, coherence, message = compute_coherence_score(
+                    verbalizations, threshold=self.min_alignment
+                )
 
-                total_pairs = len(all_words) * (len(all_words) - 1) // 2
-                if total_pairs > 0:
-                    coherence = overlap_count / total_pairs
-                else:
-                    coherence = 1.0
-
-                if coherence >= self.min_alignment:
+                if is_coherent:
                     return ConstraintResult.success(
                         self.name,
-                        f"Small corpus ({len(documents)} docs): keyword coherence {coherence:.1%} (topic modeling skipped)",
+                        f"Small corpus ({len(documents)} docs): {message}",
                     )
                 else:
                     return ConstraintResult.failure(
                         self.name,
-                        f"Small corpus keyword coherence {coherence:.1%} < {self.min_alignment:.0%}",
+                        f"Small corpus coherence below threshold: {message}",
                         {"coherence": coherence, "document_count": len(documents)},
                     )
 
@@ -489,17 +474,19 @@ class TopicsRecoverable(Constraint[KBState]):
 class CorpusGenerated(Constraint[KBState]):
     """Verify synthetic text corpus was generated and stored.
 
-    Checks that training data has been generated from verbalizations
-    and stored in the specified location.
+    Generates training data from verbalizations and stores to Iceberg (Parquet).
+    Uses the ontology.corpora table in HX for training data storage.
 
     Attributes:
         ontology_path: Path to OWL file
-        storage_path: Where corpus should be stored (hx:// URI or KB path)
+        domain: Domain name for corpus (derived from ontology name if not set)
+        write_corpus: If True, actually write corpus to storage (default True)
         min_examples: Minimum required training examples
     """
 
     ontology_path: str
-    storage_path: str = "hx://ontology.corpora"
+    domain: str = ""
+    write_corpus: bool = True
     min_examples: int = 10
 
     @property
@@ -518,6 +505,9 @@ class CorpusGenerated(Constraint[KBState]):
                 f"Ontology file not found: {self.ontology_path}",
             )
 
+        # Derive domain from ontology filename if not set
+        domain = self.domain or owl_path.stem.replace("_", "-")
+
         try:
             _ensure_jvm_ready()
             from deeponto.onto import Ontology, OntologyVerbaliser
@@ -527,55 +517,65 @@ class CorpusGenerated(Constraint[KBState]):
             verbaliser = OntologyVerbaliser(onto)
             complex_classes = list(onto.get_asserted_complex_classes())
 
-            # Count verbalized examples
-            example_count = 0
-            examples = []
+            # Generate verbalized examples
+            from .corpus import CorpusExample, get_corpus_storage
+
+            examples: list[CorpusExample] = []
 
             for concept in complex_classes:
                 try:
                     v = verbaliser.verbalise_class_expression(concept)
                     if v.verbal and len(v.verbal) >= 10:
-                        example_count += 1
-                        examples.append({
-                            "input": f"Verbalize: {str(concept)[:100]}",
-                            "output": v.verbal,
-                            "class_expr": str(concept)[:100],
-                        })
+                        examples.append(CorpusExample(
+                            input=f"Verbalize the following OWL class expression: {str(concept)[:200]}",
+                            output=v.verbal,
+                            class_expr=str(concept)[:500],
+                            metadata={"ontology": self.ontology_path},
+                        ))
                 except Exception:
                     pass
 
-            if example_count < self.min_examples:
+            if len(examples) < self.min_examples:
                 return ConstraintResult.failure(
                     self.name,
-                    f"Generated {example_count} examples, requires {self.min_examples}",
+                    f"Generated {len(examples)} examples, requires {self.min_examples}",
                     {
-                        "generated": example_count,
+                        "generated": len(examples),
                         "required": self.min_examples,
                     },
                 )
 
-            # Check if corpus exists at storage path
-            if self.storage_path.startswith("hx://"):
-                # HX storage - would need to check MinIO
-                # For now, check if examples can be generated
+            # Write corpus to Iceberg storage
+            if self.write_corpus:
+                storage = get_corpus_storage(kb_root=state.kb_root)
+                result = storage.write_corpus_sync(
+                    domain=domain,
+                    examples=examples,
+                    ontology_path=self.ontology_path,
+                    generation_params={
+                        "verbalizer": "deeponto.OntologyVerbaliser",
+                        "min_length": 10,
+                    },
+                )
+
+                if not result.success:
+                    return ConstraintResult.failure(
+                        self.name,
+                        f"Failed to write corpus: {result.errors}",
+                        {"errors": result.errors},
+                    )
+
                 return ConstraintResult.success(
                     self.name,
-                    f"Corpus ready: {example_count} examples (storage at {self.storage_path})",
+                    f"Corpus written: {result.items_written} examples to {result.hx_uri} "
+                    f"(snapshot={result.snapshot_id}, manifest={result.manifest_path})",
                 )
             else:
-                # KB path
-                corpus_dir = Path(state.kb_root) / self.storage_path
-                if corpus_dir.exists():
-                    file_count = len(list(corpus_dir.glob("*.md")))
-                    return ConstraintResult.success(
-                        self.name,
-                        f"Corpus exists: {file_count} files, {example_count} examples",
-                    )
-                else:
-                    return ConstraintResult.success(
-                        self.name,
-                        f"Corpus ready to generate: {example_count} examples",
-                    )
+                # Just check if examples can be generated
+                return ConstraintResult.success(
+                    self.name,
+                    f"Corpus ready: {len(examples)} examples (write_corpus=False)",
+                )
 
         except ImportError as e:
             return ConstraintResult.failure(
@@ -585,7 +585,7 @@ class CorpusGenerated(Constraint[KBState]):
         except Exception as e:
             return ConstraintResult.failure(
                 self.name,
-                f"Failed to check corpus: {e}",
+                f"Failed to generate corpus: {e}",
             )
 
 

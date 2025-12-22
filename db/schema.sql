@@ -1,4 +1,4 @@
-\restrict bAOURaATvSdqMaH9BRqQgbWRx3wqAzXz6gcU41o73uZAf29GBiexKRXqxo6y7Gf
+\restrict 498eKEK6RnqaSqhJjKHxMJ7kDrPFyQyp9IHybiuEr2OQAFpL7P9R27w9hsQVUcG
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -190,6 +190,37 @@ $$;
 
 
 --
+-- Name: apply_cron_jobs(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.apply_cron_jobs() RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_job RECORD;
+    v_count INTEGER := 0;
+BEGIN
+    -- Check if pg_cron is available
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+        RETURN 'pg_cron extension not installed. Jobs stored in scheduled_jobs_config table.';
+    END IF;
+
+    FOR v_job IN SELECT * FROM scheduled_jobs_config WHERE enabled LOOP
+        EXECUTE format(
+            'SELECT cron.schedule(%L, %L, %L)',
+            v_job.job_name,
+            v_job.schedule,
+            v_job.function_call
+        );
+        v_count := v_count + 1;
+    END LOOP;
+
+    RETURN format('Applied %s pg_cron jobs', v_count);
+END;
+$$;
+
+
+--
 -- Name: archive_stale_content(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -230,6 +261,29 @@ BEGIN
 
     GET DIAGNOSTICS archived_count = ROW_COUNT;
     RETURN archived_count;
+END;
+$$;
+
+
+--
+-- Name: check_archive_changed(integer, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_archive_changed(p_source_id integer, p_archive_url text, p_new_hash text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_old_hash TEXT;
+BEGIN
+    SELECT content_hash INTO v_old_hash
+    FROM doc_archives
+    WHERE source_id = p_source_id AND archive_url = p_archive_url;
+
+    IF v_old_hash IS NULL THEN
+        RETURN TRUE;  -- New archive, needs sync
+    END IF;
+
+    RETURN v_old_hash != p_new_hash;  -- Changed if hash differs
 END;
 $$;
 
@@ -341,6 +395,43 @@ BEGIN
 
     GET DIAGNOSTICS v_deleted = ROW_COUNT;
     RETURN v_deleted;
+END;
+$$;
+
+
+--
+-- Name: complete_archive_rotation(integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.complete_archive_rotation(p_rotation_id integer, p_files_moved integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE archive_rotations SET
+        status = 'completed',
+        files_moved = p_files_moved,
+        completed_at = NOW()
+    WHERE id = p_rotation_id;
+END;
+$$;
+
+
+--
+-- Name: complete_archive_sync(integer, text, integer, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.complete_archive_sync(p_archive_id integer, p_content_hash text, p_pages_extracted integer, p_kb_path_prefix text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE doc_archives SET
+        status = 'completed',
+        content_hash = p_content_hash,
+        pages_extracted = p_pages_extracted,
+        kb_path_prefix = p_kb_path_prefix,
+        processed_at = NOW(),
+        error_message = NULL
+    WHERE id = p_archive_id;
 END;
 $$;
 
@@ -477,6 +568,68 @@ COMMENT ON FUNCTION public.detect_cognition_delta(p_profile text) IS 'Schedule t
 
 
 --
+-- Name: fail_archive_sync(integer, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fail_archive_sync(p_archive_id integer, p_error_message text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE doc_archives SET
+        status = 'failed',
+        error_message = p_error_message,
+        processed_at = NOW()
+    WHERE id = p_archive_id;
+END;
+$$;
+
+
+--
+-- Name: get_active_domain(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_active_domain(p_profile_name text) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_domain_name TEXT;
+BEGIN
+    SELECT pd.name INTO v_domain_name
+    FROM profile_domains pd
+    JOIN profiles p ON pd.profile_id = p.id
+    WHERE p.name = p_profile_name AND pd.is_active = TRUE;
+
+    RETURN v_domain_name;
+END;
+$$;
+
+
+--
+-- Name: get_archives_needing_sync(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_archives_needing_sync() RETURNS TABLE(archive_id integer, source_name text, archive_url text, status text, retry_count integer, last_error text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        da.id,
+        fs.name,
+        da.archive_url,
+        da.status,
+        da.retry_count,
+        da.error_message
+    FROM doc_archives da
+    JOIN feed_sources fs ON da.source_id = fs.id
+    WHERE da.status IN ('discovered', 'failed')
+      AND (da.retry_count < 3 OR da.status = 'discovered')
+    ORDER BY da.discovered_at;
+END;
+$$;
+
+
+--
 -- Name: get_chain_head(uuid); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -487,6 +640,48 @@ CREATE FUNCTION public.get_chain_head(p_chain_id uuid) RETURNS uuid
     WHERE thought_chain_id = p_chain_id
     ORDER BY generation DESC, created_at DESC
     LIMIT 1;
+$$;
+
+
+--
+-- Name: get_current_quarter(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_current_quarter() RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN EXTRACT(YEAR FROM NOW())::TEXT || 'Q' ||
+           CEIL(EXTRACT(MONTH FROM NOW()) / 3.0)::TEXT;
+END;
+$$;
+
+
+--
+-- Name: get_doc_sync_summary(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_doc_sync_summary() RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_result JSONB;
+BEGIN
+    SELECT jsonb_build_object(
+        'total_archives', COUNT(*),
+        'by_status', jsonb_object_agg(status, cnt),
+        'total_pages', SUM(pages_extracted),
+        'last_sync', MAX(processed_at)
+    ) INTO v_result
+    FROM (
+        SELECT status, COUNT(*) as cnt, SUM(pages_extracted) as pages_extracted,
+               MAX(processed_at) as processed_at
+        FROM doc_archives
+        GROUP BY status
+    ) stats;
+
+    RETURN v_result;
+END;
 $$;
 
 
@@ -512,6 +707,58 @@ BEGIN
     JOIN content_items ci ON sl.content_item_id = ci.id
     JOIN sources s ON ci.source_id = s.id
     WHERE sl.kb_path = p_kb_path;
+END;
+$$;
+
+
+--
+-- Name: get_profile_context(text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_profile_context(p_profile_name text, p_domain_name text DEFAULT NULL::text) RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_result JSONB;
+    v_profile_text TEXT;
+    v_domain_text TEXT;
+    v_profile_prefixes TEXT[];
+    v_domain_prefixes TEXT[];
+BEGIN
+    -- Get profile info
+    SELECT profile_text, kb_path_prefixes
+    INTO v_profile_text, v_profile_prefixes
+    FROM profiles
+    WHERE name = p_profile_name;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('error', 'Profile not found');
+    END IF;
+
+    v_result := jsonb_build_object(
+        'profile', p_profile_name,
+        'profile_text', COALESCE(v_profile_text, ''),
+        'profile_prefixes', COALESCE(v_profile_prefixes, '{}')
+    );
+
+    -- Get domain info if specified
+    IF p_domain_name IS NOT NULL AND p_domain_name != '' AND p_domain_name != 'open' THEN
+        SELECT domain_text, kb_path_prefixes
+        INTO v_domain_text, v_domain_prefixes
+        FROM profile_domains pd
+        JOIN profiles p ON pd.profile_id = p.id
+        WHERE p.name = p_profile_name AND pd.name = p_domain_name;
+
+        IF FOUND THEN
+            v_result := v_result || jsonb_build_object(
+                'domain', p_domain_name,
+                'domain_text', COALESCE(v_domain_text, ''),
+                'domain_prefixes', COALESCE(v_domain_prefixes, '{}')
+            );
+        END IF;
+    END IF;
+
+    RETURN v_result;
 END;
 $$;
 
@@ -686,6 +933,96 @@ $$;
 
 
 --
+-- Name: rotate_domain_archive(integer, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.rotate_domain_archive(p_archive_id integer, p_source_kb_path text, p_archive_kb_path text) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_rotation_id INTEGER;
+    v_quarter TEXT;
+    v_version TEXT;
+BEGIN
+    v_quarter := get_current_quarter();
+
+    -- Get version from archive
+    SELECT version INTO v_version
+    FROM doc_archives
+    WHERE id = p_archive_id;
+
+    -- Create rotation record
+    INSERT INTO archive_rotations (
+        quarter, doc_archive_id, source_kb_path, archive_kb_path,
+        version_at_archive, status
+    )
+    VALUES (
+        v_quarter, p_archive_id, p_source_kb_path, p_archive_kb_path,
+        v_version, 'pending'
+    )
+    RETURNING id INTO v_rotation_id;
+
+    RETURN v_rotation_id;
+END;
+$$;
+
+
+--
+-- Name: rotate_quarterly_archives(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.rotate_quarterly_archives() RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_quarter TEXT;
+    v_archive RECORD;
+    v_rotation_id INTEGER;
+    v_results JSONB := '[]'::JSONB;
+BEGIN
+    v_quarter := get_current_quarter();
+
+    -- Find all completed archives that haven't been rotated this quarter
+    FOR v_archive IN
+        SELECT da.id, da.kb_path_prefix, da.version, da.content_hash,
+               da.source_id, fs.name as source_name
+        FROM doc_archives da
+        JOIN feed_sources fs ON da.source_id = fs.id
+        WHERE da.status = 'completed'
+          AND da.kb_path_prefix IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM archive_rotations ar
+              WHERE ar.doc_archive_id = da.id
+                AND ar.quarter = v_quarter
+          )
+    LOOP
+        -- Create rotation record for each
+        v_rotation_id := rotate_domain_archive(
+            v_archive.id,
+            v_archive.kb_path_prefix,
+            'archive/' || v_quarter || '/' ||
+                REPLACE(v_archive.kb_path_prefix, 'current/', '')
+        );
+
+        v_results := v_results || jsonb_build_object(
+            'archive_id', v_archive.id,
+            'rotation_id', v_rotation_id,
+            'source', v_archive.source_name,
+            'source_path', v_archive.kb_path_prefix,
+            'version', v_archive.version
+        );
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'quarter', v_quarter,
+        'rotations_scheduled', jsonb_array_length(v_results),
+        'details', v_results
+    );
+END;
+$$;
+
+
+--
 -- Name: schedule_due_fetches(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -733,6 +1070,70 @@ BEGIN
     UPDATE feed_sources SET last_fetch_at = NOW() WHERE id = v_source_id;
 
     RETURN v_job_id;
+END;
+$$;
+
+
+--
+-- Name: set_active_domain(text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.set_active_domain(p_profile_name text, p_domain_name text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_profile_id INTEGER;
+BEGIN
+    -- Get profile ID
+    SELECT id INTO v_profile_id
+    FROM profiles
+    WHERE name = p_profile_name;
+
+    IF v_profile_id IS NULL THEN
+        RAISE EXCEPTION 'Profile "%" not found', p_profile_name;
+    END IF;
+
+    -- Deactivate all domains for this profile
+    UPDATE profile_domains
+    SET is_active = FALSE, updated_at = NOW()
+    WHERE profile_id = v_profile_id AND is_active = TRUE;
+
+    -- Handle 'open' or NULL as clearing the domain
+    IF p_domain_name IS NULL OR p_domain_name = '' OR p_domain_name = 'open' THEN
+        RETURN TRUE;
+    END IF;
+
+    -- Activate the specified domain (upsert)
+    INSERT INTO profile_domains (profile_id, name, is_active)
+    VALUES (v_profile_id, p_domain_name, TRUE)
+    ON CONFLICT (profile_id, name)
+    DO UPDATE SET is_active = TRUE, updated_at = NOW();
+
+    RETURN TRUE;
+END;
+$$;
+
+
+--
+-- Name: start_archive_sync(integer, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.start_archive_sync(p_source_id integer, p_archive_url text, p_version text DEFAULT NULL::text) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_archive_id INTEGER;
+BEGIN
+    INSERT INTO doc_archives (source_id, archive_url, version, status)
+    VALUES (p_source_id, p_archive_url, p_version, 'downloading')
+    ON CONFLICT (source_id, archive_url)
+    DO UPDATE SET
+        status = 'downloading',
+        version = COALESCE(p_version, doc_archives.version),
+        retry_count = doc_archives.retry_count + 1
+    RETURNING id INTO v_archive_id;
+
+    RETURN v_archive_id;
 END;
 $$;
 
@@ -1951,6 +2352,51 @@ ALTER TABLE public.application_permissions_revision ALTER COLUMN id ADD GENERATE
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: archive_rotations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.archive_rotations (
+    id integer NOT NULL,
+    quarter text NOT NULL,
+    doc_archive_id integer,
+    source_kb_path text NOT NULL,
+    archive_kb_path text NOT NULL,
+    version_at_archive text,
+    status text DEFAULT 'pending'::text,
+    files_moved integer DEFAULT 0,
+    created_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE archive_rotations; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.archive_rotations IS 'Tracks quarterly archive rotations. Docs are moved to archive/ on version change.';
+
+
+--
+-- Name: archive_rotations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.archive_rotations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: archive_rotations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.archive_rotations_id_seq OWNED BY public.archive_rotations.id;
 
 
 --
@@ -3716,6 +4162,100 @@ ALTER TABLE public.dimension ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTIT
 
 
 --
+-- Name: doc_archives; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.doc_archives (
+    id integer NOT NULL,
+    source_id integer NOT NULL,
+    archive_url text NOT NULL,
+    version text,
+    content_hash text,
+    status text DEFAULT 'discovered'::text,
+    kb_path_prefix text,
+    pages_extracted integer DEFAULT 0,
+    error_message text,
+    retry_count integer DEFAULT 0,
+    discovered_at timestamp with time zone DEFAULT now(),
+    processed_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE doc_archives; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.doc_archives IS 'Tracks documentation archives discovered for ETL processing.';
+
+
+--
+-- Name: COLUMN doc_archives.content_hash; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.doc_archives.content_hash IS 'SHA-256 hash of archive content for incremental sync (skip if unchanged).';
+
+
+--
+-- Name: doc_archives_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.doc_archives_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: doc_archives_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.doc_archives_id_seq OWNED BY public.doc_archives.id;
+
+
+--
+-- Name: feed_sources; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.feed_sources (
+    id integer NOT NULL,
+    name text NOT NULL,
+    source_type public.source_type NOT NULL,
+    base_url text NOT NULL,
+    config jsonb DEFAULT '{}'::jsonb,
+    fetch_interval_minutes integer DEFAULT 60,
+    active boolean DEFAULT true,
+    last_fetch_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: doc_sync_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.doc_sync_status AS
+ SELECT fs.name AS source_name,
+    fs.source_type,
+    da.archive_url,
+    da.version,
+    da.status,
+    da.pages_extracted,
+    da.kb_path_prefix,
+    da.processed_at,
+    da.error_message,
+        CASE
+            WHEN (da.status = 'completed'::text) THEN (EXTRACT(epoch FROM (now() - da.processed_at)) / (86400)::numeric)
+            ELSE NULL::numeric
+        END AS days_since_sync
+   FROM (public.doc_archives da
+     JOIN public.feed_sources fs ON ((da.source_id = fs.id)))
+  ORDER BY da.processed_at DESC NULLS LAST;
+
+
+--
 -- Name: document_topics; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3898,23 +4438,6 @@ CREATE VIEW public.evolution_performance AS
    FROM public.evolution_cycles
   WHERE (started_at > (now() - '7 days'::interval))
   GROUP BY agent_id;
-
-
---
--- Name: feed_sources; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.feed_sources (
-    id integer NOT NULL,
-    name text NOT NULL,
-    source_type public.source_type NOT NULL,
-    base_url text NOT NULL,
-    config jsonb DEFAULT '{}'::jsonb,
-    fetch_interval_minutes integer DEFAULT 60,
-    active boolean DEFAULT true,
-    last_fetch_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now()
-);
 
 
 --
@@ -7173,6 +7696,66 @@ CREATE TABLE public.profile_content (
 
 
 --
+-- Name: profile_domains; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.profile_domains (
+    id integer NOT NULL,
+    profile_id integer NOT NULL,
+    name text NOT NULL,
+    display_name text,
+    description text,
+    domain_text text,
+    kb_path_prefixes text[] DEFAULT '{}'::text[],
+    search_boost double precision DEFAULT 1.0,
+    is_active boolean DEFAULT false,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE profile_domains; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.profile_domains IS 'Domains are profile-scoped focus areas. The same domain name can exist in multiple profiles.';
+
+
+--
+-- Name: COLUMN profile_domains.domain_text; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profile_domains.domain_text IS 'Unstructured text for agent prompting. Describes domain concepts, terminology, and goals.';
+
+
+--
+-- Name: COLUMN profile_domains.is_active; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profile_domains.is_active IS 'Only one domain can be active per profile at a time. Used for context switching.';
+
+
+--
+-- Name: profile_domains_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.profile_domains_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: profile_domains_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.profile_domains_id_seq OWNED BY public.profile_domains.id;
+
+
+--
 -- Name: profile_sources; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -7194,8 +7777,32 @@ CREATE TABLE public.profiles (
     feed_config jsonb DEFAULT '{}'::jsonb,
     active boolean DEFAULT true,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    profile_text text,
+    kb_path_prefixes text[] DEFAULT '{}'::text[],
+    search_boost double precision DEFAULT 1.0
 );
+
+
+--
+-- Name: COLUMN profiles.profile_text; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profiles.profile_text IS 'Unstructured text for agent prompting context. Describes profile purpose, conventions, priorities.';
+
+
+--
+-- Name: COLUMN profiles.kb_path_prefixes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profiles.kb_path_prefixes IS 'KB path prefixes associated with this profile. Used for search boosting and organization.';
+
+
+--
+-- Name: COLUMN profiles.search_boost; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profiles.search_boost IS 'Default search result boost multiplier for content matching profile paths (1.0 = neutral).';
 
 
 --
@@ -8400,6 +9007,48 @@ COMMENT ON COLUMN public.routing_decisions.mismatched_capabilities IS 'List of c
 
 
 --
+-- Name: scheduled_jobs_config; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.scheduled_jobs_config (
+    id integer NOT NULL,
+    job_name text NOT NULL,
+    schedule text NOT NULL,
+    function_call text NOT NULL,
+    description text,
+    enabled boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE scheduled_jobs_config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.scheduled_jobs_config IS 'Stores pg_cron job definitions. Apply with: SELECT cron.schedule(job_name, schedule, function_call) for each enabled row.';
+
+
+--
+-- Name: scheduled_jobs_config_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.scheduled_jobs_config_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: scheduled_jobs_config_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.scheduled_jobs_config_id_seq OWNED BY public.scheduled_jobs_config.id;
+
+
+--
 -- Name: scheduled_tasks_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -9102,7 +9751,9 @@ CREATE TABLE public.ui_preferences (
     domain text,
     preferences_json jsonb DEFAULT '{}'::jsonb,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    profile_name text DEFAULT 'default'::text,
+    profile_changed_at timestamp with time zone
 );
 
 
@@ -9111,6 +9762,13 @@ CREATE TABLE public.ui_preferences (
 --
 
 COMMENT ON TABLE public.ui_preferences IS 'Per-client UI state. TUI/CLI/MCP each have their own preferences.';
+
+
+--
+-- Name: COLUMN ui_preferences.profile_name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.ui_preferences.profile_name IS 'Currently active profile name for this UI session.';
 
 
 --
@@ -10052,6 +10710,13 @@ ALTER TABLE ONLY public.aiops_events ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: archive_rotations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.archive_rotations ALTER COLUMN id SET DEFAULT nextval('public.archive_rotations_id_seq'::regclass);
+
+
+--
 -- Name: calibration_summaries id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10098,6 +10763,13 @@ ALTER TABLE ONLY public.daily_eval_summaries ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.daily_summaries ALTER COLUMN id SET DEFAULT nextval('public.daily_summaries_id_seq'::regclass);
+
+
+--
+-- Name: doc_archives id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.doc_archives ALTER COLUMN id SET DEFAULT nextval('public.doc_archives_id_seq'::regclass);
 
 
 --
@@ -10283,6 +10955,13 @@ ALTER TABLE ONLY public.paper_scores ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: profile_domains id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.profile_domains ALTER COLUMN id SET DEFAULT nextval('public.profile_domains_id_seq'::regclass);
+
+
+--
 -- Name: profiles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10294,6 +10973,13 @@ ALTER TABLE ONLY public.profiles ALTER COLUMN id SET DEFAULT nextval('public.pro
 --
 
 ALTER TABLE ONLY public.remediation_approvals ALTER COLUMN id SET DEFAULT nextval('public.remediation_approvals_id_seq'::regclass);
+
+
+--
+-- Name: scheduled_jobs_config id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs_config ALTER COLUMN id SET DEFAULT nextval('public.scheduled_jobs_config_id_seq'::regclass);
 
 
 --
@@ -10552,6 +11238,14 @@ ALTER TABLE ONLY public.api_key
 
 ALTER TABLE ONLY public.api_key
     ADD CONSTRAINT api_key_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: archive_rotations archive_rotations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.archive_rotations
+    ADD CONSTRAINT archive_rotations_pkey PRIMARY KEY (id);
 
 
 --
@@ -10912,6 +11606,22 @@ ALTER TABLE ONLY public.dimension
 
 ALTER TABLE ONLY public.dimension
     ADD CONSTRAINT dimension_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: doc_archives doc_archives_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.doc_archives
+    ADD CONSTRAINT doc_archives_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: doc_archives doc_archives_source_id_archive_url_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.doc_archives
+    ADD CONSTRAINT doc_archives_source_id_archive_url_key UNIQUE (source_id, archive_url);
 
 
 --
@@ -11795,6 +12505,22 @@ ALTER TABLE ONLY public.profile_content
 
 
 --
+-- Name: profile_domains profile_domains_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.profile_domains
+    ADD CONSTRAINT profile_domains_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: profile_domains profile_domains_profile_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.profile_domains
+    ADD CONSTRAINT profile_domains_profile_id_name_key UNIQUE (profile_id, name);
+
+
+--
 -- Name: profile_sources profile_sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12024,6 +12750,22 @@ ALTER TABLE ONLY public.revision
 
 ALTER TABLE ONLY public.routing_decisions
     ADD CONSTRAINT routing_decisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: scheduled_jobs_config scheduled_jobs_config_job_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs_config
+    ADD CONSTRAINT scheduled_jobs_config_job_name_key UNIQUE (job_name);
+
+
+--
+-- Name: scheduled_jobs_config scheduled_jobs_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.scheduled_jobs_config
+    ADD CONSTRAINT scheduled_jobs_config_pkey PRIMARY KEY (id);
 
 
 --
@@ -12673,6 +13415,20 @@ CREATE INDEX idx_approvals_pending ON public.remediation_approvals USING btree (
 
 
 --
+-- Name: idx_archive_rotations_quarter; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_archive_rotations_quarter ON public.archive_rotations USING btree (quarter);
+
+
+--
+-- Name: idx_archive_rotations_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_archive_rotations_status ON public.archive_rotations USING btree (status);
+
+
+--
 -- Name: idx_audit_log_entity_qualified_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -13109,6 +13865,20 @@ CREATE INDEX idx_dimension_field_id ON public.dimension USING btree (field_id);
 --
 
 CREATE INDEX idx_dimension_human_readable_field_id ON public.dimension USING btree (human_readable_field_id);
+
+
+--
+-- Name: idx_doc_archives_source; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_doc_archives_source ON public.doc_archives USING btree (source_id);
+
+
+--
+-- Name: idx_doc_archives_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_doc_archives_status ON public.doc_archives USING btree (status);
 
 
 --
@@ -13886,6 +14656,20 @@ CREATE INDEX idx_persisted_info_database_id ON public.persisted_info USING btree
 --
 
 CREATE INDEX idx_profile_content_score ON public.profile_content USING btree (profile_id, relevance_score DESC);
+
+
+--
+-- Name: idx_profile_domains_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_profile_domains_active ON public.profile_domains USING btree (profile_id) WHERE is_active;
+
+
+--
+-- Name: idx_profile_domains_profile; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_profile_domains_profile ON public.profile_domains USING btree (profile_id);
 
 
 --
@@ -14957,6 +15741,14 @@ ALTER TABLE ONLY public.aiops_events
 
 
 --
+-- Name: archive_rotations archive_rotations_doc_archive_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.archive_rotations
+    ADD CONSTRAINT archive_rotations_doc_archive_id_fkey FOREIGN KEY (doc_archive_id) REFERENCES public.doc_archives(id) ON DELETE SET NULL;
+
+
+--
 -- Name: cognition_thoughts cognition_thoughts_predecessor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14978,6 +15770,14 @@ ALTER TABLE ONLY public.content_items
 
 ALTER TABLE ONLY public.current_state
     ADD CONSTRAINT current_state_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.grid_snapshots(id) ON DELETE SET NULL;
+
+
+--
+-- Name: doc_archives doc_archives_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.doc_archives
+    ADD CONSTRAINT doc_archives_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.feed_sources(id) ON DELETE CASCADE;
 
 
 --
@@ -16221,6 +17021,14 @@ ALTER TABLE ONLY public.profile_content
 
 
 --
+-- Name: profile_domains profile_domains_profile_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.profile_domains
+    ADD CONSTRAINT profile_domains_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+
+--
 -- Name: profile_sources profile_sources_profile_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -16280,7 +17088,7 @@ ALTER TABLE ONLY public.topic_models
 -- PostgreSQL database dump complete
 --
 
-\unrestrict bAOURaATvSdqMaH9BRqQgbWRx3wqAzXz6gcU41o73uZAf29GBiexKRXqxo6y7Gf
+\unrestrict 498eKEK6RnqaSqhJjKHxMJ7kDrPFyQyp9IHybiuEr2OQAFpL7P9R27w9hsQVUcG
 
 
 --
@@ -16311,4 +17119,7 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251215000002'),
     ('20251217000001'),
     ('20251218000001'),
-    ('20251221000001');
+    ('20251221000001'),
+    ('20251222000001'),
+    ('20251222000002'),
+    ('20251222000003');

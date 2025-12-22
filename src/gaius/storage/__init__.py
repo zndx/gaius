@@ -28,6 +28,16 @@ Database access:
 
     cycles = await get_recent_cycles(limit=10)
     scores = await get_agent_scores()
+
+Profile/Domain operations:
+    from gaius.storage.profile_ops import (
+        list_profiles, get_profile,
+        list_domains, get_active_domain, set_active_domain,
+        get_profile_context, ProfileContext,
+    )
+
+    profiles = await list_profiles()
+    context = await get_profile_context("cloudera", "csa")
 """
 
 from .protocol import StorageBackend, StorageConfig, KBDocument
