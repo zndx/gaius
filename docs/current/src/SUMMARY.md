@@ -17,6 +17,7 @@
 - [Knowledge Gradient](./architecture/knowledge-gradient.md)
 - [The Board Widget](./architecture/board.md)
 - [Multi-Agent Swarms](./architecture/swarms.md)
+- [MetaAgent Analytics](./architecture/metaagent.md)
 - [Vector Memory](./architecture/memory.md)
 - [Inference Gateway](./architecture/inference-gateway.md)
 
