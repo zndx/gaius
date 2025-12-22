@@ -176,6 +176,10 @@ class AppState:
     # Agent positions (list of (name, x, y, color))
     agent_positions: list = field(default_factory=list)
 
+    # ThetaAgent attention targets (list of (id, x, y, color))
+    # Used by THETA view mode to overlay attention schema
+    theta_targets: list = field(default_factory=list)
+
     # Center panel mode (graph/think/none)
     center_panel_mode: CenterPanelMode = CenterPanelMode.GRAPH
 

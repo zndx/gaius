@@ -262,6 +262,9 @@ class GaiusCLI:
                 # Docs sync - Cloudera documentation ETL
                 elif command == "docs-sync":
                     result["data"] = self._cmd_docs_sync(args)
+                # SITREP - ThetaAgent situational awareness
+                elif command == "sitrep":
+                    result["data"] = self._run_async(self._cmd_sitrep(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -1257,8 +1260,10 @@ class GaiusCLI:
                 "engine [cmd]": "Engine connection (status, reconnect, test)",
                 # Unified command routing (thin client)
                 "exec <cmd> [args]": "Execute via Engine's CommandService",
+                # ThetaAgent situational awareness
+                "sitrep [horizon]": "Situational report (day, week, quarter, open)",
             },
-            "tagline": "/ask away! Use /ask for general queries, /watch for telemetry, /search for research.",
+            "tagline": "/sitrep to start your day! Use /ask for queries, /thoughts for cognition.",
         }
 
     # --- Model Registry Commands ---
@@ -7793,6 +7798,81 @@ Generated: {now.isoformat()}
         # Delegate to /flow run docling with args
         flow_args = f"run docling {args}"
         return await self._cmd_flow(flow_args)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SITREP - ThetaAgent Situational Awareness
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_sitrep(self, args: str) -> dict:
+        """Generate situational awareness report.
+
+        ThetaAgent synthesizes objectives, thoughts, agendas, health, and evolution
+        into a daily briefing. The single pane of glass for starting your day.
+
+        Grounded in Attention Schema Theory (AST) and theta wave dynamics.
+
+        Usage:
+            /sitrep              - Today's situation report (day horizon)
+            /sitrep day          - Same as /sitrep (explicit)
+            /sitrep week         - Week view with rolling agenda synthesis
+            /sitrep quarter      - Quarterly view with strategic progress
+            /sitrep open         - Open threads and research continuity
+
+        Time Horizons:
+            day      - Tactical, immediate (~8 actions)
+            week     - Sprint, deliverables (~40 actions)
+            quarter  - Strategic, goals (~100 actions)
+            open     - Emergent, unbounded
+
+        Examples:
+            /sitrep               # Start your day with this
+            /sitrep week          # Sprint planning view
+            /sitrep quarter       # Quarterly review
+        """
+        try:
+            from .agents.theta import ThetaAgent, Horizon
+        except ImportError as e:
+            return {
+                "error": f"ThetaAgent module not available: {e}",
+                "suggestion": "Ensure agents/theta module is installed",
+            }
+
+        # Parse horizon argument
+        args_lower = args.strip().lower() if args else ""
+        horizon_str = args_lower.split()[0] if args_lower else "day"
+
+        try:
+            horizon = Horizon(horizon_str)
+        except ValueError:
+            return {
+                "error": f"Unknown horizon: {horizon_str}",
+                "valid_horizons": ["day", "week", "quarter", "open"],
+                "help": self._cmd_sitrep.__doc__,
+            }
+
+        try:
+            # Get KB root from config
+            kb_root = self._get_kb_root()
+
+            # Create ThetaAgent and generate report
+            agent = ThetaAgent(profile=self.config.profile, kb_root=kb_root)
+            report = await agent.sitrep(horizon)
+
+            # Return both structured data and formatted output
+            result = report.to_dict()
+
+            # Include formatted ASCII for text output mode
+            if self.format != "json":
+                result["formatted"] = report.to_ascii()
+
+            return result
+
+        except Exception as e:
+            return {
+                "error": str(e),
+                "horizon": horizon_str,
+                "suggestion": "/health diagnose for system status",
+            }
 
 
 def main():

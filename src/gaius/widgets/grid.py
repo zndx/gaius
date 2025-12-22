@@ -117,26 +117,44 @@ class MainGrid(Widget):
                 grid[y][x] = ("○", "white")
 
     def _render_theta_mode(self, grid: list) -> None:
-        """Render information density (theta view).
+        """Render information density (theta view) with attention targets.
 
         Theta waves (4-8 Hz) facilitate memory consolidation - the transfer
         of information from short-term to long-term storage. This view shows
         information density as a heatmap, revealing regions of high vs low
         knowledge accumulation.
+
+        When ThetaAgent provides attention targets (from AttentionSchema),
+        they are overlaid on the density map:
+        - Focus target: bright_yellow marker
+        - High salience periphery: cyan markers
+        - Low salience periphery: dim markers
         """
-        if not self.state.allocations:
-            return
-        for y in range(19):
-            for x in range(19):
-                if y < len(self.state.allocations) and x < len(self.state.allocations[y]):
-                    v = self.state.allocations[y][x]
-                    if v > 75:
-                        grid[y][x] = ("▓", "green")
-                    elif v > 50:
-                        grid[y][x] = ("▒", "yellow")
-                    elif v > 25:
-                        grid[y][x] = ("░", "blue")
-                    # else keep as empty
+        # Render density heatmap
+        if self.state.allocations:
+            for y in range(19):
+                for x in range(19):
+                    if y < len(self.state.allocations) and x < len(self.state.allocations[y]):
+                        v = self.state.allocations[y][x]
+                        if v > 75:
+                            grid[y][x] = ("▓", "green")
+                        elif v > 50:
+                            grid[y][x] = ("▒", "yellow")
+                        elif v > 25:
+                            grid[y][x] = ("░", "blue")
+                        # else keep as empty
+
+        # Overlay ThetaAgent attention targets (AST schema visualization)
+        if self.state.theta_targets:
+            for target_id, x, y, color in self.state.theta_targets:
+                if 0 <= x < 19 and 0 <= y < 19:
+                    # Use different markers based on color (salience level)
+                    if color == "bright_yellow":
+                        grid[y][x] = ("◉", f"bold {color}")  # Focus target
+                    elif color == "cyan":
+                        grid[y][x] = ("◎", color)  # High salience
+                    else:
+                        grid[y][x] = ("○", color)  # Low salience
 
     def _render_swarm_mode(self, grid: list) -> None:
         """Render swarm agent positions prominently."""
