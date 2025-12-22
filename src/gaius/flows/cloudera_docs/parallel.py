@@ -359,6 +359,21 @@ class ParallelDocProcessor:
         if exclude_check:
             doc_files = {p: c for p, c in doc_files.items() if not exclude_check(p)}
 
+        # Filter out files that already exist in KB (incremental sync)
+        import re
+        from pathlib import Path
+        kb_prefix = Path(kb_prefix_path)
+        already_exist = []
+        for doc_path in list(doc_files.keys()):
+            relative_path = re.sub(r"\.(html?|pdf)$", "", doc_path) + ".md"
+            kb_path = kb_prefix / relative_path
+            if kb_path.exists():
+                already_exist.append(doc_path)
+                del doc_files[doc_path]
+
+        if already_exist:
+            logger.info(f"Skipping {len(already_exist)} files that already exist in KB")
+
         # Check for existing checkpoint
         checkpoint = CheckpointState.load(self.checkpoint_path)
         if checkpoint and checkpoint.archive_hash == archive_hash:

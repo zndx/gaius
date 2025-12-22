@@ -521,6 +521,9 @@ def sync_product(
         )
         progress_tracker.start()
 
+        pages_already_exist = 0
+        pages_failed = 0
+
         with DoclingWorkloadContext(source.name, len(doc_files)) if has_pdfs else nullcontext():
             for doc_path, doc_content in doc_files.items():
                 try:
@@ -529,20 +532,28 @@ def sync_product(
                         pages_skipped += 1
                         continue
 
+                    # Generate KB path first to check if already exists
+                    relative_path = normalize_archive_path(doc_path) + ".md"
+                    kb_path = kb_prefix_path / relative_path
+
+                    # Skip if already exists (incremental sync)
+                    if kb_path.exists():
+                        pages_already_exist += 1
+                        continue
+
                     # Convert to markdown
                     markdown, title = convert_doc_to_markdown(doc_content, doc_path)
 
                     if not markdown or len(markdown) < 100:
+                        logger.warning(f"Empty or too short content for {doc_path} ({len(markdown) if markdown else 0} chars)")
                         pages_skipped += 1
                         continue
 
                     # Generate KB path - preserve archive structure
                     # e.g., csa/1.15.1/how-to-flink/cdf-datahub-how-to-flink.pdf
                     #    -> current/cloudera/docs/csa/1.15.1/how-to-flink/cdf-datahub-how-to-flink.md
-                    relative_path = normalize_archive_path(doc_path) + ".md"
                     doc_product, doc_version, _ = parse_archive_path(doc_path)
 
-                    kb_path = kb_prefix_path / relative_path
                     kb_path.parent.mkdir(parents=True, exist_ok=True)
 
                     # Escape title for YAML (handle quotes and special chars)
@@ -580,26 +591,28 @@ archive_hash: {result.archive_hash[:16]}
                         logger.info(f"Extracted {pages_extracted} pages...")
 
                 except Exception as e:
-                    logger.warning(f"Failed to process {doc_path}: {e}")
-                    pages_skipped += 1
+                    logger.error(f"Failed to process {doc_path}: {e}")
+                    pages_failed += 1
                     progress_tracker.update(
                         completed=pages_extracted,
-                        failed=pages_skipped,
+                        failed=pages_failed,
                     )
 
         result.pages_extracted = pages_extracted
-        result.pages_skipped = pages_skipped
-        result.success = True
+        result.pages_skipped = pages_skipped + pages_already_exist
+        result.success = pages_failed == 0
 
         duration = (datetime.now() - start_time).total_seconds()
         result.duration_seconds = duration
 
         # Mark progress as complete
-        progress_tracker.complete(success=True)
+        progress_tracker.complete(success=pages_failed == 0)
 
         logger.info(
-            f"Sync complete: {pages_extracted} pages extracted, "
-            f"{pages_skipped} skipped in {duration:.1f}s"
+            f"Sync complete: {pages_extracted} extracted, "
+            f"{pages_already_exist} already existed, "
+            f"{pages_skipped} skipped, "
+            f"{pages_failed} failed in {duration:.1f}s"
         )
 
     except Exception as e:
