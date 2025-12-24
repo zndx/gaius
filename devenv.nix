@@ -13,6 +13,10 @@
   env.GRPC_ENABLE_FORK_SUPPORT = 0;
   env.GRPC_VERBOSITY = "ERROR";
 
+  # JVM memory for DeepOnto (BERTSubs subsumption inference)
+  # This must be set BEFORE importing deeponto.onto to avoid interactive prompt
+  env.JVM_MEMORY = "4g";
+
   # Library paths for Python C extensions and CUDA
   # Use project-local symlinks to NVIDIA drivers (avoids glibc conflicts with Nix)
   env.LD_LIBRARY_PATH = lib.concatStringsSep ":" [
