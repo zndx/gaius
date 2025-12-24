@@ -1098,7 +1098,7 @@ dependencies = [
     { name = "nvtx" },
     { name = "packaging" },
     { name = "pandas" },
-    { name = "pyarrow", version = "19.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "pyarrow", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
     { name = "pylibcudf-cu12" },
     { name = "rich" },
     { name = "rmm-cu12" },
@@ -1256,60 +1256,25 @@ wheels = [
 
 [[package]]
 name = "datasets"
-version = "2.14.4"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'aarch64' and sys_platform == 'darwin'",
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "platform_machine == 'aarch64' and sys_platform != 'darwin' and sys_platform != 'linux'",
-    "platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "platform_machine == 'x86_64' and sys_platform != 'darwin' and sys_platform != 'linux'",
-]
-dependencies = [
-    { name = "aiohttp", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "dill", version = "0.3.7", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "fsspec", extra = ["http"], marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "huggingface-hub", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "multiprocess", version = "0.70.15", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "numpy", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "packaging", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "pandas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "pyarrow", version = "19.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "pyyaml", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "requests", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "tqdm", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "xxhash", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/69/8cc725b5d38968fd118e4ce56a483b16e75b7793854c1a392ec4a34eeb31/datasets-2.14.4.tar.gz", hash = "sha256:ef29c2b5841de488cd343cfc26ab979bff77efa4d2285af51f1ad7db5c46a83b", size = 2178719, upload-time = "2023-08-08T15:45:43.015Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/f8/38298237d18d4b6a8ee5dfe390e97bed5adb8e01ec6f9680c0ddf3066728/datasets-2.14.4-py3-none-any.whl", hash = "sha256:29336bd316a7d827ccd4da2236596279b20ca2ac78f64c04c9483da7cbc2459b", size = 519335, upload-time = "2023-08-08T15:45:38.837Z" },
-]
-
-[[package]]
-name = "datasets"
 version = "4.4.1"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'darwin'",
-    "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux'",
-    "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform != 'darwin' and sys_platform != 'linux'",
-]
 dependencies = [
+    { name = "dill", version = "0.3.7", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
     { name = "dill", version = "0.4.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "filelock", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "fsspec", extra = ["http"], marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "httpx", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "huggingface-hub", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "filelock" },
+    { name = "fsspec", extra = ["http"] },
+    { name = "httpx" },
+    { name = "huggingface-hub" },
+    { name = "multiprocess", version = "0.70.15", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
     { name = "multiprocess", version = "0.70.18", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "numpy", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "packaging", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "pandas", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "pyarrow", version = "22.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "pyyaml", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "requests", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "tqdm", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
-    { name = "xxhash", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "tqdm" },
+    { name = "xxhash" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/93/bf/0dae295d6d1ba0b1a200a9dd216838464b5bbd05da01407cb1330b377445/datasets-4.4.1.tar.gz", hash = "sha256:80322699aa8c0bbbdb7caa87906da689c3c2e29523cff698775c67f28fdab1fc", size = 585341, upload-time = "2025-11-05T16:00:38.162Z" }
 wheels = [
@@ -1360,8 +1325,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anytree" },
     { name = "click" },
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "dill", version = "0.3.7", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
     { name = "dill", version = "0.4.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
     { name = "enlighten" },
@@ -1740,8 +1704,7 @@ name = "evaluate"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "dill", version = "0.3.7", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
     { name = "dill", version = "0.4.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
     { name = "fsspec", extra = ["http"] },
@@ -2098,6 +2061,7 @@ dependencies = [
     { name = "circuit-tracer" },
     { name = "colpali-engine" },
     { name = "cuml-cu12" },
+    { name = "datasets" },
     { name = "deepagents" },
     { name = "deeponto" },
     { name = "docling" },
@@ -2198,8 +2162,7 @@ grpc = [
 ]
 hx = [
     { name = "fsspec" },
-    { name = "pyarrow", version = "19.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "pyarrow", version = "22.0.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "pyarrow" },
     { name = "pyiceberg", extra = ["s3fs", "sql-postgres"] },
     { name = "s3fs" },
 ]
@@ -2283,6 +2246,7 @@ requires-dist = [
     { name = "circuit-tracer", git = "https://github.com/safety-research/circuit-tracer.git" },
     { name = "colpali-engine", git = "ssh://git@github.com/zndx/oss-colpali.git" },
     { name = "cuml-cu12", specifier = ">=25.6.0" },
+    { name = "datasets", specifier = ">=2.14.6" },
     { name = "deepagents", specifier = ">=0.2.8" },
     { name = "deeponto", specifier = ">=0.9.0" },
     { name = "deeponto", marker = "extra == 'ontology'", specifier = ">=0.9.0" },
@@ -5055,8 +5019,7 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "bitsandbytes" },
     { name = "cerebras-cloud-sdk" },
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "flask" },
     { name = "google-cloud-aiplatform" },
     { name = "gradio" },
@@ -5098,8 +5061,7 @@ version = "1.17.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "coloredlogs" },
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "packaging" },
@@ -5114,8 +5076,7 @@ wheels = [
 
 [package.optional-dependencies]
 onnxruntime = [
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "evaluate" },
     { name = "onnx" },
     { name = "onnxruntime" },
@@ -5238,8 +5199,7 @@ wheels = [
 [package.optional-dependencies]
 transformers = [
     { name = "accelerate" },
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "setuptools" },
     { name = "transformers" },
 ]
@@ -5730,36 +5690,8 @@ wheels = [
 
 [[package]]
 name = "pyarrow"
-version = "19.0.1"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'aarch64' and sys_platform == 'darwin'",
-    "platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "platform_machine == 'aarch64' and sys_platform != 'darwin' and sys_platform != 'linux'",
-    "platform_machine == 'x86_64' and sys_platform == 'darwin'",
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-    "platform_machine == 'x86_64' and sys_platform != 'darwin' and sys_platform != 'linux'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7f/09/a9046344212690f0632b9c709f9bf18506522feb333c894d0de81d62341a/pyarrow-19.0.1.tar.gz", hash = "sha256:3bf266b485df66a400f282ac0b6d1b500b9d2ae73314a153dbe97d6d5cc8a99e", size = 1129437, upload-time = "2025-02-18T18:55:57.027Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/78/b4/94e828704b050e723f67d67c3535cf7076c7432cd4cf046e4bb3b96a9c9d/pyarrow-19.0.1-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:80b2ad2b193e7d19e81008a96e313fbd53157945c7be9ac65f44f8937a55427b", size = 30670749, upload-time = "2025-02-18T18:53:00.062Z" },
-    { url = "https://files.pythonhosted.org/packages/7e/3b/4692965e04bb1df55e2c314c4296f1eb12b4f3052d4cf43d29e076aedf66/pyarrow-19.0.1-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:ee8dec072569f43835932a3b10c55973593abc00936c202707a4ad06af7cb294", size = 32128007, upload-time = "2025-02-18T18:53:06.581Z" },
-    { url = "https://files.pythonhosted.org/packages/22/f7/2239af706252c6582a5635c35caa17cb4d401cd74a87821ef702e3888957/pyarrow-19.0.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4d5d1ec7ec5324b98887bdc006f4d2ce534e10e60f7ad995e7875ffa0ff9cb14", size = 41144566, upload-time = "2025-02-18T18:53:11.958Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/e3/c9661b2b2849cfefddd9fd65b64e093594b231b472de08ff658f76c732b2/pyarrow-19.0.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f3ad4c0eb4e2a9aeb990af6c09e6fa0b195c8c0e7b272ecc8d4d2b6574809d34", size = 42202991, upload-time = "2025-02-18T18:53:17.678Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/4f/a2c0ed309167ef436674782dfee4a124570ba64299c551e38d3fdaf0a17b/pyarrow-19.0.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:d383591f3dcbe545f6cc62daaef9c7cdfe0dff0fb9e1c8121101cabe9098cfa6", size = 40507986, upload-time = "2025-02-18T18:53:26.263Z" },
-    { url = "https://files.pythonhosted.org/packages/27/2e/29bb28a7102a6f71026a9d70d1d61df926887e36ec797f2e6acfd2dd3867/pyarrow-19.0.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:b4c4156a625f1e35d6c0b2132635a237708944eb41df5fbe7d50f20d20c17832", size = 42087026, upload-time = "2025-02-18T18:53:33.063Z" },
-    { url = "https://files.pythonhosted.org/packages/16/33/2a67c0f783251106aeeee516f4806161e7b481f7d744d0d643d2f30230a5/pyarrow-19.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:5bd1618ae5e5476b7654c7b55a6364ae87686d4724538c24185bbb2952679960", size = 25250108, upload-time = "2025-02-18T18:53:38.462Z" },
-]
-
-[[package]]
-name = "pyarrow"
 version = "22.0.0"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'darwin'",
-    "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux'",
-    "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform != 'darwin' and sys_platform != 'linux'",
-]
 sdist = { url = "https://files.pythonhosted.org/packages/30/53/04a7fdc63e6056116c9ddc8b43bc28c12cdd181b85cbeadb79278475f3ae/pyarrow-22.0.0.tar.gz", hash = "sha256:3d600dc583260d845c7d8a6db540339dd883081925da2bd1c5cb808f720b3cd9", size = 1151151, upload-time = "2025-10-24T12:30:00.762Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/af/63/ba23862d69652f85b615ca14ad14f3bcfc5bf1b99ef3f0cd04ff93fdad5a/pyarrow-22.0.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:bea79263d55c24a32b0d79c00a1c58bb2ee5f0757ed95656b01c0fb310c5af3d", size = 34211578, upload-time = "2025-10-24T10:05:21.583Z" },
@@ -7679,8 +7611,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "beartype" },
     { name = "better-abc" },
-    { name = "datasets", version = "2.14.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
-    { name = "datasets", version = "4.4.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64'" },
+    { name = "datasets" },
     { name = "einops" },
     { name = "fancy-einsum" },
     { name = "jaxtyping" },

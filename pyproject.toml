@@ -58,7 +58,8 @@ dependencies = [
     # Cross-Layer Transcoders (CLT) for interpretable sparse features
     # Uses BluelightAI's circuit-tracer library with Qwen3 CLTs
     "circuit-tracer @ git+https://github.com/safety-research/circuit-tracer.git",
-    "transformer-lens>=2.0.0",  # Required for CLT model internals
+    "transformer-lens>=2.0.0", # Required for CLT model internals
+    "datasets>=2.14.6",
 ]
 
 [project.optional-dependencies]
@@ -201,6 +202,9 @@ timeout = 60
 # Exclude infrastructure-dependent tests from default run
 # These require optillm/vLLM endpoints or other devenv services
 addopts = "--ignore=tests/test_optillm_vllm.py --ignore=tests/test_inference.py --ignore=tests/test_artifacts.py"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true
