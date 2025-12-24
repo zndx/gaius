@@ -108,6 +108,9 @@ class GaiusEngine:
         # Reconciliation service (FSM-based state observation)
         self._reconciliation_service = None
 
+        # Topology service (temporal dynamics tracking)
+        self._topology_service = None
+
     async def start(self) -> None:
         """Start the engine daemon.
 
@@ -454,6 +457,27 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to start cognition daemon: {e}")
 
+        # Create topology service (uses database pool from engine config)
+        try:
+            from .services.topology_service import TopologyService
+
+            # Get db pool from environment
+            db_pool = None
+            try:
+                import asyncpg
+                database_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius?sslmode=disable")
+                db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
+            except Exception as db_err:
+                logger.warning(f"Could not create database pool for TopologyService: {db_err}")
+
+            self._topology_service = TopologyService(db_pool=db_pool)
+            logger.info("Topology service initialized")
+
+            if self._grpc_server:
+                self._grpc_server.update_service("topology_service", self._topology_service)
+        except Exception as e:
+            logger.warning(f"Failed to initialize topology service: {e}")
+
     async def _autonomous_start_flow_scheduler(self) -> None:
         """Start the flow scheduler daemon automatically.
 
@@ -599,6 +623,7 @@ class GaiusEngine:
                 backend_router=self._backend_router,
                 orchestrator_service=self._orchestrator_service,
                 cognition_service=self._cognition_service,
+                topology_service=self._topology_service,
                 config=self.config,
                 start_time=self._start_time.timestamp() if self._start_time else None,
                 get_health_metrics=self._collect_health_metrics,

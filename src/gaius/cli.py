@@ -265,6 +265,17 @@ class GaiusCLI:
                 # SITREP - ThetaAgent situational awareness
                 elif command == "sitrep":
                     result["data"] = self._run_async(self._cmd_sitrep(args))
+                elif command == "consolidate":
+                    result["data"] = self._run_async(self._cmd_consolidate(args))
+                # CLT - Cross-Layer Transcoders for circuit tracing
+                elif command == "clt":
+                    result["data"] = self._run_async(self._cmd_clt(args))
+                # Topology - temporal dynamics tracking
+                elif command == "topology" or command == "topo" or command == "drift":
+                    result["data"] = self._run_async(self._cmd_topology(args))
+                # NG-RC - forward dynamics prediction
+                elif command == "ngrc" or command == "predict":
+                    result["data"] = self._run_async(self._cmd_ngrc(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -3300,7 +3311,10 @@ Respond with:
     async def _cmd_swarm(self, args: str) -> dict:
         """Run a swarm analysis.
 
-        Usage: /swarm <domain> [context...]
+        Usage:
+            /swarm <domain> [context...]     - Standard swarm via engine
+            /swarm clt <domain> [context...] - CLT-based interpretable swarm
+            /swarm latent <domain> [context...] - Latent swarm (Nomic embeddings)
 
         Routes through gRPC engine for proper capability-based model resolution.
         Results are automatically saved to KB at current/agents/swarm/{date}/{timestamp}_{domain}.md
@@ -3308,6 +3322,16 @@ Respond with:
         if not args:
             args = self.state.domain or "open"
 
+        # Check for subcommands
+        parts = args.split(maxsplit=2)
+        subcommand = parts[0].lower() if parts else ""
+
+        if subcommand == "clt":
+            return await self._cmd_swarm_clt(args[4:].strip() if len(args) > 4 else "")
+        elif subcommand == "latent":
+            return await self._cmd_swarm_latent(args[7:].strip() if len(args) > 7 else "")
+
+        # Standard swarm via engine
         try:
             from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
@@ -3360,6 +3384,160 @@ Respond with:
 
         except ImportError as e:
             raise RuntimeError(f"Engine proxy not available: {e}")
+
+    async def _cmd_swarm_clt(self, args: str) -> dict:
+        """Run CLT-based interpretable swarm analysis.
+
+        Usage: /swarm clt <domain> [context...]
+
+        Uses Cross-Layer Transcoders for interpretable agent collaboration:
+        - Agents share sparse features (~115 active per layer)
+        - Visible consensus (which features agents agree on)
+        - Feature overlap shows agent alignment
+
+        All CLT processing happens in the engine (no client-side fallback).
+        """
+        if not args:
+            args = self.state.domain or "open"
+
+        try:
+            from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                raise RuntimeError(
+                    "Gaius engine not running. Start with: devenv up -d\n"
+                    "CLT swarm requires the engine for GPU-accelerated feature extraction."
+                )
+
+            scheduler = await get_scheduler_proxy()
+
+            # Parse domain and context
+            parts = args.split(maxsplit=1)
+            domain = parts[0]
+            context = parts[1] if len(parts) > 1 else ""
+
+            # Use engine's CLT swarm - all processing happens server-side
+            results, saved_path = await scheduler.run_swarm_clt(
+                domain=domain,
+                context=context,
+            )
+
+            # Extract CLT-specific data from results
+            clt_data = results.pop("_clt", {})
+
+            # Format output
+            output = {
+                "mode": "clt",
+                "domain": domain,
+                "agents": {},
+                "summary": {
+                    "total": len(results),
+                    "completed": sum(1 for r in results.values() if r.get("status") == "completed"),
+                    "failed": sum(1 for r in results.values() if r.get("status") == "failed"),
+                    "total_tokens": sum(
+                        r.get("input_tokens", 0) + r.get("output_tokens", 0)
+                        for r in results.values()
+                    ),
+                    "total_latency_ms": sum(r.get("latency_ms", 0) for r in results.values()),
+                },
+                "saved_to": saved_path,
+            }
+
+            # Per-agent results
+            for role_name, result in results.items():
+                content = result.get("content", "")
+                agent_clt = clt_data.get("agent_features", {}).get(role_name, [])
+                # Engine returns {"idx": ..., "activation": ...}, not "feature_idx"
+                top_features = [f["idx"] for f in agent_clt[:5]] if agent_clt else []
+
+                output["agents"][role_name] = {
+                    "status": result.get("status", "unknown"),
+                    "preview": content[:200] + "..." if len(content) > 200 else content,
+                    "endpoint": result.get("endpoint", ""),
+                    "latency_ms": result.get("latency_ms", 0),
+                    "top_features": top_features,
+                }
+
+            # CLT-specific outputs from engine
+            if clt_data:
+                output["consensus_features"] = clt_data.get("consensus_features", [])
+                output["feature_overlap"] = clt_data.get("feature_overlap", {})
+
+                # Update state with agent positions (for grid visualization)
+                positions = clt_data.get("positions", [])
+                if positions:
+                    self.state.agent_positions = [
+                        (p["name"], p["x"], p["y"], p.get("color", "white"))
+                        for p in positions
+                    ]
+                    output["positions"] = positions
+
+                # Update state with agent traces
+                traces = clt_data.get("traces", {})
+                if traces:
+                    self.state.agent_traces = {
+                        name: [(pos["x"], pos["y"]) for pos in trace_positions]
+                        for name, trace_positions in traces.items()
+                    }
+                    output["traces"] = traces
+
+            return output
+
+        except ImportError as e:
+            raise RuntimeError(f"Engine proxy not available: {e}")
+        except Exception as e:
+            raise RuntimeError(f"CLT swarm failed: {e}")
+
+    async def _cmd_swarm_latent(self, args: str) -> dict:
+        """Run latent swarm with Nomic embeddings.
+
+        Usage: /swarm latent <domain> [context...]
+
+        Uses Nomic embeddings for latent collaboration (70-90% token reduction).
+        """
+        if not args:
+            args = self.state.domain or "open"
+
+        try:
+            from .agents.swarm import get_latent_swarm_manager
+
+            # Parse domain and context
+            parts = args.split(maxsplit=1)
+            domain = parts[0]
+            context = parts[1] if len(parts) > 1 else ""
+
+            manager = get_latent_swarm_manager()
+            result = await manager.run_round(domain=domain, context=context)
+
+            # Format output
+            output = {
+                "mode": "latent",
+                "domain": domain,
+                "agents": {},
+                "summary": {
+                    "total": len(result.responses),
+                    "succeeded": sum(1 for r in result.responses if r.succeeded),
+                    "failed": sum(1 for r in result.responses if not r.succeeded),
+                    "total_tokens": result.total_tokens,
+                    "total_latency_ms": result.total_latency_ms,
+                    "success_rate": round(result.success_rate, 3),
+                },
+                "consensus": result.consensus,
+            }
+
+            for response in result.responses:
+                output["agents"][response.role.value] = {
+                    "name": response.name,
+                    "succeeded": response.succeeded,
+                    "preview": response.content[:200] + "..." if len(response.content) > 200 else response.content,
+                    "tokens": response.tokens,
+                    "error": response.error,
+                }
+
+            return output
+
+        except Exception as e:
+            raise RuntimeError(f"Latent swarm failed: {e}")
 
     async def _cmd_meta(self, args: str) -> dict:
         """MetaAgent: Multi-agent analytics query.
@@ -7873,6 +8051,1380 @@ Generated: {now.isoformat()}
                 "horizon": horizon_str,
                 "suggestion": "/health diagnose for system status",
             }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CONSOLIDATE - ThetaAgent Cross-Temporal Linking
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_consolidate(self, args: str) -> dict:
+        """Run NVAR-mediated consolidation for cross-temporal linking.
+
+        Uses theta dynamics (NVAR) to detect drift between temporal slices,
+        then applies BERTSubs subsumption inference to discover relationships.
+        Selected candidates (via Knowledge Gradient policy) are reified as
+        wikilinks and action:search links in KB documents.
+
+        Requires DeepOnto with functional JVM for BERTSubs inference.
+        Will fail-fast if DeepOnto is unavailable.
+
+        Usage:
+            /consolidate                 - Run for current week
+            /consolidate 2025-W52        - Run for specific week slice
+            /consolidate --max 20        - Evaluate up to 20 candidates
+            /consolidate stats           - Show consolidation statistics
+
+        Grounded in:
+            - NVAR (Next Generation Reservoir Computing)
+            - Knowledge Gradient (Powell & Ryzhov, 2012)
+            - BERTSubs (Chen et al., 2023)
+
+        Examples:
+            /consolidate                 # Daily consolidation run
+            /consolidate stats           # Check KG policy stats
+        """
+        try:
+            from .agents.theta import ThetaAgent
+            from .agents.theta.subsumption import DeepOntoNotAvailableError
+        except ImportError as e:
+            return {
+                "error": f"ThetaAgent module not available: {e}",
+                "suggestion": "Ensure agents/theta module is installed",
+            }
+
+        args_parts = args.strip().split() if args else []
+
+        # Check for subcommands
+        if args_parts and args_parts[0] == "stats":
+            return await self._cmd_consolidate_stats()
+
+        # Parse arguments
+        temporal_slice = None
+        max_candidates = 10
+
+        i = 0
+        while i < len(args_parts):
+            if args_parts[i] == "--max" and i + 1 < len(args_parts):
+                try:
+                    max_candidates = int(args_parts[i + 1])
+                except ValueError:
+                    return {
+                        "error": f"Invalid max candidates: {args_parts[i + 1]}",
+                        "usage": "/consolidate --max <number>",
+                    }
+                i += 2
+            elif not args_parts[i].startswith("--"):
+                temporal_slice = args_parts[i]
+                i += 1
+            else:
+                i += 1
+
+        try:
+            # Route through gRPC (engine-centric architecture) - FAIL-FAST
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /consolidate.\n"
+                    "  Guru Meditation: #THETA.00000001.ENGINE_REQUIRED\n"
+                    "  Try: devenv processes up"
+                )
+            result = await engine_client.call(
+                "Gaius",
+                "ThetaConsolidate",
+                {
+                    "temporal_slice": temporal_slice or "",
+                    "max_candidates": max_candidates,
+                    "research_mode": True,  # Bypass KG cost threshold during research
+                },
+                timeout=120.0,  # Consolidation can take time
+            )
+
+            # Add formatted summary for text output
+            if self.format != "json":
+                slice_id = result.get("slice_id", "unknown")
+                lines = [
+                    f"Consolidation Cycle: {slice_id}",
+                    f"─" * 40,
+                ]
+
+                urgency = result.get("urgency")
+                drift = result.get("drift")
+                if urgency is not None and drift is not None:
+                    lines.extend([
+                        f"  Urgency: {urgency:.3f}",
+                        f"  Drift:   {drift:.3f}",
+                    ])
+                else:
+                    lines.append("  Signal:  Insufficient history (need k+1 slices)")
+
+                lines.extend([
+                    f"  Candidates evaluated: {result.get('candidates_evaluated', 0)}",
+                    f"  Candidates selected:  {result.get('candidates_selected', 0)}",
+                    f"  Documents augmented:  {result.get('documents_augmented', 0)}",
+                ])
+
+                error = result.get("error")
+                if error:
+                    lines.append(f"  Error: {error}")
+
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except DeepOntoNotAvailableError as e:
+            return {
+                "error": str(e),
+                "guru_meditation": "#THETA.00000001.DEEPONTO_UNAVAILABLE",
+                "remediation": "uv add deeponto jpype1 && ensure Java 11+ installed",
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "suggestion": "/health diagnose for system status",
+            }
+
+    async def _cmd_consolidate_stats(self) -> dict:
+        """Get consolidation statistics via gRPC."""
+        try:
+            # Route through gRPC (engine-centric architecture) - FAIL-FAST
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /consolidate stats.\n"
+                    "  Guru Meditation: #THETA.00000001.ENGINE_REQUIRED\n"
+                    "  Try: devenv processes up"
+                )
+            stats = await engine_client.call(
+                "Gaius",
+                "ThetaConsolidationStats",
+                {},
+                timeout=30.0,
+            )
+
+            if self.format != "json":
+                # Handle both gRPC response and direct dict
+                dynamics = stats.get("dynamics", {})
+                kg_policy = stats.get("kg_policy", {})
+                belief_state = kg_policy.get("belief_state", {})
+                effectiveness = stats.get("effectiveness", {})
+                trend_info = effectiveness.get("trend", {})
+                subsumption = stats.get("subsumption", {})
+
+                current_best = belief_state.get("current_best", 0)
+                lines = [
+                    "Consolidation Statistics",
+                    "─" * 40,
+                    "",
+                    "NVAR Dynamics:",
+                    f"  k (delay):      {dynamics.get('k', 'N/A')}",
+                    f"  Order:          {dynamics.get('polynomial_order', 'N/A')}",
+                    f"  Slices:         {dynamics.get('slice_count', 'N/A')}",
+                    "",
+                    "Knowledge Gradient Policy:",
+                    f"  Research mode:  {kg_policy.get('research_mode', 'N/A')}",
+                    f"  Cost:           {kg_policy.get('measurement_cost', 'N/A')}",
+                    f"  Measurements:   {belief_state.get('n_measurements', 'N/A')}",
+                    f"  Current best:   {current_best:.3f}" if isinstance(current_best, (int, float)) else f"  Current best:   {current_best}",
+                    "",
+                    "Effectiveness Tracker:",
+                    f"  History length: {effectiveness.get('history_length', 'N/A')}",
+                    f"  Trend:          {trend_info.get('trend', 'N/A')}",
+                    "",
+                    "Subsumption Inferencer:",
+                    f"  Threshold:      {subsumption.get('confidence_threshold', 'N/A')}",
+                    f"  Template:       {subsumption.get('template_type', 'N/A')}",
+                    f"  Classifier:     {'loaded' if subsumption.get('classifier_loaded') else 'not loaded'}",
+                ]
+                stats["formatted"] = "\n".join(lines)
+
+            return stats
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CLT - Cross-Layer Transcoders (Circuit Tracing)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_clt(self, args: str) -> dict:
+        """Cross-Layer Transcoder operations for interpretable feature extraction.
+
+        Uses BluelightAI's CLT for Qwen3 to extract sparse features and
+        compute attribution graphs for circuit tracing.
+
+        Usage:
+            /clt status              - Check CLT model availability
+            /clt extract <text>      - Extract sparse features from text
+            /clt attribute <text>    - Compute attribution graph for text
+
+        Options for extract/attribute:
+            --model <name>       - Model name (default: qwen3-1.7b)
+            --layers <0,1,2>     - Comma-separated layer indices (default: all)
+            --top-k <n>          - Top-k features per position (default: 115)
+            --threshold <f>      - Min edge weight for attribution (default: 0.01)
+            --device <dev>       - Device (cuda, cpu) (default: cuda)
+
+        Examples:
+            /clt status
+            /clt extract "The cat sat on the mat"
+            /clt attribute "Hello world" --threshold 0.05
+        """
+        args_parts = args.strip().split() if args else []
+
+        if not args_parts or args_parts[0] == "help":
+            return {
+                "help": self._cmd_clt.__doc__,
+                "commands": ["status", "extract", "attribute"],
+            }
+
+        subcommand = args_parts[0]
+
+        if subcommand == "status":
+            return await self._cmd_clt_status()
+        elif subcommand == "extract":
+            return await self._cmd_clt_extract(args_parts[1:])
+        elif subcommand == "attribute":
+            return await self._cmd_clt_attribute(args_parts[1:])
+        else:
+            return {
+                "error": f"Unknown CLT subcommand: {subcommand}",
+                "valid_subcommands": ["status", "extract", "attribute"],
+                "help": self._cmd_clt.__doc__,
+            }
+
+    async def _cmd_clt_status(self) -> dict:
+        """Get CLT model availability and status."""
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /clt.\n"
+                    "  Guru Meditation: #CLT.00000002.ENGINE_UNAVAILABLE\n"
+                    "  Try: devenv processes up"
+                )
+
+            status = await engine_client.call("CLT", "status", {}, timeout=30.0)
+
+            if self.format != "json":
+                available = "Yes" if status.get("available") else "No"
+                models = ", ".join(status.get("models", [])) or "None"
+                loaded = status.get("loaded_model") or "None"
+                features = status.get("features_per_layer", 0)
+                sparsity = status.get("l0_sparsity", 0)
+
+                lines = [
+                    "CLT Status",
+                    "─" * 40,
+                    f"  Available:          {available}",
+                    f"  Models:             {models}",
+                    f"  Loaded:             {loaded}",
+                    f"  Features/Layer:     {features:,}",
+                    f"  L0 Sparsity:        {sparsity}",
+                ]
+                if status.get("error"):
+                    lines.append(f"\n  Error: {status['error']}")
+                status["formatted"] = "\n".join(lines)
+
+            return status
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _cmd_clt_extract(self, args: list) -> dict:
+        """Extract sparse features from text."""
+        # Parse arguments
+        text = ""
+        model_name = "qwen3-1.7b"
+        layer_indices: list[int] = []
+        top_k = 115
+        device = "cuda"
+
+        i = 0
+        text_parts = []
+        while i < len(args):
+            if args[i] == "--model" and i + 1 < len(args):
+                model_name = args[i + 1]
+                i += 2
+            elif args[i] == "--layers" and i + 1 < len(args):
+                try:
+                    layer_indices = [int(x.strip()) for x in args[i + 1].split(",")]
+                except ValueError:
+                    return {"error": f"Invalid layer indices: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--top-k" and i + 1 < len(args):
+                try:
+                    top_k = int(args[i + 1])
+                except ValueError:
+                    return {"error": f"Invalid top-k: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--device" and i + 1 < len(args):
+                device = args[i + 1]
+                i += 2
+            elif not args[i].startswith("--"):
+                text_parts.append(args[i])
+                i += 1
+            else:
+                i += 1
+
+        text = " ".join(text_parts)
+        if not text:
+            return {
+                "error": "No text provided",
+                "usage": "/clt extract <text> [--model <name>] [--layers <0,1,2>] [--top-k <n>]",
+            }
+
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /clt extract.\n"
+                    "  Guru Meditation: #CLT.00000002.ENGINE_UNAVAILABLE\n"
+                    "  Try: devenv processes up"
+                )
+
+            result = await engine_client.call(
+                "CLT",
+                "extract",
+                {
+                    "text": text,
+                    "model_name": model_name,
+                    "layer_indices": layer_indices,
+                    "top_k": top_k,
+                    "device": device,
+                },
+                timeout=120.0,  # CLT inference can take time
+            )
+
+            if self.format != "json":
+                features = result.get("features", [])
+                lines = [
+                    "CLT Feature Extraction",
+                    "─" * 40,
+                    f"  Text:     \"{text[:50]}...\"" if len(text) > 50 else f"  Text:     \"{text}\"",
+                    f"  Positions: {result.get('total_positions', 0)}",
+                    f"  Features:  {len(features)}",
+                    f"  Sparsity:  {result.get('sparsity', 0):.6f}",
+                    "",
+                    f"Top 10 Features (of {len(features)}):",
+                ]
+
+                # Sort by activation and show top 10
+                sorted_features = sorted(features, key=lambda f: f["activation"], reverse=True)[:10]
+                for f in sorted_features:
+                    lines.append(
+                        f"  L{f['layer_idx']:02d} P{f['position']:02d} F{f['feature_idx']:05d}: {f['activation']:.4f}"
+                    )
+
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _cmd_clt_attribute(self, args: list) -> dict:
+        """Compute attribution graph for text."""
+        # Parse arguments
+        text = ""
+        model_name = "qwen3-1.7b"
+        target_positions: list[int] = []
+        threshold = 0.01
+        device = "cuda"
+
+        i = 0
+        text_parts = []
+        while i < len(args):
+            if args[i] == "--model" and i + 1 < len(args):
+                model_name = args[i + 1]
+                i += 2
+            elif args[i] == "--positions" and i + 1 < len(args):
+                try:
+                    target_positions = [int(x.strip()) for x in args[i + 1].split(",")]
+                except ValueError:
+                    return {"error": f"Invalid positions: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--threshold" and i + 1 < len(args):
+                try:
+                    threshold = float(args[i + 1])
+                except ValueError:
+                    return {"error": f"Invalid threshold: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--device" and i + 1 < len(args):
+                device = args[i + 1]
+                i += 2
+            elif not args[i].startswith("--"):
+                text_parts.append(args[i])
+                i += 1
+            else:
+                i += 1
+
+        text = " ".join(text_parts)
+        if not text:
+            return {
+                "error": "No text provided",
+                "usage": "/clt attribute <text> [--positions <0,1>] [--threshold <f>]",
+            }
+
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /clt attribute.\n"
+                    "  Guru Meditation: #CLT.00000002.ENGINE_UNAVAILABLE\n"
+                    "  Try: devenv processes up"
+                )
+
+            result = await engine_client.call(
+                "CLT",
+                "attribute",
+                {
+                    "text": text,
+                    "model_name": model_name,
+                    "target_positions": target_positions,
+                    "threshold": threshold,
+                    "device": device,
+                },
+                timeout=120.0,
+            )
+
+            if self.format != "json":
+                edges = result.get("edges", [])
+                lines = [
+                    "CLT Attribution Graph",
+                    "─" * 40,
+                    f"  Text:      \"{text[:50]}...\"" if len(text) > 50 else f"  Text:      \"{text}\"",
+                    f"  Positions: {result.get('target_positions', [])}",
+                    f"  Edges:     {len(edges)}",
+                    f"  Threshold: {threshold}",
+                    "",
+                ]
+
+                # Show top edges by weight
+                sorted_edges = sorted(edges, key=lambda e: e["weight"], reverse=True)[:15]
+                if sorted_edges:
+                    lines.append(f"Top 15 Attribution Edges (of {len(edges)}):")
+                    for e in sorted_edges:
+                        lines.append(
+                            f"  L{e['source_layer']:02d}:F{e['source_feature']:05d} → "
+                            f"L{e['target_layer']:02d}:F{e['target_feature']:05d} = {e['weight']:.4f}"
+                        )
+
+                # Include DOT graph if available
+                dot_graph = result.get("dot_graph", "")
+                if dot_graph and len(dot_graph) < 2000:
+                    lines.extend(["", "DOT Graph:", dot_graph])
+
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    # =========================================================================
+    # Topology Commands - Temporal Dynamics Tracking
+    # =========================================================================
+
+    async def _cmd_topology(self, args: str) -> dict:
+        """Handle /topology commands for temporal dynamics tracking.
+
+        Subcommands:
+            /topology                    - Show topology status
+            /topology drift <domain>     - Show drift metrics for domain
+            /topology history <domain>   - Show snapshot history
+            /topology well-depth <domain> - Show well depth (entrenchment)
+            /topology attractors <domain> - List semantic attractors
+
+        Examples:
+            /topology drift pension
+            /topology well-depth kudu
+            /topology history pension --hours 24
+        """
+        if not args:
+            return await self._cmd_topology_status()
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "drift":
+            return await self._cmd_topology_drift(subargs)
+        elif subcommand == "history":
+            return await self._cmd_topology_history(subargs)
+        elif subcommand == "well-depth" or subcommand == "depth":
+            return await self._cmd_topology_well_depth(subargs)
+        elif subcommand == "attractors":
+            return await self._cmd_topology_attractors(subargs)
+        elif subcommand == "status":
+            return await self._cmd_topology_status()
+        elif subcommand == "help":
+            return self._cmd_topology_help()
+        else:
+            return {
+                "error": f"Unknown topology subcommand: {subcommand}",
+                "usage": "/topology [drift|history|well-depth|attractors] <domain>",
+            }
+
+    def _cmd_topology_help(self) -> dict:
+        """Return topology command help."""
+        help_text = """
+Topology Commands - Temporal Dynamics Tracking
+
+The topology system tracks how semantic positions evolve over time,
+enabling drift detection, well-depth measurement, and NG-RC integration.
+
+Subcommands:
+    /topology                    - Show topology service status
+    /topology drift <domain>     - Show drift metrics (dx/dt)
+    /topology history <domain>   - Show snapshot history
+    /topology well-depth <domain> - Show entrenchment (1/variance)
+    /topology attractors <domain> - List named semantic attractors
+
+Key Concepts:
+    Drift: Rate of change in consensus position (dx/dt)
+    Well Depth: 1/variance - how entrenched/stable conclusions are
+    Attractors: Named stable states that can drift over time
+
+Examples:
+    /topology drift pension
+    /topology well-depth kudu --hours 24
+    /topology attractors pension
+"""
+        return {"help": help_text.strip(), "formatted": help_text.strip()}
+
+    async def _cmd_topology_status(self) -> dict:
+        """Show topology service status."""
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Get snapshot counts by domain
+                    snapshots = await conn.fetch("""
+                        SELECT domain, COUNT(*) as count,
+                               MIN(captured_at) as first,
+                               MAX(captured_at) as last
+                        FROM meta.swarm_snapshots
+                        GROUP BY domain
+                        ORDER BY count DESC
+                    """)
+
+                    # Get drift calculation count
+                    drift_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM meta.topology_drift
+                    """)
+
+                    # Get attractor count
+                    attractor_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM meta.semantic_attractors
+                        WHERE is_active = TRUE
+                    """)
+
+                    # Get NG-RC model count
+                    ngrc_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM meta.ngrc_models
+                        WHERE is_active = TRUE
+                    """)
+
+            result = {
+                "status": "healthy",
+                "domains": [
+                    {
+                        "name": row["domain"],
+                        "snapshots": row["count"],
+                        "first": row["first"].isoformat() if row["first"] else None,
+                        "last": row["last"].isoformat() if row["last"] else None,
+                    }
+                    for row in snapshots
+                ],
+                "drift_calculations": drift_count,
+                "active_attractors": attractor_count,
+                "active_ngrc_models": ngrc_count,
+            }
+
+            if self.format != "json":
+                lines = [
+                    "Topology Service Status",
+                    "─" * 40,
+                    f"  Drift Calculations: {drift_count}",
+                    f"  Active Attractors:  {attractor_count}",
+                    f"  NG-RC Models:       {ngrc_count}",
+                    "",
+                    "Domains with Snapshots:",
+                ]
+                for d in result["domains"]:
+                    lines.append(f"  {d['name']}: {d['snapshots']} snapshots")
+                    if d["last"]:
+                        lines.append(f"    Last: {d['last']}")
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get topology status: {e}"}
+
+    async def _cmd_topology_drift(self, args: list) -> dict:
+        """Show drift metrics for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology drift <domain> [--hours N]",
+            }
+
+        domain = args[0]
+        hours = 24
+
+        # Parse --hours flag
+        for i, arg in enumerate(args):
+            if arg == "--hours" and i + 1 < len(args):
+                try:
+                    hours = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                metrics = await topology.compute_drift(domain, hours=hours)
+
+            result = {
+                "domain": metrics.domain,
+                "computed_at": metrics.computed_at.isoformat(),
+                "time_window_hours": metrics.time_window_hours,
+                "n_snapshots": metrics.n_snapshots,
+                "drift_magnitude": metrics.drift_magnitude,
+                "drift_direction": metrics.drift_direction,
+                "well_depth": metrics.well_depth,
+                "lyapunov_exponent": metrics.lyapunov_exponent,
+                "mean_variance": metrics.mean_variance,
+                "variance_trend": metrics.variance_trend,
+                "kb_growth_rate": metrics.kb_growth_rate,
+                "is_bifurcation": metrics.is_bifurcation,
+            }
+
+            if self.format != "json":
+                # Stability interpretation
+                if metrics.lyapunov_exponent < -0.1:
+                    stability = "Stable (convergent)"
+                elif metrics.lyapunov_exponent > 0.1:
+                    stability = "Chaotic (divergent)"
+                else:
+                    stability = "Edge of chaos"
+
+                # Well depth interpretation
+                if metrics.well_depth > 100:
+                    entrenchment = "Deep well (potentially stuck)"
+                elif metrics.well_depth > 10:
+                    entrenchment = "Moderate entrenchment"
+                else:
+                    entrenchment = "Shallow well (flexible)"
+
+                lines = [
+                    f"Drift Metrics: {domain}",
+                    "─" * 40,
+                    f"  Time Window:       {hours} hours",
+                    f"  Snapshots:         {metrics.n_snapshots}",
+                    "",
+                    "Dynamics:",
+                    f"  Drift Magnitude:   {metrics.drift_magnitude:.4f}",
+                    f"  Drift Direction:   ({metrics.drift_direction[0]:.2f}, {metrics.drift_direction[1]:.2f})",
+                    f"  Lyapunov Exponent: {metrics.lyapunov_exponent:.4f} ({stability})",
+                    "",
+                    "Entrenchment:",
+                    f"  Well Depth:        {metrics.well_depth:.2f} ({entrenchment})",
+                    f"  Mean Variance:     {metrics.mean_variance:.4f}",
+                    f"  Variance Trend:    {metrics.variance_trend:+.4f}",
+                    "",
+                    "KB Dynamics:",
+                    f"  Growth Rate:       {metrics.kb_growth_rate:.2f} docs/hour",
+                    f"  Bifurcation:       {'Yes' if metrics.is_bifurcation else 'No'}",
+                ]
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to compute drift: {e}"}
+
+    async def _cmd_topology_well_depth(self, args: list) -> dict:
+        """Show well depth (entrenchment) for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology well-depth <domain> [--hours N]",
+            }
+
+        domain = args[0]
+        hours = 24
+
+        for i, arg in enumerate(args):
+            if arg == "--hours" and i + 1 < len(args):
+                try:
+                    hours = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                metrics = await topology.compute_drift(domain, hours=hours)
+
+            # Focus on well depth
+            result = {
+                "domain": domain,
+                "well_depth": metrics.well_depth,
+                "mean_variance": metrics.mean_variance,
+                "variance_trend": metrics.variance_trend,
+                "interpretation": self._interpret_well_depth(metrics.well_depth),
+            }
+
+            if self.format != "json":
+                lines = [
+                    f"Well Depth Analysis: {domain}",
+                    "─" * 40,
+                    f"  Well Depth:     {metrics.well_depth:.2f}",
+                    f"  Mean Variance:  {metrics.mean_variance:.4f}",
+                    f"  Variance Trend: {metrics.variance_trend:+.4f}",
+                    "",
+                    f"  Interpretation: {result['interpretation']}",
+                    "",
+                    "What this means:",
+                    "  - High well depth = entrenched, stable conclusions",
+                    "  - Low well depth = flexible, exploratory state",
+                    "  - KB growth prevents getting stuck in wells",
+                ]
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to compute well depth: {e}"}
+
+    def _interpret_well_depth(self, depth: float) -> str:
+        """Interpret well depth value."""
+        if depth > 1000:
+            return "Extremely deep - risk of ossification"
+        elif depth > 100:
+            return "Deep well - stable but potentially stuck"
+        elif depth > 10:
+            return "Moderate entrenchment - balanced state"
+        elif depth > 1:
+            return "Shallow well - flexible and adaptive"
+        else:
+            return "No well - chaotic/exploratory"
+
+    async def _cmd_topology_history(self, args: list) -> dict:
+        """Show snapshot history for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology history <domain> [--limit N]",
+            }
+
+        domain = args[0]
+        limit = 20
+
+        for i, arg in enumerate(args):
+            if arg == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                snapshots = await topology.get_snapshot_history(domain, limit=limit)
+
+            result = {
+                "domain": domain,
+                "count": len(snapshots),
+                "snapshots": [
+                    {
+                        "captured_at": s.captured_at.isoformat(),
+                        "n_agents": s.n_agents,
+                        "grid_position": (s.consensus_grid_x, s.consensus_grid_y),
+                        "variance": s.consensus_variance,
+                        "h0": s.h0_count,
+                        "h1": s.h1_count,
+                        "entropy": s.position_entropy,
+                    }
+                    for s in snapshots
+                ],
+            }
+
+            if self.format != "json":
+                lines = [
+                    f"Snapshot History: {domain}",
+                    "─" * 60,
+                ]
+                for s in snapshots[:15]:  # Show top 15
+                    lines.append(
+                        f"  {s.captured_at.strftime('%Y-%m-%d %H:%M')} | "
+                        f"({s.consensus_grid_x:2d},{s.consensus_grid_y:2d}) | "
+                        f"{s.n_agents} agents | "
+                        f"var={s.consensus_variance:.3f}"
+                    )
+                if len(snapshots) > 15:
+                    lines.append(f"  ... and {len(snapshots) - 15} more")
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get history: {e}"}
+
+    async def _cmd_topology_attractors(self, args: list) -> dict:
+        """List semantic attractors for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology attractors <domain>",
+            }
+
+        domain = args[0]
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                attractors = await topology.get_attractors(domain)
+
+            result = {
+                "domain": domain,
+                "count": len(attractors),
+                "attractors": [
+                    {
+                        "name": a.name,
+                        "grid_position": (a.current_grid_x, a.current_grid_y),
+                        "well_depth": a.mean_well_depth,
+                        "total_drift": a.total_drift_distance,
+                        "first_observed": a.first_observed.isoformat() if a.first_observed else None,
+                        "last_observed": a.last_observed.isoformat() if a.last_observed else None,
+                    }
+                    for a in attractors
+                ],
+            }
+
+            if self.format != "json":
+                lines = [
+                    f"Semantic Attractors: {domain}",
+                    "─" * 50,
+                ]
+                if not attractors:
+                    lines.append("  No attractors registered")
+                    lines.append("  Use swarm runs to generate attractors")
+                else:
+                    for a in attractors:
+                        lines.append(f"  {a.name}")
+                        lines.append(f"    Position: ({a.current_grid_x}, {a.current_grid_y})")
+                        lines.append(f"    Well Depth: {a.mean_well_depth:.2f}")
+                        lines.append(f"    Total Drift: {a.total_drift_distance:.4f}")
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get attractors: {e}"}
+
+    # =========================================================================
+    # NG-RC Commands - Forward Dynamics Prediction
+    # =========================================================================
+
+    async def _cmd_ngrc(self, args: str) -> dict:
+        """Handle /ngrc commands for forward dynamics prediction.
+
+        Subcommands:
+            /ngrc                        - Show NG-RC model status
+            /ngrc train <domain>         - Train model on domain data
+            /ngrc predict <domain> [n]   - Predict n steps ahead
+            /ngrc model <domain>         - Show model details
+
+        Examples:
+            /ngrc train pension
+            /ngrc predict pension 10
+            /ngrc model kudu
+        """
+        if not args:
+            return await self._cmd_ngrc_status()
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "train":
+            return await self._cmd_ngrc_train(subargs)
+        elif subcommand == "predict":
+            return await self._cmd_ngrc_predict(subargs)
+        elif subcommand == "model":
+            return await self._cmd_ngrc_model(subargs)
+        elif subcommand == "status":
+            return await self._cmd_ngrc_status()
+        elif subcommand == "help":
+            return self._cmd_ngrc_help()
+        else:
+            return {
+                "error": f"Unknown ngrc subcommand: {subcommand}",
+                "usage": "/ngrc [train|predict|model] <domain>",
+            }
+
+    def _cmd_ngrc_help(self) -> dict:
+        """Return NG-RC command help."""
+        help_text = """
+NG-RC Commands - Forward Dynamics Prediction
+
+NG-RC (Next-Generation Reservoir Computing) learns the flow field
+dx/dt = f(x) from swarm trajectory data, enabling prediction of
+future semantic positions without LLM inference.
+
+Subcommands:
+    /ngrc                        - Show model status for all domains
+    /ngrc train <domain>         - Train model on domain snapshots
+    /ngrc predict <domain> [n]   - Predict n steps ahead (default: 10)
+    /ngrc model <domain>         - Show trained model details
+
+Key Concepts:
+    Flow Field: dx/dt = f(x, KB(t)) - semantic velocity at each point
+    Forecast Horizon: Reliable prediction steps before error grows
+    KB Growth: Model may need retraining after significant KB growth
+
+Training Requirements:
+    - Minimum 50 swarm snapshots for the domain
+    - More data → better generalization
+
+Examples:
+    /ngrc train pension
+    /ngrc predict pension 10
+    /ngrc model kudu
+"""
+        return {"help": help_text.strip(), "formatted": help_text.strip()}
+
+    async def _cmd_ngrc_status(self) -> dict:
+        """Show NG-RC model status for all domains."""
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Get active models
+                    models = await conn.fetch("""
+                        SELECT domain, reservoir_size, spectral_radius,
+                               validation_mse, forecast_horizon_steps,
+                               n_training_snapshots, training_time_span_hours,
+                               trained_at, is_active
+                        FROM meta.ngrc_models
+                        WHERE is_active = TRUE
+                        ORDER BY trained_at DESC
+                    """)
+
+                    # Get snapshot counts by domain for training eligibility
+                    snapshots = await conn.fetch("""
+                        SELECT domain, COUNT(*) as count
+                        FROM meta.swarm_snapshots
+                        GROUP BY domain
+                    """)
+
+                    snapshot_counts = {r['domain']: r['count'] for r in snapshots}
+
+                    result = {
+                        "models": [
+                            {
+                                "domain": m['domain'],
+                                "validation_mse": m['validation_mse'],
+                                "forecast_horizon": m['forecast_horizon_steps'],
+                                "n_training_snapshots": m['n_training_snapshots'],
+                                "training_hours": m['training_time_span_hours'],
+                                "trained_at": m['trained_at'].isoformat() if m['trained_at'] else None,
+                            }
+                            for m in models
+                        ],
+                        "trainable_domains": [
+                            {"domain": d, "snapshots": c}
+                            for d, c in snapshot_counts.items()
+                            if c >= 50 and d not in [m['domain'] for m in models]
+                        ],
+                        "insufficient_data": [
+                            {"domain": d, "snapshots": c, "needed": 50}
+                            for d, c in snapshot_counts.items()
+                            if c < 50
+                        ],
+                    }
+
+                    # Format for text output
+                    lines = ["NG-RC Model Status", "=" * 40]
+
+                    if result["models"]:
+                        lines.append("\nActive Models:")
+                        for m in result["models"]:
+                            lines.append(f"\n  {m['domain']}:")
+                            lines.append(f"    MSE: {m['validation_mse']:.6f}")
+                            lines.append(f"    Forecast Horizon: {m['forecast_horizon']} steps")
+                            lines.append(f"    Training Samples: {m['n_training_snapshots']}")
+                            lines.append(f"    Trained: {m['trained_at']}")
+                    else:
+                        lines.append("\n  No trained models")
+
+                    if result["trainable_domains"]:
+                        lines.append("\n\nDomains Ready for Training:")
+                        for d in result["trainable_domains"]:
+                            lines.append(f"  {d['domain']}: {d['snapshots']} snapshots")
+
+                    if result["insufficient_data"]:
+                        lines.append("\n\nDomains Needing More Data:")
+                        for d in result["insufficient_data"]:
+                            lines.append(f"  {d['domain']}: {d['snapshots']}/{d['needed']} snapshots")
+
+                    result["formatted"] = "\n".join(lines)
+                    return result
+
+        except Exception as e:
+            return {"error": f"Failed to get NG-RC status: {e}"}
+
+    async def _cmd_ngrc_train(self, args: list) -> dict:
+        """Train NG-RC model for a domain."""
+        if not args:
+            return {"error": "Domain required: /ngrc train <domain>"}
+
+        domain = args[0]
+        min_snapshots = 50
+        if len(args) > 1:
+            try:
+                min_snapshots = int(args[1])
+            except ValueError:
+                pass
+
+        try:
+            import asyncpg
+            from gaius.engine.services.ngrc import NGRCPredictor
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            import numpy as np
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Get training data
+                    rows = await conn.fetch("""
+                        SELECT consensus_embedding, captured_at, kb_document_count
+                        FROM meta.swarm_snapshots
+                        WHERE domain = $1
+                          AND consensus_embedding IS NOT NULL
+                        ORDER BY captured_at ASC
+                    """, domain)
+
+                    if len(rows) < min_snapshots:
+                        return {
+                            "error": f"Insufficient data: {len(rows)} snapshots, need {min_snapshots}",
+                            "domain": domain,
+                        }
+
+                    # Extract embeddings and timestamps
+                    embeddings = np.array([r['consensus_embedding'] for r in rows])
+                    timestamps = [r['captured_at'] for r in rows]
+                    kb_count = rows[-1]['kb_document_count'] or 0
+
+                    # Train model
+                    predictor = NGRCPredictor()
+                    metrics = predictor.fit(
+                        embeddings,
+                        timestamps=timestamps,
+                        kb_document_count=kb_count,
+                    )
+
+                    # Persist model
+                    model_weights = predictor.serialize()
+
+                    # Deactivate old models
+                    await conn.execute("""
+                        UPDATE meta.ngrc_models
+                        SET is_active = FALSE
+                        WHERE domain = $1 AND is_active = TRUE
+                    """, domain)
+
+                    # Insert new model
+                    model_id = await conn.fetchval("""
+                        INSERT INTO meta.ngrc_models (
+                            domain, model_weights, reservoir_size, spectral_radius,
+                            validation_mse, forecast_horizon_steps,
+                            n_training_snapshots, training_time_span_hours, is_active
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+                        RETURNING id
+                    """,
+                        domain,
+                        model_weights,
+                        0,  # NG-RC doesn't use reservoir
+                        0.0,
+                        metrics["validation_mse"],
+                        metrics["forecast_horizon"],
+                        metrics["n_samples"],
+                        metrics["time_span_hours"],
+                    )
+
+                    result = {
+                        "domain": domain,
+                        "model_id": model_id,
+                        "n_samples": metrics["n_samples"],
+                        "n_features": metrics["n_features"],
+                        "validation_mse": metrics["validation_mse"],
+                        "forecast_horizon": metrics["forecast_horizon"],
+                        "time_span_hours": metrics["time_span_hours"],
+                    }
+
+                    # Format output
+                    lines = [
+                        f"NG-RC Model Trained for '{domain}'",
+                        "=" * 40,
+                        f"  Training Samples: {metrics['n_samples']}",
+                        f"  Feature Count: {metrics['n_features']}",
+                        f"  Validation MSE: {metrics['validation_mse']:.6f}",
+                        f"  Forecast Horizon: {metrics['forecast_horizon']} steps",
+                        f"  Time Span: {metrics['time_span_hours']:.1f} hours",
+                        f"  Model ID: {model_id}",
+                    ]
+                    result["formatted"] = "\n".join(lines)
+
+                    return result
+
+        except Exception as e:
+            import traceback
+            return {
+                "error": f"Training failed: {e}",
+                "traceback": traceback.format_exc(),
+            }
+
+    async def _cmd_ngrc_predict(self, args: list) -> dict:
+        """Predict future states using NG-RC model."""
+        if not args:
+            return {"error": "Domain required: /ngrc predict <domain> [steps]"}
+
+        domain = args[0]
+        n_steps = 10
+        if len(args) > 1:
+            try:
+                n_steps = int(args[1])
+            except ValueError:
+                pass
+
+        try:
+            import asyncpg
+            from gaius.engine.services.ngrc import NGRCPredictor
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            import numpy as np
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Load model
+                    row = await conn.fetchrow("""
+                        SELECT model_weights, forecast_horizon_steps
+                        FROM meta.ngrc_models
+                        WHERE domain = $1 AND is_active = TRUE
+                    """, domain)
+
+                    if not row:
+                        return {
+                            "error": f"No trained model for domain '{domain}'",
+                            "hint": f"Train with: /ngrc train {domain}",
+                        }
+
+                    predictor = NGRCPredictor()
+                    predictor.load(row['model_weights'])
+
+                    # Get latest snapshot as starting point
+                    latest = await conn.fetchrow("""
+                        SELECT consensus_embedding, consensus_grid_x, consensus_grid_y
+                        FROM meta.swarm_snapshots
+                        WHERE domain = $1 AND consensus_embedding IS NOT NULL
+                        ORDER BY captured_at DESC
+                        LIMIT 1
+                    """, domain)
+
+                    if not latest:
+                        return {"error": f"No snapshots found for domain '{domain}'"}
+
+                    current_embedding = np.array(latest['consensus_embedding'])
+                    current_grid = (latest['consensus_grid_x'], latest['consensus_grid_y'])
+
+                    # Predict
+                    prediction = predictor.predict(current_embedding, n_steps=n_steps)
+
+                    result = {
+                        "domain": domain,
+                        "n_steps": n_steps,
+                        "reliable_steps": prediction.reliable_steps,
+                        "model_horizon": row['forecast_horizon_steps'],
+                        "start_position": current_grid,
+                        "trajectory": prediction.grid_trajectory,
+                        "end_position": prediction.grid_trajectory[-1] if prediction.grid_trajectory else current_grid,
+                    }
+
+                    # Format output
+                    lines = [
+                        f"NG-RC Prediction for '{domain}'",
+                        "=" * 40,
+                        f"  Starting Position: {current_grid}",
+                        f"  Predicted Steps: {n_steps}",
+                        f"  Reliable Steps: {prediction.reliable_steps}",
+                        "",
+                        "  Trajectory:",
+                    ]
+
+                    for i, pos in enumerate(prediction.grid_trajectory[:20]):  # Limit display
+                        reliability = "✓" if i < prediction.reliable_steps else "?"
+                        lines.append(f"    Step {i}: ({pos[0]}, {pos[1]}) {reliability}")
+
+                    if len(prediction.grid_trajectory) > 20:
+                        lines.append(f"    ... ({len(prediction.grid_trajectory) - 20} more steps)")
+
+                    result["formatted"] = "\n".join(lines)
+                    return result
+
+        except Exception as e:
+            import traceback
+            return {
+                "error": f"Prediction failed: {e}",
+                "traceback": traceback.format_exc(),
+            }
+
+    async def _cmd_ngrc_model(self, args: list) -> dict:
+        """Show NG-RC model details for a domain."""
+        if not args:
+            return {"error": "Domain required: /ngrc model <domain>"}
+
+        domain = args[0]
+
+        try:
+            import asyncpg
+            from gaius.engine.services.ngrc import NGRCPredictor
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow("""
+                        SELECT id, domain, validation_mse, forecast_horizon_steps,
+                               n_training_snapshots, training_time_span_hours,
+                               trained_at, model_weights
+                        FROM meta.ngrc_models
+                        WHERE domain = $1 AND is_active = TRUE
+                    """, domain)
+
+                    if not row:
+                        return {
+                            "error": f"No trained model for domain '{domain}'",
+                            "hint": f"Train with: /ngrc train {domain}",
+                        }
+
+                    # Load model to get internal state
+                    predictor = NGRCPredictor()
+                    predictor.load(row['model_weights'])
+                    state = predictor._state
+
+                    # Check if retraining needed
+                    current_kb_count = await conn.fetchval("""
+                        SELECT kb_document_count
+                        FROM meta.swarm_snapshots
+                        WHERE domain = $1
+                        ORDER BY captured_at DESC
+                        LIMIT 1
+                    """, domain)
+
+                    needs_retrain = predictor.needs_retraining(current_kb_count or 0)
+
+                    result = {
+                        "domain": domain,
+                        "model_id": row['id'],
+                        "validation_mse": row['validation_mse'],
+                        "forecast_horizon": row['forecast_horizon_steps'],
+                        "n_training_snapshots": row['n_training_snapshots'],
+                        "training_hours": row['training_time_span_hours'],
+                        "trained_at": row['trained_at'].isoformat() if row['trained_at'] else None,
+                        "embed_dim": state.embed_dim,
+                        "n_delays": state.n_delays,
+                        "poly_degree": state.poly_degree,
+                        "kb_count_at_training": state.kb_document_count,
+                        "current_kb_count": current_kb_count,
+                        "needs_retrain": needs_retrain,
+                    }
+
+                    # Format output
+                    lines = [
+                        f"NG-RC Model for '{domain}'",
+                        "=" * 40,
+                        "",
+                        "Performance:",
+                        f"  Validation MSE: {row['validation_mse']:.6f}",
+                        f"  Forecast Horizon: {row['forecast_horizon_steps']} steps",
+                        "",
+                        "Training:",
+                        f"  Samples: {row['n_training_snapshots']}",
+                        f"  Time Span: {row['training_time_span_hours']:.1f} hours",
+                        f"  Trained At: {row['trained_at']}",
+                        "",
+                        "Architecture:",
+                        f"  Embedding Dim: {state.embed_dim}",
+                        f"  Time Delays: {state.n_delays}",
+                        f"  Polynomial Degree: {state.poly_degree}",
+                        "",
+                        "KB State:",
+                        f"  At Training: {state.kb_document_count} docs",
+                        f"  Current: {current_kb_count} docs",
+                        f"  Needs Retrain: {'Yes' if needs_retrain else 'No'}",
+                    ]
+
+                    result["formatted"] = "\n".join(lines)
+                    return result
+
+        except Exception as e:
+            return {"error": f"Failed to get model details: {e}"}
 
 
 def main():

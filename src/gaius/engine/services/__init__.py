@@ -1,4 +1,4 @@
-"""Engine services (orchestrator, scheduler, evolution, health, cognition)."""
+"""Engine services (orchestrator, scheduler, evolution, health, cognition, CLT)."""
 
 from .orchestrator_service import (
     CleanupResult,
@@ -40,6 +40,27 @@ from .dataset_service import (
     ProgressEvent,
     ProgressEventType,
 )
+from .clt_service import (
+    AgentCLTState,
+    CLTProjectionBridge,
+    CLTService,
+    SwarmCLTResult,
+)
+from .topology_service import (
+    AgentPosition,
+    DriftMetrics,
+    SemanticAttractor,
+    SwarmSnapshot,
+    TopologyService,
+)
+from .ngrc import (
+    NGRCConfig,
+    NGRCPredictor,
+    NGRCPrediction,
+    NGRCState,
+    predict_future_state,
+    train_ngrc_for_domain,
+)
 
 __all__ = [
     # Orchestrator
@@ -76,4 +97,22 @@ __all__ = [
     "GenerationError",
     "ProgressEvent",
     "ProgressEventType",
+    # CLT
+    "AgentCLTState",
+    "CLTProjectionBridge",
+    "CLTService",
+    "SwarmCLTResult",
+    # Topology
+    "AgentPosition",
+    "DriftMetrics",
+    "SemanticAttractor",
+    "SwarmSnapshot",
+    "TopologyService",
+    # NG-RC
+    "NGRCConfig",
+    "NGRCPredictor",
+    "NGRCPrediction",
+    "NGRCState",
+    "predict_future_state",
+    "train_ngrc_for_domain",
 ]
