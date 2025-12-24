@@ -32,6 +32,7 @@ class ModelCapability(Enum):
     VISION_LANGUAGE = auto()  # Multimodal understanding
     FUNCTION_CALLING = auto()  # Tool use
     LONG_CONTEXT = auto()  # Extended context window
+    LATENT_MAS_CLT = auto()  # Cross-Layer Transcoder for latent-space operations
 
 
 class TaskType(Enum):
@@ -53,6 +54,9 @@ class TaskType(Enum):
     SWARM_LEADER = "swarm_leader"
     SWARM_AGENT = "swarm_agent"
     ADVERSARIAL = "adversarial"
+
+    # Interpretability / Latent operations
+    CLT_TRACING = "clt_tracing"  # Circuit tracing with CLT
 
 
 @dataclass
@@ -496,6 +500,26 @@ GPT4O_MINI = ModelSpec(
 )
 
 
+# Cross-Layer Transcoder (CLT) for interpretable features
+# Uses BluelightAI's circuit-tracer with Qwen3
+CLT_QWEN3_1_7B = ModelSpec(
+    model_id="bluelightai/clt-qwen3-1.7b-base-20k",
+    name="CLT Qwen3 1.7B",
+    provider="clt",  # Custom provider for CLT models
+    capabilities=[ModelCapability.LATENT_MAS_CLT],
+    task_scores={
+        TaskType.CLT_TRACING: 1.0,
+    },
+    context_length=32768,
+    parameters_b=1.7,
+    memory_mb=6000,  # ~4GB base + ~2GB CLT transcoders
+    default_temperature=0.0,  # Deterministic for interpretability
+    default_max_tokens=1024,
+    description="Cross-Layer Transcoder for Qwen3-1.7B with 20K features per layer",
+    tags=["clt", "interpretability", "circuit-tracing", "latent-mas"],
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Registry
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -615,6 +639,8 @@ class ModelRegistry:
             # API models
             GROK_2,
             GPT4O_MINI,
+            # CLT models (interpretability)
+            CLT_QWEN3_1_7B,
         ]
         for model in defaults:
             self.register(model)
