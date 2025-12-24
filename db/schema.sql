@@ -1,4 +1,4 @@
-\restrict 498eKEK6RnqaSqhJjKHxMJ7kDrPFyQyp9IHybiuEr2OQAFpL7P9R27w9hsQVUcG
+\restrict 2B70jyfyUTCJ1QjvNlDd6cibFKrc5aWyWVh9bCa9OhbbyHOH6fyeikDfGHco8vN
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -400,6 +400,30 @@ $$;
 
 
 --
+-- Name: cleanup_theta_consolidation_history(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.cleanup_theta_consolidation_history() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_deleted INTEGER := 0;
+BEGIN
+    WITH ranked_runs AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY started_at DESC) as rn
+        FROM theta_consolidation_runs
+        WHERE status IN ('completed', 'failed')
+    )
+    DELETE FROM theta_consolidation_runs
+    WHERE id IN (SELECT id FROM ranked_runs WHERE rn > 100);
+
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    RETURN v_deleted;
+END;
+$$;
+
+
+--
 -- Name: complete_archive_rotation(integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -449,6 +473,31 @@ BEGIN
         result = p_result,
         error = p_error
     WHERE id = p_task_id;
+
+    RETURN FOUND;
+END;
+$$;
+
+
+--
+-- Name: complete_theta_consolidation(integer, real, real, integer, integer, integer, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.complete_theta_consolidation(p_job_id integer, p_urgency real DEFAULT NULL::real, p_drift real DEFAULT NULL::real, p_candidates_evaluated integer DEFAULT 0, p_candidates_selected integer DEFAULT 0, p_documents_augmented integer DEFAULT 0, p_error text DEFAULT NULL::text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE theta_consolidation_runs
+    SET status = CASE WHEN p_error IS NULL THEN 'completed' ELSE 'failed' END,
+        completed_at = NOW(),
+        urgency = p_urgency,
+        drift = p_drift,
+        candidates_evaluated = p_candidates_evaluated,
+        candidates_selected = p_candidates_selected,
+        documents_augmented = p_documents_augmented,
+        error = p_error,
+        metadata = metadata || jsonb_build_object('duration_ms', EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000)
+    WHERE id = p_job_id AND status = 'running';
 
     RETURN FOUND;
 END;
@@ -707,6 +756,24 @@ BEGIN
     JOIN content_items ci ON sl.content_item_id = ci.id
     JOIN sources s ON ci.source_id = s.id
     WHERE sl.kb_path = p_kb_path;
+END;
+$$;
+
+
+--
+-- Name: get_pending_theta_consolidations(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_pending_theta_consolidations() RETURNS TABLE(job_id integer, slice_id text, scheduled_at timestamp with time zone)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT id, t.slice_id, t.started_at
+    FROM theta_consolidation_runs t
+    WHERE status = 'scheduled'
+    ORDER BY started_at ASC
+    LIMIT 10;  -- Process up to 10 at a time
 END;
 $$;
 
@@ -1075,6 +1142,43 @@ $$;
 
 
 --
+-- Name: schedule_theta_consolidation(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.schedule_theta_consolidation(p_slice_id text DEFAULT NULL::text) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_slice_id TEXT;
+    v_job_id INTEGER;
+    v_existing INTEGER;
+BEGIN
+    -- Default to current week if not specified
+    v_slice_id := COALESCE(p_slice_id, to_char(NOW(), 'YYYY-"W"IW'));
+
+    -- Check for existing pending job for this slice
+    SELECT id INTO v_existing
+    FROM theta_consolidation_runs
+    WHERE slice_id = v_slice_id
+      AND status IN ('scheduled', 'running');
+
+    IF v_existing IS NOT NULL THEN
+        RAISE NOTICE 'Consolidation already pending for slice %', v_slice_id;
+        RETURN NULL;
+    END IF;
+
+    -- Create new scheduled job
+    INSERT INTO theta_consolidation_runs (slice_id, status, metadata)
+    VALUES (v_slice_id, 'scheduled', jsonb_build_object('scheduled_by', 'pg_cron', 'scheduled_at', NOW()))
+    RETURNING id INTO v_job_id;
+
+    RAISE NOTICE 'Scheduled consolidation job % for slice %', v_job_id, v_slice_id;
+    RETURN v_job_id;
+END;
+$$;
+
+
+--
 -- Name: set_active_domain(text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1134,6 +1238,24 @@ BEGIN
     RETURNING id INTO v_archive_id;
 
     RETURN v_archive_id;
+END;
+$$;
+
+
+--
+-- Name: start_theta_consolidation(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.start_theta_consolidation(p_job_id integer) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE theta_consolidation_runs
+    SET status = 'running',
+        started_at = NOW()
+    WHERE id = p_job_id AND status = 'scheduled';
+
+    RETURN FOUND;
 END;
 $$;
 
@@ -1743,6 +1865,63 @@ CREATE TABLE meta.kb_topology (
 
 
 --
+-- Name: ngrc_models; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.ngrc_models (
+    id integer NOT NULL,
+    domain text NOT NULL,
+    trained_at timestamp with time zone DEFAULT now(),
+    n_training_snapshots integer,
+    training_time_span_hours double precision,
+    reservoir_size integer DEFAULT 500,
+    spectral_radius double precision DEFAULT 0.9,
+    input_scaling double precision DEFAULT 0.1,
+    leaking_rate double precision DEFAULT 0.3,
+    model_weights bytea,
+    kb_modulation_weights bytea,
+    validation_mse double precision,
+    forecast_horizon_steps integer,
+    stability_radius double precision,
+    is_active boolean DEFAULT true
+);
+
+
+--
+-- Name: TABLE ngrc_models; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.ngrc_models IS 'NG-RC models that learn dx/dt = f(x, KB(t)). Enables forward dynamics prediction without LLM calls.';
+
+
+--
+-- Name: COLUMN ngrc_models.kb_modulation_weights; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.ngrc_models.kb_modulation_weights IS 'Maps KB state to flow field modulation for non-autonomous dynamics: dx/dt = f(x, KB(t))';
+
+
+--
+-- Name: ngrc_models_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.ngrc_models_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: ngrc_models_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.ngrc_models_id_seq OWNED BY meta.ngrc_models.id;
+
+
+--
 -- Name: nifi_flows; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -1781,6 +1960,56 @@ ALTER SEQUENCE meta.nifi_flows_id_seq OWNED BY meta.nifi_flows.id;
 
 
 --
+-- Name: semantic_attractors; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.semantic_attractors (
+    id integer NOT NULL,
+    domain text NOT NULL,
+    name text NOT NULL,
+    description text,
+    current_embedding double precision[],
+    current_grid_x integer,
+    current_grid_y integer,
+    last_observed timestamp with time zone DEFAULT now(),
+    position_history jsonb,
+    mean_well_depth double precision,
+    total_drift_distance double precision,
+    first_observed timestamp with time zone DEFAULT now(),
+    is_active boolean DEFAULT true,
+    merged_into_id integer,
+    split_from_id integer
+);
+
+
+--
+-- Name: TABLE semantic_attractors; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.semantic_attractors IS 'Named stable states in semantic space. Tracks ontological drift as meanings evolve.';
+
+
+--
+-- Name: semantic_attractors_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.semantic_attractors_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: semantic_attractors_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.semantic_attractors_id_seq OWNED BY meta.semantic_attractors.id;
+
+
+--
 -- Name: semantic_regions; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -1816,6 +2045,106 @@ ALTER SEQUENCE meta.semantic_regions_region_id_seq OWNED BY meta.semantic_region
 
 
 --
+-- Name: swarm_agent_positions; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.swarm_agent_positions (
+    id integer NOT NULL,
+    snapshot_id integer NOT NULL,
+    agent_role text NOT NULL,
+    embedding double precision[],
+    grid_x integer,
+    grid_y integer,
+    top_features jsonb,
+    distance_from_consensus double precision,
+    trace_history jsonb,
+    CONSTRAINT valid_agent_grid_x CHECK (((grid_x >= 0) AND (grid_x <= 18))),
+    CONSTRAINT valid_agent_grid_y CHECK (((grid_y >= 0) AND (grid_y <= 18)))
+);
+
+
+--
+-- Name: TABLE swarm_agent_positions; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.swarm_agent_positions IS 'Individual agent positions within a swarm snapshot. Captures CLT embeddings and grid positions.';
+
+
+--
+-- Name: swarm_agent_positions_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.swarm_agent_positions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: swarm_agent_positions_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.swarm_agent_positions_id_seq OWNED BY meta.swarm_agent_positions.id;
+
+
+--
+-- Name: swarm_snapshots; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.swarm_snapshots (
+    snapshot_id integer NOT NULL,
+    run_id uuid NOT NULL,
+    domain text NOT NULL,
+    captured_at timestamp with time zone DEFAULT now(),
+    kb_version text,
+    kb_document_count integer,
+    kb_last_modified timestamp with time zone,
+    consensus_embedding double precision[],
+    consensus_variance double precision,
+    consensus_grid_x integer,
+    consensus_grid_y integer,
+    h0_count integer,
+    h1_count integer,
+    position_entropy double precision,
+    feature_entropy double precision,
+    n_agents integer,
+    query_text text,
+    CONSTRAINT valid_grid_x CHECK (((consensus_grid_x >= 0) AND (consensus_grid_x <= 18))),
+    CONSTRAINT valid_grid_y CHECK (((consensus_grid_y >= 0) AND (consensus_grid_y <= 18)))
+);
+
+
+--
+-- Name: TABLE swarm_snapshots; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.swarm_snapshots IS 'Point-in-time capture of swarm state. Each run is a snapshot of a living topology.';
+
+
+--
+-- Name: swarm_snapshots_snapshot_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.swarm_snapshots_snapshot_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: swarm_snapshots_snapshot_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.swarm_snapshots_snapshot_id_seq OWNED BY meta.swarm_snapshots.snapshot_id;
+
+
+--
 -- Name: sync_watermarks; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -1825,6 +2154,72 @@ CREATE TABLE meta.sync_watermarks (
     last_event_id bigint,
     records_synced integer DEFAULT 0
 );
+
+
+--
+-- Name: topology_drift; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.topology_drift (
+    id integer NOT NULL,
+    domain text NOT NULL,
+    computed_at timestamp with time zone DEFAULT now(),
+    time_window_hours integer DEFAULT 24,
+    n_snapshots integer,
+    centroid_drift_velocity double precision[],
+    drift_magnitude double precision,
+    drift_direction_grid_x double precision,
+    drift_direction_grid_y double precision,
+    well_depth double precision,
+    lyapunov_exponent double precision,
+    mean_variance double precision,
+    variance_trend double precision,
+    kb_growth_rate double precision,
+    kb_modification_rate double precision,
+    drift_anomaly_score double precision,
+    is_bifurcation boolean DEFAULT false
+);
+
+
+--
+-- Name: TABLE topology_drift; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.topology_drift IS 'Tracks how consensus positions change over time. Enables drift detection and well-depth measurement.';
+
+
+--
+-- Name: COLUMN topology_drift.well_depth; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.topology_drift.well_depth IS '1/variance - measures entrenchment. High = deep well = stable but potentially stuck.';
+
+
+--
+-- Name: COLUMN topology_drift.lyapunov_exponent; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.topology_drift.lyapunov_exponent IS 'Negative = stable attractor, positive = chaotic/unstable, near-zero = edge of chaos.';
+
+
+--
+-- Name: topology_drift_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.topology_drift_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: topology_drift_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.topology_drift_id_seq OWNED BY meta.topology_drift.id;
 
 
 --
@@ -9623,6 +10018,47 @@ ALTER TABLE public.task_history ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDEN
 
 
 --
+-- Name: theta_consolidation_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.theta_consolidation_runs (
+    id integer NOT NULL,
+    slice_id text NOT NULL,
+    started_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone,
+    urgency real,
+    drift real,
+    candidates_evaluated integer DEFAULT 0,
+    candidates_selected integer DEFAULT 0,
+    documents_augmented integer DEFAULT 0,
+    status text DEFAULT 'scheduled'::text,
+    error text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    CONSTRAINT theta_consolidation_runs_status_check CHECK ((status = ANY (ARRAY['scheduled'::text, 'running'::text, 'completed'::text, 'failed'::text])))
+);
+
+
+--
+-- Name: theta_consolidation_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.theta_consolidation_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: theta_consolidation_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.theta_consolidation_runs_id_seq OWNED BY public.theta_consolidation_runs.id;
+
+
+--
 -- Name: timeline; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -10435,6 +10871,27 @@ CREATE VIEW public.v_tasks AS
 
 
 --
+-- Name: v_theta_consolidation_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_theta_consolidation_status AS
+ SELECT slice_id,
+    status,
+    started_at,
+    completed_at,
+    urgency,
+    drift,
+    candidates_evaluated,
+    candidates_selected,
+    documents_augmented,
+    error,
+    EXTRACT(epoch FROM (COALESCE(completed_at, now()) - started_at)) AS duration_seconds
+   FROM public.theta_consolidation_runs
+  ORDER BY started_at DESC
+ LIMIT 20;
+
+
+--
 -- Name: v_users; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -10675,6 +11132,13 @@ ALTER TABLE ONLY meta.document_clusters ALTER COLUMN id SET DEFAULT nextval('met
 
 
 --
+-- Name: ngrc_models id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.ngrc_models ALTER COLUMN id SET DEFAULT nextval('meta.ngrc_models_id_seq'::regclass);
+
+
+--
 -- Name: nifi_flows id; Type: DEFAULT; Schema: meta; Owner: -
 --
 
@@ -10682,10 +11146,38 @@ ALTER TABLE ONLY meta.nifi_flows ALTER COLUMN id SET DEFAULT nextval('meta.nifi_
 
 
 --
+-- Name: semantic_attractors id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.semantic_attractors ALTER COLUMN id SET DEFAULT nextval('meta.semantic_attractors_id_seq'::regclass);
+
+
+--
 -- Name: semantic_regions region_id; Type: DEFAULT; Schema: meta; Owner: -
 --
 
 ALTER TABLE ONLY meta.semantic_regions ALTER COLUMN region_id SET DEFAULT nextval('meta.semantic_regions_region_id_seq'::regclass);
+
+
+--
+-- Name: swarm_agent_positions id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.swarm_agent_positions ALTER COLUMN id SET DEFAULT nextval('meta.swarm_agent_positions_id_seq'::regclass);
+
+
+--
+-- Name: swarm_snapshots snapshot_id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.swarm_snapshots ALTER COLUMN snapshot_id SET DEFAULT nextval('meta.swarm_snapshots_snapshot_id_seq'::regclass);
+
+
+--
+-- Name: topology_drift id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.topology_drift ALTER COLUMN id SET DEFAULT nextval('meta.topology_drift_id_seq'::regclass);
 
 
 --
@@ -11011,6 +11503,13 @@ ALTER TABLE ONLY public.summary_lineage ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: theta_consolidation_runs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.theta_consolidation_runs ALTER COLUMN id SET DEFAULT nextval('public.theta_consolidation_runs_id_seq'::regclass);
+
+
+--
 -- Name: topic_models id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -11121,6 +11620,14 @@ ALTER TABLE ONLY meta.kb_topology
 
 
 --
+-- Name: ngrc_models ngrc_models_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.ngrc_models
+    ADD CONSTRAINT ngrc_models_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: nifi_flows nifi_flows_flow_id_key; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -11137,6 +11644,14 @@ ALTER TABLE ONLY meta.nifi_flows
 
 
 --
+-- Name: semantic_attractors semantic_attractors_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.semantic_attractors
+    ADD CONSTRAINT semantic_attractors_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: semantic_regions semantic_regions_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -11145,11 +11660,35 @@ ALTER TABLE ONLY meta.semantic_regions
 
 
 --
+-- Name: swarm_agent_positions swarm_agent_positions_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.swarm_agent_positions
+    ADD CONSTRAINT swarm_agent_positions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: swarm_snapshots swarm_snapshots_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.swarm_snapshots
+    ADD CONSTRAINT swarm_snapshots_pkey PRIMARY KEY (snapshot_id);
+
+
+--
 -- Name: sync_watermarks sync_watermarks_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
 ALTER TABLE ONLY meta.sync_watermarks
     ADD CONSTRAINT sync_watermarks_pkey PRIMARY KEY (sync_type);
+
+
+--
+-- Name: topology_drift topology_drift_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.topology_drift
+    ADD CONSTRAINT topology_drift_pkey PRIMARY KEY (id);
 
 
 --
@@ -12905,6 +13444,14 @@ ALTER TABLE ONLY public.task_history
 
 
 --
+-- Name: theta_consolidation_runs theta_consolidation_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.theta_consolidation_runs
+    ADD CONSTRAINT theta_consolidation_runs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: timeline timeline_entity_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -13121,6 +13668,34 @@ ALTER TABLE ONLY public.view_log
 
 
 --
+-- Name: idx_agent_positions_role; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_agent_positions_role ON meta.swarm_agent_positions USING btree (agent_role);
+
+
+--
+-- Name: idx_agent_positions_snapshot; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_agent_positions_snapshot ON meta.swarm_agent_positions USING btree (snapshot_id);
+
+
+--
+-- Name: idx_attractors_domain; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_attractors_domain ON meta.semantic_attractors USING btree (domain);
+
+
+--
+-- Name: idx_attractors_name; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_attractors_name ON meta.semantic_attractors USING btree (name);
+
+
+--
 -- Name: idx_meta_agent_perf_date; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -13195,6 +13770,55 @@ CREATE INDEX idx_meta_kb_topology_time ON meta.kb_topology USING btree (computed
 --
 
 CREATE INDEX idx_meta_nifi_flows_status ON meta.nifi_flows USING btree (status);
+
+
+--
+-- Name: idx_ngrc_models_active_domain; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ngrc_models_active_domain ON meta.ngrc_models USING btree (domain) WHERE (is_active = true);
+
+
+--
+-- Name: idx_ngrc_models_domain; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_ngrc_models_domain ON meta.ngrc_models USING btree (domain);
+
+
+--
+-- Name: idx_swarm_snapshots_captured; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_swarm_snapshots_captured ON meta.swarm_snapshots USING btree (captured_at DESC);
+
+
+--
+-- Name: idx_swarm_snapshots_domain; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_swarm_snapshots_domain ON meta.swarm_snapshots USING btree (domain);
+
+
+--
+-- Name: idx_swarm_snapshots_domain_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_swarm_snapshots_domain_time ON meta.swarm_snapshots USING btree (domain, captured_at DESC);
+
+
+--
+-- Name: idx_topology_drift_domain; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_topology_drift_domain ON meta.topology_drift USING btree (domain);
+
+
+--
+-- Name: idx_topology_drift_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_topology_drift_time ON meta.topology_drift USING btree (computed_at DESC);
 
 
 --
@@ -15345,6 +15969,34 @@ CREATE INDEX idx_task_history_started_at ON public.task_history USING btree (sta
 
 
 --
+-- Name: idx_theta_consolidation_slice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_theta_consolidation_slice ON public.theta_consolidation_runs USING btree (slice_id);
+
+
+--
+-- Name: idx_theta_consolidation_started; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_theta_consolidation_started ON public.theta_consolidation_runs USING btree (started_at);
+
+
+--
+-- Name: idx_theta_consolidation_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_theta_consolidation_status ON public.theta_consolidation_runs USING btree (status);
+
+
+--
+-- Name: idx_theta_unique_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_theta_unique_pending ON public.theta_consolidation_runs USING btree (slice_id) WHERE (status = ANY (ARRAY['scheduled'::text, 'running'::text]));
+
+
+--
 -- Name: idx_thoughts_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15714,6 +16366,30 @@ ALTER TABLE ONLY meta.data_dependencies
 
 ALTER TABLE ONLY meta.document_clusters
     ADD CONSTRAINT document_clusters_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.kb_topology(snapshot_id);
+
+
+--
+-- Name: semantic_attractors semantic_attractors_merged_into_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.semantic_attractors
+    ADD CONSTRAINT semantic_attractors_merged_into_id_fkey FOREIGN KEY (merged_into_id) REFERENCES meta.semantic_attractors(id);
+
+
+--
+-- Name: semantic_attractors semantic_attractors_split_from_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.semantic_attractors
+    ADD CONSTRAINT semantic_attractors_split_from_id_fkey FOREIGN KEY (split_from_id) REFERENCES meta.semantic_attractors(id);
+
+
+--
+-- Name: swarm_agent_positions swarm_agent_positions_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.swarm_agent_positions
+    ADD CONSTRAINT swarm_agent_positions_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.swarm_snapshots(snapshot_id) ON DELETE CASCADE;
 
 
 --
@@ -17088,7 +17764,7 @@ ALTER TABLE ONLY public.topic_models
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 498eKEK6RnqaSqhJjKHxMJ7kDrPFyQyp9IHybiuEr2OQAFpL7P9R27w9hsQVUcG
+\unrestrict 2B70jyfyUTCJ1QjvNlDd6cibFKrc5aWyWVh9bCa9OhbbyHOH6fyeikDfGHco8vN
 
 
 --
@@ -17122,4 +17798,8 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251221000001'),
     ('20251222000001'),
     ('20251222000002'),
-    ('20251222000003');
+    ('20251222000003'),
+    ('20251222000004'),
+    ('20251222000005'),
+    ('20251223000001'),
+    ('20251224000001');

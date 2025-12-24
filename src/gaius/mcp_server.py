@@ -58,6 +58,11 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 - fmea_get_controls: Get preventive/detective/mitigative controls from KB heuristics
 - fmea_map_health_check: Map health check to failure mode ID
 
+**ThetaAgent (Neuromorphic Situational Awareness)**
+- theta_sitrep: Generate situational report for time horizon
+- theta_consolidate: Run NVAR-mediated consolidation cycle
+- theta_consolidation_stats: Get consolidation statistics
+
 **Development**
 - reload_modules: Hot-reload Python modules without restart
 
@@ -3298,6 +3303,228 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- ThetaAgent Operations ---
+    # Neuromorphic situational awareness and consolidation
+    # All calls route through gRPC to gaius-engine
+
+    @server.tool()
+    async def theta_sitrep(horizon: str = "day") -> str:
+        """Generate situational report for time horizon.
+
+        ThetaAgent provides /sitrep as the single pane of glass for daily
+        situational awareness, synthesizing objectives, thoughts, agenda,
+        and evolving Gaius capabilities.
+
+        Args:
+            horizon: Temporal horizon (day, week, quarter, open)
+        """
+        try:
+            client = await _get_engine_client()
+            if client:
+                result = await client.call("ThetaAgent", "sitrep", {"horizon": horizon})
+                return json.dumps(result, indent=2, default=str)
+
+            # Fallback to direct access if engine not available
+            from .agents.theta import ThetaAgent
+
+            agent = ThetaAgent(kb_root=get_kb_root())
+            sitrep = await agent.sitrep(horizon=horizon)
+
+            return json.dumps(sitrep.to_dict(), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def theta_consolidate(
+        temporal_slice: str = "",
+        max_candidates: int = 10,
+    ) -> str:
+        """Run a consolidation cycle for cross-temporal linking.
+
+        Uses NVAR-mediated theta dynamics to detect drift between temporal
+        slices, then applies BERTSubs subsumption inference to discover
+        relationships. Selected candidates (via Knowledge Gradient policy)
+        are reified as wikilinks and action:search links in KB documents.
+
+        Requires DeepOnto with functional JVM for BERTSubs inference.
+        Will fail-fast if DeepOnto is unavailable.
+
+        Args:
+            temporal_slice: Slice ID (e.g., "2025-W52"). If empty, uses current week.
+            max_candidates: Maximum candidates to evaluate per cycle.
+        """
+        try:
+            client = await _get_engine_client()
+            if client:
+                result = await client.call("ThetaAgent", "consolidate", {
+                    "temporal_slice": temporal_slice,
+                    "max_candidates": max_candidates,
+                    "research_mode": True,
+                })
+                return json.dumps(result, indent=2, default=str)
+
+            # Fallback to direct access if engine not available
+            from .agents.theta import ThetaAgent
+
+            agent = ThetaAgent(kb_root=get_kb_root(), research_mode=True)
+            result = await agent.run_consolidation(
+                temporal_slice=temporal_slice or None,
+                max_candidates=max_candidates,
+            )
+
+            return json.dumps(result.to_dict(), indent=2)
+        except Exception as e:
+            # Include Guru Meditation code for DeepOnto errors
+            error_msg = str(e)
+            if "DEEPONTO_UNAVAILABLE" in error_msg:
+                return json.dumps({
+                    "error": error_msg,
+                    "guru_meditation": "#THETA.00000001.DEEPONTO_UNAVAILABLE",
+                    "remediation": "uv add deeponto jpype1 && ensure Java 11+ installed",
+                }, indent=2)
+            return json.dumps({"error": error_msg}, indent=2)
+
+    @server.tool()
+    async def theta_consolidation_stats() -> str:
+        """Get ThetaAgent consolidation statistics.
+
+        Returns NVAR dynamics state, Knowledge Gradient policy stats,
+        effectiveness tracker trends, and subsumption inferencer status.
+        """
+        try:
+            client = await _get_engine_client()
+            if client:
+                result = await client.call("ThetaAgent", "consolidation_stats", {})
+                return json.dumps(result, indent=2, default=str)
+
+            # Fallback to direct access if engine not available
+            from .agents.theta import ThetaAgent
+
+            agent = ThetaAgent(kb_root=get_kb_root())
+            stats = agent.get_consolidation_stats()
+
+            return json.dumps(stats, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- CLT (Cross-Layer Transcoders) ---
+    # Interpretable sparse feature extraction and circuit tracing
+    # All calls route through gRPC to gaius-engine (NO FALLBACKS)
+
+    @server.tool()
+    async def clt_status() -> str:
+        """Get CLT model availability and status.
+
+        Returns whether circuit-tracer is available, list of supported models,
+        and currently loaded model (if any).
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#CLT.00000002.ENGINE_UNAVAILABLE",
+                    "remediation": "Start gaius-engine: devenv processes up",
+                }, indent=2)
+
+            result = await client.call("CLT", "status", {})
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def clt_extract(
+        text: str,
+        model_name: str = "qwen3-1.7b",
+        layer_indices: str = "",
+        top_k: int = 115,
+        device: str = "cuda",
+    ) -> str:
+        """Extract sparse features from text using Cross-Layer Transcoders.
+
+        Uses BluelightAI's CLT for Qwen3 to extract interpretable sparse features.
+        Returns ~115 active features per layer from a 20,480-dimensional feature space.
+
+        Args:
+            text: Input text to analyze
+            model_name: CLT model name (default: qwen3-1.7b)
+            layer_indices: Comma-separated layer indices (empty = all layers)
+            top_k: Top-k features per position (default: 115)
+            device: Device to use (cuda, cpu)
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#CLT.00000002.ENGINE_UNAVAILABLE",
+                    "remediation": "Start gaius-engine: devenv processes up",
+                }, indent=2)
+
+            # Parse layer indices
+            parsed_layers = []
+            if layer_indices:
+                parsed_layers = [int(x.strip()) for x in layer_indices.split(",")]
+
+            result = await client.call("CLT", "extract", {
+                "text": text,
+                "model_name": model_name,
+                "layer_indices": parsed_layers,
+                "top_k": top_k,
+                "device": device,
+            })
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def clt_attribute(
+        text: str,
+        model_name: str = "qwen3-1.7b",
+        target_positions: str = "",
+        threshold: float = 0.01,
+        device: str = "cuda",
+    ) -> str:
+        """Compute attribution graph showing sparse feature influence paths.
+
+        Traces which sparse features influence output at target positions
+        using A_{s->t} = a_s * ||w_{s->t}|| attribution weights.
+
+        Returns edges representing cross-layer feature influence and a
+        GraphViz DOT representation for visualization.
+
+        Args:
+            text: Input text to analyze
+            model_name: CLT model name (default: qwen3-1.7b)
+            target_positions: Comma-separated token positions (empty = last position)
+            threshold: Minimum weight to include edge (default: 0.01)
+            device: Device to use (cuda, cpu)
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#CLT.00000002.ENGINE_UNAVAILABLE",
+                    "remediation": "Start gaius-engine: devenv processes up",
+                }, indent=2)
+
+            # Parse target positions
+            parsed_positions = []
+            if target_positions:
+                parsed_positions = [int(x.strip()) for x in target_positions.split(",")]
+
+            result = await client.call("CLT", "attribute", {
+                "text": text,
+                "model_name": model_name,
+                "target_positions": parsed_positions,
+                "threshold": threshold,
+                "device": device,
+            })
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- Session Operations ---
     # Session lifecycle and research thread management
 
@@ -3976,6 +4203,103 @@ Domain: {domain or 'general'}
                 },
                 indent=2,
             )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def run_clt_swarm(
+        query: str,
+        domain: str = "",
+        num_agents: int = 7,
+    ) -> str:
+        """Run swarm analysis with CLT-based interpretable collaboration.
+
+        Uses Cross-Layer Transcoders (CLT) for interpretable agent communication:
+        - Agents share sparse features (~115 active per layer) instead of text
+        - Visible consensus (which features agents agree on)
+        - Feature overlap shows how aligned agents are
+
+        Provides interpretability not available with dense embedding collaboration.
+
+        Args:
+            query: The query or topic to analyze
+            domain: Domain context (pension, kudu, etc.)
+            num_agents: Number of specialist agents
+        """
+        try:
+            from .agents.swarm import get_clt_swarm_manager
+            from .agents.roles import SWARM_ROLES
+
+            # Select subset of roles if requested
+            roles = list(SWARM_ROLES.keys())[:num_agents]
+
+            manager = get_clt_swarm_manager(roles=roles)
+            result = await manager.run_round(domain=domain or query, context=query)
+
+            # Format output with CLT-specific fields
+            perspectives = []
+            for response in result.responses:
+                # Get top features for this agent
+                agent_feats = result.agent_features.get(response.role.value, [])
+                top_feature_ids = [f[0] for f in agent_feats[:5]]
+
+                perspectives.append({
+                    "agent": response.name,
+                    "role": response.role.value,
+                    "analysis": response.content[:500] if response.succeeded else None,
+                    "tokens": response.tokens,
+                    "succeeded": response.succeeded,
+                    "top_features": top_feature_ids,
+                    "error": response.error,
+                })
+
+            # Format consensus features
+            top_consensus = sorted(
+                result.consensus_features.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+
+            # Format feature overlap
+            overlap_formatted = {
+                f"{a1}↔{a2}": round(sim, 3)
+                for (a1, a2), sim in result.feature_overlap.items()
+            }
+
+            return json.dumps(
+                {
+                    "query": query,
+                    "domain": domain,
+                    "synthesis": result.consensus,
+                    "perspectives": perspectives,
+                    "success_rate": round(result.success_rate, 3),
+                    "tokens_used": result.total_tokens,
+                    "latency_ms": result.total_latency_ms,
+                    "clt_collaboration": True,
+                    "consensus_features": [
+                        {"feature_idx": f, "score": round(s, 4)}
+                        for f, s in top_consensus
+                    ],
+                    "agent_feature_overlap": overlap_formatted,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def clt_memory_stats() -> str:
+        """Get CLT latent memory statistics.
+
+        Returns info about stored CLT thoughts including feature counts.
+        """
+        try:
+            from .agents.latent import get_clt_memory
+
+            memory = get_clt_memory()
+            stats = await memory.get_clt_stats()
+
+            return json.dumps(stats, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

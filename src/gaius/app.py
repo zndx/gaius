@@ -1406,12 +1406,14 @@ class GaiusApp(App):
             content.show_file("error.txt", f"Swarm error: {e}")
 
     async def _complete_swarm_analysis(self, domain: str) -> None:
-        """Complete swarm analysis asynchronously via gRPC engine.
+        """Complete CLT-based swarm analysis via Engine gRPC.
 
-        Uses streaming to show real-time progress updates. The stream
-        handles backend wait internally, so commands submitted during
-        engine initialization will wait with status updates rather than
-        timing out.
+        Uses Cross-Layer Transcoders for interpretable agent collaboration:
+        - Agents share sparse features (~115 active per layer)
+        - Semantic positioning on same grid as KB documents
+        - Time-delay trace embedding for exploration visualization
+
+        All CLT processing happens in the Engine - no fallbacks.
         """
         from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
         from .agents.swarm import SwarmRoundResult, AgentResponse
@@ -1423,10 +1425,9 @@ class GaiusApp(App):
         def on_progress(message: str, progress: float) -> None:
             """Update content panel with streaming progress."""
             pct = int(progress * 100)
-            status_text = f"Swarm Analysis: {domain}\n\n"
+            status_text = f"CLT Swarm Analysis: {domain}\n\n"
             status_text += f"Progress: {pct}%\n"
             status_text += f"Status: {message}\n"
-            # Show progress bar
             bar_width = 30
             filled = int(progress * bar_width)
             bar = "[" + "=" * filled + ">" + " " * (bar_width - filled - 1) + "]"
@@ -1435,12 +1436,16 @@ class GaiusApp(App):
 
         try:
             if not use_engine_proxy():
-                raise RuntimeError("Gaius engine not running. Start with: devenv up -d")
+                raise RuntimeError(
+                    "Gaius engine not running.\n"
+                    "  Try: devenv up -d\n"
+                    "  #EN.00000001.NOTRUNNING"
+                )
 
             scheduler = await get_scheduler_proxy()
-            # run_swarm now uses streaming internally with progress callback
-            # KB persistence happens automatically in SchedulerProxy
-            raw_results, saved_path = await scheduler.run_swarm(
+
+            # Run CLT swarm via engine (CLT is the default, no fallback)
+            raw_results, saved_path = await scheduler.run_swarm_clt(
                 domain=domain,
                 on_progress=on_progress,
             )
@@ -1455,7 +1460,7 @@ class GaiusApp(App):
                 try:
                     role_enum = AgentRole(role_name)
                 except ValueError:
-                    role_enum = AgentRole.LEADER  # fallback
+                    role_enum = AgentRole.LEADER
 
                 response = AgentResponse(
                     role=role_enum,
@@ -1470,7 +1475,6 @@ class GaiusApp(App):
                 total_tokens += response.tokens
                 total_latency += response.latency_ms
 
-                # Extract consensus from Leader
                 if role_name == "Leader" and response.succeeded:
                     consensus = response.content
 
@@ -1482,9 +1486,14 @@ class GaiusApp(App):
                 total_latency_ms=total_latency,
                 consensus=consensus,
             )
-            self._apply_swarm_results(result, saved_path=saved_path)
+
+            # Apply results with CLT-specific data from engine
+            self._apply_clt_swarm_results(
+                result,
+                clt_data=raw_results.get("_clt", {}),
+                saved_path=saved_path,
+            )
         except Exception as e:
-            content = self.query_one("#content-panel", ContentPanel)
             content.show_file("error.txt", f"Swarm error: {e}")
 
     def _apply_swarm_results(self, result, saved_path: str = "") -> None:
@@ -1558,6 +1567,167 @@ class GaiusApp(App):
                 lines.append(f"\n{preview}\n")
             else:
                 lines.append(f"\n*Error: {response.error}*\n")
+
+        if result.consensus:
+            lines.extend([
+                "",
+                "## Consensus (Leader)",
+                "",
+                result.consensus,
+            ])
+
+        content.show_file("swarm-result.md", "\n".join(lines))
+        self._refresh_grid()
+        self._update_status()
+
+    def _apply_clt_swarm_results(
+        self,
+        result,
+        clt_data: dict | None = None,
+        saved_path: str = "",
+    ) -> None:
+        """Apply CLT swarm results to state and UI with traces.
+
+        All CLT data comes from the Engine via gRPC - no local CLT processing.
+
+        Args:
+            result: SwarmRoundResult with agent responses
+            clt_data: CLT-specific data from engine (_clt field in response)
+            saved_path: Path where results were saved in KB
+        """
+        import asyncio
+        from .core.state import ViewMode
+
+        content = self.query_one("#content-panel", ContentPanel)
+        think = self.query_one("#think-panel", ThinkPanel)
+
+        clt_data = clt_data or {}
+        positions = clt_data.get("positions", [])
+        traces = clt_data.get("traces", {})
+        consensus_features = clt_data.get("consensus_features", {})
+        feature_overlap = clt_data.get("feature_overlap", {})
+        agent_features = clt_data.get("agent_features", {})
+
+        # Log swarm activity
+        asyncio.create_task(
+            log_activity(
+                ActivityType.SWARM_RUN,
+                profile_name=self.config.profile,
+                domain=result.domain,
+                details={
+                    "mode": "clt",
+                    "agents": len(result.responses),
+                    "tokens": result.total_tokens,
+                    "latency_ms": result.total_latency_ms,
+                    "success_rate": result.success_rate,
+                    "consensus_features": len(consensus_features),
+                    "saved_to": saved_path,
+                },
+            )
+        )
+
+        # Update agent positions from Engine's CLT projection
+        self.state.agent_positions = [
+            (p["name"], p["x"], p["y"], p["color"])
+            for p in positions
+        ]
+
+        # Update agent traces for exploration visualization
+        self.state.agent_traces = {
+            name: [(pos["x"], pos["y"]) for pos in trace_positions]
+            for name, trace_positions in traces.items()
+        }
+
+        # Switch to SWARM view to show traces
+        self.state.view_mode = ViewMode.SWARM
+
+        # Add reasoning trace
+        from datetime import datetime
+        from .core.state import ReasoningTrace
+
+        trace = ReasoningTrace(
+            timestamp=datetime.now(),
+            operation="swarm",
+            query=result.domain,
+            summary=f"CLT swarm: {result.success_rate:.0%} success, {len(consensus_features)} consensus features",
+            tokens=result.total_tokens,
+            sources=len(result.responses),
+            technique="clt-latent",
+            duration_ms=result.total_latency_ms,
+        )
+        self.state.add_reasoning_trace(trace)
+        think.update_state(self.state)
+
+        # Build CLT-specific result summary
+        lines = [
+            f"# CLT Swarm Analysis: {result.domain}",
+            "",
+            "**Mode:** Cross-Layer Transcoder (interpretable features)",
+            f"**Success Rate:** {result.success_rate:.0%}",
+            f"**Total Tokens:** {result.total_tokens}",
+            f"**Latency:** {result.total_latency_ms}ms",
+        ]
+        if saved_path:
+            lines.append(f"**Saved to:** {saved_path}")
+
+        lines.extend([
+            "",
+            "## Agent Positions (semantic projection)",
+            "",
+        ])
+
+        # Show agent positions
+        for name, x, y, color in self.state.agent_positions:
+            lines.append(f"- **{name}**: ({x}, {y}) [{color}]")
+
+        lines.extend([
+            "",
+            "## Agent Responses",
+            "",
+        ])
+
+        for response in result.responses:
+            status = "✓" if response.succeeded else "✗"
+            lines.append(f"### {status} {response.name}")
+
+            # Show top features for this agent (from engine CLT data)
+            feats = agent_features.get(response.role.value, [])
+            if feats:
+                top_5 = [str(f["idx"]) for f in feats[:5]]
+                lines.append(f"*Top features: {', '.join(top_5)}*")
+
+            if response.succeeded:
+                preview = response.content[:300]
+                if len(response.content) > 300:
+                    preview += "..."
+                lines.append(f"\n{preview}\n")
+            else:
+                lines.append(f"\n*Error: {response.error}*\n")
+
+        # Show consensus features
+        if consensus_features:
+            lines.extend([
+                "",
+                "## Feature Consensus",
+                "",
+            ])
+            top_consensus = sorted(
+                consensus_features.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+            for feat_idx, score in top_consensus:
+                lines.append(f"- Feature {feat_idx}: {score:.3f}")
+
+        # Show feature overlap matrix
+        if feature_overlap:
+            lines.extend([
+                "",
+                "## Agent Alignment (feature overlap)",
+                "",
+            ])
+            for key, sim in sorted(feature_overlap.items()):
+                lines.append(f"- {key}: {sim:.3f}")
 
         if result.consensus:
             lines.extend([

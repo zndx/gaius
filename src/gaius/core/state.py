@@ -176,6 +176,11 @@ class AppState:
     # Agent positions (list of (name, x, y, color))
     agent_positions: list = field(default_factory=list)
 
+    # Agent exploration traces (dict of agent_name -> list of (x, y) positions)
+    # Used for visualizing CLT-based exploration trajectories in swarm mode
+    # Most recent position is first in the list
+    agent_traces: dict = field(default_factory=dict)
+
     # ThetaAgent attention targets (list of (id, x, y, color))
     # Used by THETA view mode to overlay attention schema
     theta_targets: list = field(default_factory=list)
