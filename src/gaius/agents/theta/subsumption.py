@@ -182,6 +182,158 @@ def _ensure_jvm_ready() -> None:
         raise DeepOntoNotAvailableError("jpype1", e)
 
 
+def _patch_deeponto_random_sample() -> None:
+    """Patch random.sample globally for Python 3.11+ compatibility.
+
+    DeepOnto 0.9.3 uses random.sample() on sets in multiple locations:
+    - text_semantics.py:287 (named_classes - ancestors)
+    - text_semantics.py:290 (restrictionObjects)
+    - text_semantics.py:506 (subsumptions)
+    - pipeline_intra.py:346 (restrictions)
+    - pipeline_intra.py:371 (new_seeds)
+    - pipeline_intra.py:378 (all_nebs)
+
+    Python 3.11+ raises TypeError: "Population must be a sequence."
+
+    This globally patches random.sample to auto-convert sets to lists.
+
+    Upstream fix pending: https://github.com/KRR-Oxford/DeepOnto
+    """
+    import sys
+    if sys.version_info < (3, 11):
+        return  # No patch needed for Python 3.10 and earlier
+
+    import random
+
+    # Check if already patched (avoid double-patching)
+    if getattr(random.sample, "_gaius_patched", False):
+        return
+
+    _original_sample = random.sample
+
+    def _safe_sample(population, k, **kwargs):
+        """Wrapper that converts sets to lists for Python 3.11+."""
+        if isinstance(population, (set, frozenset)):
+            population = list(population)
+        return _original_sample(population, k, **kwargs)
+
+    _safe_sample._gaius_patched = True
+    random.sample = _safe_sample
+    logger.debug("Applied global Python 3.11+ random.sample compatibility patch")
+
+
+def _patch_deeponto_datasets_compat() -> None:
+    """Patch DeepOnto's BERTSubsumptionClassifierTrainer for datasets 4.x compatibility.
+
+    DeepOnto 0.9.3's bert_classifier.py line 114 does:
+        tokens = self.tokenizer(dataset["sent1"], dataset["sent2"])
+
+    In datasets 4.x, dataset["column"] returns an Arrow column, not a Python list.
+    The tokenizer expects list[str].
+
+    This patches load_dataset to convert Arrow columns to lists.
+
+    Upstream fix pending: https://github.com/KRR-Oxford/DeepOnto
+    """
+    try:
+        from deeponto.complete.bertsubs.bert_classifier import BERTSubsumptionClassifierTrainer
+
+        _original_load_dataset = BERTSubsumptionClassifierTrainer.load_dataset
+
+        def _patched_load_dataset(self, data, max_length=512, count_token_size=False):
+            """Patched version that converts Arrow columns to lists for tokenizer."""
+            from datasets import Dataset
+
+            def iterate():
+                for sample in data:
+                    yield {"sent1": sample[0], "sent2": sample[1], "labels": sample[2]}
+
+            dataset = Dataset.from_generator(iterate)
+
+            if count_token_size:
+                # Convert Arrow columns to Python lists for tokenizer
+                sent1_list = list(dataset["sent1"])
+                sent2_list = list(dataset["sent2"])
+                tokens = self.tokenizer(sent1_list, sent2_list)
+                l_sum, num_128, num_256, num_512, l_max = 0, 0, 0, 0, 0
+                for item in tokens["input_ids"]:
+                    l = len(item)
+                    l_sum += l
+                    if l <= 128:
+                        num_128 += 1
+                    if l <= 256:
+                        num_256 += 1
+                    if l <= 512:
+                        num_512 += 1
+                    if l > l_max:
+                        l_max = l
+                print("average token size: %.2f" % (l_sum / len(tokens["input_ids"])))
+                print("ratio of token size <= 128: %.3f" % (num_128 / len(tokens["input_ids"])))
+                print("ratio of token size <= 256: %.3f" % (num_256 / len(tokens["input_ids"])))
+                print("ratio of token size <= 512: %.3f" % (num_512 / len(tokens["input_ids"])))
+                print("max token size: %d" % l_max)
+
+            # Tokenize the dataset for training
+            def tokenize(sample):
+                return self.tokenizer(
+                    sample["sent1"],
+                    sample["sent2"],
+                    padding="max_length",
+                    truncation=True,
+                    max_length=max_length,
+                )
+
+            dataset = dataset.map(tokenize, batched=True)
+            dataset = dataset.rename_column("labels", "label")
+            dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+            return dataset
+
+        BERTSubsumptionClassifierTrainer.load_dataset = _patched_load_dataset
+        logger.debug("Applied datasets 4.x compatibility patch to DeepOnto BERTSubsumptionClassifierTrainer")
+
+    except ImportError:
+        # DeepOnto not installed, patch not needed
+        pass
+    except Exception as e:
+        logger.warning(f"Failed to apply DeepOnto datasets patch: {e}")
+
+
+def _patch_transformers_training_args() -> None:
+    """Patch TrainingArguments for transformers 4.46+ compatibility.
+
+    In transformers 4.46+, `evaluation_strategy` was renamed to `eval_strategy`.
+    DeepOnto 0.9.3 uses the old parameter name.
+
+    This patches TrainingArguments.__init__ to rename the parameter if needed.
+
+    Upstream fix pending: https://github.com/KRR-Oxford/DeepOnto
+    """
+    try:
+        from transformers import TrainingArguments
+        import inspect
+
+        # Check if eval_strategy is a valid parameter (newer transformers)
+        sig = inspect.signature(TrainingArguments.__init__)
+        if "eval_strategy" in sig.parameters and "evaluation_strategy" not in sig.parameters:
+            # Need to patch - newer transformers without backward compat
+
+            _original_init = TrainingArguments.__init__
+
+            def _patched_init(self, *args, **kwargs):
+                # Rename evaluation_strategy to eval_strategy
+                if "evaluation_strategy" in kwargs:
+                    kwargs["eval_strategy"] = kwargs.pop("evaluation_strategy")
+                return _original_init(self, *args, **kwargs)
+
+            TrainingArguments.__init__ = _patched_init
+            logger.debug("Applied transformers 4.46+ TrainingArguments compatibility patch")
+
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"Failed to apply TrainingArguments patch: {e}")
+
+
 class SubsumptionInferencer:
     """BERTSubs-based subsumption inference using DeepOnto.
 
@@ -249,21 +401,74 @@ class SubsumptionInferencer:
         return self._ontology
 
     def _get_config(self):
-        """Create YACS config for BERTSubsIntraPipeline.
+        """Load default BERTSubs config and merge our overrides.
 
-        Returns a config with our specified parameters.
+        BERTSubsIntraPipeline requires many config fields (label_property,
+        subsumption_type, prompt settings, etc.). We load the default config
+        and override only what we need to customize.
         """
         if self._config is None:
             try:
                 from yacs.config import CfgNode as CN
+                from pathlib import Path
+                import yaml
 
-                self._config = CN()
-                self._config.bert_checkpoint = self.bert_checkpoint
-                self._config.max_length = self.max_length
-                self._config.device = "cuda" if self._has_cuda() else "cpu"
-                self._config.batch_size = 32
+                # Load default config from DeepOnto package
+                deeponto_path = Path(__file__).parent.parent.parent.parent
+                # Find the installed deeponto package
+                import deeponto
+                deeponto_pkg_path = Path(deeponto.__file__).parent
+                default_config_path = (
+                    deeponto_pkg_path / "complete" / "bertsubs" / "default_config_intra.yaml"
+                )
 
-                logger.debug(f"Created BERTSubs config: {self._config}")
+                if default_config_path.exists():
+                    with open(default_config_path) as f:
+                        default_cfg = yaml.safe_load(f)
+                    self._config = CN(default_cfg)
+                else:
+                    # Fallback: create minimal config with required fields
+                    self._config = CN()
+                    self._config.label_property = ["http://www.w3.org/2000/01/rdf-schema#label"]
+                    self._config.use_one_label = True
+                    self._config.subsumption_type = "named_class"
+                    self._config.no_reasoning = False
+
+                # Override with our settings - we use the pipeline for inference only
+                # Clear file paths that reference non-existent test files
+                self._config.test_subsumption_file = None
+                self._config.train_subsumption_file = None
+                self._config.valid_subsumption_file = None
+
+                # Merge our settings into fine_tune (don't replace the entire section)
+                # This preserves required fields like train_pos_dup, train_neg_dup
+                if "fine_tune" not in self._config:
+                    self._config.fine_tune = CN()
+                self._config.fine_tune.pretrained = self.bert_checkpoint
+                self._config.fine_tune.tokenizer = self.bert_checkpoint
+                self._config.fine_tune.do_fine_tune = False  # Use pretrained for inference
+                self._config.fine_tune.batch_size = 32
+                self._config.fine_tune.output_dir = "/tmp/bertsubs"  # Dummy output dir
+
+                # Same for prompt - merge instead of replace
+                if "prompt" not in self._config:
+                    self._config.prompt = CN()
+                self._config.prompt.max_length = self.max_length
+                self._config.prompt.prompt_type = "isolated"
+                self._config.prompt.prompt_hop = 1
+                self._config.prompt.prompt_max_subsumptions = 4
+                self._config.prompt.use_sub_special_token = False
+                self._config.prompt.context_dup = 4
+
+                # Same for evaluation
+                if "evaluation" not in self._config:
+                    self._config.evaluation = CN()
+                self._config.evaluation.batch_size = 32
+
+                # Device selection
+                device = "cuda" if self._has_cuda() else "cpu"
+                logger.debug(f"Created BERTSubs config with device={device}")
+
             except ImportError as e:
                 raise DeepOntoNotAvailableError("yacs", e)
 
@@ -286,6 +491,10 @@ class SubsumptionInferencer:
         if self._pipeline is None:
             try:
                 _ensure_jvm_ready()
+                # Apply compatibility patches before importing pipeline
+                _patch_deeponto_random_sample()  # Python 3.11+ random.sample on sets
+                _patch_deeponto_datasets_compat()  # datasets 4.x Arrow columns
+                _patch_transformers_training_args()  # transformers 4.46+ eval_strategy
                 from deeponto.complete.bertsubs import BERTSubsIntraPipeline
 
                 ontology = self._get_ontology()

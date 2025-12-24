@@ -213,23 +213,40 @@ class TestOntologyValidationError:
 
 
 class TestDeepOntoIntegration:
-    """Tests requiring DeepOnto BERTSubs (skipped if unavailable).
+    """Tests for DeepOnto BERTSubs integration.
 
-    These tests verify the full pipeline works when dependencies are present.
+    DeepOnto with JVM is a HARD REQUIREMENT provided by devenv.
+    These tests must pass - no fallbacks, no skips.
+
+    Note: BERTSubsIntraPipeline requires an ontology with enough classes
+    and subsumption relationships to extract training data from.
+    The internal Gaius domain ontology (58 classes) provides this.
     """
 
     @pytest.fixture
-    def check_deeponto(self):
-        """Check if DeepOnto is available."""
-        try:
-            import deeponto
-            return True
-        except ImportError:
-            pytest.skip("DeepOnto not available - requires JVM")
+    def gaius_ontology(self):
+        """Return path to internal Gaius domain ontology.
+
+        This ontology has 58 classes with rdfs:label annotations,
+        sufficient for BERTSubsIntraPipeline training data extraction.
+        """
+        import gaius
+        gaius_root = Path(gaius.__file__).parent
+        ontology_path = gaius_root / "data" / "ontologies" / "gaius_domain.owl"
+
+        if not ontology_path.exists():
+            pytest.skip(f"Gaius domain ontology not found at {ontology_path}")
+
+        return ontology_path
 
     @pytest.fixture
     def minimal_ontology(self, tmp_path):
-        """Create a minimal valid OWL ontology for testing."""
+        """Create a minimal valid OWL ontology for testing.
+
+        BERTSubs requires rdfs:label annotations on classes for text semantics.
+        Note: This ontology is too small for BERTSubsIntraPipeline training,
+        but can be used for ontology loading tests.
+        """
         owl_content = '''<?xml version="1.0"?>
 <rdf:RDF xmlns="http://gaius.local/test#"
      xml:base="http://gaius.local/test"
@@ -237,9 +254,16 @@ class TestDeepOntoIntegration:
      xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
      xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#">
     <owl:Ontology rdf:about="http://gaius.local/test"/>
-    <owl:Class rdf:about="http://gaius.local/test#MachineLearning"/>
+    <owl:Class rdf:about="http://gaius.local/test#MachineLearning">
+        <rdfs:label>Machine Learning</rdfs:label>
+    </owl:Class>
     <owl:Class rdf:about="http://gaius.local/test#NeuralNetwork">
+        <rdfs:label>Neural Network</rdfs:label>
         <rdfs:subClassOf rdf:resource="http://gaius.local/test#MachineLearning"/>
+    </owl:Class>
+    <owl:Class rdf:about="http://gaius.local/test#DeepLearning">
+        <rdfs:label>Deep Learning</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.local/test#NeuralNetwork"/>
     </owl:Class>
 </rdf:RDF>
 '''
@@ -247,29 +271,46 @@ class TestDeepOntoIntegration:
         ontology_path.write_text(owl_content)
         return ontology_path
 
-    def test_ontology_loads_with_deeponto(self, check_deeponto, minimal_ontology):
-        """Test that ontology can be loaded when DeepOnto is available."""
+    def test_deeponto_import(self):
+        """Test that DeepOnto is importable - JVM is a hard requirement."""
+        import deeponto
+        assert deeponto is not None
+
+    def test_ontology_loads_with_deeponto(self, minimal_ontology):
+        """Test that ontology can be loaded via DeepOnto."""
         inferencer = SubsumptionInferencer(ontology_path=minimal_ontology)
+        ontology = inferencer._get_ontology()
+        assert ontology is not None
 
-        try:
-            ontology = inferencer._get_ontology()
-            assert ontology is not None
-        except DeepOntoNotAvailableError as e:
-            pytest.skip(f"DeepOnto/JVM not properly configured: {e}")
+    def test_gaius_ontology_loads(self, gaius_ontology):
+        """Test that internal Gaius domain ontology loads correctly."""
+        inferencer = SubsumptionInferencer(ontology_path=gaius_ontology)
+        ontology = inferencer._get_ontology()
+        assert ontology is not None
 
-    def test_predict_subsumption(self, check_deeponto, minimal_ontology):
-        """Test subsumption prediction with real BERTSubs."""
-        inferencer = SubsumptionInferencer(ontology_path=minimal_ontology)
+        # Verify it has enough classes for BERTSubs training
+        classes = list(ontology.owl_classes)
+        assert len(classes) >= 20, f"Expected at least 20 classes, got {len(classes)}"
 
-        try:
-            candidate = inferencer.predict_subsumption(
-                subclass="NeuralNetwork",
-                superclass="MachineLearning",
-            )
+    @pytest.mark.slow  # Takes ~30-60 seconds due to BERT fine-tuning
+    def test_predict_subsumption(self, gaius_ontology):
+        """Test subsumption prediction with real BERTSubs.
 
-            assert isinstance(candidate, SubsumptionCandidate)
-            assert 0 <= candidate.confidence <= 1
-            assert candidate.subclass == "NeuralNetwork"
-            assert candidate.superclass == "MachineLearning"
-        except DeepOntoNotAvailableError as e:
-            pytest.skip(f"BERTSubs not available: {e}")
+        Uses the Gaius domain ontology which has enough classes for
+        BERTSubsIntraPipeline to extract training data from.
+
+        Note: This test applies a Python 3.11+ compatibility patch for
+        random.sample() on sets (DeepOnto 0.9.3 bug).
+        """
+        inferencer = SubsumptionInferencer(ontology_path=gaius_ontology)
+
+        # Use class IRIs from the Gaius ontology
+        candidate = inferencer.predict_subsumption(
+            subclass="http://gaius.zndx.org/ontology#NeuralNetwork",
+            superclass="http://gaius.zndx.org/ontology#DeepLearning",
+        )
+
+        assert isinstance(candidate, SubsumptionCandidate)
+        assert 0 <= candidate.confidence <= 1
+        assert "NeuralNetwork" in candidate.subclass
+        assert "DeepLearning" in candidate.superclass
