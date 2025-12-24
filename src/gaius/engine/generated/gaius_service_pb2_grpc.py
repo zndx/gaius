@@ -254,6 +254,21 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.DatasetLineageRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.DatasetLineageResponse.FromString,
                 _registered_method=True)
+        self.ThetaSitrep = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaSitrep',
+                request_serializer=gaius__service__pb2.ThetaSitrepRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaSitrepResponse.FromString,
+                _registered_method=True)
+        self.ThetaConsolidate = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaConsolidate',
+                request_serializer=gaius__service__pb2.ThetaConsolidateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaConsolidateResponse.FromString,
+                _registered_method=True)
+        self.ThetaConsolidationStats = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaConsolidationStats',
+                request_serializer=gaius__service__pb2.ThetaConsolidationStatsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaConsolidationStatsResponse.FromString,
+                _registered_method=True)
         self.MetaAgentQuery = channel.unary_unary(
                 '/gaius.engine.GaiusService/MetaAgentQuery',
                 request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
@@ -263,6 +278,21 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/MetaAgentQueryStream',
                 request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.MetaAgentEvent.FromString,
+                _registered_method=True)
+        self.CLTExtract = channel.unary_unary(
+                '/gaius.engine.GaiusService/CLTExtract',
+                request_serializer=gaius__service__pb2.CLTExtractRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CLTExtractResponse.FromString,
+                _registered_method=True)
+        self.CLTAttribute = channel.unary_unary(
+                '/gaius.engine.GaiusService/CLTAttribute',
+                request_serializer=gaius__service__pb2.CLTAttributeRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CLTAttributeResponse.FromString,
+                _registered_method=True)
+        self.CLTStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/CLTStatus',
+                request_serializer=gaius__service__pb2.CLTStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CLTStatusResponse.FromString,
                 _registered_method=True)
         self.HealthStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/HealthStream',
@@ -591,6 +621,27 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ThetaSitrep(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        ThetaAgent (Neuromorphic Consolidation)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ThetaConsolidate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ThetaConsolidationStats(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def MetaAgentQuery(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         MetaAgent (Multi-Agent Analytics)
@@ -601,6 +652,27 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def MetaAgentQueryStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CLTExtract(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        CLT (Cross-Layer Transcoders)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CLTAttribute(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CLTStatus(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -848,6 +920,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.DatasetLineageRequest.FromString,
                     response_serializer=gaius__service__pb2.DatasetLineageResponse.SerializeToString,
             ),
+            'ThetaSitrep': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaSitrep,
+                    request_deserializer=gaius__service__pb2.ThetaSitrepRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaSitrepResponse.SerializeToString,
+            ),
+            'ThetaConsolidate': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaConsolidate,
+                    request_deserializer=gaius__service__pb2.ThetaConsolidateRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaConsolidateResponse.SerializeToString,
+            ),
+            'ThetaConsolidationStats': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaConsolidationStats,
+                    request_deserializer=gaius__service__pb2.ThetaConsolidationStatsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaConsolidationStatsResponse.SerializeToString,
+            ),
             'MetaAgentQuery': grpc.unary_unary_rpc_method_handler(
                     servicer.MetaAgentQuery,
                     request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
@@ -857,6 +944,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.MetaAgentQueryStream,
                     request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
                     response_serializer=gaius__service__pb2.MetaAgentEvent.SerializeToString,
+            ),
+            'CLTExtract': grpc.unary_unary_rpc_method_handler(
+                    servicer.CLTExtract,
+                    request_deserializer=gaius__service__pb2.CLTExtractRequest.FromString,
+                    response_serializer=gaius__service__pb2.CLTExtractResponse.SerializeToString,
+            ),
+            'CLTAttribute': grpc.unary_unary_rpc_method_handler(
+                    servicer.CLTAttribute,
+                    request_deserializer=gaius__service__pb2.CLTAttributeRequest.FromString,
+                    response_serializer=gaius__service__pb2.CLTAttributeResponse.SerializeToString,
+            ),
+            'CLTStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.CLTStatus,
+                    request_deserializer=gaius__service__pb2.CLTStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.CLTStatusResponse.SerializeToString,
             ),
             'HealthStream': grpc.unary_stream_rpc_method_handler(
                     servicer.HealthStream,
@@ -2050,6 +2152,87 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def ThetaSitrep(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaSitrep',
+            gaius__service__pb2.ThetaSitrepRequest.SerializeToString,
+            gaius__service__pb2.ThetaSitrepResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ThetaConsolidate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaConsolidate',
+            gaius__service__pb2.ThetaConsolidateRequest.SerializeToString,
+            gaius__service__pb2.ThetaConsolidateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ThetaConsolidationStats(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaConsolidationStats',
+            gaius__service__pb2.ThetaConsolidationStatsRequest.SerializeToString,
+            gaius__service__pb2.ThetaConsolidationStatsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def MetaAgentQuery(request,
             target,
             options=(),
@@ -2093,6 +2276,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/MetaAgentQueryStream',
             gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
             gaius__service__pb2.MetaAgentEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CLTExtract(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CLTExtract',
+            gaius__service__pb2.CLTExtractRequest.SerializeToString,
+            gaius__service__pb2.CLTExtractResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CLTAttribute(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CLTAttribute',
+            gaius__service__pb2.CLTAttributeRequest.SerializeToString,
+            gaius__service__pb2.CLTAttributeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CLTStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CLTStatus',
+            gaius__service__pb2.CLTStatusRequest.SerializeToString,
+            gaius__service__pb2.CLTStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

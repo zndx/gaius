@@ -135,6 +135,22 @@ from ...generated import (
     MetaAgentQueryRequest,
     MetaAgentQueryResponse,
     MetaAgentEvent,
+    # ThetaAgent
+    ThetaSitrepRequest,
+    ThetaSitrepResponse,
+    ThetaConsolidateRequest,
+    ThetaConsolidateResponse,
+    ThetaConsolidationStatsRequest,
+    ThetaConsolidationStatsResponse,
+    # CLT (Cross-Layer Transcoders)
+    CLTExtractRequest,
+    CLTExtractResponse,
+    SparseFeature as ProtoSparseFeature,
+    CLTAttributeRequest,
+    CLTAttributeResponse,
+    CLTAttributionEdge as ProtoAttributionEdge,
+    CLTStatusRequest,
+    CLTStatusResponse,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -990,7 +1006,126 @@ class GaiusServicer(GaiusServiceServicer):
                     progress=base_progress + (0.8 / total_agents),
                 )
 
-        # Phase 5: Save results and send COMPLETED
+        # Phase 5: CLT processing (if enabled)
+        # Uses Yunikorn-style workload system for GPU allocation
+        clt_data = {}
+        workload_id = None
+        if request.clt:
+            try:
+                from ...workloads import WorkloadRequest, WorkloadType
+                from ...services.scheduler_service import JobPriority
+                from gaius.models.registry import TaskType
+                import uuid
+
+                orchestrator = self._services.orchestrator_service
+                if not orchestrator:
+                    raise RuntimeError("Orchestrator service not available for CLT workload")
+
+                # Request CLT capability via workload system
+                workload_id = f"clt-swarm-{uuid.uuid4().hex[:8]}"
+                workload_request = WorkloadRequest(
+                    workload_id=workload_id,
+                    workload_type=WorkloadType.SWARM,
+                    required_capabilities=[TaskType.CLT_TRACING],
+                    priority=JobPriority.NORMAL,
+                    estimated_duration_s=60,  # CLT processing estimate
+                    estimated_memory_mb=6000,  # CLT model ~6GB
+                )
+
+                # Begin workload - allocates GPU, starts CLT subprocess
+                workload_result = await orchestrator.begin_workload(workload_request)
+                if not workload_result.success:
+                    raise RuntimeError(f"CLT workload allocation failed: {workload_result.error}")
+
+                # Get CLT service from orchestrator (now has allocated GPU)
+                clt = orchestrator.get_clt_service()
+                if not clt:
+                    raise RuntimeError("CLT service not available after workload allocation")
+
+                clt.clear_states()
+
+                # Extract CLT features from each completed agent response
+                for role_name, result in results.items():
+                    if result.get("status") == "completed" and result.get("content"):
+                        try:
+                            clt.extract_features(result["content"], role_name)
+                        except Exception as e:
+                            logger.warning(f"CLT extraction failed for {role_name}: {e}")
+
+                # Update grid positions
+                try:
+                    from ....core.projection import get_grid_manager
+                    projector = get_grid_manager()
+                    clt.update_grid_positions(projector)
+                except Exception:
+                    clt.update_grid_positions(None)
+
+                # Build CLT response
+                clt_data = {
+                    "positions": [
+                        {"name": name, "x": x, "y": y, "color": color}
+                        for name, x, y, color in clt.get_agent_positions()
+                    ],
+                    "traces": {
+                        name: [{"x": x, "y": y} for x, y in positions]
+                        for name, positions in clt.get_agent_traces().items()
+                    },
+                    "consensus_features": {
+                        str(k): v for k, v in clt.compute_consensus().items()
+                    },
+                    "feature_overlap": {
+                        f"{a1}↔{a2}": sim
+                        for (a1, a2), sim in clt.compute_overlap().items()
+                    },
+                    "agent_features": {
+                        role: [
+                            {"idx": idx, "activation": act}
+                            for idx, act in sorted(
+                                state.sparse_features.items(),
+                                key=lambda x: x[1],
+                                reverse=True
+                            )[:10]
+                        ]
+                        for role, state in clt._agent_states.items()
+                    },
+                }
+
+                # Persist snapshot for temporal topology tracking
+                try:
+                    from ...services.topology_service import TopologyService
+                    topology_service = self._services.topology_service
+                    if topology_service:
+                        # Compute consensus embedding from agent states
+                        consensus_embedding = None
+                        embeddings = [
+                            s.embedding for s in clt._agent_states.values()
+                            if s.embedding is not None
+                        ]
+                        if embeddings:
+                            import numpy as np
+                            consensus_embedding = np.mean(embeddings, axis=0)
+
+                        await topology_service.save_snapshot(
+                            domain=domain,
+                            run_id=uuid.UUID(workload_id.split("-")[-1].ljust(32, "0")),
+                            agent_states=clt._agent_states,
+                            consensus_embedding=consensus_embedding,
+                            query_text=domain,  # TODO: Get actual query
+                        )
+                        logger.info(f"Saved swarm topology snapshot for domain '{domain}'")
+                except Exception as snapshot_err:
+                    logger.warning(f"Failed to save topology snapshot: {snapshot_err}")
+            except Exception as e:
+                logger.warning(f"CLT processing failed: {e}")
+            finally:
+                # Complete workload to release GPU and restore baseline
+                if workload_id and orchestrator:
+                    try:
+                        await orchestrator.complete_workload(workload_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to complete CLT workload: {e}")
+
+        # Phase 6: Save results and send COMPLETED
         total_duration_ms = int((time.time() - start_time) * 1000)
 
         # Save results to KB
@@ -1010,6 +1145,10 @@ class GaiusServicer(GaiusServiceServicer):
             "failed_agents": failed,
             "total_duration_ms": total_duration_ms,
         }
+
+        # Include CLT data if available
+        if clt_data:
+            final_data["_clt"] = clt_data
 
         yield make_event(
             SwarmEvent.Type.COMPLETED,
@@ -3160,4 +3299,303 @@ class GaiusServicer(GaiusServiceServicer):
                 type=MetaAgentEvent.Type.ERROR,
                 timestamp_ms=int(time.time() * 1000),
                 message=f"MetaAgent stream failed: {e}",
+            )
+
+    # =========================================================================
+    # ThetaAgent (Neuromorphic Consolidation)
+    # =========================================================================
+
+    async def ThetaSitrep(
+        self,
+        request: ThetaSitrepRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaSitrepResponse:
+        """Generate situational awareness report."""
+        try:
+            import os
+            from ....agents.theta import ThetaAgent
+
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+            agent = ThetaAgent(kb_root=kb_root)
+
+            horizon = request.horizon or "day"
+            report = await agent.sitrep(horizon=horizon)
+            report_dict = report.to_dict()
+
+            return ThetaSitrepResponse(
+                success=True,
+                horizon=horizon,
+                generated_at_ms=int(report.generated_at.timestamp() * 1000),
+                healthy=report.system_status.healthy,
+                status_text=report.system_status.status_text,
+                gpu_count=report.system_status.gpu_count,
+                endpoint_count=report.system_status.endpoint_count,
+                priority_count=len(report.priorities),
+                thought_count=len(report.thoughts),
+                objective_count=len(report.objectives),
+                project_count=report.project_count,
+                report_json=json.dumps(report_dict).encode(),
+                ascii_format=report.to_ascii(),
+            )
+        except Exception as e:
+            logger.exception(f"ThetaSitrep failed: {e}")
+            return ThetaSitrepResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def ThetaConsolidate(
+        self,
+        request: ThetaConsolidateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaConsolidateResponse:
+        """Run NVAR-mediated consolidation cycle."""
+        try:
+            import os
+            from ....agents.theta import ThetaAgent
+            from ....agents.theta.subsumption import DeepOntoNotAvailableError
+
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+            agent = ThetaAgent(
+                kb_root=kb_root,
+                research_mode=request.research_mode if request.research_mode else True,
+            )
+
+            result = await agent.run_consolidation(
+                temporal_slice=request.temporal_slice or None,
+                max_candidates=request.max_candidates or 10,
+            )
+
+            return ThetaConsolidateResponse(
+                success=result.error is None,
+                slice_id=result.slice_id,
+                urgency=result.signal.urgency if result.signal else 0.0,
+                drift=result.signal.drift if result.signal else 0.0,
+                candidates_evaluated=result.candidates_evaluated,
+                candidates_selected=result.candidates_selected,
+                documents_augmented=result.documents_augmented,
+                error=result.error or "",
+            )
+        except Exception as e:
+            error_msg = str(e)
+            guru = ""
+            if "DEEPONTO_UNAVAILABLE" in error_msg:
+                guru = "#THETA.00000001.DEEPONTO_UNAVAILABLE"
+
+            logger.exception(f"ThetaConsolidate failed: {e}")
+            return ThetaConsolidateResponse(
+                success=False,
+                error=error_msg,
+                guru_meditation=guru,
+            )
+
+    async def ThetaConsolidationStats(
+        self,
+        request: ThetaConsolidationStatsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaConsolidationStatsResponse:
+        """Get consolidation statistics."""
+        try:
+            import os
+            from ....agents.theta import ThetaAgent
+
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+            agent = ThetaAgent(kb_root=kb_root)
+            stats = agent.get_consolidation_stats()
+
+            return ThetaConsolidationStatsResponse(
+                # NVAR dynamics
+                nvar_k=stats["dynamics"]["k"],
+                nvar_order=stats["dynamics"]["polynomial_order"],
+                slice_count=stats["dynamics"].get("slice_count", stats["dynamics"].get("history_length", 0)),
+                can_predict=stats["dynamics"]["can_predict"],
+                # KG policy
+                research_mode=stats["kg_policy"]["research_mode"],
+                measurement_cost=stats["kg_policy"]["measurement_cost"],
+                n_measurements=stats["kg_policy"]["belief_state"]["n_measurements"],
+                current_best_value=stats["kg_policy"]["belief_state"]["current_best"],
+                # Effectiveness
+                effectiveness_history_length=stats["effectiveness"]["history_length"],
+                effectiveness_trend=stats["effectiveness"]["trend"]["trend"],
+                mean_contribution=stats["effectiveness"]["trend"]["mean_contribution"],
+                # Subsumption
+                confidence_threshold=stats["subsumption"]["confidence_threshold"],
+                template_type=stats["subsumption"]["template_type"],
+                classifier_loaded=stats["subsumption"]["classifier_loaded"],
+            )
+        except Exception as e:
+            logger.exception(f"ThetaConsolidationStats failed: {e}")
+            # Return empty response on error
+            return ThetaConsolidationStatsResponse()
+
+    # -------------------------------------------------------------------------
+    # CLT (Cross-Layer Transcoders) - Interpretable Sparse Feature Extraction
+    # -------------------------------------------------------------------------
+
+    async def CLTExtract(
+        self,
+        request: CLTExtractRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CLTExtractResponse:
+        """Extract sparse features from text using Cross-Layer Transcoders.
+
+        Uses BluelightAI's CLT for Qwen3 to extract interpretable sparse features.
+        ~115 active features per layer from 20,480 feature space.
+
+        CLT runs in a subprocess with isolated GPU (GPU 4 by default) to avoid
+        memory conflicts with vLLM endpoints on GPUs 0-3.
+        """
+        try:
+            from ....engine.services.clt_service import get_clt_service
+
+            # Get model name (defaults to qwen3-1.7b)
+            model_name = request.model_name or "qwen3-1.7b"
+
+            # Get CLT service (spawns subprocess with isolated GPU)
+            clt = get_clt_service(model_name=model_name)
+
+            # Extract features via subprocess worker
+            # Note: layer_indices filtering not yet implemented in worker
+            top_k = request.top_k if request.top_k > 0 else 115
+
+            # Use a synthetic role for direct extraction (not swarm context)
+            state = clt.extract_features(request.text, role="_extract")
+
+            # Get features from state
+            features = []
+            for idx, activation in state.sparse_features.items():
+                features.append(
+                    ProtoSparseFeature(
+                        layer_idx=0,  # Aggregated across layers
+                        position=0,
+                        feature_idx=idx,
+                        activation=activation,
+                        semantic_label="",
+                    )
+                )
+
+            # Sort by activation descending, limit to top_k
+            features.sort(key=lambda f: f.activation, reverse=True)
+            features = features[:top_k]
+
+            return CLTExtractResponse(
+                success=True,
+                features=features,
+                total_positions=1,  # Aggregated
+                sparsity=len(features),
+                model_used=model_name,
+            )
+
+        except KeyError as e:
+            logger.error(f"CLTExtract model not found: {e}")
+            return CLTExtractResponse(
+                success=False,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.exception(f"CLTExtract failed: {e}")
+            return CLTExtractResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def CLTAttribute(
+        self,
+        request: CLTAttributeRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CLTAttributeResponse:
+        """Compute attribution graph showing feature influence paths.
+
+        Traces which sparse features influence output at target positions
+        using A_{s->t} = a_s * ||w_{s->t}|| attribution weights.
+        """
+        try:
+            from ....models.clt import load_clt_model
+
+            # Get or load CLT model
+            model_name = request.model_name or "qwen3-1.7b"
+            device = request.device or "cuda"
+
+            clt_model = load_clt_model(name=model_name, device=device)
+
+            # Parse target positions
+            target_positions = list(request.target_positions) if request.target_positions else None
+            threshold = request.threshold if request.threshold > 0 else 0.01
+
+            # Compute attribution
+            result = clt_model.compute_attribution(
+                text=request.text,
+                target_positions=target_positions,
+                threshold=threshold,
+            )
+
+            # Convert to proto edges
+            proto_edges = [
+                ProtoAttributionEdge(
+                    source_layer=e.source_layer,
+                    source_feature=e.source_feature,
+                    target_layer=e.target_layer,
+                    target_feature=e.target_feature,
+                    weight=e.weight,
+                )
+                for e in result.edges
+            ]
+
+            return CLTAttributeResponse(
+                success=True,
+                edges=proto_edges,
+                dot_graph=result.dot_graph,
+                edge_count=len(proto_edges),
+                model_used=model_name,
+            )
+
+        except KeyError as e:
+            logger.error(f"CLTAttribute model not found: {e}")
+            return CLTAttributeResponse(
+                success=False,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.exception(f"CLTAttribute failed: {e}")
+            return CLTAttributeResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def CLTStatus(
+        self,
+        request: CLTStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CLTStatusResponse:
+        """Get CLT model status and availability."""
+        try:
+            from ....models.clt import CLT_MODELS
+
+            # List available models
+            available_models = list(CLT_MODELS.keys())
+
+            # Check if models are loaded (would need model cache tracking)
+            loaded_model = ""  # TODO: Track loaded models in engine
+
+            # Get spec info for primary model
+            features_per_layer = 0
+            l0_sparsity = 0
+            if available_models:
+                spec = CLT_MODELS[available_models[0]]
+                features_per_layer = spec.features_per_layer
+                l0_sparsity = spec.l0_sparsity
+
+            return CLTStatusResponse(
+                available=True,  # Always available - circuit-tracer is required dependency
+                models=available_models,
+                loaded_model=loaded_model,
+                features_per_layer=features_per_layer,
+                l0_sparsity=l0_sparsity,
+            )
+
+        except Exception as e:
+            logger.exception(f"CLTStatus failed: {e}")
+            return CLTStatusResponse(
+                available=False,
+                error=str(e),
             )

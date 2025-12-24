@@ -273,6 +273,8 @@ class GrpcEngineClient:
                 return await self._call_search(action, params, timeout)
             elif service == "Gaius":
                 return await self._call_gaius(action, params, timeout)
+            elif service == "CLT":
+                return await self._call_clt(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -795,10 +797,86 @@ class GrpcEngineClient:
             raise ValueError(f"Unknown Search action: {action}")
 
     async def _call_gaius(self, action: str, params: dict, timeout: float) -> dict:
-        """Handle Gaius-specific service calls (MetaAgent, etc.)."""
-        from ..engine.generated import MetaAgentQueryRequest
+        """Handle Gaius-specific service calls (MetaAgent, ThetaAgent, etc.)."""
+        from ..engine.generated import (
+            MetaAgentQueryRequest,
+            ThetaSitrepRequest,
+            ThetaConsolidateRequest,
+            ThetaConsolidationStatsRequest,
+        )
 
-        if action == "MetaAgentQuery":
+        if action == "ThetaSitrep":
+            request = ThetaSitrepRequest(
+                horizon=params.get("horizon", "day"),
+            )
+            response = await self._gaius_stub.ThetaSitrep(request, timeout=timeout)
+            return {
+                "success": response.success,
+                "horizon": response.horizon,
+                "active_slices": list(response.active_slices),
+                "consolidation_pending": response.consolidation_pending,
+                "last_consolidation": response.last_consolidation,
+                "drift_trend": response.drift_trend,
+                "research_threads_count": response.research_threads_count,
+                "kb_health": response.kb_health,
+                "summary": response.summary,
+                "error": response.error,
+            }
+
+        elif action == "ThetaConsolidate":
+            request = ThetaConsolidateRequest(
+                temporal_slice=params.get("temporal_slice", ""),
+                max_candidates=params.get("max_candidates", 10),
+                research_mode=params.get("research_mode", True),
+            )
+            response = await self._gaius_stub.ThetaConsolidate(request, timeout=timeout)
+            return {
+                "success": response.success,
+                "slice_id": response.slice_id,
+                "urgency": response.urgency,
+                "drift": response.drift,
+                "candidates_evaluated": response.candidates_evaluated,
+                "candidates_selected": response.candidates_selected,
+                "documents_augmented": response.documents_augmented,
+                "error": response.error,
+                "guru_meditation": response.guru_meditation,
+            }
+
+        elif action == "ThetaConsolidationStats":
+            request = ThetaConsolidationStatsRequest()
+            response = await self._gaius_stub.ThetaConsolidationStats(
+                request, timeout=timeout
+            )
+            return {
+                "dynamics": {
+                    "k": response.nvar_k,
+                    "polynomial_order": response.nvar_order,
+                    "slice_count": response.slice_count,
+                    "can_predict": response.can_predict,
+                },
+                "kg_policy": {
+                    "research_mode": response.research_mode,
+                    "measurement_cost": response.measurement_cost,
+                    "belief_state": {
+                        "n_measurements": response.n_measurements,
+                        "current_best": response.current_best_value,
+                    },
+                },
+                "effectiveness": {
+                    "history_length": response.effectiveness_history_length,
+                    "trend": {
+                        "trend": response.effectiveness_trend,
+                        "mean_contribution": response.mean_contribution,
+                    },
+                },
+                "subsumption": {
+                    "confidence_threshold": response.confidence_threshold,
+                    "template_type": response.template_type,
+                    "classifier_loaded": response.classifier_loaded,
+                },
+            }
+
+        elif action == "MetaAgentQuery":
             request = MetaAgentQueryRequest(
                 query=params.get("query", ""),
                 domains=params.get("domains", []),
@@ -831,6 +909,103 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Gaius action: {action}")
+
+    async def _call_clt(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle CLT (Cross-Layer Transcoders) service calls.
+
+        CLT provides interpretable sparse feature extraction and attribution
+        graphs for circuit tracing via BluelightAI's circuit-tracer library.
+
+        Args:
+            action: Action to perform (status, extract, attribute)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with sparse features or attribution edges
+        """
+        from ..engine.generated import (
+            CLTStatusRequest,
+            CLTExtractRequest,
+            CLTAttributeRequest,
+        )
+
+        if action == "status":
+            request = CLTStatusRequest()
+            response = await self._gaius_stub.CLTStatus(request, timeout=timeout)
+            return {
+                "available": response.available,
+                "models": list(response.models),
+                "loaded_model": response.loaded_model,
+                "features_per_layer": response.features_per_layer,
+                "l0_sparsity": response.l0_sparsity,
+                "error": response.error,
+            }
+
+        elif action == "extract":
+            request = CLTExtractRequest(
+                text=params.get("text", ""),
+                model_name=params.get("model_name", "qwen3-1.7b"),
+                layer_indices=params.get("layer_indices", []),
+                top_k=params.get("top_k", 115),
+                device=params.get("device", "cuda"),
+            )
+            response = await self._gaius_stub.CLTExtract(request, timeout=timeout)
+
+            # Convert proto features to dicts
+            features = [
+                {
+                    "layer_idx": f.layer_idx,
+                    "position": f.position,
+                    "feature_idx": f.feature_idx,
+                    "activation": f.activation,
+                    "semantic_label": f.semantic_label,
+                }
+                for f in response.features
+            ]
+
+            return {
+                "success": response.success,
+                "features": features,
+                "total_positions": response.total_positions,
+                "sparsity": response.sparsity,
+                "text": params.get("text", ""),  # Echo back input text
+                "error": response.error,
+            }
+
+        elif action == "attribute":
+            request = CLTAttributeRequest(
+                text=params.get("text", ""),
+                model_name=params.get("model_name", "qwen3-1.7b"),
+                target_positions=params.get("target_positions", []),
+                threshold=params.get("threshold", 0.01),
+                device=params.get("device", "cuda"),
+            )
+            response = await self._gaius_stub.CLTAttribute(request, timeout=timeout)
+
+            # Convert proto edges to dicts
+            edges = [
+                {
+                    "source_layer": e.source_layer,
+                    "source_feature": e.source_feature,
+                    "target_layer": e.target_layer,
+                    "target_feature": e.target_feature,
+                    "weight": e.weight,
+                }
+                for e in response.edges
+            ]
+
+            return {
+                "success": response.success,
+                "edges": edges,
+                "dot_graph": response.dot_graph,
+                "text": params.get("text", ""),  # Echo back input text
+                "target_positions": params.get("target_positions", []),  # Echo back input
+                "error": response.error,
+            }
+
+        else:
+            raise ValueError(f"Unknown CLT action: {action}")
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.
@@ -1339,6 +1514,7 @@ class GrpcEngineClient:
         domain: str,
         context: str = "",
         roles: Optional[list[str]] = None,
+        clt: bool = False,
     ) -> AsyncIterator[dict]:
         """Stream swarm analysis with real-time progress updates.
 
@@ -1350,6 +1526,7 @@ class GrpcEngineClient:
             domain: Domain to analyze (e.g., "pension", "kudu")
             context: Additional context for the analysis
             roles: Agent roles to include (default: all core roles)
+            clt: Use CLT-enhanced swarm with interpretable features
 
         Yields:
             SwarmEvent dicts with:
@@ -1360,10 +1537,10 @@ class GrpcEngineClient:
                 - progress: 0.0-1.0 overall progress
                 - message: Human-readable status message
                 - data: JSON payload (agent result on AGENT_COMPLETED,
-                        final results on COMPLETED)
+                        final results on COMPLETED, includes _clt if clt=True)
 
         Example:
-            async for event in client.swarm_stream("pension"):
+            async for event in client.swarm_stream("pension", clt=True):
                 print(f"{event['type']}: {event['message']} ({event['progress']:.0%})")
                 if event['type'] == 'COMPLETED':
                     final = json.loads(event['data'])
@@ -1373,6 +1550,7 @@ class GrpcEngineClient:
             domain=domain,
             context=context,
             roles=roles or [],
+            clt=clt,
         )
 
         try:

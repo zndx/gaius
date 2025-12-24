@@ -146,6 +146,22 @@ from .gaius_service_pb2 import (
     MetaAgentQueryRequest,
     MetaAgentQueryResponse,
     MetaAgentEvent,
+    # ThetaAgent
+    ThetaSitrepRequest,
+    ThetaSitrepResponse,
+    ThetaConsolidateRequest,
+    ThetaConsolidateResponse,
+    ThetaConsolidationStatsRequest,
+    ThetaConsolidationStatsResponse,
+    # CLT (Cross-Layer Transcoders)
+    CLTExtractRequest,
+    CLTExtractResponse,
+    SparseFeature,
+    CLTAttributeRequest,
+    CLTAttributeResponse,
+    CLTAttributionEdge,
+    CLTStatusRequest,
+    CLTStatusResponse,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -285,6 +301,22 @@ __all__ = [
     "MetaAgentQueryRequest",
     "MetaAgentQueryResponse",
     "MetaAgentEvent",
+    # ThetaAgent
+    "ThetaSitrepRequest",
+    "ThetaSitrepResponse",
+    "ThetaConsolidateRequest",
+    "ThetaConsolidateResponse",
+    "ThetaConsolidationStatsRequest",
+    "ThetaConsolidationStatsResponse",
+    # CLT (Cross-Layer Transcoders)
+    "CLTExtractRequest",
+    "CLTExtractResponse",
+    "SparseFeature",
+    "CLTAttributeRequest",
+    "CLTAttributeResponse",
+    "CLTAttributionEdge",
+    "CLTStatusRequest",
+    "CLTStatusResponse",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",

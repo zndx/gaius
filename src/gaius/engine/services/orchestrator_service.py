@@ -189,6 +189,10 @@ class OrchestratorService:
         # Active workloads being tracked
         self._active_workloads: dict[str, Any] = {}  # workload_id -> ActiveWorkload
 
+        # CLT subprocess capability (managed separately from vLLM endpoints)
+        # Stores (CLTService, allocated_gpu_id) when CLT is active
+        self._clt_capability: Optional[tuple[Any, int]] = None
+
         logger.info("OrchestratorService initialized")
 
     async def start(self) -> None:
@@ -839,6 +843,14 @@ class OrchestratorService:
                 status=proc.status.value if proc else "failed",
                 pid=proc.pid if proc else None,
             )
+        elif model_spec.provider == "clt":
+            # CLT subprocess-based capability
+            # Uses a subprocess worker with isolated GPU (not vLLM)
+            return await self._start_clt_capability(
+                endpoint_name=endpoint_name,
+                model_spec=model_spec,
+                gpu=gpus[0] if gpus else 0,
+            )
         else:
             # Non-vLLM model (embedding, API, etc.)
             # Use the embedding controller
@@ -891,6 +903,103 @@ class OrchestratorService:
                 return port
 
         raise RuntimeError(f"No available ports in range {start}-{end}")
+
+    async def _start_clt_capability(
+        self,
+        endpoint_name: str,
+        model_spec: "ModelSpec",
+        gpu: int,
+    ) -> EndpointStatus:
+        """Start CLT subprocess capability.
+
+        CLT runs as a subprocess with isolated GPU (not vLLM). The orchestrator
+        manages the lifecycle and GPU allocation.
+
+        Args:
+            endpoint_name: Name for the capability endpoint
+            model_spec: CLT model specification
+            gpu: GPU index to use
+
+        Returns:
+            EndpointStatus with CLT capability info
+        """
+        from .clt_service import CLTService
+        from ..resources.allocations import GPUAllocation, AllocationState
+
+        logger.info(f"Starting CLT capability on GPU {gpu}")
+
+        try:
+            # Create CLT service with orchestrator-assigned GPU
+            clt_service = CLTService(
+                model_name="qwen3-1.7b",
+                gpu_index=gpu,
+            )
+
+            # Pre-load the model (starts subprocess worker)
+            clt_service.ensure_loaded()
+
+            # Track the CLT capability
+            self._clt_capability = (clt_service, gpu)
+
+            # Register GPU allocation with ResourceManager
+            allocation = GPUAllocation(
+                agent_alias="clt",
+                model=model_spec.model_id,
+                gpu_ids=[gpu],
+                vram_reserved_gb=6.0,  # CLT uses ~6GB
+                state=AllocationState.ACTIVE,
+            )
+            self.resource_manager.allocations["clt"] = allocation
+
+            return EndpointStatus(
+                agent_alias=endpoint_name,
+                model=model_spec.model_id,
+                port=None,  # CLT doesn't use HTTP port
+                gpu_ids=[gpu],
+                status="healthy",
+                pid=clt_service._worker.pid if clt_service._worker else None,
+                startup_message=f"CLT loaded on GPU {gpu}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to start CLT capability: {e}")
+            return EndpointStatus(
+                agent_alias=endpoint_name,
+                model=model_spec.model_id,
+                port=None,
+                gpu_ids=[],
+                status="failed",
+                startup_message=f"CLT startup failed: {e}",
+            )
+
+    def stop_clt_capability(self) -> None:
+        """Stop CLT capability and release GPU.
+
+        Called when CLT workload completes to free resources.
+        """
+        if self._clt_capability is None:
+            return
+
+        clt_service, gpu = self._clt_capability
+
+        try:
+            clt_service.unload()
+            logger.info(f"CLT capability stopped, releasing GPU {gpu}")
+        except Exception as e:
+            logger.warning(f"Error stopping CLT: {e}")
+        finally:
+            # Release GPU allocation via ResourceManager
+            self.resource_manager.release("clt")
+            self._clt_capability = None
+
+    def get_clt_service(self) -> Optional[Any]:
+        """Get active CLT service if one is running.
+
+        Returns:
+            CLTService instance or None
+        """
+        if self._clt_capability:
+            return self._clt_capability[0]
+        return None
 
     async def _find_and_evict_for_resources(
         self,

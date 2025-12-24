@@ -744,6 +744,29 @@ class SchedulerService:
         # Convert to dict
         return {name: result for name, result in results_list}
 
+    async def run_swarm_clt(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Run CLT-enhanced swarm analysis.
+
+        DEPRECATED: This method bypasses the Yunikorn-style workload system.
+        Use gRPC SwarmStream with clt=True instead, which properly allocates
+        GPU resources via the orchestrator's begin_workload/complete_workload.
+
+        Raises:
+            RuntimeError: Always fails with guidance to use proper CLT path
+        """
+        raise RuntimeError(
+            "run_swarm_clt() is deprecated. CLT requires GPU allocation via workload system.\n"
+            "  Use: gRPC SwarmStream with clt=True\n"
+            "  Or:  CLI '/swarm clt <domain>'\n"
+            "  Guru Meditation: #CLT.00000002.DEPRECATED\n"
+            "  The workload system handles GPU allocation, eviction, and restoration."
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Status
     # ─────────────────────────────────────────────────────────────────────────

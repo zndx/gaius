@@ -388,6 +388,7 @@ class SchedulerProxy:
         context: str = "",
         roles: list[str] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        clt: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream swarm analysis with real-time progress updates.
 
@@ -401,6 +402,7 @@ class SchedulerProxy:
             context: Additional context
             roles: Agent roles to include (default: all core roles)
             on_event: Optional callback for each event
+            clt: Use CLT-enhanced swarm with interpretable features
 
         Yields:
             SwarmEvent dicts with:
@@ -410,12 +412,12 @@ class SchedulerProxy:
                 - agent: Agent name (for AGENT_* events)
                 - progress: 0.0-1.0 overall progress
                 - message: Human-readable status message
-                - data: JSON payload (results on COMPLETED)
+                - data: JSON payload (results on COMPLETED, includes _clt if clt=True)
         """
         from .grpc_client import get_grpc_client
 
         client = await get_grpc_client()
-        async for event in client.swarm_stream(domain, context, roles):
+        async for event in client.swarm_stream(domain, context, roles, clt=clt):
             if on_event:
                 on_event(event)
             yield event
@@ -478,6 +480,65 @@ class SchedulerProxy:
             elif event_type == "FAILED":
                 # Return empty results on failure
                 logger.error(f"Swarm failed: {event.get('message', 'unknown error')}")
+                return {}, ""
+
+        return results, saved_path
+
+    async def run_swarm_clt(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+        on_progress: Callable[[str, float], None] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], str]:
+        """Run CLT-enhanced swarm analysis via engine.
+
+        Uses Cross-Layer Transcoders for interpretable agent collaboration.
+        All CLT processing happens in the engine.
+
+        Args:
+            domain: Domain to analyze
+            context: Additional context
+            roles: Agent roles to include (default: all core roles)
+            on_progress: Optional callback (message, progress_0_to_1)
+
+        Returns:
+            Tuple of (results dict with _clt data, saved KB path)
+        """
+        import json
+
+        results: dict[str, dict[str, Any]] = {}
+        saved_path = ""
+
+        # Use streaming internally for graceful backend handling
+        async for event in self.run_swarm_stream(domain, context, roles, clt=True):
+            event_type = event.get("type", "")
+
+            if on_progress:
+                on_progress(event.get("message", ""), event.get("progress", 0.0))
+
+            if event_type == "AGENT_COMPLETED":
+                agent = event.get("agent", "")
+                if agent and event.get("data"):
+                    try:
+                        results[agent] = json.loads(event["data"])
+                    except json.JSONDecodeError:
+                        pass
+
+            elif event_type == "COMPLETED":
+                if event.get("data"):
+                    try:
+                        final_data = json.loads(event["data"])
+                        results = final_data.get("results", results)
+                        saved_path = final_data.get("saved_path", "")
+                        # Include CLT data
+                        if "_clt" in final_data:
+                            results["_clt"] = final_data["_clt"]
+                    except json.JSONDecodeError:
+                        pass
+
+            elif event_type == "FAILED":
+                logger.error(f"CLT swarm failed: {event.get('message', 'unknown error')}")
                 return {}, ""
 
         return results, saved_path
