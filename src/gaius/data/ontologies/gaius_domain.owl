@@ -1,0 +1,345 @@
+<?xml version="1.0"?>
+<!--
+Gaius Domain Ontology
+
+An internal ontology for BERTSubsIntraPipeline to provide subsumption inference
+for ThetaAgent's cross-temporal linking functionality.
+
+This ontology covers Gaius's core domains:
+- Machine Learning / AI concepts
+- Knowledge representation / Ontology
+- Streaming / Data infrastructure
+- Cognitive systems / Agent architectures
+
+Each class has rdfs:label annotations for BERTSubs text semantics.
+The hierarchy provides enough subsumption relationships for training.
+
+References:
+- BERTSubs: Chen et al. 2023
+- DeepOnto: https://github.com/KRR-Oxford/DeepOnto
+-->
+<rdf:RDF xmlns="http://gaius.zndx.org/ontology#"
+     xml:base="http://gaius.zndx.org/ontology"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xmlns:xsd="http://www.w3.org/2001/XMLSchema#">
+
+    <owl:Ontology rdf:about="http://gaius.zndx.org/ontology">
+        <rdfs:label>Gaius Domain Ontology</rdfs:label>
+        <rdfs:comment>Domain ontology for Gaius ThetaAgent subsumption inference</rdfs:comment>
+    </owl:Ontology>
+
+    <!-- ====================================
+         ARTIFICIAL INTELLIGENCE HIERARCHY
+         ==================================== -->
+
+    <!-- Root: AI -->
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ArtificialIntelligence">
+        <rdfs:label>Artificial Intelligence</rdfs:label>
+    </owl:Class>
+
+    <!-- Machine Learning branch -->
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#MachineLearning">
+        <rdfs:label>Machine Learning</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#ArtificialIntelligence"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#SupervisedLearning">
+        <rdfs:label>Supervised Learning</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MachineLearning"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#UnsupervisedLearning">
+        <rdfs:label>Unsupervised Learning</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MachineLearning"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ReinforcementLearning">
+        <rdfs:label>Reinforcement Learning</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MachineLearning"/>
+    </owl:Class>
+
+    <!-- Deep Learning branch -->
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#DeepLearning">
+        <rdfs:label>Deep Learning</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MachineLearning"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#NeuralNetwork">
+        <rdfs:label>Neural Network</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DeepLearning"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ConvolutionalNetwork">
+        <rdfs:label>Convolutional Neural Network</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#NeuralNetwork"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#RecurrentNetwork">
+        <rdfs:label>Recurrent Neural Network</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#NeuralNetwork"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#TransformerNetwork">
+        <rdfs:label>Transformer</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#NeuralNetwork"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Attention">
+        <rdfs:label>Attention Mechanism</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#TransformerNetwork"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#LargeLanguageModel">
+        <rdfs:label>Large Language Model</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#TransformerNetwork"/>
+    </owl:Class>
+
+    <!-- NLP branch -->
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#NaturalLanguageProcessing">
+        <rdfs:label>Natural Language Processing</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#ArtificialIntelligence"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#TextClassification">
+        <rdfs:label>Text Classification</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#NaturalLanguageProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#NamedEntityRecognition">
+        <rdfs:label>Named Entity Recognition</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#NaturalLanguageProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#SemanticSearch">
+        <rdfs:label>Semantic Search</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#NaturalLanguageProcessing"/>
+    </owl:Class>
+
+    <!-- ====================================
+         KNOWLEDGE REPRESENTATION HIERARCHY
+         ==================================== -->
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#KnowledgeRepresentation">
+        <rdfs:label>Knowledge Representation</rdfs:label>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Ontology">
+        <rdfs:label>Ontology</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#KnowledgeRepresentation"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#KnowledgeGraph">
+        <rdfs:label>Knowledge Graph</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#KnowledgeRepresentation"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#SemanticWeb">
+        <rdfs:label>Semantic Web</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#KnowledgeRepresentation"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#OWL">
+        <rdfs:label>Web Ontology Language</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Ontology"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#RDF">
+        <rdfs:label>Resource Description Framework</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#SemanticWeb"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#SPARQL">
+        <rdfs:label>SPARQL Query Language</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#SemanticWeb"/>
+    </owl:Class>
+
+    <!-- ====================================
+         STREAMING DATA HIERARCHY
+         ==================================== -->
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#DataProcessing">
+        <rdfs:label>Data Processing</rdfs:label>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#StreamProcessing">
+        <rdfs:label>Stream Processing</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DataProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#BatchProcessing">
+        <rdfs:label>Batch Processing</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DataProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ApacheKafka">
+        <rdfs:label>Apache Kafka</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#StreamProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ApacheFlink">
+        <rdfs:label>Apache Flink</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#StreamProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ApacheNiFi">
+        <rdfs:label>Apache NiFi</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DataProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#DataLake">
+        <rdfs:label>Data Lake</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DataProcessing"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ApacheIceberg">
+        <rdfs:label>Apache Iceberg</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DataLake"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ApacheKudu">
+        <rdfs:label>Apache Kudu</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DataProcessing"/>
+    </owl:Class>
+
+    <!-- ====================================
+         AGENT ARCHITECTURE HIERARCHY
+         ==================================== -->
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#AgentSystem">
+        <rdfs:label>Agent System</rdfs:label>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#IntelligentAgent">
+        <rdfs:label>Intelligent Agent</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#AgentSystem"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#MultiAgentSystem">
+        <rdfs:label>Multi-Agent System</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#AgentSystem"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Swarm">
+        <rdfs:label>Agent Swarm</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MultiAgentSystem"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#CognitiveArchitecture">
+        <rdfs:label>Cognitive Architecture</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#AgentSystem"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ReasoningEngine">
+        <rdfs:label>Reasoning Engine</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#CognitiveArchitecture"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#PlanningSystem">
+        <rdfs:label>Planning System</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#CognitiveArchitecture"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#MemorySystem">
+        <rdfs:label>Memory System</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#CognitiveArchitecture"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#WorkingMemory">
+        <rdfs:label>Working Memory</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MemorySystem"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#LongTermMemory">
+        <rdfs:label>Long-Term Memory</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#MemorySystem"/>
+    </owl:Class>
+
+    <!-- ====================================
+         TOPOLOGY / MATHEMATICS HIERARCHY
+         ==================================== -->
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Mathematics">
+        <rdfs:label>Mathematics</rdfs:label>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Topology">
+        <rdfs:label>Topology</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Mathematics"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#AlgebraicTopology">
+        <rdfs:label>Algebraic Topology</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Topology"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#PersistentHomology">
+        <rdfs:label>Persistent Homology</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#AlgebraicTopology"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#TopologicalDataAnalysis">
+        <rdfs:label>Topological Data Analysis</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#AlgebraicTopology"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#DifferentialGeometry">
+        <rdfs:label>Differential Geometry</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Mathematics"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#RicciCurvature">
+        <rdfs:label>Ricci Curvature</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DifferentialGeometry"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Manifold">
+        <rdfs:label>Manifold</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#DifferentialGeometry"/>
+    </owl:Class>
+
+    <!-- ====================================
+         EMBEDDINGS / VECTORS HIERARCHY
+         ==================================== -->
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#VectorRepresentation">
+        <rdfs:label>Vector Representation</rdfs:label>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Embedding">
+        <rdfs:label>Embedding</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#VectorRepresentation"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#TextEmbedding">
+        <rdfs:label>Text Embedding</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Embedding"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#ImageEmbedding">
+        <rdfs:label>Image Embedding</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Embedding"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#MultimodalEmbedding">
+        <rdfs:label>Multimodal Embedding</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#Embedding"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#SparseFeature">
+        <rdfs:label>Sparse Feature</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#VectorRepresentation"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#VectorDatabase">
+        <rdfs:label>Vector Database</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#VectorRepresentation"/>
+    </owl:Class>
+
+    <owl:Class rdf:about="http://gaius.zndx.org/ontology#Qdrant">
+        <rdfs:label>Qdrant</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://gaius.zndx.org/ontology#VectorDatabase"/>
+    </owl:Class>
+
+</rdf:RDF>
