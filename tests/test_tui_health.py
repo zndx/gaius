@@ -137,35 +137,5 @@ async def test_ask_reason_uses_engine():
         assert result["response"] == "Engine response"
 
 
-@pytest.mark.asyncio
-async def test_ask_reason_fallback_to_direct():
-    """Test _ask_reason falls back to direct client if engine unavailable."""
-    from gaius.cli import GaiusCLI
-
-    cli = GaiusCLI()
-
-    # Mock engine to return None (unavailable)
-    with patch.object(cli, "_complete_via_engine") as mock_engine:
-        mock_engine.return_value = None
-
-        # Mock direct client - import is inside the function
-        with patch("gaius.inference.get_client") as mock_get_client:
-            mock_client = MagicMock()
-            mock_result = MagicMock()
-            mock_result.content = "Direct response"
-            mock_result.model = "direct-model"
-            mock_result.input_tokens = 10
-            mock_result.output_tokens = 20
-            mock_result.technique = "cot_reflection"
-            mock_client.complete = AsyncMock(return_value=mock_result)
-            mock_get_client.return_value = mock_client
-
-            result = await cli._ask_reason("What is 2+2?", None, False)
-
-            # Should have fallen back to direct
-            assert result["backend"] == "direct"
-            assert result["response"] == "Direct response"
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

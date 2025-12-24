@@ -55,30 +55,40 @@ class MinigridTestApp(App):
             )
 
             if "right" in data and data["right"]:
-                self.query_one("#minigrid-top", MiniGrid).update_data(data["right"])
+                self.query_one("#minigrid-top", MiniGrid).update_data(data["right"].grid)
             if "top" in data and data["top"]:
-                self.query_one("#minigrid-bottom", MiniGrid).update_data(data["top"])
+                self.query_one("#minigrid-bottom", MiniGrid).update_data(data["top"].grid)
 
 
 def make_mock_grid_data():
-    """Create mock GridData with embeddings for testing."""
+    """Create mock GridData with embeddings for testing.
+
+    Creates 11 documents in a 3x4 grid centered on (9, 9) to ensure
+    the cursor position has a document and neighborhood.
+    """
     from gaius.core.projection import GridData, GridPoint
 
-    # Create some test embeddings
-    n_docs = 10
+    # Create test embeddings
+    n_docs = 11
     embeddings = np.random.randn(n_docs, 768)
     # Normalize embeddings
     embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
 
-    # Create points at various grid positions
+    # Create points centered around (9, 9) - the default cursor position
+    # This ensures cursor position has a document for get_embed_view
+    positions = [
+        (8, 8), (9, 8), (10, 8),
+        (8, 9), (9, 9), (10, 9),  # (9, 9) is cursor position
+        (8, 10), (9, 10), (10, 10),
+        (7, 9), (11, 9),  # Extra neighbors
+    ]
+
     points = []
     embedding_to_grid = {}
     grid_to_embedding = {}
     document_positions = set()
 
-    for i in range(n_docs):
-        x = 5 + (i % 5)
-        y = 7 + (i // 5)
+    for i, (x, y) in enumerate(positions):
         point = GridPoint(
             x=x, y=y,
             path=f"/test/doc{i}.md",
