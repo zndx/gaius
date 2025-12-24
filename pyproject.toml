@@ -194,6 +194,14 @@ gaius-worker = "gaius.workers.cli:main"
 gaius-engine = "gaius.engine:main"
 gaius-dataset = "gaius.datasets.nifi_som.cli:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+timeout = 60
+# Exclude infrastructure-dependent tests from default run
+# These require optillm/vLLM endpoints or other devenv services
+addopts = "--ignore=tests/test_optillm_vllm.py --ignore=tests/test_inference.py --ignore=tests/test_artifacts.py"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
