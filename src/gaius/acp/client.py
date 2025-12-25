@@ -96,6 +96,7 @@ class ACPConfig:
         include_gaius_mcp: Automatically include Gaius MCP server
         github_repo: GitHub repository for issue tracking
         stream_callback: Optional async callback for streaming responses to TUI
+        buffer_limit: Asyncio stream buffer limit in bytes (default 16MB for large files)
     """
     # claude-code-acp is the required adapter from Zed
     # See: https://github.com/zed-industries/claude-code-acp
@@ -110,6 +111,7 @@ class ACPConfig:
     include_gaius_mcp: bool = True  # Include Gaius MCP server in session
     github_repo: str = "zndx/gaius-internal"  # GitHub repo for issue tracking
     stream_callback: StreamCallback | None = None  # Streaming to TUI panel
+    buffer_limit: int = 16 * 1024 * 1024  # 16MB buffer for large Claude Code responses
 
 
 class GaiusACPClient:
@@ -312,15 +314,17 @@ class GaiusACPClient:
                 # Configure Gaius MCP server for Claude Code
                 env["CLAUDE_CODE_MCP_CONFIG"] = json.dumps(self.config.mcp_config)
 
-            # Spawn agent process with timeout
+            # Spawn agent process with timeout and increased buffer limit
             async with asyncio.timeout(self.config.connection_timeout):
                 # spawn_agent_process returns an async context manager
+                # Pass buffer limit via transport_kwargs to handle large Claude Code responses
                 self._context_manager = spawn_agent_process(
                     gaius_client,
                     self.config.agent_command,
                     *self.config.agent_args,
                     env=env,
                     cwd=self.config.working_directory,
+                    transport_kwargs={"limit": self.config.buffer_limit},
                 )
                 self._connection, self._process = await self._context_manager.__aenter__()
 
