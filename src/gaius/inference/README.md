@@ -1,6 +1,6 @@
 # Gaius Inference
 
-Local-first inference with vLLM orchestration, optillm reasoning enhancement, and intelligent job scheduling.
+Local-first inference with vLLM orchestration, optillm reasoning enhancement, and priority-based job scheduling.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ inference/
 ├── recovery.py         # Error recovery strategies
 ├── health.py           # Inference health monitoring
 ├── persistence.py      # Job persistence
-├── routing_analytics.py # Routing decisions tracking
+├── routing_analytics.py # Routing decision tracking
 ├── manager.py          # Resource management
 └── search/
     ├── brave.py        # Brave web search
@@ -89,7 +89,7 @@ stateDiagram-v2
 
 ### Startup Progress Tracking
 
-vLLM startup is monitored with regex pattern matching:
+vLLM startup is monitored via regex pattern matching on stdout:
 
 | Pattern | Status | Progress |
 |---------|--------|----------|
@@ -103,7 +103,7 @@ vLLM startup is monitored with regex pattern matching:
 | `Uvicorn running` | Server running | 95% |
 | `Application startup complete` | Ready | 98% |
 
-Error patterns (OOM, CUDA errors) set progress to -1.0.
+Error patterns (OOM, CUDA errors) set progress to −1.0.
 
 ### Endpoint Configuration
 
@@ -112,32 +112,11 @@ Error patterns (OOM, CUDA errors) set progress to -1.0.
 class EndpointConfig:
     name: str                    # "reasoning", "coding"
     url: str                     # "http://localhost:8001/v1"
-    models: list[str]            # ["nvidia/Llama-3.3-70B-Instruct-FP8"]
-    gpus: list[int]              # [0, 1]
+    models: list[str]            # HuggingFace model IDs
+    gpus: list[int]              # Allocated GPUs
     tensor_parallel: int = 1     # GPU parallelism
-    context_length: int = 32768  # Max context
-    max_num_seqs: int = 256      # Max concurrent sequences
-```
-
-### Process Management
-
-```python
-@dataclass
-class VLLMProcess:
-    endpoint_name: str
-    model: str
-    port: int
-    gpus: list[int]
-
-    process: asyncio.subprocess.Process | None
-    pid: int | None
-    status: ProcessStatus  # STOPPED, STARTING, HEALTHY, UNHEALTHY, FAILED
-    started_at: datetime | None
-    consecutive_failures: int
-    recovery_attempts: int
-
-    stdout_buffer: deque  # Circular log buffer (500 lines)
-    stderr_buffer: deque
+    context_length: int = 32768  # Maximum context
+    max_num_seqs: int = 256      # Maximum concurrent sequences
 ```
 
 ## Job Scheduling
@@ -154,7 +133,7 @@ class JobPriority(Enum):
 
 ### Scheduling Algorithm
 
-Uses OR-Tools CP-SAT for optimal job assignment:
+Uses OR-Tools CP-SAT (Google, 2024) for optimal job assignment:
 
 ```python
 # Objective: minimize weighted completion time
@@ -182,17 +161,15 @@ result = await client.complete([
     Message(role="system", content="You are helpful."),
     Message(role="user", content="Explain TDA"),
 ])
-print(result.content)
 
 # Async job submission
 job_id = await client.submit_async(messages, priority=JobPriority.HIGH)
-# ... later ...
 result = await client.get_result(job_id)
 ```
 
 ## optillm Integration
 
-### Reasoning Techniques
+Reasoning enhancement via optillm (Maheshwari, 2024):
 
 | Technique | Description | Use Case |
 |-----------|-------------|----------|
@@ -247,37 +224,20 @@ class Citation:
     source: str      # KB path or URL
     title: str
     quote: str       # Relevant excerpt
-    relevance: float # 0-1 score
-```
-
-### Usage
-
-```python
-from gaius.inference import synthesize_search
-
-note = await synthesize_search(
-    query="What is persistent homology?",
-    kb_results=kb_search_results,
-    web_results=brave_search_results,
-)
-
-# Save to KB
-await kb_ops.save_note(note)
+    relevance: float # 0–1 score
 ```
 
 ## Evaluation System
 
 ### Quality Dimensions
 
-```python
-EVAL_DIMENSIONS = [
-    "accuracy",     # Factual correctness
-    "coherence",    # Logical flow
-    "relevance",    # Query alignment
-    "completeness", # Coverage of topic
-    "clarity",      # Writing quality
-]
-```
+| Dimension | Description |
+|-----------|-------------|
+| `accuracy` | Factual correctness |
+| `coherence` | Logical flow |
+| `relevance` | Query alignment |
+| `completeness` | Coverage of topic |
+| `clarity` | Writing quality |
 
 ### Tiered Evaluation
 
@@ -287,20 +247,6 @@ EVAL_DIMENSIONS = [
 | XAI | Grok | Promotion decisions |
 
 Budget controls limit XAI usage to high-stakes evaluations.
-
-```python
-from gaius.inference import evaluate_synthesis
-
-result = await evaluate_synthesis(
-    output=agent_response,
-    task_prompt=original_query,
-    force_xai=False,  # Use local unless budget allows
-)
-
-print(f"Overall: {result.overall_score:.2f}")
-for dim in result.dimensions:
-    print(f"  {dim.name}: {dim.score:.2f}")
-```
 
 ## Web Search
 
@@ -319,16 +265,17 @@ for result in results:
     print(f"{result.title}: {result.url}")
 ```
 
-### Result Structure
+## Error Recovery
+
+### Recovery Strategies
 
 ```python
-@dataclass
-class SearchResult:
-    title: str
-    url: str
-    description: str
-    published: datetime | None
-    relevance_score: float
+class RecoveryStrategy(Enum):
+    RESTART = "restart"           # Restart endpoint
+    ROLLBACK = "rollback"         # Previous model version
+    REDUCE_BATCH = "reduce_batch" # Smaller batch size
+    CLEAR_CACHE = "clear_cache"   # Clear KV cache
+    FAILOVER = "failover"         # Use different endpoint
 ```
 
 ## Configuration
@@ -364,38 +311,13 @@ inference {
 }
 ```
 
-## Error Recovery
+## References
 
-### Recovery Strategies
-
-```python
-class RecoveryStrategy(Enum):
-    RESTART = "restart"           # Restart endpoint
-    ROLLBACK = "rollback"         # Previous model version
-    REDUCE_BATCH = "reduce_batch" # Smaller batch size
-    CLEAR_CACHE = "clear_cache"   # Clear KV cache
-    FAILOVER = "failover"         # Use different endpoint
-```
-
-### Automatic Recovery
-
-```python
-class RecoveryManager:
-    async def handle_failure(
-        self,
-        endpoint: str,
-        error: Exception,
-    ) -> RecoveryResult:
-        if isinstance(error, OOMError):
-            return await self.clear_kv_cache(endpoint)
-        elif isinstance(error, TimeoutError):
-            return await self.restart_endpoint(endpoint)
-        elif isinstance(error, ModelLoadError):
-            return await self.rollback_model(endpoint)
-```
+- Google. (2024). *OR-Tools: Operations Research Tools*. https://developers.google.com/optimization
+- Maheshwari, P. (2024). *optillm: Inference-time reasoning optimization*. https://github.com/codelion/optillm
 
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Engine README](../engine/README.md) - gRPC integration
-- [Health README](../health/README.md) - Self-healing
+- [Parent README](../README.md) — Module overview
+- [Engine README](../engine/README.md) — gRPC integration
+- [Health README](../health/README.md) — Self-healing

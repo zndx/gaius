@@ -70,7 +70,7 @@ All backends implement the `StorageBackend` protocol:
 
 ```python
 class StorageBackend(Protocol):
-    """Abstract storage backend."""
+    """Abstract storage backend interface."""
 
     config: StorageConfig
 
@@ -122,10 +122,10 @@ build/dev/                 # KB root (gitignored)
 
 ### Allowed Directories
 
-All KB operations are restricted to:
-- `archive/` - Quarterly archives
-- `current/` - Active content
-- `scratch/` - Daily zettelkasten
+All KB operations are restricted to designated directories for security:
+- `archive/` — Quarterly archives
+- `current/` — Active content
+- `scratch/` — Daily zettelkasten notes
 
 ## KB Operations
 
@@ -134,7 +134,7 @@ High-level operations used by MCP, CLI, and TUI:
 ### Search
 
 ```python
-from gaius.storage.kb_ops import search_kb, SearchResult
+from gaius.storage.kb_ops import search_kb
 
 results = await search_kb("persistent homology", max_results=10)
 for result in results:
@@ -157,10 +157,7 @@ path = await create_kb(
 )
 
 # Update
-await update_kb(
-    "current/topics/tda.md",
-    updated_content,
-)
+await update_kb("current/topics/tda.md", updated_content)
 ```
 
 ### List
@@ -186,17 +183,8 @@ from gaius.storage.database import (
     get_evolution_trend,
 )
 
-# Recent evolution cycles
 cycles = await get_recent_cycles(limit=10)
-for cycle in cycles:
-    print(f"{cycle.agent_id}: {cycle.improvement_percent:.1f}%")
-
-# Agent scores
 scores = await get_agent_scores()
-for score in scores:
-    print(f"{score.agent_id}: {score.avg_score:.3f}")
-
-# Trend over days
 trend = await get_evolution_trend(days=7)
 ```
 
@@ -208,16 +196,6 @@ from gaius.storage.database import get_daily_summary
 summary = await get_daily_summary("2025-12-13")
 print(f"Total evals: {summary.total_evals}")
 print(f"Average score: {summary.avg_score:.3f}")
-```
-
-### XAI Budget
-
-```python
-from gaius.storage.database import get_xai_budget_status
-
-status = await get_xai_budget_status()
-print(f"Daily used: {status.daily_used}/{status.daily_limit}")
-print(f"Weekly used: {status.weekly_used}/{status.weekly_limit}")
 ```
 
 ## Grid State Persistence
@@ -241,11 +219,9 @@ print(f"Coverage: {state.coverage:.1%}")
 
 # List history
 snapshots = await list_grid_snapshots(limit=10)
-for snap in snapshots:
-    print(f"{snap.created_at}: {snap.n_documents} docs")
 ```
 
-### Snapshot Structure
+### Snapshot Schema
 
 ```sql
 CREATE TABLE grid_snapshots (
@@ -255,14 +231,14 @@ CREATE TABLE grid_snapshots (
     n_documents INT,
     coverage FLOAT,
     method VARCHAR(32),  -- umap, pca
-    allocations JSONB,   -- 19x19 density matrix
+    allocations JSONB,   -- 19×19 density matrix
     tda_features JSONB   -- Betti numbers, entropy
 );
 ```
 
 ## MinIO Integration
 
-MinIO is the primary object storage backend for Gaius, providing S3-compatible storage for KB documents, HX data lake, and content sync:
+MinIO provides S3-compatible storage for KB documents:
 
 ```python
 from gaius.storage.minio import MinioStorage
@@ -274,10 +250,7 @@ storage = MinioStorage(
     bucket="gaius-kb",
 )
 
-# Upload
 await storage.write("current/topics/tda.md", content)
-
-# Download
 content = await storage.read("current/topics/tda.md")
 ```
 
@@ -304,7 +277,7 @@ storage = AgentStudioStorage(
 )
 ```
 
-Provides:
+Features:
 - Enterprise authentication
 - Audit logging
 - Version control integration
@@ -325,7 +298,6 @@ await engine.sync_all()
 # Incremental (changed files only)
 await engine.sync_incremental()
 
-# Status
 status = engine.get_status()
 print(f"Synced: {status.synced_count}")
 print(f"Pending: {status.pending_count}")
@@ -369,6 +341,6 @@ storage {
 
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Database README](../../db/README.md) - Schema documentation
-- [Core README](../core/README.md) - Grid projection
+- [Parent README](../README.md) — Module overview
+- [Database README](../../db/README.md) — Schema documentation
+- [Core README](../core/README.md) — Grid projection

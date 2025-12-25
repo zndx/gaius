@@ -1,35 +1,34 @@
-# Gaius Source Code
+# Gaius
 
-Spatial intelligence interface for navigating graph-oriented knowledge domains. This directory contains the core implementation of the Gaius system.
+A terminal interface for navigating knowledge domains via topological and geometric structure. Gaius projects high-dimensional document embeddings onto a constrained 19×19 grid, applying persistent homology and Ollivier-Ricci curvature to reveal semantic organization.
 
-## Architecture Overview
+## System Architecture
 
 ```mermaid
 graph TB
-    subgraph "User Interfaces"
+    subgraph "Interface Layer"
         TUI[app.py<br/>Textual TUI]
-        CLI[cli.py<br/>Non-interactive CLI]
+        CLI[cli.py<br/>Command Interface]
         MCP[mcp_server.py<br/>MCP Protocol]
     end
 
-    subgraph "Core Layer"
+    subgraph "Geometric Core"
         STATE[core/state.py<br/>Application State]
-        PROJ[core/projection.py<br/>UMAP Grid Mapping]
+        PROJ[core/projection.py<br/>UMAP Projection]
         TDA[core/tda.py<br/>Persistent Homology]
         GEOM[core/geometry.py<br/>Ricci Curvature]
     end
 
-    subgraph "Intelligence Layer"
-        AGENTS[agents/<br/>Multi-Agent Swarms]
-        COG[agents/cognition/<br/>Autonomous Thinking]
-        EVOL[agents/evolution/<br/>Self-Improvement]
+    subgraph "Orchestration Layer"
+        AGENTS[agents/<br/>Role-Based LLM Calls]
+        THETA[agents/theta/<br/>Consolidation Pipeline]
+        SWARM[agents/swarm.py<br/>Parallel Execution]
     end
 
     subgraph "Infrastructure Layer"
         ENGINE[engine/<br/>gRPC Control Plane]
         INF[inference/<br/>vLLM Orchestration]
         STORE[storage/<br/>KB, Qdrant, Postgres]
-        HEALTH[health/<br/>Self-Healing]
     end
 
     TUI --> STATE
@@ -41,100 +40,89 @@ graph TB
     PROJ --> GEOM
 
     AGENTS --> ENGINE
-    COG --> ENGINE
-    EVOL --> ENGINE
+    THETA --> ENGINE
+    SWARM --> ENGINE
 
     ENGINE --> INF
     ENGINE --> STORE
-    ENGINE --> HEALTH
 ```
 
 ## Module Index
 
-| Module | Purpose | Key Files |
-|--------|---------|-----------|
-| [`core/`](core/README.md) | State, projection, TDA, geometry | `state.py`, `tda.py`, `geometry.py` |
-| [`engine/`](engine/README.md) | gRPC server, control plane | `server.py`, `workloads.py` |
-| [`inference/`](inference/README.md) | vLLM orchestration, scheduling | `orchestrator.py`, `scheduler.py` |
-| [`health/`](health/README.md) | Health checks, FMEA, self-healing | `self_healing.py`, `fmea/` |
-| [`agents/`](agents/README.md) | Swarms, cognition, evolution | `swarm.py`, `cognition/`, `evolution/` |
-| [`storage/`](storage/README.md) | KB operations, embeddings | `kb_ops.py`, `embeddings.py` |
-| [`widgets/`](widgets/README.md) | TUI components | `grid.py`, `minigrid.py` |
-| [`models/`](models/README.md) | Model registry, specs | `registry.py`, `specs/` |
+| Module | Description | Primary Components |
+|--------|-------------|-------------------|
+| [`core/`](core/README.md) | Geometric and topological computation | `tda.py`, `geometry.py`, `projection.py` |
+| [`engine/`](engine/README.md) | gRPC server and process management | `server.py`, `orchestrator_service.py` |
+| [`inference/`](inference/README.md) | vLLM endpoint management and scheduling | `orchestrator.py`, `scheduler.py` |
+| [`health/`](health/README.md) | Diagnostics and remediation | `self_healing.py`, `fmea/` |
+| [`agents/`](agents/README.md) | LLM orchestration patterns | `swarm.py`, `theta/`, `roles.py` |
+| [`storage/`](storage/README.md) | Knowledge base and vector operations | `kb_ops.py`, `embeddings.py` |
+| [`widgets/`](widgets/README.md) | TUI display components | `grid.py`, `minigrid.py` |
+| [`models/`](models/README.md) | Model registry and evaluation | `registry.py`, `evaluation.py` |
 
 ## Entry Points
 
-### TUI Application (`app.py`)
+| Command | Description |
+|---------|-------------|
+| `uv run gaius` | Terminal interface with 19×19 grid |
+| `uv run gaius-cli --cmd "/search query"` | Non-interactive command execution |
+| `uv run gaius-mcp` | Model Context Protocol server |
+| `uv run gaius-engine` | gRPC control plane daemon |
 
-The main Textual-based terminal interface:
+## Mathematical Foundations
 
-```bash
-uv run gaius
-```
+### Grid Projection
 
-Features:
-- 19x19 main grid with UMAP-projected documents
-- 9x9 mini-grids (Embed similarity, Iso curvature)
-- File tree navigation (Plan 9 style)
-- Command input with slash commands
-- Real-time overlays (Risk, H1/H2 homology, Agents)
+Documents are mapped from $\mathbb{R}^{768}$ (embedding space) to a 19×19 discrete grid via UMAP dimensionality reduction (McInnes et al., 2018). The projection preserves local neighborhood structure while providing a fixed-size representation suitable for spatial navigation.
 
-### CLI Mode (`cli.py`)
+$$\phi: \mathbb{R}^{768} \to \{0, \ldots, 18\}^2$$
 
-Non-interactive command execution:
+Grid coordinates follow Go board conventions (A1–T19, omitting I) to leverage spatial intuition from the game.
 
-```bash
-uv run gaius-cli --cmd "/search query" --format json
-```
+### Persistent Homology
 
-Useful for scripting, CI/CD pipelines, and batch operations.
+Persistent homology (Edelsbrunner et al., 2002; Zomorodian & Carlsson, 2005) computes topological invariants across filtration scales. For a point cloud $X$ with distance function $d$, the Vietoris-Rips complex at scale $\epsilon$ is:
 
-### MCP Server (`mcp_server.py`)
+$$\text{VR}_\epsilon(X) = \{ \sigma \subseteq X : \text{diam}(\sigma) \leq \epsilon \}$$
 
-Model Context Protocol server for Claude Code integration:
+Betti numbers $\beta_k$ count $k$-dimensional features:
+- $\beta_0$: Connected components (document clusters)
+- $\beta_1$: 1-cycles (circular dependency structures)
+- $\beta_2$: 2-voids (topological cavities)
 
-```bash
-uv run gaius-mcp
-```
+Persistence diagrams record feature birth-death pairs $(b_i, d_i)$, with persistence $p_i = d_i - b_i$ measuring feature significance.
 
-Exposes tools like `search_kb`, `run_swarm`, `explain_grid_position`.
+### Ollivier-Ricci Curvature
 
-## Core Concepts
+Curvature on the $k$-nearest neighbor graph follows Ollivier (2009):
 
-### The 19x19 Grid
+$$\kappa(x,y) = 1 - \frac{W_1(\mu_x, \mu_y)}{d(x,y)}$$
 
-Documents are projected from 768-dimensional embedding space onto a 19x19 grid using UMAP. The grid uses Go board conventions:
-- Positions labeled A1-T19 (skipping I)
-- Star points mark strategic positions
-- Corner/edge/center regions have different semantic properties
+where $W_1$ denotes the Wasserstein-1 (earth mover's) distance between neighborhood distributions $\mu_x$ and $\mu_y$. This discrete analogue of Ricci curvature characterizes local geometry:
 
-### Topological Data Analysis
+| Curvature | Interpretation |
+|-----------|----------------|
+| $\kappa > 0$ | Dense cluster interior (positive curvature) |
+| $\kappa < 0$ | Sparse boundary region (negative curvature) |
+| $\kappa \approx 0$ | Uniform transition zone |
 
-Persistent homology reveals structural patterns:
-- **H0 (components)**: Isolated knowledge clusters
-- **H1 (loops)**: Circular dependencies or themes
-- **H2 (voids)**: Gaps in understanding
+## Design Principles
 
-### Differential Geometry
+### Topology Over Distance
 
-Ollivier-Ricci curvature measures local structure:
+The system prioritizes topological structure (what persists across scales) over raw metric distances. Persistent homology filters noise by identifying features that survive across multiple scales, distinguishing significant structure from transient artifacts.
 
-$$\kappa(x,y) = 1 - \frac{W(\mu_x, \mu_y)}{d(x,y)}$$
+### Spatial Navigation
 
-- **Positive curvature** ($\kappa > 0$): Dense cluster cores
-- **Negative curvature** ($\kappa < 0$): Sparse boundaries
-- **Zero curvature** ($\kappa \approx 0$): Uniform regions
+The 19×19 grid transforms abstract embedding spaces into navigable territory. Position encodes semantic similarity; navigation follows spatial intuition rather than list traversal.
 
-### The Go Board Metaphor
+### Deterministic Pipelines
 
-Inspired by the game of Go:
-- **Tenuki**: Strategic jumps between contexts (not just adjacency)
-- **Territory vs Influence**: Exploitation vs exploration trade-off
-- **Life and Death**: Concept viability in knowledge space
+Current "agent" components are deterministic orchestration pipelines rather than autonomous agents. ThetaAgent executes a fixed consolidation sequence; MetaAgent coordinates parallel LLM calls with synthesis. This provides predictable behavior during development, with agentic loops planned for future iterations.
 
 ## Configuration
 
-Uses HOCON configuration in `config/base.conf`:
+HOCON configuration in `config/base.conf`:
 
 ```hocon
 gaius {
@@ -147,28 +135,22 @@ gaius {
 Environment overrides:
 ```bash
 export GAIUS_KB_ROOT="build/dev"
-export GAIUS_ALLOW_FALLBACKS=true  # dev only
+export GAIUS_ALLOW_FALLBACKS=true  # Development only
 ```
 
-## Design Philosophy
+## Nomenclature
 
-### Named for Pliny the Elder
+Named for Gaius Plinius Secundus (23–79 CE), author of *Naturalis Historia*—a systematic encyclopedia synthesizing knowledge across domains. The system aspires to similar synthesis: transforming scattered documents into structured understanding through geometric and topological analysis.
 
-Gaius Plinius Secundus (23-79 AD) authored *Naturalis Historia*, a systematic encyclopedia of knowledge. Like Pliny, Gaius aims to:
-- Catalog and organize diverse knowledge
-- Find patterns across domains
-- Transform observation into understanding
+## References
 
-### Topology Over Metrics
-
-Structure matters more than distance. Persistent homology captures what survives across scales, filtering noise and revealing the essential shape of knowledge.
-
-### Spatial Intuition
-
-The 19x19 grid transforms abstract embeddings into navigable space. Instead of scrolling through lists, you explore a landscape where position encodes meaning.
+- Edelsbrunner, H., Letscher, D., & Zomorodian, A. (2002). Topological persistence and simplification. *Discrete & Computational Geometry*, 28(4), 511–533.
+- McInnes, L., Healy, J., & Melville, J. (2018). UMAP: Uniform Manifold Approximation and Projection for Dimension Reduction. *arXiv:1802.03426*.
+- Ollivier, Y. (2009). Ricci curvature of Markov chains on metric spaces. *Journal of Functional Analysis*, 256(3), 810–864.
+- Zomorodian, A., & Carlsson, G. (2005). Computing persistent homology. *Discrete & Computational Geometry*, 33(2), 249–274.
 
 ## See Also
 
-- [Root README](../../README.md) - Installation and usage
-- [docs/](../../docs/) - mdbook documentation
-- [CLAUDE.md](../../CLAUDE.md) - Development guidelines
+- [Project README](../../README.md) — Installation and usage
+- [Documentation](../../docs/) — mdbook documentation
+- [CLAUDE.md](../../CLAUDE.md) — Development guidelines

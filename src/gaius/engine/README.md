@@ -1,6 +1,6 @@
 # Gaius Engine
 
-Centralized daemon for GPU orchestration, inference scheduling, and agent evolution. The engine serves as the control plane for all Gaius operations.
+Centralized daemon for GPU orchestration, inference scheduling, and background processes. The engine serves as the control plane for all Gaius operations, exposing a gRPC interface for client communication.
 
 ## Architecture
 
@@ -14,18 +14,17 @@ graph TB
 
     subgraph "Transport Layer"
         GRPC[gRPC Server<br/>:50051]
-        SOCK[Unix Socket<br/>/tmp/gaius-engine.sock]
     end
 
     subgraph "Services"
         ORCH[Orchestrator<br/>Endpoint Lifecycle]
-        SCHED[Scheduler<br/>Job Queue]
-        EVOL[Evolution<br/>Agent Improvement]
-        COG[Cognition<br/>Autonomous Thinking]
+        SCHED[Scheduler<br/>Priority Queue]
+        EVOL[Evolution<br/>Prompt Optimization]
+        COG[Cognition<br/>Pattern Detection]
         HEALTH[Health<br/>Monitoring]
     end
 
-    subgraph "Backends"
+    subgraph "Backend Controllers"
         ROUTER[Backend Router]
         VLLM[vLLM Controller]
         OPT[optillm Controller]
@@ -40,7 +39,6 @@ graph TB
     TUI --> GRPC
     MCP --> GRPC
     EXT --> GRPC
-    TUI -.-> SOCK
 
     GRPC --> ORCH
     GRPC --> SCHED
@@ -63,25 +61,25 @@ graph TB
 
 ```
 engine/
-├── server.py              # Main daemon loop
+├── server.py              # Main daemon entry point
 ├── config.py              # Engine configuration
 ├── init_controller.py     # Initialization progress streaming
 ├── workloads.py           # Workload definitions
 ├── grpc/
 │   ├── server.py          # gRPC server
 │   └── servicers/
-│       ├── inference_servicer.py  # KServe OIP
+│       ├── inference_servicer.py  # KServe OIP implementation
 │       └── gaius_servicer.py      # Custom extensions
 ├── backends/
-│   ├── backend_router.py  # Unified routing
+│   ├── backend_router.py  # Unified request routing
 │   ├── vllm_controller.py # vLLM process management
 │   ├── optillm_controller.py
 │   └── embedding_controller.py
 ├── services/
 │   ├── orchestrator_service.py  # Endpoint lifecycle
 │   ├── scheduler_service.py     # Job scheduling
-│   ├── evolution_service.py     # Agent evolution
-│   ├── cognition_service.py     # Autonomous thinking
+│   ├── evolution_service.py     # Prompt optimization
+│   ├── cognition_service.py     # Pattern detection
 │   └── health_service.py        # Health monitoring
 ├── compute/
 │   ├── grid_service.py    # UMAP projection
@@ -89,18 +87,15 @@ engine/
 ├── resources/
 │   ├── manager.py         # Resource allocation
 │   └── allocations.py     # GPU allocations
-├── transport/
-│   ├── protocol.py        # Message protocol
-│   └── aeron_bridge.py    # Aeron IPC (legacy)
 ├── generated/             # Protobuf generated code
 └── proto/                 # Protobuf definitions
 ```
 
 ## gRPC Protocol
 
-### KServe Open Inference Protocol (OIP)
+### KServe Open Inference Protocol
 
-The engine implements KServe's standard inference protocol for compatibility with Cloudera and other ML platforms:
+The engine implements KServe's standard inference protocol (KServe, 2023) for compatibility with Cloudera AI and other ML platforms:
 
 ```protobuf
 service GRPCInferenceService {
@@ -134,7 +129,9 @@ service GaiusService {
 }
 ```
 
-## Initialization Flow
+## Initialization Protocol
+
+The engine implements a phased initialization with progress streaming, allowing clients to display real-time status during the ~4 minute vLLM startup:
 
 ```mermaid
 sequenceDiagram
@@ -166,13 +163,13 @@ sequenceDiagram
     Client->>GRPC: Ready for inference
 ```
 
-The gRPC server starts **early** so clients can connect immediately and receive real-time progress updates during the ~4 minute vLLM preload phase.
+The gRPC server starts early so clients can connect immediately and receive real-time progress updates during vLLM model loading.
 
 ## Services
 
 ### Orchestrator Service
 
-Manages vLLM/optillm endpoint lifecycle:
+Manages vLLM and optillm endpoint lifecycle with capability-based routing:
 
 ```python
 @dataclass
@@ -185,25 +182,27 @@ class EndpointStatus:
     startup_progress: float  # 0.0 - 1.0
 ```
 
-**Yunikorn-Style Workload Management:**
-- Capability-based routing: requests declare capabilities, not endpoints
+**Workload Management**: Follows Yunikorn-style capability-based scheduling (Apache Yunikorn, 2024):
+- Requests declare required capabilities, not specific endpoints
 - Priority-based preemption: idle endpoints evicted for higher-priority work
 - Makespan fulfillment: engine ensures work completes, then restores set points
 
 ### Scheduler Service
 
-Priority-based job queue for inference requests:
+Priority-based job queue using weighted completion time minimization:
 
-| Priority | Use Case |
-|----------|----------|
-| `critical` | Interactive user requests |
-| `high` | Agent evolution |
-| `normal` | Background processing |
-| `low` | Speculative inference |
+| Priority | Weight | Use Case |
+|----------|--------|----------|
+| `critical` | 1.0 | Interactive user requests |
+| `high` | 2.0 | Swarm agent coordination |
+| `normal` | 4.0 | Background processing |
+| `low` | 8.0 | Speculative inference |
+
+Lower weights receive preferential scheduling.
 
 ### Evolution Service
 
-Continuous agent improvement via APO (Automatic Prompt Optimization):
+Background prompt optimization using APO (Zhou et al., 2023):
 
 ```mermaid
 graph LR
@@ -215,15 +214,17 @@ graph LR
     E --> G[Record Lineage]
 ```
 
+Evolution cycles execute during GPU idle periods, optimizing agent system prompts based on evaluation feedback.
+
 ### Cognition Service
 
-Scheduled autonomous thinking:
+Scheduled background tasks for pattern detection:
 
 | Task | Schedule | Purpose |
 |------|----------|---------|
-| `cognition_cycle` | Every 4h | Generate new thoughts |
-| `self_observation` | Every 8h | Meta-cognitive reflection |
-| `engine_audit` | Every 12h | System health analysis |
+| `cognition_cycle` | Every 4h | Detect patterns in recent KB activity |
+| `self_observation` | Every 8h | Meta-cognitive reflection on thought patterns |
+| `engine_audit` | Every 12h | System health and resource analysis |
 
 ## Backend Controllers
 
@@ -246,28 +247,27 @@ class VLLMController:
     async def health_check(self, port: int) -> bool
 ```
 
-**Process Management:**
-- Graceful shutdown with SIGTERM
-- Force kill after timeout
-- CUDA memory cleanup
-- Orphan process detection
+**Process Management**:
+- Graceful shutdown with SIGTERM, force kill after timeout
+- CUDA memory cleanup via `torch.cuda.empty_cache()`
+- Orphan process detection and cleanup
+- Circular log buffer (500 lines) for diagnostics
 
 ### optillm Controller
 
-Manages optillm reasoning enhancement server:
+Manages optillm reasoning enhancement server (Maheshwari, 2024):
 
-```python
-class OptillmController:
-    async def start(self) -> ProcessStatus
-    async def stop(self) -> bool
-    async def health_check(self) -> bool
-```
-
-Supports techniques: `cot_reflection`, `bon`, `moa`, `rto`, `z3`, `leap`.
+Supported techniques:
+- `cot_reflection`: Chain-of-thought with reflection
+- `bon`: Best-of-N sampling
+- `moa`: Mixture of Agents
+- `rto`: Round-trip optimization
+- `z3`: Z3 solver integration for logical reasoning
+- `leap`: Learn from examples
 
 ### Backend Router
 
-Unified routing to appropriate backend:
+Unified request routing to appropriate backend based on capability requirements:
 
 ```python
 class BackendRouter:
@@ -318,10 +318,10 @@ engine {
 
 ```bash
 # Start engine daemon
-uv run python -m gaius.engine
-
-# Or via entry point
 uv run gaius-engine
+
+# Or as module
+uv run python -m gaius.engine
 ```
 
 ### Client Connection
@@ -340,22 +340,27 @@ for progress in stub.WatchInit(InitRequest()):
 
 ### Security
 
-**Secure-by-Default Architecture:**
-
-All inference requests route through the gRPC engine for:
+All inference requests route through the gRPC engine for centralized:
 - Authentication and authorization
 - Audit logging
 - Resource management and rate limiting
 
-Direct HTTP access to optillm/vLLM is disabled by default:
+Direct HTTP access to optillm/vLLM backends is disabled by default:
 
 ```bash
-# Enable direct HTTP fallbacks (dev/debug only)
+# Enable direct HTTP fallbacks (development only)
 export GAIUS_ALLOW_FALLBACKS=true
 ```
 
+## References
+
+- Apache Yunikorn. (2024). *Yunikorn: A Universal Resource Scheduler*. https://yunikorn.apache.org/
+- KServe. (2023). *Open Inference Protocol*. https://kserve.github.io/website/latest/modelserving/data_plane/
+- Maheshwari, P. (2024). *optillm: Inference-time reasoning optimization*. https://github.com/codelion/optillm
+- Zhou, Y., Muresanu, A. I., Han, Z., et al. (2023). Large Language Models Are Human-Level Prompt Engineers. *ICLR 2023*.
+
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Inference README](../inference/README.md) - vLLM orchestration details
-- [Health README](../health/README.md) - Self-healing integration
+- [Parent README](../README.md) — Module overview
+- [Inference README](../inference/README.md) — vLLM orchestration details
+- [Health README](../health/README.md) — Self-healing integration
