@@ -1,4 +1,4 @@
-\restrict 2B70jyfyUTCJ1QjvNlDd6cibFKrc5aWyWVh9bCa9OhbbyHOH6fyeikDfGHco8vN
+\restrict mexGvu9139aCaC6sYgkf1M2eER2ActwaylkPrs40QQQCZVBTKhbbF309CNjhaOD
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -1363,6 +1363,20 @@ $$;
 --
 
 COMMENT ON FUNCTION public.update_current_state(p_kb_root text, p_snapshot_id integer, p_state_json jsonb) IS 'Atomically update state with incremented generation. Returns new generation.';
+
+
+--
+-- Name: update_health_observer_timestamp(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.update_health_observer_timestamp() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -4836,6 +4850,66 @@ CREATE VIEW public.evolution_performance AS
 
 
 --
+-- Name: external_routing_metrics; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.external_routing_metrics (
+    id integer NOT NULL,
+    task_type text NOT NULL,
+    provider text NOT NULL,
+    latency_ms integer,
+    tokens_used integer,
+    quality_score real,
+    fallback_chain text[],
+    fallback_reason text,
+    endpoint text,
+    incident_fingerprint text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE external_routing_metrics; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.external_routing_metrics IS 'Tracks external API routing decisions and performance';
+
+
+--
+-- Name: COLUMN external_routing_metrics.task_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.external_routing_metrics.task_type IS 'Task category: diagnosis, planning, code_gen, verification, documentation';
+
+
+--
+-- Name: COLUMN external_routing_metrics.fallback_chain; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.external_routing_metrics.fallback_chain IS 'Array of providers tried before successful completion';
+
+
+--
+-- Name: external_routing_metrics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.external_routing_metrics_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: external_routing_metrics_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.external_routing_metrics_id_seq OWNED BY public.external_routing_metrics.id;
+
+
+--
 -- Name: feed_sources_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -5213,6 +5287,67 @@ ALTER SEQUENCE public.fmea_outcomes_id_seq OWNED BY public.fmea_outcomes.id;
 
 
 --
+-- Name: github_issues; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.github_issues (
+    id integer NOT NULL,
+    fingerprint text NOT NULL,
+    issue_number integer NOT NULL,
+    repo text NOT NULL,
+    issue_url text,
+    sequence_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    closed_at timestamp with time zone,
+    last_updated_at timestamp with time zone,
+    recurrence_count integer DEFAULT 0,
+    status text DEFAULT 'open'::text,
+    CONSTRAINT github_issues_status_check CHECK ((status = ANY (ARRAY['open'::text, 'closed'::text, 'stale'::text])))
+);
+
+
+--
+-- Name: TABLE github_issues; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.github_issues IS 'Tracks GitHub issues created for health incidents';
+
+
+--
+-- Name: COLUMN github_issues.fingerprint; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.github_issues.fingerprint IS 'Unique incident identifier: FAILURE_MODE_ID:endpoint';
+
+
+--
+-- Name: COLUMN github_issues.recurrence_count; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.github_issues.recurrence_count IS 'Number of times this incident recurred while issue was open';
+
+
+--
+-- Name: github_issues_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.github_issues_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: github_issues_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.github_issues_id_seq OWNED BY public.github_issues.id;
+
+
+--
 -- Name: grid_allocations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5579,6 +5714,35 @@ CREATE SEQUENCE public.health_loop_state_id_seq
 --
 
 ALTER SEQUENCE public.health_loop_state_id_seq OWNED BY public.health_loop_state.id;
+
+
+--
+-- Name: health_observer_state; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.health_observer_state (
+    id integer DEFAULT 1 NOT NULL,
+    started_at timestamp with time zone,
+    stopped_at timestamp with time zone,
+    last_poll_at timestamp with time zone,
+    poll_count integer DEFAULT 0,
+    active_incidents jsonb DEFAULT '{}'::jsonb,
+    acp_connected boolean DEFAULT false,
+    acp_session_id text,
+    acp_prompts_sent integer DEFAULT 0,
+    acp_prompts_succeeded integer DEFAULT 0,
+    config jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT health_observer_state_id_check CHECK ((id = 1))
+);
+
+
+--
+-- Name: TABLE health_observer_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.health_observer_state IS 'Singleton row tracking HealthObserver daemon state';
 
 
 --
@@ -11293,6 +11457,13 @@ ALTER TABLE ONLY public.evolution_cycles ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
+-- Name: external_routing_metrics id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.external_routing_metrics ALTER COLUMN id SET DEFAULT nextval('public.external_routing_metrics_id_seq'::regclass);
+
+
+--
 -- Name: feed_sources id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -11325,6 +11496,13 @@ ALTER TABLE ONLY public.fmea_occurrences ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.fmea_outcomes ALTER COLUMN id SET DEFAULT nextval('public.fmea_outcomes_id_seq'::regclass);
+
+
+--
+-- Name: github_issues id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.github_issues ALTER COLUMN id SET DEFAULT nextval('public.github_issues_id_seq'::regclass);
 
 
 --
@@ -12196,6 +12374,14 @@ ALTER TABLE ONLY public.evolution_cycles
 
 
 --
+-- Name: external_routing_metrics external_routing_metrics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.external_routing_metrics
+    ADD CONSTRAINT external_routing_metrics_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: feed_sources feed_sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12265,6 +12451,22 @@ ALTER TABLE ONLY public.fmea_outcomes
 
 ALTER TABLE ONLY public.application_permissions_revision
     ADD CONSTRAINT general_permissions_revision_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: github_issues github_issues_fingerprint_repo_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.github_issues
+    ADD CONSTRAINT github_issues_fingerprint_repo_key UNIQUE (fingerprint, repo);
+
+
+--
+-- Name: github_issues github_issues_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.github_issues
+    ADD CONSTRAINT github_issues_pkey PRIMARY KEY (id);
 
 
 --
@@ -12393,6 +12595,14 @@ ALTER TABLE ONLY public.healing_events
 
 ALTER TABLE ONLY public.health_loop_state
     ADD CONSTRAINT health_loop_state_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: health_observer_state health_observer_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.health_observer_state
+    ADD CONSTRAINT health_observer_state_pkey PRIMARY KEY (id);
 
 
 --
@@ -14716,6 +14926,34 @@ CREATE INDEX idx_fmea_outcomes_success ON public.fmea_outcomes USING btree (succ
 
 
 --
+-- Name: idx_github_issues_fingerprint; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_github_issues_fingerprint ON public.github_issues USING btree (fingerprint);
+
+
+--
+-- Name: idx_github_issues_repo; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_github_issues_repo ON public.github_issues USING btree (repo);
+
+
+--
+-- Name: idx_github_issues_sequence; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_github_issues_sequence ON public.github_issues USING btree (sequence_id) WHERE (sequence_id IS NOT NULL);
+
+
+--
+-- Name: idx_github_issues_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_github_issues_status ON public.github_issues USING btree (status, created_at DESC);
+
+
+--
 -- Name: idx_grid_points_position; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15731,10 +15969,38 @@ CREATE INDEX idx_routing_created ON public.routing_decisions USING btree (create
 
 
 --
+-- Name: idx_routing_incident; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_incident ON public.external_routing_metrics USING btree (incident_fingerprint) WHERE (incident_fingerprint IS NOT NULL);
+
+
+--
 -- Name: idx_routing_mismatch; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_mismatch ON public.routing_decisions USING btree (capability_mismatch) WHERE capability_mismatch;
+
+
+--
+-- Name: idx_routing_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_provider ON public.external_routing_metrics USING btree (provider, created_at DESC);
+
+
+--
+-- Name: idx_routing_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_recent ON public.external_routing_metrics USING btree (created_at DESC);
+
+
+--
+-- Name: idx_routing_task_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_routing_task_type ON public.external_routing_metrics USING btree (task_type, created_at DESC);
 
 
 --
@@ -16320,6 +16586,13 @@ CREATE OR REPLACE VIEW public.v_source_status AS
      LEFT JOIN public.profiles p ON ((p.id = ps.profile_id)))
   GROUP BY fs.id
   ORDER BY fs.name;
+
+
+--
+-- Name: health_observer_state health_observer_state_updated; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER health_observer_state_updated BEFORE UPDATE ON public.health_observer_state FOR EACH ROW EXECUTE FUNCTION public.update_health_observer_timestamp();
 
 
 --
@@ -17764,7 +18037,7 @@ ALTER TABLE ONLY public.topic_models
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 2B70jyfyUTCJ1QjvNlDd6cibFKrc5aWyWVh9bCa9OhbbyHOH6fyeikDfGHco8vN
+\unrestrict mexGvu9139aCaC6sYgkf1M2eER2ActwaylkPrs40QQQCZVBTKhbbF309CNjhaOD
 
 
 --
@@ -17802,4 +18075,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251222000004'),
     ('20251222000005'),
     ('20251223000001'),
-    ('20251224000001');
+    ('20251224000001'),
+    ('20251225000001');
