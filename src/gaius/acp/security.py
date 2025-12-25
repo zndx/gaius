@@ -516,26 +516,28 @@ def sanitize_issue_content(content: str) -> str:
         Sanitized content safe for issue body/comments
     """
     # Pattern for common secrets
+    # Note: Order matters! Specific patterns should come before generic ones
     secret_patterns = [
-        # API keys with various formats
-        (r"(api[_-]?key\s*[=:]\s*)['\"]?[\w-]{20,}['\"]?", r"\1[REDACTED]"),
-        (r"(token\s*[=:]\s*)['\"]?[\w-]{20,}['\"]?", r"\1[REDACTED]"),
-        (r"(password\s*[=:]\s*)['\"]?[^\s'\"]+['\"]?", r"\1[REDACTED]"),
-        (r"(secret\s*[=:]\s*)['\"]?[^\s'\"]+['\"]?", r"\1[REDACTED]"),
-        (r"(ANTHROPIC_API_KEY\s*=\s*)[^\s]+", r"\1[REDACTED]"),
-        # Anthropic API keys: sk-ant-api03-...
+        # Anthropic API keys: sk-ant-api03-... (before generic sk- patterns)
         (r"sk-ant-[a-zA-Z0-9_-]{20,}", r"[REDACTED_ANTHROPIC_KEY]"),
-        # OpenAI keys: sk-...
+        # OpenAI keys: sk-... or sk-proj-... (project keys)
+        (r"sk-proj-[a-zA-Z0-9_-]+", r"[REDACTED_OPENAI_KEY]"),
         (r"sk-[a-zA-Z0-9]{20,}", r"[REDACTED_OPENAI_KEY]"),
-        # GitHub tokens
-        (r"ghp_[a-zA-Z0-9]{36}", r"[REDACTED_GH_PAT]"),
-        (r"gho_[a-zA-Z0-9]{36}", r"[REDACTED_GH_OAUTH]"),
-        (r"ghs_[a-zA-Z0-9]{36}", r"[REDACTED_GH_APP]"),
-        (r"ghr_[a-zA-Z0-9]{36}", r"[REDACTED_GH_REFRESH]"),
+        # GitHub tokens (various lengths) - before generic token pattern
+        (r"ghp_[a-zA-Z0-9]+", r"[REDACTED_GH_PAT]"),
+        (r"gho_[a-zA-Z0-9]+", r"[REDACTED_GH_OAUTH]"),
+        (r"ghs_[a-zA-Z0-9]+", r"[REDACTED_GH_APP]"),
+        (r"ghr_[a-zA-Z0-9]+", r"[REDACTED_GH_REFRESH]"),
         # AWS keys
         (r"AKIA[A-Z0-9]{16}", r"[REDACTED_AWS_KEY]"),
         # Generic bearer tokens
         (r"(Bearer\s+)[a-zA-Z0-9_.-]{20,}", r"\1[REDACTED_BEARER]"),
+        # Generic patterns (after specific ones)
+        (r"(ANTHROPIC_API_KEY\s*=\s*)[^\s]+", r"\1[REDACTED]"),
+        (r"(api[_-]?key\s*[=:]\s*)['\"]?[\w-]{20,}['\"]?", r"\1[REDACTED]"),
+        (r"(token\s*[=:]\s*)['\"]?[\w-]{20,}['\"]?", r"\1[REDACTED]"),
+        (r"(password\s*[=:]\s*)['\"]?[^\s'\"]+['\"]?", r"\1[REDACTED]"),
+        (r"(secret\s*[=:]\s*)['\"]?[^\s'\"]+['\"]?", r"\1[REDACTED]"),
     ]
 
     result = content
@@ -554,6 +556,16 @@ def sanitize_issue_content(content: str) -> str:
         r"<</SYS>>",
         r"Human:",
         r"Assistant:",
+        # Common prompt injection attempts
+        r"IGNORE\s+(ALL\s+)?(PREVIOUS|PRIOR|ABOVE)\s+(INSTRUCTIONS?|PROMPTS?|CONTEXT)",
+        r"DISREGARD\s+(ALL\s+)?(PREVIOUS|PRIOR|ABOVE)\s+(INSTRUCTIONS?|PROMPTS?|CONTEXT)",
+        r"FORGET\s+(ALL\s+)?(PREVIOUS|PRIOR|ABOVE)\s+(INSTRUCTIONS?|PROMPTS?|CONTEXT)",
+        r"NEW\s+INSTRUCTIONS?:",
+        r"SYSTEM\s+OVERRIDE:",
+        r"ADMIN\s+MODE:",
+        r"DEVELOPER\s+MODE:",
+        r"JAILBREAK",
+        r"DAN\s+MODE",
     ]
 
     for pattern in injection_patterns:
