@@ -339,8 +339,116 @@ storage {
 }
 ```
 
+## Call Graph
+
+```
+# KB Read Path
+mcp_server.py:read_kb(path)
+  └─→ storage.kb_ops.read_kb(path)
+      └─→ get_storage_backend()                # singleton factory
+          └─→ StorageBackend.read(path)
+              ├─→ FilesystemStorage.read()     # local dev
+              ├─→ MinioStorage.read()          # S3-compatible
+              └─→ AgentStudioStorage.read()    # Cloudera
+
+# KB Write Path
+mcp_server.py:create_kb(path, content)
+  └─→ storage.kb_ops.create_kb(path, content)
+      └─→ get_storage_backend().write(path, content)
+          └─→ sync_engine.queue_embedding(path)
+              └─→ qdrant_client.upsert(embedding)
+
+# Search Path
+mcp_server.py:search_kb(query)
+  └─→ storage.kb_ops.search_kb(query)
+      ├─→ qdrant_client.search(query_embedding)  # vector search
+      └─→ storage.filesystem.glob(pattern)       # filename match
+
+# Grid State Persistence
+widgets.grid.MainGrid.snapshot()
+  └─→ storage.grid_state.save_grid_state(data, tda)
+      └─→ database.execute_insert(grid_snapshots)
+```
+
+## Data Flow
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │              User Input                  │
+                    │  (MCP tool, CLI command, TUI action)    │
+                    └─────────────────┬───────────────────────┘
+                                      │
+                                      ▼
+                    ┌─────────────────────────────────────────┐
+                    │            kb_ops.py                     │
+                    │  (search_kb, read_kb, create_kb, ...)   │
+                    └─────────────────┬───────────────────────┘
+                                      │
+              ┌───────────────────────┼───────────────────────┐
+              ▼                       ▼                       ▼
+     ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
+     │  Filesystem  │       │    MinIO     │       │ Agent Studio │
+     │   Storage    │       │   Storage    │       │   Storage    │
+     └──────┬───────┘       └──────┬───────┘       └──────┬───────┘
+            │                      │                      │
+            └──────────────────────┼──────────────────────┘
+                                   ▼
+                    ┌─────────────────────────────────────────┐
+                    │           sync_engine.py                 │
+                    │     (embedding generation, upsert)       │
+                    └─────────────────┬───────────────────────┘
+                                      │
+              ┌───────────────────────┼───────────────────────┐
+              ▼                       ▼                       ▼
+     ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
+     │   Qdrant     │       │  PostgreSQL  │       │  MinIO/S3    │
+     │  Embeddings  │       │    State     │       │  KB Files    │
+     └──────────────┘       └──────────────┘       └──────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `get_storage_backend()` | factory.py | kb_ops, mcp_server, agents | Singleton factory |
+| `kb_ops` | StorageBackend, qdrant | mcp_server, agents, theta | `search_kb()`, `read_kb()`, `create_kb()` |
+| `database.py` | asyncpg | grid_state, evolution, health | Connection pool |
+| `grid_state.py` | database, qdrant | core.projection, widgets | `save_grid_state()`, `load_current_state()` |
+| `sync_engine.py` | StorageBackend, qdrant | workers, flows | `sync_all()`, `sync_incremental()` |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Database README](../../db/README.md) — Schema documentation
 - [Core README](../core/README.md) — Grid projection
+- [HX README](../hx/README.md) — Raw content data lake
+- [Agents README](../agents/README.md) — KB access for theta consolidation
+
+---
+
+<!-- GAI:META
+module: gaius.storage
+layer: L2-transport
+singleton: get_storage_backend
+key_types: [StorageBackend, FilesystemStorage, MinioStorage, AgentStudioStorage, KBDocument, WriteResult]
+key_funcs: [search_kb, read_kb, create_kb, update_kb, list_kb, save_grid_state, load_current_state]
+submodules: []
+depends: [core.config, qdrant_client, asyncpg, minio]
+dependents: [mcp_server, agents, flows, workers, widgets.grid]
+config_keys: [storage.backend, storage.root, storage.minio.endpoint, storage.database.url]
+env_vars: [GAIUS_KB_BACKEND, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET]
+grpc_services: []
+qdrant_collections: [gaius_embeddings]
+postgres_tables: [grid_snapshots]
+external_deps: [asyncpg, qdrant_client, minio]
+call_paths:
+  read: mcp.read_kb→kb_ops.read_kb→get_storage_backend→StorageBackend.read
+  write: mcp.create_kb→kb_ops.create_kb→StorageBackend.write→sync_engine.queue_embedding
+  search: mcp.search_kb→kb_ops.search_kb→qdrant.search+filesystem.glob
+  grid_snapshot: widgets.grid.snapshot→grid_state.save_grid_state→database.insert
+test_cmds:
+  read: 'uv run gaius-cli --cmd "/kb read current/topics/test.md"'
+  search: 'uv run gaius-cli --cmd "/kb search persistent homology"'
+guru_codes: [ST.00001.QDRANT_DOWN, ST.00002.MINIO_UNREACHABLE, ST.00003.PG_CONN_FAIL]
+fail_fast: true
+-->

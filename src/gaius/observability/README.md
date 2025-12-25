@@ -297,9 +297,104 @@ The telemetry module identifies the application entry point for proper trace att
 
 - Blanco, A., Shkuro, Y., & Parker, D. (2024). *OpenTelemetry in Action*. Manning Publications.
 
+## Call Graph
+
+```
+# ObservePanel Refresh Path
+widgets.observe_panel.ObservePanel.on_mount()
+  └─→ self.set_interval(refresh_metrics, seconds=15)
+      └─→ refresh_metrics()
+          └─→ [for metric_def in OBSERVE_METRICS]
+              └─→ source.query(metric_def.query)
+                  └─→ PrometheusSource.query()
+                      └─→ httpx.get(prometheus_url/api/v1/query)
+
+# Time Series Query Path
+mcp_server.py:get_metric_history()
+  └─→ source.query_range(metric, start, end, step)
+      └─→ PrometheusSource.query_range()
+          └─→ httpx.get(prometheus_url/api/v1/query_range)
+              └─→ MetricSeries
+
+# Metric Definition Registration Path
+OBSERVE_METRICS = [
+    MetricDefinition(name, query, display),
+    ...
+]
+  └─→ ObservePanel.load_metrics()
+      └─→ [for each definition]
+          └─→ register display widget
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Emission Side                                     │
+│        Application → OTel SDK → OTLP Exporter → Collector            │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Prometheus                                      │
+│              scrape targets → store time series                      │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼ (PromQL queries)
+┌─────────────────────────────────────────────────────────────────────┐
+│                   PrometheusSource                                   │
+│             query() | query_range() → MetricValue/Series             │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+     ┌──────────────┐                        ┌──────────────┐
+     │ ObservePanel │                        │  /observe    │
+     │   (Widget)   │                        │  (CLI cmd)   │
+     └──────────────┘                        └──────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `PrometheusSource` | httpx | ObservePanel, mcp_server | `query()`, `query_range()` |
+| `OBSERVE_METRICS` | — | ObservePanel, sources | Metric registry |
+| `MetricDefinition` | MetricDisplay | OBSERVE_METRICS | Definition model |
+| `MetricValue` | — | sources, widgets | Value model |
+| `MetricSeries` | MetricValue | sources, mcp_server | Time series model |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Core Telemetry](../core/telemetry.py) — OpenTelemetry emission
 - [Health README](../health/README.md) — Health monitoring
 - [Engine README](../engine/README.md) — Metric emission
+- [Widgets README](../widgets/README.md) — ObservePanel widget
+
+---
+
+<!-- GAI:META
+module: gaius.observability
+layer: L4-inference
+key_types: [MetricSource, PrometheusSource, MetricDefinition, MetricDisplay, MetricValue, MetricSeries, ObservabilityConfig]
+key_funcs: [query, query_range]
+submodules: [sources]
+depends: [httpx]
+dependents: [widgets.observe_panel, mcp_server, health]
+config_keys: [observability.prometheus_url, observability.scrape_interval, observability.retention_hours]
+env_vars: [PROMETHEUS_URL]
+grpc_services: []
+standard_metrics:
+  gpu: [nvidia_gpu_memory_used_bytes, nvidia_gpu_utilization_ratio, nvidia_gpu_temperature]
+  inference: [gaius_inference_duration_seconds, gaius_scheduler_queue_depth]
+  evolution: [gaius_evolution_cycle_count]
+external_deps: [httpx]
+call_paths:
+  query: ObservePanel.refresh→PrometheusSource.query→httpx.get→MetricValue
+  range: mcp.get_metric_history→PrometheusSource.query_range→MetricSeries
+test_cmds:
+  observe: 'uv run gaius-cli --cmd "/observe"'
+guru_codes: [OB.00001.PROMETHEUS_DOWN, OB.00002.QUERY_FAIL]
+fail_fast: true
+-->

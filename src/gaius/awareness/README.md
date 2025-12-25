@@ -243,8 +243,109 @@ info = client.get_collection(config.collection)
 count = info.points_count
 ```
 
+## Call Graph
+
+```
+# Startup Report Path
+mcp_server.py:get_session_handoff()
+  └─→ awareness.situational.generate_startup_report()
+      ├─→ get_activity_tracker().get_today()
+      ├─→ get_activity_tracker().get_yesterday()
+      ├─→ storage.kb_ops.list_kb("scratch/")
+      ├─→ qdrant_client.get_collection().points_count
+      └─→ [if include_insights]
+          └─→ generate_heuristic_insights()
+
+# Time Horizon Path
+awareness.situational.SituationalAwareness.generate_report()
+  └─→ [for each horizon: emphasis, tactical, strategic, secular]
+      └─→ TimeHorizon(
+          ├─→ filter_entries_by_date(start, end)
+          ├─→ extract_key_topics(entries)
+          └─→ get_notable_entries(limit=5)
+      )
+
+# Compact Status Path
+SituationalReport.to_compact()
+  └─→ format("{recent} recent | {queries}q | {swarms}s | {total} KB")
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Data Sources                                    │
+│      Activity Tracker  |  KB Filesystem  |  Qdrant Vectors           │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                  SituationalAwareness                                │
+│                generate_report(profile, domain)                      │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │   Emphasis   │    │   Tactical   │    │  Strategic   │
+     │   (24 hrs)   │    │   (7 days)   │    │  (30 days)   │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SituationalReport                                 │
+│       horizons + activity + system_state + insights                  │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+     ┌──────────────┐                        ┌──────────────┐
+     │  to_markdown()                        │ to_compact() │
+     │ (full report)                         │   (1-line)   │
+     └──────────────┘                        └──────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `SituationalAwareness` | activity, storage, qdrant | mcp_server, app | `generate_report()` |
+| `generate_startup_report()` | SituationalAwareness | mcp_server | Factory function |
+| `SituationalReport` | TimeHorizon, ActivitySummary | callers | Report model |
+| `TimeHorizon` | — | SituationalReport | Horizon model |
+| `to_markdown()` | SituationalReport | mcp_server, cli | Report rendering |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Core README](../core/README.md) — Activity tracking
 - [Storage README](../storage/README.md) — KB access
+- [Agents README](../agents/README.md) — ThetaAgent /sitrep command
+
+---
+
+<!-- GAI:META
+module: gaius.awareness
+layer: L5-orchestration
+key_types: [SituationalAwareness, SituationalReport, TimeHorizon, ActivitySummary, RecentEntry, AwarenessConfig]
+key_funcs: [generate_startup_report, get_situational_awareness]
+submodules: []
+depends: [core.activity, storage.kb_ops, qdrant_client]
+dependents: [mcp_server, app, agents.theta]
+config_keys: [awareness.emphasis_hours, awareness.default_horizon_days, awareness.include_insights_by_default]
+env_vars: []
+grpc_services: []
+time_horizons:
+  emphasis: 24h
+  tactical: 7d
+  strategic: 30d
+  secular: 90d
+call_paths:
+  report: mcp.get_session_handoff→generate_startup_report→SituationalAwareness→horizons
+  compact: SituationalReport.to_compact→format_string
+test_cmds:
+  sitrep: 'uv run gaius-cli --cmd "/sitrep"'
+guru_codes: [AW.00001.QDRANT_DOWN, AW.00002.ACTIVITY_UNAVAIL]
+fail_fast: true
+-->

@@ -301,8 +301,118 @@ class MainGrid(Widget):
 - Holman, W. (2023). *Textual: A TUI Framework for Python*. https://textual.textualize.io/
 - Pike, R., Presotto, D., Dorward, S., Flandrena, B., Thompson, K., Trickey, H., & Winterbottom, P. (1995). Plan 9 from Bell Labs. *Computing Systems*, 8(3), 221–254.
 
+## Call Graph
+
+```
+# TUI Startup Path
+launcher.py:main()
+  └─→ GaiusApp.compose()
+      ├─→ MainGrid(state=app_state)
+      ├─→ MiniGridPanel([embed_view, iso_view])
+      ├─→ FileTree(root_path=kb_root)
+      ├─→ ContentPanel(state=app_state)
+      ├─→ CommandInput()
+      └─→ LocationIndicator()
+
+# Cursor Navigation Path
+MainGrid.key_j()  # vim-style down
+  └─→ app_state.cursor_y += 1
+      └─→ [reactive] MainGrid.watch_cursor_y()
+          └─→ self.refresh()
+          └─→ MiniGridPanel.update_views(cursor_x, cursor_y)
+
+# Command Execution Path
+CommandInput.action_submit()
+  └─→ self.post_message(CommandSubmitted(text))
+      └─→ GaiusApp.on_command_submitted()
+          ├─→ /search → storage.kb_ops.search_kb()
+          ├─→ /swarm → agents.swarm.run_swarm()
+          ├─→ /explain → core.projection.explain_position()
+          └─→ /tda → core.tda.compute_tda()
+
+# Content Loading Path
+FileTree.on_node_selected()
+  └─→ self.post_message(FileSelected(path))
+      └─→ ContentPanel.load_file(path)
+          └─→ storage.kb_ops.read_kb(path)
+              └─→ ContentPanel.update(content)
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         User Input                                   │
+│          Keyboard (hjkl, /command)  |  Mouse clicks                  │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          GaiusApp                                    │
+│                        (app.py)                                      │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │   AppState   │    │  core.tda    │    │ storage.kb   │
+     │ (reactive)   │    │   compute    │    │   ops        │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Widget Tree                                   │
+│   MainGrid | MiniGridPanel | FileTree | ContentPanel | CommandInput │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Widget | Uses | Reacts To | Messages |
+|--------|------|-----------|----------|
+| `MainGrid` | AppState, projection | cursor_x, cursor_y, view_mode, overlay_mode | — |
+| `MiniGridPanel` | core.geometry | cursor position | — |
+| `FileTree` | storage.kb_ops | — | `FileSelected` |
+| `ContentPanel` | storage.kb_ops | file selection | — |
+| `CommandInput` | — | — | `CommandSubmitted` |
+| `LocationIndicator` | AppState | cursor position | — |
+| `EvolutionPanel` | client.evolution_proxy | evolution events | — |
+| `ObservePanel` | observability.sources | health metrics | — |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Core README](../core/README.md) — State management
 - [app.py](../app.py) — Main TUI application
+- [Observability README](../observability/README.md) — ObservePanel metrics
+
+---
+
+<!-- GAI:META
+module: gaius.widgets
+layer: L7-widgets
+key_types: [MainGrid, MiniGrid, MiniGridPanel, FileTree, ContentPanel, CommandInput, LocationIndicator, ThinkPanel, EvolutionPanel, InitPanel, ObservePanel, GraphView, NoteEditor, Splash, ConnectionIndicator]
+key_funcs: []
+submodules: []
+depends: [core.state, core.tda, core.geometry, storage.kb_ops, client.engine_proxy, observability]
+dependents: [app]
+config_keys: []
+env_vars: []
+grpc_services: []
+external_deps: [textual]
+reactive_props: [cursor_x, cursor_y, view_mode, overlay_mode, iso_mode, center_panel_mode]
+key_bindings:
+  navigation: [h, j, k, l]
+  modes: [v, o, i, g]
+  panels: ["[", "]", "\\"]
+  commands: ["/", "?", t, q, Ctrl-N]
+call_paths:
+  startup: launcher→GaiusApp.compose→[widgets]
+  navigation: MainGrid.key_*→app_state.cursor_*→reactive.refresh
+  command: CommandInput.action_submit→CommandSubmitted→GaiusApp.on_command
+  file: FileTree.on_node_selected→FileSelected→ContentPanel.load_file
+test_cmd: 'uv run gaius'
+guru_codes: [WG.00001.RENDER_FAIL]
+fail_fast: true
+-->

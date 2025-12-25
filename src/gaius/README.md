@@ -2,150 +2,253 @@
 
 A terminal interface for navigating knowledge domains via topological and geometric structure. Gaius projects high-dimensional document embeddings onto a constrained 19×19 grid, applying persistent homology and Ollivier-Ricci curvature to reveal semantic organization.
 
-## System Architecture
+## Layer Architecture
 
-```mermaid
-graph TB
-    subgraph "Interface Layer"
-        TUI[app.py<br/>Textual TUI]
-        CLI[cli.py<br/>Command Interface]
-        MCP[mcp_server.py<br/>MCP Protocol]
-    end
+The system is organized into 8 architectural layers, with dependencies flowing downward:
 
-    subgraph "Geometric Core"
-        STATE[core/state.py<br/>Application State]
-        PROJ[core/projection.py<br/>UMAP Projection]
-        TDA[core/tda.py<br/>Persistent Homology]
-        GEOM[core/geometry.py<br/>Ricci Curvature]
-    end
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ L8: APPLICATION                                                         │
+│   app.py (TUI)  ←→  cli.py (CLI)  ←→  mcp_server.py (MCP)              │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L7: WIDGETS                                                             │
+│   widgets/grid.py, minigrid.py, filetree.py, content.py, command.py    │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L6: VERIFICATION (Safety-Critical)                                      │
+│   rase/  — MBSE metamodel, constraints, oracles, RLVR rewards          │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L5: ORCHESTRATION                                                       │
+│   agents/swarm.py, theta/, latent/, evolution/, cognition.py           │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L4: INFERENCE & MODELS                                                  │
+│   inference/  — vLLM, optillm, scheduling                              │
+│   models/     — registry, evaluation, versioning, merging              │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L3: ENGINE (Daemon)                                                     │
+│   engine/server.py → services/, backends/, resources/                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L2: TRANSPORT & STORAGE                                                 │
+│   client/    — gRPC + Aeron IPC                                        │
+│   storage/   — KB filesystem, Qdrant, Postgres                         │
+│   hx/        — Iceberg data lake, OpenLineage                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│ L1: CORE FOUNDATION                                                     │
+│   core/state.py, projection.py, tda.py, geometry.py, telemetry.py      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-    subgraph "Orchestration Layer"
-        AGENTS[agents/<br/>Role-Based LLM Calls]
-        THETA[agents/theta/<br/>Consolidation Pipeline]
-        SWARM[agents/swarm.py<br/>Parallel Execution]
-    end
+## Execution Paths
 
-    subgraph "Infrastructure Layer"
-        ENGINE[engine/<br/>gRPC Control Plane]
-        INF[inference/<br/>vLLM Orchestration]
-        STORE[storage/<br/>KB, Qdrant, Postgres]
-    end
+### Path A: TUI Session
 
-    TUI --> STATE
-    CLI --> STATE
-    MCP --> STATE
+```
+gaius (launcher.py)
+  └─→ splash screen with phased imports
+      └─→ GaiusApp.compose() — build widget tree
+          └─→ on_mount()
+              ├─→ get_grpc_client() → connect to engine
+              ├─→ load_kb_entries() → populate FileTree
+              ├─→ project_grid() → UMAP + quantize → MainGrid
+              └─→ start services (scheduler, health watcher)
+```
 
-    STATE --> PROJ
-    PROJ --> TDA
-    PROJ --> GEOM
+### Path B: MCP Tool Call
 
-    AGENTS --> ENGINE
-    THETA --> ENGINE
-    SWARM --> ENGINE
+```
+Claude Code → mcp_server.py (FastMCP)
+  └─→ @mcp.tool handler
+      └─→ gaius.mcp.operations (ask_reasoning, run_swarm)
+          └─→ inference.client → gRPC → engine
+              └─→ vLLM backend → response
+```
 
-    ENGINE --> INF
-    ENGINE --> STORE
+### Path C: Agent Evolution
+
+```
+gaius-engine (daemon)
+  └─→ EvolutionService.daemon_loop()
+      └─→ check_gpu_idle() — wait for <30% utilization
+          └─→ select_next_agent() — round-robin with health check
+              └─→ optimize_agent() — APO/GEPA prompt tuning
+                  └─→ evaluate() — local + optional XAI
+                      └─→ save_version() → promote if improved
+```
+
+### Path D: Swarm Analysis
+
+```
+/swarm "query" (TUI or MCP)
+  └─→ SwarmManager.analyze(query, domain)
+      └─→ expand_roles() — get RoleDefinitions for domain
+          └─→ parallel_inference() — concurrent LLM calls
+              └─→ synthesize() — merge specialist outputs
+                  └─→ SwarmResult → display
+```
+
+### Path E: ThetaAgent Consolidation
+
+```
+/sitrep or theta_consolidate (MCP)
+  └─→ ThetaAgent.consolidate(temporal_slice)
+      └─→ NVARDynamics.detect_drift() — NG-RC forward prediction
+          └─→ SubsumptionInferencer.infer() — BERTSubs via DeepOnto
+              └─→ KnowledgeGradientPolicy.select() — pick best links
+                  └─→ AugmentationWriter.inject_wikilinks()
 ```
 
 ## Module Index
 
-| Module | Description | Primary Components |
-|--------|-------------|-------------------|
-| [`core/`](core/README.md) | Geometric and topological computation | `tda.py`, `geometry.py`, `projection.py` |
-| [`engine/`](engine/README.md) | gRPC server and process management | `server.py`, `orchestrator_service.py` |
-| [`inference/`](inference/README.md) | vLLM endpoint management and scheduling | `orchestrator.py`, `scheduler.py` |
-| [`health/`](health/README.md) | Diagnostics and remediation | `self_healing.py`, `fmea/` |
-| [`agents/`](agents/README.md) | LLM orchestration patterns | `swarm.py`, `theta/`, `roles.py` |
-| [`storage/`](storage/README.md) | Knowledge base and vector operations | `kb_ops.py`, `embeddings.py` |
-| [`widgets/`](widgets/README.md) | TUI display components | `grid.py`, `minigrid.py` |
-| [`models/`](models/README.md) | Model registry and evaluation | `registry.py`, `evaluation.py` |
+### Core Infrastructure
+
+| Module | Layer | Singleton | Key Types | Description |
+|--------|-------|-----------|-----------|-------------|
+| [`core/`](core/README.md) | L1 | — | `AppState`, `ViewMode` | TDA, geometry, projection, telemetry |
+| [`client/`](client/README.md) | L2 | `get_grpc_client()` | `GrpcEngineClient` | gRPC + Aeron transport to engine |
+| [`storage/`](storage/README.md) | L2 | `get_storage_backend()` | `StorageBackend` | KB filesystem, Minio sync |
+| [`hx/`](hx/README.md) | L2 | — | `IcebergContentStore` | Raw content lake, lineage |
+| [`engine/`](engine/README.md) | L3 | — | `GaiusEngine` | gRPC daemon, 9-phase startup |
+| [`inference/`](inference/README.md) | L4 | `get_inference_client()` | `InferenceClient` | vLLM orchestration, optillm |
+| [`models/`](models/README.md) | L4 | `get_model_registry()` | `ModelRegistry` | Versioning, evaluation, merging |
+
+### Agent System
+
+| Module | Layer | Singleton | Key Types | Description |
+|--------|-------|-----------|-----------|-------------|
+| [`agents/`](agents/README.md) | L5 | `get_swarm_manager()` | `SwarmManager` | Role-based parallel LLM calls |
+| `agents/theta/` | L5 | — | `ThetaAgent` | Neuromorphic consolidation |
+| `agents/latent/` | L5 | — | `LatentWorkingMemory` | Qdrant-based agent collaboration |
+| `agents/evolution/` | L5 | — | `EvolutionDaemon` | Self-improvement loops |
+
+### Verification & Safety
+
+| Module | Layer | Singleton | Key Types | Description |
+|--------|-------|-----------|-----------|-------------|
+| [`rase/`](rase/README.md) | L6 | — | `TraceableId`, `Constraint` | MBSE metamodel (SysML v2) |
+| [`health/`](health/README.md) | L5 | — | `HealthChecker` | Diagnostics, FMEA, self-healing |
+
+### Interface & Display
+
+| Module | Layer | Singleton | Key Types | Description |
+|--------|-------|-----------|-----------|-------------|
+| [`widgets/`](widgets/README.md) | L7 | — | `MainGrid`, `FileTree` | Textual TUI components |
+| [`observability/`](observability/README.md) | L4 | — | `MetricSource` | Prometheus queries, metrics display |
+| [`awareness/`](awareness/README.md) | L5 | — | `SituationalAwareness` | Startup reports, time horizons |
+
+### Data Pipelines
+
+| Module | Layer | Singleton | Key Types | Description |
+|--------|-------|-----------|-----------|-------------|
+| [`flows/`](flows/README.md) | L4 | — | `GaiusFlow` | Metaflow pipelines, OpenLineage |
+| [`workers/`](workers/README.md) | L3 | — | `WorkerManager` | Fetch job queue, content ingestion |
+| [`datasets/`](datasets/README.md) | L4 | — | `NiFiSoMGenerator` | SoM training data generation |
+
+### External Integration
+
+| Module | Layer | Singleton | Key Types | Description |
+|--------|-------|-----------|-----------|-------------|
+| [`acp/`](acp/README.md) | L5 | — | `GaiusACPClient` | Claude Code integration via ACP |
+| [`mcp/`](mcp/README.md) | L5 | — | — | Programmatic MCP tool access |
+| [`providers/`](providers/README.md) | L4 | — | `CerebrasClient` | Cloud GPU providers |
 
 ## Entry Points
 
-| Command | Description |
-|---------|-------------|
-| `uv run gaius` | Terminal interface with 19×19 grid |
-| `uv run gaius-cli --cmd "/search query"` | Non-interactive command execution |
-| `uv run gaius-mcp` | Model Context Protocol server |
-| `uv run gaius-engine` | gRPC control plane daemon |
+| Command | Module | Description |
+|---------|--------|-------------|
+| `gaius` | `launcher.py` → `app.py` | TUI with splash screen |
+| `gaius-cli` | `cli.py` | Non-interactive commands |
+| `gaius-mcp` | `mcp_server.py` | MCP protocol server |
+| `gaius-engine` | `engine/server.py` | gRPC daemon (9-phase startup) |
+| `gaius-worker` | `workers/cli.py` | Fetch job processor |
+| `gaius-dataset` | `datasets/nifi_som/cli.py` | SoM dataset generation |
+
+## Singleton Registry
+
+Critical singletons with factory functions (use these, don't instantiate directly):
+
+| Factory | Returns | Module | Thread-Safe |
+|---------|---------|--------|-------------|
+| `get_config()` | `GaiusConfig` | `core.config` | ✓ |
+| `get_grpc_client()` | `GrpcEngineClient` | `client` | ✓ |
+| `get_storage_backend()` | `StorageBackend` | `storage` | ✓ |
+| `get_inference_client()` | `InferenceClient` | `inference` | ✓ |
+| `get_swarm_manager()` | `SwarmManager` | `agents` | ✓ |
+| `get_model_registry()` | `ModelRegistry` | `models` | ✓ |
+| `get_tracer()` | `Tracer` | `core.telemetry` | ✓ |
+| `get_meter()` | `Meter` | `core.telemetry` | ✓ |
+
+## Configuration Hierarchy
+
+```
+1. Environment variables (GAIUS_*)
+2. ~/.gaius/config.hocon (user)
+3. ./config.hocon (project)
+4. config/base.conf (defaults)
+```
+
+Key configuration namespaces:
+
+| Namespace | Description |
+|-----------|-------------|
+| `gaius.kb.*` | Knowledge base paths |
+| `gaius.engine.*` | gRPC ports, startup options |
+| `gaius.inference.*` | Model selection, vLLM parameters |
+| `gaius.agents.*` | Role definitions, parallelism |
+| `gaius.evolution.*` | Daemon intervals, budget limits |
 
 ## Mathematical Foundations
 
 ### Grid Projection
 
-Documents are mapped from $\mathbb{R}^{768}$ (embedding space) to a 19×19 discrete grid via UMAP dimensionality reduction (McInnes et al., 2018). The projection preserves local neighborhood structure while providing a fixed-size representation suitable for spatial navigation.
+Documents are mapped from $\mathbb{R}^{768}$ (embedding space) to a 19×19 discrete grid via UMAP dimensionality reduction (McInnes et al., 2018):
 
 $$\phi: \mathbb{R}^{768} \to \{0, \ldots, 18\}^2$$
 
-Grid coordinates follow Go board conventions (A1–T19, omitting I) to leverage spatial intuition from the game.
+Grid coordinates follow Go board conventions (A1–T19, omitting I).
 
 ### Persistent Homology
 
-Persistent homology (Edelsbrunner et al., 2002; Zomorodian & Carlsson, 2005) computes topological invariants across filtration scales. For a point cloud $X$ with distance function $d$, the Vietoris-Rips complex at scale $\epsilon$ is:
+Persistent homology (Edelsbrunner et al., 2002) computes topological invariants via Vietoris-Rips complexes. Betti numbers count features:
 
-$$\text{VR}_\epsilon(X) = \{ \sigma \subseteq X : \text{diam}(\sigma) \leq \epsilon \}$$
-
-Betti numbers $\beta_k$ count $k$-dimensional features:
-- $\beta_0$: Connected components (document clusters)
-- $\beta_1$: 1-cycles (circular dependency structures)
-- $\beta_2$: 2-voids (topological cavities)
-
-Persistence diagrams record feature birth-death pairs $(b_i, d_i)$, with persistence $p_i = d_i - b_i$ measuring feature significance.
+| Dimension | Symbol | Interpretation |
+|-----------|--------|----------------|
+| 0 | $\beta_0$ | Connected components (clusters) |
+| 1 | $\beta_1$ | 1-cycles (loops) |
+| 2 | $\beta_2$ | 2-voids (cavities) |
 
 ### Ollivier-Ricci Curvature
 
-Curvature on the $k$-nearest neighbor graph follows Ollivier (2009):
+Discrete curvature on the k-NN graph (Ollivier, 2009):
 
 $$\kappa(x,y) = 1 - \frac{W_1(\mu_x, \mu_y)}{d(x,y)}$$
 
-where $W_1$ denotes the Wasserstein-1 (earth mover's) distance between neighborhood distributions $\mu_x$ and $\mu_y$. This discrete analogue of Ricci curvature characterizes local geometry:
-
 | Curvature | Interpretation |
 |-----------|----------------|
-| $\kappa > 0$ | Dense cluster interior (positive curvature) |
-| $\kappa < 0$ | Sparse boundary region (negative curvature) |
-| $\kappa \approx 0$ | Uniform transition zone |
+| $\kappa > 0$ | Dense cluster interior |
+| $\kappa < 0$ | Sparse boundary region |
+| $\kappa \approx 0$ | Transition zone |
 
 ## Design Principles
 
+### Fail-Fast with Remediation
+
+All errors surface immediately with actionable paths. Guru Meditation codes identify failure modes; `/health fix` commands provide automated remediation.
+
 ### Topology Over Distance
 
-The system prioritizes topological structure (what persists across scales) over raw metric distances. Persistent homology filters noise by identifying features that survive across multiple scales, distinguishing significant structure from transient artifacts.
-
-### Spatial Navigation
-
-The 19×19 grid transforms abstract embedding spaces into navigable territory. Position encodes semantic similarity; navigation follows spatial intuition rather than list traversal.
+Prioritize persistent homology (what survives across scales) over raw metric distances. Filter noise by identifying robust structure.
 
 ### Deterministic Pipelines
 
-Current "agent" components are deterministic orchestration pipelines rather than autonomous agents. ThetaAgent executes a fixed consolidation sequence; MetaAgent coordinates parallel LLM calls with synthesis. This provides predictable behavior during development, with agentic loops planned for future iterations.
-
-## Configuration
-
-HOCON configuration in `config/base.conf`:
-
-```hocon
-gaius {
-  kb.root = "build/dev"
-  inference.model = "nvidia/Llama-3.3-70B-Instruct-FP8"
-  engine.grpc_port = 50051
-}
-```
-
-Environment overrides:
-```bash
-export GAIUS_KB_ROOT="build/dev"
-export GAIUS_ALLOW_FALLBACKS=true  # Development only
-```
+Current "agents" are orchestration pipelines with fixed sequences. Agentic loops are planned but not yet implemented.
 
 ## Nomenclature
 
-Named for Gaius Plinius Secundus (23–79 CE), author of *Naturalis Historia*—a systematic encyclopedia synthesizing knowledge across domains. The system aspires to similar synthesis: transforming scattered documents into structured understanding through geometric and topological analysis.
+Named for Gaius Plinius Secundus (23–79 CE), author of *Naturalis Historia*—synthesizing knowledge across domains into systematic organization.
 
 ## References
 
 - Edelsbrunner, H., Letscher, D., & Zomorodian, A. (2002). Topological persistence and simplification. *Discrete & Computational Geometry*, 28(4), 511–533.
-- McInnes, L., Healy, J., & Melville, J. (2018). UMAP: Uniform Manifold Approximation and Projection for Dimension Reduction. *arXiv:1802.03426*.
+- McInnes, L., Healy, J., & Melville, J. (2018). UMAP: Uniform Manifold Approximation and Projection. *arXiv:1802.03426*.
 - Ollivier, Y. (2009). Ricci curvature of Markov chains on metric spaces. *Journal of Functional Analysis*, 256(3), 810–864.
 - Zomorodian, A., & Carlsson, G. (2005). Computing persistent homology. *Discrete & Computational Geometry*, 33(2), 249–274.
 
@@ -154,3 +257,30 @@ Named for Gaius Plinius Secundus (23–79 CE), author of *Naturalis Historia*—
 - [Project README](../../README.md) — Installation and usage
 - [Documentation](../../docs/) — mdbook documentation
 - [CLAUDE.md](../../CLAUDE.md) — Development guidelines
+
+---
+
+<!-- GAI:META
+module: gaius
+layer: root
+entry_points: [gaius, gaius-cli, gaius-mcp, gaius-engine, gaius-worker, gaius-dataset]
+submodules: [core, client, storage, hx, engine, inference, models, agents, rase, health, widgets, observability, awareness, flows, workers, datasets, mcp, providers]
+layer_deps:
+  L8: [L7, L5, L4]
+  L7: [L1]
+  L6: [L2]
+  L5: [L4, L3, L2]
+  L4: [L3, L2]
+  L3: [L2, L1]
+  L2: [L1]
+  L1: []
+singletons: [get_config, get_grpc_client, get_storage_backend, get_inference_client, get_swarm_manager, get_model_registry, get_tracer, get_meter]
+config_ns: [gaius.kb, gaius.engine, gaius.inference, gaius.agents, gaius.evolution]
+env_prefix: GAIUS_
+exec_paths:
+  tui: launcher→app.compose→on_mount→services
+  mcp: mcp_server→tool_handler→operations→inference
+  evolution: engine→EvolutionService→optimize→evaluate→save
+  swarm: SwarmManager→expand_roles→parallel_inference→synthesize
+  theta: ThetaAgent→NVARDynamics→SubsumptionInferencer→KGPolicy→inject
+-->

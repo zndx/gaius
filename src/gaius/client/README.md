@@ -254,7 +254,101 @@ except ConnectionError as e:
 
 - KServe. (2023). *Open Inference Protocol*. https://kserve.github.io/website/latest/modelserving/data_plane/v2_protocol/
 
+## Call Graph
+
+```
+# Inference Request Path
+agents.swarm.SwarmManager.analyze()
+  └─→ inference.client.InferenceClient.complete()
+      └─→ client.grpc_client.GrpcEngineClient.infer()
+          └─→ grpc.stub.ModelInfer(request)
+              └─→ engine.grpc.servicers.gaius_servicer
+
+# Orchestrator Status Path
+mcp_server.py:orchestrator_status()
+  └─→ client.engine_proxy.OrchestratorProxy.status()
+      └─→ client.grpc_client.call("Orchestrator", "status")
+          └─→ grpc.stub.OrchestratorStatus(request)
+
+# Streaming Health Path
+app.py:GaiusApp.on_mount()
+  └─→ client.grpc_client.health_stream()
+      └─→ async for event in grpc.stub.WatchHealth(request):
+          └─→ yield HealthEvent
+
+# Evolution Trigger Path
+mcp_server.py:trigger_evolution()
+  └─→ client.engine_proxy.EvolutionProxy.trigger(agent_id)
+      └─→ client.grpc_client.call("Evolution", "trigger", {agent_id})
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Client Applications                           │
+│              TUI (app.py)  |  CLI (cli.py)  |  MCP Server            │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Engine Proxies                               │
+│   OrchestratorProxy | SchedulerProxy | EvolutionProxy | HealthProxy │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      GrpcEngineClient                                │
+│                   grpc.insecure_channel()                            │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼ (gRPC :50051)
+┌─────────────────────────────────────────────────────────────────────┐
+│                        gaius-engine                                  │
+│            GrpcServer → Servicers → Backend Controllers              │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `get_engine_client()` | grpc | inference, app, mcp_server | Singleton factory |
+| `GrpcEngineClient` | grpc.aio | engine_proxy, inference.client | Connection pool |
+| `OrchestratorProxy` | GrpcEngineClient | mcp_server, health | `status()`, `start_endpoint()` |
+| `SchedulerProxy` | GrpcEngineClient | mcp_server, inference | `submit_async()`, `get_result()` |
+| `EvolutionProxy` | GrpcEngineClient | mcp_server | `status()`, `trigger()` |
+| `HealthProxy` | GrpcEngineClient | app, health | `check()`, `stream()` |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Engine README](../engine/README.md) — Server-side implementation
+- [Inference README](../inference/README.md) — InferenceClient using gRPC
+- [Health README](../health/README.md) — Health proxy integration
+
+---
+
+<!-- GAI:META
+module: gaius.client
+layer: L2-transport
+singleton: get_engine_client
+key_types: [GrpcEngineClient, OrchestratorProxy, SchedulerProxy, EvolutionProxy, HealthProxy, GridProxy, TDAProxy]
+key_funcs: [get_engine_client, get_orchestrator_proxy, get_scheduler_proxy, get_evolution_proxy, get_health_proxy]
+submodules: []
+depends: [core.config, grpc]
+dependents: [inference, app, mcp_server, health]
+config_keys: [client.grpc.host, client.grpc.port, client.grpc.timeout]
+env_vars: [GAIUS_GRPC_HOST, GAIUS_GRPC_PORT, GAIUS_ENGINE_TIMEOUT]
+grpc_services: [GaiusService, GRPCInferenceService]
+ports: [50051]
+external_deps: [grpc, grpcio-tools]
+call_paths:
+  infer: inference.client.complete→grpc_client.infer→grpc.stub.ModelInfer
+  orchestrator: mcp.orchestrator_status→OrchestratorProxy.status→grpc_client.call
+  stream: app.on_mount→grpc_client.health_stream→async_generator
+test_cmds:
+  connect: 'uv run python -c "from gaius.client import get_engine_client; import asyncio; asyncio.run(get_engine_client())"'
+guru_codes: [CL.00001.GRPC_UNAVAIL, CL.00002.TIMEOUT, CL.00003.AUTH_FAIL]
+fail_fast: true
+-->

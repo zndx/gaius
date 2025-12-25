@@ -331,7 +331,208 @@ CREATE TABLE fmea_outcomes (
 
 - Stamatis, D. H. (2003). *Failure Mode and Effect Analysis: FMEA from Theory to Execution*. ASQ Quality Press.
 
+## Call Graph
+
+```
+# Health Check Path
+mcp_server.py:aiops_report()
+  └─→ health.checker.HealthChecker.run_all()
+      ├─→ check_grpc_connection()
+      ├─→ check_postgresql()
+      ├─→ check_qdrant()
+      ├─→ check_gpu_memory()
+      ├─→ check_endpoints()
+      └─→ check_evolution_daemon()
+
+# FMEA Calculation Path
+health.checker.HealthChecker.diagnose()
+  └─→ fmea.engine.FMEAEngine.calculate_rpn()
+      ├─→ fmea.loader.map_check_to_failure_mode()
+      ├─→ fmea.catalog.get_base_scores(failure_mode_id)
+      └─→ fmea.learning.AdaptiveLearner.get_adjustments()
+          └─→ RPN = S × O × D
+
+# Self-Healing Path
+health.watcher.HealthWatcher.on_issue()
+  └─→ health.self_healing.SelfHealer.heal()
+      ├─→ fmea.engine.calculate_rpn(issue)
+      ├─→ [RPN < 100] tier0_restart(issue)
+      ├─→ [RPN 100-200] tier1_agent(issue)
+      └─→ [RPN > 200] tier2_escalate(issue)
+          └─→ database.insert(fmea_approvals)
+
+# Fix Strategy Path
+cli.py:/health fix <service>
+  └─→ health.service_fixes.apply_fix(service)
+      └─→ SERVICE_STRATEGIES[service].execute()
+          └─→ multi-step remediation with verification
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Detection Sources                               │
+│        Scheduled Checks  |  Continuous Watcher  |  User Reports     │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                       HealthChecker                                  │
+│                 run_all() → list[HealthIssue]                        │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        FMEA Engine                                   │
+│         calculate_rpn() → RPNScore(severity, occurrence, detection) │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │   Tier 0     │    │   Tier 1     │    │   Tier 2     │
+     │  Procedural  │    │Agent-Assisted│    │  Approval    │
+     │  (RPN<100)   │    │ (RPN 100-200)│    │  (RPN>200)   │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Adaptive Learner                                 │
+│          update S/O/D from outcomes → PostgreSQL                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## ACP Escalation (Claude Code Integration)
+
+When the self-healing system encounters issues beyond its capability, it can
+escalate to Claude Code via the Agent Client Protocol (ACP). This enables
+**meta-level maintenance**—Claude Code evolves the `/health fix` framework
+itself rather than just fixing individual issues.
+
+### HealthObserver Daemon
+
+The `HealthObserver` daemon (`observe.py`) provides continuous health monitoring
+with ACP escalation:
+
+```python
+from gaius.health.observe import HealthObserver
+
+observer = HealthObserver()
+await observer.start()  # Begins continuous monitoring
+```
+
+**Features**:
+- Configurable poll interval (default 60s)
+- FMEA/RPN-based incident prioritization
+- Automatic escalation when RPN exceeds threshold
+- Incident tracking with healing history
+- GitHub issue integration via ACP
+
+### ACP Escalation Flow
+
+```mermaid
+sequenceDiagram
+    participant HO as HealthObserver
+    participant FMEA as FMEA Engine
+    participant SH as Self-Healer
+    participant ACP as ACP Client
+    participant CC as Claude Code
+
+    HO->>FMEA: Detect issue, calculate RPN
+    FMEA-->>HO: RPN > 300 (high risk)
+
+    alt Self-healing attempted
+        HO->>SH: Try local fix
+        SH-->>HO: Failed after 3 attempts
+    end
+
+    HO->>ACP: Escalate incident
+    ACP->>CC: Connect via claude-code-acp
+
+    CC->>CC: Analyze with MCP tools
+    CC->>CC: Identify framework gap
+
+    alt Gap found
+        CC->>CC: Implement FixStrategy
+        CC->>CC: Add KB heuristic
+        CC->>CC: Commit to acp-claude/health-fix
+    end
+
+    CC-->>ACP: Resolution report
+    ACP-->>HO: Mark incident resolved
+```
+
+### Escalation Triggers
+
+| Condition | Threshold | Action |
+|-----------|-----------|--------|
+| High RPN score | RPN > 300 | Escalate to ACP |
+| Repeated failures | 3+ failed attempts | Escalate to ACP |
+| Unknown failure mode | No matching FMEA | Escalate to ACP |
+| Manual request | User `/health escalate` | Escalate to ACP |
+
+### ACP Workflow Modes
+
+| Mode | Purpose |
+|------|---------|
+| `OBSERVE` | Diagnose issue, identify framework gaps |
+| `INTERVENE` | Implement fixes, create heuristics |
+| `REPORT` | Generate coverage analysis |
+
+### Security
+
+ACP escalation enforces mandatory security checks:
+- GitHub repo must be in HOCON allowlist
+- Repo must have private visibility
+- Content is sanitized before issue creation
+- All changes go to `acp-claude/health-fix` branch
+
+See [ACP README](../acp/README.md) for full security documentation.
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `HealthChecker` | client, database, pynvml | watcher, mcp_server | `run_all()`, `diagnose()` |
+| `FMEAEngine` | fmea.catalog, fmea.learning | checker, self_healing | `calculate_rpn()` |
+| `SelfHealer` | orchestrator, inference, database | watcher | `heal()` |
+| `AdaptiveLearner` | database | fmea.engine | `update_from_outcome()` |
+| `SERVICE_STRATEGIES` | various services | cli, mcp_server | `/health fix <service>` |
+| `HealthObserver` | health, acp, database | mcp_server | `start()`, `stop()` |
+| `GaiusACPClient` | claude-code-acp | HealthObserver | `prompt()` |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Engine README](../engine/README.md) — Orchestrator integration
+- [Client README](../client/README.md) — Health proxy
+- [Observability README](../observability/README.md) — Metrics for health
+
+---
+
+<!-- GAI:META
+module: gaius.health
+layer: L5-orchestration
+key_types: [HealthChecker, HealthIssue, FMEAEngine, RPNScore, FailureMode, SelfHealer, HealingResult, AdaptiveLearner]
+key_funcs: [run_all_checks, diagnose, calculate_rpn, heal, apply_fix]
+submodules: [fmea]
+depends: [client, storage.database, engine.orchestrator, pynvml]
+dependents: [mcp_server, engine.services.health_service, cli]
+config_keys: [health.check_interval, health.fmea.learning_rate, health.self_healing.enabled]
+env_vars: []
+grpc_services: []
+postgres_tables: [fmea_catalog, fmea_occurrences, fmea_outcomes, fmea_approvals]
+external_deps: [pynvml, asyncpg]
+call_paths:
+  check: mcp.aiops_report→HealthChecker.run_all→[checks]→list[HealthIssue]
+  fmea: HealthChecker.diagnose→FMEAEngine.calculate_rpn→RPNScore
+  heal: HealthWatcher.on_issue→SelfHealer.heal→tier0|tier1|tier2
+  fix: cli./health_fix→service_fixes.apply_fix→FixStrategy.execute
+test_cmds:
+  health: 'uv run gaius-cli --cmd "/health" --format json'
+  fmea: 'uv run gaius-cli --cmd "/fmea" --format json'
+guru_codes: [HL.00001.GRPC_DOWN, HL.00002.GPU_OOM, HL.00003.STUCK_ENDPOINT]
+fail_fast: true
+-->

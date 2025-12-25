@@ -268,8 +268,114 @@ class HxConfig:
 
 - Apache Iceberg. (2024). *Apache Iceberg Table Format*. https://iceberg.apache.org/
 
+## Call Graph
+
+```
+# Content Write Path
+flows.docling.ArxivDoclingFlow.process_step()
+  └─→ hx.writer.IcebergContentStore.write()
+      ├─→ content_hash = sha256(content)
+      ├─→ pyiceberg.table.append(record)
+      └─→ lineage.emitter.emit(RunEvent.complete())
+
+# Content Read Path
+mcp_server.py:query_lineage(kb_path)
+  └─→ hx.reader.IcebergContentReader.get()
+      └─→ pyiceberg.table.scan().filter().to_pandas()
+
+# Exchange Capture Path
+inference.client.InferenceClient.complete()
+  └─→ hx.exchange.ExchangeCapture.record()
+      └─→ pyiceberg.exchange_table.append(exchange_record)
+
+# Evidence Capture Path
+rase.vm.oracle.verify()
+  └─→ hx.evidence.EvidenceCapture.record()
+      └─→ pyiceberg.evidence_table.append(evidence_record)
+
+# Lineage Query Path
+mcp_server.py:lineage_cypher(query)
+  └─→ hx.lineage.emitter.query()
+      └─→ ag_catalog.cypher('openlineage', query)
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Data Sources                                  │
+│           arXiv  |  bioRxiv  |  RSS  |  API Exchanges                │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     IcebergContentStore                              │
+│                       write() → Parquet                              │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │  Raw Content │    │   Exchanges  │    │   Evidence   │
+     │    Table     │    │    Table     │    │    Table     │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Apache Iceberg                                  │
+│                  (PyIceberg + MinIO/S3)                              │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼ (OpenLineage events)
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Apache AGE Graph                                │
+│                 (Dataset, Job, Run vertices)                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `IcebergContentStore` | pyiceberg, minio | flows, workers | `write()`, `read()` |
+| `ExchangeCapture` | pyiceberg | inference.client | `record()` context manager |
+| `EvidenceCapture` | pyiceberg | rase.vm | `record()` |
+| `LineageEmitter` | apache-age, asyncpg | flows, mcp_server | `emit()`, `query()` |
+| `get_catalog()` | pyiceberg | all hx modules | Factory function |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Flows README](../flows/README.md) — Pipeline integration
 - [RASE README](../rase/README.md) — Evidence capture
+- [Storage README](../storage/README.md) — KB vs HX distinction
+- [Workers README](../workers/README.md) — Content fetching
+
+---
+
+<!-- GAI:META
+module: gaius.hx
+layer: L2-transport
+key_types: [IcebergContentStore, IcebergContentReader, ExchangeCapture, EvidenceCapture, LineageEmitter, HxConfig, CatalogType]
+key_funcs: [get_catalog, get_exchange_capture, get_evidence_capture, get_emitter]
+submodules: [lineage]
+depends: [core.config, pyiceberg, minio, asyncpg, apache-age]
+dependents: [flows, workers, rase.vm, mcp_server]
+config_keys: [hx.catalog_type, hx.storage_backend, hx.warehouse_path, hx.retention_days]
+env_vars: [ICEBERG_CATALOG_URI, ICEBERG_WAREHOUSE]
+grpc_services: []
+postgres_tables: []
+iceberg_tables: [raw_content, exchanges, evidence]
+external_deps: [pyiceberg, minio, apache-age-python]
+call_paths:
+  write: flows.process→IcebergContentStore.write→pyiceberg.append→lineage.emit
+  read: mcp.query→IcebergContentReader.get→pyiceberg.scan
+  exchange: inference.client→ExchangeCapture.record→pyiceberg.append
+  evidence: rase.oracle.verify→EvidenceCapture.record→pyiceberg.append
+  lineage: mcp.lineage_cypher→LineageEmitter.query→ag_catalog.cypher
+test_cmds:
+  lineage: 'uv run gaius-cli --cmd "/lineage query scratch/2024-12-25/paper.md"'
+guru_codes: [HX.00001.ICEBERG_CONN, HX.00002.AGE_UNAVAIL, HX.00003.MINIO_DOWN]
+fail_fast: true
+-->

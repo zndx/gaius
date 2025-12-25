@@ -336,3 +336,145 @@ The RASE metamodel mirrors SysML v2 semantics without requiring external tooling
 | Human ID `<'scheme:path'>` | `TraceableId.uri` |
 
 When extending the metamodel, consult `docs/scratch/2025-12-19/150000_rase_mbse_framework.md` for the formal SysML v2 mappings.
+
+## ACP Integration (Agent Client Protocol)
+
+The `gaius.acp` package provides integration with Claude Code for autonomous health maintenance. **This is security-critical infrastructure** with mandatory multi-layer protections.
+
+### Architecture Overview
+
+```
+HealthObserver → detects incident → exceeds FMEA threshold?
+       ↓                                    ↓ Yes
+  Log & self-heal ←── No ──┘     Escalate via ACP → Claude Code
+                                            ↓
+                              Claude Code analyzes via MCP tools
+                                            ↓
+                              Implements /health fix enhancement
+                                            ↓
+                              Commits to acp-claude/health-fix branch
+```
+
+**Key Insight**: ACP-Claude is a *meta-level maintainer*. It evolves the `/health fix` framework itself, teaching Gaius to heal autonomously.
+
+### Security Model (MANDATORY - No Bypass)
+
+Security verification is **mandatory and cannot be disabled**. This is by design to prevent generated code from bypassing security checks.
+
+#### Multi-Layer Protection
+
+| Layer | Check | Purpose |
+|-------|-------|---------|
+| 0 | Format validation | Reject malformed repo names |
+| 1 | HOCON allowlist | Explicit repo patterns only |
+| 2 | Visibility verification | Must be private (via `gh api`) |
+| 3 | Content sanitization | Redact secrets, strip injection |
+
+#### Configuration
+
+Security is configured via HOCON at `~/.config/gaius/acp.conf`:
+
+```hocon
+acp {
+  github {
+    # Explicit allowlist - only these repos can be used
+    allowed_repos = ["zndx/gaius-acp"]
+
+    # MANDATORY: repos must be private
+    require_private = true
+
+    # Re-verify visibility on each operation
+    verify_on_each_operation = true
+
+    # Cache visibility for 5 minutes
+    cache_visibility_seconds = 300
+  }
+}
+```
+
+### Attack Vectors Mitigated
+
+| Attack | Mitigation |
+|--------|------------|
+| Info leak via public repo | Layer 2: visibility verification |
+| Prompt injection from issues | Layer 1: explicit allowlist |
+| Credential exposure in issues | Layer 3: content sanitization |
+| Visibility change attack | Re-verify on each operation |
+| Generated code bypass | Security is mandatory, no option to disable |
+
+### Content Sanitization
+
+Before including content in GitHub issues, the following are automatically redacted:
+
+- API keys (Anthropic, OpenAI, AWS patterns)
+- GitHub tokens (PAT, OAuth, App tokens)
+- Prompt injection markers
+
+```python
+from gaius.acp import sanitize_issue_content
+
+# Automatically redacts secrets and strips injection attempts
+safe_content = sanitize_issue_content(raw_content)
+```
+
+### Cadence Policy
+
+To prevent runaway automation:
+
+- Max 3 GitHub issues per 24 hours
+- Min 5 minutes between restart attempts
+- Max 3 restarts per endpoint per hour
+- All changes on `acp-claude/health-fix` branch for human review
+
+### Guru Meditation Codes
+
+| Code | Description |
+|------|-------------|
+| `#ACP.00000001.CONNFAIL` | Connection to Claude Code failed |
+| `#ACP.00000002.TIMEOUT` | Connection timeout |
+| `#ACP.00000003.NOTCONN` | Operation on disconnected client |
+| `#ACP.00000004.PROMPTTIMEOUT` | Prompt response timeout |
+| `#ACP.00000005.PROMPTFAIL` | Prompt execution failed |
+| `#ACP.00000010.GHSECFAIL` | GitHub security check failed |
+| `#ACP.SEC.00000002.NOTALLOWED` | Repo not in allowlist |
+| `#ACP.SEC.00000003.NOTPRIVATE` | Repo not private |
+| `#ACP.SEC.00000004.NOTCONFIGURED` | No repos configured |
+
+### Development Workflow
+
+All ACP-related code changes should go through human review:
+
+```bash
+# Switch to the ACP development branch
+git checkout acp-claude/health-fix
+
+# Test ACP connection
+uv run python -c "
+import asyncio
+from gaius.acp import GaiusACPClient
+
+async def test():
+    async with GaiusACPClient() as client:
+        print(f'Connected: {client.session_id}')
+
+asyncio.run(test())
+"
+
+# After testing, submit for human review before merging to trunk
+```
+
+### Integration with Health System
+
+The HealthObserver daemon (`gaius.health.observe`) automatically escalates to ACP when:
+
+1. An incident exceeds the configured FMEA RPN threshold
+2. Local remediation has failed
+3. The incident fingerprint is not in cooldown
+
+```python
+# From health/observe.py - escalation path
+if incident.rpn_score > self.escalation_threshold:
+    await self._escalate_to_acp(incident)
+```
+
+See [`src/gaius/acp/README.md`](src/gaius/acp/README.md) for complete API documentation.

@@ -359,8 +359,95 @@ export GAIUS_ALLOW_FALLBACKS=true
 - Maheshwari, P. (2024). *optillm: Inference-time reasoning optimization*. https://github.com/codelion/optillm
 - Zhou, Y., Muresanu, A. I., Han, Z., et al. (2023). Large Language Models Are Human-Level Prompt Engineers. *ICLR 2023*.
 
+## Call Graph
+
+```
+# Engine Startup (gaius-engine)
+engine/server.py:main()
+  └─→ GaiusEngine.start()
+      ├─→ Phase 1: InitController.start()
+      ├─→ Phase 2: grpc.server.start()          # Clients can connect early
+      ├─→ Phase 3: core.telemetry.setup()
+      ├─→ Phase 4: backends.router.initialize()
+      │     ├─→ vllm_controller.start()
+      │     └─→ optillm_controller.start()
+      ├─→ Phase 5: orchestrator_service.start()
+      ├─→ Phase 6: preload_endpoints()          # Load models to VRAM (~240s)
+      │     └─→ vllm_controller.start_endpoint("reasoning")
+      ├─→ Phase 7: transport.aeron_bridge.start()
+      ├─→ Phase 8: background_services.start()
+      │     ├─→ cognition_service.start()
+      │     ├─→ evolution_service.start()
+      │     ├─→ flow_scheduler_service.start()
+      │     └─→ topology_service.start()
+      └─→ Phase 9: init_controller.mark_complete()
+
+# Inference Request Path
+client.grpc_client.infer(messages)
+  └─→ grpc.servicers.gaius_servicer.ModelInfer()
+      └─→ scheduler_service.submit_job()
+          └─→ backends.router.route_inference()
+              ├─→ optillm_controller.enhance()  # if technique specified
+              └─→ vllm_controller.infer()
+                  └─→ HTTP POST to vLLM endpoint
+
+# Evolution Daemon Path
+evolution_service.start_daemon()
+  └─→ EvolutionDaemon.run()
+      └─→ while True:
+          ├─→ gpu_monitor.check_idle()         # <30% utilization
+          ├─→ wait_for_idle(idle_threshold)
+          └─→ evolution.engine.run_cycle()
+              ├─→ select_agent()               # round-robin
+              ├─→ generate_candidates()
+              ├─→ evaluate_candidates()
+              └─→ promote_best()
+```
+
+## Integration Points
+
+| Service | Provides | Consumers | Protocol |
+|---------|----------|-----------|----------|
+| `GrpcServer` | Inference, health, evolution APIs | TUI, CLI, MCP | gRPC |
+| `OrchestratorService` | Endpoint lifecycle | Scheduler, health | Internal |
+| `SchedulerService` | Job queue, priority | gRPC servicers | Internal |
+| `EvolutionService` | Prompt optimization | Background daemon | Internal |
+| `CognitionService` | Pattern detection | Scheduled tasks | Internal |
+| `VllmController` | vLLM process management | Orchestrator | HTTP |
+| `OptillmController` | Reasoning enhancement | Router | HTTP |
+
 ## See Also
 
-- [Parent README](../README.md) — Module overview
+- [Parent README](../README.md) — System overview, layer architecture
+- [Client README](../client/README.md) — gRPC client implementation
 - [Inference README](../inference/README.md) — vLLM orchestration details
+- [Agents README](../agents/README.md) — Evolution daemon, cognition
 - [Health README](../health/README.md) — Self-healing integration
+- [Models README](../models/README.md) — Versioning for evolution
+
+---
+
+<!-- GAI:META
+module: gaius.engine
+layer: L3-engine
+entry_point: gaius-engine
+key_types: [GaiusEngine, GrpcServer, OrchestratorService, SchedulerService, EvolutionService, VllmController, OptillmController, BackendRouter]
+key_funcs: []
+submodules: [grpc, backends, services, compute, resources, transport, generated]
+depends: [core.telemetry, core.config, models, agents.evolution, health]
+dependents: [client, app, mcp_server]
+config_keys: [engine.grpc.port, engine.grpc.host, engine.orchestrator.preload_endpoints, engine.scheduler.max_queue_size, engine.evolution.enabled, engine.evolution.idle_threshold]
+env_vars: [GAIUS_ENGINE_HOST, GAIUS_ENGINE_PORT, GAIUS_ALLOW_FALLBACKS]
+grpc_services: [GaiusService, GRPCInferenceService]
+ports: [50051]
+startup_phases: [INIT, GRPC, TELEMETRY, BACKENDS, ORCHESTRATOR, ENDPOINTS, TRANSPORT, SERVICES, COMPLETE]
+external_deps: [grpc, vllm, optillm, pynvml]
+call_paths:
+  startup: main→GaiusEngine.start→9_phases→init_complete
+  inference: grpc.ModelInfer→scheduler.submit→router.route→vllm.infer
+  evolution: evolution_service→EvolutionDaemon.run→run_cycle→promote
+test_cmd: 'uv run gaius-engine'
+guru_codes: [EN.00001.GRPC_BIND, EN.00002.VLLM_START, EN.00003.GPU_OOM, EN.00004.ORPHAN_PROC]
+fail_fast: true
+-->
+

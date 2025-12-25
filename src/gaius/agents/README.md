@@ -271,8 +271,116 @@ agents {
 - Yu, L., Yu, B., Yu, H., Huang, F., & Li, Y. (2024). Language Models are Super Mario: Absorbing Abilities from Homologous Models as a Free Lunch. *ICML 2024*.
 - Zhou, Y., Muresanu, A. I., Han, Z., et al. (2023). Large Language Models Are Human-Level Prompt Engineers. *ICLR 2023*.
 
+## Call Graph
+
+```
+# Swarm Execution Path
+app.py:action_swarm_analysis()
+  └─→ get_swarm_manager()                    # singleton factory
+      └─→ SwarmManager.analyze(query, domain)
+          ├─→ roles.get_roles_for_domain()   # load role definitions
+          └─→ inference.parallel_inference() # concurrent LLM calls
+              └─→ client.grpc_client.infer() # → engine
+                  └─→ engine.backends.vllm_controller
+                      └─→ vLLM
+
+# ThetaAgent Consolidation Path
+mcp_server.py:theta_consolidate()
+  └─→ ThetaAgent.run_consolidation()
+      ├─→ theta.consolidation.ThetaDynamics.detect_drift()
+      │     └─→ engine.services.ngrc.NGRCPredictor
+      ├─→ theta.subsumption.SubsumptionInferencer.infer()
+      │     └─→ deeponto.onto.Ontology (JVM via JPype)
+      ├─→ theta.kg_policy.KnowledgeGradientPolicy.select()
+      └─→ theta.augmentation.AugmentationWriter.inject()
+            └─→ storage.kb_ops.update_document()
+
+# Evolution Daemon Path
+engine.server.py:start()
+  └─→ EvolutionService.start_daemon()
+      └─→ evolution.daemon.EvolutionDaemon.run()
+          └─→ while True:
+              ├─→ check_gpu_idle()           # <30% utilization
+              ├─→ select_next_agent()        # round-robin
+              └─→ evolution.engine.optimize_agent()
+                  ├─→ inference.client.infer() # generate candidates
+                  ├─→ models.evaluation.evaluate() # score
+                  └─→ models.versioning.save_version()
+```
+
+## Data Flow
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │              User Query                      │
+                    └─────────────────┬───────────────────────────┘
+                                      │
+              ┌───────────────────────┼───────────────────────┐
+              ▼                       ▼                       ▼
+       ┌────────────┐          ┌────────────┐          ┌────────────┐
+       │   Swarm    │          │   Theta    │          │  MetaAgent │
+       │  Manager   │          │   Agent    │          │  Manager   │
+       └─────┬──────┘          └─────┬──────┘          └─────┬──────┘
+             │                       │                       │
+    ┌────────┼────────┐              │              ┌────────┼────────┐
+    ▼        ▼        ▼              ▼              ▼        ▼        ▼
+┌──────┐ ┌──────┐ ┌──────┐    ┌───────────┐   ┌──────┐ ┌──────┐ ┌──────┐
+│Leader│ │ Risk │ │Critic│    │NVAR→Subs  │   │Lineage│ │ Ops │ │Topo  │
+│      │ │      │ │      │    │→KG→Augment│   │Analyst│ │     │ │      │
+└──┬───┘ └──┬───┘ └──┬───┘    └─────┬─────┘   └──┬───┘ └──┬───┘ └──┬───┘
+   │        │        │              │            │        │        │
+   └────────┼────────┘              │            └────────┼────────┘
+            ▼                       ▼                     ▼
+     ┌────────────┐          ┌────────────┐        ┌────────────┐
+     │ Synthesize │          │ KB Update  │        │ Correlate  │
+     └────────────┘          └────────────┘        └────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `SwarmManager` | inference, roles | app, mcp_server | `get_swarm_manager()` |
+| `ThetaAgent` | storage, hx.lineage, deeponto | mcp_server | Direct instantiation |
+| `LatentWorkingMemory` | qdrant_client | LatentSwarmManager | Collection: `gaius_latent_memory` |
+| `EvolutionDaemon` | models, inference | engine | `EvolutionService.start_daemon()` |
+| `CognitionAgent` | storage, inference | engine.cognition_service | Scheduled trigger |
+
 ## See Also
 
-- [Parent README](../README.md) — System overview
-- [Engine README](../engine/README.md) — gRPC integration
-- [Models README](../models/README.md) — Evaluation and versioning
+- [Parent README](../README.md) — System overview, layer architecture
+- [Inference README](../inference/README.md) — `parallel_inference()` implementation
+- [Engine README](../engine/README.md) — gRPC services, daemon lifecycle
+- [Models README](../models/README.md) — Evaluation, versioning, merging
+- [Storage README](../storage/README.md) — KB operations for augmentation
+- [HX README](../hx/README.md) — OpenLineage for provenance tracking
+
+---
+
+<!-- GAI:META
+module: gaius.agents
+layer: L5-orchestration
+singleton: get_swarm_manager
+key_types: [SwarmManager, ThetaAgent, LatentWorkingMemory, EvolutionDaemon, CognitionAgent, MetaAgentManager]
+key_funcs: [run_swarm, run_latent_swarm, run_clt_swarm]
+submodules: [theta, latent, evolution, metaagent, modeladd]
+depends: [inference, models, storage, hx.lineage, core.telemetry, client]
+dependents: [app, mcp_server, engine.services.evolution_service, engine.services.cognition_service]
+config_keys: [agents.swarm.parallel, agents.swarm.timeout, agents.theta.confidence_threshold, agents.evolution.enabled, agents.evolution.idle_threshold]
+env_vars: [GAIUS_SWARM_TIMEOUT]
+grpc_services: []
+qdrant_collections: [gaius_latent_memory, gaius_clt_memory]
+external_deps: [deeponto, jpype, qdrant_client]
+call_paths:
+  swarm: app.action_swarm_analysis→get_swarm_manager→SwarmManager.analyze→roles.get_roles→inference.parallel_inference
+  theta: mcp.theta_consolidate→ThetaAgent.run_consolidation→ThetaDynamics→SubsumptionInferencer→KGPolicy→AugmentationWriter
+  evolution: engine.EvolutionService→EvolutionDaemon.run→optimize_agent→evaluate→save_version
+  cognition: engine.CognitionService→CognitionAgent.generate_thoughts→storage.create_kb
+test_cmds:
+  swarm: 'uv run gaius-cli --cmd "/swarm \"test query\" --domain pension"'
+  sitrep: 'uv run gaius-cli --cmd "/sitrep"'
+  evolution: 'uv run gaius-cli --cmd "/evolve status"'
+guru_codes: [AG.00001.NOENDPOINT, AG.00002.TIMEOUT, AG.00003.DEEPONTO_JVM]
+fail_fast: true
+-->
+
