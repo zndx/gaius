@@ -123,7 +123,7 @@ class LauncherApp(App):
 
             splash.status = "Loading widgets..."
             from .widgets.grid import MainGrid
-            from .widgets.content import ContentPanel
+            from .widgets.info_panel import InfoPanel
 
             splash.status = "Loading telemetry..."
             from .core.telemetry import init_from_config as init_telemetry

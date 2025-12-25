@@ -44,10 +44,10 @@ from .awareness import generate_startup_report
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
 from .widgets.filetree import FileTree, FileTreeSelection, FileTreeHighlight
-from .widgets.content import ContentPanel
+from .widgets.info_panel import InfoPanel
 from .widgets.command import CommandInput, CommandSubmitted
 from .widgets.location import LocationIndicator
-from .widgets.note_editor import NoteEditor
+from .widgets.note_editor import NoteEditor, EDITABLE_EXTENSIONS
 from .widgets.graph_view import GraphView
 from .widgets.think_panel import ThinkPanel
 from .widgets.evolution_panel import EvolutionPanel
@@ -276,7 +276,7 @@ class GaiusApp(App):
         display: none;
     }
 
-    ContentPanel {
+    InfoPanel {
         width: 100%;
         height: 100%;
         overflow: hidden auto;
@@ -314,7 +314,7 @@ class GaiusApp(App):
     }
 
     /* Right panel (content) - change interior border color on focus */
-    ContentPanel:focus {
+    InfoPanel:focus {
         border-left: solid $accent;
     }
 
@@ -455,7 +455,7 @@ class GaiusApp(App):
             await asyncio.sleep(0.5)
 
             # Show notification
-            content = self.query_one("#content-panel", ContentPanel)
+            content = self.query_one("#info-panel", InfoPanel)
             content.show_file(
                 "auto-init.txt",
                 "# Auto-Initializing\n\n"
@@ -1041,7 +1041,7 @@ class GaiusApp(App):
         success = await loop.run_in_executor(None, run_init)
 
         # Show result
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         if success:
             content.show_file(
                 "init.txt",
@@ -1237,7 +1237,7 @@ class GaiusApp(App):
         success = await loop.run_in_executor(None, run_reindex)
 
         # Show result in content panel
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         if success:
             content.show_file(
                 "reindex.txt",
@@ -1382,7 +1382,7 @@ class GaiusApp(App):
         """
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         domain = domain_override or self.state.domain
 
         # Update domain if override provided
@@ -1420,7 +1420,7 @@ class GaiusApp(App):
         from .agents.roles import AgentRole
         from datetime import datetime
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         def on_progress(message: str, progress: float) -> None:
             """Update content panel with streaming progress."""
@@ -1500,7 +1500,7 @@ class GaiusApp(App):
         """Apply swarm results to state and UI."""
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
         # Log swarm activity
@@ -1576,7 +1576,7 @@ class GaiusApp(App):
                 result.consensus,
             ])
 
-        content.show_file("swarm-result.md", "\n".join(lines))
+        self._show_output("swarm_result", "\n".join(lines))
         self._refresh_grid()
         self._update_status()
 
@@ -1598,7 +1598,7 @@ class GaiusApp(App):
         import asyncio
         from .core.state import ViewMode
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
         clt_data = clt_data or {}
@@ -1737,7 +1737,7 @@ class GaiusApp(App):
                 result.consensus,
             ])
 
-        content.show_file("swarm-result.md", "\n".join(lines))
+        self._show_output("swarm_result", "\n".join(lines))
         self._refresh_grid()
         self._update_status()
 
@@ -1764,7 +1764,7 @@ class GaiusApp(App):
         from .core.links import rewrite_link
         from .inference.synthesis import ZettelkastenSynthesizer, ZettelkastenNote
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         editor = self.query_one("#note-editor", NoteEditor)
         file_tree = self.query_one("#file-tree", FileTree)
         graph_view = self.query_one("#graph-view", GraphView)
@@ -1901,7 +1901,7 @@ class GaiusApp(App):
 
     def _show_agent_status(self) -> None:
         """Show current agent positions and status."""
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         lines = [
             "# Agent Status",
@@ -1949,7 +1949,7 @@ class GaiusApp(App):
         """Generate and show daily summary."""
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
         content.show_file("summary.md", "Generating daily summary...\n\n*This may take a moment.*")
@@ -1968,7 +1968,7 @@ class GaiusApp(App):
                 )
                 duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
-                content.show_file("summary.md", note.to_markdown())
+                self._show_output("summary", note.to_markdown())
 
                 # Record trace
                 think.complete_trace(
@@ -1989,7 +1989,7 @@ class GaiusApp(App):
         """Show recent activity log."""
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         async def show():
             try:
@@ -2056,7 +2056,7 @@ class GaiusApp(App):
         from .core.tda import get_tda_manager
         from .core.minigrids import get_embed_view, get_iso_view
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
         editor = self.query_one("#note-editor", NoteEditor)
         file_tree = self.query_one("#file-tree", FileTree)
@@ -2281,7 +2281,7 @@ class GaiusApp(App):
                     # Refresh file tree to show the new note
                     file_tree.refresh_tree()
 
-                content.show_file("explain.md", "\n".join(output))
+                self._show_output("explain", "\n".join(output))
 
                 # Record trace
                 summary = f"Generated explanation in {duration_ms}ms"
@@ -2323,7 +2323,7 @@ class GaiusApp(App):
         from .inference.manager import get_inference_manager
         from .inference.orchestrator import ProcessStatus
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         if not args or args == "status":
             # Show status
@@ -2486,7 +2486,7 @@ Use `/inference stop <endpoint>` to stop an endpoint.
         """
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         parts = args.split() if args else []
         subcmd = parts[0].lower() if parts else "orchestrated"  # Default to orchestrated
@@ -2774,7 +2774,7 @@ Use `/evolve stop` to stop orchestrated evolution.
         """
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         editor = self.query_one("#note-editor", NoteEditor)
 
         parts = args.split() if args else []
@@ -2919,7 +2919,7 @@ Use `/evolve stop` to stop orchestrated evolution.
         else:
             content.show_file("error.txt", f"Unknown thoughts subcommand: {subcmd}\n\nUsage:\n  /thoughts          - Trigger cognition and show thoughts\n  /thoughts recent   - Show most recent thought\n  /thoughts self     - Trigger self-observation\n  /thoughts audit    - Trigger engine audit")
 
-    def _trigger_cognition_and_show(self, content: "ContentPanel", editor: "NoteEditor") -> None:
+    def _trigger_cognition_and_show(self, content: "InfoPanel", editor: "NoteEditor") -> None:
         """Trigger a cognition cycle and show the resulting thought note."""
         import asyncio
 
@@ -2996,7 +2996,7 @@ Use `/evolve stop` to stop orchestrated evolution.
 
         from .health import HealthChecker, CheckStatus
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         parts = args.split() if args else []
         subcmd = parts[0].lower() if parts else ""
@@ -3079,7 +3079,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                     "*Categories: engine, data, cognition, inference*",
                 ])
 
-                content.show_file("health.md", "\n".join(lines))
+                self._show_output("health", "\n".join(lines))
 
                 # Refresh ThinkPanel to show any updates
                 try:
@@ -3094,7 +3094,7 @@ Use `/evolve stop` to stop orchestrated evolution.
 
         asyncio.create_task(run_health_check())
 
-    def _handle_iso_command(self, args: str, content: "ContentPanel") -> None:
+    def _handle_iso_command(self, args: str, content: "InfoPanel") -> None:
         """Handle /iso command for Iso view mode control.
 
         Usage:
@@ -3163,7 +3163,7 @@ Use `/evolve stop` to stop orchestrated evolution.
         }
         return descriptions.get(mode, mode.value)
 
-    def _show_iso_info(self, content: "ContentPanel") -> None:
+    def _show_iso_info(self, content: "InfoPanel") -> None:
         """Show detailed information about current Iso mode and features."""
         from .core.state import IsoMode
         from .core.iso_features import ISO_MODE_SYMBOLS
@@ -3224,7 +3224,7 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
         import asyncio
         from datetime import datetime
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
         if not query:
@@ -3306,7 +3306,7 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
                 lines.append("")
                 lines.append("Try `/research <topic>` to search the web and save to KB.")
 
-            content.show_file("search.md", "\n".join(lines))
+            self._show_output("search", "\n".join(lines))
 
             # Record trace
             think.complete_trace(
@@ -3325,7 +3325,7 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
         import asyncio
         from datetime import datetime
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
         if not topic:
@@ -3431,7 +3431,7 @@ Domain: {domain}
 
 {sources_text}
 """
-                content.show_file("research.md", result_text)
+                self._show_output("research", result_text)
 
                 # Record trace
                 think.complete_trace(
@@ -3467,7 +3467,7 @@ Domain: {domain}
         import os
         from datetime import datetime
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
         if not args:
@@ -3590,7 +3590,7 @@ The general-purpose agentic query interface.
                     diag_text = json.dumps(result["diagnostics"], indent=2)
                     result_text += f"\n\n## Diagnostics\n```json\n{diag_text}\n```"
 
-                content.show_file("ask.md", result_text)
+                self._show_output("ask", result_text)
 
                 # Record trace
                 think.complete_trace(
@@ -3618,7 +3618,7 @@ The general-purpose agentic query interface.
         import asyncio
         import os
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
@@ -3674,7 +3674,7 @@ The general-purpose agentic query interface.
         import asyncio
         import os
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         parts = args.split(maxsplit=1) if args else ["status"]
         subcmd = parts[0].lower()
@@ -3759,7 +3759,7 @@ The general-purpose agentic query interface.
 
                 # Right panel (content)
                 with Vertical(id="right-panel"):
-                    yield ContentPanel(self.state, id="content-panel")
+                    yield InfoPanel(self.state, id="info-panel")
 
         # Command input
         yield CommandInput(self.state, id="command-input")
@@ -3901,8 +3901,29 @@ The general-purpose agentic query interface.
             self.state.cursor_x,
             self.state.cursor_y,
         )
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         content.show_file("context.md", explanation)
+
+    def _show_output(self, title: str, content: str, extension: str = ".md") -> str:
+        """Show command output in center panel via NoteEditor.
+
+        Creates scratch file and opens in editor. Refreshes file tree.
+
+        Args:
+            title: Base name for scratch file (will be sanitized)
+            content: Text content to display
+            extension: File extension (default .md)
+
+        Returns:
+            Path to created scratch file
+        """
+        editor = self.query_one("#note-editor", NoteEditor)
+        filepath = editor.show_content(title, content, extension)
+
+        file_tree = self.query_one("#file-tree", FileTree)
+        file_tree.refresh_tree()
+
+        return filepath
 
     # ─────────────────────────────────────────────────────────────────────
     # Actions
@@ -3966,7 +3987,7 @@ The general-purpose agentic query interface.
 
     def action_show_help(self) -> None:
         """Show help in content panel."""
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         help_text = """# Gaius Help
 
 ## Navigation
@@ -4181,7 +4202,7 @@ The general-purpose agentic query interface.
         self._update_status()
 
         # Show confirmation in content panel
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         content.show_file("note.txt", f"New note: {filepath}\n\nVim keys: i=insert, ESC=normal, :q=close")
 
     def action_zoom_editor(self) -> None:
@@ -4296,7 +4317,7 @@ The general-purpose agentic query interface.
 
     def action_quit_hint(self) -> None:
         """Show quit hint instead of immediately quitting."""
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         content.show_file("quit.txt", "Use /q or /exit to quit Gaius.")
 
     # ─────────────────────────────────────────────────────────────────────
@@ -4566,7 +4587,7 @@ The general-purpose agentic query interface.
         different startup behaviors per environment.
         """
         startup = self.config.startup
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         # Run each startup command
         commands_run = []
@@ -4590,7 +4611,7 @@ The general-purpose agentic query interface.
         """
         import asyncio
 
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         editor = self.query_one("#note-editor", NoteEditor)
 
         # Log startup event
@@ -4692,7 +4713,7 @@ The general-purpose agentic query interface.
     def on_file_tree_selection(self, event: FileTreeSelection) -> None:
         """Handle file/agent selection from the tree."""
         data = event.data
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         editor = self.query_one("#note-editor", NoteEditor)
         graph = self.query_one("#graph-view", GraphView)
 
@@ -4702,10 +4723,11 @@ The general-purpose agentic query interface.
             if not graph.has_class("hidden"):
                 graph.update_for_file(filepath)
 
-            # Check if it's an editable KB file (.md under archive/, current/, or scratch/)
-            path_parts = Path(filepath).parts
+            # Check if it's an editable KB file (supported extension under archive/, current/, or scratch/)
+            file_path = Path(filepath)
+            path_parts = file_path.parts
             kb_dirs = ("archive", "current", "scratch")
-            is_editable = any(d in path_parts for d in kb_dirs) and filepath.endswith(".md")
+            is_editable = any(d in path_parts for d in kb_dirs) and file_path.suffix.lower() in EDITABLE_EXTENSIONS
             if is_editable:
                 # Open in editor
                 editor.remove_class("hidden")
@@ -4775,8 +4797,8 @@ The general-purpose agentic query interface.
         file_tree = self.query_one("#file-tree", FileTree)
         file_tree.highlight_path(event.filepath)
 
-        # Preview file content in ContentPanel
-        content_panel = self.query_one("#content-panel", ContentPanel)
+        # Preview file content in InfoPanel
+        content_panel = self.query_one("#info-panel", InfoPanel)
         filepath = event.filepath
 
         # Ensure .md extension
@@ -4814,7 +4836,7 @@ The general-purpose agentic query interface.
         """Open file when Enter pressed on graph node."""
         filepath = event.filepath
         editor = self.query_one("#note-editor", NoteEditor)
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
         file_tree = self.query_one("#file-tree", FileTree)
         # KB root and allowed directories for file creation
         kb_root = Path("build/dev")
@@ -4864,10 +4886,10 @@ The general-purpose agentic query interface.
             )
             return
 
-        # Open in editor if it's an editable KB file (.md under archive/, current/, or scratch/)
+        # Open in editor if it's an editable KB file (supported extension under archive/, current/, or scratch/)
         path_parts = path.parts
         kb_dirs = ("archive", "current", "scratch")
-        is_editable = any(d in path_parts for d in kb_dirs) and str(path).endswith(".md")
+        is_editable = any(d in path_parts for d in kb_dirs) and path.suffix.lower() in EDITABLE_EXTENSIONS
         if is_editable:
             editor.remove_class("hidden")
             editor.open_note(str(path))
@@ -4881,7 +4903,7 @@ The general-purpose agentic query interface.
 
     def _execute_command(self, cmd: str) -> None:
         """Execute a slash command."""
-        content = self.query_one("#content-panel", ContentPanel)
+        content = self.query_one("#info-panel", InfoPanel)
 
         if cmd.startswith("/"):
             cmd = cmd[1:]
