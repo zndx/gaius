@@ -60,6 +60,7 @@ dependencies = [
     "circuit-tracer @ git+https://github.com/safety-research/circuit-tracer.git",
     "transformer-lens>=2.0.0", # Required for CLT model internals
     "datasets>=2.14.6",
+    "agent-client-protocol>=0.7.0",
 ]
 
 [project.optional-dependencies]
