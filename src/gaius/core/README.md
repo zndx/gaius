@@ -429,9 +429,132 @@ async def main():
 - Rucco, M., Castiglione, F., Merelli, E., & Pettini, M. (2016). Characterisation of the idiotypic immune network through persistent entropy. *Proceedings of ECCS*, 117–128.
 - Zomorodian, A., & Carlsson, G. (2005). Computing persistent homology. *Discrete & Computational Geometry*, 33(2), 249–274.
 
+## Call Graph
+
+```
+# Grid Projection Pipeline
+widgets.grid.MainGrid.on_mount()
+  └─→ engine.compute.grid_service.project()
+      └─→ core.projection.GridProjector.project()
+          ├─→ embeddings from storage.kb_ops.get_embeddings()
+          ├─→ umap.UMAP.fit_transform()           # 768D → 2D
+          └─→ quantize_to_grid()                  # continuous → 19x19
+
+# TDA Computation Pipeline
+engine.compute.tda_service.compute()
+  └─→ core.tda.TDAComputer.compute()
+      ├─→ ripser.ripser()                         # Vietoris-Rips
+      ├─→ compute_betti_numbers()                 # H0, H1, H2
+      └─→ compute_persistence_entropy()
+
+# Curvature Computation Pipeline
+core.geometry.GeometryComputer.compute_features()
+  ├─→ sklearn.neighbors.NearestNeighbors()       # k-NN graph
+  ├─→ GraphRicciCurvature.compute_ricci()        # Ollivier-Ricci
+  └─→ compute_gradient_field()                   # semantic gradients
+
+# Telemetry Instrumentation
+any_component:
+  └─→ core.telemetry.get_tracer("component_name")
+      └─→ tracer.start_as_current_span()
+          └─→ OTLP → OTel Collector → Prometheus
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Input: KB Documents                            │
+└─────────────────────────────────┬───────────────────────────────────────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    ▼             ▼             ▼
+            ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+            │ Embeddings  │ │  Metadata   │ │  Content    │
+            │ (768D, MV)  │ │  (dates)    │ │  (text)     │
+            └──────┬──────┘ └──────┬──────┘ └─────────────┘
+                   │               │
+        ┌──────────┼───────────────┼──────────┐
+        │          ▼               ▼          │
+        │   ┌────────────┐  ┌────────────┐   │
+        │   │ projection │  │  session   │   │
+        │   │   (UMAP)   │  │ (temporal) │   │
+        │   └─────┬──────┘  └─────┬──────┘   │
+        │         │               │          │
+        │         ▼               ▼          │
+        │  ┌─────────────────────────────┐   │
+        │  │     AppState (state.py)     │   │
+        │  │  ├─ grid_positions [19x19]  │   │
+        │  │  ├─ cursor_position         │   │
+        │  │  ├─ view_mode               │   │
+        │  │  └─ overlay_mode            │   │
+        │  └─────────────┬───────────────┘   │
+        │                │                   │
+        │    ┌───────────┼───────────┐       │
+        │    ▼           ▼           ▼       │
+        │ ┌──────┐  ┌─────────┐  ┌──────┐   │
+        │ │ TDA  │  │Geometry │  │  Iso │   │
+        │ │(H0-2)│  │(κ,∇,div)│  │(κπσβ)│   │
+        │ └──┬───┘  └────┬────┘  └──┬───┘   │
+        │    └───────────┼──────────┘       │
+        │                ▼                   │
+        │  ┌─────────────────────────────┐   │
+        │  │     TDAFeatures, Metrics     │   │
+        │  └─────────────────────────────┘   │
+        └────────────────────────────────────┘
+                         │
+                         ▼
+               ┌─────────────────┐
+               │  widgets/grid   │
+               │  (MainGrid)     │
+               └─────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `AppState` | — | app, widgets, commands | Global state container |
+| `GridProjector` | storage.embeddings | engine.grid_service | `project(embeddings)` |
+| `TDAComputer` | ripser | engine.tda_service | `compute(embeddings, positions)` |
+| `GeometryComputer` | GraphRicciCurvature | engine.tda_service | `compute_features()` |
+| `get_tracer()` | opentelemetry | all modules | `@trace_operation` decorator |
+| `get_meter()` | opentelemetry | all modules | Counter, histogram |
+| `get_config()` | pyhocon | all modules | Singleton config |
+
 ## See Also
 
-- [Parent README](../README.md) — Module overview
+- [Parent README](../README.md) — System overview, layer architecture
+- [Widgets README](../widgets/README.md) — Grid visualization
+- [Engine README](../engine/README.md) — compute services
 - [Observability README](../observability/README.md) — Metric consumption
-- [TDA documentation](../../../../docs/current/src/concepts/homology.md)
-- [Geometry design notes](../../../../docs/scratch/2025-12-03/01_differential_geometry_tda_design.md)
+- [Storage README](../storage/README.md) — Embedding source
+
+---
+
+<!-- GAI:META
+module: gaius.core
+layer: L1-foundation
+singletons: [get_config, get_tracer, get_meter]
+key_types: [AppState, ViewMode, OverlayMode, IsoMode, GaiusConfig, GridProjector, TDAComputer, TDAFeatures, GeometryComputer, GeometricFeatures]
+key_funcs: [get_config, get_tracer, get_meter, trace_operation, traced_command, flush_telemetry]
+depends: []
+dependents: [engine, widgets, agents, inference, storage, health, app]
+config_keys: [gaius.kb.root, gaius.tda.max_points, gaius.tda.max_dimension, gaius.geometry.k_neighbors, gaius.projection.method]
+env_vars: [GAIUS_KB_ROOT, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_TRACES_EXPORTER]
+external_deps: [umap, ripser, GraphRicciCurvature, opentelemetry, pyhocon, numpy, scipy]
+math:
+  betti: β_k counts k-dim topological features
+  curvature: κ(x,y) = 1 - W_1(μ_x,μ_y)/d(x,y)
+  persistence: p_i = d_i - b_i (feature lifespan)
+  entropy: H = -Σ p̂_i log(p̂_i)
+call_paths:
+  projection: grid_service→GridProjector.project→UMAP→quantize
+  tda: tda_service→TDAComputer.compute→ripser→betti_numbers
+  geometry: GeometryComputer.compute_features→k_NN→Ricci→gradients
+  telemetry: any_module→get_tracer→start_span→OTLP
+test_cmd: 'uv run python -c "from gaius.core import AppState, ViewMode"'
+guru_codes: [CO.00001.UMAP_DIM, CO.00002.RIPSER_MEM, CO.00003.OTEL_EXPORT]
+fail_fast: true
+-->
+

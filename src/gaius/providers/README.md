@@ -188,8 +188,93 @@ except AuthenticationError:
     pass
 ```
 
+## Call Graph
+
+```
+# Lambda Labs Instance Path
+models.registry.ModelRegistry.resolve_backend()
+  └─→ [if model_size > local_vram]
+      └─→ providers.lambdalabs.LambdaLabsClient.launch_instance()
+          └─→ httpx.post("api.lambdalabs.com/instance-operations/launch")
+              └─→ InstanceInfo (id, ip, ssh_key)
+
+# Cerebras Inference Path
+models.tiered_evaluation.TieredEvaluator.evaluate()
+  └─→ [if xai_budget_exhausted and cerebras_available]
+      └─→ providers.cerebras.CerebrasClient.chat()
+          └─→ httpx.post("api.cerebras.ai/v1/chat/completions")
+              └─→ CerebrasResponse
+
+# Instance Termination Path
+inference.manager.ResourceManager.cleanup()
+  └─→ providers.lambdalabs.LambdaLabsClient.terminate_instance()
+      └─→ httpx.post("api.lambdalabs.com/instance-operations/terminate")
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Local GPU Check                                   │
+│             model_size > local_vram → need external                  │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+     ┌──────────────┐                        ┌──────────────┐
+     │ Lambda Labs  │                        │   Cerebras   │
+     │   (GPUs)     │                        │  (Inference) │
+     └──────┬───────┘                        └──────┬───────┘
+            │                                       │
+            ▼                                       ▼
+     ┌──────────────┐                        ┌──────────────┐
+     │check_availability                     │    chat()    │
+     │launch_instance                        │   (API)      │
+     │terminate_instance                     │              │
+     └──────┬───────┘                        └──────┬───────┘
+            │                                       │
+            ▼                                       ▼
+     ┌──────────────┐                        ┌──────────────┐
+     │  SSH Deploy  │                        │ Evaluation   │
+     │    vLLM      │                        │   Result     │
+     └──────────────┘                        └──────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `LambdaLabsClient` | httpx | models.registry, inference | `launch_instance()`, `terminate_instance()` |
+| `CerebrasClient` | httpx | models.tiered_evaluation | `chat()` |
+| `InstanceAvailability` | — | LambdaLabsClient | Return type |
+| `CerebrasResponse` | — | CerebrasClient | Return type |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Inference README](../inference/README.md) — Inference routing
 - [Models README](../models/README.md) — Evaluation integration
+
+---
+
+<!-- GAI:META
+module: gaius.providers
+layer: L4-inference
+key_types: [LambdaLabsClient, CerebrasClient, InstanceType, InstanceAvailability, CerebrasModel, CerebrasResponse, Usage]
+key_funcs: [launch_instance, terminate_instance, get_availability, chat]
+submodules: []
+depends: [httpx]
+dependents: [models.registry, models.tiered_evaluation, inference.manager]
+config_keys: []
+env_vars: [LAMBDA_API_KEY, CEREBRAS_API_KEY]
+grpc_services: []
+external_deps: [httpx]
+call_paths:
+  lambda_launch: models.registry→LambdaLabsClient.launch_instance→httpx.post
+  cerebras_chat: tiered_eval→CerebrasClient.chat→httpx.post
+  lambda_terminate: inference.manager→LambdaLabsClient.terminate_instance
+test_cmds:
+  availability: 'uv run python -c "from gaius.providers import LambdaLabsClient; ..."'
+guru_codes: [PR.00001.LAMBDA_QUOTA, PR.00002.CEREBRAS_AUTH, PR.00003.INSTANCE_UNAVAIL]
+fail_fast: true
+-->

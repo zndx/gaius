@@ -316,8 +316,98 @@ inference {
 - Google. (2024). *OR-Tools: Operations Research Tools*. https://developers.google.com/optimization
 - Maheshwari, P. (2024). *optillm: Inference-time reasoning optimization*. https://github.com/codelion/optillm
 
+## Call Graph
+
+```
+# Client Completion Request
+agents.swarm.SwarmManager.analyze()
+  └─→ inference.parallel.parallel_inference()
+      └─→ [asyncio.gather for each role]
+          └─→ inference.client.InferenceClient.complete()
+              └─→ client.grpc_client.infer()
+                  └─→ engine.grpc.servicers → vLLM
+
+# Synthesis Pipeline
+mcp_server.py:research_topic()
+  └─→ inference.synthesis.ZettelkastenSynthesizer.synthesize()
+      ├─→ inference.search.brave.BraveSearch.search()
+      ├─→ storage.kb_ops.search_kb()           # vector search
+      ├─→ inference.client.complete()          # LLM synthesis
+      └─→ storage.kb_ops.create_kb()           # save note
+
+# Evaluation Path
+models.evaluation.evaluate()
+  └─→ inference.evaluation.TieredEvaluator.evaluate()
+      ├─→ [Tier 1] inference.client.complete() # local model
+      └─→ [Tier 2] providers.xai.evaluate()    # XAI Grok (if budget)
+```
+
+## Data Flow
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   User Query    │ ──▶ │  InferenceClient │ ──▶ │   gRPC Client   │
+└─────────────────┘     └─────────────────┘     └────────┬────────┘
+                                                         │
+                        ┌────────────────────────────────┼────────────────────────────────┐
+                        │                          Engine (L3)                             │
+                        │                                ▼                                 │
+                        │  ┌─────────────┐     ┌─────────────────┐     ┌───────────────┐  │
+                        │  │  Scheduler  │ ──▶ │  Backend Router │ ──▶ │ optillm (opt) │  │
+                        │  │ (priority)  │     │ (capability)    │     └───────┬───────┘  │
+                        │  └─────────────┘     └─────────────────┘             │          │
+                        │                              │                       ▼          │
+                        │                              │              ┌───────────────┐   │
+                        │                              └─────────────▶│     vLLM      │   │
+                        │                                             │  (GPU 0-3)   │   │
+                        │                                             └───────────────┘   │
+                        └─────────────────────────────────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `InferenceClient` | client.grpc_client | agents, mcp_server, models | `get_inference_client()` |
+| `ZettelkastenSynthesizer` | client, search, storage | mcp_server | Direct instantiation |
+| `TieredEvaluator` | client, providers.xai | models.evaluation | Direct instantiation |
+| `BraveSearch` | httpx (Brave API) | synthesis | `BRAVE_API_KEY` env |
+| `parallel_inference` | client | agents.swarm | `asyncio.gather` |
+
 ## See Also
 
-- [Parent README](../README.md) — Module overview
-- [Engine README](../engine/README.md) — gRPC integration
-- [Health README](../health/README.md) — Self-healing
+- [Parent README](../README.md) — System overview, layer architecture
+- [Engine README](../engine/README.md) — gRPC server, vLLM controller
+- [Client README](../client/README.md) — gRPC transport layer
+- [Agents README](../agents/README.md) — Swarm parallel inference
+- [Models README](../models/README.md) — Evaluation integration
+- [Storage README](../storage/README.md) — KB search, note persistence
+- [Health README](../health/README.md) — Self-healing for endpoints
+
+---
+
+<!-- GAI:META
+module: gaius.inference
+layer: L4-inference
+singleton: get_inference_client
+key_types: [InferenceClient, ZettelkastenSynthesizer, TieredEvaluator, BraveSearch, JobPriority, RecoveryStrategy]
+key_funcs: [parallel_inference, get_client, get_search]
+submodules: [search, backends]
+depends: [client, engine, storage, providers, core.telemetry]
+dependents: [agents, models, mcp_server, app]
+config_keys: [inference.backend, inference.vllm.reasoning_port, inference.vllm.coding_port, inference.optillm.default_technique, inference.scheduler.max_queue_size, inference.evaluation.xai_daily_budget]
+env_vars: [BRAVE_API_KEY, GAIUS_INFERENCE_TIMEOUT]
+grpc_services: []
+external_deps: [ortools, httpx, brave_api]
+call_paths:
+  completion: InferenceClient.complete→grpc_client.infer→engine→vLLM
+  synthesis: ZettelkastenSynthesizer.synthesize→search→complete→create_kb
+  evaluation: TieredEvaluator.evaluate→local_model→(xai_if_budget)
+  parallel: parallel_inference→asyncio.gather→[complete, complete, ...]
+test_cmds:
+  infer: 'uv run gaius-cli --cmd "/ask \"test question\""'
+  search: 'uv run gaius-cli --cmd "/research \"topic\" --save"'
+guru_codes: [IF.00001.TIMEOUT, IF.00002.VLLM_DOWN, IF.00003.BRAVE_QUOTA, IF.00004.OOM]
+fail_fast: true
+-->
+

@@ -227,8 +227,119 @@ result = await run_flow(
 - DS4SD. (2024). *docling: Document Understanding*. https://github.com/DS4SD/docling
 - OpenLineage. (2024). *OpenLineage Specification*. https://openlineage.io/
 
+## Call Graph
+
+```
+# ArXiv Flow Execution
+mcp_server.py:fetch_paper(arxiv_id)
+  └─→ flows.runner.run_flow("arxiv-docling", arxiv_id)
+      └─→ ArxivDoclingFlow().run()
+          ├─→ start: emit_lineage_start(inputs=[arxiv_url])
+          ├─→ download: arxiv.fetch_pdf()
+          ├─→ convert: docling.convert_pdf_to_markdown()
+          ├─→ topics: bertopic.extract_topics()
+          ├─→ score: inference.client.complete(scoring_prompt)
+          ├─→ save: storage.kb_ops.create_kb(zettelkasten_path)
+          └─→ end: emit_lineage_complete(outputs=[kb_path])
+
+# Cloudera Docs Flow
+mcp_server.py:sync_cloudera_docs()
+  └─→ ClouderaDocsFlow().run()
+      ├─→ start: download archive zip
+      ├─→ extract: unzip to temp directory
+      ├─→ convert: [parallel] docling.convert_pdf()
+      ├─→ save: storage.kb_ops.create_kb()
+      └─→ end: emit_lineage_complete()
+
+# Lineage Emission Path
+GaiusFlow.emit_lineage_complete()
+  └─→ hx.lineage.emitter.emit(RunEvent.complete())
+      └─→ ag_catalog.cypher(insert_vertex, insert_edge)
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Flow Triggers                                 │
+│           MCP Tool  |  CLI Command  |  Scheduled                     │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Flow Runner                                     │
+│                run_flow(name, **params)                              │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Metaflow Runtime                                │
+│              @step decorators → DAG execution                        │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │   docling    │    │  BERTopic    │    │   Inference  │
+     │  PDF→MD      │    │   Topics     │    │   Scoring    │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+              ┌───────────────────────────────────────┐
+              │         storage.kb_ops                 │
+              │    create_kb(zettelkasten_path)        │
+              └───────────────────┬───────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │      KB      │    │  HX (raw)    │    │   Lineage    │
+     │   (summary)  │    │  (content)   │    │    Graph     │
+     └──────────────┘    └──────────────┘    └──────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `GaiusFlow` | metaflow, hx.lineage | all flows | Base class |
+| `FLOW_REGISTRY` | — | mcp_server, cli | `@register_flow` decorator |
+| `ArxivDoclingFlow` | docling, bertopic, inference | mcp_server | `run()` |
+| `ClouderaDocsFlow` | docling, storage | mcp_server | `run()` |
+| `run_flow()` | FLOW_REGISTRY | mcp_server | Flow invocation |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [HX README](../hx/README.md) — Lineage storage
 - [Storage README](../storage/README.md) — KB integration
+- [Workers README](../workers/README.md) — Fetch job queue
+- [Inference README](../inference/README.md) — Scoring integration
+
+---
+
+<!-- GAI:META
+module: gaius.flows
+layer: L4-inference
+entry_point: python -m metaflow.run
+key_types: [GaiusFlow, FlowConfig]
+key_funcs: [register_flow, run_flow, zettelkasten_path, archive_path]
+submodules: [docling, cloudera_docs, topics]
+depends: [metaflow, hx.lineage, storage.kb_ops, inference.client]
+dependents: [mcp_server, workers]
+config_keys: [flows.kb_root, flows.archive_pdfs]
+env_vars: [GAIUS_KB_ROOT, METAFLOW_DATASTORE_SYSROOT_S3, METAFLOW_DEFAULT_METADATA]
+grpc_services: []
+metaflow_flows: [ArxivDoclingFlow, ClouderaDocsFlow, TopicExtractionFlow]
+external_deps: [metaflow, docling, bertopic]
+call_paths:
+  arxiv: mcp.fetch_paper→run_flow→ArxivDoclingFlow.run→docling→kb_ops.create
+  cloudera: mcp.sync_cloudera_docs→ClouderaDocsFlow.run→docling→kb_ops.create
+  lineage: GaiusFlow.emit_lineage_complete→hx.lineage.emit→AGE_insert
+test_cmds:
+  arxiv: 'uv run gaius-cli --cmd "/fetch_paper 2312.12345"'
+  list: 'uv run gaius-cli --cmd "/flows list"'
+guru_codes: [FL.00001.DOCLING_FAIL, FL.00002.METAFLOW_DB, FL.00003.ARXIV_RATE]
+fail_fast: true
+-->

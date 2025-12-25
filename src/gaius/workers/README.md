@@ -268,8 +268,118 @@ Environment variables:
 - `GAIUS_WORKER_COUNT`: Number of workers
 - `GAIUS_POLL_INTERVAL`: Seconds between polls
 
+## Call Graph
+
+```
+# Worker Daemon Startup
+cli.py:start()
+  └─→ WorkerManager(config).start()
+      └─→ [spawn N workers]
+          └─→ Worker.run()
+              └─→ while True:
+                  ├─→ triage.get_batch(limit=10)
+                  └─→ [for each job]
+                      └─→ process_job(job)
+
+# Job Processing Path
+Worker.process_job(job)
+  └─→ get_fetcher(job.source)
+      └─→ fetcher.fetch(job.source_id)
+          ├─→ [arxiv] ArxivFetcher.fetch()
+          ├─→ [biorxiv] BioRxivFetcher.fetch()
+          └─→ [rss] RSSFetcher.fetch()
+              └─→ ContentItem
+
+# Content Storage Path
+Worker.process_job(job) [continued]
+  └─→ ContentProcessor.process(item)
+      ├─→ hx.writer.IcebergContentStore.write()   # raw content
+      ├─→ [if summarize_on_fetch]
+      │     └─→ flows.run_flow("summarize")
+      └─→ triage.complete(job_id, result)
+
+# Job Submission Path
+mcp_server.py:submit_fetch_job()
+  └─→ workers.db.insert_job()
+      └─→ database.execute(INSERT INTO fetch_jobs)
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Job Submission                                   │
+│           MCP Tool  |  CLI  |  Scheduled Discovery                   │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                   PostgreSQL: fetch_jobs                             │
+│        source | source_id | priority | status | attempts            │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼ (poll)
+┌─────────────────────────────────────────────────────────────────────┐
+│                     WorkerManager                                    │
+│            triage.get_batch() → dispatch to workers                  │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │   Worker 1   │    │   Worker 2   │    │   Worker N   │
+     │ArxivFetcher  │    │BioRxivFetcher│    │  RSSFetcher  │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+              ┌───────────────────────────────────────┐
+              │        ContentProcessor                │
+              │    write to HX | optional summarize    │
+              └───────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `WorkerManager` | triage, fetchers, db | cli, daemon | `start()`, `stop()` |
+| `JobTriage` | database | WorkerManager | `get_batch()`, `complete()`, `fail()` |
+| `ArxivFetcher` | httpx, arxiv API | Worker | `fetch(source_id)` |
+| `ContentProcessor` | hx.writer, flows | Worker | `process(item)` |
+| `FetchJob` | — | all workers modules | Job model |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [HX README](../hx/README.md) — Content storage
 - [Flows README](../flows/README.md) — Processing pipelines
+- [Storage README](../storage/README.md) — KB integration
+
+---
+
+<!-- GAI:META
+module: gaius.workers
+layer: L3-engine
+entry_point: gaius-worker
+key_types: [WorkerManager, WorkerConfig, FetchJob, JobStatus, ContentItem, FetchResult, BaseFetcher]
+key_funcs: [start, stop, submit_job, get_batch, complete, fail]
+submodules: [fetchers, processing]
+depends: [storage.database, hx.writer, flows.runner]
+dependents: [mcp_server, daemon]
+config_keys: [workers.num_workers, workers.poll_interval, workers.batch_size, workers.timeout]
+env_vars: [GAIUS_WORKER_COUNT, GAIUS_POLL_INTERVAL]
+grpc_services: []
+postgres_tables: [fetch_jobs]
+external_deps: [httpx, feedparser]
+call_paths:
+  daemon: cli.start→WorkerManager.start→[Workers].run→poll_loop
+  job: Worker.process_job→get_fetcher→fetch→ContentProcessor.process→hx.write
+  submit: mcp.submit_fetch_job→db.insert_job→fetch_jobs_INSERT
+test_cmds:
+  start: 'uv run python -m gaius.workers.cli start'
+  submit: 'uv run python -m gaius.workers.cli submit arxiv 2312.12345'
+  status: 'uv run python -m gaius.workers.cli status'
+guru_codes: [WK.00001.DB_UNAVAIL, WK.00002.FETCH_TIMEOUT, WK.00003.RATE_LIMIT]
+fail_fast: true
+-->

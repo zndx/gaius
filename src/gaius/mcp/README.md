@@ -155,8 +155,94 @@ The `mcp_server.py` exposes tools to Claude Code. The `mcp/operations.py` module
 
 This avoids code duplication and ensures consistent behavior.
 
+## Call Graph
+
+```
+# ask_reasoning Path
+agents.theta.ThetaAgent.consolidate()
+  └─→ mcp.operations.ask_reasoning(question)
+      └─→ inference.client.InferenceClient.complete()
+          └─→ client.grpc_client.infer()
+              └─→ engine → vLLM
+
+# run_swarm Path
+agents.cognition.CognitionAgent.self_observe()
+  └─→ mcp.operations.run_swarm(query, domain)
+      └─→ agents.swarm.SwarmManager.analyze()
+          └─→ [for each role]
+              └─→ inference.parallel_inference()
+                  └─→ synthesize() → SwarmResult
+
+# MCP Server to Operations
+mcp_server.py:@mcp.tool("ask_reasoning")
+  └─→ mcp.operations.ask_reasoning(question)
+      └─→ ... (same path as above)
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                       External Caller                                │
+│      Claude Code (via MCP)  |  Internal Agent  |  ThetaAgent         │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    mcp/operations.py                                 │
+│           ask_reasoning()  |  run_swarm()                            │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┴───────────────────┐
+              ▼                                       ▼
+     ┌──────────────┐                        ┌──────────────┐
+     │ InferenceClient                       │ SwarmManager │
+     │   .complete()                         │  .analyze()  │
+     └──────┬───────┘                        └──────┬───────┘
+            │                                       │
+            └───────────────────┬───────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          engine                                      │
+│              gRPC → vLLM → Response                                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `ask_reasoning()` | inference.client | theta, cognition, mcp_server | Direct call |
+| `run_swarm()` | agents.swarm | theta, cognition, mcp_server | Direct call |
+| `AskReasoningResult` | — | callers | Return type |
+| `SwarmResult` | — | callers | Return type |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Agents README](../agents/README.md) — Agent integration
 - [Inference README](../inference/README.md) — Underlying inference
+- [mcp_server.py](../mcp_server.py) — MCP protocol server
+
+---
+
+<!-- GAI:META
+module: gaius.mcp
+layer: L5-orchestration
+key_types: [AskReasoningResult, SwarmResult, AgentOutput]
+key_funcs: [ask_reasoning, run_swarm]
+submodules: []
+depends: [inference.client, agents.swarm]
+dependents: [agents.theta, agents.cognition, mcp_server]
+config_keys: []
+env_vars: []
+grpc_services: []
+call_paths:
+  reasoning: theta→mcp.ask_reasoning→inference.client.complete→engine
+  swarm: cognition→mcp.run_swarm→SwarmManager.analyze→parallel_inference
+test_cmds:
+  reason: 'uv run gaius-cli --cmd "/ask \"test question\""'
+  swarm: 'uv run gaius-cli --cmd "/swarm \"analysis query\" --domain test"'
+guru_codes: []
+fail_fast: true
+-->

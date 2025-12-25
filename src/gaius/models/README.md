@@ -433,8 +433,115 @@ models {
 - Yu, L., Yu, B., Yu, H., Huang, F., & Li, Y. (2024). Language Models are Super Mario: Absorbing Abilities from Homologous Models as a Free Lunch. *ICML 2024*.
 - Zhou, Y., Muresanu, A. I., Han, Z., et al. (2023). Large Language Models Are Human-Level Prompt Engineers. *ICLR 2023*.
 
+## Call Graph
+
+```
+# Task-to-Model Resolution
+agents.swarm.SwarmManager.analyze()
+  └─→ models.registry.get_model_for_task(TaskType.REASONING)
+      └─→ ModelRegistry.get_best(capabilities=[REASONING])
+          └─→ ModelSpec with vllm_config
+
+# Evaluation Path
+agents.evolution.evaluate_candidate()
+  └─→ models.tiered_evaluation.TieredEvaluator.evaluate()
+      ├─→ [Tier 1] inference.client.complete()      # local Orchestrator-8B
+      │     └─→ parse_evaluation_response()
+      └─→ [Tier 2] models.evaluation.XAIEvaluator.evaluate()
+            └─→ httpx.post(XAI_API_URL)             # if budget permits
+
+# Version Promotion Path
+evolution.engine.promote_candidate()
+  └─→ models.versioning.VersionManager.save_version()
+      └─→ database.insert(agent_versions)
+          └─→ models.lineage.record_lineage(parent, child)
+
+# Model Merge Path
+mcp_server.py:trigger_model_merge()
+  └─→ models.merging.ModelMerger.merge()
+      ├─→ ties_merge(models, base, weights)     # TIES method
+      ├─→ dare_ties_merge(models, drop_rate)    # DARE method
+      └─→ models.lineage.record_merge_lineage()
+```
+
+## Data Flow
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│                        Task Request                                    │
+│                  (inference, evaluation, merge)                        │
+└───────────────────────────────┬───────────────────────────────────────┘
+                                │
+                ┌───────────────┴───────────────┐
+                ▼                               ▼
+       ┌──────────────┐                ┌──────────────┐
+       │   Registry   │                │  Versioning  │
+       │  get_model() │                │   Manager    │
+       └──────┬───────┘                └──────┬───────┘
+              │                               │
+              ▼                               ▼
+       ┌──────────────┐                ┌──────────────┐
+       │  ModelSpec   │                │AgentVersion  │
+       │  vllm_config │                │ system_prompt│
+       └──────┬───────┘                └──────┬───────┘
+              │                               │
+              └───────────────┬───────────────┘
+                              ▼
+              ┌───────────────────────────────┐
+              │         Evaluation            │
+              │   TieredEvaluator.evaluate()  │
+              └───────────────┬───────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+       ┌──────────────┐                ┌──────────────┐
+       │Local (Tier 1)│                │ XAI (Tier 2) │
+       │Orchestrator-8B│               │    Grok      │
+       └──────────────┘                └──────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `get_model_for_task()` | registry.py | agents.swarm, inference | Factory function |
+| `TieredEvaluator` | inference.client, providers.xai | evolution, mcp_server | `evaluate()` |
+| `VersionManager` | storage.database | evolution, mcp_server | `save_version()`, `get_best_version()` |
+| `ModelMerger` | torch, mergekit | evolution, mcp_server | `ties_merge()`, `dare_ties_merge()` |
+| `NomicEmbeddings` | nomic-embed | storage.sync, core.projection | `embed_text()`, `embed_image()` |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [Agents README](../agents/README.md) — Evolution integration
 - [Engine README](../engine/README.md) — vLLM orchestration
+- [Inference README](../inference/README.md) — Model execution
+- [Providers README](../providers/README.md) — External model access
+
+---
+
+<!-- GAI:META
+module: gaius.models
+layer: L4-inference
+singleton: get_model_registry
+key_types: [ModelRegistry, ModelSpec, TaskType, ModelCapability, AgentVersion, TieredEvaluator, XAIEvaluator, NomicEmbeddings]
+key_funcs: [get_model_for_task, get_embeddings, get_evaluator, get_tiered_evaluator, ties_merge, dare_ties_merge, compute_pareto_front]
+submodules: []
+depends: [core.config, storage.database, inference.client, providers.xai]
+dependents: [agents.evolution, agents.swarm, mcp_server, engine.services]
+config_keys: [models.registry.default_reasoning, models.embeddings.text_model, models.evaluation.xai_api_key, models.evaluation.daily_budget]
+env_vars: [XAI_API_KEY, NOMIC_API_KEY]
+grpc_services: []
+postgres_tables: [agent_versions, model_lineage, evaluation_results]
+external_deps: [torch, mergekit, nomic, httpx]
+call_paths:
+  resolve: agents.swarm→registry.get_model_for_task→ModelSpec
+  evaluate: evolution→TieredEvaluator.evaluate→local|xai
+  version: evolution.promote→VersionManager.save_version→database
+  merge: mcp.trigger_merge→ModelMerger.merge→ties|dare→lineage
+test_cmds:
+  list: 'uv run gaius-cli --cmd "/model list"'
+  eval: 'uv run gaius-cli --cmd "/eval status"'
+guru_codes: [MD.00001.XAI_BUDGET, MD.00002.MERGE_OOM, MD.00003.NOMIC_UNAVAIL]
+fail_fast: true
+-->

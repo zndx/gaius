@@ -331,8 +331,118 @@ print(f"Reward: {reward}")
 
 - Friedenthal, S., Moore, A., & Steiner, R. (2014). *A Practical Guide to SysML: The Systems Modeling Language* (3rd ed.). Morgan Kaufmann.
 
+## Call Graph
+
+```
+# Verification Pipeline
+datasets.nifi_som.generate()
+  └─→ rase.osm.scenario.Scenario.execute()
+      └─→ [for each step]
+          ├─→ @given/@when/@then step definitions
+          └─→ rase.uom.som.capture_screenshot_with_marks()
+              └─→ hx.evidence.EvidenceCapture.record()
+
+# Oracle Verification Path
+mcp_server.py:verify_objective()
+  └─→ rase.vm.oracle.NiFiOracle.verify()
+      ├─→ nifi_client.get_state()           # fetch API ground truth
+      ├─→ [for each constraint]
+      │     └─→ constraint.evaluate(state)
+      └─→ VerdictKind + accuracy computation
+
+# Reward Computation Path
+rase.vm.oracle.NiFiOracle.verify()
+  └─→ rase.vm.oracle.compute_reward(result)
+      ├─→ BinaryReward.compute()             # 0.0 or 1.0
+      └─→ GradedReward.compute()             # partial credit
+
+# Traceability Path
+rase.traceability.DigitalThread.add_derivation()
+  └─→ TraceabilityGraph.add_edge(source_id, derived_id)
+      └─→ storage.database.insert(traceability_edges)
+```
+
+## Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      BDD Scenarios (OSM)                             │
+│           Feature → Scenario → Steps → @given/@when/@then            │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     System State (SSM)                               │
+│         NiFiInstance → ProcessorGroup → Processor → Connection       │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+     │ Constraints  │    │    UOM       │    │   Verifier   │
+     │  (SSM)       │    │ Screenshots  │    │   (VM)       │
+     │ ProcessorExist│   │ SoM + ToM    │    │   Oracle     │
+     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+            │                   │                   │
+            └───────────────────┼───────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      VerificationResult                              │
+│              VerdictKind + Accuracy + Reward Signal                  │
+└─────────────────────────────────┬───────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                   RLVR Training Loop                                 │
+│               Reward → Policy Update → Agent                         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `TraceableId` | — | all rase modules | URI-based identification |
+| `DigitalThread` | TraceableId | datasets, verification | Provenance tracking |
+| `NiFiOracle` | NiFiInstance, Constraints | mcp_server, datasets | `verify()` |
+| `Scenario` | StepDefs | datasets, tests | `execute()` |
+| `ScreenshotWithSoM` | — | datasets.nifi_som, hx.evidence | Mark capture |
+| `compute_reward()` | VerificationResult | training loops | RLVR signal |
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
 - [HX README](../hx/README.md) — Evidence capture
 - [Datasets README](../datasets/README.md) — Training data generation
+- [Agents README](../agents/README.md) — ThetaAgent uses RASE verification
+
+---
+
+<!-- GAI:META
+module: gaius.rase
+layer: L6-verification
+key_types: [TraceableId, DigitalThread, Scenario, Step, StepType, NiFiInstance, Processor, ProcessorGroup, Connection, Constraint, ConstraintResult, ScreenshotWithSoM, Mark, TraceOfMarks, ScenarioRequirement, VerificationCase, VerdictKind, BinaryReward, GradedReward]
+key_funcs: [given, when, then, compute_reward]
+submodules: [core, domains, osm, uom, vm]
+depends: [storage.database, hx.evidence, httpx]
+dependents: [datasets, mcp_server, training]
+config_keys: []
+env_vars: []
+grpc_services: []
+postgres_tables: [traceability_edges, verification_runs]
+external_deps: [pydantic, selenium]
+sysml_v2_mapping:
+  requirement_def: [Requirement, ScenarioRequirement]
+  verification_def: [VerificationCase, APIVerificationCase]
+  constraint_def: [Constraint subclasses]
+  action_def: [StepDef, given/when/then]
+  part_def: [Processor, ProcessorGroup, NiFiInstance]
+call_paths:
+  verify: mcp.verify_objective→NiFiOracle.verify→constraints→VerdictKind+accuracy
+  execute: datasets.generate→Scenario.execute→steps→capture→evidence
+  reward: NiFiOracle.verify→compute_reward→BinaryReward|GradedReward
+test_cmds:
+  verify: 'uv run gaius-cli --cmd "/verify rsv"'
+guru_codes: [RS.00001.NIFI_API_FAIL, RS.00002.CONSTRAINT_ERROR, RS.00003.JVM_UNAVAIL]
+fail_fast: true
+-->
