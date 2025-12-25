@@ -215,6 +215,16 @@
     maven.enable = true;
   };
 
+  # JavaScript/Node.js for claude-code-acp adapter
+  # Required for ACP integration with Claude Code
+  languages.javascript = {
+    enable = true;
+    npm = {
+      enable = true;
+      install.enable = true;  # Enable declarative npm package installation
+    };
+  };
+
   tasks = {
     "docs:build".exec = "mdbook build docs";
     "docs:open".exec = "mdbook build docs --open";
