@@ -18,7 +18,13 @@ Usage:
         print(response)
 """
 
-from .client import GaiusACPClient, ACPConnectionError, ACPConfig, _find_acp_adapter
+from .client import (
+    GaiusACPClient,
+    ACPConnectionError,
+    ACPConfig,
+    StreamCallback,
+    _find_acp_adapter,
+)
 from .prompts import (
     WorkflowMode,
     CadencePolicy,
@@ -34,6 +40,7 @@ __all__ = [
     "GaiusACPClient",
     "ACPConnectionError",
     "ACPConfig",
+    "StreamCallback",
     "_find_acp_adapter",
     # Prompts
     "WorkflowMode",

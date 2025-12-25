@@ -33,9 +33,14 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
+
+# Type alias for streaming callback
+# Receives: (chunk_type: str, content: str)
+# chunk_type is one of: "text", "tool_use", "thought", "status"
+StreamCallback = Callable[[str, str], Awaitable[None]]
 
 
 class ACPConnectionError(Exception):
@@ -90,6 +95,7 @@ class ACPConfig:
         mcp_config: MCP server configuration for Claude Code to use
         include_gaius_mcp: Automatically include Gaius MCP server
         github_repo: GitHub repository for issue tracking
+        stream_callback: Optional async callback for streaming responses to TUI
     """
     # claude-code-acp is the required adapter from Zed
     # See: https://github.com/zed-industries/claude-code-acp
@@ -103,6 +109,7 @@ class ACPConfig:
     mcp_config: dict[str, Any] | None = None  # Additional MCP servers
     include_gaius_mcp: bool = True  # Include Gaius MCP server in session
     github_repo: str = "zndx/gaius-internal"  # GitHub repo for issue tracking
+    stream_callback: StreamCallback | None = None  # Streaming to TUI panel
 
 
 class GaiusACPClient:
@@ -179,7 +186,14 @@ class GaiusACPClient:
             logger.info(f"Connecting to ACP agent: {self.config.agent_command}")
 
             # Import schema types for session updates
-            from acp.schema import AgentMessageChunk, TextContentBlock
+            from acp.schema import (
+                AgentMessageChunk,
+                AgentThoughtChunk,
+                TextContentBlock,
+                ToolCallStart,
+                ToolCallUpdate,
+                ToolCallProgress,
+            )
 
             # Create custom client class with permission handlers
             class GaiusClient(Client):
@@ -226,18 +240,55 @@ class GaiusACPClient:
                 async def session_update(self, session_id: str, update, **kwargs) -> None:
                     """Handle session update notifications.
 
-                    Captures AgentMessageChunk updates to build the response text.
+                    Streams updates to TUI panel via callback if configured,
+                    and also buffers text for final response.
+
+                    Chunk types streamed:
+                    - "text": Agent message text chunks
+                    - "thought": Agent thinking/reasoning chunks
+                    - "tool_start": Tool call initiated
+                    - "tool_progress": Tool execution progress
+                    - "tool_update": Tool call result
                     """
                     logger.debug(f"Session update: {type(update).__name__}")
+                    callback = self._parent.config.stream_callback
 
-                    # Capture agent message chunks (the actual response text)
+                    # Handle agent message chunks (the actual response text)
                     if isinstance(update, AgentMessageChunk):
-                        # Content is a union type, check for TextContentBlock
                         if isinstance(update.content, TextContentBlock):
                             text = update.content.text
                             if text:
                                 self._response_buffer.append(text)
+                                if callback:
+                                    await callback("text", text)
                                 logger.debug(f"Captured text chunk: {text[:50]}...")
+
+                    # Handle agent thought chunks (reasoning/thinking)
+                    elif isinstance(update, AgentThoughtChunk):
+                        if hasattr(update, 'content') and isinstance(update.content, TextContentBlock):
+                            text = update.content.text
+                            if text and callback:
+                                await callback("thought", text)
+                            logger.debug(f"Thought chunk: {text[:50] if text else '(empty)'}...")
+
+                    # Handle tool call start
+                    elif isinstance(update, ToolCallStart):
+                        tool_name = getattr(update, 'title', 'unknown')
+                        if callback:
+                            await callback("tool_start", f"⚙ {tool_name}")
+                        logger.debug(f"Tool start: {tool_name}")
+
+                    # Handle tool call progress
+                    elif isinstance(update, ToolCallProgress):
+                        progress = getattr(update, 'message', '')
+                        if progress and callback:
+                            await callback("tool_progress", progress)
+
+                    # Handle tool call update (result)
+                    elif isinstance(update, ToolCallUpdate):
+                        # Tool results can be large, just note completion
+                        if callback:
+                            await callback("tool_update", "✓ Tool complete")
 
                 def get_response(self) -> str:
                     """Get accumulated response and clear buffer."""
@@ -296,7 +347,7 @@ class GaiusACPClient:
                             command="uv",
                             args=["run", "python", "-m", "gaius.mcp_server"],
                             cwd=self.config.working_directory,
-                            env=None,
+                            env=[],  # Empty list, not None
                         ))
                     else:
                         mcp_servers.append(McpServerStdio(
@@ -304,7 +355,7 @@ class GaiusACPClient:
                             command=str(venv_python),
                             args=["-m", "gaius.mcp_server"],
                             cwd=self.config.working_directory,
-                            env=None,
+                            env=[],  # Empty list, not None
                         ))
                     logger.info("Gaius MCP server configured for ACP session")
 
