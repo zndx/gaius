@@ -13,6 +13,9 @@ from textual.message import Message
 from textual.binding import Binding
 from textual import events
 
+# File extensions editable in NoteEditor (KB text files)
+EDITABLE_EXTENSIONS = {".md", ".owl", ".json", ".yaml", ".yml", ".ttl", ".txt", ".toml"}
+
 
 class VimTextArea(TextArea):
     """TextArea that sends ESC to parent for vim-style mode switching."""
@@ -505,3 +508,32 @@ class NoteEditor(Widget, can_focus=True):
         """Focus the editor (enters normal mode)."""
         self.focus()
         self._update_mode_display()
+
+    def show_content(self, title: str, content: str, extension: str = ".md") -> str:
+        """Display content in editor, creating scratch file automatically.
+
+        Used for command output that should be editable. Creates a timestamped
+        scratch file and opens it in the editor.
+
+        Args:
+            title: Base name for scratch file (will be sanitized)
+            content: Text content to display
+            extension: File extension (default .md)
+
+        Returns:
+            Path to created scratch file
+        """
+        safe_title = re.sub(r'[^\w\-]', '_', title)[:30]
+        today = datetime.now().strftime("%Y-%m-%d")
+        timestamp = int(time.time())
+        filename = f"{timestamp}_{safe_title}{extension}"
+
+        filepath = self.scratch_dir / today / filename
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(content)
+
+        self.open_note(str(filepath))
+        self.remove_class("hidden")
+
+        self.post_message(self.NoteCreated(str(filepath)))
+        return str(filepath)

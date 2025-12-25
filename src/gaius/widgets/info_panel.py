@@ -1,4 +1,4 @@
-"""Content panel for displaying file contents and agent output."""
+"""Info panel for displaying brief contextual information."""
 
 from textual.widget import Widget
 from textual.widgets import Static, Markdown
@@ -10,14 +10,15 @@ from rich.markdown import Markdown as RichMarkdown
 from ..core.state import AppState
 
 
-class ContentPanel(Widget, can_focus=True):
-    """Right panel for displaying content.
+class InfoPanel(Widget, can_focus=True):
+    """Right panel for displaying brief contextual information.
 
     Shows:
-    - Selected file contents (with Markdown rendering for .md)
+    - Transient status messages and progress indicators
     - Agent output during swarm rounds
     - Contextual information based on cursor position
 
+    For heavy/final output, use NoteEditor via _show_output() instead.
     Arrow keys scroll content when focused (without entering edit mode).
     """
 
@@ -31,35 +32,35 @@ class ContentPanel(Widget, can_focus=True):
     ]
 
     DEFAULT_CSS = """
-    ContentPanel {
+    InfoPanel {
         width: 100%;
         height: 100%;
         background: $surface;
         border-left: solid $primary-darken-2;
     }
 
-    ContentPanel > VerticalScroll {
+    InfoPanel > VerticalScroll {
         width: 100%;
         height: 100%;
     }
 
-    ContentPanel .content-header {
+    InfoPanel .content-header {
         background: $primary-darken-3;
         padding: 0 1;
         text-style: bold;
     }
 
-    ContentPanel .content-body {
+    InfoPanel .content-body {
         padding: 1;
     }
 
-    ContentPanel .agent-output {
+    InfoPanel .agent-output {
         border-bottom: dashed $surface-lighten-1;
         padding: 1;
         margin-bottom: 1;
     }
 
-    ContentPanel .agent-name {
+    InfoPanel .agent-name {
         text-style: bold;
     }
     """

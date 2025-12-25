@@ -2,12 +2,64 @@
 
 from pathlib import Path
 
+from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 from textual.message import Message
 
 from ..core.state import AppState
+
+
+class VimTree(Tree):
+    """Tree widget with vim-style navigation keys."""
+
+    BINDINGS = [
+        Binding("G", "goto_last", "Go to last", show=False),
+        Binding("g", "goto_first_prefix", "Go to first (gg)", show=False),
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._g_pressed = False
+
+    def action_goto_last(self) -> None:
+        """Jump to the last visible node (G)."""
+        self._g_pressed = False  # Reset any pending g
+
+        # Find the last visible node by traversing the tree
+        def get_last_visible(node: TreeNode) -> TreeNode:
+            """Recursively find the last visible node."""
+            if node.is_expanded and node.children:
+                return get_last_visible(node.children[-1])
+            return node
+
+        if self.root.children:
+            last_node = get_last_visible(self.root.children[-1])
+            # Use move_cursor instead of select_node to avoid triggering NodeSelected
+            # User can press Enter to select after navigating
+            self.move_cursor(last_node)
+            self.scroll_to_node(last_node)
+
+    def action_goto_first_prefix(self) -> None:
+        """Handle first 'g' press - wait for second 'g' for gg."""
+        if self._g_pressed:
+            # Second g - go to first
+            self._g_pressed = False
+            if self.root.children:
+                first_node = self.root.children[0]
+                # Use move_cursor instead of select_node to avoid triggering NodeSelected
+                # User can press Enter to select after navigating
+                self.move_cursor(first_node)
+                self.scroll_to_node(first_node)
+        else:
+            # First g - set flag, reset after short timeout
+            self._g_pressed = True
+            self.set_timer(0.5, self._reset_g_pressed)
+
+    def _reset_g_pressed(self) -> None:
+        """Reset the g-pressed state after timeout."""
+        self._g_pressed = False
 
 
 class FileTreeSelection(Message):
@@ -67,11 +119,11 @@ class FileTree(Widget):
         self.state = state
         self._agents = agents or []
         self._kb_root = Path(kb_root)
-        self._tree: Tree | None = None
+        self._tree: VimTree | None = None
 
     def compose(self):
         """Compose the tree widget."""
-        self._tree = Tree("Gaius", id="kb-tree")
+        self._tree = VimTree("Gaius", id="kb-tree")
         self._tree.show_root = False  # Hide the root node for cleaner UX
         self._tree.root.expand()
         self._populate_tree()
