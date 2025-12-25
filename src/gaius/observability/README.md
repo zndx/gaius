@@ -2,20 +2,28 @@
 
 Metrics collection and visualization for operational monitoring. Provides a unified abstraction over multiple data backends including Prometheus and the gRPC engine.
 
+This module handles the **consumption side** of telemetry—querying metrics from Prometheus for display. For the **emission side** (OpenTelemetry instrumentation), see [core/telemetry.py](../core/telemetry.py).
+
 ## Architecture
+
+The observability pipeline follows the OpenTelemetry standard (Blanco et al., 2024):
 
 ```mermaid
 graph TB
-    subgraph "Data Sources"
-        PROM[Prometheus]
-        ENGINE[gaius-engine gRPC]
-        NVML[pynvml]
+    subgraph "Emission (core/telemetry.py)"
+        APP[Application Code]
+        OTEL[OpenTelemetry SDK<br/>TracerProvider, MeterProvider]
+        OTLP[OTLP Exporter]
     end
 
-    subgraph "Observability Layer"
+    subgraph "Collection"
+        COLL[OTel Collector]
+        PROM[(Prometheus)]
+    end
+
+    subgraph "Consumption (observability/)"
         SRC[MetricSource Protocol]
         PS[PrometheusSource]
-        ES[EngineSource]
     end
 
     subgraph "Display"
@@ -23,11 +31,12 @@ graph TB
         CLI[/observe Command]
     end
 
+    APP --> OTEL
+    OTEL --> OTLP
+    OTLP --> COLL
+    COLL --> PROM
     PROM --> PS
-    ENGINE --> ES
-    NVML --> ES
     PS --> SRC
-    ES --> SRC
     SRC --> TUI
     SRC --> CLI
 ```
@@ -231,8 +240,66 @@ Environment variables:
 | `gaius_scheduler_queue_depth` | Engine | Job queue size |
 | `gaius_evolution_cycle_count` | Engine | Evolution cycles completed |
 
+## OpenTelemetry Integration
+
+This module queries metrics that are emitted by `core/telemetry.py` using OpenTelemetry. The emission-consumption separation follows the vendor-neutral observability pattern (Blanco et al., 2024).
+
+### Emission Side (core/telemetry.py)
+
+```python
+from gaius.core.telemetry import get_tracer, get_meter, trace_operation
+
+# Tracing
+tracer = get_tracer("gaius.agents")
+
+with tracer.start_as_current_span("swarm_analysis") as span:
+    span.set_attribute("domain", domain)
+    result = await run_swarm(query)
+
+# Metrics
+meter = get_meter("gaius.inference")
+counter = meter.create_counter("gaius.inference.count")
+counter.add(1, {"model": model_name})
+
+# Decorator for automatic tracing
+@trace_operation("critical_operation")
+async def my_function():
+    ...
+```
+
+### Consumption Side (this module)
+
+```python
+from gaius.observability import PrometheusSource
+
+source = PrometheusSource()
+
+# Query OTel-emitted metrics from Prometheus
+latency = await source.query(
+    "gaius_gaius_inference_latency_milliseconds_bucket",
+    labels={"model": "reasoning"},
+)
+```
+
+### Entry Point Identification
+
+The telemetry module identifies the application entry point for proper trace attribution:
+
+| Entry Point | Service Name | Description |
+|-------------|--------------|-------------|
+| `gaius-tui` | gaius-tui | Textual TUI application |
+| `gaius-cli` | gaius-cli | Non-interactive CLI |
+| `gaius-mcp` | gaius-mcp | MCP server |
+| `gaius-engine` | gaius-engine | gRPC engine daemon |
+| `gaius-worker` | gaius-worker | Fetch worker pool |
+
+## References
+
+- Blanco, A., Shkuro, Y., & Parker, D. (2024). *OpenTelemetry in Action*. Manning Publications.
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
+- [Core Telemetry](../core/telemetry.py) — OpenTelemetry emission
 - [Health README](../health/README.md) — Health monitoring
 - [Engine README](../engine/README.md) — Metric emission

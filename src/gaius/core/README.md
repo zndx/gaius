@@ -54,6 +54,7 @@ graph TB
 | `activity.py` | Activity logging |
 | `session.py` | Session management |
 | `kb_capture.py` | Zettelkasten note generation |
+| `telemetry.py` | OpenTelemetry instrumentation |
 
 ## Persistent Homology
 
@@ -271,9 +272,156 @@ gaius {
 
 The system subsamples large datasets automatically to maintain interactive performance.
 
+## OpenTelemetry Instrumentation
+
+The `telemetry.py` module provides vendor-neutral distributed tracing and metrics following the OpenTelemetry specification (Blanco et al., 2024). This is the **emission side** of observability—for metric consumption and visualization, see [observability/README.md](../observability/README.md).
+
+### Architecture
+
+```mermaid
+graph LR
+    subgraph "Application"
+        CODE[Application Code]
+        TRACER[Tracer]
+        METER[Meter]
+    end
+
+    subgraph "OpenTelemetry SDK"
+        TP[TracerProvider]
+        MP[MeterProvider]
+    end
+
+    subgraph "Exporters"
+        OTLP[OTLP Exporter]
+        CONSOLE[Console Exporter]
+    end
+
+    subgraph "Backend"
+        COLL[OTel Collector]
+        PROM[(Prometheus)]
+        JAEGER[(Jaeger)]
+    end
+
+    CODE --> TRACER
+    CODE --> METER
+    TRACER --> TP
+    METER --> MP
+    TP --> OTLP
+    MP --> OTLP
+    TP --> CONSOLE
+    OTLP --> COLL
+    COLL --> PROM
+    COLL --> JAEGER
+```
+
+### Entry Point Detection
+
+The telemetry module auto-detects the application entry point for proper trace attribution:
+
+```python
+ENTRY_POINTS = ("tui", "cli", "mcp", "engine", "worker")
+
+def _detect_entry_point() -> str:
+    """Detect which entry point is running based on sys.argv[0]."""
+    ...
+```
+
+| Entry Point | Service Name | Use Case |
+|-------------|--------------|----------|
+| `gaius-tui` | gaius-tui | Interactive TUI session |
+| `gaius-cli` | gaius-cli | Non-interactive commands |
+| `gaius-mcp` | gaius-mcp | MCP server for Claude Code |
+| `gaius-engine` | gaius-engine | gRPC daemon |
+| `gaius-worker` | gaius-worker | Fetch worker pool |
+
+### Tracing API
+
+```python
+from gaius.core.telemetry import get_tracer, trace_operation, traced_command
+
+# Get a tracer for a component
+tracer = get_tracer("gaius.agents.swarm")
+
+# Manual span creation
+with tracer.start_as_current_span("analyze_query") as span:
+    span.set_attribute("query", query)
+    span.set_attribute("domain", domain)
+    result = await perform_analysis()
+    span.set_attribute("result_count", len(result))
+
+# Decorator for automatic tracing
+@trace_operation("swarm_synthesis")
+async def synthesize_results(results: list) -> str:
+    ...
+
+# Context manager for CLI commands
+async def run_command():
+    async with traced_command("health_check"):
+        await check_endpoints()
+```
+
+### Metrics API
+
+```python
+from gaius.core.telemetry import get_meter
+
+meter = get_meter("gaius.inference")
+
+# Counter for events
+inference_counter = meter.create_counter(
+    "gaius.inference.count",
+    description="Number of inference requests",
+)
+inference_counter.add(1, {"model": "reasoning", "status": "success"})
+
+# Histogram for latency
+latency_histogram = meter.create_histogram(
+    "gaius.inference.latency",
+    description="Inference latency in milliseconds",
+    unit="ms",
+)
+latency_histogram.record(elapsed_ms, {"model": "reasoning"})
+```
+
+### Pre-defined Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `gaius.search.count` | Counter | KB search operations |
+| `gaius.inference.count` | Counter | Inference requests |
+| `gaius.inference.latency` | Histogram | Inference latency (ms) |
+| `gaius.swarm.rounds` | Histogram | Swarm synthesis rounds |
+
+### Configuration
+
+Environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP collector endpoint |
+| `OTEL_TRACES_EXPORTER` | `otlp` | Trace exporter (`otlp`, `console`, `none`) |
+| `OTEL_METRICS_EXPORTER` | `otlp` | Metrics exporter |
+| `OTEL_SERVICE_NAME` | Auto-detected | Service name override |
+
+### CLI Flush Pattern
+
+For short-lived CLI commands, explicitly flush telemetry before exit:
+
+```python
+from gaius.core.telemetry import flush_telemetry
+
+async def main():
+    async with traced_command("my_command"):
+        await do_work()
+
+    # Ensure spans are exported before process exits
+    flush_telemetry()
+```
+
 ## References
 
 - Bauer, U. (2021). Ripser: Efficient computation of Vietoris–Rips persistence barcodes. *Journal of Applied and Computational Topology*, 5, 391–423.
+- Blanco, A., Shkuro, Y., & Parker, D. (2024). *OpenTelemetry in Action*. Manning Publications.
 - Edelsbrunner, H., Letscher, D., & Zomorodian, A. (2002). Topological persistence and simplification. *Discrete & Computational Geometry*, 28(4), 511–533.
 - McInnes, L., Healy, J., & Melville, J. (2018). UMAP: Uniform Manifold Approximation and Projection for Dimension Reduction. *arXiv:1802.03426*.
 - Ni, C.-C., Lin, Y.-Y., Gao, J., Gu, X. D., & Saucan, E. (2019). Ricci curvature of the internet topology. *Proceedings of IEEE INFOCOM*, 2758–2766.
@@ -284,5 +432,6 @@ The system subsamples large datasets automatically to maintain interactive perfo
 ## See Also
 
 - [Parent README](../README.md) — Module overview
+- [Observability README](../observability/README.md) — Metric consumption
 - [TDA documentation](../../../../docs/current/src/concepts/homology.md)
 - [Geometry design notes](../../../../docs/scratch/2025-12-03/01_differential_geometry_tda_design.md)
