@@ -94,11 +94,15 @@ class ACPConfig:
         auto_approve_terminal: Auto-approve terminal operations
         mcp_config: MCP server configuration for Claude Code to use
         include_gaius_mcp: Automatically include Gaius MCP server
-        github_repo: GitHub repository for issue tracking
+        github_repo: GitHub repository for issue tracking (MUST be in allowlist)
         stream_callback: Optional async callback for streaming responses to TUI
         buffer_limit: Asyncio stream buffer limit in bytes (default 16MB for large files)
         security_config_path: Path to HOCON security config (None for auto-discovery)
-        verify_github_security: Verify GitHub repo security before operations
+
+    Security Note:
+        GitHub security verification is MANDATORY and cannot be disabled.
+        The github_repo must be in the allowlist at ~/.config/gaius/acp.conf
+        and must have private visibility.
     """
     # claude-code-acp is the required adapter from Zed
     # See: https://github.com/zed-industries/claude-code-acp
@@ -111,11 +115,11 @@ class ACPConfig:
     auto_approve_terminal: bool = True  # Allow gh CLI for issue management
     mcp_config: dict[str, Any] | None = None  # Additional MCP servers
     include_gaius_mcp: bool = True  # Include Gaius MCP server in session
-    github_repo: str = "zndx/gaius-internal"  # GitHub repo for issue tracking
+    github_repo: str = "zndx/gaius-acp"  # GitHub repo for issue tracking
     stream_callback: StreamCallback | None = None  # Streaming to TUI panel
     buffer_limit: int = 16 * 1024 * 1024  # 16MB buffer for large Claude Code responses
     security_config_path: Path | None = None  # HOCON config for GitHub security
-    verify_github_security: bool = True  # Verify repo is private and allowed
+    # NOTE: verify_github_security removed - security is MANDATORY, not optional
 
 
 class GaiusACPClient:
@@ -181,8 +185,10 @@ class GaiusACPClient:
             logger.warning("ACP client already connected")
             return
 
-        # Security check: verify GitHub repo before connecting
-        if self.config.verify_github_security and self.config.github_repo:
+        # MANDATORY security check: verify GitHub repo before connecting
+        # This check cannot be disabled - it prevents information leakage
+        # and prompt injection attacks via public GitHub repos
+        if self.config.github_repo:
             from .security import GitHubSecurityGuard
 
             try:

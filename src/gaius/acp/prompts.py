@@ -448,7 +448,7 @@ Provide a markdown report suitable for the GitHub issue or KB, including:
 
 def build_system_prompt(
     mode: WorkflowMode,
-    github_repo: str = "zndx/gaius-internal",
+    github_repo: str = "zndx/gaius-acp",
     cadence: CadencePolicy | None = None,
 ) -> str:
     """Build the complete system prompt for Claude Code.
