@@ -97,6 +97,8 @@ class ACPConfig:
         github_repo: GitHub repository for issue tracking
         stream_callback: Optional async callback for streaming responses to TUI
         buffer_limit: Asyncio stream buffer limit in bytes (default 16MB for large files)
+        security_config_path: Path to HOCON security config (None for auto-discovery)
+        verify_github_security: Verify GitHub repo security before operations
     """
     # claude-code-acp is the required adapter from Zed
     # See: https://github.com/zed-industries/claude-code-acp
@@ -112,6 +114,8 @@ class ACPConfig:
     github_repo: str = "zndx/gaius-internal"  # GitHub repo for issue tracking
     stream_callback: StreamCallback | None = None  # Streaming to TUI panel
     buffer_limit: int = 16 * 1024 * 1024  # 16MB buffer for large Claude Code responses
+    security_config_path: Path | None = None  # HOCON config for GitHub security
+    verify_github_security: bool = True  # Verify repo is private and allowed
 
 
 class GaiusACPClient:
@@ -167,13 +171,34 @@ class GaiusACPClient:
         """Connect to Claude Code via ACP.
 
         Spawns Claude Code subprocess and establishes an ACP session.
+        Verifies GitHub repository security before connecting.
 
         Raises:
             ACPConnectionError: If connection fails
+            GitHubSecurityError: If GitHub repository fails security checks
         """
         if self._connected:
             logger.warning("ACP client already connected")
             return
+
+        # Security check: verify GitHub repo before connecting
+        if self.config.verify_github_security and self.config.github_repo:
+            from .security import GitHubSecurityGuard
+
+            try:
+                guard = GitHubSecurityGuard.from_config(self.config.security_config_path)
+                await guard.verify_repo(self.config.github_repo)
+                logger.info(
+                    f"GitHub security verified: {self.config.github_repo} is private and allowed"
+                )
+            except Exception as e:
+                raise ACPConnectionError(
+                    f"GitHub security check failed for {self.config.github_repo}.\n"
+                    f"Ensure the repository is private and in your allowlist.\n"
+                    f"Config file: ~/.config/gaius/acp.conf\n"
+                    f"Guru Meditation: #ACP.00000010.GHSECFAIL\n"
+                    f"Error: {e}"
+                )
 
         try:
             # Import ACP SDK

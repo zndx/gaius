@@ -34,6 +34,17 @@ from .prompts import (
     ISSUE_UPDATE_TEMPLATE,
     ISSUE_RESOLUTION_TEMPLATE,
 )
+from .security import (
+    GitHubSecurityError,
+    RepositoryNotAllowedError,
+    RepositoryNotPrivateError,
+    RepositoryNotConfiguredError,
+    GitHubSecurityConfig,
+    GitHubSecurityGuard,
+    load_security_config,
+    sanitize_issue_content,
+    validate_issue_title,
+)
 
 __all__ = [
     # Client
@@ -50,4 +61,14 @@ __all__ = [
     "ISSUE_BODY_TEMPLATE",
     "ISSUE_UPDATE_TEMPLATE",
     "ISSUE_RESOLUTION_TEMPLATE",
+    # Security
+    "GitHubSecurityError",
+    "RepositoryNotAllowedError",
+    "RepositoryNotPrivateError",
+    "RepositoryNotConfiguredError",
+    "GitHubSecurityConfig",
+    "GitHubSecurityGuard",
+    "load_security_config",
+    "sanitize_issue_content",
+    "validate_issue_title",
 ]
