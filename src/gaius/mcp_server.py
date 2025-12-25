@@ -5112,6 +5112,146 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- HealthObserver Tools ---
+    # Control the HealthObserver daemon for autonomous health monitoring
+
+    @server.tool()
+    async def health_observer_status() -> str:
+        """Get HealthObserver daemon status.
+
+        Returns daemon state, metrics, and active incidents.
+        Useful for understanding current system health monitoring.
+        """
+        try:
+            from .health.observe import get_health_observer
+            observer = get_health_observer()
+            return json.dumps(observer.get_status(), indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_start() -> str:
+        """Start the HealthObserver daemon (idempotent).
+
+        Begins continuous health monitoring with ACP escalation
+        for complex issues. Safe to call if already running.
+        """
+        try:
+            from .health.observe import get_health_observer
+            observer = get_health_observer()
+            await observer.start()
+            return json.dumps({
+                "status": "started" if observer.running else "already_running",
+                "poll_interval": observer.config.poll_interval,
+                "acp_enabled": observer.config.escalate_to_acp,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_stop() -> str:
+        """Stop the HealthObserver daemon gracefully.
+
+        Stops background monitoring. Active incidents remain tracked
+        but no new health checks will run.
+        """
+        try:
+            from .health.observe import get_health_observer
+            observer = get_health_observer()
+            await observer.stop()
+            return json.dumps({
+                "status": "stopped",
+                "active_incidents": len(observer.active_incidents),
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_incidents(status: str = "active") -> str:
+        """List health incidents (active, resolved, or all).
+
+        Args:
+            status: Filter by status ("active", "resolved", "all")
+        """
+        try:
+            from .health.observe import get_health_observer
+            observer = get_health_observer()
+
+            incidents = observer.active_incidents
+            if status == "resolved":
+                # Would need to query database for resolved incidents
+                return json.dumps({
+                    "note": "Query database for resolved incidents",
+                    "active_count": len(incidents),
+                }, indent=2)
+
+            return json.dumps({
+                "status_filter": status,
+                "count": len(incidents),
+                "incidents": [inc.to_dict() for inc in incidents],
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_check() -> str:
+        """Force an immediate health check.
+
+        Runs a full health check bypassing the poll interval.
+        Returns the health report with any new incidents.
+        """
+        try:
+            from .health.observe import get_health_observer
+            observer = get_health_observer()
+            report = await observer.force_check()
+
+            return json.dumps({
+                "healthy": report.healthy,
+                "summary": report.summary(),
+                "passed": report.passed,
+                "warnings": report.warnings,
+                "failures": report.failures,
+                "active_incidents": len(observer.active_incidents),
+                "interventions": report.interventions[:5],  # Top 5
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_incident_detail(fingerprint: str) -> str:
+        """Get full incident details with healing history.
+
+        Args:
+            fingerprint: Incident fingerprint (e.g., "GPU_001:reasoning")
+        """
+        try:
+            from .health.observe import get_health_observer
+            from .health.healing_events import HealingEventRecorder
+
+            observer = get_health_observer()
+            incident = observer.get_incident(fingerprint)
+
+            if not incident:
+                return json.dumps({
+                    "error": f"Incident not found: {fingerprint}",
+                    "active_fingerprints": [
+                        inc.fingerprint for inc in observer.active_incidents
+                    ],
+                }, indent=2)
+
+            # Get event history if sequence exists
+            events = []
+            if incident.sequence_id:
+                recorder = HealingEventRecorder()
+                events = await recorder.get_sequence_events(incident.sequence_id)
+
+            return json.dumps({
+                "incident": incident.to_dict(),
+                "events": events,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing
 
