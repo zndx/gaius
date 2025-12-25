@@ -6,94 +6,108 @@ A terminal interface for navigating knowledge domains via topological and geomet
 
 The system is organized into 8 architectural layers, with dependencies flowing downward:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│ L8: APPLICATION                                                         │
-│   app.py (TUI)  ←→  cli.py (CLI)  ←→  mcp_server.py (MCP)              │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L7: WIDGETS                                                             │
-│   widgets/grid.py, minigrid.py, filetree.py, content.py, command.py    │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L6: VERIFICATION (Safety-Critical)                                      │
-│   rase/  — MBSE metamodel, constraints, oracles, RLVR rewards          │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L5: ORCHESTRATION                                                       │
-│   agents/swarm.py, theta/, latent/, evolution/, cognition.py           │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L4: INFERENCE & MODELS                                                  │
-│   inference/  — vLLM, optillm, scheduling                              │
-│   models/     — registry, evaluation, versioning, merging              │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L3: ENGINE (Daemon)                                                     │
-│   engine/server.py → services/, backends/, resources/                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L2: TRANSPORT & STORAGE                                                 │
-│   client/    — gRPC + Aeron IPC                                        │
-│   storage/   — KB filesystem, Qdrant, Postgres                         │
-│   hx/        — Iceberg data lake, OpenLineage                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│ L1: CORE FOUNDATION                                                     │
-│   core/state.py, projection.py, tda.py, geometry.py, telemetry.py      │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+block-beta
+    columns 1
+    block:L8["L8: APPLICATION"]
+        app["app.py (TUI)"]
+        cli["cli.py (CLI)"]
+        mcp["mcp_server.py (MCP)"]
+    end
+    block:L7["L7: WIDGETS"]
+        widgets["grid.py, minigrid.py, filetree.py, info_panel.py, command.py"]
+    end
+    block:L6["L6: VERIFICATION (Safety-Critical)"]
+        rase["rase/ - MBSE metamodel, constraints, oracles, RLVR rewards"]
+    end
+    block:L5["L5: ORCHESTRATION"]
+        agents["agents/swarm.py, theta/, latent/, evolution/, cognition.py"]
+    end
+    block:L4["L4: INFERENCE & MODELS"]
+        inference["inference/ - vLLM, optillm, scheduling"]
+        models["models/ - registry, evaluation, versioning, merging"]
+    end
+    block:L3["L3: ENGINE (Daemon)"]
+        engine["engine/server.py - services/, backends/, resources/"]
+    end
+    block:L2["L2: TRANSPORT & STORAGE"]
+        client["client/ - gRPC + Aeron IPC"]
+        storage["storage/ - KB filesystem, Qdrant, Postgres"]
+        hx["hx/ - Iceberg data lake, OpenLineage"]
+    end
+    block:L1["L1: CORE FOUNDATION"]
+        core["core/state.py, projection.py, tda.py, geometry.py, telemetry.py"]
+    end
+
+    L8 --> L7
+    L7 --> L6
+    L6 --> L5
+    L5 --> L4
+    L4 --> L3
+    L3 --> L2
+    L2 --> L1
 ```
 
 ## Execution Paths
 
 ### Path A: TUI Session
 
-```
-gaius (launcher.py)
-  └─→ splash screen with phased imports
-      └─→ GaiusApp.compose() — build widget tree
-          └─→ on_mount()
-              ├─→ get_grpc_client() → connect to engine
-              ├─→ load_kb_entries() → populate FileTree
-              ├─→ project_grid() → UMAP + quantize → MainGrid
-              └─→ start services (scheduler, health watcher)
+```mermaid
+flowchart LR
+    A[gaius launcher.py] --> B[splash screen]
+    B --> C[GaiusApp.compose]
+    C --> D[on_mount]
+    D --> E[get_grpc_client]
+    D --> F[load_kb_entries]
+    D --> G[project_grid]
+    D --> H[start services]
 ```
 
 ### Path B: MCP Tool Call
 
-```
-Claude Code → mcp_server.py (FastMCP)
-  └─→ @mcp.tool handler
-      └─→ gaius.mcp.operations (ask_reasoning, run_swarm)
-          └─→ inference.client → gRPC → engine
-              └─→ vLLM backend → response
+```mermaid
+flowchart LR
+    A[Claude Code] --> B[mcp_server.py]
+    B --> C["@mcp.tool handler"]
+    C --> D[gaius.mcp.operations]
+    D --> E[inference.client]
+    E --> F[gRPC]
+    F --> G[engine]
+    G --> H[vLLM backend]
 ```
 
 ### Path C: Agent Evolution
 
-```
-gaius-engine (daemon)
-  └─→ EvolutionService.daemon_loop()
-      └─→ check_gpu_idle() — wait for <30% utilization
-          └─→ select_next_agent() — round-robin with health check
-              └─→ optimize_agent() — APO/GEPA prompt tuning
-                  └─→ evaluate() — local + optional XAI
-                      └─→ save_version() → promote if improved
+```mermaid
+flowchart TD
+    A[gaius-engine daemon] --> B[EvolutionService.daemon_loop]
+    B --> C[check_gpu_idle]
+    C --> D[select_next_agent]
+    D --> E[optimize_agent]
+    E --> F[evaluate]
+    F --> G[save_version]
 ```
 
 ### Path D: Swarm Analysis
 
-```
-/swarm "query" (TUI or MCP)
-  └─→ SwarmManager.analyze(query, domain)
-      └─→ expand_roles() — get RoleDefinitions for domain
-          └─→ parallel_inference() — concurrent LLM calls
-              └─→ synthesize() — merge specialist outputs
-                  └─→ SwarmResult → display
+```mermaid
+flowchart TD
+    A["/swarm query"] --> B[SwarmManager.analyze]
+    B --> C[expand_roles]
+    C --> D[parallel_inference]
+    D --> E[synthesize]
+    E --> F[SwarmResult]
 ```
 
 ### Path E: ThetaAgent Consolidation
 
-```
-/sitrep or theta_consolidate (MCP)
-  └─→ ThetaAgent.consolidate(temporal_slice)
-      └─→ NVARDynamics.detect_drift() — NG-RC forward prediction
-          └─→ SubsumptionInferencer.infer() — BERTSubs via DeepOnto
-              └─→ KnowledgeGradientPolicy.select() — pick best links
-                  └─→ AugmentationWriter.inject_wikilinks()
+```mermaid
+flowchart TD
+    A["/sitrep or theta_consolidate"] --> B[ThetaAgent.consolidate]
+    B --> C[NVARDynamics.detect_drift]
+    C --> D[SubsumptionInferencer.infer]
+    D --> E[KnowledgeGradientPolicy.select]
+    E --> F[AugmentationWriter.inject_wikilinks]
 ```
 
 ## Module Index

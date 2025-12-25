@@ -466,38 +466,38 @@ mcp_server.py:trigger_model_merge()
 
 ## Data Flow
 
-```
-┌───────────────────────────────────────────────────────────────────────┐
-│                        Task Request                                    │
-│                  (inference, evaluation, merge)                        │
-└───────────────────────────────┬───────────────────────────────────────┘
-                                │
-                ┌───────────────┴───────────────┐
-                ▼                               ▼
-       ┌──────────────┐                ┌──────────────┐
-       │   Registry   │                │  Versioning  │
-       │  get_model() │                │   Manager    │
-       └──────┬───────┘                └──────┬───────┘
-              │                               │
-              ▼                               ▼
-       ┌──────────────┐                ┌──────────────┐
-       │  ModelSpec   │                │AgentVersion  │
-       │  vllm_config │                │ system_prompt│
-       └──────┬───────┘                └──────┬───────┘
-              │                               │
-              └───────────────┬───────────────┘
-                              ▼
-              ┌───────────────────────────────┐
-              │         Evaluation            │
-              │   TieredEvaluator.evaluate()  │
-              └───────────────┬───────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-       ┌──────────────┐                ┌──────────────┐
-       │Local (Tier 1)│                │ XAI (Tier 2) │
-       │Orchestrator-8B│               │    Grok      │
-       └──────────────┘                └──────────────┘
+```mermaid
+graph TB
+    TR[Task Request<br/>inference, evaluation, merge]
+
+    subgraph Registry
+        REG[Registry<br/>get_model]
+        MS[ModelSpec<br/>vllm_config]
+    end
+
+    subgraph Versioning
+        VM[Versioning Manager]
+        AV[AgentVersion<br/>system_prompt]
+    end
+
+    EVAL[Evaluation<br/>TieredEvaluator.evaluate]
+
+    subgraph Tier1["Local (Tier 1)"]
+        LOCAL[Orchestrator-8B]
+    end
+
+    subgraph Tier2["XAI (Tier 2)"]
+        XAI[Grok]
+    end
+
+    TR --> REG
+    TR --> VM
+    REG --> MS
+    VM --> AV
+    MS --> EVAL
+    AV --> EVAL
+    EVAL --> LOCAL
+    EVAL --> XAI
 ```
 
 ## Integration Points

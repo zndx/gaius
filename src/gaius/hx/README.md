@@ -301,37 +301,24 @@ mcp_server.py:lineage_cypher(query)
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Data Sources                                  │
-│           arXiv  |  bioRxiv  |  RSS  |  API Exchanges                │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     IcebergContentStore                              │
-│                       write() → Parquet                              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │  Raw Content │    │   Exchanges  │    │   Evidence   │
-     │    Table     │    │    Table     │    │    Table     │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Apache Iceberg                                  │
-│                  (PyIceberg + MinIO/S3)                              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼ (OpenLineage events)
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Apache AGE Graph                                │
-│                 (Dataset, Job, Run vertices)                         │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    SRC["Data Sources<br/>arXiv | bioRxiv | RSS | API Exchanges"]
+    STORE["IcebergContentStore<br/>write() → Parquet"]
+    RAW[Raw Content<br/>Table]
+    EXCH[Exchanges<br/>Table]
+    EVID[Evidence<br/>Table]
+    ICE["Apache Iceberg<br/>(PyIceberg + MinIO/S3)"]
+    AGE["Apache AGE Graph<br/>(Dataset, Job, Run vertices)"]
+
+    SRC --> STORE
+    STORE --> RAW
+    STORE --> EXCH
+    STORE --> EVID
+    RAW --> ICE
+    EXCH --> ICE
+    EVID --> ICE
+    ICE -->|OpenLineage events| AGE
 ```
 
 ## Integration Points

@@ -252,38 +252,23 @@ widgets.grid.MainGrid.update_agent_positions()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Agent Thought                                     │
-│              content: "The risk model..."                            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ Nomic Embed  │                        │ CLT Extract  │
-     │   (768-d)    │                        │  (20480-d    │
-     │              │                        │   sparse)    │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │   Qdrant     │                        │   Qdrant     │
-     │ (dense vec)  │                        │ (sparse vec) │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            └───────────────────┬───────────────────┘
-                                ▼
-     ┌─────────────────────────────────────────────────────────────────┐
-     │                CLTProjectionBridge                               │
-     │         sparse features → ColNomic → grid position               │
-     └─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-     ┌─────────────────────────────────────────────────────────────────┐
-     │                    MainGrid (19×19)                              │
-     │              agents positioned with KB documents                 │
-     └─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    THOUGHT[Agent Thought<br/>content: 'The risk model...']
+    NOMIC[Nomic Embed<br/>768-d]
+    CLT[CLT Extract<br/>20480-d sparse]
+    QD1[Qdrant<br/>dense vec]
+    QD2[Qdrant<br/>sparse vec]
+    BRIDGE[CLTProjectionBridge<br/>sparse features → ColNomic → grid position]
+    GRID[MainGrid 19×19<br/>agents positioned with KB documents]
+
+    THOUGHT --> NOMIC
+    THOUGHT --> CLT
+    NOMIC --> QD1
+    CLT --> QD2
+    QD1 --> BRIDGE
+    QD2 --> BRIDGE
+    BRIDGE --> GRID
 ```
 
 ## Constants

@@ -370,38 +370,24 @@ cli.py:/health fix <service>
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Detection Sources                               │
-│        Scheduled Checks  |  Continuous Watcher  |  User Reports     │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       HealthChecker                                  │
-│                 run_all() → list[HealthIssue]                        │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        FMEA Engine                                   │
-│         calculate_rpn() → RPNScore(severity, occurrence, detection) │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │   Tier 0     │    │   Tier 1     │    │   Tier 2     │
-     │  Procedural  │    │Agent-Assisted│    │  Approval    │
-     │  (RPN<100)   │    │ (RPN 100-200)│    │  (RPN>200)   │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Adaptive Learner                                 │
-│          update S/O/D from outcomes → PostgreSQL                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    DETECT["Detection Sources<br/>Scheduled Checks | Continuous Watcher | User Reports"]
+    HC["HealthChecker<br/>run_all() → list[HealthIssue]"]
+    FMEA["FMEA Engine<br/>calculate_rpn() → RPNScore(severity, occurrence, detection)"]
+    T0["Tier 0<br/>Procedural<br/>(RPN<100)"]
+    T1["Tier 1<br/>Agent-Assisted<br/>(RPN 100-200)"]
+    T2["Tier 2<br/>Approval<br/>(RPN>200)"]
+    LEARN["Adaptive Learner<br/>update S/O/D from outcomes → PostgreSQL"]
+
+    DETECT --> HC
+    HC --> FMEA
+    FMEA --> T0
+    FMEA --> T1
+    FMEA --> T2
+    T0 --> LEARN
+    T1 --> LEARN
+    T2 --> LEARN
 ```
 
 ## ACP Escalation (Claude Code Integration)

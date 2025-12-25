@@ -16,31 +16,29 @@ teaching Gaius to heal autonomously.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Gaius ACP Integration                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌──────────────┐     ACP/JSON-RPC      ┌──────────────────────────┐   │
-│  │   Gaius      │◄────────────────────►│    Claude Code           │   │
-│  │  ACPClient   │     over stdio        │  (via claude-code-acp)   │   │
-│  └──────────────┘                       └──────────────────────────┘   │
-│         │                                          │                    │
-│         │                                          │ Anthropic API      │
-│         ▼                                          ▼                    │
-│  ┌──────────────┐                       ┌──────────────────────────┐   │
-│  │ HealthObserver│                       │   Claude Sonnet/Opus    │   │
-│  │   Daemon     │                       └──────────────────────────┘   │
-│  └──────────────┘                                  │                    │
-│         │                                          │ MCP Tools          │
-│         │ Incidents                                ▼                    │
-│         ▼                               ┌──────────────────────────┐   │
-│  ┌──────────────┐                       │   Gaius MCP Server       │   │
-│  │  FMEA/RPN    │                       │  (health, KB, infra)     │   │
-│  │  Scoring     │                       └──────────────────────────┘   │
-│  └──────────────┘                                                       │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Gaius["Gaius ACP Integration"]
+        ACPClient["GaiusACPClient"]
+        Observer["HealthObserver Daemon"]
+        FMEA["FMEA/RPN Scoring"]
+
+        ACPClient --> Observer
+        Observer --> FMEA
+    end
+
+    subgraph Claude["Claude Code"]
+        Adapter["claude-code-acp adapter"]
+        Model["Claude Sonnet/Opus"]
+        MCP["Gaius MCP Server"]
+
+        Adapter --> Model
+        Model --> MCP
+    end
+
+    ACPClient <-->|"ACP/JSON-RPC over stdio"| Adapter
+    Model -->|"Anthropic API"| Model
+    MCP -->|"health, KB, infra tools"| Observer
 ```
 
 ## Components
@@ -195,22 +193,16 @@ async with GaiusACPClient(config) as client:
 
 The primary mission of ACP-Claude is to evolve the `/health fix` framework:
 
-```
-Incident Detected
-       ↓
-Can /health fix handle it? ──Yes──→ Let framework handle it
-       ↓ No
-Open GitHub issue on zndx/gaius-acp
-       ↓
-Implement FixStrategy + KB heuristic
-       ↓
-Test with /health fix <service>
-       ↓
-Commit to acp-claude/health-fix branch
-       ↓
-Close GitHub issue
-       ↓
-Gaius is now smarter 🧠
+```mermaid
+flowchart TD
+    A[Incident Detected] --> B{Can /health fix handle it?}
+    B -->|Yes| C[Let framework handle it]
+    B -->|No| D[Open GitHub issue on zndx/gaius-acp]
+    D --> E[Implement FixStrategy + KB heuristic]
+    E --> F[Test with /health fix service]
+    F --> G[Commit to acp-claude/health-fix branch]
+    G --> H[Close GitHub issue]
+    H --> I[Framework capability expanded]
 ```
 
 ## Security Considerations

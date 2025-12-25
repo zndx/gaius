@@ -181,31 +181,37 @@ mcp_server.py:@mcp.tool("ask_reasoning")
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       External Caller                                │
-│      Claude Code (via MCP)  |  Internal Agent  |  ThetaAgent         │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    mcp/operations.py                                 │
-│           ask_reasoning()  |  run_swarm()                            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ InferenceClient                       │ SwarmManager │
-     │   .complete()                         │  .analyze()  │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            └───────────────────┬───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          engine                                      │
-│              gRPC → vLLM → Response                                  │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph External["External Caller"]
+        CC[Claude Code via MCP]
+        IA[Internal Agent]
+        THETA[ThetaAgent]
+    end
+
+    subgraph MCP["mcp/operations.py"]
+        ASK[ask_reasoning]
+        SWARM[run_swarm]
+    end
+
+    IC[InferenceClient<br/>.complete]
+    SM[SwarmManager<br/>.analyze]
+
+    subgraph Engine["engine"]
+        GRPC[gRPC]
+        VLLM[vLLM]
+        RESP[Response]
+    end
+
+    CC --> MCP
+    IA --> MCP
+    THETA --> MCP
+    ASK --> IC
+    SWARM --> SM
+    IC --> Engine
+    SM --> Engine
+    GRPC --> VLLM
+    VLLM --> RESP
 ```
 
 ## Integration Points

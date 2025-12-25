@@ -261,38 +261,28 @@ datasets.nifi_som.to_huggingface()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     NiFi Canvas                                      │
-│            Browser Automation (Selenium/Playwright)                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   NiFiSoMGenerator                                   │
-│    execute scenarios → capture screenshots → annotate marks          │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │  Screenshot  │    │ SoM Marks    │    │   Action     │
-     │    (PNG)     │    │ [id, bbox]   │    │   Label      │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    AnnotatedSample                                   │
-│          image + marks + conversations + action                      │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │MagmaExporter │    │  HX Evidence │    │ HuggingFace  │
-     │  JSONL+IMG   │    │   (Iceberg)  │    │   Datasets   │
-     └──────────────┘    └──────────────┘    └──────────────┘
+```mermaid
+flowchart TB
+    CANVAS["NiFi Canvas<br/>Browser Automation (Selenium/Playwright)"]
+    GEN["NiFiSoMGenerator<br/>execute scenarios → capture screenshots → annotate marks"]
+    SS[Screenshot<br/>PNG]
+    MARKS[SoM Marks<br/>[id, bbox]]
+    ACTION[Action<br/>Label]
+    SAMPLE["AnnotatedSample<br/>image + marks + conversations + action"]
+    MAGMA[MagmaExporter<br/>JSONL+IMG]
+    HX[HX Evidence<br/>Iceberg]
+    HF[HuggingFace<br/>Datasets]
+
+    CANVAS --> GEN
+    GEN --> SS
+    GEN --> MARKS
+    GEN --> ACTION
+    SS --> SAMPLE
+    MARKS --> SAMPLE
+    ACTION --> SAMPLE
+    SAMPLE --> MAGMA
+    SAMPLE --> HX
+    SAMPLE --> HF
 ```
 
 ## Integration Points

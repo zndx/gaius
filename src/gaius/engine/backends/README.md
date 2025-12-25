@@ -278,39 +278,28 @@ inference.client.InferenceClient.embed_multi()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    InferenceRequest                                  │
-│         prompt, model, max_tokens, technique?                        │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    BackendRouter                                     │
-│              select backend based on request type                    │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-     ┌────────────────────────────┼────────────────────────────────┐
-     ▼                            ▼                                ▼
-┌──────────┐              ┌──────────┐                      ┌──────────┐
-│  vLLM    │              │ optillm  │                      │Embedding │
-│Controller│              │Controller│                      │Controller│
-└────┬─────┘              └────┬─────┘                      └────┬─────┘
-     │                         │                                 │
-     ▼                         ▼                                 ▼
-┌──────────┐              ┌──────────┐                      ┌──────────┐
-│  vLLM    │              │ optillm  │                      │  Nomic   │
-│ Process  │              │ Process  │                      │ Server   │
-│ (GPU 0-1)│              │          │                      │ (GPU 2)  │
-└────┬─────┘              └────┬─────┘                      └────┬─────┘
-     │                         │                                 │
-     └─────────────────────────┴─────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    InferenceResponse                                 │
-│              content, model, backend, tokens_used                    │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    REQ[InferenceRequest<br/>prompt, model, max_tokens, technique?]
+    ROUTER[BackendRouter<br/>select backend based on request type]
+    VLLM_CTRL[vLLM<br/>Controller]
+    OPT_CTRL[optillm<br/>Controller]
+    EMB_CTRL[Embedding<br/>Controller]
+    VLLM_PROC[vLLM Process<br/>GPU 0-1]
+    OPT_PROC[optillm<br/>Process]
+    NOMIC[Nomic Server<br/>GPU 2]
+    RESP[InferenceResponse<br/>content, model, backend, tokens_used]
+
+    REQ --> ROUTER
+    ROUTER --> VLLM_CTRL
+    ROUTER --> OPT_CTRL
+    ROUTER --> EMB_CTRL
+    VLLM_CTRL --> VLLM_PROC
+    OPT_CTRL --> OPT_PROC
+    EMB_CTRL --> NOMIC
+    VLLM_PROC --> RESP
+    OPT_PROC --> RESP
+    NOMIC --> RESP
 ```
 
 ## GPU Allocation

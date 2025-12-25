@@ -114,44 +114,28 @@ reward = await env.score_response(response)
 
 ## Evolution Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    EvolutionDaemon                                   │
-│         monitors GPU → triggers cycles when idle                     │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    EvolutionEngine                                   │
-│    select agent → get tasks → run inference → compute reward         │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │ TaskIdeation │    │  Curriculum  │    │  Objective   │
-     │   Agent      │    │    Agent     │    │  Generator   │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      AgentRunner                                     │
-│           validated inference via engine scheduler                   │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      DaemonOracle                                    │
-│             intrinsic verification → reward signal                   │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │  APO/GEPA    │                        │    Model     │
-     │ Optimization │                        │   Merging    │
-     └──────────────┘                        └──────────────┘
+```mermaid
+graph TB
+    DAEMON[EvolutionDaemon<br/>monitors GPU → triggers cycles when idle]
+    ENGINE[EvolutionEngine<br/>select agent → get tasks → run inference → compute reward]
+    IDEATE[TaskIdeation<br/>Agent]
+    CURRIC[Curriculum<br/>Agent]
+    OBJGEN[Objective<br/>Generator]
+    RUNNER[AgentRunner<br/>validated inference via engine scheduler]
+    ORACLE[DaemonOracle<br/>intrinsic verification → reward signal]
+    APO[APO/GEPA<br/>Optimization]
+    MERGE[Model<br/>Merging]
+
+    DAEMON --> ENGINE
+    ENGINE --> IDEATE
+    ENGINE --> CURRIC
+    ENGINE --> OBJGEN
+    IDEATE --> RUNNER
+    CURRIC --> RUNNER
+    OBJGEN --> RUNNER
+    RUNNER --> ORACLE
+    ORACLE --> APO
+    ORACLE --> MERGE
 ```
 
 ## Key Types

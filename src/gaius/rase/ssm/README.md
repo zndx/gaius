@@ -315,62 +315,49 @@ else:
 
 ## Call Graph
 
-```
-# Constraint Evaluation Path
-rase.vm.NiFiOracle.verify()
-  └─→ [for each constraint in case.verify]
-      └─→ ssm.Constraint.evaluate(state)
-          ├─→ [if ProcessorExists]
-          │   └─→ search_processors(state, type)
-          │       └─→ ConstraintResult.success() or .failure()
-          ├─→ [if AllOf]
-          │   └─→ [for each child]
-          │       └─→ child.evaluate(state)
-          │           └─→ aggregate_results()
-          └─→ ConstraintResult
+```mermaid
+graph TD
+    subgraph "Constraint Evaluation Path"
+        CE1[NiFiOracle.verify] --> CE2[for each constraint]
+        CE2 --> CE3[Constraint.evaluate]
+        CE3 --> CE4{Constraint Type}
+        CE4 -->|ProcessorExists| CE5[search_processors]
+        CE5 --> CE6[ConstraintResult]
+        CE4 -->|AllOf| CE7[for each child]
+        CE7 --> CE8[child.evaluate]
+        CE8 --> CE9[aggregate_results]
+        CE9 --> CE6
+    end
 
-# State Loading Path
-rase.ssm.NiFiInstance.from_api()
-  └─→ nifi_client.get_process_group("root")
-      └─→ recursive_load_groups()
-          └─→ NiFiInstance
+    subgraph "State Loading Path"
+        SL1[NiFiInstance.from_api] --> SL2[nifi_client.get_process_group]
+        SL2 --> SL3[recursive_load_groups]
+        SL3 --> SL4[NiFiInstance]
+    end
 
-# Transition Constraint Path
-rase.ssm.ProcessorCreated.evaluate()
-  └─→ find_processor_in_state(before_state, type)
-      └─→ [if not found in before]
-          └─→ find_processor_in_state(after_state, type)
-              └─→ [if found in after]
-                  └─→ ConstraintResult.success()
+    subgraph "Transition Constraint Path"
+        TC1[ProcessorCreated.evaluate] --> TC2[find_processor before_state]
+        TC2 --> TC3{Not found in before?}
+        TC3 -->|Yes| TC4[find_processor after_state]
+        TC4 --> TC5{Found in after?}
+        TC5 -->|Yes| TC6[ConstraintResult.success]
+    end
 ```
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    NiFi API                                          │
-│              GET /process-groups/{id}                                │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    NiFiInstance                                      │
-│         root_group → processors, connections, services               │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Constraint.evaluate(state)                        │
-│         check condition → ConstraintResult                           │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ success()    │                        │ failure()    │
-     │ satisfied=T  │                        │ satisfied=F  │
-     │              │                        │ message=...  │
-     └──────────────┘                        └──────────────┘
+```mermaid
+graph TB
+    API[NiFi API<br/>GET /process-groups/id]
+    INST[NiFiInstance<br/>root_group - processors, connections, services]
+    EVAL[Constraint.evaluate<br/>check condition]
+    SUCCESS[success<br/>satisfied=true]
+    FAILURE[failure<br/>satisfied=false<br/>message details]
+
+    API --> INST
+    INST --> EVAL
+    EVAL --> SUCCESS
+    EVAL --> FAILURE
 ```
 
 ## SysML v2 Alignment

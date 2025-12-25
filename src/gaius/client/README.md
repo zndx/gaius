@@ -284,29 +284,44 @@ mcp_server.py:trigger_evolution()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Client Applications                           │
-│              TUI (app.py)  |  CLI (cli.py)  |  MCP Server            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Engine Proxies                               │
-│   OrchestratorProxy | SchedulerProxy | EvolutionProxy | HealthProxy │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      GrpcEngineClient                                │
-│                   grpc.insecure_channel()                            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼ (gRPC :50051)
-┌─────────────────────────────────────────────────────────────────────┐
-│                        gaius-engine                                  │
-│            GrpcServer → Servicers → Backend Controllers              │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Apps["Client Applications"]
+        TUI[TUI app.py]
+        CLI[CLI cli.py]
+        MCP[MCP Server]
+    end
+
+    subgraph Proxies["Engine Proxies"]
+        ORCH[OrchestratorProxy]
+        SCHED[SchedulerProxy]
+        EVOL[EvolutionProxy]
+        HEALTH[HealthProxy]
+    end
+
+    GRPC[GrpcEngineClient<br/>grpc.insecure_channel]
+
+    ENG[gaius-engine<br/>GrpcServer → Servicers → Controllers]
+
+    TUI --> ORCH
+    TUI --> SCHED
+    TUI --> EVOL
+    TUI --> HEALTH
+    CLI --> ORCH
+    CLI --> SCHED
+    CLI --> EVOL
+    CLI --> HEALTH
+    MCP --> ORCH
+    MCP --> SCHED
+    MCP --> EVOL
+    MCP --> HEALTH
+
+    ORCH --> GRPC
+    SCHED --> GRPC
+    EVOL --> GRPC
+    HEALTH --> GRPC
+
+    GRPC -->|gRPC :50051| ENG
 ```
 
 ## Integration Points

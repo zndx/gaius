@@ -217,74 +217,54 @@ print(f"Detection factor: {adjustment.detection_factor:.2f}")
 
 ## Call Graph
 
-```
-# FMEA Assessment Path
-health.service_fixes.HealthFixOrchestrator.diagnose()
-  └─→ fmea.FMEAEngine.assess()
-      ├─→ loader.get_failure_mode(failure_mode_id)
-      ├─→ calculate_context_adjusted_rpn(mode, context)
-      │   └─→ RPNScore(adjusted_s, adjusted_o, adjusted_d)
-      ├─→ learner.get_adjustment(failure_mode_id)
-      └─→ FMEAIncident(mode, rpn, tier, action)
+```mermaid
+graph TD
+    subgraph "FMEA Assessment Path"
+        FA1[HealthFixOrchestrator.diagnose] --> FA2[FMEAEngine.assess]
+        FA2 --> FA3[loader.get_failure_mode]
+        FA2 --> FA4[calculate_context_adjusted_rpn]
+        FA4 --> FA5[RPNScore]
+        FA2 --> FA6[learner.get_adjustment]
+        FA2 --> FA7[FMEAIncident]
+    end
 
-# Remediation Path
-mcp_server.py:fmea_calculate_rpn()
-  └─→ fmea.FMEAEngine.calculate_rpn()
-      └─→ RPNScore.from_context(mode, context)
-          └─→ tier = determine_tier(rpn.value)
+    subgraph "Remediation Path"
+        RM1[mcp_server.py:fmea_calculate_rpn] --> RM2[FMEAEngine.calculate_rpn]
+        RM2 --> RM3[RPNScore.from_context]
+        RM3 --> RM4[determine_tier]
+    end
 
-# Learning Path
-health.service_fixes.HealthFixOrchestrator.execute()
-  └─→ [after remediation]
-      └─→ fmea.AdaptiveLearner.record_outcome()
-          └─→ update_rpn_factors(failure_mode_id, success)
+    subgraph "Learning Path"
+        LP1[HealthFixOrchestrator.execute] --> LP2[after remediation]
+        LP2 --> LP3[AdaptiveLearner.record_outcome]
+        LP3 --> LP4[update_rpn_factors]
+    end
 
-# Catalog Query Path
-mcp_server.py:fmea_catalog()
-  └─→ fmea.loader.get_catalog()
-      └─→ [category filter]
-          └─→ [FailureMode, ...]
+    subgraph "Catalog Query Path"
+        CQ1[mcp_server.py:fmea_catalog] --> CQ2[loader.get_catalog]
+        CQ2 --> CQ3[category filter]
+        CQ3 --> CQ4[FailureMode list]
+    end
 ```
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Health Check Failure                              │
-│              gpu_memory_percent: 97%                                 │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    FMEA Loader                                       │
-│         map_health_check_to_failure_mode("gpu_memory")               │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    FMEAEngine.assess()                               │
-│         load failure mode → calculate RPN → determine tier           │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ RPNScore     │                        │ AdaptiveLearner
-     │ S=9,O=5,D=2  │                        │ adjustment   │
-     │ RPN=90       │                        └──────────────┘
-     └──────┬───────┘
-            │
-            ▼
-     ┌──────────────┐
-     │ TIER_0       │
-     │ auto-remediate
-     └──────┬───────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    ActionPolicy                                      │
-│              /health fix vllm → restart process                      │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    FAIL[Health Check Failure<br/>gpu_memory_percent: 97%]
+    LOADER[FMEA Loader<br/>map_health_check_to_failure_mode]
+    ASSESS[FMEAEngine.assess<br/>load failure mode, calculate RPN, determine tier]
+    RPN[RPNScore<br/>S=9, O=5, D=2<br/>RPN=90]
+    LEARNER[AdaptiveLearner<br/>adjustment]
+    TIER[TIER_0<br/>auto-remediate]
+    ACTION[ActionPolicy<br/>/health fix vllm - restart process]
+
+    FAIL --> LOADER
+    LOADER --> ASSESS
+    ASSESS --> RPN
+    ASSESS --> LEARNER
+    RPN --> TIER
+    TIER --> ACTION
 ```
 
 ## Integration Points

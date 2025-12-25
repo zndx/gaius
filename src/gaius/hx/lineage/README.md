@@ -250,64 +250,43 @@ async def process_job(job: FetchJob):
 
 ## Call Graph
 
-```
-# Event Emission Path
-flows.arxiv_fetch.ArxivFetchFlow.fetch()
-  └─→ hx.lineage.LineageEmitter.emit()
-      ├─→ postgres.insert(events_table, event)
-      └─→ age.execute("""
-          MERGE (d:Dataset {namespace: $ns, name: $name})
-          MERGE (r:Run {run_id: $run_id})
-          CREATE (d)-[:INPUT_TO]->(r)
-      """)
+```mermaid
+graph TD
+    subgraph "Event Emission Path"
+        EE1[ArxivFetchFlow.fetch] --> EE2[LineageEmitter.emit]
+        EE2 --> EE3[postgres.insert]
+        EE2 --> EE4[age.execute MERGE Dataset/Run]
+    end
 
-# Query Path
-mcp_server.py:query_lineage()
-  └─→ hx.lineage.graph.query_lineage(cypher)
-      └─→ age.execute(cypher)
-          └─→ [result rows]
+    subgraph "Query Path"
+        QP1[mcp_server.py:query_lineage] --> QP2[graph.query_lineage]
+        QP2 --> QP3[age.execute cypher]
+        QP3 --> QP4[result rows]
+    end
 
-# Trace Path
-mcp_server.py:lineage_cypher()
-  └─→ hx.lineage.graph.execute_cypher()
-      └─→ asyncpg.execute()
-          └─→ age results
+    subgraph "Trace Path"
+        TP1[mcp_server.py:lineage_cypher] --> TP2[graph.execute_cypher]
+        TP2 --> TP3[asyncpg.execute]
+        TP3 --> TP4[age results]
+    end
 ```
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Processing Event                                  │
-│         (Metaflow step, worker job, agent action)                    │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    RunEvent                                          │
-│         run + job + inputs[] + outputs[]                             │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    LineageEmitter                                    │
-│              emit() → store + graph sync                             │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ PostgreSQL   │                        │ Apache AGE   │
-     │ (events)     │                        │ (graph)      │
-     └──────────────┘                        └──────┬───────┘
-                                                    │
-                                                    ▼
-     ┌─────────────────────────────────────────────────────────────────┐
-     │                    Cypher Queries                                │
-     │    MATCH (src)-[:INPUT_TO|OUTPUTS*]->(target)                   │
-     │    WHERE target.name = 'kb/document.md'                          │
-     │    RETURN src                                                    │
-     └─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    PROC[Processing Event<br/>Metaflow step, worker job, agent action]
+    EVENT[RunEvent<br/>run + job + inputs + outputs]
+    EMIT[LineageEmitter<br/>emit - store + graph sync]
+    PG[PostgreSQL<br/>events table]
+    AGE[Apache AGE<br/>graph]
+    CYPHER[Cypher Queries<br/>MATCH path, WHERE conditions, RETURN results]
+
+    PROC --> EVENT
+    EVENT --> EMIT
+    EMIT --> PG
+    EMIT --> AGE
+    AGE --> CYPHER
 ```
 
 ## Example Queries

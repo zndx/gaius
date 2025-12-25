@@ -213,31 +213,28 @@ inference.manager.ResourceManager.cleanup()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Local GPU Check                                   │
-│             model_size > local_vram → need external                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ Lambda Labs  │                        │   Cerebras   │
-     │   (GPUs)     │                        │  (Inference) │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │check_availability                     │    chat()    │
-     │launch_instance                        │   (API)      │
-     │terminate_instance                     │              │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │  SSH Deploy  │                        │ Evaluation   │
-     │    vLLM      │                        │   Result     │
-     └──────────────┘                        └──────────────┘
+```mermaid
+graph TB
+    CHECK[Local GPU Check<br/>model_size > local_vram → need external]
+
+    subgraph Lambda["Lambda Labs (GPUs)"]
+        LAVAIL[check_availability]
+        LAUNCH[launch_instance]
+        TERM[terminate_instance]
+        DEPLOY[SSH Deploy vLLM]
+    end
+
+    subgraph Cerebras["Cerebras (Inference)"]
+        CHAT[chat API]
+        RESULT[Evaluation Result]
+    end
+
+    CHECK --> Lambda
+    CHECK --> Cerebras
+    LAVAIL --> LAUNCH
+    LAUNCH --> TERM
+    TERM --> DEPLOY
+    CHAT --> RESULT
 ```
 
 ## Integration Points

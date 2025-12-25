@@ -364,38 +364,24 @@ rase.traceability.DigitalThread.add_derivation()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      BDD Scenarios (OSM)                             │
-│           Feature → Scenario → Steps → @given/@when/@then            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     System State (SSM)                               │
-│         NiFiInstance → ProcessorGroup → Processor → Connection       │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │ Constraints  │    │    UOM       │    │   Verifier   │
-     │  (SSM)       │    │ Screenshots  │    │   (VM)       │
-     │ ProcessorExist│   │ SoM + ToM    │    │   Oracle     │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      VerificationResult                              │
-│              VerdictKind + Accuracy + Reward Signal                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   RLVR Training Loop                                 │
-│               Reward → Policy Update → Agent                         │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    OSM["BDD Scenarios (OSM)<br/>Feature → Scenario → Steps → @given/@when/@then"]
+    SSM["System State (SSM)<br/>NiFiInstance → ProcessorGroup → Processor → Connection"]
+    CONS["Constraints<br/>(SSM)<br/>ProcessorExist"]
+    UOM["UOM<br/>Screenshots<br/>SoM + ToM"]
+    VM["Verifier<br/>(VM)<br/>Oracle"]
+    VR["VerificationResult<br/>VerdictKind + Accuracy + Reward Signal"]
+    RLVR["RLVR Training Loop<br/>Reward → Policy Update → Agent"]
+
+    OSM --> SSM
+    SSM --> CONS
+    SSM --> UOM
+    SSM --> VM
+    CONS --> VR
+    UOM --> VR
+    VM --> VR
+    VR --> RLVR
 ```
 
 ## Integration Points

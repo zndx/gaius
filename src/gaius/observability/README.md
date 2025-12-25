@@ -328,30 +328,42 @@ OBSERVE_METRICS = [
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Emission Side                                     │
-│        Application → OTel SDK → OTLP Exporter → Collector            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Prometheus                                      │
-│              scrape targets → store time series                      │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼ (PromQL queries)
-┌─────────────────────────────────────────────────────────────────────┐
-│                   PrometheusSource                                   │
-│             query() | query_range() → MetricValue/Series             │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ ObservePanel │                        │  /observe    │
-     │   (Widget)   │                        │  (CLI cmd)   │
-     └──────────────┘                        └──────────────┘
+```mermaid
+graph TB
+    subgraph Emission["Emission Side"]
+        APP[Application]
+        OTEL[OTel SDK]
+        OTLP[OTLP Exporter]
+        COLL[Collector]
+    end
+
+    subgraph Storage["Prometheus"]
+        SCRAPE[scrape targets]
+        STORE[store time series]
+    end
+
+    subgraph Query["PrometheusSource"]
+        Q1[query]
+        Q2[query_range]
+        MV[MetricValue/Series]
+    end
+
+    subgraph Display
+        OP[ObservePanel<br/>Widget]
+        CLI[/observe<br/>CLI cmd]
+    end
+
+    APP --> OTEL
+    OTEL --> OTLP
+    OTLP --> COLL
+    COLL --> SCRAPE
+    SCRAPE --> STORE
+    STORE -->|PromQL queries| Q1
+    STORE -->|PromQL queries| Q2
+    Q1 --> MV
+    Q2 --> MV
+    MV --> OP
+    MV --> CLI
 ```
 
 ## Integration Points

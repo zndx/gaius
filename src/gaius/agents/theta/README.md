@@ -302,37 +302,23 @@ theta.effectiveness.EffectivenessTracker.record()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    /sitrep Command                                   │
-│                 horizon: day, domain: pension                        │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    ThetaAgent                                        │
-│         gather objectives, thoughts, agenda, events                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ HorizonView  │                        │ Consolidation│
-     │  (temporal)  │                        │  (Phase 2)   │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ Attention    │                        │ ThetaDynamics│
-     │   Schema     │                        │   (NVAR)     │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            └───────────────────┬───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SituationReport                                   │
-│              to_markdown() → formatted output                        │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    CMD[/sitrep Command<br/>horizon: day, domain: pension]
+    AGENT[ThetaAgent<br/>gather objectives, thoughts, agenda, events]
+    HORIZON[HorizonView<br/>temporal]
+    CONSOL[Consolidation<br/>Phase 2]
+    SCHEMA[Attention<br/>Schema]
+    DYNAMICS[ThetaDynamics<br/>NVAR]
+    REPORT[SituationReport<br/>to_markdown → formatted output]
+
+    CMD --> AGENT
+    AGENT --> HORIZON
+    AGENT --> CONSOL
+    HORIZON --> SCHEMA
+    CONSOL --> DYNAMICS
+    SCHEMA --> REPORT
+    DYNAMICS --> REPORT
 ```
 
 ## References

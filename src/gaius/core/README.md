@@ -462,52 +462,46 @@ any_component:
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Input: KB Documents                            │
-└─────────────────────────────────┬───────────────────────────────────────┘
-                                  │
-                    ┌─────────────┼─────────────┐
-                    ▼             ▼             ▼
-            ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-            │ Embeddings  │ │  Metadata   │ │  Content    │
-            │ (768D, MV)  │ │  (dates)    │ │  (text)     │
-            └──────┬──────┘ └──────┬──────┘ └─────────────┘
-                   │               │
-        ┌──────────┼───────────────┼──────────┐
-        │          ▼               ▼          │
-        │   ┌────────────┐  ┌────────────┐   │
-        │   │ projection │  │  session   │   │
-        │   │   (UMAP)   │  │ (temporal) │   │
-        │   └─────┬──────┘  └─────┬──────┘   │
-        │         │               │          │
-        │         ▼               ▼          │
-        │  ┌─────────────────────────────┐   │
-        │  │     AppState (state.py)     │   │
-        │  │  ├─ grid_positions [19x19]  │   │
-        │  │  ├─ cursor_position         │   │
-        │  │  ├─ view_mode               │   │
-        │  │  └─ overlay_mode            │   │
-        │  └─────────────┬───────────────┘   │
-        │                │                   │
-        │    ┌───────────┼───────────┐       │
-        │    ▼           ▼           ▼       │
-        │ ┌──────┐  ┌─────────┐  ┌──────┐   │
-        │ │ TDA  │  │Geometry │  │  Iso │   │
-        │ │(H0-2)│  │(κ,∇,div)│  │(κπσβ)│   │
-        │ └──┬───┘  └────┬────┘  └──┬───┘   │
-        │    └───────────┼──────────┘       │
-        │                ▼                   │
-        │  ┌─────────────────────────────┐   │
-        │  │     TDAFeatures, Metrics     │   │
-        │  └─────────────────────────────┘   │
-        └────────────────────────────────────┘
-                         │
-                         ▼
-               ┌─────────────────┐
-               │  widgets/grid   │
-               │  (MainGrid)     │
-               └─────────────────┘
+```mermaid
+graph TB
+    Input[KB Documents]
+
+    Emb[Embeddings<br/>768D, MV]
+    Meta[Metadata<br/>dates]
+    Content[Content<br/>text]
+
+    Proj[projection<br/>UMAP]
+    Sess[session<br/>temporal]
+
+    State["AppState (state.py)<br/>grid_positions [19x19]<br/>cursor_position<br/>view_mode<br/>overlay_mode"]
+
+    TDA["TDA<br/>(H0-2)"]
+    Geom["Geometry<br/>(κ,∇,div)"]
+    Iso["Iso<br/>(κπσβ)"]
+
+    Features[TDAFeatures, Metrics]
+
+    Grid[widgets/grid<br/>MainGrid]
+
+    Input --> Emb
+    Input --> Meta
+    Input --> Content
+
+    Emb --> Proj
+    Meta --> Sess
+
+    Proj --> State
+    Sess --> State
+
+    State --> TDA
+    State --> Geom
+    State --> Iso
+
+    TDA --> Features
+    Geom --> Features
+    Iso --> Features
+
+    Features --> Grid
 ```
 
 ## Integration Points

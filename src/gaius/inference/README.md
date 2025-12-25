@@ -344,24 +344,26 @@ models.evaluation.evaluate()
 
 ## Data Flow
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   User Query    │ ──▶ │  InferenceClient │ ──▶ │   gRPC Client   │
-└─────────────────┘     └─────────────────┘     └────────┬────────┘
-                                                         │
-                        ┌────────────────────────────────┼────────────────────────────────┐
-                        │                          Engine (L3)                             │
-                        │                                ▼                                 │
-                        │  ┌─────────────┐     ┌─────────────────┐     ┌───────────────┐  │
-                        │  │  Scheduler  │ ──▶ │  Backend Router │ ──▶ │ optillm (opt) │  │
-                        │  │ (priority)  │     │ (capability)    │     └───────┬───────┘  │
-                        │  └─────────────┘     └─────────────────┘             │          │
-                        │                              │                       ▼          │
-                        │                              │              ┌───────────────┐   │
-                        │                              └─────────────▶│     vLLM      │   │
-                        │                                             │  (GPU 0-3)   │   │
-                        │                                             └───────────────┘   │
-                        └─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    UQ[User Query]
+    IC[InferenceClient]
+    GC[gRPC Client]
+
+    subgraph Engine["Engine (L3)"]
+        SCHED[Scheduler<br/>priority]
+        ROUTER[Backend Router<br/>capability]
+        OPT[optillm<br/>opt]
+        VLLM[vLLM<br/>GPU 0-3]
+    end
+
+    UQ --> IC
+    IC --> GC
+    GC --> Engine
+    SCHED --> ROUTER
+    ROUTER --> OPT
+    OPT --> VLLM
+    ROUTER --> VLLM
 ```
 
 ## Integration Points

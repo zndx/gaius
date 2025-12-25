@@ -4,22 +4,29 @@ Textual-based TUI components for the Gaius spatial intelligence interface. This 
 
 ## Layout
 
-```
-┌─────────┬────────────────────────────┬───────────┐
-│ Left    │  ┌──────────────┬────────┐ │ Right     │
-│ Panel   │  │              │  9×9   │ │ Panel     │
-│         │  │    19×19     │ Embed  │ │           │
-│ Files/  │  │    Main      ├────────┤ │ Content   │
-│ Agents  │  │    Grid      │  9×9   │ │           │
-│         │  │              │  Iso   │ │           │
-│         │  ├──────────────┴────────┤ │           │
-│         │  │◉ RA 12h30m Dec +45° ψ │ │           │
-│         │  ├───────────────────────┤ │           │
-│         │  │ Note Editor (Ctrl-N)  │ │           │
-│         │  └───────────────────────┘ │           │
-├─────────┴────────────────────────────┴───────────┤
-│ / Command                                         │
-└───────────────────────────────────────────────────┘
+```mermaid
+block-beta
+    columns 3
+    block:left:1
+        columns 1
+        LP["Left Panel"]
+        FT["Files/Agents"]
+    end
+    block:center:1
+        columns 2
+        MG["19×19<br/>Main Grid"]:1
+        ME["9×9<br/>Embed"]:1
+        space:1
+        MI["9×9<br/>Iso"]:1
+        LOC["RA 12h30m Dec +45° psi"]:2
+        NE["Note Editor (Ctrl-N)"]:2
+    end
+    block:right:1
+        columns 1
+        RP["Right Panel"]
+        CP["Content"]
+    end
+    CMD["/ Command"]:3
 ```
 
 ## Module Structure
@@ -87,7 +94,7 @@ iso_view = MiniGrid(title="Iso", data=curvature_matrix)
 
 **Views**:
 - **Embed**: Cosine similarity spotlight centered on cursor position
-- **Iso**: Elevation map with four selectable modes (κ, π, σ, β)
+- **Iso**: Elevation map with four selectable modes (kappa, pi, sigma, beta)
 
 **Unicode Intensity Scale**:
 
@@ -165,13 +172,13 @@ cmd = CommandInput()
 Celestial-style position display:
 
 ```
-◉ RA 12h30m Dec +45° ψ=0.85
+RA 12h30m Dec +45° psi=0.85
 ```
 
 Components:
 - Position as Right Ascension and Declination (grid coordinates mapped to celestial convention)
-- ψ (psi): Relevance score for current position
-- Optional Iso mode indicator (κ/π/σ/β)
+- psi: Relevance score for current position
+- Optional Iso mode indicator (kappa/pi/sigma/beta)
 
 ## Panel Widgets
 
@@ -241,7 +248,7 @@ Wiki-link graph visualization:
 | `hjkl` | Navigate cursor (vim-style) |
 | `v` | Cycle view modes (Go → Theta → Swarm) |
 | `o` | Cycle overlay modes |
-| `i` | Cycle Iso modes (κ → π → σ → β) |
+| `i` | Cycle Iso modes (kappa → pi → sigma → beta) |
 | `g` | Toggle center panel (Graph → Think → Evolution) |
 | `[` | Toggle left panel |
 | `]` | Toggle right panel |
@@ -270,7 +277,7 @@ state.cursor_y = 9
 - `cursor_x`, `cursor_y` — Grid cursor position
 - `view_mode` — Active view (Go, Theta, Swarm)
 - `overlay_mode` — Active overlay (Topology, Geometry, etc.)
-- `iso_mode` — Iso view mode (κ, π, σ, β)
+- `iso_mode` — Iso view mode (kappa, pi, sigma, beta)
 - `center_panel_mode` — Center panel state
 
 ## Styling
@@ -340,31 +347,22 @@ FileTree.on_node_selected()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         User Input                                   │
-│          Keyboard (hjkl, /command)  |  Mouse clicks                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          GaiusApp                                    │
-│                        (app.py)                                      │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │   AppState   │    │  core.tda    │    │ storage.kb   │
-     │ (reactive)   │    │   compute    │    │   ops        │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Widget Tree                                   │
-│   MainGrid | MiniGridPanel | FileTree | ContentPanel | CommandInput │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    INPUT["User Input<br/>Keyboard (hjkl, /command) | Mouse clicks"]
+    APP["GaiusApp<br/>(app.py)"]
+    STATE["AppState<br/>(reactive)"]
+    TDA["core.tda<br/>compute"]
+    KB["storage.kb<br/>ops"]
+    WIDGETS["Widget Tree<br/>MainGrid | MiniGridPanel | FileTree | ContentPanel | CommandInput"]
+
+    INPUT --> APP
+    APP --> STATE
+    APP --> TDA
+    APP --> KB
+    STATE --> WIDGETS
+    TDA --> WIDGETS
+    KB --> WIDGETS
 ```
 
 ## Integration Points

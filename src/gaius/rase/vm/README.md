@@ -264,69 +264,50 @@ print(f"Reward: {reward:.3f}")
 
 ## Call Graph
 
-```
-# Verification Path
-agents.evolution.DaemonOracle.verify()
-  └─→ rase.vm.NiFiOracle.verify()
-      ├─→ [for each constraint in case.verify]
-      │   └─→ ssm.Constraint.evaluate(state)
-      │       └─→ ConstraintResult
-      └─→ aggregate_results()
-          └─→ VerificationResult(verdict, accuracy)
+```mermaid
+graph TD
+    subgraph "Verification Path"
+        VP1[DaemonOracle.verify] --> VP2[NiFiOracle.verify]
+        VP2 --> VP3[for each constraint]
+        VP3 --> VP4[Constraint.evaluate]
+        VP4 --> VP5[ConstraintResult]
+        VP2 --> VP6[aggregate_results]
+        VP6 --> VP7[VerificationResult]
+    end
 
-# Reward Path
-agents.evolution.engine.EvolutionEngine.run_cycle()
-  └─→ [after verification]
-      └─→ rase.vm.compute_reward(result, strategy)
-          └─→ RewardStrategy.compute(result)
-              └─→ float (reward signal)
+    subgraph "Reward Path"
+        RP1[EvolutionEngine.run_cycle] --> RP2[after verification]
+        RP2 --> RP3[compute_reward]
+        RP3 --> RP4[RewardStrategy.compute]
+        RP4 --> RP5[float reward signal]
+    end
 
-# Requirement Derivation Path
-rase.vm.derive_requirements_from_scenario()
-  └─→ [for each step in scenario.steps]
-      └─→ StepRequirement(step)
-          └─→ ScenarioRequirement(step_requirements)
+    subgraph "Requirement Derivation Path"
+        RD1[derive_requirements_from_scenario] --> RD2[for each step]
+        RD2 --> RD3[StepRequirement]
+        RD3 --> RD4[ScenarioRequirement]
+    end
 ```
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Agent Execution                                   │
-│         UI trace from agent performing scenario                      │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Oracle.verify()                                   │
-│              API call to NiFi → ground truth state                   │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Constraint Evaluation                             │
-│         [for each constraint] → ConstraintResult                     │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │ VerdictKind  │                        │   Accuracy   │
-     │ PASS/FAIL/...│                        │   0.0-1.0    │
-     └──────┬───────┘                        └──────┬───────┘
-            │                                       │
-            └───────────────────┬───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    VerificationResult                                │
-│              verdict + accuracy + constraint_results                 │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    compute_reward()                                  │
-│              strategy.compute(result) → float                        │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    AGENT[Agent Execution<br/>UI trace from agent performing scenario]
+    ORACLE[Oracle.verify<br/>API call to NiFi - ground truth state]
+    CONSTR[Constraint Evaluation<br/>for each constraint - ConstraintResult]
+    VERDICT[VerdictKind<br/>PASS/FAIL/INCONCLUSIVE/ERROR]
+    ACCURACY[Accuracy<br/>0.0-1.0]
+    RESULT[VerificationResult<br/>verdict + accuracy + constraint_results]
+    REWARD[compute_reward<br/>strategy.compute - float]
+
+    AGENT --> ORACLE
+    ORACLE --> CONSTR
+    CONSTR --> VERDICT
+    CONSTR --> ACCURACY
+    VERDICT --> RESULT
+    ACCURACY --> RESULT
+    RESULT --> REWARD
 ```
 
 ## Integration Points

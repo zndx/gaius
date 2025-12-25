@@ -286,67 +286,62 @@ print(f"Confidence: {prediction.confidence:.2%}")
 
 ## Call Graph
 
-```
-# Orchestrator Path
-mcp_server.py:orchestrator_start()
-  └─→ engine.services.OrchestratorService.ensure_endpoint()
-      ├─→ backends.vllm_controller.VLLMController.start()
-      └─→ wait_for_healthy()
+```mermaid
+graph TD
+    subgraph "Orchestrator Path"
+        OS1[mcp_server.py:orchestrator_start] --> OS2[OrchestratorService.ensure_endpoint]
+        OS2 --> OS3[VLLMController.start]
+        OS2 --> OS4[wait_for_healthy]
+    end
 
-# Scheduler Path
-mcp_server.py:scheduler_submit()
-  └─→ engine.services.SchedulerService.submit()
-      ├─→ priority_queue.push(job)
-      └─→ [when resources available]
-          └─→ backends.vllm_controller.VLLMController.infer()
+    subgraph "Scheduler Path"
+        SS1[mcp_server.py:scheduler_submit] --> SS2[SchedulerService.submit]
+        SS2 --> SS3[priority_queue.push]
+        SS3 --> SS4[when resources available]
+        SS4 --> SS5[VLLMController.infer]
+    end
 
-# Health Check Path
-mcp_server.py:gpu_health()
-  └─→ engine.services.HealthService.get_gpu_health()
-      └─→ pynvml.nvmlDeviceGetMemoryInfo()
-          └─→ GPUHealth
+    subgraph "Health Check Path"
+        HS1[mcp_server.py:gpu_health] --> HS2[HealthService.get_gpu_health]
+        HS2 --> HS3[pynvml.nvmlDeviceGetMemoryInfo]
+        HS3 --> HS4[GPUHealth]
+    end
 
-# CLT Extraction Path
-mcp_server.py:clt_extract()
-  └─→ engine.services.CLTService.extract_features()
-      └─→ clt_worker.extract()
-          └─→ circuit-tracer.extract_sparse()
-              └─→ AgentCLTState
+    subgraph "CLT Extraction Path"
+        CS1[mcp_server.py:clt_extract] --> CS2[CLTService.extract_features]
+        CS2 --> CS3[clt_worker.extract]
+        CS3 --> CS4[circuit-tracer.extract_sparse]
+        CS4 --> CS5[AgentCLTState]
+    end
 
-# Topology Path
-mcp_server.py:topology_attractors()
-  └─→ engine.services.TopologyService.detect_attractors()
-      └─→ clt_service.compute_swarm_features()
-          └─→ cluster_features()
-              └─→ [SemanticAttractor, ...]
+    subgraph "Topology Path"
+        TS1[mcp_server.py:topology_attractors] --> TS2[TopologyService.detect_attractors]
+        TS2 --> TS3[clt_service.compute_swarm_features]
+        TS3 --> TS4[cluster_features]
+        TS4 --> TS5[SemanticAttractor list]
+    end
 ```
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    gRPC Request                                      │
-│              (from mcp_server or client)                             │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Servicer Dispatch                                 │
-│              routes to appropriate service                           │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-     ┌────────────────────────────┼────────────────────────────────┐
-     ▼                            ▼                                ▼
-┌──────────┐              ┌──────────┐                      ┌──────────┐
-│Orchestrator              │Scheduler│                      │  Health  │
-│  Service │              │ Service  │                      │ Service  │
-└────┬─────┘              └────┬─────┘                      └────┬─────┘
-     │                         │                                 │
-     ▼                         ▼                                 ▼
-┌──────────┐              ┌──────────┐                      ┌──────────┐
-│  vLLM    │              │ Priority │                      │  pynvml  │
-│Controller│              │  Queue   │                      │          │
-└──────────┘              └──────────┘                      └──────────┘
+```mermaid
+graph TB
+    REQ[gRPC Request<br/>from mcp_server or client]
+    DISPATCH[Servicer Dispatch<br/>routes to appropriate service]
+    ORCH[Orchestrator<br/>Service]
+    SCHED[Scheduler<br/>Service]
+    HEALTH[Health<br/>Service]
+    VLLM[vLLM<br/>Controller]
+    QUEUE[Priority<br/>Queue]
+    NVML[pynvml]
+
+    REQ --> DISPATCH
+    DISPATCH --> ORCH
+    DISPATCH --> SCHED
+    DISPATCH --> HEALTH
+    ORCH --> VLLM
+    SCHED --> QUEUE
+    HEALTH --> NVML
 ```
 
 ## Integration Points

@@ -306,37 +306,24 @@ mcp_server.py:submit_fetch_job()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Job Submission                                   │
-│           MCP Tool  |  CLI  |  Scheduled Discovery                   │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                   PostgreSQL: fetch_jobs                             │
-│        source | source_id | priority | status | attempts            │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼ (poll)
-┌─────────────────────────────────────────────────────────────────────┐
-│                     WorkerManager                                    │
-│            triage.get_batch() → dispatch to workers                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │   Worker 1   │    │   Worker 2   │    │   Worker N   │
-     │ArxivFetcher  │    │BioRxivFetcher│    │  RSSFetcher  │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-              ┌───────────────────────────────────────┐
-              │        ContentProcessor                │
-              │    write to HX | optional summarize    │
-              └───────────────────────────────────────┘
+```mermaid
+graph TB
+    SUB["Job Submission<br/>MCP Tool | CLI | Scheduled Discovery"]
+    PG["PostgreSQL: fetch_jobs<br/>source | source_id | priority | status | attempts"]
+    MGR["WorkerManager<br/>triage.get_batch() → dispatch to workers"]
+    W1["Worker 1<br/>ArxivFetcher"]
+    W2["Worker 2<br/>BioRxivFetcher"]
+    WN["Worker N<br/>RSSFetcher"]
+    PROC["ContentProcessor<br/>write to HX | optional summarize"]
+
+    SUB --> PG
+    PG -->|poll| MGR
+    MGR --> W1
+    MGR --> W2
+    MGR --> WN
+    W1 --> PROC
+    W2 --> PROC
+    WN --> PROC
 ```
 
 ## Integration Points

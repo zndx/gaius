@@ -310,30 +310,51 @@ engine.server.py:start()
 
 ## Data Flow
 
-```
-                    ┌─────────────────────────────────────────────┐
-                    │              User Query                      │
-                    └─────────────────┬───────────────────────────┘
-                                      │
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                       ▼
-       ┌────────────┐          ┌────────────┐          ┌────────────┐
-       │   Swarm    │          │   Theta    │          │  MetaAgent │
-       │  Manager   │          │   Agent    │          │  Manager   │
-       └─────┬──────┘          └─────┬──────┘          └─────┬──────┘
-             │                       │                       │
-    ┌────────┼────────┐              │              ┌────────┼────────┐
-    ▼        ▼        ▼              ▼              ▼        ▼        ▼
-┌──────┐ ┌──────┐ ┌──────┐    ┌───────────┐   ┌──────┐ ┌──────┐ ┌──────┐
-│Leader│ │ Risk │ │Critic│    │NVAR→Subs  │   │Lineage│ │ Ops │ │Topo  │
-│      │ │      │ │      │    │→KG→Augment│   │Analyst│ │     │ │      │
-└──┬───┘ └──┬───┘ └──┬───┘    └─────┬─────┘   └──┬───┘ └──┬───┘ └──┬───┘
-   │        │        │              │            │        │        │
-   └────────┼────────┘              │            └────────┼────────┘
-            ▼                       ▼                     ▼
-     ┌────────────┐          ┌────────────┐        ┌────────────┐
-     │ Synthesize │          │ KB Update  │        │ Correlate  │
-     └────────────┘          └────────────┘        └────────────┘
+```mermaid
+graph TB
+    Query[User Query]
+
+    Swarm[Swarm Manager]
+    Theta[Theta Agent]
+    Meta[MetaAgent Manager]
+
+    Leader[Leader]
+    Risk[Risk]
+    Critic[Critic]
+
+    NVAR[NVAR → Subs → KG → Augment]
+
+    Lineage[Lineage Analyst]
+    Ops[Ops]
+    Topo[Topo]
+
+    Synth[Synthesize]
+    KBUpdate[KB Update]
+    Correlate[Correlate]
+
+    Query --> Swarm
+    Query --> Theta
+    Query --> Meta
+
+    Swarm --> Leader
+    Swarm --> Risk
+    Swarm --> Critic
+
+    Theta --> NVAR
+
+    Meta --> Lineage
+    Meta --> Ops
+    Meta --> Topo
+
+    Leader --> Synth
+    Risk --> Synth
+    Critic --> Synth
+
+    NVAR --> KBUpdate
+
+    Lineage --> Correlate
+    Ops --> Correlate
+    Topo --> Correlate
 ```
 
 ## Integration Points

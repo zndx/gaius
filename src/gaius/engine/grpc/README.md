@@ -190,35 +190,18 @@ engine.main.start_engine()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Client (MCP/CLI/TUI)                              │
-│              GaiusClient.submit(prompt)                              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │ gRPC call
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    gRPC Server                                       │
-│              port 50051, max_workers=10                              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    GaiusServicer                                     │
-│              SchedulerSubmit() → services.scheduler.submit()         │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SchedulerService                                  │
-│              priority queue → vLLM inference → result                │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SchedulerSubmitResponse                           │
-│              content, tokens_used, latency_ms                        │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    CLIENT[Client MCP/CLI/TUI<br/>GaiusClient.submit prompt]
+    SERVER[gRPC Server<br/>port 50051, max_workers=10]
+    SERVICER[GaiusServicer<br/>SchedulerSubmit → services.scheduler.submit]
+    SCHED[SchedulerService<br/>priority queue → vLLM inference → result]
+    RESP[SchedulerSubmitResponse<br/>content, tokens_used, latency_ms]
+
+    CLIENT -->|gRPC call| SERVER
+    SERVER --> SERVICER
+    SERVICER --> SCHED
+    SCHED --> RESP
 ```
 
 ## Configuration

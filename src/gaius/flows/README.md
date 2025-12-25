@@ -259,44 +259,30 @@ GaiusFlow.emit_lineage_complete()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Flow Triggers                                 │
-│           MCP Tool  |  CLI Command  |  Scheduled                     │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Flow Runner                                     │
-│                run_flow(name, **params)                              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Metaflow Runtime                                │
-│              @step decorators → DAG execution                        │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │   docling    │    │  BERTopic    │    │   Inference  │
-     │  PDF→MD      │    │   Topics     │    │   Scoring    │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-              ┌───────────────────────────────────────┐
-              │         storage.kb_ops                 │
-              │    create_kb(zettelkasten_path)        │
-              └───────────────────┬───────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │      KB      │    │  HX (raw)    │    │   Lineage    │
-     │   (summary)  │    │  (content)   │    │    Graph     │
-     └──────────────┘    └──────────────┘    └──────────────┘
+```mermaid
+flowchart TB
+    TRIGGER["Flow Triggers<br/>MCP Tool | CLI Command | Scheduled"]
+    RUNNER["Flow Runner<br/>run_flow(name, **params)"]
+    MF["Metaflow Runtime<br/>@step decorators → DAG execution"]
+    DOC[docling<br/>PDF→MD]
+    BERT[BERTopic<br/>Topics]
+    INF[Inference<br/>Scoring]
+    KB_OPS["storage.kb_ops<br/>create_kb(zettelkasten_path)"]
+    KB[KB<br/>summary]
+    HX[HX<br/>raw content]
+    LIN[Lineage<br/>Graph]
+
+    TRIGGER --> RUNNER
+    RUNNER --> MF
+    MF --> DOC
+    MF --> BERT
+    MF --> INF
+    DOC --> KB_OPS
+    BERT --> KB_OPS
+    INF --> KB_OPS
+    KB_OPS --> KB
+    KB_OPS --> HX
+    KB_OPS --> LIN
 ```
 
 ## Integration Points

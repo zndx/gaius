@@ -372,38 +372,28 @@ widgets.grid.MainGrid.snapshot()
 
 ## Data Flow
 
-```
-                    ┌─────────────────────────────────────────┐
-                    │              User Input                  │
-                    │  (MCP tool, CLI command, TUI action)    │
-                    └─────────────────┬───────────────────────┘
-                                      │
-                                      ▼
-                    ┌─────────────────────────────────────────┐
-                    │            kb_ops.py                     │
-                    │  (search_kb, read_kb, create_kb, ...)   │
-                    └─────────────────┬───────────────────────┘
-                                      │
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                       ▼
-     ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
-     │  Filesystem  │       │    MinIO     │       │ Agent Studio │
-     │   Storage    │       │   Storage    │       │   Storage    │
-     └──────┬───────┘       └──────┬───────┘       └──────┬───────┘
-            │                      │                      │
-            └──────────────────────┼──────────────────────┘
-                                   ▼
-                    ┌─────────────────────────────────────────┐
-                    │           sync_engine.py                 │
-                    │     (embedding generation, upsert)       │
-                    └─────────────────┬───────────────────────┘
-                                      │
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                       ▼
-     ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
-     │   Qdrant     │       │  PostgreSQL  │       │  MinIO/S3    │
-     │  Embeddings  │       │    State     │       │  KB Files    │
-     └──────────────┘       └──────────────┘       └──────────────┘
+```mermaid
+graph TB
+    INPUT["User Input<br/>(MCP tool, CLI command, TUI action)"]
+    KBOPS["kb_ops.py<br/>(search_kb, read_kb, create_kb, ...)"]
+    FS["Filesystem<br/>Storage"]
+    MINIO["MinIO<br/>Storage"]
+    STUDIO["Agent Studio<br/>Storage"]
+    SYNC["sync_engine.py<br/>(embedding generation, upsert)"]
+    QD["Qdrant<br/>Embeddings"]
+    PG["PostgreSQL<br/>State"]
+    S3["MinIO/S3<br/>KB Files"]
+
+    INPUT --> KBOPS
+    KBOPS --> FS
+    KBOPS --> MINIO
+    KBOPS --> STUDIO
+    FS --> SYNC
+    MINIO --> SYNC
+    STUDIO --> SYNC
+    SYNC --> QD
+    SYNC --> PG
+    SYNC --> S3
 ```
 
 ## Integration Points

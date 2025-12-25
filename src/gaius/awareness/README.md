@@ -272,38 +272,39 @@ SituationalReport.to_compact()
 
 ## Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Data Sources                                    │
-│      Activity Tracker  |  KB Filesystem  |  Qdrant Vectors           │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                  SituationalAwareness                                │
-│                generate_report(profile, domain)                      │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┼───────────────────┐
-              ▼                   ▼                   ▼
-     ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-     │   Emphasis   │    │   Tactical   │    │  Strategic   │
-     │   (24 hrs)   │    │   (7 days)   │    │  (30 days)   │
-     └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
-            │                   │                   │
-            └───────────────────┼───────────────────┘
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SituationalReport                                 │
-│       horizons + activity + system_state + insights                  │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-     ┌──────────────┐                        ┌──────────────┐
-     │  to_markdown()                        │ to_compact() │
-     │ (full report)                         │   (1-line)   │
-     └──────────────┘                        └──────────────┘
+```mermaid
+graph TB
+    subgraph Sources["Data Sources"]
+        ACT[Activity Tracker]
+        KB[KB Filesystem]
+        QD[Qdrant Vectors]
+    end
+
+    SA[SituationalAwareness<br/>generate_report]
+
+    Emph[Emphasis<br/>24 hrs]
+    Tact[Tactical<br/>7 days]
+    Strat[Strategic<br/>30 days]
+
+    Report[SituationalReport<br/>horizons + activity + system_state + insights]
+
+    MD[to_markdown<br/>full report]
+    Compact[to_compact<br/>1-line]
+
+    ACT --> SA
+    KB --> SA
+    QD --> SA
+
+    SA --> Emph
+    SA --> Tact
+    SA --> Strat
+
+    Emph --> Report
+    Tact --> Report
+    Strat --> Report
+
+    Report --> MD
+    Report --> Compact
 ```
 
 ## Integration Points
