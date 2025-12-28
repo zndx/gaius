@@ -1,0 +1,530 @@
+// ============================================================================
+// FDMM_RearEchelon_Augmentation.sysml
+// Complementary Rear-Echelon Augmentation Package for FDMM
+// SysML v2 (text-style) single-file package with BFO grounding
+//
+// Purpose:
+// - Define rear-echelon (fixed-site / higher-infrastructure) modules that augment
+//   the forward-deployed container micro-factory.
+// - Capture capabilities that are typically non-containerizable or operationally
+//   unsuitable for the forward edge (foundation loads, precision environment,
+//   safety envelope, power/utility intensity).
+//
+// BFO Grounding (high-level):
+// - Modules/Equipment are BFO:MaterialEntity
+// - Capabilities are BFO:RealizableEntity borne by Modules
+// - Realizations are BFO:Process
+// - Constraints are BFO:Quality / relational qualities (foundation, power, hazards)
+//
+// Source grounding: Equipment items correspond to the provided equipment list.
+// ============================================================================
+
+package FDMM_RearEchelon_Augmentation {
+
+  // --------------------------------------------------------------------------
+  // 00. Minimal shared terminology (keep file standalone)
+  // --------------------------------------------------------------------------
+  package _BFO_Terminology {
+
+    annotation bfoType { attribute iri: String; }
+    annotation bfoNote { attribute text: String; }
+
+  }
+
+  package Context {
+
+    value type kW { unit = "kW"; }
+    value type scfm { unit = "scfm"; }
+    value type psi { unit = "psi"; }
+    value type kg { unit = "kg"; }
+    value type degC { unit = "degC"; }
+    value type percent { unit = "%"; }
+
+    enum EnvironmentalControlClass { None, Basic, Conditioned, Precision }
+    enum PowerQualityClass { Dirty, Conditioned, Precision }
+    enum HandlingClass { Manual, Forklift, Crane, RiggingTeam }
+
+    part def RearSite {
+      doc /*BFO: MaterialEntity (site proxy for rear-echelon base)*/;
+      attribute ambientTemp_degC: degC;
+      attribute ambientRH_percent: percent;
+      attribute availablePowerQuality: PowerQualityClass;
+      attribute availablePower_kW: kW;
+      attribute availableAir_scfm: scfm;
+      attribute availableAir_psi: psi;
+      attribute dustControl: EnvironmentalControlClass;
+      attribute craneAvailable: Boolean;
+      attribute riggingAvailable: Boolean;
+      attribute fireSuppressionClass: String;
+      attribute wastewaterHandling: Boolean;
+    }
+
+  }
+
+  package Interfaces {
+    import Context::*;
+
+    interface def ElectricalPower {
+      attribute max_kW: kW;
+      attribute voltage: String;
+      attribute phase: String;
+      attribute frequency: String;
+      attribute quality: PowerQualityClass;
+    }
+
+    interface def CompressedAir {
+      attribute pressure_psi: psi;
+      attribute flow_scfm: scfm;
+      attribute drynessClass: String;
+    }
+
+    // Rear-echelon introduces new logistics interfaces
+    interface def WorkOrder {
+      attribute workOrderId: String;
+      attribute priority: String;     // e.g., P1/P2/P3
+      attribute partNumber: String;
+      attribute requiredBy: String;   // date/time string for planning
+      attribute notes: String;
+    }
+
+    interface def FinishedGoods {
+      attribute partNumber: String;
+      attribute qty: Integer;
+      attribute packaging: String;
+      attribute shippingClass: String;
+    }
+
+    interface def QualityRecord {
+      attribute recordId: String;
+      attribute inspectionLevel: String;
+      attribute traceability: String;
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 01. Capabilities (rear-echelon set)
+  // --------------------------------------------------------------------------
+  package Capabilities {
+    import _BFO_Terminology::*;
+
+    class Capability {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000016" } // realizable entity
+      @bfoNote { text = "Rear-echelon capability modeled as BFO RealizableEntity borne by rear modules." }
+      attribute capabilityId: String;
+      attribute description: String;
+      attribute forwardDependency: String; // how it supports forward ops
+    }
+
+    // Rear-echelon unique/expanded capabilities
+    class Cap_LargeEnvelopeTurning : Capability;
+    class Cap_HeavyStampingPunching : Capability;
+    class Cap_WireEDM_Precision : Capability;
+    class Cap_RotaryGrinding_Precision : Capability;
+    class Cap_AdvancedHeatTreat : Capability;
+    class Cap_ProductionTurretTurning : Capability;
+
+    // Interface/coordination capabilities
+    class Cap_WorkOrderIntakeAndDispatch : Capability;
+    class Cap_QualityAssuranceAndTrace : Capability;
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 02. Physical architecture (rear-echelon modules & equipment)
+  // --------------------------------------------------------------------------
+  package PhysicalArchitecture {
+    import _BFO_Terminology::*;
+    import Context::*;
+    import Interfaces::*;
+    import Capabilities::*;
+
+    // Equipment base class
+    part def Equipment {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // material entity
+      attribute equipId: String;
+      attribute makeModel: String;
+      attribute mass_kg: kg;
+      attribute handling: HandlingClass;
+
+      // Deployment-relevant qualities
+      attribute requiresFoundation: Boolean;
+      attribute requiresVibrationIsolation: Boolean;
+      attribute requiresEnvironmentalControl: EnvironmentalControlClass;
+      attribute requiresConditionedPower: Boolean;
+      attribute hazardClass: String;
+      attribute utilityNotes: String;
+    }
+
+    // Rear-specific equipment types
+    part def LargeManualLathe : Equipment;
+    part def TurretLathe : Equipment;
+    part def PunchPress : Equipment;
+    part def WireEDM : Equipment;
+    part def RotaryGrinder : Equipment;
+    part def HeatTreatFurnace : Equipment;
+    part def AirCompressor : Equipment;
+
+    // Rear module abstraction
+    part def Rear_Module {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // material entity
+      attribute moduleId: String;
+      attribute fixedSiteFootprint: String; // e.g., "bay", "cell", "room"
+      attribute grossMass_kg: kg;
+
+      attribute powerDemand_kW: kW;
+      attribute airDemand_scfm: scfm;
+      attribute thermalLoad_kW: kW;
+      attribute envControl: EnvironmentalControlClass;
+
+      port pwrIn : ElectricalPower;
+      port airIn : CompressedAir;
+
+      // Rear ops I/O
+      port woIn : WorkOrder;
+      port goodsOut : FinishedGoods;
+      port qaOut : QualityRecord;
+
+      part capabilities[*] : Capability;
+
+      attribute forwardSupportMode: String; // "build-to-order", "repair-return", "batch-stock", etc.
+    }
+
+    // Rear modules (augmenters)
+    part def Module_LargeTurning : Rear_Module {
+      part lathes[*] : LargeManualLathe;
+      part turret[*] : TurretLathe;
+
+      part cap_large_turn : Cap_LargeEnvelopeTurning;
+      part cap_turret_prod : Cap_ProductionTurretTurning;
+    }
+
+    part def Module_WireEDM : Rear_Module {
+      part edm[*] : WireEDM;
+
+      part cap_edm : Cap_WireEDM_Precision;
+    }
+
+    part def Module_HeavyGrinding : Rear_Module {
+      part rotary[*] : RotaryGrinder;
+
+      part cap_rotary : Cap_RotaryGrinding_Precision;
+    }
+
+    part def Module_StampingPunching : Rear_Module {
+      part press[*] : PunchPress;
+
+      part cap_punch : Cap_HeavyStampingPunching;
+    }
+
+    part def Module_HeatTreat_Advanced : Rear_Module {
+      part furnaces[*] : HeatTreatFurnace;
+
+      part cap_ht : Cap_AdvancedHeatTreat;
+    }
+
+    part def Module_QA_Dispatch : Rear_Module {
+      part cap_dispatch : Cap_WorkOrderIntakeAndDispatch;
+      part cap_qa : Cap_QualityAssuranceAndTrace;
+    }
+
+    // Rear site utilities
+    part def Rear_Utilities {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" }
+      part compressors[*] : AirCompressor;
+      port pwrOut : ElectricalPower;
+      port airOut : CompressedAir;
+      attribute notes: String;
+    }
+
+    // Top-level rear-echelon augmentation site
+    part def RearEchelonFacility {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" }
+      part site : Context::RearSite;
+      part utilities : Rear_Utilities;
+      part modules[*] : Rear_Module;
+
+      attribute facilityName: String;
+      attribute conceptOfOps: String;
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 03. Functional architecture (processes / realizations)
+  // --------------------------------------------------------------------------
+  package FunctionalArchitecture {
+    import _BFO_Terminology::*;
+
+    activity def Process {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000015" } // process
+      attribute processId: String;
+      attribute description: String;
+    }
+
+    // Rear processes
+    activity def P_LargeEnvelopeTurning : Process;
+    activity def P_TurretLatheProduction : Process;
+    activity def P_WireEDM : Process;
+    activity def P_RotaryGrinding : Process;
+    activity def P_StampingPunching : Process;
+    activity def P_AdvancedHeatTreat : Process;
+
+    activity def P_WorkOrderTriage : Process;
+    activity def P_QA_InspectionAndTrace : Process;
+    activity def P_PackAndShipForward : Process;
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 04. Equipment library (traceable to provided list)
+  // --------------------------------------------------------------------------
+  package EquipmentLibrary {
+    import Context::*;
+    import PhysicalArchitecture::*;
+
+    part Victor_22x120 : LargeManualLathe {
+      equipId = "RE-LATHE-VICTOR-22x120";
+      makeModel = "Victor 22in x 120in Manual Lathe";
+      handling = RiggingTeam;
+      requiresFoundation = true;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+      utilityNotes = "Large envelope; best in fixed bay with rigging/crane access.";
+    }
+
+    part Kingston_21x120 : LargeManualLathe {
+      equipId = "RE-LATHE-KINGSTON-21x120";
+      makeModel = "Kingston 21in x 120in Manual Lathe";
+      handling = RiggingTeam;
+      requiresFoundation = true;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+      utilityNotes = "Large envelope; foundation preferred.";
+    }
+
+    part Jet_TurretLathe : TurretLathe {
+      equipId = "RE-LATHE-JET-TURRET";
+      makeModel = "Jet Turret Lathe (Production)";
+      handling = Crane;
+      requiresFoundation = true;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+      utilityNotes = "Supports repeatable turned production ops.";
+    }
+
+    part Walsh_OBI_35Ton : PunchPress {
+      equipId = "RE-PRESS-WALSH-35TON-OBI";
+      makeModel = "Walsh OBI Punch Press 35 Ton";
+      handling = RiggingTeam;
+      requiresFoundation = true;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "HighEnergyPress";
+      utilityNotes = "Shock loads; requires safety envelope and guarding.";
+    }
+
+    part Sodick_AQ327L : WireEDM {
+      equipId = "RE-EDM-SODICK-AQ327L";
+      makeModel = "Sodick AQ327L Wire EDM";
+      handling = RiggingTeam;
+      requiresFoundation = true;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Precision;
+      requiresConditionedPower = true;
+      hazardClass = "EDM_Dielectric";
+      utilityNotes = "Requires controlled environment and dielectric management.";
+    }
+
+    part DCM_1G280SD : RotaryGrinder {
+      equipId = "RE-GRIND-DCM-1G280SD";
+      makeModel = "DCM 1G280SD Rotary Grinder";
+      handling = RiggingTeam;
+      requiresFoundation = true;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Precision;
+      requiresConditionedPower = true;
+      hazardClass = "Abrasive_Precision";
+      utilityNotes = "Precision grind; vibration control critical.";
+    }
+
+    part HeatTreat_12cube_A : HeatTreatFurnace {
+      equipId = "RE-HT-12CUBE-A";
+      makeModel = "Heat Treat Furnace 12in x 12in x 12in";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "FireRisk";
+      utilityNotes = "Rear use enables tighter controls, safety, and QA documentation.";
+    }
+
+    part AirCompressor_50HP_A : AirCompressor {
+      equipId = "RE-AIR-50HP-A";
+      makeModel = "50 HP Air Compressor";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "Pressure";
+      utilityNotes = "Suitable as facility air backbone.";
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 05. Rear-echelon facility template (concrete augmentation configuration)
+  // --------------------------------------------------------------------------
+  package FacilityTemplates {
+    import Context::*;
+    import Capabilities::*;
+    import PhysicalArchitecture::*;
+    import EquipmentLibrary::*;
+
+    part RearEchelon_Augmentation_Baseline : PhysicalArchitecture::RearEchelonFacility {
+
+      facilityName = "Rear-Echelon FDMM Augmentation Facility (Baseline)";
+
+      part site : Context::RearSite {
+        ambientTemp_degC = 22[degC];
+        ambientRH_percent = 45[%];
+        availablePowerQuality = Precision;
+        availablePower_kW = 500[kW];
+        availableAir_scfm = 400[scfm];
+        availableAir_psi = 120[psi];
+        dustControl = Precision;
+        craneAvailable = true;
+        riggingAvailable = true;
+        fireSuppressionClass = "Industrial/HotWork";
+        wastewaterHandling = true;
+      }
+
+      part utilities : PhysicalArchitecture::Rear_Utilities {
+        notes = "Rear site supplies precision power, dielectric handling, and enhanced safety controls.";
+        part compressors = (AirCompressor_50HP_A);
+      }
+
+      part modules = (
+
+        module QA_Dispatch : PhysicalArchitecture::Module_QA_Dispatch {
+          moduleId = "RE-MOD-QA-01";
+          fixedSiteFootprint = "Receiving/QA/Shipping Area";
+          envControl = Precision;
+          forwardSupportMode = "Work order intake, triage, QA records, dispatch";
+
+          part cap_dispatch : Cap_WorkOrderIntakeAndDispatch {
+            capabilityId = "RE-CAP-01";
+            description = "Triage, schedule, and dispatch work orders supporting forward sustainment.";
+            forwardDependency = "Receives repair requests and drawings from forward cells.";
+          }
+
+          part cap_qa : Cap_QualityAssuranceAndTrace {
+            capabilityId = "RE-CAP-02";
+            description = "Inspection/traceability records for precision parts and controlled processes.";
+            forwardDependency = "Provides QA records back to forward operators and planners.";
+          }
+        },
+
+        module LargeTurning : PhysicalArchitecture::Module_LargeTurning {
+          moduleId = "RE-MOD-TURN-01";
+          fixedSiteFootprint = "Machine Bay A";
+          envControl = Basic;
+          forwardSupportMode = "Build-to-order & repair-return for large shafts/assemblies";
+
+          part lathes = (Victor_22x120, Kingston_21x120);
+          part turret = (Jet_TurretLathe);
+
+          part cap_large_turn : Cap_LargeEnvelopeTurning {
+            capabilityId = "RE-CAP-10";
+            description = "Large-envelope turning beyond forward module constraints.";
+            forwardDependency = "Covers long/large shafts and heavy rotational parts.";
+          }
+
+          part cap_turret_prod : Cap_ProductionTurretTurning {
+            capabilityId = "RE-CAP-11";
+            description = "Repeatable production turning for batch replenishment.";
+            forwardDependency = "Enables stock builds to reduce forward downtime.";
+          }
+        },
+
+        module WireEDM : PhysicalArchitecture::Module_WireEDM {
+          moduleId = "RE-MOD-EDM-01";
+          fixedSiteFootprint = "Precision Room EDM";
+          envControl = Precision;
+          forwardSupportMode = "Precision tooling, complex profiles, repair fixtures";
+
+          part edm = (Sodick_AQ327L);
+
+          part cap_edm : Cap_WireEDM_Precision {
+            capabilityId = "RE-CAP-20";
+            description = "Wire EDM precision cutting for complex geometries and tooling.";
+            forwardDependency = "Produces dies, gauges, and high-precision parts not feasible forward.";
+          }
+        },
+
+        module HeavyGrinding : PhysicalArchitecture::Module_HeavyGrinding {
+          moduleId = "RE-MOD-GRIND-01";
+          fixedSiteFootprint = "Precision Room Grinding";
+          envControl = Precision;
+          forwardSupportMode = "Precision surfacing & restoration";
+
+          part rotary = (DCM_1G280SD);
+
+          part cap_rotary : Cap_RotaryGrinding_Precision {
+            capabilityId = "RE-CAP-30";
+            description = "Rotary grinding for precision flatness and surface finish.";
+            forwardDependency = "Restores mating surfaces and produces precision plates.";
+          }
+        },
+
+        module Punching : PhysicalArchitecture::Module_StampingPunching {
+          moduleId = "RE-MOD-PRESS-01";
+          fixedSiteFootprint = "Press Bay (Guarded)";
+          envControl = Basic;
+          forwardSupportMode = "Batch stamping/punching of plates/brackets";
+
+          part press = (Walsh_OBI_35Ton);
+
+          part cap_punch : Cap_HeavyStampingPunching {
+            capabilityId = "RE-CAP-40";
+            description = "High-energy punching/stamping unsuitable for container floors.";
+            forwardDependency = "Creates blanks and bracketry for forward assembly kits.";
+          }
+        },
+
+        module HeatTreat : PhysicalArchitecture::Module_HeatTreat_Advanced {
+          moduleId = "RE-MOD-HT-01";
+          fixedSiteFootprint = "Heat Treat Area";
+          envControl = Basic;
+          forwardSupportMode = "Controlled heat-treat with QA traceability";
+
+          part furnaces = (HeatTreat_12cube_A);
+
+          part cap_ht : Cap_AdvancedHeatTreat {
+            capabilityId = "RE-CAP-50";
+            description = "Heat treat with improved process control, safety, and documentation.";
+            forwardDependency = "Provides hardened/stress-relieved parts with QA records.";
+          }
+        }
+
+      );
+
+      conceptOfOps =
+        "Rear-echelon facility augments forward micro-factory by absorbing heavy, precision, " +
+        "and high-energy processes. Operates as a work-order-driven production and repair-return hub, " +
+        "with QA/traceability and dispatch to forward sites.";
+
+    }
+
+  }
+
+} // end package FDMM_RearEchelon_Augmentation
