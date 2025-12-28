@@ -1,0 +1,877 @@
+// ============================================================================
+// FDMM_BFO.sysml
+// Forward-Deployed Modular Manufacturing (FDMM)
+// SysML v2 (text-style) single-file package with BFO grounding
+//
+// Notes:
+// - This file is written in a SysMLv2-text *style* intended for planning/model seeding.
+// - Tools vary in how strictly they enforce current SysMLv2 grammar. If your tool
+//   requires adjustments, treat this as an authoritative conceptual baseline.
+//
+// BFO Grounding (high-level):
+// - Modules/Equipment/Utilities/People are BFO:MaterialEntity (independent continuants)
+// - Capabilities are BFO:RealizableEntity (Functions/Dispositions) borne by Modules
+// - Realizations are BFO:Process (occurrents) expressed as Activities/UseCases
+// - Constraints are BFO:Quality / relational quality expressed as value properties
+//
+// Source grounding: Equipment items correspond to the provided equipment list.
+// ============================================================================
+
+package FDMM_SystemOfInterest {
+
+  // --------------------------------------------------------------------------
+  // 00. Profile-ish definitions (lightweight)
+  // --------------------------------------------------------------------------
+  package _BFO_Terminology {
+
+    // Abstract BFO categories (documentation-only; used via comments/metadata)
+    abstract class BFO_Entity;
+    abstract class BFO_Continuant : BFO_Entity;
+    abstract class BFO_Occurrent  : BFO_Entity;
+
+    abstract class BFO_IndependentContinuant : BFO_Continuant;   // MaterialEntity, etc.
+    abstract class BFO_SpecificallyDependentContinuant : BFO_Continuant; // realizables, qualities
+    abstract class BFO_RealizableEntity : BFO_SpecificallyDependentContinuant; // functions, roles
+    abstract class BFO_Quality : BFO_SpecificallyDependentContinuant;
+
+    abstract class BFO_Process : BFO_Occurrent;
+
+    // "Tags" used as doc annotations (keep simple; tool-friendly)
+    annotation bfoType { attribute iri: String; }
+    annotation bfoNote { attribute text: String; }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 01. Context & assumptions (planning baseline)
+  // --------------------------------------------------------------------------
+  package Context {
+
+    enum ContainerType { ISO_20ft, ISO_40ft, ISO_40ft_HC }
+
+    // Value types
+    value type kW { unit = "kW"; }
+    value type scfm { unit = "scfm"; }
+    value type psi { unit = "psi"; }
+    value type kg { unit = "kg"; }
+    value type m { unit = "m"; }
+    value type degC { unit = "degC"; }
+    value type percent { unit = "%"; }
+    value type mm { unit = "mm"; }
+
+    // Qualitative classes for planning (can be refined to numeric later)
+    enum EnvironmentalControlClass { None, Basic, Conditioned }
+    enum PowerQualityClass { Dirty, Conditioned }
+    enum HandlingClass { Manual, Forklift, Crane }
+
+    // Deployment "site" is a context object that supplies constraints
+    part def DeploymentSite {
+      doc /*BFO: MaterialEntity (site as material aggregate / location proxy)*/;
+      attribute ambientTemp_degC: degC;
+      attribute ambientRH_percent: percent;
+      attribute availablePowerQuality: PowerQualityClass;
+      attribute availablePower_kW: kW;
+      attribute availableAir_scfm: scfm;
+      attribute availableAir_psi: psi;
+      attribute dustLevel: EnvironmentalControlClass;
+      attribute groundStabilityClass: String;
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 02. Interfaces (ports/item flows)
+  // --------------------------------------------------------------------------
+  package Interfaces {
+    import Context::*;
+
+    interface def ElectricalPower {
+      attribute max_kW: kW;
+      attribute voltage: String;
+      attribute phase: String;
+      attribute frequency: String;
+      attribute quality: PowerQualityClass;
+    }
+
+    interface def CompressedAir {
+      attribute pressure_psi: psi;
+      attribute flow_scfm: scfm;
+      attribute drynessClass: String;
+    }
+
+    interface def DataNet {
+      attribute bandwidth: String;
+      attribute latency: String;
+      attribute offlineMode: Boolean;
+    }
+
+    interface def MaterialFlow {
+      attribute form: String;           // bar, plate, billet, consumables, etc.
+      attribute handling: HandlingClass;
+      attribute mass_kg: kg;
+    }
+
+    interface def HeatRejection {
+      attribute thermalLoad_kW: kW;
+      attribute exhaustType: String; // filtered/vented/recirculated
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 03. BFO-grounded capabilities (Realizable entities borne by modules)
+  // --------------------------------------------------------------------------
+  package Capabilities {
+    import _BFO_Terminology::*;
+    import Context::*;
+
+    // Abstract capability concept (BFO:Function / Disposition)
+    class Capability {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000016" } // realizable entity
+      @bfoNote { text = "Capability modeled as a BFO RealizableEntity (Function/Disposition) borne by a module." }
+      attribute capabilityId: String;
+      attribute description: String;
+      attribute containerSuitability: String; // ContainerCompatible / Adaptable / RearEchelon
+    }
+
+    // Upper-level taxonomy
+    class SustainmentRepairCapability : Capability;
+    class LowRateProductionCapability : Capability;
+    class MetrologyProcessAssuranceCapability : Capability;
+    class DeploymentLogisticsSupportCapability : Capability;
+
+    // Leaf capabilities (planning set)
+    class Cap_CutAndPrepStock : SustainmentRepairCapability;
+    class Cap_JoinAndFabricate : SustainmentRepairCapability;
+    class Cap_MachineRotational_Manual : SustainmentRepairCapability;
+    class Cap_MachinePrismatic_Manual  : SustainmentRepairCapability;
+    class Cap_MachineRotational_CNC    : LowRateProductionCapability;
+    class Cap_MachinePrismatic_CNC     : LowRateProductionCapability;
+    class Cap_FinishAndDeburr          : SustainmentRepairCapability;
+    class Cap_RestoreFits_HoneGrind     : SustainmentRepairCapability;
+    class Cap_HeatTreat_Limited         : SustainmentRepairCapability;
+    class Cap_DesignPlanProgram_CADCAM  : MetrologyProcessAssuranceCapability;
+    class Cap_HandleMaterials_Yard      : DeploymentLogisticsSupportCapability;
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 04. Personnel & roles (BFO roles realized in processes)
+  // --------------------------------------------------------------------------
+  package Personnel {
+    import _BFO_Terminology::*;
+
+    class Person {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // material entity
+      attribute name: String;
+    }
+
+    class Role {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000023" } // role (realizable)
+      attribute roleName: String;
+    }
+
+    // Roles typically required
+    class MachinistRole : Role;
+    class CNCProgrammerRole : Role;
+    class WelderRole : Role;
+    class FabricatorRole : Role;
+    class MaintainerRole : Role;
+    class LogisticsRole : Role;
+
+    // Team structure for planning
+    part def FDMM_Team {
+      part lead : Person;
+      part machinists[*] : Person;
+      part cncProgrammers[*] : Person;
+      part welders[*] : Person;
+      part logistics[*] : Person;
+
+      // Informal role assignment (can be refined to allocations)
+      attribute notes: String;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 05. Physical architecture (modules, equipment, utilities)
+  // --------------------------------------------------------------------------
+  package PhysicalArchitecture {
+    import _BFO_Terminology::*;
+    import Context::*;
+    import Interfaces::*;
+    import Capabilities::*;
+
+    // ----------------------------
+    // Equipment abstractions
+    // ----------------------------
+    part def Equipment {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // material entity
+      attribute equipId: String;
+      attribute makeModel: String;
+      attribute mass_kg: kg;
+      attribute handling: HandlingClass;
+
+      // Deployment-relevant qualities (BFO:Qualities)
+      attribute requiresFoundation: Boolean;
+      attribute requiresVibrationIsolation: Boolean;
+      attribute requiresEnvironmentalControl: EnvironmentalControlClass;
+      attribute requiresConditionedPower: Boolean;
+      attribute hazardClass: String;
+    }
+
+    part def ManualMill     : Equipment;
+    part def ManualLathe    : Equipment;
+    part def DrillPress     : Equipment;
+    part def SurfaceGrinder : Equipment;
+    part def HoningMachine  : Equipment;
+    part def CNC_VMC        : Equipment;
+    part def CNC_Lathe      : Equipment;
+    part def Saw            : Equipment;
+    part def PlasmaCutter   : Equipment;
+    part def WeldingSystem  : Equipment;
+    part def StudWelder     : Equipment;
+    part def DeburrMachine  : Equipment;
+    part def HeatTreatFurnace : Equipment;
+    part def ComputeNode    : Equipment;
+    part def AirCompressor  : Equipment;
+    part def Forklift       : Equipment;
+    part def FlatbedTruck   : Equipment;
+
+    // ----------------------------
+    // Container module abstraction
+    // ----------------------------
+    part def Container_Module {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // module is material entity
+      attribute moduleId: String;
+      attribute containerType: ContainerType;
+      attribute grossMass_kg: kg;
+
+      // Resource demands (planning)
+      attribute powerDemand_kW: kW;
+      attribute airDemand_scfm: scfm;
+      attribute thermalLoad_kW: kW;
+      attribute envControl: EnvironmentalControlClass;
+
+      // Ports (interfaces)
+      port pwrIn : ElectricalPower;
+      port airIn : CompressedAir;
+      port netIn : DataNet;
+      port heatOut : HeatRejection;
+      port matIn : MaterialFlow;
+      port matOut: MaterialFlow;
+
+      // BFO-realizable capabilities borne by the module
+      part capabilities[*] : Capability;
+
+      // Deployment suitability notes
+      attribute containerCompatibility: String; // Compatible / Adaptable / RearEchelon
+    }
+
+    // ----------------------------
+    // Module specializations (cells)
+    // ----------------------------
+    part def Module_ManualMachining : Container_Module {
+      part mills[*] : ManualMill;
+      part lathes[*] : ManualLathe;
+      part drills[*] : DrillPress;
+      part grinders[*] : SurfaceGrinder;
+      part hone[*] : HoningMachine;
+
+      // Typical capability-bearing set
+      part cap_mill : Cap_MachinePrismatic_Manual;
+      part cap_turn : Cap_MachineRotational_Manual;
+      part cap_restore : Cap_RestoreFits_HoneGrind;
+    }
+
+    part def Module_CNCMachining : Container_Module {
+      part vmc[*] : CNC_VMC;
+      part cncLathes[*] : CNC_Lathe;
+      part cadcam[*] : ComputeNode;
+
+      part cap_cnc_mill : Cap_MachinePrismatic_CNC;
+      part cap_cnc_turn : Cap_MachineRotational_CNC;
+      part cap_cadcam : Cap_DesignPlanProgram_CADCAM;
+    }
+
+    part def Module_CuttingPrep : Container_Module {
+      part saws[*] : Saw;
+      part plasma[*] : PlasmaCutter;
+
+      part cap_cut : Cap_CutAndPrepStock;
+    }
+
+    part def Module_WeldingFab : Container_Module {
+      part welding[*] : WeldingSystem;
+      part stud[*] : StudWelder;
+
+      part cap_join : Cap_JoinAndFabricate;
+    }
+
+    part def Module_Finishing : Container_Module {
+      part deburr[*] : DeburrMachine;
+      part grinders[*] : SurfaceGrinder;
+
+      part cap_finish : Cap_FinishAndDeburr;
+    }
+
+    part def Module_HeatTreat : Container_Module {
+      part furnaces[*] : HeatTreatFurnace;
+      part cap_ht : Cap_HeatTreat_Limited;
+    }
+
+    // ----------------------------
+    // Yard operations (non-container)
+    // ----------------------------
+    part def Yard_Operations {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // material aggregate
+      part forklifts[*] : Forklift;
+      part flatbeds[*] : FlatbedTruck;
+
+      part cap_handle : Cap_HandleMaterials_Yard;
+    }
+
+    // ----------------------------
+    // Utilities (some implied by list; compressors present)
+    // ----------------------------
+    part def Utilities {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" }
+      part compressors[*] : AirCompressor;
+
+      // Ports outward to modules (modeled as provided services)
+      port pwrOut : ElectricalPower;
+      port airOut : CompressedAir;
+      port netOut : DataNet;
+
+      attribute notes: String;
+    }
+
+    // ----------------------------
+    // Top-level deployment (system-of-systems)
+    // ----------------------------
+    part def FDMM_Deployment {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000040" } // material entity aggregate
+      part site : Context::DeploymentSite;
+
+      part utilities : Utilities;
+      part yard : Yard_Operations;
+      part modules[*] : Container_Module;
+
+      attribute deploymentName: String;
+      attribute conceptOfOps: String;
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 06. Functional architecture (Activities as BFO:Processes)
+  // --------------------------------------------------------------------------
+  package FunctionalArchitecture {
+    import _BFO_Terminology::*;
+    import Interfaces::*;
+    import PhysicalArchitecture::*;
+
+    activity def Process {
+      @bfoType { iri = "http://purl.obolibrary.org/obo/BFO_0000015" } // process
+      attribute processId: String;
+      attribute description: String;
+    }
+
+    // Core processes realizing capabilities
+    activity def P_CutAndPrepStock : Process;
+    activity def P_WeldAndFabricate : Process;
+    activity def P_ManualTurn : Process;
+    activity def P_ManualMill : Process;
+    activity def P_CNC_Turn : Process;
+    activity def P_CNC_Mill : Process;
+    activity def P_FinishAndDeburr : Process;
+    activity def P_RestoreFits : Process;
+    activity def P_HeatTreat : Process;
+    activity def P_CAD_CAM_Planning : Process;
+    activity def P_HandleMaterials : Process;
+
+    // Allocation intent (informal; your tool may support "allocate")
+    // - These comments guide allocation relationships:
+    //   P_CutAndPrepStock     allocated to Module_CuttingPrep
+    //   P_WeldAndFabricate    allocated to Module_WeldingFab
+    //   P_ManualTurn/Mill     allocated to Module_ManualMachining
+    //   P_CNC_Turn/Mill       allocated to Module_CNCMachining
+    //   P_FinishAndDeburr     allocated to Module_Finishing
+    //   P_RestoreFits         allocated to Module_ManualMachining
+    //   P_HeatTreat           allocated to Module_HeatTreat (optional)
+    //   P_CAD_CAM_Planning    allocated to Module_CNCMachining (compute)
+    //   P_HandleMaterials     allocated to Yard_Operations
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 07. Requirements (starter set) + verification skeleton
+  // --------------------------------------------------------------------------
+  package RequirementsAndVnV {
+    import Context::*;
+    import PhysicalArchitecture::*;
+    import FunctionalArchitecture::*;
+
+    requirement def Requirement {
+      attribute reqId: String;
+      attribute text: String;
+      attribute rationale: String;
+      attribute verificationMethod: String; // Test / Analysis / Inspection / Demonstration
+    }
+
+    // Deployment/logistics
+    requirement DEP_001 : Requirement {
+      reqId = "DEP-001";
+      text = "FDMM shall deploy as N ISO container modules plus yard assets, using standard logistics handling.";
+      rationale = "Minimize bespoke transport and simplify forward basing.";
+      verificationMethod = "Inspection";
+    }
+
+    requirement DEP_002 : Requirement {
+      reqId = "DEP-002";
+      text = "Each module shall be independently transportable and settable using forklift/crane operations within site constraints.";
+      rationale = "Enable incremental scaling and survivable dispersal.";
+      verificationMethod = "Demonstration";
+    }
+
+    // Power & environment
+    requirement PWR_001 : Requirement {
+      reqId = "PWR-001";
+      text = "CNC machining module shall operate with conditioned power meeting required quality class.";
+      rationale = "CNC reliability and control electronics depend on power quality.";
+      verificationMethod = "Analysis";
+    }
+
+    requirement ENV_001 : Requirement {
+      reqId = "ENV-001";
+      text = "Modules requiring environmental control shall maintain internal conditions within stated limits (TBD).";
+      rationale = "Precision and electronics protection.";
+      verificationMethod = "Test";
+    }
+
+    // Capability
+    requirement CAP_001 : Requirement {
+      reqId = "CAP-001";
+      text = "FDMM shall fabricate and fit replacement mechanical parts within defined envelope and tolerance coupons (TBD).";
+      rationale = "Primary mission: sustainment and rapid repair.";
+      verificationMethod = "Demonstration";
+    }
+
+    // Verification case skeletons
+    case def VerificationCase {
+      attribute vcId: String;
+      attribute method: String;
+      attribute procedure: String;
+      attribute passCriteria: String;
+    }
+
+    case VC_PowerBudget : VerificationCase {
+      vcId = "VC-001";
+      method = "Analysis";
+      procedure = "Compute total kW demand Σ(module powerDemand) + auxiliaries and compare to site availability.";
+      passCriteria = "Total demand <= availablePower_kW with margin (TBD).";
+    }
+
+    case VC_ReferencePartSet : VerificationCase {
+      vcId = "VC-002";
+      method = "Demonstration";
+      procedure = "Manufacture a standard reference part set covering turning, milling, welding, and finishing workflows.";
+      passCriteria = "Parts meet specified tolerances and functional fit checks (TBD).";
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 08. Library: Equipment instances (traceable to the provided list)
+  // --------------------------------------------------------------------------
+  package EquipmentLibrary {
+    import Context::*;
+    import PhysicalArchitecture::*;
+
+    // NOTE: Masses, power demands, and detailed specs are left TBD for planning.
+    // You can refine these per exact machine serial/model.
+    // Instances below map to items in the equipment list.
+
+    // Manual machines
+    part Kingston_21x120 : ManualLathe {
+      equipId = "E-LATHE-KINGSTON-21x120";
+      makeModel = "Kingston 21in x 120in Manual Lathe";
+      handling = Crane;
+      requiresFoundation = true;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+    }
+
+    part Victor_16x60_A : ManualLathe {
+      equipId = "E-LATHE-VICTOR-16x60-A";
+      makeModel = "Victor 16in x 60in Manual Lathe";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+    }
+
+    part Bridgeport_Mill_A : ManualMill {
+      equipId = "E-MILL-BRIDGEPORT-A";
+      makeModel = "Manual Bridgeport Mill";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+    }
+
+    part SurfaceGrinder_6x12_A : SurfaceGrinder {
+      equipId = "E-GRIND-6x12-A";
+      makeModel = "Surface Grinder 6in x 12in";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "Abrasive";
+    }
+
+    part Sunnen_Honing : HoningMachine {
+      equipId = "E-HONE-SUNNEN-LBB-1660";
+      makeModel = "Sunnen Honing Machine LBB-1660 (1/4in-6in)";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "RotatingMachinery";
+    }
+
+    // CNC machines (representative instances; expand as needed)
+    part Haas_VF2YT_A : CNC_VMC {
+      equipId = "E-CNCVMC-HAAS-VF2YT-A";
+      makeModel = "Haas VF-2YT Vertical CNC Machining Center";
+      handling = Crane;
+      requiresFoundation = true;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Conditioned;
+      requiresConditionedPower = true;
+      hazardClass = "CNC";
+    }
+
+    part Haas_VF3_A : CNC_VMC {
+      equipId = "E-CNCVMC-HAAS-VF3-A";
+      makeModel = "Haas VF-3 Vertical Machining Center";
+      handling = Crane;
+      requiresFoundation = true;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Conditioned;
+      requiresConditionedPower = true;
+      hazardClass = "CNC";
+    }
+
+    part Daewoo_Puma240L : CNC_Lathe {
+      equipId = "E-CNCLATHE-DAEWOO-PUMA240L";
+      makeModel = "Daewoo Puma 240L CNC Lathe (12in chuck)";
+      handling = Crane;
+      requiresFoundation = true;
+      requiresVibrationIsolation = true;
+      requiresEnvironmentalControl = Conditioned;
+      requiresConditionedPower = true;
+      hazardClass = "CNC";
+    }
+
+    // Cutting
+    part HydMech_H14A : Saw {
+      equipId = "E-SAW-HYDMECH-H14A";
+      makeModel = "HYD-MECH H-14A CNC Saw";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "Cutting";
+    }
+
+    part PlasmaCutter_1_2in : PlasmaCutter {
+      equipId = "E-PLASMA-1_2IN";
+      makeModel = "Plasma Cutter 1/2in capacity";
+      handling = Manual;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "HotWork";
+    }
+
+    // Welding
+    part HeliArc_Set_A : WeldingSystem {
+      equipId = "E-WELD-HELIARC-A";
+      makeModel = "Heli-Arc Wire Feed (Plasma/Gas/Arc)";
+      handling = Manual;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "HotWork";
+    }
+
+    part StudWelder_Miller600A : StudWelder {
+      equipId = "E-STUD-MILLER-600A";
+      makeModel = "Miller 600 Amp Stud Welder";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "HotWork";
+    }
+
+    // Finishing
+    part Sweco_Deburr_A : DeburrMachine {
+      equipId = "E-DEBURR-SWECO-A";
+      makeModel = "Sweco Vibratory Deburring Machine";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "Vibration";
+    }
+
+    // Heat treat (optional)
+    part HeatTreat_12cube_A : HeatTreatFurnace {
+      equipId = "E-HT-12CUBE-A";
+      makeModel = "Heat Treat Furnace 12in x 12in x 12in";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "FireRisk";
+    }
+
+    // Compute
+    part CADCAM_Workstation_A : ComputeNode {
+      equipId = "E-COMPUTE-CADCAM-A";
+      makeModel = "CAD/CAM Workstation (Mastercam/AutoCAD/Inventor)";
+      handling = Manual;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Conditioned;
+      requiresConditionedPower = true;
+      hazardClass = "Electronics";
+    }
+
+    // Air
+    part AirCompressor_25HP_A : AirCompressor {
+      equipId = "E-AIR-25HP-A";
+      makeModel = "25 HP Air Compressor";
+      handling = Forklift;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = Basic;
+      requiresConditionedPower = false;
+      hazardClass = "Pressure";
+    }
+
+    // Yard assets
+    part Forklift_2500_A : Forklift {
+      equipId = "E-FORK-2500-A";
+      makeModel = "Clark Forklift 2500#";
+      handling = Manual;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = None;
+      requiresConditionedPower = false;
+      hazardClass = "Vehicle";
+    }
+
+    part Forklift_5000_A : Forklift {
+      equipId = "E-FORK-5000-A";
+      makeModel = "Clark Forklift 5000#";
+      handling = Manual;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = None;
+      requiresConditionedPower = false;
+      hazardClass = "Vehicle";
+    }
+
+    part Flatbed_F450 : FlatbedTruck {
+      equipId = "E-TRUCK-F450-FLATBED";
+      makeModel = "Ford F-450 2.5 Ton Flatbed";
+      handling = Manual;
+      requiresFoundation = false;
+      requiresVibrationIsolation = false;
+      requiresEnvironmentalControl = None;
+      requiresConditionedPower = false;
+      hazardClass = "Vehicle";
+    }
+
+  }
+
+  // --------------------------------------------------------------------------
+  // 09. Deployment template (a concrete starting configuration)
+  // --------------------------------------------------------------------------
+  package DeploymentTemplates {
+    import Context::*;
+    import Capabilities::*;
+    import PhysicalArchitecture::*;
+    import EquipmentLibrary::*;
+
+    // A 5-container baseline: manual machining, CNC, cutting, welding, finishing + yard + utilities
+    part Baseline_FDMM_5x40HC : PhysicalArchitecture::FDMM_Deployment {
+
+      deploymentName = "Baseline FDMM (5x 40ft HC)";
+
+      // Site (placeholder)
+      part site : Context::DeploymentSite {
+        ambientTemp_degC = 25[degC];
+        ambientRH_percent = 50[%];
+        availablePowerQuality = Conditioned;
+        availablePower_kW = 250[kW];
+        availableAir_scfm = 200[scfm];
+        availableAir_psi = 120[psi];
+        dustLevel = Basic;
+        groundStabilityClass = "Compacted";
+      }
+
+      // Utilities (compressors available in list; power/net may be provided externally)
+      part utilities : PhysicalArchitecture::Utilities {
+        notes = "Power generation and network uplink assumed external; compressors sourced from equipment list.";
+        part compressors = (AirCompressor_25HP_A);
+      }
+
+      // Yard
+      part yard : PhysicalArchitecture::Yard_Operations {
+        part forklifts = (Forklift_2500_A, Forklift_5000_A);
+        part flatbeds  = (Flatbed_F450);
+        part cap_handle : Cap_HandleMaterials_Yard {
+          capabilityId = "CAP-D1";
+          description = "Material handling and inter-module logistics.";
+          containerSuitability = "External";
+        }
+      }
+
+      // Modules
+      part modules = (
+
+        // Manual machining module
+        module ManualMachining_40HC : PhysicalArchitecture::Module_ManualMachining {
+          moduleId = "MOD-MANUAL-01";
+          containerType = ISO_40ft_HC;
+          containerCompatibility = "Compatible";
+          envControl = Basic;
+
+          part mills = (Bridgeport_Mill_A);
+          part lathes = (Victor_16x60_A);
+          part grinders = (SurfaceGrinder_6x12_A);
+          part hone = (Sunnen_Honing);
+
+          part cap_mill : Cap_MachinePrismatic_Manual {
+            capabilityId = "CAP-A1";
+            description = "Manual milling for prismatic parts within module envelope.";
+            containerSuitability = "ContainerCompatible";
+          }
+          part cap_turn : Cap_MachineRotational_Manual {
+            capabilityId = "CAP-A2";
+            description = "Manual turning for rotational parts within module envelope.";
+            containerSuitability = "ContainerCompatible";
+          }
+          part cap_restore : Cap_RestoreFits_HoneGrind {
+            capabilityId = "CAP-A9";
+            description = "Fit restoration via honing and grinding.";
+            containerSuitability = "ContainerCompatible";
+          }
+        },
+
+        // CNC machining module
+        module CNCMachining_40HC : PhysicalArchitecture::Module_CNCMachining {
+          moduleId = "MOD-CNC-01";
+          containerType = ISO_40ft_HC;
+          containerCompatibility = "Adaptable";
+          envControl = Conditioned;
+
+          part vmc = (Haas_VF2YT_A, Haas_VF3_A);
+          part cncLathes = (Daewoo_Puma240L);
+          part cadcam = (CADCAM_Workstation_A);
+
+          part cap_cnc_mill : Cap_MachinePrismatic_CNC {
+            capabilityId = "CAP-B1";
+            description = "CNC milling (conditioned power, conditioned environment).";
+            containerSuitability = "ContainerAdaptable";
+          }
+          part cap_cnc_turn : Cap_MachineRotational_CNC {
+            capabilityId = "CAP-B2";
+            description = "CNC turning (conditioned power, conditioned environment).";
+            containerSuitability = "ContainerAdaptable";
+          }
+          part cap_cadcam : Cap_DesignPlanProgram_CADCAM {
+            capabilityId = "CAP-C2";
+            description = "CAD/CAM planning, programming, and revision control.";
+            containerSuitability = "ContainerCompatible";
+          }
+        },
+
+        // Cutting & prep module
+        module CuttingPrep_40HC : PhysicalArchitecture::Module_CuttingPrep {
+          moduleId = "MOD-CUT-01";
+          containerType = ISO_40ft_HC;
+          containerCompatibility = "Compatible";
+          envControl = Basic;
+
+          part saws = (HydMech_H14A);
+          part plasma = (PlasmaCutter_1_2in);
+
+          part cap_cut : Cap_CutAndPrepStock {
+            capabilityId = "CAP-A5";
+            description = "Stock breakdown and profile cutting.";
+            containerSuitability = "ContainerCompatible";
+          }
+        },
+
+        // Welding & fabrication module
+        module WeldingFab_40HC : PhysicalArchitecture::Module_WeldingFab {
+          moduleId = "MOD-WELD-01";
+          containerType = ISO_40ft_HC;
+          containerCompatibility = "Compatible";
+          envControl = Basic;
+
+          part welding = (HeliArc_Set_A);
+          part stud = (StudWelder_Miller600A);
+
+          part cap_join : Cap_JoinAndFabricate {
+            capabilityId = "CAP-A6";
+            description = "Welding/fabrication for repair and modification.";
+            containerSuitability = "ContainerCompatible";
+          }
+        },
+
+        // Finishing module
+        module Finishing_40HC : PhysicalArchitecture::Module_Finishing {
+          moduleId = "MOD-FINISH-01";
+          containerType = ISO_40ft_HC;
+          containerCompatibility = "Compatible";
+          envControl = Basic;
+
+          part deburr = (Sweco_Deburr_A);
+          part grinders = (SurfaceGrinder_6x12_A);
+
+          part cap_finish : Cap_FinishAndDeburr {
+            capabilityId = "CAP-A8";
+            description = "Deburr and surface finishing for assembly readiness.";
+            containerSuitability = "ContainerCompatible";
+          }
+        }
+
+      );
+
+      conceptOfOps =
+        "Deploy a 5-container micro-factory for sustainment + low-rate production. " +
+        "Yard assets provide material flow; CNC cell depends on conditioned power/environment.";
+
+    }
+
+  }
+
+} // end package FDMM_SystemOfInterest
