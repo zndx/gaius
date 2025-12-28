@@ -28,8 +28,9 @@ from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Static, Header, Footer
+from textual.widgets import Static, Header, Footer, TextArea, Button
 
 from .core.state import AppState, ViewMode, OverlayMode, CenterPanelMode
 from .core.config import get_config, GaiusConfig
@@ -65,6 +66,131 @@ from .static import (
     get_position_hint,
     generate_explanation,
 )
+
+
+def _generate_qr_ascii(url: str) -> str:
+    """Generate ASCII QR code for the given URL.
+
+    Uses the qrcode library to create a scannable QR code that works
+    in terminal environments like a-Shell + tmux on iPad.
+    """
+    try:
+        import io
+        import qrcode
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=1,
+            border=1,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+
+        # Capture ASCII output
+        buffer = io.StringIO()
+        qr.print_ascii(out=buffer, invert=True)
+        return buffer.getvalue()
+    except ImportError:
+        return "(QR code requires 'qrcode' package: uv add qrcode)"
+    except Exception as e:
+        return f"(QR code generation failed: {e})"
+
+
+class QRCodeModal(ModalScreen):
+    """Modal displaying a QR code for easy scanning on mobile devices.
+
+    Perfect for a-Shell + tmux setups on iPad where clipboard doesn't work.
+    Scan the QR code with your device's camera app to open the URL.
+    """
+
+    DEFAULT_CSS = """
+    QRCodeModal {
+        align: center middle;
+    }
+
+    QRCodeModal > Vertical {
+        width: auto;
+        height: auto;
+        max-width: 90%;
+        max-height: 95%;
+        background: white;
+        padding: 1 2;
+        border: thick $primary;
+    }
+
+    QRCodeModal #modal-title {
+        text-align: center;
+        text-style: bold;
+        color: black;
+        padding: 1 0;
+        background: white;
+    }
+
+    QRCodeModal #modal-instructions {
+        text-align: center;
+        color: #666666;
+        padding: 0 0 1 0;
+        background: white;
+    }
+
+    QRCodeModal #qr-display {
+        text-align: center;
+        color: black;
+        background: white;
+        padding: 0;
+        margin: 0;
+    }
+
+    QRCodeModal #url-display {
+        text-align: center;
+        color: #333333;
+        background: #f0f0f0;
+        padding: 1;
+        margin: 1 0;
+        height: auto;
+        max-height: 3;
+    }
+
+    QRCodeModal Horizontal {
+        align: center middle;
+        height: auto;
+        padding: 1 0;
+        background: white;
+    }
+
+    QRCodeModal Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
+    ]
+
+    def __init__(self, title: str, url: str) -> None:
+        super().__init__()
+        self._title = title
+        self._url = url
+        self._qr_ascii = _generate_qr_ascii(url)
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(self._title, id="modal-title")
+            yield Static("Scan with your camera app", id="modal-instructions")
+            yield Static(self._qr_ascii, id="qr-display")
+            yield Static(self._url, id="url-display")
+            with Horizontal():
+                yield Button("Close [Esc]", id="close-button", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button presses."""
+        if event.button.id == "close-button":
+            self.dismiss()
+
+
+# Keep CopyableTextModal as alias for backwards compatibility
+CopyableTextModal = QRCodeModal
 
 
 class GaiusApp(App):
@@ -2510,16 +2636,23 @@ Use `/inference stop <endpoint>` to stop an endpoint.
                     from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
                     from .agents.evolution import get_evolution_daemon
 
-                    # Use engine client (agent-first architecture)
-                    if use_engine_proxy():
-                        orch = await get_orchestrator_proxy()
-                        result = await orch.clean_start(endpoints)
-                    else:
-                        import logging
-                        logging.getLogger(__name__).warning("LEGACY_FALLBACK: /evolve start bypassing engine - tech debt")
-                        from .inference.orchestrator import get_orchestrator
-                        orchestrator = get_orchestrator()
-                        result = await orchestrator.clean_start(endpoints)
+                    # Engine Federation Architecture: GPU operations require engine gRPC
+                    if not use_engine_proxy():
+                        content.show_file("error.txt", """# Engine Not Available
+
+GPU operations require the engine gRPC service.
+
+## Guru Meditation
+`#GR.00000001.ENGINEOFF`
+
+## Remediation
+- Start the engine: `devenv up gaius-engine`
+- Or: `uv run python -m gaius.engine`
+""")
+                        return
+
+                    orch = await get_orchestrator_proxy()
+                    result = await orch.clean_start(endpoints)
 
                     if not result["success"]:
                         content.show_file("error.txt", f"Failed to start GPU endpoints: {result['startup']}")
@@ -3032,16 +3165,16 @@ Use `/evolve stop` to stop orchestrated evolution.
                     "",
                 ]
 
-                # Status icons
-                status_icons = {
-                    CheckStatus.PASS: "✅",
-                    CheckStatus.WARN: "⚠️",
-                    CheckStatus.FAIL: "❌",
-                    CheckStatus.SKIP: "⏭️",
+                # Status indicators
+                status_indicators = {
+                    CheckStatus.PASS: "[OK]",
+                    CheckStatus.WARN: "[WARN]",
+                    CheckStatus.FAIL: "[FAIL]",
+                    CheckStatus.SKIP: "[SKIP]",
                 }
 
                 for check in report.checks:
-                    icon = status_icons.get(check.status, "❓")
+                    icon = status_indicators.get(check.status, "[?]")
                     line = f"{icon} **{check.name}**: {check.message}"
                     lines.append(line)
 
@@ -3093,6 +3226,274 @@ Use `/evolve stop` to stop orchestrated evolution.
                 content.show_file("error.txt", f"Health check failed: {e}\n\n{traceback.format_exc()}")
 
         asyncio.create_task(run_health_check())
+
+    def _handle_x_bookmarks_command(self, args: str) -> None:
+        """Handle /x-bookmarks command for X bookmarks sync.
+
+        Usage:
+            /x-bookmarks sync     - Trigger sync (Iceberg + work queue)
+            /x-bookmarks status   - Show sync status
+            /x-bookmarks auth     - Show auth status or start auth flow
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.strip().split(maxsplit=1)
+        subcommand = parts[0] if parts else "status"
+
+        if subcommand == "sync":
+            self._x_bookmarks_sync(content)
+        elif subcommand == "status":
+            self._x_bookmarks_status(content)
+        elif subcommand == "auth":
+            self._x_bookmarks_auth(content, parts[1] if len(parts) > 1 else "")
+        else:
+            content.show_file("x-bookmarks.md", f"""# X Bookmarks
+
+Unknown subcommand: {subcommand}
+
+**Usage:**
+- `/x-bookmarks sync` - Sync bookmarks to Iceberg and KB work queue
+- `/x-bookmarks status` - Show sync status and token info
+- `/x-bookmarks auth` - Start OAuth flow (shows QR code)
+- `/x-bookmarks auth complete <code>` - Complete OAuth with callback code
+- `/xb` - Shortcut alias
+""")
+
+    def _x_bookmarks_sync(self, content: "InfoPanel") -> None:
+        """Execute bookmarks sync via gRPC."""
+        import asyncio
+
+        content.show_file("x-bookmarks.md", "# X Bookmarks Sync\n\nStarting sync...")
+
+        async def do_sync():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("XBookmarks", "trigger_sync", {})
+
+                # Check for action required
+                if result.get("action_required"):
+                    output = f"""# X Bookmarks Sync
+
+**Status:** {result.get('status', 'unknown')}
+**Action Required:** {result.get('action_required')}
+
+{result.get('guidance_message', '')}
+
+{result.get('message', '')}
+"""
+                    content.show_file("x-bookmarks.md", output)
+                    return
+
+                # Format success result
+                output = f"""# X Bookmarks Sync Complete
+
+| Metric | Value |
+|--------|-------|
+| Status | {result.get('status', 'unknown')} |
+| Bookmarks fetched | {result.get('bookmarks_fetched', 0)} |
+| Written to Iceberg | {result.get('iceberg_written', 0)} |
+| KB work queue items | {result.get('queue_items', 0)} |
+
+{result.get('message', '')}
+"""
+                content.show_file("x-bookmarks.md", output)
+
+            except Exception as e:
+                content.show_file("x-bookmarks.md", f"# Sync Error\n\n{e}")
+
+        asyncio.create_task(do_sync())
+
+    def _x_bookmarks_status(self, content: "InfoPanel") -> None:
+        """Show bookmarks sync status via gRPC."""
+        import asyncio
+
+        content.show_file("x-bookmarks.md", "# X Bookmarks Status\n\nFetching...")
+
+        async def do_status():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("XBookmarks", "sync_status", {})
+
+                # Check for guidance message
+                guidance = ""
+                if result.get("action_required"):
+                    guidance = f"\n**Action Required:** {result.get('action_required')}\n\n{result.get('message', '')}\n"
+
+                output = f"""# X Bookmarks Status
+
+| Field | Value |
+|-------|-------|
+| Configured | {'Yes' if result.get('configured') else 'No'} |
+| User | @{result.get('username', 'N/A')} |
+| Token Status | {result.get('token_status', 'N/A')} |
+| Folders | {result.get('folder_count', 0)} |
+| Bookmarks | {result.get('bookmark_count', 0)} |
+| Queued Requests | {result.get('queued_requests', 0)} |
+| Last Sync | {result.get('last_sync_at', 'Never')} |
+{guidance}
+"""
+                content.show_file("x-bookmarks.md", output)
+
+            except Exception as e:
+                content.show_file("x-bookmarks.md", f"# Status Error\n\n{e}")
+
+        asyncio.create_task(do_status())
+
+    def _x_bookmarks_auth(self, content: "InfoPanel", args: str) -> None:
+        """Show auth status or initiate OAuth flow via gRPC.
+
+        Usage:
+            /x-bookmarks auth              - Start OAuth flow (shows QR code)
+            /x-bookmarks auth complete <code> - Complete OAuth with callback code
+        """
+        import asyncio
+
+        # Check for 'complete' subcommand
+        parts = args.strip().split(maxsplit=1)
+        if parts and parts[0] == "complete":
+            code = parts[1] if len(parts) > 1 else ""
+            self._x_bookmarks_auth_complete(content, code)
+            return
+
+        content.show_file("x-bookmarks.md", "# X Bookmarks Auth\n\nStarting OAuth flow...")
+
+        # Keep reference to self for use in async function
+        app = self
+
+        async def do_auth():
+            try:
+                from .client.grpc_client import get_grpc_client
+                import urllib.parse
+
+                client = await get_grpc_client()
+                result = await client.call("XBookmarks", "get_auth_url", {})
+
+                if "error" in result:
+                    content.show_file("x-bookmarks.md", f"# Auth Error\n\n{result['error']}")
+                    return
+
+                auth_url = result.get("auth_url", "")
+
+                # Extract redirect_uri from auth_url for display
+                parsed = urllib.parse.urlparse(auth_url)
+                params = urllib.parse.parse_qs(parsed.query)
+                redirect_uri = params.get('redirect_uri', [''])[0]
+                is_localhost = "localhost" in redirect_uri or "127.0.0.1" in redirect_uri
+
+                if is_localhost:
+                    callback_instructions = """3. After clicking 'Authorize', X will redirect to localhost.
+   The page will fail to load, but that's OK!
+
+   Look at your browser's address bar - it will show:
+   `http://localhost:8765/callback?code=XXXXX&state=YYYYY`
+
+   Copy the value after `code=` (up to the & or end of URL)."""
+                else:
+                    callback_instructions = "3. After authorization, copy the code from the callback page."
+
+                output = f"""# X Bookmarks OAuth Authentication
+
+**1. Open this URL in your browser:**
+
+```
+{auth_url}
+```
+
+**2. Log in to X and authorize Gaius**
+
+**{callback_instructions}**
+
+**4. Complete authentication:**
+
+Run: `/x-bookmarks auth complete <YOUR_CODE>`
+
+---
+
+**Note:** Authorization expires in 10 minutes.
+
+**Callback:** `{redirect_uri}`
+
+**Troubleshooting:**
+- "You weren't able to give access": Your X app needs OAuth 2.0 configured.
+  Go to https://developer.x.com/en/portal/dashboard
+- `bookmark.read` requires X API Pro tier or higher.
+"""
+                content.show_file("x-bookmarks.md", output)
+
+                # Show a QR code modal for easy scanning on mobile devices
+                app.push_screen(QRCodeModal(
+                    title="X OAuth Authorization URL",
+                    url=auth_url,
+                ))
+
+            except Exception as e:
+                content.show_file("x-bookmarks.md", f"# Auth Error\n\n{e}")
+
+        asyncio.create_task(do_auth())
+
+    def _x_bookmarks_auth_complete(self, content: "InfoPanel", code: str) -> None:
+        """Complete OAuth flow with authorization code."""
+        import asyncio
+
+        if not code:
+            content.show_file("x-bookmarks.md", """# X Bookmarks Auth Complete
+
+**Error:** Missing authorization code.
+
+**Usage:** `/x-bookmarks auth complete <YOUR_CODE>`
+
+The code is provided after you authorize Gaius in your browser.
+Copy it from the callback page or URL bar.
+""")
+            return
+
+        content.show_file("x-bookmarks.md", f"# X Bookmarks Auth\n\nCompleting authentication with code: `{code[:20]}...`")
+
+        async def do_complete():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("XBookmarks", "complete_auth", {"code": code, "verifier": ""})
+
+                if "error" in result:
+                    content.show_file("x-bookmarks.md", f"""# Auth Error
+
+{result.get('error', 'Unknown error')}
+
+{result.get('message', '')}
+
+**Troubleshooting:**
+- The authorization code may have expired (valid for 10 minutes)
+- Try starting the flow again with `/x-bookmarks auth`
+""")
+                    return
+
+                # Success!
+                username = result.get("username", "Unknown")
+                output = f"""# X Bookmarks Auth Complete
+
+**Successfully authenticated as @{username}**
+
+Your X bookmarks sync is now configured. You can:
+
+- `/x-bookmarks sync` - Sync your bookmarks now
+- `/x-bookmarks status` - View sync status
+
+Tokens have been saved securely and will auto-refresh.
+"""
+                content.show_file("x-bookmarks.md", output)
+
+            except Exception as e:
+                content.show_file("x-bookmarks.md", f"# Auth Error\n\n{e}")
+
+        asyncio.create_task(do_complete())
 
     def _handle_iso_command(self, args: str, content: "InfoPanel") -> None:
         """Handle /iso command for Iso view mode control.
@@ -3297,7 +3698,7 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
                 lines.append("## KB Results")
                 lines.append("")
                 for r in results:
-                    match_type = "📄" if r["match"] == "filename" else "📝"
+                    match_type = "[FILE]" if r["match"] == "filename" else "[TEXT]"
                     lines.append(f"- {match_type} **{r['path']}**")
                     lines.append(f"  {r['preview'][:100]}")
                     lines.append("")
@@ -4870,9 +5271,14 @@ The general-purpose agentic query interface.
             graph_view = self.query_one("#graph-view", GraphView)
             source_file = graph_view.current_file
 
-            # Use original link text as search query (verbatim, no transformation)
-            # e.g., filepath="current/topics/kudu-compaction.md" -> link_text="current/topics/kudu-compaction"
-            link_text = filepath.removesuffix(".md") if filepath.endswith(".md") else filepath
+            # Derive link_text relative to kb_root (strip kb_root prefix if present)
+            # e.g., path="build/dev/current/topics/kudu.md" -> link_text="current/topics/kudu"
+            try:
+                relative_path = path.relative_to(kb_root)
+                link_text = str(relative_path).removesuffix(".md")
+            except ValueError:
+                # Path not under kb_root, use filename stem as fallback
+                link_text = path.stem
 
             # Show status and trigger async resolution
             content.show_file(
@@ -4900,6 +5306,26 @@ The general-purpose agentic query interface.
                 content.show_file(path.name, text)
             except Exception as e:
                 content.show_file("error.txt", f"Cannot read file: {e}")
+
+    def on_init_panel_xb_auth_completed(
+        self, event: InitPanel.XBAuthCompleted
+    ) -> None:
+        """Dismiss QR modal when XB OAuth completes.
+
+        When the user completes OAuth via QR code on their device, the engine
+        broadcasts XB_AUTH_COMPLETED. The InitPanel receives this event and
+        posts an XBAuthCompleted message which bubbles up here to dismiss
+        the QR modal automatically.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Check if the current screen is a QRCodeModal
+        if isinstance(self.screen, QRCodeModal):
+            logger.info(
+                f"XB auth completed for @{event.username}, dismissing QR modal"
+            )
+            self.screen.dismiss()
 
     def _execute_command(self, cmd: str) -> None:
         """Execute a slash command."""
@@ -5061,6 +5487,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "health":
             # Run comprehensive health check
             self._handle_health_command(args)
+        elif command in ("x-bookmarks", "xb"):
+            # X Bookmarks sync and management
+            self._handle_x_bookmarks_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
