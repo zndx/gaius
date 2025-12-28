@@ -10,6 +10,21 @@ package gaius.engine;
 import "google/protobuf/empty.proto";
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Common Enums
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Status of a vLLM/inference endpoint process
+enum ProcessStatus {
+  PROCESS_STATUS_UNSPECIFIED = 0;
+  PROCESS_STATUS_STOPPED = 1;
+  PROCESS_STATUS_STARTING = 2;
+  PROCESS_STATUS_HEALTHY = 3;
+  PROCESS_STATUS_UNHEALTHY = 4;
+  PROCESS_STATUS_STOPPING = 5;
+  PROCESS_STATUS_FAILED = 6;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Orchestrator Service Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -30,7 +45,7 @@ message GPUAllocation {
 message EndpointInfo {
   string name = 1;
   string model = 2;
-  string status = 3;  // "running", "stopped", "starting", "error"
+  ProcessStatus status = 3;  // Endpoint process status
   repeated int32 gpu_ids = 4;
   int32 port = 5;
 }
@@ -252,6 +267,100 @@ message CognitionActivityResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Cognition Streaming Messages (TUI Real-time Updates)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to subscribe to cognition events
+message CognitionStreamRequest {
+  int32 buffer_size = 1;           // Max events to buffer (default: 100)
+  repeated string event_types = 2;  // Filter by types (empty = all)
+}
+
+// Streaming cognition event - pushed to TUI/MCP clients
+message CognitionEvent {
+  enum Type {
+    CYCLE_START = 0;       // Cognition cycle beginning
+    THOUGHT = 1;           // New thought generated
+    PATTERN = 2;           // Pattern detected
+    CONNECTION = 3;        // Connection found
+    CURIOSITY = 4;         // Curiosity generated
+    SELF_OBSERVATION = 5;  // Meta-cognition thought
+    ENGINE_AUDIT = 6;      // Engine audit completed
+    CYCLE_END = 7;         // Cognition cycle complete
+    ERROR = 8;             // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string thought_id = 3;           // UUID of thought (for THOUGHT events)
+  string thought_type = 4;         // "pattern", "connection", etc.
+  string title = 5;                // Thought title
+  string summary = 6;              // Brief summary (truncated for streaming)
+  float salience = 7;              // 0.0-1.0 importance score
+  int32 generation = 8;            // Thought generation number
+  string cycle_id = 9;             // UUID of current cycle
+  int32 thoughts_in_cycle = 10;    // Thoughts generated so far in this cycle
+  string error = 11;               // Error message if type=ERROR
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Evolution Streaming Messages (TUI Real-time Updates)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to subscribe to evolution events
+message EvolutionStreamRequest {
+  string agent_filter = 1;         // Filter by agent ID (empty = all agents)
+  int32 buffer_size = 2;           // Max events to buffer (default: 100)
+}
+
+// Streaming evolution event - pushed to TUI/MCP clients
+message EvolutionEvent {
+  enum Type {
+    CYCLE_START = 0;       // Evolution cycle beginning
+    EVALUATION_START = 1;  // Evaluating an agent version
+    EVALUATION_DONE = 2;   // Evaluation complete with score
+    PROMOTION = 3;         // Version promoted to active
+    ROLLBACK = 4;          // Rolled back to previous version
+    MERGE_START = 5;       // Model merge beginning
+    MERGE_DONE = 6;        // Model merge complete
+    TASK_IDEATION = 7;     // New task concepts generated
+    CALIBRATION = 8;       // Calibration cycle completed
+    CYCLE_END = 9;         // Evolution cycle complete
+    ERROR = 10;            // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string agent_id = 3;             // Agent being evolved
+  string version_id = 4;           // Version being evaluated/promoted
+  float score = 5;                 // Evaluation score (0.0-1.0)
+  float improvement_pct = 6;       // Improvement percentage
+  string details = 7;              // Human-readable details
+  int32 cycle_number = 8;          // Cycle number in current session
+  string merge_id = 9;             // Merge ID for MERGE_* events
+  string error = 10;               // Error message if type=ERROR
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Activity Streaming Messages (Unified Feed)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to subscribe to all activity (cognition + evolution + system)
+message ActivityStreamRequest {
+  int32 buffer_size = 1;           // Max events to buffer (default: 100)
+  repeated string domains = 2;     // Filter by domain (empty = all)
+}
+
+// Unified activity event
+message ActivityEvent {
+  string event_type = 1;           // "cognition", "evolution", "system", "kb"
+  int64 timestamp_ms = 2;
+  string source = 3;               // Service that generated event
+  string domain = 4;               // Domain context
+  string title = 5;                // Brief title
+  string summary = 6;              // Human-readable summary
+  bytes data = 7;                  // JSON payload with full details
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Workload Management Messages (Yunikorn-Style)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -453,6 +562,10 @@ message InitEvent {
     HEALTH_OK = 9;          // Response to HEALTH command
     QUEUED = 10;            // Command queued (needs endpoint to execute)
     ERROR = 11;             // Error occurred
+    // X Bookmarks events (pushed to TUI for real-time auth status updates)
+    XB_AUTH_COMPLETED = 12; // X Bookmarks OAuth completed successfully
+    XB_AUTH_FAILED = 13;    // X Bookmarks OAuth failed
+    XB_STATUS_CHANGED = 14; // X Bookmarks sync/queue status changed
   }
   Type type = 1;
   int64 timestamp_ms = 2;   // Event timestamp
@@ -460,7 +573,7 @@ message InitEvent {
   float progress = 4;       // Progress 0.0-1.0
   string endpoint = 5;      // Related endpoint name
   string message = 6;       // Human-readable message
-  bytes data = 7;           // JSON for complex payloads (health data, etc.)
+  bytes data = 7;           // JSON for complex payloads (health data, XB auth info, etc.)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1112,6 +1225,248 @@ message CLTStatusResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HealthObserver Messages (Autonomous FMEA Monitoring + ACP Escalation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Health observer status request
+message HealthObserverStatusRequest {}
+
+// Health observer status response
+message HealthObserverStatusResponse {
+  bool running = 1;                      // Is observer daemon running?
+  bool enabled = 2;                      // Is observer enabled in config?
+  int32 poll_count = 3;                  // Total health checks completed
+  string last_poll_at = 4;               // ISO timestamp of last poll
+  int32 active_incidents = 5;            // Number of active incidents
+  repeated HealthIncident incidents = 6; // Active incidents
+  HealthObserverMetrics metrics = 7;     // Aggregate metrics
+  HealthObserverConfig config = 8;       // Current configuration
+}
+
+// Health incident tracked by observer
+message HealthIncident {
+  string incident_id = 1;        // UUID
+  string fingerprint = 2;        // Deduplication key (failure_mode_id:endpoint)
+  string endpoint = 3;           // Affected endpoint
+  string failure_mode_id = 4;    // FMEA failure mode
+  int32 rpn_score = 5;           // Risk Priority Number (1-1000)
+  int32 rpn_severity = 6;        // Severity component (1-10)
+  int32 rpn_occurrence = 7;      // Occurrence component (1-10)
+  int32 rpn_detection = 8;       // Detection component (1-10)
+  int32 current_tier = 9;        // Escalation tier (0, 1, 2, or 3=manual)
+  string sequence_id = 10;       // Healing event sequence UUID
+  string created_at = 11;        // ISO timestamp
+  string last_check_at = 12;     // ISO timestamp
+  int32 attempts = 13;           // Number of remediation attempts
+  int32 github_issue = 14;       // Linked GitHub issue number (0 if none)
+  string status = 15;            // active, healing, recovering, resolved, manual_required
+}
+
+// Health observer metrics
+message HealthObserverMetrics {
+  int32 incidents_created = 1;   // Total incidents created
+  int32 incidents_resolved = 2;  // Total incidents resolved
+  int32 acp_escalations = 3;     // Total ACP escalations
+}
+
+// Health observer configuration
+message HealthObserverConfig {
+  float poll_interval = 1;       // Seconds between health checks
+  bool escalate_to_acp = 2;      // Whether ACP escalation is enabled
+  string github_repo = 3;        // GitHub repo for issue tracking
+}
+
+// Request to start/stop observer
+message HealthObserverControlRequest {
+  bool start = 1;                // True to start, false to stop
+}
+
+// Request to force an immediate health check
+message ForceHealthCheckRequest {}
+
+// Response for forced health check
+message ForceHealthCheckResponse {
+  bool healthy = 1;              // Overall health status
+  string summary = 2;            // Health summary text
+  int32 passed = 3;              // Number of passed checks
+  int32 warnings = 4;            // Number of warnings
+  int32 failures = 5;            // Number of failures
+  int32 new_incidents = 6;       // Incidents created from this check
+}
+
+// Request for incident details
+message GetIncidentDetailRequest {
+  string fingerprint = 1;        // Incident fingerprint
+}
+
+// Response with incident details
+message GetIncidentDetailResponse {
+  HealthIncident incident = 1;   // Incident details
+  bool found = 2;                // Whether incident was found
+}
+
+// Request to list incidents
+message ListIncidentsRequest {
+  string status = 1;             // Filter by status (active, resolved, all)
+}
+
+// Response with list of incidents
+message ListIncidentsResponse {
+  repeated HealthIncident incidents = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// X Bookmarks Service Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to start OAuth flow
+message XBookmarksAuthRequest {}
+
+// OAuth flow response
+message XBookmarksAuthResponse {
+  string auth_url = 1;           // URL to open in browser
+  string state = 2;              // CSRF state parameter
+  string verifier = 3;           // PKCE verifier (must be passed to complete)
+}
+
+// Complete OAuth with callback code
+message XBookmarksCompleteAuthRequest {
+  string code = 1;               // Authorization code from callback
+  string verifier = 2;           // PKCE verifier from AuthResponse
+}
+
+// Complete OAuth using state parameter (for Engine Federation and Cloudflare Worker callbacks)
+message XBookmarksCompleteAuthByStateRequest {
+  string code = 1;               // Authorization code from callback
+  string state = 2;              // State parameter from OAuth flow (used to look up verifier)
+}
+
+// Auth completion response
+message XBookmarksCompleteAuthResponse {
+  bool success = 1;
+  string user_id = 2;            // X user ID
+  string username = 3;           // X @handle
+  repeated string scopes = 4;    // Granted scopes
+  string expires_at = 5;         // ISO timestamp
+  string error = 6;
+  string message = 7;            // Success/error message
+}
+
+// Auth status request
+message XBookmarksAuthStatusRequest {
+  string user_id = 1;            // Optional: specific user
+}
+
+// Auth status response
+message XBookmarksAuthStatusResponse {
+  bool authenticated = 1;
+  string user_id = 2;
+  string username = 3;
+  string expires_at = 4;
+  repeated string scopes = 5;
+  string error = 6;
+  string guru_code = 7;
+  string action_required = 8;     // "TOKEN_EXPIRED", "TOKEN_EXPIRING", "NOT_AUTHENTICATED", or empty
+  string guidance_message = 9;    // Human-readable guidance for next steps
+}
+
+// Trigger sync request
+message XBookmarksSyncRequest {
+  string user_id = 1;            // Optional: specific user
+  bool full_sync = 2;            // If true, sync all bookmarks. If false, only new ones.
+  string folder_id = 3;          // Optional: sync specific folder only
+}
+
+// Sync run result
+message XBookmarksSyncResponse {
+  bool started = 1;              // True if sync was started
+  int32 run_id = 2;              // Run ID if started
+  string message = 3;            // Status message or error
+  // Extended fields for detailed sync results
+  string status = 4;             // "completed", "failed", "partial", "queued"
+  int32 bookmarks_fetched = 5;   // Total from X API (or existing in DB)
+  int32 iceberg_written = 6;     // New rows written to raw.bookmarks
+  int32 queue_items = 7;         // KB sync work queue items created
+  string action_required = 8;    // TOKEN_EXPIRED, NOT_AUTHENTICATED, etc.
+  string guidance_message = 9;   // Human-readable guidance for next steps
+}
+
+// Sync status request
+message XBookmarksSyncStatusRequest {
+  string user_id = 1;            // Optional: specific user
+}
+
+// Sync status response
+message XBookmarksSyncStatusResponse {
+  bool configured = 1;
+  string user_id = 2;
+  string username = 3;
+  string token_status = 4;       // "valid", "expired", "expiring_soon", "none"
+  int32 folder_count = 5;
+  int32 bookmark_count = 6;
+  int32 queued_requests = 7;
+  string last_sync_at = 8;       // ISO timestamp
+  string last_run_status = 9;    // "completed", "failed", "running"
+  string action_required = 10;   // "TOKEN_EXPIRED", "TOKEN_EXPIRING", "SYNC_FAILED", "NOT_CONFIGURED", or empty
+  string guidance_message = 11;  // Human-readable guidance for next steps
+}
+
+// Service status request
+message XBookmarksServiceStatusRequest {}
+
+// Service status response
+message XBookmarksServiceStatusResponse {
+  bool running = 1;              // Is queue processor running?
+  int32 total_syncs = 2;         // Total syncs completed
+  int32 total_bookmarks = 3;     // Total bookmarks synced
+  string last_sync_at = 4;       // ISO timestamp
+  int32 queue_poll_interval_s = 5;
+}
+
+// Bookmark folder
+message XBookmarkFolder {
+  string id = 1;                 // Folder ID from X API
+  string name = 2;               // Folder name
+  string kb_path = 3;            // KB path (e.g., "current/bookmarks/folder_name")
+  int32 bookmark_count = 4;      // Number of bookmarks in folder
+}
+
+// List folders request
+message XBookmarksListFoldersRequest {
+  string user_id = 1;            // Optional: specific user
+}
+
+// List folders response
+message XBookmarksListFoldersResponse {
+  repeated XBookmarkFolder folders = 1;
+  bool folders_available = 2;    // False if API tier doesn't support folders
+  string message = 3;            // Status message or error
+}
+
+// Queue status request (for InitPanel cooldown timer)
+message XBookmarksQueueStatusRequest {}
+
+// Queue status response
+message XBookmarksQueueStatusResponse {
+  int32 queue_depth = 1;           // Total pending requests in work queue
+  string cooldown_end_iso = 2;     // ISO8601 timestamp when cooldown ends (empty if can request)
+  int32 cooldown_seconds = 3;      // Seconds remaining until next request allowed
+  bool can_request = 4;            // True if rate limit allows request now
+}
+
+// Emit test event request (for debugging XB event propagation chain with OTel tracing)
+message XBookmarksEmitTestEventRequest {
+  string event_type = 1;           // XB_AUTH_COMPLETED, XB_AUTH_FAILED, XB_STATUS_CHANGED (default: XB_AUTH_COMPLETED)
+}
+
+// Emit test event response
+message XBookmarksEmitTestEventResponse {
+  bool success = 1;
+  string event_type = 2;           // Event type that was emitted
+  string message = 3;              // Status message
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1170,6 +1525,15 @@ service GaiusService {
   rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
+
+  // Cognition streaming - replaces TUI polling
+  rpc SubscribeCognition(CognitionStreamRequest) returns (stream CognitionEvent);
+
+  // Evolution streaming - replaces TUI polling
+  rpc SubscribeEvolution(EvolutionStreamRequest) returns (stream EvolutionEvent);
+
+  // Unified activity stream - all system activity
+  rpc SubscribeActivity(ActivityStreamRequest) returns (stream ActivityEvent);
 
   // ─────────────────────────────────────────────────────────────────────────
   // State (Thin Client Architecture)
@@ -1248,4 +1612,28 @@ service GaiusService {
   // during engine startup and receive real-time progress, while also sending
   // control commands (pause, cancel, health checks) back to the engine.
   rpc InitStream(stream InitCommand) returns (stream InitEvent);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HealthObserver (Autonomous FMEA Monitoring + ACP Escalation)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc HealthObserverStatus(HealthObserverStatusRequest) returns (HealthObserverStatusResponse);
+  rpc HealthObserverStart(google.protobuf.Empty) returns (HealthObserverStatusResponse);
+  rpc HealthObserverStop(google.protobuf.Empty) returns (HealthObserverStatusResponse);
+  rpc HealthObserverForceCheck(ForceHealthCheckRequest) returns (ForceHealthCheckResponse);
+  rpc HealthObserverListIncidents(ListIncidentsRequest) returns (ListIncidentsResponse);
+  rpc HealthObserverGetIncident(GetIncidentDetailRequest) returns (GetIncidentDetailResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // X Bookmarks
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc XBookmarksGetAuthUrl(XBookmarksAuthRequest) returns (XBookmarksAuthResponse);
+  rpc XBookmarksCompleteAuth(XBookmarksCompleteAuthRequest) returns (XBookmarksCompleteAuthResponse);
+  rpc XBookmarksCompleteAuthByState(XBookmarksCompleteAuthByStateRequest) returns (XBookmarksCompleteAuthResponse);  // Engine Federation / Cloudflare Worker callback
+  rpc XBookmarksAuthStatus(XBookmarksAuthStatusRequest) returns (XBookmarksAuthStatusResponse);
+  rpc XBookmarksTriggerSync(XBookmarksSyncRequest) returns (XBookmarksSyncResponse);
+  rpc XBookmarksSyncStatus(XBookmarksSyncStatusRequest) returns (XBookmarksSyncStatusResponse);
+  rpc XBookmarksServiceStatus(XBookmarksServiceStatusRequest) returns (XBookmarksServiceStatusResponse);
+  rpc XBookmarksListFolders(XBookmarksListFoldersRequest) returns (XBookmarksListFoldersResponse);
+  rpc XBookmarksQueueStatus(XBookmarksQueueStatusRequest) returns (XBookmarksQueueStatusResponse);
+  rpc XBookmarksEmitTestEvent(XBookmarksEmitTestEventRequest) returns (XBookmarksEmitTestEventResponse);  // Debug: emit test event with OTel tracing
 }

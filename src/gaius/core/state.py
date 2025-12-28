@@ -122,6 +122,16 @@ class InitializationState:
     error: Optional[str] = None
     connected: bool = False  # True when gRPC connection established
 
+    # XB Queue status (updated by InitPanel polling)
+    xb_queue_depth: int = 0
+    xb_cooldown_end: Optional[datetime] = None  # UTC datetime when cooldown ends
+    xb_can_request: bool = True
+
+    # XB Auth status (fetched alongside queue status)
+    xb_authenticated: bool = False
+    xb_username: str = ""
+    xb_action_required: str = ""  # "NOT_AUTHENTICATED", "TOKEN_EXPIRED", etc.
+
 
 @dataclass
 class AppState:

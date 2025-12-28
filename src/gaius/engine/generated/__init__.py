@@ -6,7 +6,7 @@ This package contains:
 - gaius_service_pb2.py: Gaius extension messages
 - gaius_service_pb2_grpc.py: Gaius service stubs
 
-Regenerate with: ./scripts/compile_protos.sh
+Regenerate with: devenv tasks run proto:generate
 """
 
 from .open_inference_grpc_pb2 import (
@@ -33,6 +33,15 @@ from .open_inference_grpc_pb2_grpc import (
 )
 
 from .gaius_service_pb2 import (
+    # Process Status Enum (shared across clients)
+    ProcessStatus,
+    PROCESS_STATUS_UNSPECIFIED,
+    PROCESS_STATUS_STOPPED,
+    PROCESS_STATUS_STARTING,
+    PROCESS_STATUS_HEALTHY,
+    PROCESS_STATUS_UNHEALTHY,
+    PROCESS_STATUS_STOPPING,
+    PROCESS_STATUS_FAILED,
     # Orchestrator
     OrchestratorStatusResponse,
     GPUAllocation,
@@ -162,6 +171,47 @@ from .gaius_service_pb2 import (
     CLTAttributionEdge,
     CLTStatusRequest,
     CLTStatusResponse,
+    # HealthObserver
+    HealthObserverStatusRequest,
+    HealthObserverStatusResponse,
+    HealthIncident,
+    HealthObserverMetrics,
+    HealthObserverConfig,
+    HealthObserverControlRequest,
+    ForceHealthCheckRequest,
+    ForceHealthCheckResponse,
+    GetIncidentDetailRequest,
+    GetIncidentDetailResponse,
+    ListIncidentsRequest,
+    ListIncidentsResponse,
+    # Streaming (Cognition/Evolution/Activity)
+    CognitionStreamRequest,
+    CognitionEvent,
+    EvolutionStreamRequest,
+    EvolutionEvent,
+    ActivityStreamRequest,
+    ActivityEvent,
+    # X Bookmarks
+    XBookmarksAuthRequest,
+    XBookmarksAuthResponse,
+    XBookmarksCompleteAuthRequest,
+    XBookmarksCompleteAuthResponse,
+    XBookmarksCompleteAuthByStateRequest,
+    XBookmarksAuthStatusRequest,
+    XBookmarksAuthStatusResponse,
+    XBookmarksSyncRequest,
+    XBookmarksSyncResponse,
+    XBookmarksSyncStatusRequest,
+    XBookmarksSyncStatusResponse,
+    XBookmarksServiceStatusRequest,
+    XBookmarksServiceStatusResponse,
+    XBookmarkFolder,
+    XBookmarksListFoldersRequest,
+    XBookmarksListFoldersResponse,
+    XBookmarksQueueStatusRequest,
+    XBookmarksQueueStatusResponse,
+    XBookmarksEmitTestEventRequest,
+    XBookmarksEmitTestEventResponse,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -171,6 +221,15 @@ from .gaius_service_pb2_grpc import (
 )
 
 __all__ = [
+    # Process Status Enum
+    "ProcessStatus",
+    "PROCESS_STATUS_UNSPECIFIED",
+    "PROCESS_STATUS_STOPPED",
+    "PROCESS_STATUS_STARTING",
+    "PROCESS_STATUS_HEALTHY",
+    "PROCESS_STATUS_UNHEALTHY",
+    "PROCESS_STATUS_STOPPING",
+    "PROCESS_STATUS_FAILED",
     # OIP
     "ServerLiveRequest",
     "ServerLiveResponse",
@@ -317,6 +376,47 @@ __all__ = [
     "CLTAttributionEdge",
     "CLTStatusRequest",
     "CLTStatusResponse",
+    # HealthObserver
+    "HealthObserverStatusRequest",
+    "HealthObserverStatusResponse",
+    "HealthIncident",
+    "HealthObserverMetrics",
+    "HealthObserverConfig",
+    "HealthObserverControlRequest",
+    "ForceHealthCheckRequest",
+    "ForceHealthCheckResponse",
+    "GetIncidentDetailRequest",
+    "GetIncidentDetailResponse",
+    "ListIncidentsRequest",
+    "ListIncidentsResponse",
+    # Streaming (Cognition/Evolution/Activity)
+    "CognitionStreamRequest",
+    "CognitionEvent",
+    "EvolutionStreamRequest",
+    "EvolutionEvent",
+    "ActivityStreamRequest",
+    "ActivityEvent",
+    # X Bookmarks
+    "XBookmarksAuthRequest",
+    "XBookmarksAuthResponse",
+    "XBookmarksCompleteAuthRequest",
+    "XBookmarksCompleteAuthResponse",
+    "XBookmarksCompleteAuthByStateRequest",
+    "XBookmarksAuthStatusRequest",
+    "XBookmarksAuthStatusResponse",
+    "XBookmarksSyncRequest",
+    "XBookmarksSyncResponse",
+    "XBookmarksSyncStatusRequest",
+    "XBookmarksSyncStatusResponse",
+    "XBookmarksServiceStatusRequest",
+    "XBookmarksServiceStatusResponse",
+    "XBookmarkFolder",
+    "XBookmarksListFoldersRequest",
+    "XBookmarksListFoldersResponse",
+    "XBookmarksQueueStatusRequest",
+    "XBookmarksQueueStatusResponse",
+    "XBookmarksEmitTestEventRequest",
+    "XBookmarksEmitTestEventResponse",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",

@@ -141,6 +141,89 @@ class InitController:
             except asyncio.QueueFull:
                 logger.warning("InitStream subscriber queue full, dropping event")
 
+    async def broadcast_xb_event(self, event_type: str, data: dict) -> None:
+        """Broadcast X Bookmarks event to all InitStream subscribers with OTel tracing.
+
+        Called by XBookmarksService when auth completes or status changes.
+        The TUI's InitPanel listens for these events to update in real-time.
+
+        Extracts trace context from data (if present) to continue the trace
+        across the async boundary from XBookmarksService._emit_event.
+
+        Args:
+            event_type: One of XB_AUTH_COMPLETED, XB_AUTH_FAILED, XB_STATUS_CHANGED
+            data: Event payload (user_id, username, error, etc.)
+        """
+        from gaius.core.telemetry import get_tracer, XBAuthAttrs
+
+        tracer = get_tracer()
+
+        # Extract trace context from data if present (cross-async-boundary linking)
+        parent_ctx = None
+        parent_span_ctx = None
+        if "_trace_id" in data and "_span_id" in data:
+            try:
+                from opentelemetry import trace as otel_trace
+                parent_span_ctx = otel_trace.SpanContext(
+                    trace_id=int(data.pop("_trace_id"), 16),
+                    span_id=int(data.pop("_span_id"), 16),
+                    is_remote=True,
+                    trace_flags=otel_trace.TraceFlags(1),
+                )
+                parent_ctx = otel_trace.set_span_in_context(
+                    otel_trace.NonRecordingSpan(parent_span_ctx)
+                )
+            except Exception:
+                # OTel not fully initialized - continue without trace context
+                pass
+
+        # Build span kwargs for proper trace linking
+        span_kwargs = {"context": parent_ctx} if parent_ctx else {}
+        if parent_span_ctx:
+            try:
+                from opentelemetry import trace as otel_trace
+                span_kwargs["links"] = [otel_trace.Link(parent_span_ctx)]
+            except Exception:
+                pass
+
+        with tracer.start_as_current_span("xb.auth_event.broadcast", **span_kwargs) as span:
+            span.set_attribute(XBAuthAttrs.EVENT_TYPE, event_type)
+            span.set_attribute(XBAuthAttrs.SUBSCRIBER_COUNT, len(self._subscribers))
+
+            # Map string event type to proto enum value
+            type_map = {
+                "XB_AUTH_COMPLETED": InitEvent.Type.XB_AUTH_COMPLETED,
+                "XB_AUTH_FAILED": InitEvent.Type.XB_AUTH_FAILED,
+                "XB_STATUS_CHANGED": InitEvent.Type.XB_STATUS_CHANGED,
+            }
+
+            proto_type = type_map.get(event_type)
+            if proto_type is None:
+                span.add_event("xb.broadcast.unknown_type", {"event_type": event_type})
+                logger.warning(f"Unknown XB event type: {event_type}")
+                return
+
+            # Build human-readable message
+            if event_type == "XB_AUTH_COMPLETED":
+                message = f"X Bookmarks authenticated as @{data.get('username', 'unknown')}"
+                span.set_attribute(XBAuthAttrs.USERNAME, data.get('username', ''))
+            elif event_type == "XB_AUTH_FAILED":
+                message = f"X Bookmarks auth failed: {data.get('error', 'unknown error')}"
+            else:
+                message = f"X Bookmarks status changed"
+
+            event = self._create_event(
+                proto_type,
+                message=message,
+                data=data,
+            )
+
+            span.add_event("xb.broadcast.starting", {"subscriber_count": len(self._subscribers)})
+            await self._broadcast(event)
+            span.add_event("xb.broadcast.completed")
+
+            logger.info(f"Broadcast XB event: {event_type} to {len(self._subscribers)} subscribers")
+
     def _create_event(
         self,
         event_type: int,

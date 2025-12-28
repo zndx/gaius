@@ -23,6 +23,15 @@ from grpc import aio
 from google.protobuf import empty_pb2
 
 from ...generated import (
+    # Process Status Enum
+    ProcessStatus,
+    PROCESS_STATUS_UNSPECIFIED,
+    PROCESS_STATUS_STOPPED,
+    PROCESS_STATUS_STARTING,
+    PROCESS_STATUS_HEALTHY,
+    PROCESS_STATUS_UNHEALTHY,
+    PROCESS_STATUS_STOPPING,
+    PROCESS_STATUS_FAILED,
     # Orchestrator
     OrchestratorStatusResponse,
     GPUAllocation,
@@ -151,6 +160,39 @@ from ...generated import (
     CLTAttributionEdge as ProtoAttributionEdge,
     CLTStatusRequest,
     CLTStatusResponse,
+    # HealthObserver
+    HealthObserverStatusRequest,
+    HealthObserverStatusResponse,
+    HealthIncident as ProtoHealthIncident,
+    HealthObserverMetrics as ProtoHealthObserverMetrics,
+    HealthObserverConfig as ProtoHealthObserverConfig,
+    ForceHealthCheckRequest,
+    ForceHealthCheckResponse,
+    GetIncidentDetailRequest,
+    GetIncidentDetailResponse,
+    ListIncidentsRequest,
+    ListIncidentsResponse,
+    # X Bookmarks
+    XBookmarksAuthRequest,
+    XBookmarksAuthResponse,
+    XBookmarksCompleteAuthByStateRequest,
+    XBookmarksCompleteAuthRequest,
+    XBookmarksCompleteAuthResponse,
+    XBookmarksAuthStatusRequest,
+    XBookmarksAuthStatusResponse,
+    XBookmarksSyncRequest,
+    XBookmarksSyncResponse,
+    XBookmarksSyncStatusRequest,
+    XBookmarksSyncStatusResponse,
+    XBookmarksServiceStatusRequest,
+    XBookmarksServiceStatusResponse,
+    XBookmarksListFoldersRequest,
+    XBookmarksListFoldersResponse,
+    XBookmarkFolder,
+    XBookmarksQueueStatusRequest,
+    XBookmarksQueueStatusResponse,
+    XBookmarksEmitTestEventRequest,
+    XBookmarksEmitTestEventResponse,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -159,6 +201,24 @@ if TYPE_CHECKING:
     from ..server import ServiceRegistry
 
 logger = logging.getLogger(__name__)
+
+
+# Map string status values to ProcessStatus enum
+_STATUS_MAP = {
+    "stopped": PROCESS_STATUS_STOPPED,
+    "starting": PROCESS_STATUS_STARTING,
+    "healthy": PROCESS_STATUS_HEALTHY,
+    "running": PROCESS_STATUS_HEALTHY,  # alias for healthy
+    "unhealthy": PROCESS_STATUS_UNHEALTHY,
+    "stopping": PROCESS_STATUS_STOPPING,
+    "failed": PROCESS_STATUS_FAILED,
+    "error": PROCESS_STATUS_FAILED,  # alias for failed
+}
+
+
+def _status_to_enum(status_str: str) -> int:
+    """Convert string status to ProcessStatus enum value."""
+    return _STATUS_MAP.get(status_str.lower(), PROCESS_STATUS_UNSPECIFIED)
 
 
 class GaiusServicer(GaiusServiceServicer):
@@ -229,7 +289,7 @@ class GaiusServicer(GaiusServiceServicer):
                 endpoint = EndpointInfo(
                     name=alias,
                     model=ep.get("model", ""),
-                    status=ep.get("status", "stopped"),
+                    status=_status_to_enum(ep.get("status", "stopped")),
                     port=ep.get("port", 0),
                 )
                 response.endpoints.append(endpoint)
@@ -244,7 +304,7 @@ class GaiusServicer(GaiusServiceServicer):
                     endpoint = EndpointInfo(
                         name=name,
                         model=backend.get("model", ""),
-                        status="running" if backend.get("healthy") else "stopped",
+                        status=_status_to_enum("healthy" if backend.get("healthy") else "stopped"),
                         port=backend.get("port", 0),
                     )
                     response.endpoints.append(endpoint)
@@ -1390,6 +1450,138 @@ class GaiusServicer(GaiusServiceServicer):
             logger.debug(f"Failed to get active thoughts: {e}")
 
         return response
+
+    async def SubscribeCognition(
+        self,
+        request,
+        context: aio.ServicerContext,
+    ):
+        """Stream cognition events to TUI/MCP clients.
+
+        Replaces polling - clients receive real-time updates as thoughts
+        are generated, cycles start/complete, etc.
+        """
+        from ...generated import gaius_service_pb2 as pb
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            # No service - return empty stream
+            return
+
+        buffer_size = request.buffer_size or 100
+
+        try:
+            async for event in cognition.subscribe_cognition(buffer_size=buffer_size):
+                # Map event type string to proto enum
+                event_type = getattr(
+                    pb.CognitionEvent.Type,
+                    event.get("type", "THOUGHT"),
+                    pb.CognitionEvent.Type.THOUGHT,
+                )
+
+                yield pb.CognitionEvent(
+                    type=event_type,
+                    timestamp_ms=event.get("timestamp_ms", 0),
+                    thought_id=event.get("thought_id", ""),
+                    thought_type=event.get("thought_type", ""),
+                    title=event.get("title", ""),
+                    summary=event.get("summary", ""),
+                    salience=event.get("salience", 0.0),
+                    generation=event.get("generation", 0),
+                    cycle_id=event.get("cycle_id", ""),
+                    thoughts_in_cycle=event.get("thoughts_in_cycle", 0),
+                    error=event.get("error", ""),
+                )
+        except asyncio.CancelledError:
+            # Client disconnected
+            pass
+        except Exception as e:
+            logger.error(f"Cognition stream error: {e}")
+
+    async def SubscribeEvolution(
+        self,
+        request,
+        context: aio.ServicerContext,
+    ):
+        """Stream evolution events to TUI/MCP clients.
+
+        Replaces polling - clients receive real-time updates as agents
+        are evaluated, promoted, etc.
+        """
+        from ...generated import gaius_service_pb2 as pb
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return
+
+        buffer_size = request.buffer_size or 100
+        agent_filter = request.agent_filter or ""
+
+        try:
+            async for event in cognition.subscribe_evolution(
+                buffer_size=buffer_size,
+                agent_filter=agent_filter,
+            ):
+                # Map event type string to proto enum
+                event_type = getattr(
+                    pb.EvolutionEvent.Type,
+                    event.get("type", "CYCLE_START"),
+                    pb.EvolutionEvent.Type.CYCLE_START,
+                )
+
+                yield pb.EvolutionEvent(
+                    type=event_type,
+                    timestamp_ms=event.get("timestamp_ms", 0),
+                    agent_id=event.get("agent_id", ""),
+                    version_id=event.get("version_id", ""),
+                    score=event.get("score", 0.0),
+                    improvement_pct=event.get("improvement_pct", 0.0),
+                    details=event.get("details", ""),
+                    cycle_number=event.get("cycle_number", 0),
+                    merge_id=event.get("merge_id", ""),
+                    error=event.get("error", ""),
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Evolution stream error: {e}")
+
+    async def SubscribeActivity(
+        self,
+        request,
+        context: aio.ServicerContext,
+    ):
+        """Stream all activity events to TUI/MCP clients.
+
+        Unified feed of cognition, evolution, system, and KB events.
+        """
+        from ...generated import gaius_service_pb2 as pb
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return
+
+        buffer_size = request.buffer_size or 100
+        domains = list(request.domains) if request.domains else None
+
+        try:
+            async for event in cognition.subscribe_activity(
+                buffer_size=buffer_size,
+                domains=domains,
+            ):
+                yield pb.ActivityEvent(
+                    event_type=event.get("event_type", ""),
+                    timestamp_ms=event.get("timestamp_ms", 0),
+                    source=event.get("source", ""),
+                    domain=event.get("domain", ""),
+                    title=event.get("title", ""),
+                    summary=event.get("summary", ""),
+                    data=event.get("data", "{}").encode("utf-8"),
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Activity stream error: {e}")
 
     # =========================================================================
     # State Service (Thin Client Architecture)
@@ -3598,4 +3790,659 @@ class GaiusServicer(GaiusServiceServicer):
             return CLTStatusResponse(
                 available=False,
                 error=str(e),
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HealthObserver (Autonomous FMEA Monitoring + ACP Escalation)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def HealthObserverStatus(
+        self,
+        request: HealthObserverStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> HealthObserverStatusResponse:
+        """Get health observer daemon status."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return HealthObserverStatusResponse(
+                    running=False,
+                    enabled=False,
+                    poll_count=0,
+                )
+
+            status = observer.get_status()
+
+            # Convert incidents to proto
+            proto_incidents = []
+            for inc in status.get("incidents", []):
+                proto_incidents.append(ProtoHealthIncident(
+                    incident_id=inc.get("incident_id", ""),
+                    fingerprint=inc.get("fingerprint", ""),
+                    endpoint=inc.get("endpoint", ""),
+                    failure_mode_id=inc.get("failure_mode_id", ""),
+                    rpn_score=inc.get("rpn_score", 0),
+                    rpn_severity=inc.get("rpn_severity", 5),
+                    rpn_occurrence=inc.get("rpn_occurrence", 5),
+                    rpn_detection=inc.get("rpn_detection", 5),
+                    current_tier=inc.get("current_tier", 0),
+                    sequence_id=inc.get("sequence_id") or "",
+                    created_at=inc.get("created_at", ""),
+                    last_check_at=inc.get("last_check_at", ""),
+                    attempts=inc.get("attempts", 0),
+                    github_issue=inc.get("github_issue") or 0,
+                    status=inc.get("status", "unknown"),
+                ))
+
+            metrics = status.get("metrics", {})
+            config = status.get("config", {})
+
+            return HealthObserverStatusResponse(
+                running=status.get("running", False),
+                enabled=status.get("enabled", False),
+                poll_count=status.get("poll_count", 0),
+                last_poll_at=status.get("last_poll_at") or "",
+                active_incidents=status.get("active_incidents", 0),
+                incidents=proto_incidents,
+                metrics=ProtoHealthObserverMetrics(
+                    incidents_created=metrics.get("incidents_created", 0),
+                    incidents_resolved=metrics.get("incidents_resolved", 0),
+                    acp_escalations=metrics.get("acp_escalations", 0),
+                ),
+                config=ProtoHealthObserverConfig(
+                    poll_interval=config.get("poll_interval", 30.0),
+                    escalate_to_acp=config.get("escalate_to_acp", True),
+                    github_repo=config.get("github_repo", ""),
+                ),
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverStatus failed: {e}")
+            return HealthObserverStatusResponse(
+                running=False,
+                enabled=False,
+            )
+
+    async def HealthObserverStart(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext,
+    ) -> HealthObserverStatusResponse:
+        """Start the health observer daemon."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return HealthObserverStatusResponse(
+                    running=False,
+                    enabled=False,
+                )
+
+            await observer.start()
+
+            # Return updated status
+            return await self.HealthObserverStatus(
+                HealthObserverStatusRequest(), context
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverStart failed: {e}")
+            return HealthObserverStatusResponse(
+                running=False,
+                enabled=False,
+            )
+
+    async def HealthObserverStop(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext,
+    ) -> HealthObserverStatusResponse:
+        """Stop the health observer daemon."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return HealthObserverStatusResponse(
+                    running=False,
+                    enabled=False,
+                )
+
+            await observer.stop()
+
+            # Return updated status
+            return await self.HealthObserverStatus(
+                HealthObserverStatusRequest(), context
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverStop failed: {e}")
+            return HealthObserverStatusResponse(
+                running=False,
+                enabled=False,
+            )
+
+    async def HealthObserverForceCheck(
+        self,
+        request: ForceHealthCheckRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ForceHealthCheckResponse:
+        """Force an immediate health check."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return ForceHealthCheckResponse(
+                    healthy=True,
+                    summary="Health observer not available",
+                )
+
+            # Get incident count before check
+            incidents_before = len(observer.active_incidents)
+
+            # Run forced check
+            report = await observer.force_check()
+
+            # Calculate new incidents
+            incidents_after = len(observer.active_incidents)
+            new_incidents = max(0, incidents_after - incidents_before)
+
+            # Count check statuses
+            checks = report.get("checks", [])
+            passed = sum(1 for c in checks if c.get("status") != "FAIL")
+            warnings = sum(1 for c in checks if c.get("status") == "WARN")
+            failures = sum(1 for c in checks if c.get("status") == "FAIL")
+
+            return ForceHealthCheckResponse(
+                healthy=report.get("healthy", True),
+                summary=f"{passed} passed, {warnings} warnings, {failures} failures",
+                passed=passed,
+                warnings=warnings,
+                failures=failures,
+                new_incidents=new_incidents,
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverForceCheck failed: {e}")
+            return ForceHealthCheckResponse(
+                healthy=False,
+                summary=f"Error: {e}",
+            )
+
+    async def HealthObserverListIncidents(
+        self,
+        request: ListIncidentsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ListIncidentsResponse:
+        """List health incidents."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return ListIncidentsResponse()
+
+            incidents = observer.active_incidents
+            status_filter = request.status or "active"
+
+            proto_incidents = []
+            for inc in incidents:
+                # Apply status filter
+                if status_filter != "all" and inc.status != status_filter:
+                    continue
+
+                proto_incidents.append(ProtoHealthIncident(
+                    incident_id=str(inc.incident_id),
+                    fingerprint=inc.fingerprint,
+                    endpoint=inc.endpoint,
+                    failure_mode_id=inc.failure_mode_id,
+                    rpn_score=inc.rpn_score,
+                    rpn_severity=inc.rpn_severity,
+                    rpn_occurrence=inc.rpn_occurrence,
+                    rpn_detection=inc.rpn_detection,
+                    current_tier=inc.current_tier,
+                    sequence_id=str(inc.sequence_id) if inc.sequence_id else "",
+                    created_at=inc.created_at.isoformat(),
+                    last_check_at=inc.last_check_at.isoformat(),
+                    attempts=inc.attempts,
+                    github_issue=inc.github_issue or 0,
+                    status=inc.status,
+                ))
+
+            return ListIncidentsResponse(incidents=proto_incidents)
+
+        except Exception as e:
+            logger.exception(f"HealthObserverListIncidents failed: {e}")
+            return ListIncidentsResponse()
+
+    async def HealthObserverGetIncident(
+        self,
+        request: GetIncidentDetailRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetIncidentDetailResponse:
+        """Get details of a specific incident."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return GetIncidentDetailResponse(found=False)
+
+            incident = observer.get_incident(request.fingerprint)
+            if not incident:
+                return GetIncidentDetailResponse(found=False)
+
+            proto_incident = ProtoHealthIncident(
+                incident_id=str(incident.incident_id),
+                fingerprint=incident.fingerprint,
+                endpoint=incident.endpoint,
+                failure_mode_id=incident.failure_mode_id,
+                rpn_score=incident.rpn_score,
+                rpn_severity=incident.rpn_severity,
+                rpn_occurrence=incident.rpn_occurrence,
+                rpn_detection=incident.rpn_detection,
+                current_tier=incident.current_tier,
+                sequence_id=str(incident.sequence_id) if incident.sequence_id else "",
+                created_at=incident.created_at.isoformat(),
+                last_check_at=incident.last_check_at.isoformat(),
+                attempts=incident.attempts,
+                github_issue=incident.github_issue or 0,
+                status=incident.status,
+            )
+
+            return GetIncidentDetailResponse(
+                incident=proto_incident,
+                found=True,
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverGetIncident failed: {e}")
+            return GetIncidentDetailResponse(found=False)
+
+    # =========================================================================
+    # X Bookmarks Service Methods
+    # =========================================================================
+
+    async def XBookmarksGetAuthUrl(
+        self,
+        request: XBookmarksAuthRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksAuthResponse:
+        """Get OAuth 2.0 authorization URL for X API access."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT\n"
+                    "  Try: /health fix x_bookmarks"
+                )
+                return XBookmarksAuthResponse()
+
+            auth_url, state, verifier = await service.get_auth_url()
+            return XBookmarksAuthResponse(
+                auth_url=auth_url,
+                state=state,
+                verifier=verifier,
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksGetAuthUrl failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return XBookmarksAuthResponse()
+
+    async def XBookmarksCompleteAuth(
+        self,
+        request: XBookmarksCompleteAuthRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksCompleteAuthResponse:
+        """Complete OAuth 2.0 flow with authorization code."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT"
+                )
+                return XBookmarksCompleteAuthResponse(success=False)
+
+            # Verifier is optional - will be looked up from database if not provided
+            verifier = request.verifier if request.verifier else None
+            result = await service.complete_auth(request.code, verifier)
+            return XBookmarksCompleteAuthResponse(
+                success=True,
+                message="Authentication successful",
+                user_id=result.get("user_id", ""),
+                username=result.get("username", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksCompleteAuth failed: {e}")
+            return XBookmarksCompleteAuthResponse(
+                success=False,
+                error=str(e),
+                message=str(e),
+            )
+
+    async def XBookmarksCompleteAuthByState(
+        self,
+        request: XBookmarksCompleteAuthByStateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksCompleteAuthResponse:
+        """Complete OAuth using state parameter to look up verifier.
+
+        Used by Engine Federation and Cloudflare Worker callbacks where
+        the state parameter is known but verifier needs to be looked up
+        from the database.
+        """
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT"
+                )
+                return XBookmarksCompleteAuthResponse(success=False)
+
+            result = await service.complete_auth_by_state(request.code, request.state)
+
+            if "error" in result:
+                return XBookmarksCompleteAuthResponse(
+                    success=False,
+                    error=result.get("error", "Unknown error"),
+                    message=result.get("error", "Unknown error"),
+                )
+
+            return XBookmarksCompleteAuthResponse(
+                success=True,
+                message="Authentication successful",
+                user_id=result.get("user_id", ""),
+                username=result.get("username", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksCompleteAuthByState failed: {e}")
+            return XBookmarksCompleteAuthResponse(
+                success=False,
+                error=str(e),
+                message=str(e),
+            )
+
+    async def XBookmarksAuthStatus(
+        self,
+        request: XBookmarksAuthStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksAuthStatusResponse:
+        """Check X API authentication status."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                return XBookmarksAuthStatusResponse(
+                    authenticated=False,
+                    error="XBookmarksService not initialized",
+                    guru_code="#XB.00000001.SVCNOTINIT",
+                    action_required="NOT_INITIALIZED",
+                    guidance_message=(
+                        "X Bookmarks service is still initializing. "
+                        "Wait for engine startup to complete."
+                    ),
+                )
+
+            status = await service.get_auth_status()
+            return XBookmarksAuthStatusResponse(
+                authenticated=status.get("authenticated", False),
+                user_id=status.get("user_id", ""),
+                username=status.get("username", ""),
+                expires_at=status.get("expires_at", ""),
+                scopes=status.get("scopes", []),
+                error=status.get("error", ""),
+                guru_code=status.get("guru_code", ""),
+                action_required=status.get("action_required", ""),
+                guidance_message=status.get("message", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksAuthStatus failed: {e}")
+            return XBookmarksAuthStatusResponse(
+                authenticated=False,
+                error=str(e),
+                action_required="ERROR",
+                guidance_message="Check engine logs for details.",
+            )
+
+    async def XBookmarksTriggerSync(
+        self,
+        request: XBookmarksSyncRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksSyncResponse:
+        """Trigger X bookmarks sync with Iceberg write and work queue population."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT"
+                )
+                return XBookmarksSyncResponse(
+                    started=False,
+                    status="failed",
+                    action_required="NOT_INITIALIZED",
+                    guidance_message="Engine is starting. Wait for vLLM preload to complete.",
+                )
+
+            sync_run = await service.trigger_sync(
+                user_id=request.user_id if request.user_id else None,
+                force=request.full_sync,  # full_sync maps to force
+            )
+            return XBookmarksSyncResponse(
+                started=True,
+                run_id=sync_run.run_id,
+                status=sync_run.status,
+                message=f"Sync {sync_run.status}: {sync_run.bookmarks_fetched} fetched, {sync_run.iceberg_written} to Iceberg, {sync_run.queue_items} queued",
+                bookmarks_fetched=sync_run.bookmarks_fetched,
+                iceberg_written=sync_run.iceberg_written,
+                queue_items=sync_run.queue_items,
+                action_required=sync_run.action_required or "",
+                guidance_message=sync_run.guidance_message or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksTriggerSync failed: {e}")
+            # Check if it's an auth error
+            error_str = str(e)
+            action_required = ""
+            guidance_message = ""
+            if "expired" in error_str.lower() or "token" in error_str.lower():
+                action_required = "TOKEN_EXPIRED"
+                guidance_message = "Re-authenticate using /x-bookmarks auth to continue syncing."
+            elif "authentication" in error_str.lower() or "oauth" in error_str.lower():
+                action_required = "NOT_AUTHENTICATED"
+                guidance_message = "Run /x-bookmarks auth to set up X API access."
+
+            return XBookmarksSyncResponse(
+                started=False,
+                status="failed",
+                message=str(e),
+                action_required=action_required,
+                guidance_message=guidance_message,
+            )
+
+    async def XBookmarksSyncStatus(
+        self,
+        request: XBookmarksSyncStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksSyncStatusResponse:
+        """Get sync status and history."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                return XBookmarksSyncStatusResponse(
+                    configured=False,
+                    action_required="NOT_INITIALIZED",
+                    guidance_message=(
+                        "X Bookmarks service is still initializing. "
+                        "Wait for engine startup to complete."
+                    ),
+                )
+
+            status = await service.get_sync_status(
+                user_id=request.user_id if request.user_id else None,
+            )
+
+            return XBookmarksSyncStatusResponse(
+                configured=status.get("configured", False),
+                user_id=status.get("user_id", ""),
+                username=status.get("username", ""),
+                token_status=status.get("token_status", "none"),
+                folder_count=status.get("folder_count", 0),
+                bookmark_count=status.get("bookmark_count", 0),
+                queued_requests=status.get("queued_requests", 0),
+                last_sync_at=status.get("last_sync_at", ""),
+                last_run_status=status.get("last_run_status", ""),
+                action_required=status.get("action_required", ""),
+                guidance_message=status.get("message", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksSyncStatus failed: {e}")
+            return XBookmarksSyncStatusResponse(
+                configured=False,
+                action_required="ERROR",
+                guidance_message="Check engine logs for details.",
+            )
+
+    async def XBookmarksServiceStatus(
+        self,
+        request: XBookmarksServiceStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksServiceStatusResponse:
+        """Get overall X Bookmarks service status."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                return XBookmarksServiceStatusResponse(running=False)
+
+            status = await service.get_service_status()
+
+            return XBookmarksServiceStatusResponse(
+                running=status.get("running", False),
+                total_syncs=status.get("total_syncs", 0),
+                total_bookmarks=status.get("total_bookmarks", 0),
+                last_sync_at=status.get("last_sync_at", ""),
+                queue_poll_interval_s=status.get("queue_poll_interval_s", 0),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksServiceStatus failed: {e}")
+            return XBookmarksServiceStatusResponse(running=False)
+
+    async def XBookmarksListFolders(
+        self,
+        request: XBookmarksListFoldersRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksListFoldersResponse:
+        """List X bookmark folders."""
+        try:
+            service = self._services.x_bookmarks_service
+            if service is None:
+                return XBookmarksListFoldersResponse(
+                    folders_available=False,
+                    message="XBookmarksService not initialized",
+                )
+
+            # Check if folders are available
+            folders_available = await service.check_folders_available()
+            if not folders_available:
+                return XBookmarksListFoldersResponse(
+                    folders_available=False,
+                    message="Bookmark folders not available for your API tier.\n"
+                    "  Guru Meditation: #XB.00000011.NOFOLDER",
+                )
+
+            # Get folders from database
+            user_id = request.user_id if request.user_id else None
+            folders = await service.list_folders(user_id)
+
+            return XBookmarksListFoldersResponse(
+                folders=[
+                    XBookmarkFolder(
+                        id=f["id"],
+                        name=f["name"],
+                        kb_path=f["kb_path"],
+                        bookmark_count=f["bookmark_count"],
+                    )
+                    for f in folders
+                ],
+                folders_available=True,
+                message=f"{len(folders)} folders",
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksListFolders failed: {e}")
+            return XBookmarksListFoldersResponse(
+                folders_available=False,
+                message=str(e),
+            )
+
+    async def XBookmarksQueueStatus(
+        self,
+        request: XBookmarksQueueStatusRequest,
+        context: aio.ServicerContext,
+    ) -> XBookmarksQueueStatusResponse:
+        """Get queue status and cooldown timer for InitPanel display."""
+        service = self._services.x_bookmarks_service
+        if service is None:
+            logger.warning("XBookmarksQueueStatus: service is None")
+            return XBookmarksQueueStatusResponse(
+                queue_depth=0,
+                can_request=False,
+                cooldown_seconds=0,
+            )
+
+        try:
+            status = await service.get_queue_status()
+            logger.info(f"XBookmarksQueueStatus: got status={status}")
+            return XBookmarksQueueStatusResponse(
+                queue_depth=status.get("queue_depth", 0),
+                cooldown_end_iso=status.get("cooldown_end_iso", ""),
+                cooldown_seconds=status.get("cooldown_seconds", 0),
+                can_request=status.get("can_request", False),
+            )
+        except Exception as e:
+            logger.warning(f"XBookmarksQueueStatus error: {e}")
+            return XBookmarksQueueStatusResponse(
+                queue_depth=0,
+                can_request=False,
+            )
+
+    async def XBookmarksEmitTestEvent(
+        self,
+        request: XBookmarksEmitTestEventRequest,
+        context: aio.ServicerContext,
+    ) -> XBookmarksEmitTestEventResponse:
+        """Emit a test XB event for debugging the event propagation chain with OTel tracing.
+
+        This endpoint allows firing simulated XB events to verify the complete flow
+        from engine → InitController → InitStream → TUI InitPanel without requiring
+        actual OAuth completion.
+        """
+        service = self._services.x_bookmarks_service
+        if service is None:
+            logger.warning("XBookmarksEmitTestEvent: service is None")
+            return XBookmarksEmitTestEventResponse(
+                success=False,
+                message="X Bookmarks service not initialized",
+            )
+
+        try:
+            event_type = request.event_type or "XB_AUTH_COMPLETED"
+            result = await service.emit_test_event(event_type=event_type)
+            logger.info(f"XBookmarksEmitTestEvent: emitted {event_type}, result={result}")
+            return XBookmarksEmitTestEventResponse(
+                success=result.get("success", False),
+                event_type=result.get("event_type", event_type),
+                message=f"Emitted test event: {event_type}",
+            )
+        except Exception as e:
+            logger.warning(f"XBookmarksEmitTestEvent error: {e}")
+            return XBookmarksEmitTestEventResponse(
+                success=False,
+                message=str(e),
             )

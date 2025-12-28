@@ -159,6 +159,21 @@ class GaiusServiceStub(object):
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionActivityResponse.FromString,
                 _registered_method=True)
+        self.SubscribeCognition = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeCognition',
+                request_serializer=gaius__service__pb2.CognitionStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CognitionEvent.FromString,
+                _registered_method=True)
+        self.SubscribeEvolution = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeEvolution',
+                request_serializer=gaius__service__pb2.EvolutionStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EvolutionEvent.FromString,
+                _registered_method=True)
+        self.SubscribeActivity = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeActivity',
+                request_serializer=gaius__service__pb2.ActivityStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ActivityEvent.FromString,
+                _registered_method=True)
         self.GetCurrentState = channel.unary_unary(
                 '/gaius.engine.GaiusService/GetCurrentState',
                 request_serializer=gaius__service__pb2.GetStateRequest.SerializeToString,
@@ -308,6 +323,86 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/InitStream',
                 request_serializer=gaius__service__pb2.InitCommand.SerializeToString,
                 response_deserializer=gaius__service__pb2.InitEvent.FromString,
+                _registered_method=True)
+        self.HealthObserverStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverStatus',
+                request_serializer=gaius__service__pb2.HealthObserverStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.HealthObserverStatusResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverStart = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverStart',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.HealthObserverStatusResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverStop = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverStop',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.HealthObserverStatusResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverForceCheck = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverForceCheck',
+                request_serializer=gaius__service__pb2.ForceHealthCheckRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ForceHealthCheckResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverListIncidents = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverListIncidents',
+                request_serializer=gaius__service__pb2.ListIncidentsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListIncidentsResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverGetIncident = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverGetIncident',
+                request_serializer=gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetIncidentDetailResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksGetAuthUrl = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksGetAuthUrl',
+                request_serializer=gaius__service__pb2.XBookmarksAuthRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksAuthResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksCompleteAuth = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksCompleteAuth',
+                request_serializer=gaius__service__pb2.XBookmarksCompleteAuthRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksCompleteAuthByState = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksCompleteAuthByState',
+                request_serializer=gaius__service__pb2.XBookmarksCompleteAuthByStateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksAuthStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksAuthStatus',
+                request_serializer=gaius__service__pb2.XBookmarksAuthStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksAuthStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksTriggerSync = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksTriggerSync',
+                request_serializer=gaius__service__pb2.XBookmarksSyncRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksSyncResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksSyncStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksSyncStatus',
+                request_serializer=gaius__service__pb2.XBookmarksSyncStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksSyncStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksServiceStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksServiceStatus',
+                request_serializer=gaius__service__pb2.XBookmarksServiceStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksServiceStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksListFolders = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksListFolders',
+                request_serializer=gaius__service__pb2.XBookmarksListFoldersRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksListFoldersResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksQueueStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksQueueStatus',
+                request_serializer=gaius__service__pb2.XBookmarksQueueStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksQueueStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksEmitTestEvent = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksEmitTestEvent',
+                request_serializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
                 _registered_method=True)
 
 
@@ -483,6 +578,27 @@ class GaiusServiceServicer(object):
 
     def CognitionActivity(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeCognition(self, request, context):
+        """Cognition streaming - replaces TUI polling
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeEvolution(self, request, context):
+        """Evolution streaming - replaces TUI polling
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeActivity(self, request, context):
+        """Unified activity stream - all system activity
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -702,6 +818,110 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def HealthObserverStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        HealthObserver (Autonomous FMEA Monitoring + ACP Escalation)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverStart(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverStop(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverForceCheck(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverListIncidents(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverGetIncident(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksGetAuthUrl(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        X Bookmarks
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksCompleteAuth(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksCompleteAuthByState(self, request, context):
+        """Engine Federation / Cloudflare Worker callback
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksAuthStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksTriggerSync(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksSyncStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksServiceStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksListFolders(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksQueueStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksEmitTestEvent(self, request, context):
+        """Debug: emit test event with OTel tracing
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -824,6 +1044,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.CognitionActivity,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.CognitionActivityResponse.SerializeToString,
+            ),
+            'SubscribeCognition': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeCognition,
+                    request_deserializer=gaius__service__pb2.CognitionStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.CognitionEvent.SerializeToString,
+            ),
+            'SubscribeEvolution': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeEvolution,
+                    request_deserializer=gaius__service__pb2.EvolutionStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.EvolutionEvent.SerializeToString,
+            ),
+            'SubscribeActivity': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeActivity,
+                    request_deserializer=gaius__service__pb2.ActivityStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.ActivityEvent.SerializeToString,
             ),
             'GetCurrentState': grpc.unary_unary_rpc_method_handler(
                     servicer.GetCurrentState,
@@ -974,6 +1209,86 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.InitStream,
                     request_deserializer=gaius__service__pb2.InitCommand.FromString,
                     response_serializer=gaius__service__pb2.InitEvent.SerializeToString,
+            ),
+            'HealthObserverStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverStatus,
+                    request_deserializer=gaius__service__pb2.HealthObserverStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.HealthObserverStatusResponse.SerializeToString,
+            ),
+            'HealthObserverStart': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverStart,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.HealthObserverStatusResponse.SerializeToString,
+            ),
+            'HealthObserverStop': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverStop,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.HealthObserverStatusResponse.SerializeToString,
+            ),
+            'HealthObserverForceCheck': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverForceCheck,
+                    request_deserializer=gaius__service__pb2.ForceHealthCheckRequest.FromString,
+                    response_serializer=gaius__service__pb2.ForceHealthCheckResponse.SerializeToString,
+            ),
+            'HealthObserverListIncidents': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverListIncidents,
+                    request_deserializer=gaius__service__pb2.ListIncidentsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListIncidentsResponse.SerializeToString,
+            ),
+            'HealthObserverGetIncident': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverGetIncident,
+                    request_deserializer=gaius__service__pb2.GetIncidentDetailRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetIncidentDetailResponse.SerializeToString,
+            ),
+            'XBookmarksGetAuthUrl': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksGetAuthUrl,
+                    request_deserializer=gaius__service__pb2.XBookmarksAuthRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksAuthResponse.SerializeToString,
+            ),
+            'XBookmarksCompleteAuth': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksCompleteAuth,
+                    request_deserializer=gaius__service__pb2.XBookmarksCompleteAuthRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.SerializeToString,
+            ),
+            'XBookmarksCompleteAuthByState': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksCompleteAuthByState,
+                    request_deserializer=gaius__service__pb2.XBookmarksCompleteAuthByStateRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.SerializeToString,
+            ),
+            'XBookmarksAuthStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksAuthStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksAuthStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksAuthStatusResponse.SerializeToString,
+            ),
+            'XBookmarksTriggerSync': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksTriggerSync,
+                    request_deserializer=gaius__service__pb2.XBookmarksSyncRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksSyncResponse.SerializeToString,
+            ),
+            'XBookmarksSyncStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksSyncStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksSyncStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksSyncStatusResponse.SerializeToString,
+            ),
+            'XBookmarksServiceStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksServiceStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksServiceStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksServiceStatusResponse.SerializeToString,
+            ),
+            'XBookmarksListFolders': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksListFolders,
+                    request_deserializer=gaius__service__pb2.XBookmarksListFoldersRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksListFoldersResponse.SerializeToString,
+            ),
+            'XBookmarksQueueStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksQueueStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksQueueStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksQueueStatusResponse.SerializeToString,
+            ),
+            'XBookmarksEmitTestEvent': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksEmitTestEvent,
+                    request_deserializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1628,6 +1943,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CognitionActivity',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             gaius__service__pb2.CognitionActivityResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeCognition(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeCognition',
+            gaius__service__pb2.CognitionStreamRequest.SerializeToString,
+            gaius__service__pb2.CognitionEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeEvolution(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeEvolution',
+            gaius__service__pb2.EvolutionStreamRequest.SerializeToString,
+            gaius__service__pb2.EvolutionEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeActivity(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeActivity',
+            gaius__service__pb2.ActivityStreamRequest.SerializeToString,
+            gaius__service__pb2.ActivityEvent.FromString,
             options,
             channel_credentials,
             insecure,
@@ -2438,6 +2834,438 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/InitStream',
             gaius__service__pb2.InitCommand.SerializeToString,
             gaius__service__pb2.InitEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverStatus',
+            gaius__service__pb2.HealthObserverStatusRequest.SerializeToString,
+            gaius__service__pb2.HealthObserverStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverStart(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverStart',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.HealthObserverStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverStop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverStop',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.HealthObserverStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverForceCheck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverForceCheck',
+            gaius__service__pb2.ForceHealthCheckRequest.SerializeToString,
+            gaius__service__pb2.ForceHealthCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverListIncidents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverListIncidents',
+            gaius__service__pb2.ListIncidentsRequest.SerializeToString,
+            gaius__service__pb2.ListIncidentsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverGetIncident(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverGetIncident',
+            gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
+            gaius__service__pb2.GetIncidentDetailResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksGetAuthUrl(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksGetAuthUrl',
+            gaius__service__pb2.XBookmarksAuthRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksAuthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksCompleteAuth(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksCompleteAuth',
+            gaius__service__pb2.XBookmarksCompleteAuthRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksCompleteAuthByState(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksCompleteAuthByState',
+            gaius__service__pb2.XBookmarksCompleteAuthByStateRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksAuthStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksAuthStatus',
+            gaius__service__pb2.XBookmarksAuthStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksAuthStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksTriggerSync(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksTriggerSync',
+            gaius__service__pb2.XBookmarksSyncRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksSyncResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksSyncStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksSyncStatus',
+            gaius__service__pb2.XBookmarksSyncStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksSyncStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksServiceStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksServiceStatus',
+            gaius__service__pb2.XBookmarksServiceStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksServiceStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksListFolders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksListFolders',
+            gaius__service__pb2.XBookmarksListFoldersRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksListFoldersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksQueueStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksQueueStatus',
+            gaius__service__pb2.XBookmarksQueueStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksQueueStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksEmitTestEvent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksEmitTestEvent',
+            gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
             options,
             channel_credentials,
             insecure,
