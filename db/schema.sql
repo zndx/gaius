@@ -1,4 +1,4 @@
-\restrict mexGvu9139aCaC6sYgkf1M2eER2ActwaylkPrs40QQQCZVBTKhbbF309CNjhaOD
+\restrict 82IuwDQDF63iuaHbYFVQp7TythlM2pSBlmmhKrGgDEn4JKdB2rIamTCl4YYqup0
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -1423,6 +1423,262 @@ $$;
 --
 
 COMMENT ON FUNCTION public.upsert_current_state_if_newer(p_kb_root text, p_snapshot_id integer, p_generation bigint, p_state_json jsonb) IS 'Idempotent update: only applies if incoming generation > current.';
+
+
+--
+-- Name: x_can_request(character varying, character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_can_request(p_user_id character varying, p_endpoint_group character varying DEFAULT 'bookmarks'::character varying) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_reset_at TIMESTAMPTZ;
+    v_remaining INTEGER;
+BEGIN
+    SELECT reset_at, requests_remaining INTO v_reset_at, v_remaining
+    FROM x_rate_limits
+    WHERE user_id = p_user_id AND endpoint_group = p_endpoint_group;
+
+    -- No rate limit record = allow (first request)
+    IF NOT FOUND THEN
+        RETURN TRUE;
+    END IF;
+
+    -- Past reset time = allow
+    IF v_reset_at IS NOT NULL AND v_reset_at <= NOW() THEN
+        RETURN TRUE;
+    END IF;
+
+    -- Have remaining quota
+    IF v_remaining > 0 THEN
+        RETURN TRUE;
+    END IF;
+
+    RETURN FALSE;
+END;
+$$;
+
+
+--
+-- Name: x_check_token_refresh(character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_check_token_refresh(p_user_id character varying) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_expires_at TIMESTAMPTZ;
+    v_has_refresh BOOLEAN;
+BEGIN
+    SELECT expires_at, refresh_token IS NOT NULL INTO v_expires_at, v_has_refresh
+    FROM x_oauth_tokens
+    WHERE user_id = p_user_id;
+
+    IF NOT FOUND THEN
+        RETURN FALSE;  -- No token
+    END IF;
+
+    -- Needs refresh if expires within 5 minutes
+    IF v_expires_at IS NOT NULL AND v_expires_at <= NOW() + INTERVAL '5 minutes' THEN
+        RETURN v_has_refresh;
+    END IF;
+
+    RETURN FALSE;  -- Token still valid
+END;
+$$;
+
+
+--
+-- Name: x_complete_sync_run(integer, character varying, integer, integer, integer, character varying, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_complete_sync_run(p_run_id integer, p_status character varying, p_bookmarks_fetched integer DEFAULT 0, p_bookmarks_new integer DEFAULT 0, p_folders_synced integer DEFAULT 0, p_pagination_token character varying DEFAULT NULL::character varying, p_error_message text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE x_sync_runs SET
+        status = p_status,
+        bookmarks_fetched = p_bookmarks_fetched,
+        bookmarks_new = p_bookmarks_new,
+        folders_synced = p_folders_synced,
+        pagination_token = p_pagination_token,
+        completed_at = NOW(),
+        error_message = p_error_message
+    WHERE id = p_run_id;
+END;
+$$;
+
+
+--
+-- Name: x_get_next_request(character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_get_next_request(p_user_id character varying) RETURNS TABLE(request_id integer, request_type character varying, endpoint character varying, pagination_token character varying)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Only return if rate limit allows
+    IF NOT x_can_request(p_user_id) THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT r.id, r.request_type, r.endpoint, r.pagination_token
+    FROM x_api_requests r
+    WHERE r.user_id = p_user_id
+      AND r.status = 'queued'
+    ORDER BY r.priority DESC, r.queued_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED;
+END;
+$$;
+
+
+--
+-- Name: x_process_request_queue(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_process_request_queue() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_processed INTEGER := 0;
+    v_request RECORD;
+BEGIN
+    -- Find users with queued requests that can proceed
+    FOR v_request IN
+        SELECT DISTINCT r.user_id
+        FROM x_api_requests r
+        WHERE r.status = 'queued'
+          AND x_can_request(r.user_id)
+    LOOP
+        -- Mark one request per user as ready for processing
+        UPDATE x_api_requests
+        SET status = 'executing', started_at = NOW()
+        WHERE id = (
+            SELECT id FROM x_api_requests
+            WHERE user_id = v_request.user_id AND status = 'queued'
+            ORDER BY priority DESC, queued_at
+            LIMIT 1
+        );
+
+        v_processed := v_processed + 1;
+    END LOOP;
+
+    RETURN v_processed;
+END;
+$$;
+
+
+--
+-- Name: x_queue_bookmark_sync(character varying, integer, character varying, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_queue_bookmark_sync(p_user_id character varying, p_sync_run_id integer, p_pagination_token character varying DEFAULT NULL::character varying, p_priority integer DEFAULT 0) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_request_id INTEGER;
+BEGIN
+    INSERT INTO x_api_requests (user_id, request_type, endpoint, status, priority, pagination_token, sync_run_id)
+    VALUES (
+        p_user_id,
+        'bookmarks',
+        format('/2/users/%s/bookmarks', p_user_id),
+        'queued',
+        p_priority,
+        p_pagination_token,
+        p_sync_run_id
+    )
+    RETURNING id INTO v_request_id;
+
+    RETURN v_request_id;
+END;
+$$;
+
+
+--
+-- Name: x_record_request(character varying, character varying, integer, integer, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_record_request(p_user_id character varying, p_endpoint_group character varying, p_remaining integer, p_limit integer, p_reset_at timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    INSERT INTO x_rate_limits (user_id, endpoint_group, requests_remaining, requests_limit, reset_at, last_request_at, updated_at)
+    VALUES (p_user_id, p_endpoint_group, p_remaining, p_limit, p_reset_at, NOW(), NOW())
+    ON CONFLICT (user_id) DO UPDATE SET
+        endpoint_group = EXCLUDED.endpoint_group,
+        requests_remaining = EXCLUDED.requests_remaining,
+        requests_limit = EXCLUDED.requests_limit,
+        reset_at = EXCLUDED.reset_at,
+        last_request_at = NOW(),
+        updated_at = NOW();
+END;
+$$;
+
+
+--
+-- Name: x_start_sync_run(character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_start_sync_run(p_user_id character varying) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_run_id INTEGER;
+BEGIN
+    INSERT INTO x_sync_runs (user_id, status)
+    VALUES (p_user_id, 'running')
+    RETURNING id INTO v_run_id;
+
+    RETURN v_run_id;
+END;
+$$;
+
+
+--
+-- Name: x_trigger_daily_sync(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_trigger_daily_sync() RETURNS TABLE(user_id character varying, run_id integer)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT t.user_id, x_start_sync_run(t.user_id)
+    FROM x_oauth_tokens t
+    WHERE t.refresh_token IS NOT NULL;  -- Only users with valid tokens
+END;
+$$;
+
+
+--
+-- Name: x_upsert_folder(character varying, character varying, character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_upsert_folder(p_x_folder_id character varying, p_user_id character varying, p_name character varying) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_kb_path VARCHAR(1024);
+    v_safe_name VARCHAR(255);
+BEGIN
+    -- Sanitize folder name for filesystem
+    v_safe_name := regexp_replace(lower(p_name), '[^a-z0-9_-]', '_', 'g');
+    v_kb_path := format('current/bookmarks/%s/', v_safe_name);
+
+    INSERT INTO x_bookmark_folders (x_folder_id, user_id, name, kb_path)
+    VALUES (p_x_folder_id, p_user_id, p_name, v_kb_path)
+    ON CONFLICT (x_folder_id) DO UPDATE SET
+        name = EXCLUDED.name,
+        updated_at = NOW()
+    RETURNING kb_path INTO v_kb_path;
+
+    RETURN v_kb_path;
+END;
+$$;
 
 
 --
@@ -11156,6 +11412,263 @@ CREATE VIEW public.v_view_log AS
 
 
 --
+-- Name: x_api_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_api_requests (
+    id integer NOT NULL,
+    user_id character varying(64) NOT NULL,
+    request_type character varying(64) NOT NULL,
+    endpoint character varying(255) NOT NULL,
+    status character varying(32) NOT NULL,
+    priority integer DEFAULT 0,
+    pagination_token character varying(255),
+    sync_run_id integer,
+    queued_at timestamp with time zone DEFAULT now(),
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    response_status integer,
+    rate_limit_reset_at timestamp with time zone,
+    error_message text,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE x_api_requests; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_api_requests IS 'Rate-limited API request queue (1 req/15 min on Free tier)';
+
+
+--
+-- Name: COLUMN x_api_requests.rate_limit_reset_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_api_requests.rate_limit_reset_at IS 'X-Rate-Limit-Reset header value';
+
+
+--
+-- Name: x_bookmark_folders; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_bookmark_folders (
+    x_folder_id character varying(64) NOT NULL,
+    user_id character varying(64) NOT NULL,
+    name character varying(255) NOT NULL,
+    kb_path character varying(1024) NOT NULL,
+    bookmark_count integer DEFAULT 0,
+    last_sync_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE x_bookmark_folders; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_bookmark_folders IS 'X bookmark folder to KB path mapping';
+
+
+--
+-- Name: COLUMN x_bookmark_folders.kb_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_bookmark_folders.kb_path IS 'KB directory for this folder, e.g., current/bookmarks/papers/';
+
+
+--
+-- Name: x_bookmarks_sync; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_bookmarks_sync (
+    tweet_id character varying(64) NOT NULL,
+    folder_id character varying(64),
+    user_id character varying(64) NOT NULL,
+    content_hash character varying(64) NOT NULL,
+    iceberg_id uuid,
+    kb_manifest_path character varying(1024),
+    bookmarked_at timestamp with time zone,
+    synced_at timestamp with time zone DEFAULT now(),
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE x_bookmarks_sync; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_bookmarks_sync IS 'Individual bookmark sync state';
+
+
+--
+-- Name: COLUMN x_bookmarks_sync.content_hash; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_bookmarks_sync.content_hash IS 'SHA-256 hash for deduplication';
+
+
+--
+-- Name: COLUMN x_bookmarks_sync.iceberg_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_bookmarks_sync.iceberg_id IS 'Reference to raw.x_bookmarks Iceberg table';
+
+
+--
+-- Name: x_oauth_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_oauth_tokens (
+    user_id character varying(64) NOT NULL,
+    username character varying(64) NOT NULL,
+    access_token text NOT NULL,
+    refresh_token text,
+    token_type character varying(32) DEFAULT 'Bearer'::character varying,
+    scopes text[],
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE x_oauth_tokens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_oauth_tokens IS 'OAuth 2.0 tokens for X API access';
+
+
+--
+-- Name: COLUMN x_oauth_tokens.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_tokens.user_id IS 'X user ID (numeric string)';
+
+
+--
+-- Name: COLUMN x_oauth_tokens.access_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_tokens.access_token IS 'Encrypted access token';
+
+
+--
+-- Name: COLUMN x_oauth_tokens.refresh_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_tokens.refresh_token IS 'Encrypted refresh token for token renewal';
+
+
+--
+-- Name: x_rate_limits; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_rate_limits (
+    user_id character varying(64) NOT NULL,
+    endpoint_group character varying(64) NOT NULL,
+    requests_remaining integer DEFAULT 0,
+    requests_limit integer DEFAULT 1,
+    reset_at timestamp with time zone,
+    last_request_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE x_rate_limits; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_rate_limits IS 'Cached X API rate limit state';
+
+
+--
+-- Name: COLUMN x_rate_limits.endpoint_group; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_rate_limits.endpoint_group IS 'Rate limit bucket (bookmarks share a limit)';
+
+
+--
+-- Name: x_sync_runs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_sync_runs (
+    id integer NOT NULL,
+    user_id character varying(64) NOT NULL,
+    status character varying(32) NOT NULL,
+    bookmarks_fetched integer DEFAULT 0,
+    bookmarks_new integer DEFAULT 0,
+    folders_synced integer DEFAULT 0,
+    pages_fetched integer DEFAULT 0,
+    pagination_token character varying(255),
+    started_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone,
+    error_message text,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE x_sync_runs; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_sync_runs IS 'Sync operation history with rate limit resume support';
+
+
+--
+-- Name: COLUMN x_sync_runs.pagination_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_sync_runs.pagination_token IS 'Next page token for resuming rate-limited syncs';
+
+
+--
+-- Name: v_x_sync_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_x_sync_status AS
+ SELECT t.user_id,
+    t.username,
+    t.expires_at AS token_expires_at,
+        CASE
+            WHEN (t.expires_at IS NULL) THEN 'no_expiry'::text
+            WHEN (t.expires_at <= now()) THEN 'expired'::text
+            WHEN (t.expires_at <= (now() + '1 day'::interval)) THEN 'expiring_soon'::text
+            ELSE 'valid'::text
+        END AS token_status,
+    rl.requests_remaining,
+    rl.reset_at AS rate_limit_reset,
+    ( SELECT count(*) AS count
+           FROM public.x_bookmark_folders f
+          WHERE ((f.user_id)::text = (t.user_id)::text)) AS folder_count,
+    ( SELECT count(*) AS count
+           FROM public.x_bookmarks_sync b
+          WHERE ((b.user_id)::text = (t.user_id)::text)) AS bookmark_count,
+    ( SELECT count(*) AS count
+           FROM public.x_api_requests r
+          WHERE (((r.user_id)::text = (t.user_id)::text) AND ((r.status)::text = 'queued'::text))) AS queued_requests,
+    ( SELECT max(r.completed_at) AS max
+           FROM public.x_sync_runs r
+          WHERE (((r.user_id)::text = (t.user_id)::text) AND ((r.status)::text = 'completed'::text))) AS last_sync_at,
+    ( SELECT r.status
+           FROM public.x_sync_runs r
+          WHERE ((r.user_id)::text = (t.user_id)::text)
+          ORDER BY r.started_at DESC
+         LIMIT 1) AS last_run_status
+   FROM (public.x_oauth_tokens t
+     LEFT JOIN public.x_rate_limits rl ON (((rl.user_id)::text = (t.user_id)::text)));
+
+
+--
+-- Name: VIEW v_x_sync_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.v_x_sync_status IS 'X bookmark sync status per user';
+
+
+--
 -- Name: view_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -11167,6 +11680,46 @@ ALTER TABLE public.view_log ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: x_api_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.x_api_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: x_api_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.x_api_requests_id_seq OWNED BY public.x_api_requests.id;
+
+
+--
+-- Name: x_sync_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.x_sync_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: x_sync_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.x_sync_runs_id_seq OWNED BY public.x_sync_runs.id;
 
 
 --
@@ -11699,6 +12252,20 @@ ALTER TABLE ONLY public.topic_models ALTER COLUMN id SET DEFAULT nextval('public
 --
 
 ALTER TABLE ONLY public.user_interests ALTER COLUMN id SET DEFAULT nextval('public.user_interests_id_seq'::regclass);
+
+
+--
+-- Name: x_api_requests id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_api_requests ALTER COLUMN id SET DEFAULT nextval('public.x_api_requests_id_seq'::regclass);
+
+
+--
+-- Name: x_sync_runs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_sync_runs ALTER COLUMN id SET DEFAULT nextval('public.x_sync_runs_id_seq'::regclass);
 
 
 --
@@ -13875,6 +14442,54 @@ ALTER TABLE ONLY public.user_parameter_value
 
 ALTER TABLE ONLY public.view_log
     ADD CONSTRAINT view_log_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: x_api_requests x_api_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_api_requests
+    ADD CONSTRAINT x_api_requests_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: x_bookmark_folders x_bookmark_folders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_bookmark_folders
+    ADD CONSTRAINT x_bookmark_folders_pkey PRIMARY KEY (x_folder_id);
+
+
+--
+-- Name: x_bookmarks_sync x_bookmarks_sync_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_bookmarks_sync
+    ADD CONSTRAINT x_bookmarks_sync_pkey PRIMARY KEY (tweet_id);
+
+
+--
+-- Name: x_oauth_tokens x_oauth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_oauth_tokens
+    ADD CONSTRAINT x_oauth_tokens_pkey PRIMARY KEY (user_id);
+
+
+--
+-- Name: x_rate_limits x_rate_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_rate_limits
+    ADD CONSTRAINT x_rate_limits_pkey PRIMARY KEY (user_id);
+
+
+--
+-- Name: x_sync_runs x_sync_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_sync_runs
+    ADD CONSTRAINT x_sync_runs_pkey PRIMARY KEY (id);
 
 
 --
@@ -16522,6 +17137,62 @@ CREATE INDEX idx_view_log_user_id ON public.view_log USING btree (user_id);
 
 
 --
+-- Name: idx_x_api_queued; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_api_queued ON public.x_api_requests USING btree (status, priority DESC, queued_at) WHERE ((status)::text = 'queued'::text);
+
+
+--
+-- Name: idx_x_api_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_api_user ON public.x_api_requests USING btree (user_id, completed_at DESC);
+
+
+--
+-- Name: idx_x_bookmarks_folder; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_bookmarks_folder ON public.x_bookmarks_sync USING btree (folder_id);
+
+
+--
+-- Name: idx_x_bookmarks_synced; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_bookmarks_synced ON public.x_bookmarks_sync USING btree (synced_at DESC);
+
+
+--
+-- Name: idx_x_bookmarks_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_bookmarks_user ON public.x_bookmarks_sync USING btree (user_id);
+
+
+--
+-- Name: idx_x_folders_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_folders_user ON public.x_bookmark_folders USING btree (user_id);
+
+
+--
+-- Name: idx_x_sync_runs_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_sync_runs_status ON public.x_sync_runs USING btree (status) WHERE ((status)::text = ANY ((ARRAY['running'::character varying, 'rate_limited'::character varying])::text[]));
+
+
+--
+-- Name: idx_x_sync_runs_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, started_at DESC);
+
+
+--
 -- Name: search_index__xbo2_cawqvv61fpn_ortu_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -18034,10 +18705,66 @@ ALTER TABLE ONLY public.topic_models
 
 
 --
+-- Name: x_api_requests x_api_requests_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_api_requests
+    ADD CONSTRAINT x_api_requests_sync_run_id_fkey FOREIGN KEY (sync_run_id) REFERENCES public.x_sync_runs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: x_api_requests x_api_requests_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_api_requests
+    ADD CONSTRAINT x_api_requests_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.x_oauth_tokens(user_id) ON DELETE CASCADE;
+
+
+--
+-- Name: x_bookmark_folders x_bookmark_folders_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_bookmark_folders
+    ADD CONSTRAINT x_bookmark_folders_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.x_oauth_tokens(user_id) ON DELETE CASCADE;
+
+
+--
+-- Name: x_bookmarks_sync x_bookmarks_sync_folder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_bookmarks_sync
+    ADD CONSTRAINT x_bookmarks_sync_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.x_bookmark_folders(x_folder_id) ON DELETE SET NULL;
+
+
+--
+-- Name: x_bookmarks_sync x_bookmarks_sync_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_bookmarks_sync
+    ADD CONSTRAINT x_bookmarks_sync_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.x_oauth_tokens(user_id) ON DELETE CASCADE;
+
+
+--
+-- Name: x_rate_limits x_rate_limits_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_rate_limits
+    ADD CONSTRAINT x_rate_limits_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.x_oauth_tokens(user_id) ON DELETE CASCADE;
+
+
+--
+-- Name: x_sync_runs x_sync_runs_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_sync_runs
+    ADD CONSTRAINT x_sync_runs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.x_oauth_tokens(user_id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict mexGvu9139aCaC6sYgkf1M2eER2ActwaylkPrs40QQQCZVBTKhbbF309CNjhaOD
+\unrestrict 82IuwDQDF63iuaHbYFVQp7TythlM2pSBlmmhKrGgDEn4JKdB2rIamTCl4YYqup0
 
 
 --
@@ -18076,4 +18803,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251222000005'),
     ('20251223000001'),
     ('20251224000001'),
-    ('20251225000001');
+    ('20251225000001'),
+    ('20251227000001');
