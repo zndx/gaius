@@ -61,6 +61,7 @@ dependencies = [
     "transformer-lens>=2.0.0", # Required for CLT model internals
     "datasets>=2.14.6",
     "agent-client-protocol>=0.7.0",
+    "qrcode>=8.0", # Terminal QR codes for OAuth URLs on mobile devices
 ]
 
 [project.optional-dependencies]

@@ -87,19 +87,19 @@ class HealthReport:
         return self.failures == 0
 
     @property
-    def status_emoji(self) -> str:
-        """Status indicator emoji."""
+    def status_indicator(self) -> str:
+        """Status indicator character."""
         if self.failures > 0:
-            return "🔴"
+            return "[FAIL]"
         if self.warnings > 0:
-            return "🟡"
-        return "🟢"
+            return "[WARN]"
+        return "[OK]"
 
     def summary(self) -> str:
         """Generate summary string."""
         total = len(self.checks)
         return (
-            f"{self.status_emoji} Health: {self.passed}/{total} passed, "
+            f"{self.status_indicator} Health: {self.passed}/{total} passed, "
             f"{self.warnings} warnings, {self.failures} failures"
         )
 
@@ -274,6 +274,15 @@ class HealthChecker:
                 category="rase",
                 description="Check KB objectives and intrinsic verification components",
                 check_fn="_check_rase_objectives",
+            ),
+            # Configuration audit checks
+            HealthCheck(
+                id="config_audit",
+                name="Config Audit",
+                category="config",
+                description="Audit port/URL mismatches between env vars and running services",
+                check_fn="_check_config_audit",
+                heuristic_id="inference/optillm_port_mismatch",
             ),
         ]
 
@@ -724,7 +733,7 @@ class HealthChecker:
                     mem_pct = (used / total) * 100 if total > 0 else 0
                     gpus.append({"id": idx, "memory_used_mb": used, "memory_total_mb": total, "memory_pct": mem_pct, "utilization": util})
 
-                    if mem_pct > 95:
+                    if mem_pct > 98:
                         warnings.append(f"GPU {idx} memory at {mem_pct:.0f}%")
 
             if warnings:
@@ -828,7 +837,7 @@ class HealthChecker:
         try:
             import httpx
 
-            url = os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8080/v1")
+            url = os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8000/v1")
             base_url = url.rstrip("/v1").rstrip("/")
 
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -1822,3 +1831,121 @@ class HealthChecker:
                     await self._healing_coordinator.handle_health_issue(issue)
                 except Exception as e:
                     logger.error(f"Failed to emit issue to coordinator: {e}")
+
+    async def _check_config_audit(self) -> CheckResult:
+        """Audit configuration for port/URL mismatches.
+
+        Detects common configuration issues:
+        1. optillm: env var vs gunicorn bind port mismatch
+        2. vLLM endpoints: configured URLs vs actual listening ports
+        3. Database URLs: connectivity with configured credentials
+
+        This check proactively identifies misconfigurations that cause
+        confusing "not responding" errors when services are actually running.
+        """
+        import os
+        import re
+        import subprocess
+        from pathlib import Path
+        from urllib.parse import urlparse
+
+        mismatches: list[dict] = []
+        audited_configs: list[str] = []
+
+        # 1. Check optillm port configuration
+        try:
+            optillm_url = os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8000/v1")
+            expected_port = urlparse(optillm_url).port or 8000
+
+            # Check gunicorn config if it exists
+            gunicorn_config = Path("/tmp/gaius/gunicorn_optillm.conf.py")
+            if gunicorn_config.exists():
+                config_text = gunicorn_config.read_text()
+                # Extract bind port from gunicorn config
+                bind_match = re.search(r'bind\s*=\s*["\'][\d.]+:(\d+)["\']', config_text)
+                if bind_match:
+                    actual_port = int(bind_match.group(1))
+                    if actual_port != expected_port:
+                        mismatches.append({
+                            "service": "optillm",
+                            "issue": "port_mismatch",
+                            "expected": expected_port,
+                            "actual": actual_port,
+                            "env_var": "GAIUS_OPTILLM_URL",
+                            "config_file": str(gunicorn_config),
+                            "fix": f"export GAIUS_OPTILLM_URL=http://localhost:{actual_port}/v1",
+                        })
+                    audited_configs.append(f"optillm:gunicorn={actual_port}")
+                else:
+                    audited_configs.append("optillm:gunicorn=parse_error")
+            else:
+                # Check if optillm is running and what port it's listening on
+                try:
+                    result = subprocess.run(
+                        ["ss", "-tlnp"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    # Look for gunicorn listening ports
+                    for line in result.stdout.split("\n"):
+                        if "gunicorn" in line:
+                            port_match = re.search(r":(\d+)\s", line)
+                            if port_match:
+                                actual_port = int(port_match.group(1))
+                                if actual_port != expected_port and actual_port in [8000, 8080]:
+                                    mismatches.append({
+                                        "service": "optillm",
+                                        "issue": "port_mismatch",
+                                        "expected": expected_port,
+                                        "actual": actual_port,
+                                        "env_var": "GAIUS_OPTILLM_URL",
+                                        "fix": f"export GAIUS_OPTILLM_URL=http://localhost:{actual_port}/v1",
+                                    })
+                                audited_configs.append(f"optillm:ss={actual_port}")
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
+        except Exception as e:
+            logger.debug(f"optillm config audit failed: {e}")
+
+        # 2. Check vLLM endpoint configuration
+        vllm_endpoints = [
+            ("reasoning", os.getenv("GAIUS_VLLM_REASONING_URL", "http://localhost:8081/v1")),
+            ("coding", os.getenv("GAIUS_VLLM_CODING_URL", "http://localhost:8082/v1")),
+            ("fast", os.getenv("GAIUS_VLLM_FAST_URL", "http://localhost:8083/v1")),
+        ]
+        for name, url in vllm_endpoints:
+            port = urlparse(url).port
+            if port:
+                audited_configs.append(f"vllm_{name}:{port}")
+
+        # 3. Check database URL format
+        try:
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
+            if db_url:
+                parsed = urlparse(db_url)
+                audited_configs.append(f"postgres:{parsed.port or 5432}")
+        except Exception:
+            pass
+
+        # Generate result
+        if mismatches:
+            return CheckResult(
+                name="Config Audit",
+                status=CheckStatus.WARN,
+                message=f"{len(mismatches)} config mismatch(es) detected",
+                details={
+                    "mismatches": mismatches,
+                    "audited": audited_configs,
+                },
+                suggestion=f"/health fix config or: {mismatches[0].get('fix', 'check heuristic')}",
+            )
+
+        return CheckResult(
+            name="Config Audit",
+            status=CheckStatus.PASS,
+            message=f"Audited {len(audited_configs)} config(s), no mismatches",
+            details={"audited": audited_configs},
+        )

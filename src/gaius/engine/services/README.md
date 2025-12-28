@@ -24,9 +24,15 @@ graph TB
         NGRC[NGRCPredictor]
     end
 
+    subgraph "External Integration"
+        XBS[XBookmarksService]
+        XAPI[X API v2]
+    end
+
     subgraph "Backends"
         VLLM[vLLM Processes]
         GPU[GPU Pool]
+        DB[(PostgreSQL)]
     end
 
     ORCH --> VLLM
@@ -39,6 +45,8 @@ graph TB
     TOPO --> CLT
     DS --> VLLM
     NGRC --> TOPO
+    XBS --> XAPI
+    XBS --> DB
 ```
 
 ## Module Structure
@@ -54,7 +62,8 @@ services/
 ├── dataset_service.py        # DatasetService (SoM generation)
 ├── clt_service.py            # CLTService (sparse features)
 ├── topology_service.py       # TopologyService (semantic attractors)
-└── ngrc.py                   # NGRCPredictor (reservoir computing)
+├── ngrc.py                   # NGRCPredictor (reservoir computing)
+└── x_bookmarks_service.py    # XBookmarksService (X API sync)
 ```
 
 ## OrchestratorService
@@ -284,6 +293,81 @@ print(f"Predicted embedding: {prediction.embedding[:5]}...")
 print(f"Confidence: {prediction.confidence:.2%}")
 ```
 
+## XBookmarksService
+
+X (Twitter) bookmark synchronization with folder-first sync:
+
+```python
+from gaius.engine.services import XBookmarksService, XBookmarksConfig
+
+xbs = XBookmarksService(pool, XBookmarksConfig())
+
+# Check auth status
+status = await xbs.get_auth_status()
+if status["authenticated"]:
+    print(f"Authenticated as @{status['username']}")
+
+# Trigger sync (folder-first, skips unfiled)
+result = await xbs.trigger_sync()
+print(f"Synced {result.folders_synced} folders, {result.bookmarks_new} new bookmarks")
+
+# List folders
+folders = await xbs.list_folders()
+for f in folders:
+    print(f"{f['name']}: {f['bookmark_count']} bookmarks")
+```
+
+### XBookmark
+
+```python
+@dataclass
+class XBookmark:
+    tweet_id: str
+    folder_id: str | None
+    folder_name: str | None
+    text: str
+    author_id: str
+    author_username: str
+    urls: list[str]
+    media_urls: list[str]
+    tweet_created_at: datetime | None
+    bookmarked_at: datetime | None
+    metadata: dict[str, Any]
+
+    @property
+    def content_hash(self) -> str: ...
+```
+
+### XSyncRun
+
+```python
+@dataclass
+class XSyncRun:
+    run_id: int
+    user_id: str
+    status: str  # "queued", "running", "completed", "failed"
+    bookmarks_fetched: int
+    bookmarks_new: int
+    folders_synced: int
+    pagination_token: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_message: str | None
+```
+
+### Folder-First Sync
+
+XBookmarksService uses a folder-first approach:
+
+1. Fetch all bookmark folders from X API
+2. For each folder, fetch bookmarks within that folder
+3. Store bookmarks with folder_id and folder_name
+4. Write weekly manifest to KB at `current/bookmarks/{folder_name}/`
+
+**Unfiled bookmarks are skipped** - only bookmarks in folders are synced.
+
+If the folders endpoint returns 403 (not available on API tier), the service raises `XBookmarksError` with guru code `#XB.00000011.NOFOLDER` and the feature is disabled.
+
 ## Call Graph
 
 ```mermaid
@@ -319,6 +403,15 @@ graph TD
         TS2 --> TS3[clt_service.compute_swarm_features]
         TS3 --> TS4[cluster_features]
         TS4 --> TS5[SemanticAttractor list]
+    end
+
+    subgraph "X Bookmarks Path"
+        XS1[mcp_server.py:x_bookmarks_sync] --> XS2[XBookmarksService.trigger_sync]
+        XS2 --> XS3[_fetch_folders]
+        XS3 --> XS4[X API /bookmarks/folders]
+        XS4 --> XS5[_fetch_bookmarks_in_folder]
+        XS5 --> XS6[_store_bookmarks]
+        XS6 --> XS7[_write_folder_manifest_to_kb]
     end
 ```
 
@@ -357,6 +450,7 @@ graph TB
 | `CLTService` | clt_worker | topology, swarm | `extract_features()` |
 | `TopologyService` | clt_service | mcp_server, grid | `detect_attractors()`, `compute_drift()` |
 | `NGRCPredictor` | topology | theta | `train()`, `predict()` |
+| `XBookmarksService` | httpx, asyncpg, auth.x_oauth | mcp_server | `trigger_sync()`, `get_auth_status()`, `list_folders()` |
 
 ## See Also
 
@@ -370,13 +464,13 @@ graph TB
 <!-- GAI:META
 module: gaius.engine.services
 layer: L3-engine
-key_types: [OrchestratorService, EndpointStatus, CleanupResult, SchedulerService, InferenceJob, JobPriority, XAIBudget, AgentMetrics, HealthService, GPUHealth, SystemHealth, EndpointHealth, EvolutionService, EvolutionConfig, EvolutionCycle, CycleStatus, EvolutionStrategy, CognitionService, CognitionConfig, DatasetService, DatasetJob, DatasetJobConfig, ProgressEvent, ProgressEventType, CLTService, AgentCLTState, SwarmCLTResult, TopologyService, SemanticAttractor, SwarmSnapshot, AgentPosition, DriftMetrics, NGRCPredictor, NGRCConfig, NGRCPrediction, NGRCState]
-key_funcs: [ensure_endpoint, clean_start, submit, submit_async, get_gpu_health, get_system_health, run_cycle, trigger, start_job, stream_progress, extract_features, compute_swarm_features, detect_attractors, compute_drift, train, predict]
+key_types: [OrchestratorService, EndpointStatus, CleanupResult, SchedulerService, InferenceJob, JobPriority, XAIBudget, AgentMetrics, HealthService, GPUHealth, SystemHealth, EndpointHealth, EvolutionService, EvolutionConfig, EvolutionCycle, CycleStatus, EvolutionStrategy, CognitionService, CognitionConfig, DatasetService, DatasetJob, DatasetJobConfig, ProgressEvent, ProgressEventType, CLTService, AgentCLTState, SwarmCLTResult, TopologyService, SemanticAttractor, SwarmSnapshot, AgentPosition, DriftMetrics, NGRCPredictor, NGRCConfig, NGRCPrediction, NGRCState, XBookmarksService, XBookmarksConfig, XBookmark, XSyncRun, XBookmarksError]
+key_funcs: [ensure_endpoint, clean_start, submit, submit_async, get_gpu_health, get_system_health, run_cycle, trigger, start_job, stream_progress, extract_features, compute_swarm_features, detect_attractors, compute_drift, train, predict, trigger_sync, get_auth_status, list_folders, get_auth_url, complete_auth]
 submodules: []
-depends: [backends, pynvml, clt_worker, priority_queue]
+depends: [backends, pynvml, clt_worker, priority_queue, auth.x_oauth, httpx]
 dependents: [grpc.servicers, mcp_server, agents.evolution, agents.theta]
-config_keys: [engine.max_concurrent_jobs, engine.xai_daily_limit, engine.gpu_memory_threshold]
-env_vars: [XAI_API_KEY, CEREBRAS_API_KEY]
+config_keys: [engine.max_concurrent_jobs, engine.xai_daily_limit, engine.gpu_memory_threshold, gaius.x.sync.poll_interval_s, gaius.x.sync.batch_size]
+env_vars: [XAI_API_KEY, CEREBRAS_API_KEY, X_CLIENT_ID, X_CLIENT_SECRET, X_REDIRECT_URI]
 grpc_services: [GaiusService]
 call_paths:
   orchestrator: mcp.orchestrator_start→OrchestratorService.ensure_endpoint→VLLMController.start
@@ -384,10 +478,13 @@ call_paths:
   health: mcp.gpu_health→HealthService.get_gpu_health→pynvml
   clt: mcp.clt_extract→CLTService.extract_features→clt_worker→circuit-tracer
   topology: mcp.topology_attractors→TopologyService.detect_attractors→clt_service→cluster
+  x_bookmarks: mcp.x_bookmarks_sync→XBookmarksService.trigger_sync→_fetch_folders→X_API→_store_bookmarks→KB
 test_cmds:
   status: 'uv run gaius-cli --cmd "/orchestrator status"'
   health: 'uv run gaius-cli --cmd "/gpu health"'
   submit: 'uv run gaius-cli --cmd "/scheduler submit \"test prompt\""'
-guru_codes: [EN.00001.VLLM_CRASH, EN.00002.SCHEDULER_FULL, EN.00003.GPU_OOM, EN.00004.CLT_UNAVAIL]
+  x_status: 'uv run gaius-cli --cmd "/x-bookmarks status" --format json'
+  x_folders: 'uv run gaius-cli --cmd "/x-bookmarks folders"'
+guru_codes: [EN.00001.VLLM_CRASH, EN.00002.SCHEDULER_FULL, EN.00003.GPU_OOM, EN.00004.CLT_UNAVAIL, XB.00000001.NOTOKEN, XB.00000011.NOFOLDER, XB.00000012.FOLDERFAIL, XB.00000013.BOOKMARKFAIL]
 fail_fast: true
 -->

@@ -104,14 +104,35 @@ async def _gpu_health(params: dict) -> dict:
 
 
 async def _orchestrator_status(params: dict) -> dict:
-    """Get orchestrator status."""
+    """Get orchestrator status via engine gRPC."""
     try:
-        from ..inference.orchestrator import get_orchestrator_status
+        from ..client.engine_proxy import use_engine_proxy, get_orchestrator_proxy
 
-        return await get_orchestrator_status()
-    except ImportError:
-        # Fallback - return minimal status
-        return {"endpoints": {}, "healthy": False}
+        if not use_engine_proxy():
+            return {
+                "endpoints": {},
+                "healthy": False,
+                "error": "Engine not available (#GR.00000001.ENGINEOFF)",
+            }
+
+        proxy = await get_orchestrator_proxy()
+        status = await proxy._get_status_async()
+
+        # Convert gRPC response to expected format
+        endpoints = {}
+        for ep in status.get("endpoints", []):
+            name = ep.get("name", "")
+            endpoints[name] = {
+                "status": ep.get("status", "stopped"),
+                "port": ep.get("port"),
+            }
+
+        return {
+            "endpoints": endpoints,
+            "healthy": any(
+                ep.get("status") == "healthy" for ep in status.get("endpoints", [])
+            ),
+        }
     except Exception as e:
         return {"endpoints": {}, "healthy": False, "error": str(e)}
 

@@ -21,6 +21,7 @@ class SourceType(Enum):
     PHILEVENTS = "philevents"  # Philosophy events and CFPs
     DOCS = "docs"
     BRAVE = "brave"  # Uses Brave Search API for RSS-less sources
+    X_BOOKMARKS = "x_bookmarks"  # X (Twitter) bookmarks via OAuth 2.0
 
 
 class JobStatus(Enum):

@@ -58,20 +58,23 @@ class InferenceManager:
         self._default_endpoint: str | None = None  # Discovered dynamically
         self._endpoint_cache_time: datetime | None = None
 
-        # Check if engine is available
+        # Engine Federation Architecture: all orchestration goes through engine gRPC
         try:
             from ..client.engine_proxy import use_engine_proxy
             self._use_engine = use_engine_proxy()
             if self._use_engine:
                 logger.info("InferenceManager using engine client (agent-first mode)")
+            else:
+                logger.warning(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "InferenceManager will be limited to external endpoints only. "
+                    "Start engine: devenv up gaius-engine"
+                )
         except ImportError:
-            pass
-
-        # Fall back to legacy orchestrator if engine not available
-        if not self._use_engine:
-            logger.warning("LEGACY_FALLBACK: InferenceManager using legacy orchestrator - tech debt")
-            from .orchestrator import get_orchestrator
-            self._orchestrator = get_orchestrator()
+            logger.warning(
+                "Engine proxy not available. InferenceManager will be limited. "
+                "GPU orchestration requires the engine gRPC service."
+            )
 
     async def _get_engine_proxy(self):
         """Get or create engine orchestrator proxy."""

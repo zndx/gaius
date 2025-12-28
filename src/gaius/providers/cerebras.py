@@ -338,7 +338,7 @@ class CerebrasClient:
         ]
 
         if match.is_preview:
-            lines.append("- ⚠️ *Preview model - may be discontinued*")
+            lines.append("- [!] *Preview model - may be discontinued*")
 
         # Add cost comparison if GPU cost provided
         if gpu_cost_per_hour:
@@ -352,9 +352,9 @@ class CerebrasClient:
             ])
 
             if comparison["cheaper_option"] == "cerebras":
-                lines.append(f"- ✅ Cerebras is **${comparison['savings_per_hour']:.2f}/hr cheaper** at this usage")
+                lines.append(f"- [+] Cerebras is **${comparison['savings_per_hour']:.2f}/hr cheaper** at this usage")
             else:
-                lines.append(f"- 💡 GPU rental is cheaper for sustained high-volume usage")
+                lines.append(f"- [i] GPU rental is cheaper for sustained high-volume usage")
 
         lines.extend([
             "",

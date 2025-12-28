@@ -107,14 +107,14 @@ class ResearchThread:
 
     def to_markdown(self) -> str:
         """Format thread as markdown section."""
-        status_emoji = {
-            ThreadStatus.ACTIVE: "🔵",
-            ThreadStatus.PAUSED: "⏸️",
-            ThreadStatus.COMPLETED: "✅",
-            ThreadStatus.ABANDONED: "❌",
-        }.get(self.status, "📌")
+        status_indicator = {
+            ThreadStatus.ACTIVE: "[*]",
+            ThreadStatus.PAUSED: "[=]",
+            ThreadStatus.COMPLETED: "[OK]",
+            ThreadStatus.ABANDONED: "[X]",
+        }.get(self.status, "[?]")
 
-        lines = [f"### {status_emoji} {self.topic}"]
+        lines = [f"### {status_indicator} {self.topic}"]
 
         if self.domain:
             lines.append(f"*Domain: {self.domain}*")

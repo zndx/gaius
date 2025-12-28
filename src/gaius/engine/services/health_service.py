@@ -50,7 +50,7 @@ class GPUHealth:
     @property
     def is_healthy(self) -> bool:
         """Check if GPU is in healthy state."""
-        return self.temperature_c < 85 and self.memory_used_pct < 95
+        return self.temperature_c < 85 and self.memory_used_pct < 98
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization."""

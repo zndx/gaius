@@ -101,21 +101,21 @@ class Thought:
 
     def to_markdown(self) -> str:
         """Format thought as markdown section."""
-        emoji = {
-            ThoughtType.PATTERN: "📊",
-            ThoughtType.CONNECTION: "🔗",
-            ThoughtType.CURIOSITY: "❓",
-            ThoughtType.MOMENTUM: "📈",
-            ThoughtType.OBSERVATION: "👁️",
-            ThoughtType.SYNTHESIS: "🧩",
-            ThoughtType.SELF_OBSERVATION: "🪞",
-            ThoughtType.ENGINE_AUDIT: "⚙️",
-            ThoughtType.META_REFLECTION: "🔮",
-            ThoughtType.TASK_IDEA: "🧪",
-            ThoughtType.EVOLUTION_INSIGHT: "🧬",
-        }.get(self.thought_type, "💭")
+        indicator = {
+            ThoughtType.PATTERN: "[PATTERN]",
+            ThoughtType.CONNECTION: "[LINK]",
+            ThoughtType.CURIOSITY: "[?]",
+            ThoughtType.MOMENTUM: "[TREND]",
+            ThoughtType.OBSERVATION: "[OBS]",
+            ThoughtType.SYNTHESIS: "[SYNTH]",
+            ThoughtType.SELF_OBSERVATION: "[SELF]",
+            ThoughtType.ENGINE_AUDIT: "[AUDIT]",
+            ThoughtType.META_REFLECTION: "[META]",
+            ThoughtType.TASK_IDEA: "[TASK]",
+            ThoughtType.EVOLUTION_INSIGHT: "[EVOL]",
+        }.get(self.thought_type, "[*]")
 
-        lines = [f"### {emoji} {self.title}"]
+        lines = [f"### {indicator} {self.title}"]
 
         if self.summary:
             lines.append(f"_{self.summary}_")
@@ -1251,7 +1251,8 @@ Return ONLY the title, no quotes or explanation."""
                     prev_rel = prev_note.relative_to(kb_root)
                     prev_link = f"[[{prev_rel}]]"
                 except ValueError:
-                    prev_link = f"[[{prev_note}]]"
+                    # Fallback: use just the filename stem to avoid absolute paths in links
+                    prev_link = f"[[{prev_note.stem}]]"
 
             # Build note content
             note_content = f"""[[current/agents/cognition]]

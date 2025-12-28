@@ -213,7 +213,7 @@ class ModelAddOrchestrator:
     async def _consult_orchestrator(self, state: WorkflowState) -> ToolCall | None:
         """Consult orchestrator model for next action.
 
-        Uses engine client if available, falls back to router for backwards compatibility.
+        Engine Federation Architecture: uses engine scheduler for inference.
         """
         # Format state as prompt
         prompt = self._format_state_prompt(state)
@@ -221,47 +221,28 @@ class ModelAddOrchestrator:
         try:
             from ...client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
-            # Try engine client first (preferred)
-            if use_engine_proxy():
-                scheduler = await get_scheduler_proxy()
-
-                # Format as single prompt (scheduler uses prompt, not messages)
-                full_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\n{prompt}"
-
-                result = await scheduler.complete(
-                    prompt=full_prompt,
-                    agent=self.orchestrator_endpoint,
-                    max_tokens=1000,
-                    temperature=0.3,
+            if not use_engine_proxy():
+                # Engine not available - fail-fast
+                logger.error(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "Model add orchestrator requires engine gRPC. "
+                    "Start engine: devenv up gaius-engine"
                 )
+                return self._fallback_next_action(state)
 
-                response = result.content if result else ""
-            else:
-                # Fallback to router (legacy mode)
-                logger.warning("LEGACY_FALLBACK: _consult_orchestrator using router instead of scheduler - tech debt")
-                from ...inference.router import get_endpoint_router
+            scheduler = await get_scheduler_proxy()
 
-                router = get_endpoint_router()
+            # Format as single prompt (scheduler uses prompt, not messages)
+            full_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\n{prompt}"
 
-                messages = [
-                    {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ]
+            result = await scheduler.complete(
+                prompt=full_prompt,
+                agent=self.orchestrator_endpoint,
+                max_tokens=1000,
+                temperature=0.3,
+            )
 
-                result = await router.complete(
-                    messages=messages,
-                    endpoint=self.orchestrator_endpoint,
-                    max_tokens=1000,
-                    temperature=0.3,
-                )
-
-                # Check for error response
-                if hasattr(result, "raw_response") and isinstance(result.raw_response, dict):
-                    if "error" in result.raw_response:
-                        logger.warning(f"Orchestrator returned error: {result.raw_response['error']}")
-                        return self._fallback_next_action(state)
-
-                response = result.content if hasattr(result, "content") else str(result)
+            response = result.content if result else ""
 
             # Check for empty response
             if not response or not response.strip():
@@ -889,7 +870,7 @@ model_id: {state.model_id}
 
 ## Feasibility
 
-**Status**: ❌ Cannot run locally
+**Status**: [FAIL] Cannot run locally
 **Reason**: {feasibility.get('reason', 'Unknown')}
 
 ## Links
@@ -1173,7 +1154,7 @@ model_id: {state.model_id}
         reason = args.get("reason", "Local model unavailable")
 
         # Prompt user via console
-        print(f"\n⚠️  Local coding model failed: {reason}")
+        print(f"\n[!] Local coding model failed: {reason}")
         print("   XAI API key is available as fallback.")
         print("   This will use the XAI Grok API for code generation.")
         print()

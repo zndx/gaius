@@ -30,7 +30,7 @@ def get_overlay_explanation(overlay_mode: OverlayMode, x: int, y: int) -> str:
         OverlayMode.NONE: """**No Overlay**: Raw view without additional analysis layers.""",
 
         OverlayMode.TOPOLOGY: f"""**Topology Overlay**: Persistent homology features (H0/H1/H2).
-- H1 cycles (red ⚠): Loops in the knowledge graph - connected concepts
+- H1 cycles (red !): Loops in the knowledge graph - connected concepts
 - H2 voids (magenta ◇): Cavities - missing knowledge or gaps
 Position ({x}, {y}) topological significance: {"High" if 4 <= x <= 14 and 4 <= y <= 14 else "Edge region"}
 Persistent features reveal stable structural patterns in the data.""",

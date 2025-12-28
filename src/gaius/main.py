@@ -166,7 +166,7 @@ class Board(Static):
             for yy in range(19):
                 for xx in range(19):
                     if random.random() < 0.2:  # Simulate loop projection
-                        grid[yy][xx] = "[on bright_red]⚠[/]"
+                        grid[yy][xx] = "[on bright_red]![/]"
 
         lines = [f"{19-y:2} " + " ".join(grid[y]) for y in range(19)]
         lines.append("   " + " ".join(chr(65+i) if i!=8 else " " for i in range(19)))

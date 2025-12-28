@@ -84,16 +84,16 @@ class Insight:
 
     def to_markdown(self) -> str:
         """Format as markdown."""
-        emoji = {
-            InsightType.SYNTHESIS: "🧩",
-            InsightType.GAP: "🕳️",
-            InsightType.QUESTION: "❓",
-            InsightType.EVOLUTION: "📈",
-            InsightType.CONFIDENCE: "🎯",
-            InsightType.RECOMMENDATION: "💡",
-        }.get(self.insight_type, "•")
+        indicator = {
+            InsightType.SYNTHESIS: "[SYNTH]",
+            InsightType.GAP: "[GAP]",
+            InsightType.QUESTION: "[?]",
+            InsightType.EVOLUTION: "[EVOL]",
+            InsightType.CONFIDENCE: "[CONF]",
+            InsightType.RECOMMENDATION: "[REC]",
+        }.get(self.insight_type, "[*]")
 
-        lines = [f"### {emoji} {self.title}"]
+        lines = [f"### {indicator} {self.title}"]
         lines.append(self.content)
 
         if self.related_entries:

@@ -118,42 +118,31 @@ Gaius implements a simplified two-tier pattern optimized for single-node deploym
 ### Request Flow
 
 1. **Application** constructs inference request
-2. **InferenceClient** checks if gRPC engine is available
-3. If available: route through gRPC gateway (authenticated, logged)
-4. If unavailable and `GAIUS_ALLOW_FALLBACKS=true`: direct HTTP (dev mode)
-5. If unavailable and fallbacks disabled: fail with error
+2. **InferenceClient** routes through gRPC gateway
+3. **gaius-engine** handles authentication, logging, resource management
+4. **Backend router** dispatches to optillm/vLLM/XAI as appropriate
 
 ```python
-# From src/gaius/inference/client.py
-if self._is_grpc_available():
-    result = await self._complete_via_grpc(messages, ...)
-    if result:
-        return result
-
-if not self.config.allow_fallbacks:
+# From src/gaius/inference/client.py - gRPC-only architecture
+if not self._is_grpc_available():
     raise RuntimeError(
-        "gRPC engine unavailable and fallbacks disabled (secure by default). "
-        "Either start the engine (gaius-engine) or enable fallbacks for "
-        "development/debugging: GAIUS_ALLOW_FALLBACKS=true"
+        "gRPC engine unavailable. Start the engine with: gaius-engine\n"
+        "  See: /health fix engine"
     )
+
+result = await self._complete_via_grpc(messages, ...)
 ```
 
 ### Security Model
 
 | Mode | gRPC Engine | Direct HTTP | Use Case |
 |------|-------------|-------------|----------|
-| **Production** (default) | Required | Blocked | Enterprise deployments |
-| **Development** | Preferred | Allowed with warning | Local development |
+| **gRPC-only** | Required | N/A | All deployments |
 
-**Production** (secure by default):
-- gRPC engine must be running
-- All requests authenticated and logged
-- Direct HTTP blocked
-
-**Development** (`GAIUS_ALLOW_FALLBACKS=true`):
-- gRPC engine preferred if available
-- Falls back to direct HTTP with warning
-- Warning logged: `FALLBACK: Using direct HTTP to optillm/vLLM - bypasses gRPC auth/authz`
+The gRPC engine must be running for any inference operations. There is no fallback to direct HTTP - this ensures:
+- All requests are authenticated and logged
+- Centralized resource management
+- Consistent audit trail
 
 ## Feature Comparison
 
@@ -172,12 +161,6 @@ if not self.config.allow_fallbacks:
 
 ## Configuration
 
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GAIUS_ALLOW_FALLBACKS` | `false` | Enable direct HTTP when gRPC unavailable |
-
 ### HOCON Configuration
 
 ```hocon
@@ -191,14 +174,14 @@ inference {
 
 ## Health Checks
 
-The `/health quick` command distinguishes gateway from fallback paths:
+The `/health quick` command shows gateway status:
 
 ```
 Service              Status    Details
 ─────────────────────────────────────────────────
-gRPC Engine          healthy   PRIMARY - authenticated inference gateway
-optillm Service      healthy   DEV FALLBACK - direct HTTP (no auth)
-vLLM Direct          healthy   DEV FALLBACK - direct HTTP (no auth)
+gRPC Engine          healthy   Authenticated inference gateway
+optillm Service      healthy   Connected via engine
+vLLM Direct          healthy   Connected via engine
 ```
 
 ## Future Alignment

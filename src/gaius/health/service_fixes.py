@@ -207,9 +207,24 @@ class MinioFixStrategy(ServiceFixStrategy):
 
 
 class SingletonFixStrategy(ServiceFixStrategy):
-    """Fix strategy for Python client singletons."""
+    """Fix strategy for Python client singletons.
+
+    DEPRECATED: With Engine Federation architecture, client-side singleton
+    management is no longer the recommended approach. Use EngineFixStrategy
+    instead, which includes gRPC client reset as part of engine recovery.
+
+    The gRPC client reset is still available but should not be called in
+    isolation - it's now part of the engine reconnection flow.
+    """
 
     def __init__(self):
+        import warnings
+        warnings.warn(
+            "SingletonFixStrategy is deprecated. Use EngineFixStrategy which "
+            "includes gRPC singleton reset as part of engine recovery.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__("singletons")
 
     def create_fix_actions(
@@ -910,9 +925,9 @@ print(f"Checking objectives directory: {objectives_dir}")
 if not objectives_dir.exists():
     print(f"Creating objectives directory: {objectives_dir}")
     objectives_dir.mkdir(parents=True, exist_ok=True)
-    print("✓ Directory created")
+    print("[OK] Directory created")
 else:
-    print(f"✓ Directory exists")
+    print(f"[OK] Directory exists")
 
 # List objectives
 objectives = list(objectives_dir.glob("*.md"))
@@ -921,7 +936,7 @@ for obj in objectives:
     print(f"  - {obj.name}")
 
 if not objectives:
-    print("⚠ No objectives found. Create objectives in current/objectives/")
+    print("[WARN] No objectives found. Create objectives in current/objectives/")
 ''',
                 safety=SafetyLevel.SAFE,
                 timeout=10,
@@ -946,19 +961,19 @@ async def test_oracle():
     # Test state capture
     try:
         state = KBState.capture(kb_root)
-        print(f"✓ KBState captured: {len(state.documents)} documents")
+        print(f"[OK] KBState captured: {len(state.documents)} documents")
         if state.is_stale():
-            print("⚠ State is stale, will refresh on next verification")
+            print("[WARN] State is stale, will refresh on next verification")
     except Exception as e:
-        print(f"✗ KBState capture failed: {e}")
+        print(f"[FAIL] KBState capture failed: {e}")
         return False
 
     # Test oracle creation
     try:
         oracle = KBOracle(kb_root=kb_root)
-        print(f"✓ KBOracle created")
+        print(f"[OK] KBOracle created")
     except Exception as e:
-        print(f"✗ KBOracle creation failed: {e}")
+        print(f"[FAIL] KBOracle creation failed: {e}")
         return False
 
     return True
@@ -985,7 +1000,7 @@ async def test_evidence():
 
         capture = get_evidence_capture()
         status = capture.get_status()
-        print(f"✓ EvidenceCapture singleton: {type(capture).__name__}")
+        print(f"[OK] EvidenceCapture singleton: {type(capture).__name__}")
         print(f"  - enabled: {status['enabled']}")
         print(f"  - namespace: {status['namespace']}")
         print(f"  - table: {status['table_name']}")
@@ -996,13 +1011,13 @@ async def test_evidence():
         try:
             client = get_minio_client()
             buckets = client.list_buckets()
-            print(f"✓ MinIO connected: {len(buckets)} buckets")
+            print(f"[OK] MinIO connected: {len(buckets)} buckets")
         except Exception as e:
-            print(f"⚠ MinIO check failed (may not be critical): {e}")
+            print(f"[WARN] MinIO check failed (may not be critical): {e}")
 
         return True
     except Exception as e:
-        print(f"✗ Evidence capture test failed: {e}")
+        print(f"[FAIL] Evidence capture test failed: {e}")
         return False
 
 result = asyncio.run(test_evidence())
@@ -1025,34 +1040,34 @@ print("Resetting RASE singletons...")
 try:
     from gaius.agents.evolution import daemon_oracle
     daemon_oracle._daemon_oracle = None
-    print("✓ DaemonOracle singleton reset")
+    print("[OK] DaemonOracle singleton reset")
 except Exception as e:
-    print(f"⚠ DaemonOracle reset: {e}")
+    print(f"[WARN] DaemonOracle reset: {e}")
 
 # Reset objective generator
 try:
     from gaius.agents.evolution import objective_generator
     objective_generator._generator = None
-    print("✓ ObjectiveTaskGenerator singleton reset")
+    print("[OK] ObjectiveTaskGenerator singleton reset")
 except Exception as e:
-    print(f"⚠ ObjectiveTaskGenerator reset: {e}")
+    print(f"[WARN] ObjectiveTaskGenerator reset: {e}")
 
 # Reset calibration oracle
 try:
     from gaius.agents.evolution import calibration
     calibration._calibration_oracle = None
-    print("✓ CalibrationOracle singleton reset")
+    print("[OK] CalibrationOracle singleton reset")
 except Exception as e:
-    print(f"⚠ CalibrationOracle reset: {e}")
+    print(f"[WARN] CalibrationOracle reset: {e}")
 
 # Reset KB oracle (in domains)
 try:
     from gaius.rase.domains.kb import oracle
     if hasattr(oracle, '_kb_oracle'):
         oracle._kb_oracle = None
-        print("✓ KBOracle singleton reset")
+        print("[OK] KBOracle singleton reset")
 except Exception as e:
-    print(f"⚠ KBOracle reset: {e}")
+    print(f"[WARN] KBOracle reset: {e}")
 
 print("\\nRASE singletons reset complete")
 ''',
@@ -1075,20 +1090,20 @@ cerebras_key = os.environ.get("CEREBRAS_API_KEY", "")
 xai_key = os.environ.get("XAI_API_KEY", "")
 
 if cerebras_key:
-    print(f"✓ CEREBRAS_API_KEY configured ({len(cerebras_key)} chars)")
+    print(f"[OK] CEREBRAS_API_KEY configured ({len(cerebras_key)} chars)")
 else:
-    print("⚠ CEREBRAS_API_KEY not set (calibration will fall back to XAI)")
+    print("[WARN] CEREBRAS_API_KEY not set (calibration will fall back to XAI)")
 
 if xai_key:
-    print(f"✓ XAI_API_KEY configured ({len(xai_key)} chars)")
+    print(f"[OK] XAI_API_KEY configured ({len(xai_key)} chars)")
 else:
-    print("⚠ XAI_API_KEY not set (calibration may not work)")
+    print("[WARN] XAI_API_KEY not set (calibration may not work)")
 
 if not cerebras_key and not xai_key:
-    print("\\n✗ No calibration providers configured!")
+    print("\\n[FAIL] No calibration providers configured!")
     print("  Set CEREBRAS_API_KEY or XAI_API_KEY in environment")
 else:
-    print("\\n✓ At least one calibration provider available")
+    print("\\n[OK] At least one calibration provider available")
 ''',
                 safety=SafetyLevel.SAFE,
                 timeout=5,
@@ -1099,6 +1114,12 @@ else:
 
 
 # Service registry - maps service names to strategies
+#
+# NOTE: With Engine Federation architecture, most remediation should go through
+# the engine's HealthObserverService via gRPC. The strategies here are for
+# client-side remediation when the engine is not available.
+#
+# Deprecated: "singletons" - use "engine" which includes gRPC singleton reset
 SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "engine": EngineFixStrategy(),
     "grpc": EngineFixStrategy(),  # Alias
@@ -1108,7 +1129,7 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "qdrant": QdrantFixStrategy(),
     "minio": MinioFixStrategy(),
     "s3": MinioFixStrategy(),  # Alias
-    "singletons": SingletonFixStrategy(),
+    # "singletons" removed - deprecated, use "engine" instead
     "all": AllServicesFixStrategy(),
     "endpoints": EndpointFixStrategy(),
     "inference": EndpointFixStrategy(),  # Alias

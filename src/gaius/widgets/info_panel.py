@@ -106,7 +106,7 @@ class InfoPanel(Widget, can_focus=True):
         self._content_type = "agent"
 
         header = self.query_one("#content-header", Static)
-        header.update(f"🤖 {name}")
+        header.update(f"[AGENT] {name}")
 
         text = Text()
         text.append("Role: ", style="dim")

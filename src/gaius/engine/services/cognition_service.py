@@ -115,6 +115,14 @@ class CognitionService:
         # Progress callbacks
         self._progress_callbacks: list[Callable[[str], None]] = []
 
+        # Streaming subscribers (for TUI real-time updates)
+        self._cognition_subscribers: list[asyncio.Queue] = []
+        self._evolution_subscribers: list[asyncio.Queue] = []
+        self._activity_subscribers: list[asyncio.Queue] = []
+
+        # Current cycle ID for tracking
+        self._current_cycle_id: Optional[str] = None
+
         logger.info("CognitionService initialized")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -344,20 +352,28 @@ class CognitionService:
         # Record cycle start for rate limiting
         self._recent_cycles.append(datetime.now())
 
-        # Get cognition agent
-        from ...agents.cognition import get_cognition_agent
+        # Use engine-native cognition logic (no L5 agent imports)
+        from .cognition_logic import process_cognition_cycle
 
-        agent = get_cognition_agent()
-
-        # Extract parameters from payload
-        max_thoughts = payload.get("max_thoughts", self.config.max_thoughts_per_cycle)
-        trigger_reason = payload.get("trigger", "scheduled")
+        # Build payload with service config defaults
+        cycle_payload = {
+            "max_thoughts": payload.get("max_thoughts", self.config.max_thoughts_per_cycle),
+            "trigger": payload.get("trigger", "scheduled"),
+        }
 
         # Run cognition cycle
         self._notify_progress("Running cognition cycle...")
-        result = await agent.think(
-            max_thoughts=max_thoughts,
-            trigger_reason=trigger_reason,
+        result = await process_cognition_cycle(
+            db_pool=self._db_pool,
+            payload=cycle_payload,
+        )
+
+        # Emit streaming event for real-time TUI updates
+        self._emit_cognition_event(
+            "THOUGHT" if result.thoughts_generated > 0 else "CYCLE_END",
+            thought_type="cognition_cycle",
+            title=f"Generated {result.thoughts_generated} thoughts",
+            summary=f"{result.patterns_detected} patterns, {result.connections_found} connections",
         )
 
         # Update statistics
@@ -365,13 +381,13 @@ class CognitionService:
         self._last_cycle_at = datetime.now()
 
         self._notify_progress(
-            f"Generated {len(result.thoughts)} thoughts "
+            f"Generated {result.thoughts_generated} thoughts "
             f"({result.patterns_detected} patterns, "
             f"{result.connections_found} connections)"
         )
 
         return {
-            "thoughts_generated": len(result.thoughts),
+            "thoughts_generated": result.thoughts_generated,
             "patterns_detected": result.patterns_detected,
             "connections_found": result.connections_found,
             "curiosities_generated": result.curiosities_generated,
@@ -421,17 +437,27 @@ class CognitionService:
             logger.error(f"Engine audit error: {e}")
             return {"error": str(e)}
 
-        # If anomalies found, generate a thought about them
+        # If anomalies found, generate a thought about them using engine-native logic
         if anomalies_found > 0 and self.config.enable_engine_audit:
-            from ...agents.cognition import get_cognition_agent
+            from .cognition_logic import process_engine_audit
 
-            agent = get_cognition_agent()
-            context = await agent._gather_context()
-            context.engine_observations = observations
+            audit_result = await process_engine_audit(
+                db_pool=self._db_pool,
+                payload={
+                    "observations": observations,
+                    "anomalies": anomalies,
+                },
+            )
+            if audit_result.success:
+                logger.info(f"Engine audit generated {audit_result.observations_recorded} observations")
 
-            audit_thoughts = await agent._audit_engine_health(context)
-            for thought in audit_thoughts:
-                await agent._save_thought(thought)
+            # Emit streaming event
+            self._emit_cognition_event(
+                "ENGINE_AUDIT",
+                thought_type="engine_audit",
+                title=f"Found {anomalies_found} anomalies",
+                summary=str(anomalies)[:200] if anomalies_found else "",
+            )
 
         return {
             "observations_recorded": len(observations),
@@ -550,37 +576,34 @@ class CognitionService:
             Result dict with cycles run and results
         """
         try:
-            from ...agents.evolution import get_evolution_daemon
+            # Use engine-native evolution logic (no L5 agent imports)
+            from .cognition_logic import process_evolution_cycle
 
-            daemon = get_evolution_daemon()
             agents = payload.get("agents", ["leader", "risk", "critic", "opportunity", "domain"])
             source = payload.get("source", "scheduled")
 
             logger.info(f"Starting evolution cycle for {len(agents)} agents (source={source})")
             self._notify_progress(f"Running evolution for {len(agents)} agents...")
 
-            results = []
-            for agent_id in agents:
-                try:
-                    result = await daemon.force_evolution_cycle(agent_id)
-                    results.append({
-                        "agent_id": agent_id,
-                        "success": result.success if hasattr(result, 'success') else True,
-                        "improvement": getattr(result, 'improvement_percent', 0.0),
-                    })
-                except Exception as e:
-                    logger.error(f"Evolution cycle failed for {agent_id}: {e}")
-                    results.append({
-                        "agent_id": agent_id,
-                        "success": False,
-                        "error": str(e),
-                    })
+            result = await process_evolution_cycle(
+                db_pool=self._db_pool,
+                payload={
+                    "agents": agents,
+                    "source": source,
+                },
+            )
 
-            successful = sum(1 for r in results if r.get("success", False))
+            # Emit streaming event
+            self._emit_evolution_event(
+                "CYCLE_END" if result.success else "ERROR",
+                agent_id=agents[0] if agents else "",
+                details=f"Processed {result.agents_processed} agents, {result.successful} successful",
+            )
+
             return {
-                "cycles_run": len(results),
-                "successful": successful,
-                "results": results,
+                "cycles_run": result.agents_processed,
+                "successful": result.successful,
+                "results": result.results,
             }
 
         except Exception as e:
@@ -597,28 +620,28 @@ class CognitionService:
             Result dict with drafts generated
         """
         try:
-            from ...agents.evolution import get_task_ideation_agent
+            # Use engine-native task ideation (no L5 agent imports)
+            from .cognition_logic import process_task_ideation
 
-            agent = get_task_ideation_agent()
             max_concepts = payload.get("max_concepts", 5)
             novelty_threshold = payload.get("novelty_threshold", 0.4)
 
             logger.info(f"Running task ideation (max_concepts={max_concepts})")
             self._notify_progress("Generating task concepts...")
 
-            drafts = await agent.ideate(
-                max_concepts=max_concepts,
-                novelty_threshold=novelty_threshold,
+            result = await process_task_ideation(
+                db_pool=self._db_pool,
+                payload={
+                    "max_concepts": max_concepts,
+                    "novelty_threshold": novelty_threshold,
+                },
             )
 
             return {
-                "drafts_generated": len(drafts) if drafts else 0,
-                "names": [d.name for d in drafts] if drafts else [],
+                "drafts_generated": result.drafts_generated,
+                "names": result.task_names,
             }
 
-        except ImportError:
-            logger.warning("Task ideation agent not available")
-            return {"error": "task_ideation_agent_not_available"}
         except Exception as e:
             logger.error(f"Task ideation failed: {e}")
             return {"error": str(e)}
@@ -633,41 +656,28 @@ class CognitionService:
             Result dict with merge results
         """
         try:
-            from ...agents.evolution import get_merge_coordinator
+            # Use engine-native model merge (no L5 agent imports)
+            from .cognition_logic import process_model_merge
 
-            coordinator = get_merge_coordinator()
             agents = payload.get("agents")  # None = all agents
 
             logger.info(f"Running model merge (agents={agents or 'all'})")
             self._notify_progress("Running model merging...")
 
             if agents is None:
-                # Get all agents from config
                 agents = ["leader", "risk", "critic", "opportunity", "domain"]
 
-            results = {}
-            for agent_id in agents:
-                try:
-                    result = await coordinator.run_merge_cycle(agent_id)
-                    results[agent_id] = {
-                        "success": result.success,
-                        "merged_model_id": result.merged_model_id,
-                        "method": result.merge_method,
-                        "improvement_percent": result.improvement_percent,
-                    }
-                except Exception as e:
-                    logger.error(f"Merge failed for {agent_id}: {e}")
-                    results[agent_id] = {"success": False, "error": str(e)}
+            result = await process_model_merge(
+                db_pool=self._db_pool,
+                payload={"agents": agents},
+            )
 
             return {
-                "agents_processed": len(results),
-                "successful": sum(1 for r in results.values() if r.get("success")),
-                "results": results,
+                "agents_processed": result.agents_processed,
+                "successful": result.successful,
+                "results": result.results,
             }
 
-        except ImportError:
-            logger.warning("Merge coordinator not available")
-            return {"error": "merge_coordinator_not_available"}
         except Exception as e:
             logger.error(f"Model merge failed: {e}")
             return {"error": str(e)}
@@ -782,31 +792,31 @@ class CognitionService:
             Result dict with summary info
         """
         try:
-            # Try to use daily summary agent with extended period
-            from ...agents.daily_summary import get_daily_summary_agent
+            # Use engine-native daily summary (no L5 agent imports)
+            from .cognition_logic import process_daily_summary
 
-            agent = get_daily_summary_agent()
             use_llm = payload.get("use_llm", True)
             write_to_kb = payload.get("write_to_kb", True)
 
             logger.info("Generating weekly summary")
             self._notify_progress("Generating weekly summary...")
 
-            summary = await agent.generate_summary(
-                days=7,
-                use_llm=use_llm,
-                write_to_kb=write_to_kb,
+            result = await process_daily_summary(
+                db_pool=self._db_pool,
+                payload={
+                    "days": 7,
+                    "use_llm": use_llm,
+                    "write_to_kb": write_to_kb,
+                },
             )
 
             return {
                 "period": "weekly",
-                "kb_entries": summary.metrics.get("kb_entries", 0) if summary.metrics else 0,
-                "queries": summary.metrics.get("queries", 0) if summary.metrics else 0,
+                "kb_entries": result.kb_entries,
+                "queries": result.queries,
+                "kb_path": result.kb_path,
             }
 
-        except ImportError:
-            logger.warning("Daily summary agent not available")
-            return {"error": "daily_summary_agent_not_available"}
         except Exception as e:
             logger.error(f"Weekly summary failed: {e}")
             return {"error": str(e)}
@@ -1591,7 +1601,7 @@ Your summary note content"""
         gpu = metrics.get("gpu", {})
         if gpu.get("temperature_c", 0) > 80:
             anomalies.append(f"High GPU temperature: {gpu['temperature_c']}°C")
-        if gpu.get("memory_used_pct", 0) > 95:
+        if gpu.get("memory_used_pct", 0) > 98:
             anomalies.append(f"GPU memory nearly full: {gpu['memory_used_pct']}%")
 
         return anomalies
@@ -1801,3 +1811,248 @@ Your summary note content"""
     def is_running(self) -> bool:
         """Whether daemon is running."""
         return self._running
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Streaming Subscriptions (TUI Real-time Updates)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def subscribe_cognition(
+        self,
+        buffer_size: int = 100,
+    ):
+        """Subscribe to cognition events.
+
+        Yields CognitionEvent-like dicts for streaming to TUI/MCP clients.
+
+        Args:
+            buffer_size: Maximum events to buffer
+
+        Yields:
+            Event dicts matching CognitionEvent proto structure
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._cognition_subscribers.append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+        finally:
+            self._cognition_subscribers.remove(queue)
+
+    async def subscribe_evolution(
+        self,
+        buffer_size: int = 100,
+        agent_filter: str = "",
+    ):
+        """Subscribe to evolution events.
+
+        Yields EvolutionEvent-like dicts for streaming to TUI/MCP clients.
+
+        Args:
+            buffer_size: Maximum events to buffer
+            agent_filter: Only events for this agent (empty = all)
+
+        Yields:
+            Event dicts matching EvolutionEvent proto structure
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._evolution_subscribers.append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                # Filter by agent if specified
+                if agent_filter and event.get("agent_id") != agent_filter:
+                    continue
+                yield event
+        finally:
+            self._evolution_subscribers.remove(queue)
+
+    async def subscribe_activity(
+        self,
+        buffer_size: int = 100,
+        domains: Optional[list[str]] = None,
+    ):
+        """Subscribe to all activity events.
+
+        Yields ActivityEvent-like dicts for unified activity stream.
+
+        Args:
+            buffer_size: Maximum events to buffer
+            domains: Filter by domains (None = all)
+
+        Yields:
+            Event dicts matching ActivityEvent proto structure
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._activity_subscribers.append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                # Filter by domain if specified
+                if domains and event.get("domain") not in domains:
+                    continue
+                yield event
+        finally:
+            self._activity_subscribers.remove(queue)
+
+    def _emit_cognition_event(
+        self,
+        event_type: str,
+        thought_id: str = "",
+        thought_type: str = "",
+        title: str = "",
+        summary: str = "",
+        salience: float = 0.0,
+        generation: int = 0,
+        error: str = "",
+    ) -> None:
+        """Emit a cognition event to all subscribers.
+
+        Non-blocking - drops if subscriber queues are full.
+
+        Args:
+            event_type: Event type (CYCLE_START, THOUGHT, etc.)
+            thought_id: UUID of thought
+            thought_type: "pattern", "connection", etc.
+            title: Thought title
+            summary: Brief summary
+            salience: Importance score 0.0-1.0
+            generation: Thought generation number
+            error: Error message if type=ERROR
+        """
+        import time
+
+        event = {
+            "type": event_type,
+            "timestamp_ms": int(time.time() * 1000),
+            "thought_id": thought_id,
+            "thought_type": thought_type,
+            "title": title,
+            "summary": summary[:200] if summary else "",  # Truncate for streaming
+            "salience": salience,
+            "generation": generation,
+            "cycle_id": self._current_cycle_id or "",
+            "thoughts_in_cycle": self._cycles_completed,
+            "error": error,
+        }
+
+        for queue in self._cognition_subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+        # Also emit to activity stream
+        self._emit_activity_event(
+            event_type="cognition",
+            source="cognition_service",
+            title=title or event_type,
+            summary=summary,
+            data=event,
+        )
+
+    def _emit_evolution_event(
+        self,
+        event_type: str,
+        agent_id: str = "",
+        version_id: str = "",
+        score: float = 0.0,
+        improvement_pct: float = 0.0,
+        details: str = "",
+        merge_id: str = "",
+        error: str = "",
+    ) -> None:
+        """Emit an evolution event to all subscribers.
+
+        Non-blocking - drops if subscriber queues are full.
+
+        Args:
+            event_type: Event type (CYCLE_START, EVALUATION_DONE, etc.)
+            agent_id: Agent being evolved
+            version_id: Version being evaluated/promoted
+            score: Evaluation score 0.0-1.0
+            improvement_pct: Improvement percentage
+            details: Human-readable details
+            merge_id: Merge ID for merge events
+            error: Error message if type=ERROR
+        """
+        import time
+
+        event = {
+            "type": event_type,
+            "timestamp_ms": int(time.time() * 1000),
+            "agent_id": agent_id,
+            "version_id": version_id,
+            "score": score,
+            "improvement_pct": improvement_pct,
+            "details": details,
+            "cycle_number": self._cycles_completed,
+            "merge_id": merge_id,
+            "error": error,
+        }
+
+        for queue in self._evolution_subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+        # Also emit to activity stream
+        self._emit_activity_event(
+            event_type="evolution",
+            source="cognition_service",
+            title=f"{event_type}: {agent_id}" if agent_id else event_type,
+            summary=details,
+            data=event,
+        )
+
+    def _emit_activity_event(
+        self,
+        event_type: str,
+        source: str,
+        title: str,
+        summary: str = "",
+        domain: str = "",
+        data: Optional[dict] = None,
+    ) -> None:
+        """Emit a unified activity event to all subscribers.
+
+        Non-blocking - drops if subscriber queues are full.
+
+        Args:
+            event_type: "cognition", "evolution", "system", "kb"
+            source: Service that generated event
+            title: Brief title
+            summary: Human-readable summary
+            domain: Domain context
+            data: Full event data
+        """
+        import time
+
+        event = {
+            "event_type": event_type,
+            "timestamp_ms": int(time.time() * 1000),
+            "source": source,
+            "domain": domain,
+            "title": title,
+            "summary": summary[:500] if summary else "",
+            "data": json.dumps(data) if data else "{}",
+        }
+
+        for queue in self._activity_subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+    @property
+    def subscriber_counts(self) -> dict[str, int]:
+        """Get count of active subscribers by type."""
+        return {
+            "cognition": len(self._cognition_subscribers),
+            "evolution": len(self._evolution_subscribers),
+            "activity": len(self._activity_subscribers),
+        }

@@ -14,7 +14,7 @@ This is the primary transport for gaius-engine, designed to:
 import asyncio
 import logging
 from concurrent import futures
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import grpc
@@ -71,6 +71,15 @@ class ServiceRegistry:
 
     # Topology service for temporal dynamics tracking
     topology_service: Any = None
+
+    # Health service for basic metrics
+    health_service: Any = None
+
+    # Health observer service for autonomous FMEA monitoring + ACP
+    health_observer_service: Any = None
+
+    # X Bookmarks service for syncing X/Twitter bookmarks to KB
+    x_bookmarks_service: Any = None
 
     # Engine config
     config: Any = None

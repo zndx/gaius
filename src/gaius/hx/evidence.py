@@ -384,7 +384,7 @@ class EvidenceCapture:
         # Build constraint summary table
         constraint_rows = []
         for c in record.constraint_results:
-            status = "✅" if c.get("satisfied", False) else "❌"
+            status = "[OK]" if c.get("satisfied", False) else "[FAIL]"
             name = c.get("name", "unknown")
             message = c.get("message", "")[:60]
             constraint_rows.append(f"| {name} | {status} | {message} |")

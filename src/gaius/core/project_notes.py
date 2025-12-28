@@ -87,7 +87,8 @@ def create_project_note(
             prev_rel = prev_note.relative_to(kb_root)
             prev_link = f"[[{prev_rel}]]"
         except ValueError:
-            prev_link = f"[[{prev_note}]]"
+            # Fallback: use just the filename stem to avoid absolute paths in links
+            prev_link = f"[[{prev_note.stem}]]"
     else:
         prev_link = ""
 
@@ -135,7 +136,8 @@ def _update_next_link(prev_note: Path, kb_root: Path, new_note: Path) -> bool:
             new_rel = new_note.relative_to(kb_root)
             new_link = f"[[{new_rel}]]"
         except ValueError:
-            new_link = f"[[{new_note}]]"
+            # Fallback: use just the filename stem to avoid absolute paths in links
+            new_link = f"[[{new_note.stem}]]"
 
         # Replace empty next: with link to new note
         # Match "next:" followed by optional whitespace and end of line

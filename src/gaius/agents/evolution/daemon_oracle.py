@@ -246,12 +246,12 @@ class DaemonOracle:
         agent_says_pass = any([
             "pass" in agent_output.lower()[:500],
             "satisfied" in agent_output.lower()[:500],
-            "✅" in agent_output[:500],
+            "[ok]" in agent_output.lower()[:500],
         ])
         agent_says_fail = any([
             "fail" in agent_output.lower()[:500],
             "not satisfied" in agent_output.lower()[:500],
-            "❌" in agent_output[:500],
+            "[fail]" in agent_output.lower()[:500],
         ])
 
         actual_pass = result.verdict.value == "pass"
@@ -268,7 +268,7 @@ class DaemonOracle:
                 gates_mentioned += 1
                 # Check if agent correctly identified gate status
                 gate_context = agent_output.lower().split(gate_name.lower())[1][:200]
-                agent_says_gate_pass = "pass" in gate_context or "✅" in gate_context
+                agent_says_gate_pass = "pass" in gate_context or "[ok]" in gate_context
                 if agent_says_gate_pass == gate_passed:
                     gate_mention_accuracy += 1
 

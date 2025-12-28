@@ -16,30 +16,50 @@ teaching Gaius to heal autonomously.
 
 ## Architecture
 
+The HealthObserver runs inside the gaius-engine daemon, enabling autonomous
+self-healing even when no clients are connected. Claude Code interacts with
+the engine via the MCP server's gRPC thin client.
+
 ```mermaid
 flowchart TB
-    subgraph Gaius["Gaius ACP Integration"]
-        ACPClient["GaiusACPClient"]
-        Observer["HealthObserver Daemon"]
+    subgraph Engine["gaius-engine (Daemon)"]
+        Observer["HealthObserverService"]
         FMEA["FMEA/RPN Scoring"]
+        ACPClient["GaiusACPClient (Engine-side)"]
+        Orch["OrchestratorService"]
 
-        ACPClient --> Observer
         Observer --> FMEA
+        Observer --> ACPClient
+        Observer --> Orch
     end
 
-    subgraph Claude["Claude Code"]
+    subgraph Clients["Thin Clients (Optional)"]
+        MCP["Gaius MCP Server"]
+        TUI["Gaius TUI"]
+        CLI["gaius-cli"]
+
+        MCP -->|gRPC| Engine
+        TUI -->|gRPC| Engine
+        CLI -->|gRPC| Engine
+    end
+
+    subgraph Claude["Claude Code (External)"]
         Adapter["claude-code-acp adapter"]
         Model["Claude Sonnet/Opus"]
-        MCP["Gaius MCP Server"]
 
         Adapter --> Model
-        Model --> MCP
     end
 
     ACPClient <-->|"ACP/JSON-RPC over stdio"| Adapter
     Model -->|"Anthropic API"| Model
-    MCP -->|"health, KB, infra tools"| Observer
+    Model -->|"MCP tools"| MCP
 ```
+
+**Key Points**:
+- HealthObserver lives in the engine daemon, not in thin clients
+- Engine can self-heal autonomously via `devenv up` without any client
+- MCP tools call engine via gRPC (thin client architecture)
+- Claude Code accesses engine services through MCP's gRPC calls
 
 ## Components
 
@@ -143,24 +163,43 @@ instead of API credits.
 
 ## Usage Patterns
 
-### Health Incident Escalation
+### Health Incident Escalation (Engine-Side)
 
-When the HealthObserver daemon detects an incident that exceeds the FMEA
-risk threshold, it can escalate to Claude Code via ACP:
+The HealthObserverService in gaius-engine handles escalation automatically.
+When an incident exceeds FMEA thresholds, the engine spawns an ACP session:
 
 ```python
-from gaius.acp import GaiusACPClient, build_incident_prompt, WorkflowMode
+# This happens inside HealthObserverService in the engine daemon
+# Users don't need to call this directly - it's automatic
 
-async def escalate_incident(incident: HealthIncident):
-    prompt = build_incident_prompt(
-        incident=incident.to_dict(),
-        mode=WorkflowMode.OBSERVE,
-    )
+class HealthObserverService:
+    async def _escalate_to_acp(self, incident: HealthIncident) -> None:
+        """Escalate to Claude Code when Tier 0/1 remediation fails."""
+        from gaius.acp import GaiusACPClient, build_incident_prompt
 
-    async with GaiusACPClient() as client:
-        analysis = await client.prompt(prompt)
-        # Claude Code will use MCP tools to diagnose
-        # and recommend framework improvements
+        prompt = build_incident_prompt(
+            incident=incident.to_dict(),
+            mode=WorkflowMode.OBSERVE,
+        )
+
+        async with GaiusACPClient() as client:
+            analysis = await client.prompt(prompt)
+            # Claude Code uses MCP tools to diagnose and fix
+```
+
+### Monitoring via MCP Tools
+
+Thin clients (MCP, TUI, CLI) can monitor and control the HealthObserver
+via gRPC calls to the engine:
+
+```python
+# From MCP tool - calls engine via gRPC
+from gaius.client.grpc_client import get_grpc_client
+
+async def check_health():
+    client = await get_grpc_client()
+    status = await client.call("HealthObserver", "status")
+    return status
 ```
 
 ### Streaming to TUI

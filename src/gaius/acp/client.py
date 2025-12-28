@@ -308,7 +308,7 @@ class GaiusACPClient:
                     elif isinstance(update, ToolCallStart):
                         tool_name = getattr(update, 'title', 'unknown')
                         if callback:
-                            await callback("tool_start", f"⚙ {tool_name}")
+                            await callback("tool_start", f"[TOOL] {tool_name}")
                         logger.debug(f"Tool start: {tool_name}")
 
                     # Handle tool call progress

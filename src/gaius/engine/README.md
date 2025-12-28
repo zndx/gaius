@@ -345,12 +345,7 @@ All inference requests route through the gRPC engine for centralized:
 - Audit logging
 - Resource management and rate limiting
 
-Direct HTTP access to optillm/vLLM backends is disabled by default:
-
-```bash
-# Enable direct HTTP fallbacks (development only)
-export GAIUS_ALLOW_FALLBACKS=true
-```
+All clients (TUI, CLI, MCP) must connect via gRPC. Direct HTTP access to optillm/vLLM backends is not supported.
 
 ## References
 
@@ -437,7 +432,7 @@ submodules: [grpc, backends, services, compute, resources, transport, generated]
 depends: [core.telemetry, core.config, models, agents.evolution, health]
 dependents: [client, app, mcp_server]
 config_keys: [engine.grpc.port, engine.grpc.host, engine.orchestrator.preload_endpoints, engine.scheduler.max_queue_size, engine.evolution.enabled, engine.evolution.idle_threshold]
-env_vars: [GAIUS_ENGINE_HOST, GAIUS_ENGINE_PORT, GAIUS_ALLOW_FALLBACKS]
+env_vars: [GAIUS_ENGINE_HOST, GAIUS_ENGINE_PORT]
 grpc_services: [GaiusService, GRPCInferenceService]
 ports: [50051]
 startup_phases: [INIT, GRPC, TELEMETRY, BACKENDS, ORCHESTRATOR, ENDPOINTS, TRANSPORT, SERVICES, COMPLETE]

@@ -302,7 +302,7 @@ Be concise and decisive. The system should make steady progress without human in
         try:
             from ...client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
+            # Engine Federation Architecture: endpoint status via engine gRPC
             if use_engine_proxy():
                 orch = await get_orchestrator_proxy()
                 status = await orch._get_status_async()
@@ -310,14 +310,11 @@ Be concise and decisive. The system should make steady progress without human in
                 for name, info in status.get("endpoints", {}).items():
                     endpoints_running[name] = info.get("status") == "healthy"
             else:
-                # Fallback to legacy
-                logger.warning("LEGACY_FALLBACK: _observe_system endpoint status bypassing engine - tech debt")
-                from ...inference.orchestrator import get_orchestrator
-                orch = get_orchestrator()
-                status = orch.get_status()
-
-                for name, info in status.get("endpoints", {}).items():
-                    endpoints_running[name] = info.get("status") == "healthy"
+                # Engine not available - cannot get authoritative endpoint status
+                logger.warning(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "Cannot get endpoint status. Start engine: devenv up gaius-engine"
+                )
         except Exception as e:
             logger.debug(f"Failed to get endpoint status: {e}")
 
@@ -679,26 +676,24 @@ Be concise and decisive. The system should make steady progress without human in
         }
 
     async def _execute_restart_endpoint(self, endpoint: str) -> dict:
-        """Restart a vLLM endpoint via engine."""
+        """Restart a vLLM endpoint via engine.
+
+        Engine Federation Architecture: endpoint restarts go through engine gRPC.
+        """
         try:
             from ...client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                success = await orch.restart_endpoint(endpoint)
-                return {"success": success, "restarted": endpoint}
+            if not use_engine_proxy():
+                # Engine not available - fail-fast
+                return {
+                    "success": False,
+                    "error": "Engine not available (#GR.00000001.ENGINEOFF)",
+                    "remediation": "Start engine: devenv up gaius-engine",
+                }
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: _execute_restart_endpoint bypassing engine - tech debt")
-            from ...inference.orchestrator import get_orchestrator
-
-            orch = get_orchestrator()
-            await orch.stop_endpoint(endpoint)
-            await asyncio.sleep(5)
-            await orch.start_endpoint(endpoint)
-
-            return {"success": True, "restarted": endpoint}
+            orch = await get_orchestrator_proxy()
+            success = await orch.restart_endpoint(endpoint)
+            return {"success": success, "restarted": endpoint}
         except Exception as e:
             return {"success": False, "error": str(e)}
 

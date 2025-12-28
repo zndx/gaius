@@ -1167,6 +1167,8 @@ class SelfHealingCoordinator:
         tier0_config: dict | None = None,
         tier1_config: dict | None = None,
         tier2_config: dict | None = None,
+        event_recorder: Any | None = None,
+        state_store: Any | None = None,
     ):
         """Initialize the self-healing coordinator.
 
@@ -1175,8 +1177,12 @@ class SelfHealingCoordinator:
             tier0_config: Config for procedural tier
             tier1_config: Config for local agent tier
             tier2_config: Config for remote escalation tier
+            event_recorder: Optional HealingEventRecorder for persisting events
+            state_store: Optional HealingStateStore for persisting state
         """
         self._orchestrator = orchestrator_service
+        self._event_recorder = event_recorder
+        self._state_store = state_store
 
         # Initialize tiers
         tier0_config = tier0_config or {}

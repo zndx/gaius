@@ -196,14 +196,14 @@ class InferenceScheduler:
                         models_available=ep.get("models", []),
                         current_model=ep.get("models", [None])[0] if ep.get("models") else None,
                     )
-        except Exception:
-            # LEGACY_FALLBACK: Single default endpoint when config loading fails
-            # In agent-first mode, engine manages endpoints; this is a last resort
-            logger.warning("LEGACY_FALLBACK: Using default endpoint - prefer engine proxy")
-            self._endpoints["default"] = EndpointState(
-                name="default",
-                url="http://localhost:8080/v1",  # orchestrator endpoint
+        except Exception as e:
+            # Engine Federation Architecture: fail-fast when config unavailable
+            logger.error(
+                f"Failed to load endpoint configuration (#EP.00000001.NOCONFIG): {e}. "
+                "No fallback endpoints will be configured. "
+                "Ensure engine is running: devenv up gaius-engine"
             )
+            # No default endpoint - fail-fast behavior
 
     def _estimate_duration(self, job: Job, endpoint: EndpointState) -> int:
         """Estimate job duration in milliseconds."""
@@ -1056,8 +1056,8 @@ class SchedulerService:
     async def _init_orchestrator_components(self) -> None:
         """Initialize GPU orchestrator, health monitor, recovery manager, and persistence.
 
-        Prefers engine client (agent-first architecture) when available.
-        Falls back to legacy orchestrator for standalone mode.
+        Engine Federation Architecture: GPU orchestration is delegated to the engine.
+        The scheduler itself only handles job queuing and client-side routing.
         """
         try:
             from ..client.engine_proxy import use_engine_proxy
@@ -1067,14 +1067,20 @@ class SchedulerService:
                 logger.info("Using engine for GPU orchestration (agent-first mode)")
                 self._orchestrator = None  # Engine handles this
             else:
-                # Fallback to legacy standalone orchestrator
-                logger.warning("LEGACY_FALLBACK: InferenceScheduler using legacy orchestrator - tech debt")
-                from .orchestrator import get_orchestrator
-                self._orchestrator = get_orchestrator()
-                await self._orchestrator.start()
-                logger.info("GPU orchestrator initialized (standalone mode)")
+                # Engine Federation Architecture: no fallback to local orchestrator
+                logger.warning(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "GPU orchestration requires engine gRPC service. "
+                    "Scheduler will operate in limited mode (no GPU management). "
+                    "Start engine: devenv up gaius-engine"
+                )
+                self._orchestrator = None
         except Exception as e:
-            logger.warning(f"GPU orchestrator not available: {e}")
+            logger.warning(
+                f"GPU orchestrator check failed (#GR.00000002.CALLF): {e}. "
+                "Operating without GPU orchestration."
+            )
+            self._orchestrator = None
 
         try:
             from .health import get_health_monitor

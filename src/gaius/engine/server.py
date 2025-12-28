@@ -2,11 +2,10 @@
 
 The engine server:
 1. Loads configuration from HOCON
-2. Starts gRPC server (PRIMARY transport)
-3. Starts Aeron IPC bridge (optional/legacy)
-4. Routes requests to services
-5. Broadcasts events and health metrics
-6. Provides Unix socket fallback for debugging
+2. Starts gRPC server (the only transport)
+3. Initializes backend services (vLLM, optillm, cognition, etc.)
+4. Broadcasts events and health metrics
+5. Runs autonomous services (evolution, health observer)
 """
 
 # Configure parallelism BEFORE any imports
@@ -31,19 +30,11 @@ from pathlib import Path
 from typing import Optional
 
 from .config import EngineConfig, load_config
-from .transport.aeron_bridge import AeronBridge, AeronMessage, create_bridge
 from .transport.protocol import (
     Request,
     Response,
-    Event,
-    EventType,
     HealthMetrics,
     Service,
-    deserialize_request,
-    serialize_response,
-    serialize_event,
-    serialize_health_metrics,
-    start_span_from_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,20 +52,13 @@ class GaiusEngine:
 
     def __init__(self, config: EngineConfig):
         self.config = config
-        self._bridge: Optional[AeronBridge] = None
         self._running = False
         self._health_task: Optional[asyncio.Task] = None
         self._request_task: Optional[asyncio.Task] = None
         self._start_time: Optional[datetime] = None
 
-        # gRPC server (PRIMARY transport)
+        # gRPC server (only transport)
         self._grpc_server = None
-
-        # Unix socket server (fallback for debugging/CLI)
-        self._socket_server: Optional[asyncio.Server] = None
-        self._socket_path = os.environ.get(
-            "GAIUS_ENGINE_SOCKET", "/tmp/gaius-engine.sock"
-        )
 
         # Backend router for inference (manages optillm and vLLM)
         self._backend_router = None
@@ -111,6 +95,15 @@ class GaiusEngine:
         # Topology service (temporal dynamics tracking)
         self._topology_service = None
 
+        # Health observer service (autonomous monitoring, FMEA, ACP)
+        self._health_observer_service = None
+
+        # X Bookmarks service (sync X/Twitter bookmarks to KB)
+        self._x_bookmarks_service = None
+
+        # Health service (basic metrics)
+        self._health_service = None
+
     async def start(self) -> None:
         """Start the engine daemon.
 
@@ -118,16 +111,15 @@ class GaiusEngine:
         TUI/MCP clients to connect immediately and receive real-time
         initialization progress during the ~240s vLLM preload phase.
 
-        New order:
+        Phases:
         1. Create InitController (for bidirectional streaming)
         2. Start gRPC server EARLY (clients can connect immediately)
         3. Initialize telemetry
         4. Initialize backends (broadcasts progress)
         5. Initialize orchestrator (broadcasts progress)
         6. Preload endpoints (broadcasts progress)
-        7. Start other transports (Aeron, socket)
-        8. Start background services
-        9. Mark initialization complete
+        7. Start background services
+        8. Mark initialization complete
         """
         from .init_controller import get_init_controller, InitPhase
 
@@ -141,6 +133,10 @@ class GaiusEngine:
         # 2. Start gRPC server EARLY so clients can connect immediately
         #    InitController is available, other services will be added as they're ready
         await self._start_grpc_server_early()
+
+        # 2.5 Start X Bookmarks service EARLY (no GPU deps, needed for InitPanel status)
+        #     This runs before the ~240s vLLM preload so XB status is available immediately
+        await self._init_x_bookmarks_service()
 
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
         await self._init_telemetry()
@@ -164,30 +160,10 @@ class GaiusEngine:
             await self._init_controller.start_phase(InitPhase.PRELOAD, "Starting endpoint preload")
             await self._autonomous_clean_start_with_progress()
 
-        # 7. Start other transports
-        await self._init_controller.start_phase(InitPhase.AERON, "Starting Aeron bridge")
-        try:
-            self._bridge = create_bridge(self.config.aeron)
-            await self._bridge.start()
-
-            # Subscribe to request stream
-            await self._bridge.subscribe(
-                self.config.aeron.request_stream, self._on_request
-            )
-            logger.info(f"Aeron bridge started on streams: requests={self.config.aeron.request_stream}")
-        except Exception as e:
-            logger.warning(f"Aeron bridge not started: {e}")
-            self._bridge = None
-
-        # Start Unix socket server (fallback for debugging/CLI)
-        await self._init_controller.start_phase(InitPhase.SOCKET, "Starting socket server")
-        await self._start_socket_server()
-
         self._running = True
 
-        # 8. Start background tasks
+        # 7. Start background tasks
         self._health_task = asyncio.create_task(self._health_broadcast_loop())
-        self._request_task = asyncio.create_task(self._request_loop())
 
         # Autonomous startup: start evolution daemon if configured
         if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
@@ -208,6 +184,12 @@ class GaiusEngine:
 
         # Start reconciliation service (FSM-based state observation)
         await self._init_reconciliation_service()
+
+        # Start health observer service (autonomous FMEA monitoring + ACP escalation)
+        await self._init_health_observer_service()
+
+        # NOTE: X Bookmarks service is initialized EARLY (after gRPC starts, before PRELOAD)
+        # to ensure XB status is available during the ~240s vLLM preload phase
 
         # 9. Mark initialization complete
         await self._init_controller.complete_init()
@@ -426,7 +408,36 @@ class GaiusEngine:
 
         The cognition daemon polls scheduled_tasks for cognition_cycle,
         engine_audit, and delta_check tasks inserted by pg_cron.
+
+        Creates a shared database pool FIRST, then passes it to both
+        CognitionService and TopologyService.
         """
+        # Create shared database pool BEFORE services that need it
+        # This is critical - CognitionService needs db_pool to consume pg_cron tasks
+        db_pool = None
+        try:
+            import asyncpg
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+            db_pool = await asyncpg.create_pool(
+                database_url,
+                min_size=2,
+                max_size=10,
+            )
+            logger.info(f"Created shared database pool (min=2, max=10)")
+        except Exception as db_err:
+            # This is a critical failure - pg_cron tasks won't be consumed
+            logger.error(
+                f"Failed to create database pool: {db_err}\n"
+                "  Guru Meditation: #COG.00000001.NOPOOL\n"
+                "  Cognition and Topology services will not function properly.\n"
+                "  Try: /health fix postgres"
+            )
+
+        # Start CognitionService with db_pool
         try:
             from .services.cognition_service import CognitionService, CognitionConfig
 
@@ -440,13 +451,23 @@ class GaiusEngine:
                 poll_interval_seconds=30.0,
             )
 
-            # Create and start service
+            # Wire up GPU idle check to orchestrator if available
+            def get_gpu_idle() -> bool:
+                if self._orchestrator_service:
+                    return self._orchestrator_service.is_gpu_idle()
+                return True  # Default to idle if orchestrator not available
+
+            # Create and start service WITH db_pool
             self._cognition_service = CognitionService(
                 config,
-                get_gpu_idle=lambda: True,  # TODO: wire up to health service
+                get_gpu_idle=get_gpu_idle,
+                db_pool=db_pool,  # Critical: pass db_pool for pg_cron task consumption
             )
             await self._cognition_service.start()
-            logger.info("Cognition daemon started")
+            logger.info(
+                f"Cognition daemon started "
+                f"(db_pool={'connected' if db_pool else 'MISSING'})"
+            )
 
             # Update gRPC service registry (cognition starts after gRPC)
             if self._grpc_server:
@@ -457,21 +478,12 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to start cognition daemon: {e}")
 
-        # Create topology service (uses database pool from engine config)
+        # Create topology service (reuses the shared database pool)
         try:
             from .services.topology_service import TopologyService
 
-            # Get db pool from environment
-            db_pool = None
-            try:
-                import asyncpg
-                database_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius?sslmode=disable")
-                db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
-            except Exception as db_err:
-                logger.warning(f"Could not create database pool for TopologyService: {db_err}")
-
             self._topology_service = TopologyService(db_pool=db_pool)
-            logger.info("Topology service initialized")
+            logger.info("Topology service initialized (sharing db_pool)")
 
             if self._grpc_server:
                 self._grpc_server.update_service("topology_service", self._topology_service)
@@ -592,6 +604,140 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to initialize reconciliation service: {e}")
 
+    async def _init_health_observer_service(self) -> None:
+        """Initialize autonomous health observer service.
+
+        The HealthObserverService runs continuous health monitoring with:
+        - FMEA-based RPN scoring for incident classification
+        - Tiered remediation (Tier 0 → 1 → 2 → Manual)
+        - ACP escalation to Claude Code for complex issues
+        - Event-sourced healing audit trail
+
+        This is the self-healing brain of the engine - runs independently
+        of any client connections.
+        """
+        try:
+            from .services.health_observer_service import (
+                HealthObserverService,
+                ObserverConfig,
+            )
+            from .services.health_service import HealthService
+
+            logger.info("Initializing health observer service...")
+
+            # Create health service for basic metrics first
+            self._health_service = HealthService()
+            self._health_service.set_services(
+                orchestrator=self._orchestrator_service,
+            )
+            await self._health_service.start()
+
+            # Create observer config from engine config
+            observer_config = ObserverConfig(
+                enabled=True,
+                poll_interval=30.0,
+                escalate_to_acp=True,
+                kb_root=os.environ.get("GAIUS_KB_ROOT", "build/dev"),
+            )
+
+            # Create and start observer service with dependencies
+            self._health_observer_service = HealthObserverService(
+                config=observer_config,
+                orchestrator_service=self._orchestrator_service,
+                health_service=self._health_service,
+            )
+            await self._health_observer_service.start()
+            logger.info("Health observer service started (autonomous monitoring active)")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "health_observer_service", self._health_observer_service
+                )
+                self._grpc_server.update_service(
+                    "health_service", self._health_service
+                )
+
+        except ImportError as e:
+            logger.warning(f"Health observer service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize health observer service: {e}")
+
+    async def _init_x_bookmarks_service(self) -> None:
+        """Initialize X Bookmarks sync service.
+
+        The XBookmarksService manages X (Twitter) bookmark synchronization:
+        - OAuth 2.0 PKCE flow for authentication
+        - Rate-limited API request queue (respects X API limits)
+        - Bookmark fetching with pagination
+        - Sync to Iceberg HX and KB markdown
+        """
+        try:
+            from .services.x_bookmarks_service import XBookmarksService, XBookmarksConfig
+            import asyncpg
+
+            logger.info("Initializing X Bookmarks service...")
+
+            # Get database pool from config
+            db_url = os.environ.get(
+                "DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            # Create database pool
+            pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
+
+            # Create service config
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = XBookmarksConfig(
+                kb_root=kb_root,
+                queue_poll_interval_s=60,  # Check queue every minute
+            )
+
+            # Create and start service
+            self._x_bookmarks_service = XBookmarksService(
+                pool=pool,
+                config=config,
+            )
+
+            # Wire XBookmarksService to InitController for real-time XB event push
+            # This enables the TUI's InitPanel to update immediately when auth completes
+            if self._init_controller:
+                def xb_event_callback(event_type: str, data: dict) -> None:
+                    """Forward XB events to InitController for broadcast."""
+                    import asyncio
+                    logger.info(f"XB callback invoked: {event_type} with data: {data}")
+                    try:
+                        # Use create_task for async broadcast from sync callback
+                        loop = asyncio.get_running_loop()
+                        task = loop.create_task(
+                            self._init_controller.broadcast_xb_event(event_type, data)
+                        )
+                        logger.info(f"Created broadcast task for {event_type}: {task}")
+                    except RuntimeError as e:
+                        # No running loop - we're called from sync context
+                        logger.error(f"No running event loop for XB event: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast XB event: {e}", exc_info=True)
+
+                self._x_bookmarks_service.set_event_callback(xb_event_callback)
+                logger.info("XBookmarksService wired to InitController for real-time events")
+
+            await self._x_bookmarks_service.start()
+            logger.info("X Bookmarks service started")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "x_bookmarks_service", self._x_bookmarks_service
+                )
+                logger.info("X Bookmarks service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"X Bookmarks service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize X Bookmarks service: {e}")
+
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).
 
@@ -680,13 +826,6 @@ class GaiusEngine:
             except asyncio.CancelledError:
                 pass
 
-        if self._request_task:
-            self._request_task.cancel()
-            try:
-                await self._request_task
-            except asyncio.CancelledError:
-                pass
-
         # Stop evolution daemon
         if self._evolution_daemon:
             try:
@@ -719,16 +858,9 @@ class GaiusEngine:
         if self._orchestrator_service:
             await self._orchestrator_service.stop()
 
-        # Stop gRPC server (PRIMARY transport)
+        # Stop gRPC server
         if self._grpc_server:
             await self._grpc_server.stop()
-
-        # Stop Aeron bridge
-        if self._bridge:
-            await self._bridge.stop()
-
-        # Stop socket server
-        await self._stop_socket_server()
 
         # Stop backend router (stops optillm and vLLM)
         if self._backend_router:
@@ -776,181 +908,19 @@ class GaiusEngine:
         except Exception as e:
             logger.warning(f"Failed to initialize OpenTelemetry: {e}")
 
-    async def _start_socket_server(self) -> None:
-        """Start Unix socket server for CLI/debugging fallback.
-
-        Only enabled when GAIUS_ALLOW_FALLBACKS=true environment variable is set.
-        This is a debugging/development feature.
-        """
-        # Check feature flag - fallbacks disabled by default
-        if os.environ.get("GAIUS_ALLOW_FALLBACKS", "").lower() != "true":
-            logger.debug(
-                "Unix socket fallback disabled (set GAIUS_ALLOW_FALLBACKS=true to enable)"
-            )
-            return
-
-        # Remove stale socket file
-        socket_path = Path(self._socket_path)
-        if socket_path.exists():
-            socket_path.unlink()
-
-        self._socket_server = await asyncio.start_unix_server(
-            self._handle_socket_client,
-            path=self._socket_path,
-        )
-        logger.info(f"Unix socket server listening on {self._socket_path}")
-
-    async def _stop_socket_server(self) -> None:
-        """Stop Unix socket server and cleanup."""
-        if self._socket_server:
-            self._socket_server.close()
-            await self._socket_server.wait_closed()
-
-        # Remove socket file
-        socket_path = Path(self._socket_path)
-        if socket_path.exists():
-            socket_path.unlink()
-
-    async def _handle_socket_client(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """Handle a connected socket client."""
-        peer = writer.get_extra_info("peername")
-        logger.debug(f"Socket client connected: {peer}")
-
-        try:
-            while self._running:
-                # Read length-prefixed message
-                length_bytes = await reader.readexactly(4)
-                length = int.from_bytes(length_bytes, "big")
-
-                if length > 1024 * 1024:  # 1MB limit
-                    logger.warning(f"Message too large: {length}")
-                    break
-
-                # Read message data
-                data = await reader.readexactly(length)
-
-                # Process request
-                try:
-                    request = deserialize_request(data)
-                    logger.debug(
-                        f"Socket request: {request.service.name}.{request.action}"
-                    )
-
-                    # Route to handler
-                    handler = self._handlers.get(request.service)
-                    if handler:
-                        response = await handler(request)
-                    else:
-                        response = Response.failure(
-                            request.id,
-                            code=404,
-                            message=f"Unknown service: {request.service.name}",
-                        )
-
-                    # Send response (length-prefixed)
-                    response_data = serialize_response(response)
-                    writer.write(len(response_data).to_bytes(4, "big"))
-                    writer.write(response_data)
-                    await writer.drain()
-
-                except Exception as e:
-                    logger.error(f"Socket request error: {e}")
-                    # Try to send error response
-                    try:
-                        response = Response.failure(
-                            request_id="unknown",
-                            code=500,
-                            message=str(e),
-                        )
-                        response_data = serialize_response(response)
-                        writer.write(len(response_data).to_bytes(4, "big"))
-                        writer.write(response_data)
-                        await writer.drain()
-                    except Exception:
-                        pass
-
-        except asyncio.IncompleteReadError:
-            logger.debug(f"Socket client disconnected: {peer}")
-        except Exception as e:
-            logger.error(f"Socket client error: {e}")
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-    def _on_request(self, msg: AeronMessage) -> None:
-        """Handle incoming request (callback from bridge)."""
-        asyncio.create_task(self._process_request(msg))
-
-    async def _process_request(self, msg: AeronMessage) -> None:
-        """Process a single request and send response."""
-        try:
-            request = deserialize_request(msg.data)
-            logger.debug(f"Received request: {request.service.name}.{request.action}")
-
-            # Start OpenTelemetry span if available
-            span = start_span_from_request(request)
-
-            try:
-                # Route to handler
-                handler = self._handlers.get(request.service)
-                if handler:
-                    response = await handler(request)
-                else:
-                    response = Response.failure(
-                        request.id,
-                        code=404,
-                        message=f"Unknown service: {request.service.name}",
-                    )
-
-            finally:
-                if span:
-                    span.__exit__(None, None, None)
-
-            # Send response
-            response_data = serialize_response(response)
-            await self._bridge.publish(
-                self.config.aeron.response_stream, response_data
-            )
-
-        except Exception as e:
-            logger.exception(f"Error processing request: {e}")
-            # Try to send error response
-            try:
-                response = Response.failure(
-                    request_id=getattr(msg, "id", "unknown"),
-                    code=500,
-                    message=str(e),
-                )
-                await self._bridge.publish(
-                    self.config.aeron.response_stream,
-                    serialize_response(response),
-                )
-            except Exception:
-                pass
-
-    async def _request_loop(self) -> None:
-        """Main loop for processing requests (using async iterator)."""
-        # The _on_request callback handles requests via subscription
-        # This loop is for any additional processing needed
-        while self._running:
-            await asyncio.sleep(0.1)
-
     async def _health_broadcast_loop(self) -> None:
-        """Broadcast health metrics at configured interval."""
+        """Internal health metrics collection loop.
+
+        Note: Health metrics are now exposed via gRPC HealthObserver service.
+        This loop maintains internal state for gRPC queries.
+        """
         interval = self.config.health_interval_ms / 1000.0
 
         while self._running:
             try:
-                metrics = await self._collect_health_metrics()
-                data = serialize_health_metrics(metrics)
-                await self._bridge.publish(self.config.aeron.health_stream, data)
+                await self._collect_health_metrics()
             except Exception as e:
-                logger.debug(f"Health broadcast error: {e}")
+                logger.debug(f"Health collection error: {e}")
 
             await asyncio.sleep(interval)
 
@@ -964,12 +934,6 @@ class GaiusEngine:
             evolution_running=False,  # TODO: Collect from evolution daemon
             evolution_agent="",
         )
-
-    async def broadcast_event(self, event: Event) -> None:
-        """Broadcast an event to all subscribers."""
-        if self._bridge:
-            data = serialize_event(event)
-            await self._bridge.publish(self.config.aeron.event_stream, data)
 
     # =========================================================================
     # Service Handlers - delegate to service implementations
@@ -1512,27 +1476,11 @@ class GaiusEngine:
             return Response.success(request.id, {"tasks": tasks})
 
         elif action == "recent_thoughts":
-            # Get recent thoughts from the cognition agent
+            # Get recent thoughts from the cognition service (engine-native)
             limit = request.payload.get("limit", 10)
             try:
-                from ..agents.cognition import get_cognition_agent
-
-                agent = get_cognition_agent()
-                thoughts = await agent.get_active_thoughts(limit=limit)
-
-                thought_list = []
-                for t in thoughts:
-                    thought_list.append({
-                        "type": t.thought_type.value if hasattr(t.thought_type, "value") else str(t.thought_type),
-                        "title": t.title,
-                        "summary": t.summary or (t.content[:100] if t.content else ""),
-                        "salience": t.salience,
-                        "generation": t.generation,
-                        "timestamp": t.created_at.isoformat() if t.created_at else None,
-                        "note_path": t.note_path,
-                    })
-
-                return Response.success(request.id, {"thoughts": thought_list})
+                thoughts = await self._cognition_service.get_recent_thoughts(limit=limit)
+                return Response.success(request.id, {"thoughts": thoughts})
 
             except Exception as e:
                 logger.debug(f"Failed to get recent thoughts: {e}")
@@ -1559,12 +1507,9 @@ class GaiusEngine:
                     else None
                 )
 
-            # Try to get thought count for today
+            # Try to get thought count for today (engine-native)
             try:
-                from ..agents.cognition import get_cognition_agent
-
-                agent = get_cognition_agent()
-                thoughts = await agent.get_active_thoughts(limit=100)
+                thoughts = await self._cognition_service.get_recent_thoughts(limit=100)
                 activity["thoughts_today"] = len(thoughts)
             except Exception:
                 pass

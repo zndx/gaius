@@ -345,13 +345,9 @@ class WatchResult:
 
 
 # Standard patterns to watch for in log output
+# Note: Engine availability patterns removed - if engine is offline,
+# the watcher (which runs in the engine) won't be watching anyway.
 STANDARD_PATTERNS = [
-    # Legacy fallback pattern (project convention)
-    {
-        "pattern": re.compile(r"LEGACY_FALLBACK:\s*(.+?)\s*-\s*tech debt", re.IGNORECASE),
-        "type": ObservationType.LEGACY,
-        "action": "warn_tech_debt",
-    },
     # Stub implementations
     {
         "pattern": re.compile(r"\(stub\)|\bstub\b", re.IGNORECASE),
@@ -700,25 +696,6 @@ def emit_fallback_event(
         span.set_attribute("fallback.used", True)
         span.set_attribute("fallback.target", fallback_to)
         span.set_attribute("fallback.reason", reason)
-
-
-def emit_legacy_fallback(span: Any, component: str, tech_debt_note: str) -> None:
-    """Emit span event for legacy fallback (matches LEGACY_FALLBACK log convention).
-
-    Usage in code:
-        with tracer.start_as_current_span("orchestrator.status") as span:
-            if not use_engine_proxy():
-                emit_legacy_fallback(span, "orchestrator_status", "bypassing engine")
-                logger.warning("LEGACY_FALLBACK: orchestrator_status bypassing engine - tech debt")
-    """
-    if hasattr(span, "add_event"):
-        span.add_event("legacy_fallback", {
-            "component": component,
-            "tech_debt": tech_debt_note,
-        })
-    if hasattr(span, "set_attribute"):
-        span.set_attribute("implementation.status", "legacy")
-        span.set_attribute("tech_debt.component", component)
 
 
 def emit_exception_caught(span: Any, exc: Exception, continued: bool = True) -> None:

@@ -27,6 +27,12 @@ from gaius.hx.writer import IcebergContentStore
 from gaius.hx.reader import IcebergContentReader
 from gaius.hx.exchange import ExchangeCapture, ExchangeRecord, get_exchange_capture
 from gaius.hx.evidence import EvidenceCapture, EvidenceRecord, get_evidence_capture
+from gaius.hx.bookmarks_tables import (
+    create_bookmarks_table,
+    get_bookmarks_table,
+    get_bookmarks_schema,
+    write_x_bookmarks_to_iceberg,
+)
 
 __all__ = [
     # Config
@@ -52,4 +58,9 @@ __all__ = [
     "EvidenceCapture",
     "EvidenceRecord",
     "get_evidence_capture",
+    # Bookmarks (multi-source)
+    "create_bookmarks_table",
+    "get_bookmarks_table",
+    "get_bookmarks_schema",
+    "write_x_bookmarks_to_iceberg",
 ]

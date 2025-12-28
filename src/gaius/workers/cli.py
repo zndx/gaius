@@ -45,10 +45,10 @@ async def show_status(config: WorkerConfig) -> None:
             print("-" * 80)
             for stat in stats:
                 status_icon = {
-                    "ok": "✓",
-                    "overdue": "⚠",
-                    "never": "○",
-                }.get(stat.get("status", ""), "?")
+                    "ok": "[OK]",
+                    "overdue": "[!]",
+                    "never": "[-]",
+                }.get(stat.get("status", ""), "[?]")
 
                 print(
                     f"  {status_icon} {stat['name']:<20} "

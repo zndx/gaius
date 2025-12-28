@@ -783,17 +783,17 @@ class ReportGenerator:
                 lines.append("")
 
         # Trend indicator
-        trend_emoji = {
-            "improving": "📈",
-            "stable": "➡️",
-            "declining": "📉",
-            "unknown": "❓",
+        trend_indicator = {
+            "improving": "[+]",
+            "stable": "[-]",
+            "declining": "[v]",
+            "unknown": "[?]",
         }
 
         lines.extend([
             "## Trend Analysis",
             "",
-            f"{trend_emoji.get(summary.trend_direction, '❓')} **{summary.trend_direction.title()}**",
+            f"{trend_indicator.get(summary.trend_direction, '[?]')} **{summary.trend_direction.title()}**",
             "",
             f"Based on 7-day held-out score trajectory with {summary.trend_confidence:.0%} confidence.",
             "",

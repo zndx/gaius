@@ -289,7 +289,7 @@ reward: {reward}
 |------|--------|---------|
 """
         for cs in constraint_summary:
-            status = "✅" if cs["satisfied"] else "❌"
+            status = "[OK]" if cs["satisfied"] else "[FAIL]"
             manifest_content += f"| {cs['name']} | {status} | {cs['message']} |\n"
 
         manifest_content += """

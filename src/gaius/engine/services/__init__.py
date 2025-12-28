@@ -61,6 +61,17 @@ from .ngrc import (
     predict_future_state,
     train_ngrc_for_domain,
 )
+from .health_observer_service import (
+    HealthIncident,
+    HealthObserverService,
+    ObserverConfig,
+)
+from .x_bookmarks_service import (
+    XBookmark,
+    XBookmarksConfig,
+    XBookmarksService,
+    XSyncRun,
+)
 
 __all__ = [
     # Orchestrator
@@ -115,4 +126,13 @@ __all__ = [
     "NGRCState",
     "predict_future_state",
     "train_ngrc_for_domain",
+    # Health Observer
+    "HealthIncident",
+    "HealthObserverService",
+    "ObserverConfig",
+    # X Bookmarks
+    "XBookmark",
+    "XBookmarksConfig",
+    "XBookmarksService",
+    "XSyncRun",
 ]

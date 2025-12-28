@@ -236,7 +236,7 @@ class MainGrid(Widget):
                     if 0 <= x < 19 and 0 <= y < 19:
                         # Only mark edges of the bounding box
                         if x == x1 or x == x2 or y == y1 or y == y2:
-                            grid[y][x] = ("⚠", "bold red on dark_red")
+                            grid[y][x] = ("!", "bold red on dark_red")
 
         # H2 voids (2-voids/cavities) - magenta diamonds
         for x1, y1, x2, y2 in self.state.h2_voids:

@@ -93,9 +93,6 @@ class InferenceConfig:
     timeout: float = 60.0  # Request timeout in seconds
     max_tokens: int = 2048  # Default max tokens
 
-    # Security enforcement - gRPC gateway (secure by default)
-    allow_fallbacks: bool = False  # If True, allow direct HTTP when gRPC unavailable (dev/debug)
-
     @classmethod
     def from_env(cls) -> "InferenceConfig":
         """Load configuration from environment variables.
@@ -133,8 +130,6 @@ class InferenceConfig:
             offline_mode=os.getenv("GAIUS_OFFLINE", "").lower() in ("1", "true", "yes"),
             timeout=float(os.getenv("GAIUS_TIMEOUT", "60")),
             max_tokens=int(os.getenv("GAIUS_MAX_TOKENS", "2048")),
-            # Security enforcement - secure by default
-            allow_fallbacks=os.getenv("GAIUS_ALLOW_FALLBACKS", "").lower() in ("1", "true", "yes"),
         )
 
     @staticmethod
@@ -202,5 +197,4 @@ class InferenceConfig:
             offline_mode=self.offline_mode,
             timeout=self.timeout,
             max_tokens=self.max_tokens,
-            allow_fallbacks=self.allow_fallbacks,
         )
