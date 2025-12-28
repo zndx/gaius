@@ -276,6 +276,9 @@ class GaiusCLI:
                 # NG-RC - forward dynamics prediction
                 elif command == "ngrc" or command == "predict":
                     result["data"] = self._run_async(self._cmd_ngrc(args))
+                # X Bookmarks - sync X/Twitter bookmarks to KB
+                elif command == "x-bookmarks" or command == "xb":
+                    result["data"] = self._run_async(self._cmd_x_bookmarks(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -2602,7 +2605,7 @@ Answer:"""
                 diagnostics.append({
                     "component": "gaius-engine",
                     "status": "not connected",
-                    "suggestion": "Set GAIUS_ALLOW_FALLBACKS=true and start engine",
+                    "suggestion": "Start engine with: gaius-engine",
                 })
         except Exception as e:
             diagnostics.append({
@@ -3710,75 +3713,16 @@ Respond with:
                 else:
                     return {"error": f"Unknown gpu command: {subcmd}"}
 
-            # Fallback to legacy orchestrator
-            logger.warning("LEGACY_FALLBACK: /gpu command bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-
-            if subcmd == "status":
-                return orchestrator.get_status()
-
-            elif subcmd == "start":
-                if subargs:
-                    success = await orchestrator.start_endpoint(subargs)
-                    proc = orchestrator.get_endpoint_status(subargs)
-                    return {
-                        "endpoint": subargs,
-                        "started": success,
-                        "status": proc.status.value if proc else "unknown",
-                        "pid": proc.pid if proc else None,
-                    }
-                else:
-                    results = await orchestrator.start_all()
-                    return {
-                        "action": "start_all",
-                        "results": results,
-                        "successful": sum(1 for v in results.values() if v),
-                    }
-
-            elif subcmd == "stop":
-                if subargs:
-                    success = await orchestrator.stop_endpoint(subargs)
-                    return {"endpoint": subargs, "stopped": success}
-                else:
-                    results = await orchestrator.stop_all()
-                    return {
-                        "action": "stop_all",
-                        "results": results,
-                        "stopped": sum(1 for v in results.values() if v),
-                    }
-
-            elif subcmd == "restart":
-                if not subargs:
-                    return {"error": "restart requires an endpoint name"}
-                success = await orchestrator.restart_endpoint(subargs)
-                proc = orchestrator.get_endpoint_status(subargs)
-                return {
-                    "endpoint": subargs,
-                    "restarted": success,
-                    "status": proc.status.value if proc else "unknown",
-                    "pid": proc.pid if proc else None,
-                }
-
-            elif subcmd == "logs":
-                if not subargs:
-                    return {"error": "logs requires an endpoint name"}
-                logs = orchestrator.get_logs(subargs, lines=50)
-                return {
-                    "endpoint": subargs,
-                    "lines": len(logs),
-                    "logs": logs,
-                }
-
-            elif subcmd == "health":
-                from .inference.health import get_health_monitor
-
-                monitor = get_health_monitor()
-                return monitor.get_summary()
-
-            else:
-                return {"error": f"Unknown gpu command: {subcmd}"}
+            # Engine not available - fail-fast with actionable remediation
+            return {
+                "error": "Engine not available - cannot execute GPU operations",
+                "guru_meditation": "#GR.00000001.ENGINEOFF",
+                "note": "Engine Federation Architecture: GPU operations require engine gRPC",
+                "remediation": [
+                    "Start the engine: devenv up gaius-engine",
+                    "Or: uv run python -m gaius.engine",
+                ],
+            }
 
         except ImportError as e:
             raise RuntimeError(f"GPU orchestrator not available: {e}")
@@ -4192,7 +4136,6 @@ Respond with:
             #   endpoint: Optional endpoint to use for orchestration (default: orchestrator)
             #             Use 'fast' or 'reasoning' if orchestrator endpoint not available.
             #             If no endpoint specified and none running, uses fallback heuristics.
-            from .inference.orchestrator import get_orchestrator
             from .agents.evolution.orchestrated import get_orchestrated_evolution
 
             endpoint_to_use = subargs.strip() if subargs else "orchestrator"
@@ -4258,27 +4201,39 @@ Respond with:
 
         elif subcmd == "start":
             # Clean start: cleanup GPU, start reasoning endpoint, start daemon
-            from .inference.orchestrator import get_orchestrator
+            # Engine Federation Architecture: use engine gRPC for GPU operations
+            from .client.engine_proxy import use_engine_proxy, get_orchestrator_proxy
             from .agents.evolution import get_evolution_daemon
 
-            orchestrator = get_orchestrator()
+            if not use_engine_proxy():
+                return {
+                    "action": "start",
+                    "success": False,
+                    "error": "Engine not available (#GR.00000001.ENGINEOFF)",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }
 
             # Parse optional endpoint list
             endpoints = ["reasoning"]
             if subargs:
                 endpoints = [e.strip() for e in subargs.split(",")]
 
-            # Phase 1: Clean start GPU
+            # Phase 1: Clean start GPU via engine gRPC
             print("Phase 1: Cleaning up stale processes...", file=sys.stderr)
-            clean_result = await orchestrator.clean_start(endpoints)
+            proxy = await get_orchestrator_proxy()
+            clean_result = await proxy.clean_start(endpoints)
 
-            if not clean_result["success"]:
+            if not clean_result.get("success"):
                 return {
                     "action": "start",
                     "success": False,
                     "error": "Failed to start GPU endpoints",
-                    "cleanup": clean_result["cleanup"],
-                    "startup": clean_result["startup"],
+                    "cleanup": clean_result.get("cleanup", {}),
+                    "startup": clean_result.get("startup", {}),
                 }
 
             # Phase 2: Start evolution daemon
@@ -4289,8 +4244,8 @@ Respond with:
             return {
                 "action": "start",
                 "success": True,
-                "gpu_cleanup": clean_result["cleanup"],
-                "gpu_startup": clean_result["startup"],
+                "gpu_cleanup": clean_result.get("cleanup", {}),
+                "gpu_startup": clean_result.get("startup", {}),
                 "daemon_running": daemon.running,
                 "message": "Evolution running. Use '/evolve status' to monitor.",
             }
@@ -4707,13 +4662,16 @@ Respond with:
         # Get common metrics
         metrics = {}
 
-        # Try to get GPU metrics
+        # Try to get GPU metrics via engine gRPC
         try:
-            from .inference.orchestrator import get_orchestrator
-            orch = get_orchestrator()
-            status = orch.get_status()
-            metrics["gpu_utilization"] = status.get("gpu_utilization", [])
-            metrics["endpoints_healthy"] = status.get("healthy_endpoints", 0)
+            from .client.engine_proxy import use_engine_proxy, get_orchestrator_proxy
+            if use_engine_proxy():
+                proxy = await get_orchestrator_proxy()
+                status = await proxy._get_status_async()
+                metrics["gpu_utilization"] = status.get("gpu_utilization", [])
+                endpoints = status.get("endpoints", [])
+                healthy = sum(1 for e in endpoints if e.get("status") == "healthy")
+                metrics["endpoints_healthy"] = healthy
         except Exception:
             pass
 
@@ -5671,15 +5629,20 @@ Respond with:
         and suggest interventions.
 
         Usage:
-            /health           - Run full health check
-            /health quick     - Run critical checks only
-            /health engine    - Check engine/gRPC health
-            /health data      - Check database/KB health
-            /health cognition - Check cognition daemon
-            /health inference - Check inference endpoints
+            /health                    - Run full health check
+            /health quick              - Run critical checks only
+            /health engine             - Check engine/gRPC health
+            /health data               - Check database/KB health
+            /health cognition          - Check cognition daemon
+            /health inference          - Check inference endpoints
             /health diagnose <service> - Deep diagnostics for a service
-            /health fix [service]      - Fix unhealthy services
+            /health fix [service]      - Fix unhealthy services (via engine gRPC)
             /health fix --dry-run      - Show fix plan without executing
+            /health observer           - Show HealthObserver daemon status
+            /health observer start     - Start the observer daemon
+            /health observer stop      - Stop the observer daemon
+            /health observer check     - Force immediate health check
+            /health observer incidents - List active incidents
             /health watch <cmd>        - Execute command and watch for fallbacks/stubs
             /health history [endpoint] - Show healing event history
             /health sequence <id>      - Show detailed healing sequence
@@ -5718,6 +5681,10 @@ Respond with:
         # Handle fix subcommand
         if subcmd == "fix":
             return await self._health_fix(checker, subargs)
+
+        # Handle observer subcommand - direct gRPC access to HealthObserverService
+        if subcmd == "observer":
+            return await self._health_observer(subargs)
 
         # Handle watch subcommand
         if subcmd == "watch":
@@ -5783,7 +5750,7 @@ Respond with:
         import os
 
         now = datetime.now()
-        status_icon = "✅" if report.healthy else "❌"
+        status_icon = "[OK]" if report.healthy else "[FAIL]"
 
         md_report = f"""# Health Report {status_icon}
 
@@ -5808,11 +5775,11 @@ Respond with:
 |-------|--------|----------|---------|
 """
         for check in report.checks:
-            status_emoji = {"pass": "✓", "warn": "⚠", "fail": "✗", "skip": "○"}.get(
-                check.status.value, "?"
+            status_indicator = {"pass": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skip": "[SKIP]"}.get(
+                check.status.value, "[?]"
             )
             msg = check.message[:60] + "..." if len(check.message) > 60 else check.message
-            md_report += f"| {check.name} | {status_emoji} {check.status.value} | {check.duration_ms}ms | {msg} |\n"
+            md_report += f"| {check.name} | {status_indicator} {check.status.value} | {check.duration_ms}ms | {msg} |\n"
 
         # Add details for non-passing checks
         issues = [c for c in report.checks if c.status.value in ("warn", "fail")]
@@ -5984,116 +5951,266 @@ Respond with:
         }
 
     async def _health_fix(self, checker, args: list[str]) -> dict:
-        """Fix unhealthy services.
+        """Fix unhealthy services via engine HealthObserverService.
+
+        Engine Federation Architecture:
+        - All remediation goes through the engine's HealthObserverService via gRPC
+        - Fail-fast: if engine unavailable, error with actionable remediation hints
+        - The HealthObserver provides FMEA-based incident tracking and ACP escalation
 
         Args:
-            checker: HealthChecker instance
-            args: Arguments like ['engine'] or ['--dry-run', 'engine']
+            checker: HealthChecker instance (unused - kept for interface compatibility)
+            args: Arguments like ['--dry-run'] or ['endpoints']
         """
-        from .health.remediation import RemediationExecutor, RemediationPlan
-        from .health.service_fixes import get_strategy, list_services
-
         # Parse flags
         dry_run = "--dry-run" in args
-        force = "--force" in args
         args = [a for a in args if not a.startswith("--")]
         service = args[0] if args else None
 
-        # List available services if requested
-        if service == "list" or service == "--list":
-            return {
-                "available_services": list_services(),
-                "usage": "/health fix <service> [--dry-run] [--force]",
-            }
-
-        # Get strategy for service (or all services if none specified)
+        # Specific service fix goes through orchestrator for endpoints
         if service:
-            strategy = get_strategy(service)
-            if not strategy:
+            if service in ("endpoints", "inference"):
+                # Endpoint issues go through orchestrator
+                try:
+                    from .client.grpc_client import get_grpc_client
+
+                    client = await get_grpc_client()
+                    status = await client.call("Orchestrator", "status", {}, timeout=10.0)
+                    endpoints = status.get("endpoints", {})
+
+                    if dry_run:
+                        unhealthy = [
+                            name for name, info in endpoints.items()
+                            if info.get("status") not in ("healthy", "stopped")
+                        ]
+                        return {
+                            "dry_run": True,
+                            "service": service,
+                            "would_restart": unhealthy,
+                            "note": "Run without --dry-run to restart endpoints",
+                        }
+
+                    # Restart unhealthy endpoints
+                    restarted = []
+                    for name, info in endpoints.items():
+                        ep_status = info.get("status", "")
+                        if ep_status in ("unhealthy", "failed", "error"):
+                            await client.call(
+                                "Orchestrator", "restart", {"endpoint": name}, timeout=60.0
+                            )
+                            restarted.append(name)
+
+                    return {
+                        "service": service,
+                        "restarted": restarted,
+                        "note": "Endpoints restarted via OrchestratorService",
+                    }
+
+                except Exception as e:
+                    return {
+                        "error": f"Engine not available: {e}",
+                        "guru_meditation": "#GR.00000001.ENGINEOFF",
+                        "remediation": "Start the engine: devenv up gaius-engine",
+                    }
+
+            elif service in ("evolution", "evolve"):
+                # Evolution daemon control
+                try:
+                    from .client.grpc_client import get_grpc_client
+
+                    client = await get_grpc_client()
+
+                    if dry_run:
+                        status = await client.call("Evolution", "status", {}, timeout=10.0)
+                        return {
+                            "dry_run": True,
+                            "service": service,
+                            "currently_running": status.get("running", False),
+                            "note": "Run without --dry-run to start evolution daemon",
+                        }
+
+                    result = await client.call("Evolution", "start", {}, timeout=30.0)
+                    return {
+                        "service": service,
+                        "started": result.get("running", False),
+                        "note": "Evolution daemon started via EvolutionService",
+                    }
+
+                except Exception as e:
+                    return {
+                        "error": f"Engine not available: {e}",
+                        "guru_meditation": "#GR.00000001.ENGINEOFF",
+                        "remediation": "Start the engine: devenv up gaius-engine",
+                    }
+
+            else:
                 return {
                     "error": f"Unknown service: {service}",
-                    "available_services": list_services(),
-                    "usage": "/health fix <service>",
+                    "available_services": ["endpoints", "evolution"],
+                    "usage": "/health fix [endpoints|evolution] [--dry-run]",
+                    "note": "Use '/health fix' without args for full HealthObserver remediation",
                 }
-            strategies = [(service, strategy)]
-        else:
-            # Fix all unhealthy services
-            report = await checker.run_quick()
-            strategies = []
 
-            # Map failed checks to services
-            check_to_service = {
-                "grpc connection": "engine",
-                "optillm": None,  # Can't fix optillm, it's managed externally
-                "vllm": None,  # Same
-                "database": "postgres",
-                "qdrant": "qdrant",
-                "s3/minio": "minio",
-            }
+        # Full health fix via HealthObserverService
+        try:
+            from .client.grpc_client import get_grpc_client
 
-            for check in report.checks:
-                if check.status.value in ("fail", "warn"):
-                    for pattern, svc in check_to_service.items():
-                        if pattern in check.name.lower() and svc:
-                            strat = get_strategy(svc)
-                            if strat:
-                                strategies.append((svc, strat))
-                                break
+            client = await get_grpc_client()
 
-            if not strategies:
+            if dry_run:
+                # For dry-run, just get status and show what would be fixed
+                status = await client.call(
+                    "HealthObserver", "status", {}, timeout=10.0
+                )
+                incidents = status.get("incidents", [])
+
                 return {
-                    "message": "No fixable issues found",
-                    "healthy": report.healthy,
-                    "summary": report.summary(),
+                    "dry_run": True,
+                    "observer_running": status.get("running", False),
+                    "poll_count": status.get("poll_count", 0),
+                    "would_fix": [
+                        {
+                            "fingerprint": inc.get("fingerprint"),
+                            "endpoint": inc.get("endpoint"),
+                            "failure_mode": inc.get("failure_mode_id"),
+                            "tier": inc.get("current_tier"),
+                            "attempts": inc.get("attempts"),
+                        }
+                        for inc in incidents
+                        if inc.get("status") in ("active", "healing")
+                    ],
+                    "note": "Run without --dry-run to trigger HealthObserver remediation",
                 }
 
-        # Create remediation plans
-        executor = RemediationExecutor()
-        results = []
+            # Force a health check which triggers remediation for incidents
+            result = await client.call(
+                "HealthObserver", "check", {}, timeout=120.0
+            )
 
-        for svc_name, strategy in strategies:
-            # Create plan from strategy
-            actions = strategy.create_fix_actions()
-            plan = RemediationPlan(service=svc_name, actions=actions)
-
-            # Execute plan
-            result = await executor.execute(plan, dry_run=dry_run, force=force)
-
-            results.append({
-                "service": svc_name,
-                "success": result.success,
-                "dry_run": result.dry_run,
-                "actions": [
-                    {
-                        "name": ar.action.name,
-                        "success": ar.success,
-                        "output": ar.output[:500] if ar.output else None,
-                        "error": ar.error[:500] if ar.error else None,
-                        "duration_ms": ar.duration_ms,
-                    }
-                    for ar in result.action_results
-                ],
-                "summary": result.summary,
-            })
-
-        # If not dry run, re-run health check to verify
-        if not dry_run:
-            verification = await checker.run_quick()
-            verification_summary = {
-                "healthy": verification.healthy,
-                "summary": verification.summary(),
-                "passed": verification.passed,
-                "failures": verification.failures,
+            return {
+                "healthy": result.get("healthy", False),
+                "summary": result.get("summary", ""),
+                "passed": result.get("passed", []),
+                "warnings": result.get("warnings", []),
+                "failures": result.get("failures", []),
+                "active_incidents": result.get("active_incidents", 0),
+                "interventions": result.get("interventions", []),
+                "note": "Remediation handled by engine HealthObserverService",
             }
-        else:
-            verification_summary = None
 
-        return {
-            "dry_run": dry_run,
-            "services_fixed": len(results),
-            "results": results,
-            "verification": verification_summary,
-        }
+        except Exception as e:
+            error_msg = str(e)
+            if "UNAVAILABLE" in error_msg or "failed to connect" in error_msg.lower():
+                return {
+                    "error": "Engine not available - cannot perform health fix",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or restart all services: devenv up",
+                    ],
+                    "note": "Health remediation requires the engine to be running",
+                }
+            else:
+                return {
+                    "error": f"HealthObserver error: {error_msg}",
+                    "guru_meditation": "#HO.00000001.CHECKFAIL",
+                    "remediation": "Check engine logs: journalctl -u gaius-engine -n 50",
+                }
+
+    async def _health_observer(self, args: list[str]) -> dict:
+        """Control and query the HealthObserver daemon via engine gRPC.
+
+        The HealthObserver runs inside the engine, providing:
+        - FMEA-based incident detection and RPN scoring
+        - Tiered self-healing (Tier 0-2 with ACP escalation)
+        - Incident tracking and GitHub issue creation
+
+        Args:
+            args: Subcommand args like ['start'], ['stop'], ['check'], ['incidents']
+        """
+        from .client.grpc_client import get_grpc_client
+
+        action = args[0].lower() if args else "status"
+
+        try:
+            client = await get_grpc_client()
+
+            if action == "status":
+                result = await client.call("HealthObserver", "status", {}, timeout=10.0)
+                return {
+                    "running": result.get("running", False),
+                    "enabled": result.get("enabled", True),
+                    "poll_count": result.get("poll_count", 0),
+                    "last_poll_at": result.get("last_poll_at"),
+                    "poll_interval": result.get("poll_interval", 30),
+                    "escalate_to_acp": result.get("escalate_to_acp", True),
+                    "metrics": {
+                        "incidents_created": result.get("incidents_created", 0),
+                        "incidents_resolved": result.get("incidents_resolved", 0),
+                        "acp_escalations": result.get("acp_escalations", 0),
+                    },
+                    "active_incidents": result.get("active_incident_count", 0),
+                    "incidents": result.get("incidents", []),
+                }
+
+            elif action == "start":
+                result = await client.call("HealthObserver", "start", {}, timeout=10.0)
+                return {
+                    "started": result.get("status") == "started",
+                    "poll_interval": result.get("poll_interval", 30),
+                    "escalate_to_acp": result.get("escalate_to_acp", True),
+                }
+
+            elif action == "stop":
+                result = await client.call("HealthObserver", "stop", {}, timeout=10.0)
+                return {
+                    "stopped": True,
+                    "active_incidents_preserved": result.get("active_incidents", 0),
+                }
+
+            elif action == "check":
+                result = await client.call("HealthObserver", "check", {}, timeout=120.0)
+                return {
+                    "healthy": result.get("healthy", False),
+                    "summary": result.get("summary", ""),
+                    "passed": result.get("passed", []),
+                    "warnings": result.get("warnings", []),
+                    "failures": result.get("failures", []),
+                    "active_incidents": result.get("active_incidents", 0),
+                    "interventions": result.get("interventions", []),
+                }
+
+            elif action == "incidents":
+                status_filter = args[1] if len(args) > 1 else "active"
+                result = await client.call(
+                    "HealthObserver", "incidents", {"status": status_filter}, timeout=10.0
+                )
+                return {
+                    "filter": status_filter,
+                    "count": result.get("count", 0),
+                    "incidents": result.get("incidents", []),
+                }
+
+            else:
+                return {
+                    "error": f"Unknown observer action: {action}",
+                    "available_actions": ["status", "start", "stop", "check", "incidents"],
+                    "usage": "/health observer [status|start|stop|check|incidents [filter]]",
+                }
+
+        except Exception as e:
+            error_msg = str(e)
+            if "UNAVAILABLE" in error_msg or "failed to connect" in error_msg.lower():
+                return {
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": "Start the engine: devenv up gaius-engine",
+                }
+            else:
+                return {
+                    "error": f"HealthObserver error: {error_msg}",
+                    "guru_meditation": "#HO.00000002.GRPCFAIL",
+                }
 
     async def _health_watch(self, watch_cmd: str | None) -> dict:
         """Execute a command while watching for fallbacks and stubs.
@@ -6695,7 +6812,7 @@ Generated: {now.isoformat()}
 |-----|------|-----------|-------------|--------|
 """
         for gpu in gpu_health:
-            status_icon = "✓" if gpu.get("healthy", True) else "⚠"
+            status_icon = "[OK]" if gpu.get("healthy", True) else "[WARN]"
             report += f"| {gpu.get('index', '?')} | {gpu.get('temp', '?')}°C | {gpu.get('vram_used', '?'):.1f}/{gpu.get('vram_total', '?'):.1f}GB | {gpu.get('util', '?')}% | {status_icon} |\n"
 
         report += f"""
@@ -9425,6 +9542,531 @@ Examples:
 
         except Exception as e:
             return {"error": f"Failed to get model details: {e}"}
+
+    # =========================================================================
+    # X Bookmarks - Sync X/Twitter bookmarks to KB
+    # =========================================================================
+
+    async def _cmd_x_bookmarks(self, args: str) -> dict:
+        """Handle /x-bookmarks commands for X/Twitter bookmark sync.
+
+        Subcommands:
+            /x-bookmarks                 - Show service status
+            /x-bookmarks auth            - Start OAuth authentication
+            /x-bookmarks auth complete   - Complete OAuth with callback code
+            /x-bookmarks sync            - Trigger bookmark sync
+            /x-bookmarks status          - Show sync status
+
+        Examples:
+            /x-bookmarks auth
+            /x-bookmarks sync
+            /x-bookmarks status
+        """
+        if not args:
+            return await self._cmd_x_bookmarks_service_status()
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "auth":
+            if subargs and subargs[0] == "complete":
+                # /x-bookmarks auth complete <code>
+                if len(subargs) < 2:
+                    return {"error": "Missing authorization code", "usage": "/x-bookmarks auth complete <code>"}
+                return await self._cmd_x_bookmarks_complete_auth(subargs[1])
+            else:
+                # /x-bookmarks auth - start auth flow
+                return await self._cmd_x_bookmarks_auth()
+        elif subcommand == "sync":
+            return await self._cmd_x_bookmarks_sync()
+        elif subcommand == "status":
+            return await self._cmd_x_bookmarks_sync_status()
+        elif subcommand == "folders":
+            return await self._cmd_x_bookmarks_folders()
+        elif subcommand == "service" or subcommand == "svc":
+            return await self._cmd_x_bookmarks_service_status()
+        elif subcommand == "help":
+            return self._cmd_x_bookmarks_help()
+        elif subcommand == "queue":
+            return await self._cmd_x_bookmarks_queue_status()
+        elif subcommand == "test-event":
+            # Debug: emit a test event to trace the XB event propagation chain
+            event_type = subargs[0] if subargs else "XB_AUTH_COMPLETED"
+            return await self._cmd_x_bookmarks_test_event(event_type)
+        else:
+            return {
+                "error": f"Unknown x-bookmarks subcommand: {subcommand}",
+                "usage": "/x-bookmarks [auth|sync|status|folders|queue|test-event]",
+            }
+
+    def _cmd_x_bookmarks_help(self) -> dict:
+        """Return X Bookmarks command help."""
+        help_text = """
+X Bookmarks Commands - Sync X/Twitter Bookmarks to KB
+
+Syncs your X (Twitter) bookmarks to the Knowledge Base,
+storing tweet content as markdown files and raw data in Iceberg.
+
+Subcommands:
+    /x-bookmarks                 - Show service status
+    /x-bookmarks auth            - Start OAuth authentication
+    /x-bookmarks auth complete   - Complete OAuth with callback code
+    /x-bookmarks sync            - Trigger bookmark sync
+    /x-bookmarks status          - Show sync status
+    /x-bookmarks folders         - List bookmark folders
+
+Authentication Flow:
+    1. Run /x-bookmarks auth to get authorization URL
+    2. Open URL in browser, authorize Gaius
+    3. Copy the code from callback URL
+    4. Run /x-bookmarks auth complete <code>
+
+Rate Limits (Basic API tier):
+    - 15 requests per 15 minutes
+    - Syncs are queued and processed automatically
+
+Examples:
+    /x-bookmarks auth
+    /x-bookmarks sync
+    /x-bookmarks status
+"""
+        return {"help": help_text.strip(), "formatted": help_text.strip()}
+
+    async def _cmd_x_bookmarks_auth(self) -> dict:
+        """Start OAuth authentication flow."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "get_auth_url", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            auth_url = result.get("auth_url", "")
+            state = result.get("state", "")
+
+            # Extract redirect_uri from auth_url for display
+            import urllib.parse
+            parsed = urllib.parse.urlparse(auth_url)
+            params = urllib.parse.parse_qs(parsed.query)
+            redirect_uri = params.get('redirect_uri', [''])[0]
+
+            # Check if using localhost (which won't work for remote browser)
+            is_localhost = "localhost" in redirect_uri or "127.0.0.1" in redirect_uri
+
+            lines = [
+                "X Bookmarks OAuth Authentication",
+                "",
+                "1. Open this URL in your browser:",
+                "",
+                f"   {auth_url}",
+                "",
+                "2. Log in to X and authorize Gaius",
+                "",
+            ]
+
+            if is_localhost:
+                lines.extend([
+                    "3. After clicking 'Authorize', X will redirect to localhost.",
+                    "   The page will fail to load, but that's OK!",
+                    "",
+                    "   Look at your browser's address bar - it will show:",
+                    "   http://localhost:8765/callback?code=XXXXX&state=YYYYY",
+                    "",
+                    "   Copy the value after 'code=' (up to the & or end of URL).",
+                    "",
+                ])
+            else:
+                lines.extend([
+                    "3. After authorization, copy the code from the callback page.",
+                    "",
+                ])
+
+            lines.extend([
+                "4. Complete authentication:",
+                "",
+                "   /x-bookmarks auth complete <YOUR_CODE>",
+                "",
+                "Note: Authorization expires in 10 minutes.",
+                f"Callback: {redirect_uri}",
+            ])
+
+            if is_localhost:
+                lines.extend([
+                    "",
+                    "Tip: To use a proper callback, set X_REDIRECT_URI to a",
+                    "hosted page that can display the code (e.g., GitHub Pages).",
+                ])
+
+            lines.extend([
+                "",
+                "Troubleshooting:",
+                "- 'You weren't able to give access': Your X app needs OAuth 2.0",
+                "  configured in the Developer Portal. Go to:",
+                "  https://developer.x.com/en/portal/dashboard",
+                "  -> Your App -> Settings -> User Authentication -> Set up",
+                "  Enable OAuth 2.0 with 'Read' permissions.",
+                f"  Add this callback URL: {redirect_uri}",
+                "",
+                "- 'bookmark.read' requires X API Pro tier or higher.",
+            ])
+
+            return {
+                "auth_url": auth_url,
+                "state": state,
+                "formatted": "\n".join(lines),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to start authentication: {e}"}
+
+    async def _cmd_x_bookmarks_complete_auth(self, code: str) -> dict:
+        """Complete OAuth authentication with authorization code."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "complete_auth", {"code": code})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            success = result.get("success", False)
+            username = result.get("username", "")
+            user_id = result.get("user_id", "")
+
+            if success:
+                lines = [
+                    "Authentication Successful",
+                    "",
+                    f"User: @{username}" if username else "",
+                    f"User ID: {user_id}" if user_id else "",
+                    "",
+                    "You can now sync bookmarks with:",
+                    "",
+                    "   /x-bookmarks sync",
+                ]
+                return {
+                    "success": True,
+                    "username": username,
+                    "user_id": user_id,
+                    "formatted": "\n".join(line for line in lines if line or line == ""),
+                }
+            else:
+                # Check both error and message fields (gRPC may use either)
+                error = result.get("error") or result.get("message") or "Unknown error"
+                return {"error": f"Authentication failed: {error}"}
+
+        except Exception as e:
+            return {"error": f"Failed to complete authentication: {e}"}
+
+    async def _cmd_x_bookmarks_sync(self) -> dict:
+        """Trigger bookmark sync."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "trigger_sync", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            started = result.get("started", False)
+            message = result.get("message", "")
+            queued = result.get("queued_requests", 0)
+
+            if started:
+                lines = [
+                    "Bookmark Sync Started",
+                    "",
+                    f"Message: {message}" if message else "Sync initiated",
+                    f"Queued requests: {queued}" if queued else "",
+                    "",
+                    "Check status with: /x-bookmarks status",
+                ]
+                return {
+                    "started": True,
+                    "message": message,
+                    "queued_requests": queued,
+                    "formatted": "\n".join(line for line in lines if line or line == ""),
+                }
+            else:
+                return {
+                    "started": False,
+                    "message": message or "Sync not started",
+                    "formatted": f"Sync not started: {message}",
+                }
+
+        except Exception as e:
+            return {"error": f"Failed to trigger sync: {e}"}
+
+    async def _cmd_x_bookmarks_sync_status(self) -> dict:
+        """Show sync status."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "sync_status", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            configured = result.get("configured", False)
+            username = result.get("username", "")
+            user_id = result.get("user_id", "")
+            token_status = result.get("token_status", "")
+            folder_count = result.get("folder_count", 0)
+            bookmark_count = result.get("bookmark_count", 0)
+            queued_requests = result.get("queued_requests", 0)
+            last_sync_at = result.get("last_sync_at", "")
+            last_run_status = result.get("last_run_status", "")
+            action_required = result.get("action_required", "")
+            action_message = result.get("message", "")
+
+            lines = [
+                "X Bookmarks Sync Status",
+                "",
+                f"Configured: {'Yes' if configured else 'No'}",
+            ]
+
+            if configured:
+                lines.extend([
+                    f"User: @{username}" if username else "",
+                    f"User ID: {user_id}" if user_id else "",
+                    f"Token: {token_status}" if token_status else "",
+                    "",
+                    f"Folders: {folder_count}",
+                    f"Bookmarks: {bookmark_count}",
+                    f"Queued requests: {queued_requests}",
+                    "",
+                    f"Last sync: {last_sync_at}" if last_sync_at else "Last sync: Never",
+                    f"Status: {last_run_status}" if last_run_status else "",
+                ])
+                # Add actionable guidance when there's an issue
+                if action_message:
+                    lines.extend(["", action_message])
+            else:
+                lines.extend([
+                    "",
+                    "To configure, run:",
+                    "",
+                    "   /x-bookmarks auth",
+                ])
+
+            return {
+                "configured": configured,
+                "username": username,
+                "user_id": user_id,
+                "token_status": token_status,
+                "folder_count": folder_count,
+                "bookmark_count": bookmark_count,
+                "queued_requests": queued_requests,
+                "last_sync_at": last_sync_at,
+                "last_run_status": last_run_status,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get sync status: {e}"}
+
+    async def _cmd_x_bookmarks_service_status(self) -> dict:
+        """Show service status."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "service_status", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            running = result.get("running", False)
+            total_syncs = result.get("total_syncs", 0)
+            total_bookmarks = result.get("total_bookmarks", 0)
+            last_sync_at = result.get("last_sync_at", "")
+            queue_poll_interval = result.get("queue_poll_interval_s", 0)
+
+            lines = [
+                "X Bookmarks Service Status",
+                "",
+                f"Running: {'Yes' if running else 'No'}",
+                f"Queue poll interval: {queue_poll_interval}s" if queue_poll_interval else "",
+                "",
+                f"Total syncs: {total_syncs}",
+                f"Total bookmarks: {total_bookmarks}",
+                f"Last sync: {last_sync_at}" if last_sync_at else "Last sync: Never",
+                "",
+                "Commands:",
+                "   /x-bookmarks auth    - Start OAuth flow",
+                "   /x-bookmarks sync    - Trigger sync",
+                "   /x-bookmarks status  - Show sync status",
+            ]
+
+            return {
+                "running": running,
+                "total_syncs": total_syncs,
+                "total_bookmarks": total_bookmarks,
+                "last_sync_at": last_sync_at,
+                "queue_poll_interval_s": queue_poll_interval,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get service status: {e}"}
+
+    async def _cmd_x_bookmarks_queue_status(self) -> dict:
+        """Show queue depth and cooldown timer status."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "queue_status", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            queue_depth = result.get("queue_depth", 0)
+            cooldown_end_iso = result.get("cooldown_end_iso", "")
+            cooldown_seconds = result.get("cooldown_seconds", 0)
+            can_request = result.get("can_request", True)
+
+            lines = [
+                "X Bookmarks Queue Status",
+                "",
+                f"Queue depth: {queue_depth}",
+            ]
+
+            if can_request:
+                lines.append("Rate limit: OK (can request)")
+            else:
+                mins, secs = divmod(cooldown_seconds, 60)
+                lines.extend([
+                    f"Rate limit: In cooldown",
+                    f"Cooldown remaining: {mins}m {secs}s",
+                    f"Cooldown ends: {cooldown_end_iso}" if cooldown_end_iso else "",
+                ])
+
+            return {
+                "queue_depth": queue_depth,
+                "cooldown_end_iso": cooldown_end_iso,
+                "cooldown_seconds": cooldown_seconds,
+                "can_request": can_request,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get queue status: {e}"}
+
+    async def _cmd_x_bookmarks_test_event(self, event_type: str = "XB_AUTH_COMPLETED") -> dict:
+        """Emit a test XB event for debugging the event propagation chain.
+
+        This fires a simulated XB event that flows through the complete chain:
+        XBookmarksService -> InitController -> InitStream -> InitPanel
+
+        With OTel tracing enabled, the full propagation can be observed.
+        """
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "emit_test_event", {"event_type": event_type})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            success = result.get("success", False)
+            emitted_type = result.get("event_type", event_type)
+            message = result.get("message", "")
+
+            lines = [
+                "XB Test Event Emitted",
+                "",
+                f"Event type: {emitted_type}",
+                f"Success: {success}",
+                f"Message: {message}" if message else "",
+                "",
+                "With OTel tracing enabled, check console for spans:",
+                "  - xb.auth_event.trigger",
+                "  - xb.auth_event.emit",
+                "  - xb.auth_event.broadcast",
+                "  - xb.auth_event.panel_update (in TUI process)",
+            ]
+
+            return {
+                "success": success,
+                "event_type": emitted_type,
+                "message": message,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to emit test event: {e}"}
+
+    async def _cmd_x_bookmarks_folders(self) -> dict:
+        """List X bookmark folders."""
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "list_folders")
+
+            folders_available = result.get("folders_available", False)
+            folders = result.get("folders", [])
+            message = result.get("message", "")
+
+            if not folders_available:
+                lines = [
+                    "X Bookmarks Folders - Not Available",
+                    "",
+                    message or "Folder access not available for your API tier.",
+                    "",
+                    "The X Bookmarks sync feature requires access to the folders endpoint.",
+                    "This may require a higher API tier or specific app permissions.",
+                ]
+                return {
+                    "folders_available": False,
+                    "message": message,
+                    "formatted": "\n".join(lines),
+                }
+
+            if not folders:
+                lines = [
+                    "X Bookmarks Folders",
+                    "",
+                    "No folders found. Run /x-bookmarks sync to fetch folders.",
+                ]
+                return {
+                    "folders_available": True,
+                    "folders": [],
+                    "formatted": "\n".join(lines),
+                }
+
+            lines = [
+                "X Bookmarks Folders",
+                "",
+                f"Found {len(folders)} folder(s):",
+                "",
+            ]
+
+            for folder in folders:
+                name = folder.get("name", "Unknown")
+                count = folder.get("bookmark_count", 0)
+                kb_path = folder.get("kb_path", "")
+                lines.append(f"  {name}")
+                lines.append(f"    Bookmarks: {count}")
+                lines.append(f"    KB Path: {kb_path}")
+                lines.append("")
+
+            return {
+                "folders_available": True,
+                "folders": folders,
+                "formatted": "\n".join(lines),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to list folders: {e}"}
 
 
 def main():

@@ -2319,34 +2319,31 @@ Domain: {domain or 'general'}
     async def scheduler_status() -> str:
         """Get scheduler status including endpoints, queue, and metrics.
 
-        Returns comprehensive status of the inference scheduler.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        Returns comprehensive status of the inference scheduler via gRPC.
+
+        Engine Federation Architecture:
+        All scheduler operations go through the engine gRPC service.
         """
         try:
-            # Try engine proxy first
             client = await _get_engine_client()
-            if client:
-                status = await client.call("Scheduler", "status", {})
-                return json.dumps(status, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fall back to direct access
-            import warnings
-            warnings.warn(
-                "LEGACY_FALLBACK: scheduler_status using direct scheduler access instead of engine. "
-                "Start gaius-engine for proper resource management.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning("LEGACY_FALLBACK: scheduler_status bypassing engine - tech debt")
-
-            from .inference.scheduler import get_scheduler_service
-
-            service = get_scheduler_service()
-            status = service.get_status()
-
+            status = await client.call("Scheduler", "status", {})
             return json.dumps(status, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def scheduler_submit(
@@ -2598,34 +2595,32 @@ Domain: {domain or 'general'}
     async def orchestrator_status() -> str:
         """Get GPU orchestrator status including all vLLM processes and GPU health.
 
-        Returns comprehensive status of GPU resources, process health, and scheduling metrics.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        Returns comprehensive status of GPU resources, process health, and scheduling metrics via gRPC.
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service, which
+        is co-located with GPUs and may be federated across multiple nodes.
         """
         try:
-            # Try engine proxy first
             client = await _get_engine_client()
-            if client:
-                status = await client.call("Orchestrator", "status", {})
-                return json.dumps(status, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fall back to direct access
-            import warnings
-            warnings.warn(
-                "LEGACY_FALLBACK: orchestrator_status using direct orchestrator instead of engine. "
-                "Start gaius-engine for proper resource management.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning("LEGACY_FALLBACK: orchestrator_status bypassing engine - tech debt")
-
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-            status = orchestrator.get_status()
-
+            status = await client.call("Orchestrator", "status", {})
             return json.dumps(status, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_clean_start(endpoints: str = "reasoning") -> str:
@@ -2634,30 +2629,35 @@ Domain: {domain or 'general'}
         This is the recommended way to start Gaius for overnight evolution runs.
         Cleans up orphaned vLLM processes, frees GPU memory, then starts endpoints.
 
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
+
         Args:
             endpoints: Comma-separated endpoint names to start (default: reasoning)
         """
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
-                results = await orch.clean_start(endpoint_list or ["reasoning"])
-                return json.dumps(results, indent=2, default=str)
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_clean_start bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
+            orch = await get_orchestrator_proxy()
             endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
-            results = await orchestrator.clean_start(endpoint_list or None)
-
+            results = await orch.clean_start(endpoint_list or ["reasoning"])
             return json.dumps(results, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_start(endpoint: str = "") -> str:
@@ -2665,71 +2665,60 @@ Domain: {domain or 'general'}
 
         Uses engine's ensure_endpoint for proper resource management.
 
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
+
         Args:
             endpoint: Endpoint name to start (empty string starts all configured endpoints)
         """
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-                if endpoint:
-                    result = await orch.ensure_endpoint(endpoint)
-                    return json.dumps(
-                        {
-                            "endpoint": endpoint,
-                            "started": result.get("healthy", False),
-                            "status": result.get("status", "unknown"),
-                            "port": result.get("port"),
-                            "gpu_ids": result.get("gpu_ids", []),
-                            "message": result.get("message", ""),
-                        },
-                        indent=2,
-                    )
-                else:
-                    # Start all returns status for all endpoints
-                    success = await orch.start_endpoint("")
-                    return json.dumps(
-                        {"action": "start_all", "success": success},
-                        indent=2,
-                    )
-
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_start bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
+            orch = await get_orchestrator_proxy()
 
             if endpoint:
-                success = await orchestrator.start_endpoint(endpoint)
+                result = await orch.ensure_endpoint(endpoint)
                 return json.dumps(
                     {
                         "endpoint": endpoint,
-                        "started": success,
-                        "status": orchestrator.get_endpoint_status(endpoint).status.value
-                        if orchestrator.get_endpoint_status(endpoint) else "unknown",
+                        "started": result.get("healthy", False),
+                        "status": result.get("status", "unknown"),
+                        "port": result.get("port"),
+                        "gpu_ids": result.get("gpu_ids", []),
+                        "message": result.get("message", ""),
                     },
                     indent=2,
                 )
             else:
-                results = await orchestrator.start_all()
+                # Start all returns status for all endpoints
+                success = await orch.start_endpoint("")
                 return json.dumps(
-                    {
-                        "action": "start_all",
-                        "results": results,
-                        "successful": sum(1 for v in results.values() if v),
-                        "total": len(results),
-                    },
+                    {"action": "start_all", "success": success},
                     indent=2,
                 )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_stop(endpoint: str = "") -> str:
         """Stop vLLM endpoint(s).
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
 
         Args:
             endpoint: Endpoint name to stop (empty string stops all)
@@ -2737,52 +2726,43 @@ Domain: {domain or 'general'}
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-                if endpoint:
-                    success = await orch.stop_endpoint(endpoint)
-                    return json.dumps(
-                        {"endpoint": endpoint, "stopped": success},
-                        indent=2,
-                    )
-                else:
-                    success = await orch.stop_endpoint("")
-                    return json.dumps(
-                        {"action": "stop_all", "stopped": success},
-                        indent=2,
-                    )
-
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_stop bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
+            orch = await get_orchestrator_proxy()
 
             if endpoint:
-                success = await orchestrator.stop_endpoint(endpoint)
+                success = await orch.stop_endpoint(endpoint)
                 return json.dumps(
                     {"endpoint": endpoint, "stopped": success},
                     indent=2,
                 )
             else:
-                results = await orchestrator.stop_all()
+                success = await orch.stop_endpoint("")
                 return json.dumps(
-                    {
-                        "action": "stop_all",
-                        "results": results,
-                        "stopped": sum(1 for v in results.values() if v),
-                        "total": len(results),
-                    },
+                    {"action": "stop_all", "stopped": success},
                     indent=2,
                 )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_restart(endpoint: str) -> str:
         """Restart a specific vLLM endpoint.
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
 
         Args:
             endpoint: Endpoint name to restart
@@ -2790,45 +2770,42 @@ Domain: {domain or 'general'}
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                success = await orch.restart_endpoint(endpoint)
-                # Get status after restart
-                status = await orch.get_endpoint_status(endpoint)
-                return json.dumps(
-                    {
-                        "endpoint": endpoint,
-                        "restarted": success,
-                        "status": status.get("status", "unknown") if status else "unknown",
-                        "port": status.get("port") if status else None,
-                    },
-                    indent=2,
-                )
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_restart bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-            success = await orchestrator.restart_endpoint(endpoint)
-
-            proc = orchestrator.get_endpoint_status(endpoint)
+            orch = await get_orchestrator_proxy()
+            success = await orch.restart_endpoint(endpoint)
+            # Get status after restart
+            status = await orch.get_endpoint_status(endpoint)
             return json.dumps(
                 {
                     "endpoint": endpoint,
                     "restarted": success,
-                    "status": proc.status.value if proc else "unknown",
-                    "pid": proc.pid if proc else None,
+                    "status": status.get("status", "unknown") if status else "unknown",
+                    "port": status.get("port") if status else None,
                 },
                 indent=2,
             )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_logs(endpoint: str, lines: int = 50) -> str:
         """Get recent stdout/stderr logs from a vLLM endpoint.
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
 
         Args:
             endpoint: Endpoint name
@@ -2837,67 +2814,63 @@ Domain: {domain or 'general'}
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                logs = await orch.get_logs_async(endpoint, lines=lines)
-                return json.dumps(
-                    {
-                        "endpoint": endpoint,
-                        "lines": len(logs) if logs else 0,
-                        "logs": logs or [],
-                    },
-                    indent=2,
-                )
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_logs bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-            logs = orchestrator.get_logs(endpoint, lines=lines)
-
+            orch = await get_orchestrator_proxy()
+            logs = await orch.get_logs_async(endpoint, lines=lines)
             return json.dumps(
                 {
                     "endpoint": endpoint,
-                    "lines": len(logs),
-                    "logs": logs,
+                    "lines": len(logs) if logs else 0,
+                    "logs": logs or [],
                 },
                 indent=2,
             )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def gpu_health() -> str:
         """Get detailed GPU health metrics (VRAM, temp, power, utilization).
 
-        Uses pynvml for real-time GPU monitoring.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        Uses pynvml for real-time GPU monitoring via gRPC engine.
+
+        Engine Federation Architecture:
+        GPU health monitoring goes through the engine, which is co-located
+        with the GPUs and may be federated across multiple nodes.
         """
         try:
-            # Try engine proxy first
             client = await _get_engine_client()
-            if client:
-                health = await client.call("Health", "gpu_detailed", {})
-                return json.dumps(health, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fall back to direct access
-            logger.warning("LEGACY_FALLBACK: gpu_health bypassing engine - tech debt")
-            from .inference.health import get_health_monitor
-
-            monitor = get_health_monitor()
-
-            # Try to reinitialize if not available (e.g., pynvml installed after startup)
-            if not monitor.available:
-                if monitor.reinitialize():
-                    pass  # Successfully reinitialized
-
-            summary = monitor.get_summary()
-
-            return json.dumps(summary, indent=2, default=str)
+            health = await client.call("Health", "gpu_detailed", {})
+            return json.dumps(health, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     # --- FMEA Operations ---
     # Failure Mode and Effects Analysis for RPN-based risk assessment
@@ -3868,8 +3841,7 @@ Domain: {domain or 'general'}
         """Get background evolution daemon status.
 
         Returns status of the Agent0-style self-improvement daemon,
-        including cycles completed, improvement metrics, and next agent.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        including cycles completed, improvement metrics, and next agent via gRPC.
         """
         try:
             # Try engine proxy first
@@ -5114,6 +5086,7 @@ Domain: {domain or 'general'}
 
     # --- HealthObserver Tools ---
     # Control the HealthObserver daemon for autonomous health monitoring
+    # These tools call the engine via gRPC - HealthObserver runs in the engine daemon
 
     @server.tool()
     async def health_observer_status() -> str:
@@ -5123,9 +5096,10 @@ Domain: {domain or 'general'}
         Useful for understanding current system health monitoring.
         """
         try:
-            from .health.observe import get_health_observer
-            observer = get_health_observer()
-            return json.dumps(observer.get_status(), indent=2, default=str)
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "status")
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -5137,14 +5111,10 @@ Domain: {domain or 'general'}
         for complex issues. Safe to call if already running.
         """
         try:
-            from .health.observe import get_health_observer
-            observer = get_health_observer()
-            await observer.start()
-            return json.dumps({
-                "status": "started" if observer.running else "already_running",
-                "poll_interval": observer.config.poll_interval,
-                "acp_enabled": observer.config.escalate_to_acp,
-            }, indent=2)
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "start")
+            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -5156,13 +5126,10 @@ Domain: {domain or 'general'}
         but no new health checks will run.
         """
         try:
-            from .health.observe import get_health_observer
-            observer = get_health_observer()
-            await observer.stop()
-            return json.dumps({
-                "status": "stopped",
-                "active_incidents": len(observer.active_incidents),
-            }, indent=2)
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "stop")
+            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -5174,22 +5141,10 @@ Domain: {domain or 'general'}
             status: Filter by status ("active", "resolved", "all")
         """
         try:
-            from .health.observe import get_health_observer
-            observer = get_health_observer()
-
-            incidents = observer.active_incidents
-            if status == "resolved":
-                # Would need to query database for resolved incidents
-                return json.dumps({
-                    "note": "Query database for resolved incidents",
-                    "active_count": len(incidents),
-                }, indent=2)
-
-            return json.dumps({
-                "status_filter": status,
-                "count": len(incidents),
-                "incidents": [inc.to_dict() for inc in incidents],
-            }, indent=2, default=str)
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "incidents", {"status": status})
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -5201,19 +5156,10 @@ Domain: {domain or 'general'}
         Returns the health report with any new incidents.
         """
         try:
-            from .health.observe import get_health_observer
-            observer = get_health_observer()
-            report = await observer.force_check()
-
-            return json.dumps({
-                "healthy": report.healthy,
-                "summary": report.summary(),
-                "passed": report.passed,
-                "warnings": report.warnings,
-                "failures": report.failures,
-                "active_incidents": len(observer.active_incidents),
-                "interventions": report.interventions[:5],  # Top 5
-            }, indent=2, default=str)
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "check")
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -5225,30 +5171,142 @@ Domain: {domain or 'general'}
             fingerprint: Incident fingerprint (e.g., "GPU_001:reasoning")
         """
         try:
-            from .health.observe import get_health_observer
-            from .health.healing_events import HealingEventRecorder
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "HealthObserver", "incident_detail", {"fingerprint": fingerprint}
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
 
-            observer = get_health_observer()
-            incident = observer.get_incident(fingerprint)
+    # --- X Bookmarks Tools ---
+    # Sync X (Twitter) bookmarks to Gaius KB via the engine
 
-            if not incident:
-                return json.dumps({
-                    "error": f"Incident not found: {fingerprint}",
-                    "active_fingerprints": [
-                        inc.fingerprint for inc in observer.active_incidents
-                    ],
-                }, indent=2)
+    @server.tool()
+    async def x_bookmarks_get_auth_url() -> str:
+        """Get OAuth 2.0 authorization URL for X API access.
 
-            # Get event history if sequence exists
-            events = []
-            if incident.sequence_id:
-                recorder = HealingEventRecorder()
-                events = await recorder.get_sequence_events(incident.sequence_id)
+        Returns the URL to visit to authorize Gaius to access your X bookmarks.
+        Also returns the state and verifier needed to complete the flow.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "get_auth_url")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
 
-            return json.dumps({
-                "incident": incident.to_dict(),
-                "events": events,
-            }, indent=2, default=str)
+    @server.tool()
+    async def x_bookmarks_complete_auth(code: str) -> str:
+        """Complete OAuth 2.0 flow with authorization code.
+
+        After visiting the auth URL and authorizing, enter the code
+        you received. The PKCE verifier is automatically retrieved
+        from the database (stored when get_auth_url was called).
+
+        Args:
+            code: Authorization code from X callback
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "complete_auth", {"code": code, "verifier": ""}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_auth_status() -> str:
+        """Check X API authentication status.
+
+        Returns whether you're authenticated, username, and token expiry.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "auth_status")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_trigger_sync(full_sync: bool = False, folder_id: str = "") -> str:
+        """Trigger X bookmarks sync.
+
+        Starts a sync of your X bookmarks to the KB.
+
+        Args:
+            full_sync: If True, sync all bookmarks. If False, only new ones.
+            folder_id: Optional folder ID to sync specific folder only.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "trigger_sync",
+                {"full_sync": full_sync, "folder_id": folder_id}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_sync_status(user_id: str = "") -> str:
+        """Get X bookmarks sync status.
+
+        Returns current sync configuration, folder/bookmark counts,
+        and last sync information. The engine provides actionable guidance
+        (action_required, message) when re-authentication is needed.
+
+        Args:
+            user_id: Optional user ID to check status for specific user.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "sync_status", {"user_id": user_id}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_service_status() -> str:
+        """Get X Bookmarks service status.
+
+        Returns overall service health, total syncs completed,
+        and queue status.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "service_status")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_list_folders(user_id: str = "") -> str:
+        """List X bookmark folders.
+
+        Returns list of bookmark folders with counts.
+        Only returns folders that have been synced.
+
+        Args:
+            user_id: Optional user ID to list folders for specific user.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "list_folders", {"user_id": user_id}
+            )
+            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

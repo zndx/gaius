@@ -58,6 +58,29 @@ from ..engine.generated import (
     # Swarm streaming
     SwarmStreamRequest,
     SwarmEvent,
+    # HealthObserver
+    HealthObserverStatusRequest,
+    HealthObserverControlRequest,
+    ForceHealthCheckRequest,
+    ListIncidentsRequest,
+    GetIncidentDetailRequest,
+    # X Bookmarks
+    XBookmarksAuthRequest,
+    XBookmarksCompleteAuthRequest,
+    XBookmarksAuthStatusRequest,
+    XBookmarksSyncRequest,
+    XBookmarksSyncStatusRequest,
+    XBookmarksServiceStatusRequest,
+    XBookmarksListFoldersRequest,
+    XBookmarksQueueStatusRequest,
+    XBookmarksEmitTestEventRequest,
+    # Streaming (Cognition/Evolution/Activity)
+    CognitionStreamRequest,
+    CognitionEvent,
+    EvolutionStreamRequest,
+    EvolutionEvent,
+    ActivityStreamRequest,
+    ActivityEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -275,6 +298,10 @@ class GrpcEngineClient:
                 return await self._call_gaius(action, params, timeout)
             elif service == "CLT":
                 return await self._call_clt(action, params, timeout)
+            elif service == "HealthObserver":
+                return await self._call_health_observer(action, params, timeout)
+            elif service == "XBookmarks":
+                return await self._call_x_bookmarks(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -1007,6 +1034,315 @@ class GrpcEngineClient:
         else:
             raise ValueError(f"Unknown CLT action: {action}")
 
+    async def _call_health_observer(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle HealthObserver service calls via gRPC.
+
+        HealthObserver provides autonomous FMEA-based health monitoring
+        with tiered remediation and ACP escalation for complex issues.
+
+        Args:
+            action: Action to perform (status, start, stop, incidents, check, incident_detail)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with status, incidents, or health check results
+        """
+        if action == "status":
+            request = HealthObserverStatusRequest()
+            response = await self._gaius_stub.HealthObserverStatus(
+                request, timeout=timeout
+            )
+            return {
+                "running": response.running,
+                "enabled": response.enabled,
+                "poll_count": response.poll_count,
+                "last_poll_at": response.last_poll_at or None,
+                "poll_interval": response.config.poll_interval if response.config else 30,
+                "escalate_to_acp": response.config.escalate_to_acp if response.config else True,
+                "incidents_created": response.metrics.incidents_created if response.metrics else 0,
+                "incidents_resolved": response.metrics.incidents_resolved if response.metrics else 0,
+                "acp_escalations": response.metrics.acp_escalations if response.metrics else 0,
+                "active_incident_count": response.active_incidents,
+                "incidents": [
+                    {
+                        "incident_id": inc.incident_id,
+                        "fingerprint": inc.fingerprint,
+                        "endpoint": inc.endpoint,
+                        "failure_mode_id": inc.failure_mode_id,
+                        "rpn_score": inc.rpn_score,
+                        "current_tier": inc.current_tier,
+                        "attempts": inc.attempts,
+                        "status": inc.status,
+                        "created_at": inc.created_at,
+                    }
+                    for inc in response.incidents
+                ],
+            }
+
+        elif action == "start":
+            response = await self._gaius_stub.HealthObserverStart(
+                empty_pb2.Empty(), timeout=timeout
+            )
+            return {
+                "status": "started" if response.running else "already_running",
+                "poll_interval": response.config.poll_interval if response.config else 30,
+                "escalate_to_acp": response.config.escalate_to_acp if response.config else True,
+            }
+
+        elif action == "stop":
+            response = await self._gaius_stub.HealthObserverStop(
+                empty_pb2.Empty(), timeout=timeout
+            )
+            return {
+                "status": "stopped",
+                "active_incidents": len(response.active_incidents),
+            }
+
+        elif action == "incidents":
+            status_filter = params.get("status", "active")
+            request = ListIncidentsRequest(status=status_filter)
+            response = await self._gaius_stub.HealthObserverListIncidents(
+                request, timeout=timeout
+            )
+            return {
+                "status_filter": status_filter,
+                "count": len(response.incidents),
+                "incidents": [
+                    {
+                        "incident_id": inc.incident_id,
+                        "fingerprint": inc.fingerprint,
+                        "endpoint": inc.endpoint,
+                        "failure_mode_id": inc.failure_mode_id,
+                        "rpn_score": inc.rpn_score,
+                        "current_tier": inc.current_tier,
+                        "attempts": inc.attempts,
+                        "status": inc.status,
+                        "created_at": inc.created_at,
+                    }
+                    for inc in response.incidents
+                ],
+            }
+
+        elif action == "check":
+            request = ForceHealthCheckRequest()
+            response = await self._gaius_stub.HealthObserverForceCheck(
+                request, timeout=timeout
+            )
+            return {
+                "healthy": response.healthy,
+                "summary": response.summary,
+                "passed": list(response.passed),
+                "warnings": list(response.warnings),
+                "failures": list(response.failures),
+                "active_incidents": response.active_incidents,
+                "interventions": list(response.interventions)[:5],
+            }
+
+        elif action == "incident_detail":
+            fingerprint = params.get("fingerprint", "")
+            request = GetIncidentDetailRequest(fingerprint=fingerprint)
+            response = await self._gaius_stub.HealthObserverGetIncident(
+                request, timeout=timeout
+            )
+            if not response.found:
+                return {
+                    "error": f"Incident not found: {fingerprint}",
+                }
+            inc = response.incident
+            return {
+                "incident": {
+                    "incident_id": inc.incident_id,
+                    "fingerprint": inc.fingerprint,
+                    "endpoint": inc.endpoint,
+                    "failure_mode_id": inc.failure_mode_id,
+                    "rpn_score": inc.rpn_score,
+                    "rpn_severity": inc.rpn_severity,
+                    "rpn_occurrence": inc.rpn_occurrence,
+                    "rpn_detection": inc.rpn_detection,
+                    "current_tier": inc.current_tier,
+                    "sequence_id": inc.sequence_id,
+                    "created_at": inc.created_at,
+                    "last_check_at": inc.last_check_at,
+                    "attempts": inc.attempts,
+                    "github_issue": inc.github_issue,
+                    "status": inc.status,
+                },
+            }
+
+        else:
+            raise ValueError(f"Unknown HealthObserver action: {action}")
+
+    async def _call_x_bookmarks(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle X Bookmarks service calls via gRPC.
+
+        X Bookmarks provides sync of X/Twitter bookmarks to Gaius KB
+        with OAuth 2.0 PKCE authentication and rate limiting.
+
+        Args:
+            action: Action to perform (get_auth_url, complete_auth, auth_status, trigger_sync, sync_status, service_status)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with auth info, sync status, or service status
+        """
+        if action == "get_auth_url":
+            request = XBookmarksAuthRequest()
+            response = await self._gaius_stub.XBookmarksGetAuthUrl(
+                request, timeout=timeout
+            )
+            return {
+                "auth_url": response.auth_url,
+                "state": response.state,
+                "verifier": response.verifier,
+            }
+
+        elif action == "complete_auth":
+            code = params.get("code", "")
+            verifier = params.get("verifier", "")
+            request = XBookmarksCompleteAuthRequest(code=code, verifier=verifier)
+            response = await self._gaius_stub.XBookmarksCompleteAuth(
+                request, timeout=timeout
+            )
+            return {
+                "success": response.success,
+                "message": response.message,
+            }
+
+        elif action == "auth_status":
+            request = XBookmarksAuthStatusRequest()
+            response = await self._gaius_stub.XBookmarksAuthStatus(
+                request, timeout=timeout
+            )
+            result = {
+                "authenticated": response.authenticated,
+                "user_id": response.user_id,
+                "username": response.username,
+                "expires_at": response.expires_at,
+                "scopes": list(response.scopes),
+                "error": response.error if response.error else None,
+                "guru_code": response.guru_code if response.guru_code else None,
+            }
+            # Add guidance fields if present
+            if response.action_required:
+                result["action_required"] = response.action_required
+            if response.guidance_message:
+                result["message"] = response.guidance_message
+            return result
+
+        elif action == "trigger_sync":
+            full_sync = params.get("full_sync", False)
+            folder_id = params.get("folder_id", "")
+            request = XBookmarksSyncRequest(full_sync=full_sync, folder_id=folder_id)
+            response = await self._gaius_stub.XBookmarksTriggerSync(
+                request, timeout=timeout
+            )
+            result = {
+                "started": response.started,
+                "run_id": response.run_id,
+                "message": response.message,
+                # Extended fields for detailed sync results
+                "status": response.status,
+                "bookmarks_fetched": response.bookmarks_fetched,
+                "iceberg_written": response.iceberg_written,
+                "queue_items": response.queue_items,
+            }
+            # Add guidance fields if present
+            if response.action_required:
+                result["action_required"] = response.action_required
+            if response.guidance_message:
+                result["guidance_message"] = response.guidance_message
+            return result
+
+        elif action == "sync_status":
+            user_id = params.get("user_id", "")
+            request = XBookmarksSyncStatusRequest(user_id=user_id)
+            response = await self._gaius_stub.XBookmarksSyncStatus(
+                request, timeout=timeout
+            )
+            result = {
+                "configured": response.configured,
+                "user_id": response.user_id,
+                "username": response.username,
+                "token_status": response.token_status,
+                "folder_count": response.folder_count,
+                "bookmark_count": response.bookmark_count,
+                "queued_requests": response.queued_requests,
+                "last_sync_at": response.last_sync_at,
+                "last_run_status": response.last_run_status,
+            }
+            # Add guidance fields if present
+            if response.action_required:
+                result["action_required"] = response.action_required
+            if response.guidance_message:
+                result["message"] = response.guidance_message
+            return result
+
+        elif action == "service_status":
+            request = XBookmarksServiceStatusRequest()
+            response = await self._gaius_stub.XBookmarksServiceStatus(
+                request, timeout=timeout
+            )
+            return {
+                "running": response.running,
+                "total_syncs": response.total_syncs,
+                "total_bookmarks": response.total_bookmarks,
+                "last_sync_at": response.last_sync_at,
+                "queue_poll_interval_s": response.queue_poll_interval_s,
+            }
+
+        elif action == "list_folders":
+            user_id = params.get("user_id", "")
+            request = XBookmarksListFoldersRequest(user_id=user_id)
+            response = await self._gaius_stub.XBookmarksListFolders(
+                request, timeout=timeout
+            )
+            return {
+                "folders_available": response.folders_available,
+                "folders": [
+                    {
+                        "id": f.id,
+                        "name": f.name,
+                        "kb_path": f.kb_path,
+                        "bookmark_count": f.bookmark_count,
+                    }
+                    for f in response.folders
+                ],
+                "message": response.message,
+            }
+
+        elif action == "queue_status":
+            request = XBookmarksQueueStatusRequest()
+            response = await self._gaius_stub.XBookmarksQueueStatus(
+                request, timeout=timeout
+            )
+            return {
+                "queue_depth": response.queue_depth,
+                "cooldown_end_iso": response.cooldown_end_iso,
+                "cooldown_seconds": response.cooldown_seconds,
+                "can_request": response.can_request,
+            }
+
+        elif action == "emit_test_event":
+            event_type = params.get("event_type", "XB_AUTH_COMPLETED")
+            request = XBookmarksEmitTestEventRequest(event_type=event_type)
+            response = await self._gaius_stub.XBookmarksEmitTestEvent(
+                request, timeout=timeout
+            )
+            return {
+                "success": response.success,
+                "event_type": response.event_type,
+                "message": response.message,
+            }
+
+        else:
+            raise ValueError(f"Unknown XBookmarks action: {action}")
+
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.
 
@@ -1449,6 +1785,7 @@ class GrpcEngineClient:
             async for event in call:
                 event_dict = {
                     "type": InitEvent.Type.Name(event.type),
+                    "type_enum": event.type,  # Raw proto enum for direct comparison
                     "timestamp_ms": event.timestamp_ms,
                     "phase": event.phase,
                     "progress": event.progress,
@@ -1574,6 +1911,175 @@ class GrpcEngineClient:
                     "progress": 0.0,
                     "message": f"Stream error: {e.details()}",
                     "data": "",
+                }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Cognition/Evolution Streaming
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def subscribe_cognition(
+        self,
+        buffer_size: int = 100,
+        event_types: Optional[list[str]] = None,
+    ) -> AsyncIterator[dict]:
+        """Subscribe to cognition events (thoughts, patterns, connections).
+
+        Real-time stream of engine cognition activity. Use this instead of
+        polling get_recent_thoughts() for responsive TUI updates.
+
+        Args:
+            buffer_size: Server-side buffer size for events
+            event_types: Filter to specific event types (default: all)
+
+        Yields:
+            CognitionEvent dicts with:
+                - type: Event type (CYCLE_START, THOUGHT, PATTERN, CONNECTION,
+                        CURIOSITY, SELF_OBSERVATION, ENGINE_AUDIT, CYCLE_END, ERROR)
+                - timestamp_ms: Event timestamp
+                - thought_id: Unique thought ID
+                - thought_type: Thought type string
+                - title: Thought title/summary
+                - content: Full thought content
+                - confidence: Confidence score (0.0-1.0)
+                - cycle_id: Cognition cycle ID
+                - error_message: Error details (for ERROR type)
+        """
+        request = CognitionStreamRequest(
+            buffer_size=buffer_size,
+            event_types=event_types or [],
+        )
+
+        try:
+            async for event in self._gaius_stub.SubscribeCognition(request):
+                yield {
+                    "type": CognitionEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "thought_id": event.thought_id,
+                    "thought_type": event.thought_type,
+                    "title": event.title,
+                    "content": event.content,
+                    "confidence": event.confidence,
+                    "cycle_id": event.cycle_id,
+                    "error_message": event.error_message,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SubscribeCognition error: {e}")
+                yield {
+                    "type": "ERROR",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "thought_id": "",
+                    "thought_type": "",
+                    "title": "Stream error",
+                    "content": str(e.details()),
+                    "confidence": 0.0,
+                    "cycle_id": 0,
+                    "error_message": str(e.details()),
+                }
+
+    async def subscribe_evolution(
+        self,
+        buffer_size: int = 100,
+        agent_filter: Optional[str] = None,
+    ) -> AsyncIterator[dict]:
+        """Subscribe to evolution events (optimization cycles, metrics).
+
+        Real-time stream of agent evolution activity. Use this instead of
+        polling evolution_status() for responsive TUI updates.
+
+        Args:
+            buffer_size: Server-side buffer size for events
+            agent_filter: Filter to specific agent (default: all)
+
+        Yields:
+            EvolutionEvent dicts with:
+                - type: Event type (CYCLE_START, OPTIMIZATION_STEP, EVALUATION,
+                        PROMOTION, ROLLBACK, CYCLE_END, ERROR)
+                - timestamp_ms: Event timestamp
+                - cycle_id: Evolution cycle ID
+                - agent_id: Agent being optimized
+                - version_id: Version being evaluated
+                - score: Evaluation score
+                - improvement: Score improvement delta
+                - message: Status message
+                - error_message: Error details (for ERROR type)
+        """
+        request = EvolutionStreamRequest(
+            buffer_size=buffer_size,
+            agent_filter=agent_filter or "",
+        )
+
+        try:
+            async for event in self._gaius_stub.SubscribeEvolution(request):
+                yield {
+                    "type": EvolutionEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "cycle_id": event.cycle_id,
+                    "agent_id": event.agent_id,
+                    "version_id": event.version_id,
+                    "score": event.score,
+                    "improvement": event.improvement,
+                    "message": event.message,
+                    "error_message": event.error_message,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SubscribeEvolution error: {e}")
+                yield {
+                    "type": "ERROR",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "cycle_id": 0,
+                    "agent_id": "",
+                    "version_id": "",
+                    "score": 0.0,
+                    "improvement": 0.0,
+                    "message": "Stream error",
+                    "error_message": str(e.details()),
+                }
+
+    async def subscribe_activity(
+        self,
+        buffer_size: int = 100,
+        include_health: bool = True,
+        include_endpoints: bool = True,
+    ) -> AsyncIterator[dict]:
+        """Subscribe to general engine activity events.
+
+        Unified stream for health, endpoints, and other engine activity.
+        Useful for TUI status updates.
+
+        Args:
+            buffer_size: Server-side buffer size for events
+            include_health: Include health status events
+            include_endpoints: Include endpoint status events
+
+        Yields:
+            ActivityEvent dicts with:
+                - type: Event type (HEALTH_UPDATE, ENDPOINT_STATUS, GPU_METRICS,
+                        QUEUE_STATUS, DAEMON_STATUS, ERROR)
+                - timestamp_ms: Event timestamp
+                - data: JSON payload with event-specific data
+        """
+        request = ActivityStreamRequest(
+            buffer_size=buffer_size,
+            include_health=include_health,
+            include_endpoints=include_endpoints,
+        )
+
+        try:
+            async for event in self._gaius_stub.SubscribeActivity(request):
+                yield {
+                    "type": ActivityEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "data": event.data.decode() if event.data else "",
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SubscribeActivity error: {e}")
+                yield {
+                    "type": "ERROR",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "data": f'{{"error": "{e.details()}"}}',
                 }
 
     @property
