@@ -284,6 +284,23 @@ class HealthChecker:
                 check_fn="_check_config_audit",
                 heuristic_id="inference/optillm_port_mismatch",
             ),
+            # Content pipeline checks
+            HealthCheck(
+                id="pipeline_status",
+                name="Pipeline Status",
+                category="pipeline",
+                description="Check content pipeline stage health (fetch → triage → KB)",
+                check_fn="_check_pipeline_status",
+                heuristic_id="pipeline/stage_backlog",
+            ),
+            HealthCheck(
+                id="task_queue",
+                name="Task Queue",
+                category="pipeline",
+                description="Check for stalled or stuck scheduled tasks",
+                check_fn="_check_task_queue",
+                heuristic_id="cognition/task_queue_stalled",
+            ),
         ]
 
     async def run_all(self) -> HealthReport:
@@ -1510,7 +1527,12 @@ class HealthChecker:
             )
 
     async def _check_endpoint_stuck(self) -> CheckResult:
-        """Check for endpoints stuck in starting/stopping state."""
+        """Check for endpoints stuck in starting/stopping state.
+
+        Timeouts (from orchestrator_service.py):
+        - STARTING: 5 minutes (300s) - models need time to load
+        - STOPPING: 2 minutes (120s) - shutdown should be quick
+        """
         try:
             from ..client.engine_proxy import get_health_proxy, use_engine_proxy
 
@@ -1535,24 +1557,77 @@ class HealthChecker:
                     details={"endpoint_count": 0},
                 )
 
-            stuck = []
+            # Thresholds for stuck detection
+            STARTING_TIMEOUT_SECS = 300  # 5 minutes
+            STOPPING_TIMEOUT_SECS = 120  # 2 minutes
+            now = datetime.now()
+
+            transitional = []  # Endpoints in transitional state (not yet stuck)
+            stuck_critical = []  # Endpoints stuck past timeout (FAIL)
+
             for name, ep in endpoints.items():
                 if isinstance(ep, dict):
                     ep_status = ep.get("status", "unknown")
                     if ep_status in ("starting", "stopping"):
-                        stuck.append({"name": name, "status": ep_status})
+                        started_at = ep.get("started_at")
+                        elapsed_secs = 0
+                        if started_at:
+                            try:
+                                start_time = datetime.fromisoformat(started_at)
+                                elapsed_secs = (now - start_time).total_seconds()
+                            except (ValueError, TypeError):
+                                pass
 
-            if stuck:
-                stuck_names = [s["name"] for s in stuck]
+                        timeout = STARTING_TIMEOUT_SECS if ep_status == "starting" else STOPPING_TIMEOUT_SECS
+                        entry = {
+                            "name": name,
+                            "status": ep_status,
+                            "elapsed_secs": int(elapsed_secs),
+                            "timeout_secs": timeout,
+                        }
+
+                        if elapsed_secs > timeout:
+                            stuck_critical.append(entry)
+                        else:
+                            transitional.append(entry)
+
+            # Critical: endpoints stuck past timeout
+            if stuck_critical:
+                stuck_names = [s["name"] for s in stuck_critical]
+                stopping_stuck = [s for s in stuck_critical if s["status"] == "stopping"]
+                starting_stuck = [s for s in stuck_critical if s["status"] == "starting"]
+
+                # Use specific heuristic based on stuck type
+                # Maps to FMEA catalog: VLLM_001 (Stuck Starting), VLLM_002 (Stuck Stopping)
+                heuristic = "inference/endpoint_stuck_stopping" if stopping_stuck else "inference/endpoint_stuck_starting"
+                failure_mode = "VLLM_002" if stopping_stuck else "VLLM_001"
+
+                return CheckResult(
+                    name="Stuck Endpoints",
+                    status=CheckStatus.FAIL,
+                    message=f"{len(stuck_critical)} endpoint(s) stuck past timeout",
+                    details={
+                        "stuck_endpoints": stuck_critical,
+                        "transitional_endpoints": transitional,
+                        "total_endpoints": len(endpoints),
+                        "failure_mode_id": failure_mode,  # FMEA catalog reference
+                    },
+                    heuristic_id=heuristic,
+                    suggestion=f"Fix with: /health fix endpoints (force clean start) or kill stuck processes",
+                )
+
+            # Warning: endpoints in transitional state but not yet stuck
+            if transitional:
+                transitional_names = [s["name"] for s in transitional]
                 return CheckResult(
                     name="Stuck Endpoints",
                     status=CheckStatus.WARN,
-                    message=f"{len(stuck)} endpoint(s) in transitional state",
+                    message=f"{len(transitional)} endpoint(s) in transitional state",
                     details={
-                        "stuck_endpoints": stuck,
+                        "transitional_endpoints": transitional,
                         "total_endpoints": len(endpoints),
                     },
-                    suggestion=f"Fix with: /health fix endpoints or /engine restart {stuck_names[0]}",
+                    suggestion=f"Monitor: {transitional_names[0]} may be loading model",
                 )
 
             return CheckResult(
@@ -1949,3 +2024,269 @@ class HealthChecker:
             message=f"Audited {len(audited_configs)} config(s), no mismatches",
             details={"audited": audited_configs},
         )
+
+    # =========================================================================
+    # Content Pipeline Health Checks
+    # =========================================================================
+
+    async def _check_pipeline_status(self) -> CheckResult:
+        """Check content pipeline stage health.
+
+        Queries v_pipeline_status view to monitor:
+        - fetch: Feed/arxiv fetch jobs
+        - heuristic_triage: Fast keyword scoring
+        - llm_triage: LLM quality assessment
+        - kb_write: Writing triaged content to KB
+        """
+        try:
+            import os
+
+            import asyncpg
+
+            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                # Check if the view exists (migration may not have run)
+                view_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.views
+                        WHERE table_schema = 'public' AND table_name = 'v_pipeline_status'
+                    )
+                """)
+
+                if not view_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Pipeline Status",
+                        status=CheckStatus.SKIP,
+                        message="Pipeline monitoring not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                # Query pipeline status
+                rows = await conn.fetch("SELECT * FROM v_pipeline_status")
+                await conn.close()
+
+                stages = {}
+                warnings = []
+                failures = []
+
+                for row in rows:
+                    stage = row["stage"]
+                    pending = row["pending"]
+                    completed_1h = row["completed_1h"]
+                    warn_threshold = row.get("backlog_warn", 100)
+                    critical_threshold = row.get("backlog_critical", 500)
+
+                    stages[stage] = {
+                        "pending": pending,
+                        "completed_1h": completed_1h,
+                    }
+
+                    if pending >= critical_threshold:
+                        failures.append(f"{stage}: {pending} pending (critical)")
+                    elif pending >= warn_threshold:
+                        warnings.append(f"{stage}: {pending} pending")
+
+                if failures:
+                    return CheckResult(
+                        name="Pipeline Status",
+                        status=CheckStatus.FAIL,
+                        message=f"Pipeline backlog critical: {failures[0]}",
+                        details={"stages": stages, "issues": failures},
+                        suggestion="Run: /health fix pipeline",
+                    )
+
+                if warnings:
+                    return CheckResult(
+                        name="Pipeline Status",
+                        status=CheckStatus.WARN,
+                        message=f"Pipeline backlog elevated: {warnings[0]}",
+                        details={"stages": stages, "issues": warnings},
+                        suggestion="Triage tasks will process backlog automatically",
+                    )
+
+                # Calculate total throughput
+                total_completed = sum(s.get("completed_1h", 0) for s in stages.values())
+                return CheckResult(
+                    name="Pipeline Status",
+                    status=CheckStatus.PASS,
+                    message=f"Pipeline healthy, {total_completed} items processed in last hour",
+                    details={"stages": stages},
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Pipeline Status",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str:
+                return CheckResult(
+                    name="Pipeline Status",
+                    status=CheckStatus.SKIP,
+                    message="Pipeline views not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Pipeline Status",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_task_queue(self) -> CheckResult:
+        """Check for stalled or stuck scheduled tasks.
+
+        Queries v_task_watchdog view to detect:
+        - stale_pending: Tasks waiting too long to be picked up
+        - stuck_running: Tasks running too long without completion
+        """
+        try:
+            import os
+
+            import asyncpg
+
+            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                # Check if the view exists
+                view_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.views
+                        WHERE table_schema = 'public' AND table_name = 'v_task_watchdog'
+                    )
+                """)
+
+                if not view_exists:
+                    # Fall back to direct query
+                    stale = await conn.fetchval("""
+                        SELECT COUNT(*) FROM scheduled_tasks
+                        WHERE picked_up_at IS NULL
+                          AND scheduled_for < NOW() - interval '30 minutes'
+                    """)
+                    stuck = await conn.fetchval("""
+                        SELECT COUNT(*) FROM scheduled_tasks
+                        WHERE picked_up_at IS NOT NULL
+                          AND completed_at IS NULL
+                          AND picked_up_at < NOW() - interval '10 minutes'
+                    """)
+                    completed_1h = await conn.fetchval("""
+                        SELECT COUNT(*) FROM scheduled_tasks
+                        WHERE completed_at > NOW() - interval '1 hour'
+                    """)
+                    await conn.close()
+
+                    if stale > 0 or stuck > 0:
+                        return CheckResult(
+                            name="Task Queue",
+                            status=CheckStatus.WARN if (stale + stuck) < 5 else CheckStatus.FAIL,
+                            message=f"{stale} stale, {stuck} stuck tasks",
+                            details={
+                                "stale_pending": stale,
+                                "stuck_running": stuck,
+                                "completed_1h": completed_1h,
+                            },
+                            suggestion="Run: /health fix pipeline",
+                        )
+
+                    return CheckResult(
+                        name="Task Queue",
+                        status=CheckStatus.PASS,
+                        message=f"Task queue healthy, {completed_1h} completed in last hour",
+                        details={
+                            "stale_pending": 0,
+                            "stuck_running": 0,
+                            "completed_1h": completed_1h,
+                        },
+                    )
+
+                # Query task watchdog view
+                rows = await conn.fetch("SELECT * FROM v_task_watchdog")
+                await conn.close()
+
+                task_types = {}
+                total_stale = 0
+                total_stuck = 0
+                total_completed = 0
+                total_failed = 0
+
+                for row in rows:
+                    task_type = row["task_type"]
+                    stale = row["stale_pending"]
+                    stuck = row["stuck_running"]
+                    completed = row["completed_1h"]
+                    failed = row.get("failed_24h", 0)
+
+                    task_types[task_type] = {
+                        "stale_pending": stale,
+                        "stuck_running": stuck,
+                        "completed_1h": completed,
+                        "failed_24h": failed,
+                    }
+
+                    total_stale += stale
+                    total_stuck += stuck
+                    total_completed += completed
+                    total_failed += failed
+
+                if total_stale > 0 or total_stuck > 0:
+                    severity = CheckStatus.FAIL if (total_stale + total_stuck) >= 5 else CheckStatus.WARN
+                    issues = []
+                    if total_stale > 0:
+                        issues.append(f"{total_stale} stale")
+                    if total_stuck > 0:
+                        issues.append(f"{total_stuck} stuck")
+
+                    return CheckResult(
+                        name="Task Queue",
+                        status=severity,
+                        message=f"Task queue issues: {', '.join(issues)}",
+                        details={
+                            "task_types": task_types,
+                            "stale_total": total_stale,
+                            "stuck_total": total_stuck,
+                            "completed_1h": total_completed,
+                            "failed_24h": total_failed,
+                        },
+                        suggestion="Run: /health fix pipeline",
+                    )
+
+                return CheckResult(
+                    name="Task Queue",
+                    status=CheckStatus.PASS,
+                    message=f"Task queue healthy, {total_completed} completed in last hour",
+                    details={
+                        "task_types": task_types,
+                        "completed_1h": total_completed,
+                        "failed_24h": total_failed,
+                    },
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Task Queue",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            return CheckResult(
+                name="Task Queue",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )

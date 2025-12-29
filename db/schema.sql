@@ -1,4 +1,4 @@
-\restrict 82IuwDQDF63iuaHbYFVQp7TythlM2pSBlmmhKrGgDEn4JKdB2rIamTCl4YYqup0
+\restrict FnLgWKznwpakrmewWSKOrU3KOye1cwdUATep7LJR2AQbP5eEebmgZsHaOEOuEHg
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -173,6 +173,40 @@ CREATE TYPE public.source_type AS ENUM (
     'brave',
     'philevents'
 );
+
+
+--
+-- Name: cron_job_status(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.cron_job_status() RETURNS TABLE(jobid bigint, jobname text, schedule text, active boolean, last_run timestamp with time zone, last_status text)
+    LANGUAGE sql
+    AS $$
+    SELECT
+        j.jobid,
+        j.jobname,
+        j.schedule,
+        j.active,
+        r.start_time as last_run,
+        COALESCE(r.status, 'never_run') as last_status
+    FROM cron.job j
+    LEFT JOIN LATERAL (
+        SELECT start_time, status
+        FROM cron.job_run_details
+        WHERE jobid = j.jobid
+        ORDER BY start_time DESC
+        LIMIT 1
+    ) r ON TRUE
+    WHERE j.jobname LIKE 'meta-%'
+    ORDER BY j.jobname;
+$$;
+
+
+--
+-- Name: FUNCTION cron_job_status(); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.cron_job_status() IS 'Check status of meta observability cron jobs';
 
 
 --
@@ -1490,6 +1524,23 @@ $$;
 
 
 --
+-- Name: x_cleanup_pending_auths(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_cleanup_pending_auths() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_deleted INTEGER;
+BEGIN
+    DELETE FROM x_oauth_pending WHERE expires_at < NOW();
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    RETURN v_deleted;
+END;
+$$;
+
+
+--
 -- Name: x_complete_sync_run(integer, character varying, integer, integer, integer, character varying, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1967,6 +2018,30 @@ CREATE TABLE meta.agent_performance (
 
 
 --
+-- Name: alert_thresholds; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.alert_thresholds (
+    metric_name character varying(64) NOT NULL,
+    category character varying(32) NOT NULL,
+    description text,
+    warning_threshold double precision,
+    critical_threshold double precision,
+    comparison character varying(8) DEFAULT '>='::character varying,
+    enabled boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE alert_thresholds; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.alert_thresholds IS 'Alert thresholds for Metabase dashboard alerts';
+
+
+--
 -- Name: data_dependencies; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -2071,6 +2146,81 @@ CREATE TABLE meta.flow_runs (
 
 
 --
+-- Name: fmea_rpn_timeseries; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.fmea_rpn_timeseries (
+    failure_mode_id character varying(32) NOT NULL,
+    hour timestamp with time zone NOT NULL,
+    avg_rpn double precision,
+    min_rpn integer,
+    max_rpn integer,
+    outcome_count integer DEFAULT 0,
+    success_count integer DEFAULT 0,
+    failure_count integer DEFAULT 0
+);
+
+
+--
+-- Name: TABLE fmea_rpn_timeseries; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.fmea_rpn_timeseries IS 'Hourly RPN aggregates for FMEA trend analysis in Metabase';
+
+
+--
+-- Name: gpu_hourly_stats; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.gpu_hourly_stats (
+    hour timestamp with time zone NOT NULL,
+    gpu_index smallint NOT NULL,
+    samples integer DEFAULT 0,
+    memory_min_mb real,
+    memory_max_mb real,
+    memory_avg_mb real,
+    util_min_pct real,
+    util_max_pct real,
+    util_avg_pct real,
+    temp_max_c real,
+    power_avg_w real
+);
+
+
+--
+-- Name: TABLE gpu_hourly_stats; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.gpu_hourly_stats IS 'Hourly GPU rollups with 30-day retention for Metabase time series';
+
+
+--
+-- Name: gpu_minute_stats; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.gpu_minute_stats (
+    minute timestamp with time zone NOT NULL,
+    gpu_index smallint NOT NULL,
+    samples integer DEFAULT 0,
+    memory_min_mb real,
+    memory_max_mb real,
+    memory_avg_mb real,
+    util_min_pct real,
+    util_max_pct real,
+    util_avg_pct real,
+    temp_max_c real,
+    power_avg_w real
+);
+
+
+--
+-- Name: TABLE gpu_minute_stats; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.gpu_minute_stats IS 'Minute-level GPU stats with 24h retention for Metabase time series';
+
+
+--
 -- Name: gpu_utilization; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -2083,6 +2233,33 @@ CREATE TABLE meta.gpu_utilization (
     temperature_c integer,
     active_endpoint text
 );
+
+
+--
+-- Name: inference_hourly; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.inference_hourly (
+    hour timestamp with time zone NOT NULL,
+    model character varying(128) NOT NULL,
+    endpoint character varying(64) DEFAULT ''::character varying NOT NULL,
+    request_count integer DEFAULT 0,
+    tokens_total bigint DEFAULT 0,
+    tokens_avg real,
+    latency_min_ms real,
+    latency_max_ms real,
+    latency_p50_ms real,
+    latency_p95_ms real,
+    latency_p99_ms real,
+    errors_count integer DEFAULT 0
+);
+
+
+--
+-- Name: TABLE inference_hourly; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.inference_hourly IS 'Hourly inference metrics with percentiles for Metabase time series';
 
 
 --
@@ -2132,6 +2309,57 @@ CREATE TABLE meta.kb_topology (
     avg_curvature double precision,
     avg_complexity double precision
 );
+
+
+--
+-- Name: lineage_sankey_agg; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.lineage_sankey_agg (
+    time_window text NOT NULL,
+    window_start timestamp with time zone NOT NULL,
+    source_namespace text NOT NULL,
+    source_name text NOT NULL,
+    target_namespace text NOT NULL,
+    target_name text NOT NULL,
+    via_job text DEFAULT ''::text NOT NULL,
+    flow_count integer DEFAULT 1,
+    bytes_transferred bigint DEFAULT 0,
+    computed_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE lineage_sankey_agg; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.lineage_sankey_agg IS 'Pre-aggregated lineage edges for Sankey visualization in Metabase v52+';
+
+
+--
+-- Name: metaagent_queries; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.metaagent_queries (
+    query_hash text NOT NULL,
+    query_text text NOT NULL,
+    domains text[],
+    answer text,
+    dot_graph text,
+    evidence jsonb DEFAULT '[]'::jsonb,
+    duration_ms integer,
+    created_at timestamp with time zone DEFAULT now(),
+    expires_at timestamp with time zone,
+    cache_hits integer DEFAULT 0,
+    last_hit_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE metaagent_queries; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.metaagent_queries IS 'MetaAgent query result cache for expensive analytics queries';
 
 
 --
@@ -2490,6 +2718,587 @@ CREATE SEQUENCE meta.topology_drift_id_seq
 --
 
 ALTER SEQUENCE meta.topology_drift_id_seq OWNED BY meta.topology_drift.id;
+
+
+--
+-- Name: fmea_catalog; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_catalog (
+    failure_mode_id character varying(32) NOT NULL,
+    category character varying(32) NOT NULL,
+    name character varying(128) NOT NULL,
+    description text,
+    base_severity integer NOT NULL,
+    base_occurrence integer NOT NULL,
+    base_detection integer NOT NULL,
+    detection_method character varying(64),
+    detection_query text,
+    detection_threshold jsonb DEFAULT '{}'::jsonb,
+    recommended_actions text[],
+    escalation_tier integer DEFAULT 0,
+    preventive_controls text[],
+    detective_controls text[],
+    mitigative_controls text[],
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT fmea_catalog_base_detection_check CHECK (((base_detection >= 1) AND (base_detection <= 10))),
+    CONSTRAINT fmea_catalog_base_occurrence_check CHECK (((base_occurrence >= 1) AND (base_occurrence <= 10))),
+    CONSTRAINT fmea_catalog_base_severity_check CHECK (((base_severity >= 1) AND (base_severity <= 10)))
+);
+
+
+--
+-- Name: TABLE fmea_catalog; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_catalog IS 'FMEA failure mode definitions with S/O/D scores';
+
+
+--
+-- Name: COLUMN fmea_catalog.failure_mode_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.failure_mode_id IS 'Unique ID: GPU_001, VLLM_002, MQ_003, etc.';
+
+
+--
+-- Name: COLUMN fmea_catalog.base_severity; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.base_severity IS 'Severity score 1-10: impact on system availability';
+
+
+--
+-- Name: COLUMN fmea_catalog.base_occurrence; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.base_occurrence IS 'Occurrence score 1-10: probability of recurrence';
+
+
+--
+-- Name: COLUMN fmea_catalog.base_detection; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.fmea_catalog.base_detection IS 'Detection score 1-10: ability to detect before impact (1=certain, 10=none)';
+
+
+--
+-- Name: healing_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.healing_events (
+    id bigint NOT NULL,
+    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    sequence_id uuid NOT NULL,
+    sequence_num integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    event_type character varying(32) NOT NULL,
+    endpoint character varying(64) NOT NULL,
+    tier integer NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    aiops_event_id integer,
+    failure_mode_id character varying(32)
+);
+
+
+--
+-- Name: TABLE healing_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.healing_events IS 'Event-sourced audit log for self-healing attempts - append only';
+
+
+--
+-- Name: COLUMN healing_events.sequence_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.sequence_id IS 'Groups all events for one healing sequence (issue detection through resolution)';
+
+
+--
+-- Name: COLUMN healing_events.sequence_num; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.sequence_num IS 'Order within sequence, auto-incremented per sequence';
+
+
+--
+-- Name: COLUMN healing_events.event_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.event_type IS 'Event classification: sequence_started/completed, tier_entered/exhausted, attempt_started/succeeded/failed, cooldown_started/cleared, circuit_breaker_tripped/reset';
+
+
+--
+-- Name: COLUMN healing_events.payload; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.healing_events.payload IS 'Event-specific data varying by event_type';
+
+
+--
+-- Name: v_incident_lifecycle; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_incident_lifecycle AS
+ WITH sequence_bounds AS (
+         SELECT healing_events.sequence_id,
+            min(healing_events.created_at) FILTER (WHERE ((healing_events.event_type)::text = 'sequence_started'::text)) AS started_at,
+            max(healing_events.created_at) FILTER (WHERE ((healing_events.event_type)::text = 'sequence_completed'::text)) AS completed_at,
+            max(
+                CASE
+                    WHEN ((healing_events.event_type)::text = 'sequence_completed'::text) THEN (healing_events.payload ->> 'outcome'::text)
+                    ELSE NULL::text
+                END) AS outcome,
+            max(
+                CASE
+                    WHEN ((healing_events.event_type)::text = 'sequence_completed'::text) THEN healing_events.tier
+                    ELSE NULL::integer
+                END) AS final_tier,
+            max((healing_events.endpoint)::text) AS endpoint,
+            max((healing_events.failure_mode_id)::text) AS failure_mode_id,
+            count(*) AS event_count
+           FROM public.healing_events
+          WHERE (healing_events.created_at > (now() - '30 days'::interval))
+          GROUP BY healing_events.sequence_id
+        )
+ SELECT s.sequence_id,
+    s.started_at,
+    s.completed_at,
+    s.outcome,
+    s.final_tier,
+    s.endpoint,
+    s.failure_mode_id,
+    c.category,
+    c.name AS failure_name,
+    s.event_count,
+    (EXTRACT(epoch FROM (s.completed_at - s.started_at)) * (1000)::numeric) AS duration_ms,
+        CASE
+            WHEN (s.completed_at IS NULL) THEN 'active'::text
+            WHEN (s.outcome = 'success'::text) THEN 'resolved'::text
+            WHEN (s.outcome = 'failure'::text) THEN 'failed'::text
+            ELSE 'escalated'::text
+        END AS status,
+        CASE
+            WHEN (s.final_tier <= 2) THEN true
+            ELSE false
+        END AS auto_resolved
+   FROM (sequence_bounds s
+     LEFT JOIN public.fmea_catalog c ON ((s.failure_mode_id = (c.failure_mode_id)::text)));
+
+
+--
+-- Name: VIEW v_incident_lifecycle; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_incident_lifecycle IS 'Incident lifecycle from detection to resolution for Metabase';
+
+
+--
+-- Name: v_autonomous_healing_summary; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_autonomous_healing_summary AS
+ SELECT date_trunc('day'::text, started_at) AS day,
+    count(*) AS total_incidents,
+    count(*) FILTER (WHERE (status = 'resolved'::text)) AS resolved,
+    count(*) FILTER (WHERE (status = 'active'::text)) AS active,
+    count(*) FILTER (WHERE ((status = 'escalated'::text) OR (status = 'failed'::text))) AS escalated,
+    count(*) FILTER (WHERE auto_resolved) AS auto_resolved,
+    round(((100.0 * (count(*) FILTER (WHERE auto_resolved))::numeric) / (NULLIF(count(*), 0))::numeric), 1) AS auto_rate_pct,
+    avg(duration_ms) FILTER (WHERE (status = 'resolved'::text)) AS avg_resolution_ms,
+    percentile_cont((0.50)::double precision) WITHIN GROUP (ORDER BY ((duration_ms)::double precision)) FILTER (WHERE (status = 'resolved'::text)) AS p50_resolution_ms
+   FROM meta.v_incident_lifecycle
+  WHERE (started_at > (now() - '30 days'::interval))
+  GROUP BY (date_trunc('day'::text, started_at))
+  ORDER BY (date_trunc('day'::text, started_at)) DESC;
+
+
+--
+-- Name: VIEW v_autonomous_healing_summary; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_autonomous_healing_summary IS 'Daily autonomous healing summary for Metabase dashboards';
+
+
+--
+-- Name: fmea_outcomes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_outcomes (
+    id integer NOT NULL,
+    failure_mode_id character varying(32) NOT NULL,
+    aiops_event_id integer,
+    mlops_event_id integer,
+    rpn_score integer NOT NULL,
+    severity integer NOT NULL,
+    occurrence integer NOT NULL,
+    detection integer NOT NULL,
+    action_taken character varying(128),
+    tier_used integer,
+    success boolean NOT NULL,
+    duration_ms integer,
+    downtime_seconds integer,
+    sla_breach boolean DEFAULT false,
+    detection_lead_time_seconds integer,
+    detected_by character varying(32),
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE fmea_outcomes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_outcomes IS 'Remediation outcomes for adaptive S/O/D learning';
+
+
+--
+-- Name: v_fmea_remediation_effectiveness; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_fmea_remediation_effectiveness AS
+ SELECT o.failure_mode_id,
+    c.category,
+    c.name AS failure_name,
+    o.action_taken,
+    o.tier_used,
+    count(*) AS attempts,
+    sum(
+        CASE
+            WHEN o.success THEN 1
+            ELSE 0
+        END) AS successes,
+    sum(
+        CASE
+            WHEN (NOT o.success) THEN 1
+            ELSE 0
+        END) AS failures,
+    round(((100.0 * (sum(
+        CASE
+            WHEN o.success THEN 1
+            ELSE 0
+        END))::numeric) / (NULLIF(count(*), 0))::numeric), 1) AS success_rate_pct,
+    avg(o.duration_ms) AS avg_duration_ms,
+    percentile_cont((0.95)::double precision) WITHIN GROUP (ORDER BY ((o.duration_ms)::double precision)) AS p95_duration_ms,
+    avg(o.downtime_seconds) AS avg_downtime_seconds,
+    sum(
+        CASE
+            WHEN o.sla_breach THEN 1
+            ELSE 0
+        END) AS sla_breaches
+   FROM (public.fmea_outcomes o
+     JOIN public.fmea_catalog c ON (((o.failure_mode_id)::text = (c.failure_mode_id)::text)))
+  WHERE (o.created_at > (now() - '30 days'::interval))
+  GROUP BY o.failure_mode_id, c.category, c.name, o.action_taken, o.tier_used;
+
+
+--
+-- Name: VIEW v_fmea_remediation_effectiveness; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_fmea_remediation_effectiveness IS 'Remediation strategy effectiveness metrics for FMEA in Metabase';
+
+
+--
+-- Name: fmea_occurrences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fmea_occurrences (
+    id integer NOT NULL,
+    failure_mode_id character varying(32) NOT NULL,
+    occurred_at timestamp with time zone DEFAULT now(),
+    endpoint character varying(64),
+    context jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE fmea_occurrences; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.fmea_occurrences IS 'History of failure mode occurrences for calculating O score';
+
+
+--
+-- Name: v_fmea_risk_heatmap; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_fmea_risk_heatmap AS
+ WITH recent_rpn AS (
+         SELECT DISTINCT ON (fmea_outcomes.failure_mode_id) fmea_outcomes.failure_mode_id,
+            fmea_outcomes.rpn_score AS last_rpn,
+            fmea_outcomes.severity AS last_s,
+            fmea_outcomes.occurrence AS last_o,
+            fmea_outcomes.detection AS last_d,
+            fmea_outcomes.created_at AS last_occurrence_at
+           FROM public.fmea_outcomes
+          ORDER BY fmea_outcomes.failure_mode_id, fmea_outcomes.created_at DESC
+        ), occurrence_stats AS (
+         SELECT fmea_occurrences.failure_mode_id,
+            count(*) FILTER (WHERE (fmea_occurrences.occurred_at > (now() - '24:00:00'::interval))) AS occurrences_24h,
+            count(*) FILTER (WHERE (fmea_occurrences.occurred_at > (now() - '7 days'::interval))) AS occurrences_7d,
+            count(*) AS total_occurrences
+           FROM public.fmea_occurrences
+          GROUP BY fmea_occurrences.failure_mode_id
+        )
+ SELECT c.failure_mode_id,
+    c.category,
+    c.name,
+    c.description,
+    c.base_severity,
+    c.base_occurrence,
+    c.base_detection,
+    ((c.base_severity * c.base_occurrence) * c.base_detection) AS base_rpn,
+    COALESCE(r.last_rpn, ((c.base_severity * c.base_occurrence) * c.base_detection)) AS current_rpn,
+    r.last_s AS current_severity,
+    r.last_o AS current_occurrence,
+    r.last_d AS current_detection,
+    COALESCE(os.occurrences_24h, (0)::bigint) AS occurrences_24h,
+    COALESCE(os.occurrences_7d, (0)::bigint) AS occurrences_7d,
+    COALESCE(os.total_occurrences, (0)::bigint) AS total_occurrences,
+    r.last_occurrence_at,
+        CASE
+            WHEN (COALESCE(r.last_rpn, ((c.base_severity * c.base_occurrence) * c.base_detection)) <= 100) THEN 'TIER_0'::text
+            WHEN (COALESCE(r.last_rpn, ((c.base_severity * c.base_occurrence) * c.base_detection)) <= 200) THEN 'TIER_1'::text
+            WHEN (COALESCE(r.last_rpn, ((c.base_severity * c.base_occurrence) * c.base_detection)) <= 400) THEN 'TIER_2'::text
+            ELSE 'MANUAL'::text
+        END AS risk_tier,
+    c.escalation_tier,
+    c.recommended_actions
+   FROM ((public.fmea_catalog c
+     LEFT JOIN recent_rpn r ON (((c.failure_mode_id)::text = (r.failure_mode_id)::text)))
+     LEFT JOIN occurrence_stats os ON (((c.failure_mode_id)::text = (os.failure_mode_id)::text)));
+
+
+--
+-- Name: VIEW v_fmea_risk_heatmap; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_fmea_risk_heatmap IS 'FMEA risk heatmap showing current RPN scores, occurrence stats, and risk tiers for Metabase';
+
+
+--
+-- Name: v_mttr_metrics; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_mttr_metrics AS
+ SELECT c.category,
+    i.failure_mode_id,
+    c.name AS failure_name,
+    i.final_tier,
+    count(*) AS incident_count,
+    count(*) FILTER (WHERE (i.status = 'resolved'::text)) AS resolved_count,
+    count(*) FILTER (WHERE (i.status = 'active'::text)) AS active_count,
+    avg(i.duration_ms) FILTER (WHERE (i.status = 'resolved'::text)) AS avg_mttr_ms,
+    percentile_cont((0.50)::double precision) WITHIN GROUP (ORDER BY ((i.duration_ms)::double precision)) FILTER (WHERE (i.status = 'resolved'::text)) AS p50_mttr_ms,
+    percentile_cont((0.95)::double precision) WITHIN GROUP (ORDER BY ((i.duration_ms)::double precision)) FILTER (WHERE (i.status = 'resolved'::text)) AS p95_mttr_ms,
+    min(i.duration_ms) FILTER (WHERE (i.status = 'resolved'::text)) AS min_mttr_ms,
+    max(i.duration_ms) FILTER (WHERE (i.status = 'resolved'::text)) AS max_mttr_ms
+   FROM (meta.v_incident_lifecycle i
+     LEFT JOIN public.fmea_catalog c ON ((i.failure_mode_id = (c.failure_mode_id)::text)))
+  WHERE (i.started_at > (now() - '30 days'::interval))
+  GROUP BY c.category, i.failure_mode_id, c.name, i.final_tier;
+
+
+--
+-- Name: VIEW v_mttr_metrics; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_mttr_metrics IS 'Mean Time To Resolve metrics by failure mode and tier for Metabase';
+
+
+--
+-- Name: content_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.content_items (
+    id integer NOT NULL,
+    source_id integer,
+    external_id text,
+    url text,
+    title text NOT NULL,
+    authors text[],
+    summary text,
+    content_type text DEFAULT 'text/plain'::text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    published_at timestamp with time zone,
+    fetched_at timestamp with time zone DEFAULT now(),
+    processed_at timestamp with time zone,
+    kb_path text,
+    embedding_id text,
+    iceberg_id text,
+    iceberg_snapshot_id bigint,
+    summarized_at timestamp with time zone,
+    summary_kb_path text,
+    summary_excluded boolean DEFAULT false,
+    exclusion_reason text,
+    heuristic_score integer,
+    llm_quality_score integer,
+    content_hash text
+);
+
+
+--
+-- Name: TABLE content_items; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.content_items IS 'Content metadata (PostgreSQL) - raw content stored in Iceberg via iceberg_id link.
+See gaius.hx module for Iceberg access.';
+
+
+--
+-- Name: COLUMN content_items.iceberg_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.content_items.iceberg_id IS 'UUID linking to raw.content table in Iceberg data lake (gaius.hx)';
+
+
+--
+-- Name: COLUMN content_items.iceberg_snapshot_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.content_items.iceberg_snapshot_id IS 'Iceberg snapshot ID when content was written, for time-travel queries';
+
+
+--
+-- Name: COLUMN content_items.summarized_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.content_items.summarized_at IS 'When this content was summarized to KB';
+
+
+--
+-- Name: COLUMN content_items.summary_kb_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.content_items.summary_kb_path IS 'KB path where summary was written';
+
+
+--
+-- Name: COLUMN content_items.summary_excluded; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.content_items.summary_excluded IS 'Whether content was excluded from summarization';
+
+
+--
+-- Name: COLUMN content_items.exclusion_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.content_items.exclusion_reason IS 'Why content was excluded (quality, relevance, etc.)';
+
+
+--
+-- Name: v_pipeline_funnel; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_pipeline_funnel AS
+ SELECT date_trunc('day'::text, fetched_at) AS day,
+    count(*) AS fetched,
+    count(*) FILTER (WHERE (heuristic_score IS NOT NULL)) AS scored_heuristic,
+    count(*) FILTER (WHERE (heuristic_score >= 30)) AS passed_heuristic,
+    count(*) FILTER (WHERE (llm_quality_score IS NOT NULL)) AS scored_llm,
+    count(*) FILTER (WHERE (llm_quality_score >= 50)) AS passed_llm,
+    count(*) FILTER (WHERE (processed_at IS NOT NULL)) AS written_to_kb,
+    count(*) FILTER (WHERE (summary_excluded = true)) AS excluded,
+    round(((100.0 * (count(*) FILTER (WHERE (heuristic_score >= 30)))::numeric) / (NULLIF(count(*), 0))::numeric), 1) AS heuristic_yield_pct,
+    round(((100.0 * (count(*) FILTER (WHERE (llm_quality_score >= 50)))::numeric) / (NULLIF(count(*) FILTER (WHERE (heuristic_score >= 30)), 0))::numeric), 1) AS llm_yield_pct,
+    round(((100.0 * (count(*) FILTER (WHERE (processed_at IS NOT NULL)))::numeric) / (NULLIF(count(*), 0))::numeric), 1) AS total_yield_pct
+   FROM public.content_items
+  WHERE (fetched_at > (now() - '30 days'::interval))
+  GROUP BY (date_trunc('day'::text, fetched_at))
+  ORDER BY (date_trunc('day'::text, fetched_at)) DESC;
+
+
+--
+-- Name: VIEW v_pipeline_funnel; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_pipeline_funnel IS 'Content pipeline conversion funnel with daily yields for Metabase';
+
+
+--
+-- Name: fetch_jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.fetch_jobs (
+    id integer NOT NULL,
+    source_id integer,
+    started_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone,
+    status text DEFAULT 'running'::text,
+    items_fetched integer DEFAULT 0,
+    items_new integer DEFAULT 0,
+    error_message text,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: v_pipeline_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_pipeline_status AS
+ SELECT 'fetch'::text AS stage,
+    count(*) FILTER (WHERE (fetch_jobs.status = 'pending'::text)) AS pending,
+    count(*) FILTER (WHERE ((fetch_jobs.status = 'completed'::text) AND (fetch_jobs.completed_at > (now() - '01:00:00'::interval)))) AS completed_1h,
+    0 AS backlog_warn,
+    100 AS backlog_critical
+   FROM public.fetch_jobs
+UNION ALL
+ SELECT 'heuristic_triage'::text AS stage,
+    count(*) FILTER (WHERE (content_items.heuristic_score IS NULL)) AS pending,
+    count(*) FILTER (WHERE ((content_items.heuristic_score IS NOT NULL) AND (content_items.fetched_at > (now() - '01:00:00'::interval)))) AS completed_1h,
+    200 AS backlog_warn,
+    500 AS backlog_critical
+   FROM public.content_items
+UNION ALL
+ SELECT 'llm_triage'::text AS stage,
+    count(*) FILTER (WHERE ((content_items.heuristic_score >= 30) AND (content_items.llm_quality_score IS NULL) AND (NOT COALESCE(content_items.summary_excluded, false)))) AS pending,
+    count(*) FILTER (WHERE ((content_items.llm_quality_score IS NOT NULL) AND (content_items.fetched_at > (now() - '01:00:00'::interval)))) AS completed_1h,
+    100 AS backlog_warn,
+    300 AS backlog_critical
+   FROM public.content_items
+UNION ALL
+ SELECT 'kb_write'::text AS stage,
+    count(*) FILTER (WHERE ((content_items.llm_quality_score >= 50) AND (content_items.processed_at IS NULL) AND (NOT COALESCE(content_items.summary_excluded, false)))) AS pending,
+    count(*) FILTER (WHERE ((content_items.processed_at IS NOT NULL) AND (content_items.processed_at > (now() - '01:00:00'::interval)))) AS completed_1h,
+    50 AS backlog_warn,
+    150 AS backlog_critical
+   FROM public.content_items;
+
+
+--
+-- Name: v_pipeline_health; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_pipeline_health AS
+ SELECT stage,
+    pending,
+    completed_1h,
+    backlog_warn,
+    backlog_critical,
+        CASE
+            WHEN (pending >= backlog_critical) THEN 'critical'::text
+            WHEN (pending >= backlog_warn) THEN 'warning'::text
+            ELSE 'healthy'::text
+        END AS health_status,
+        CASE
+            WHEN (pending >= backlog_critical) THEN 3
+            WHEN (pending >= backlog_warn) THEN 2
+            ELSE 1
+        END AS health_level,
+    round(((100.0 * (completed_1h)::numeric) / (NULLIF((pending + completed_1h), 0))::numeric), 1) AS throughput_pct
+   FROM public.v_pipeline_status ps;
+
+
+--
+-- Name: VIEW v_pipeline_health; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_pipeline_health IS 'Pipeline health status with severity levels for Metabase';
 
 
 --
@@ -4049,84 +4858,6 @@ ALTER TABLE public.connection_impersonations ALTER COLUMN id ADD GENERATED BY DE
 
 
 --
--- Name: content_items; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.content_items (
-    id integer NOT NULL,
-    source_id integer,
-    external_id text,
-    url text,
-    title text NOT NULL,
-    authors text[],
-    summary text,
-    content_type text DEFAULT 'text/plain'::text,
-    metadata jsonb DEFAULT '{}'::jsonb,
-    published_at timestamp with time zone,
-    fetched_at timestamp with time zone DEFAULT now(),
-    processed_at timestamp with time zone,
-    kb_path text,
-    embedding_id text,
-    iceberg_id text,
-    iceberg_snapshot_id bigint,
-    summarized_at timestamp with time zone,
-    summary_kb_path text,
-    summary_excluded boolean DEFAULT false,
-    exclusion_reason text
-);
-
-
---
--- Name: TABLE content_items; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.content_items IS 'Content metadata (PostgreSQL) - raw content stored in Iceberg via iceberg_id link.
-See gaius.hx module for Iceberg access.';
-
-
---
--- Name: COLUMN content_items.iceberg_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.content_items.iceberg_id IS 'UUID linking to raw.content table in Iceberg data lake (gaius.hx)';
-
-
---
--- Name: COLUMN content_items.iceberg_snapshot_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.content_items.iceberg_snapshot_id IS 'Iceberg snapshot ID when content was written, for time-travel queries';
-
-
---
--- Name: COLUMN content_items.summarized_at; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.content_items.summarized_at IS 'When this content was summarized to KB';
-
-
---
--- Name: COLUMN content_items.summary_kb_path; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.content_items.summary_kb_path IS 'KB path where summary was written';
-
-
---
--- Name: COLUMN content_items.summary_excluded; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.content_items.summary_excluded IS 'Whether content was excluded from summarization';
-
-
---
--- Name: COLUMN content_items.exclusion_reason; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.content_items.exclusion_reason IS 'Why content was excluded (quality, relevance, etc.)';
-
-
---
 -- Name: content_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -5186,23 +5917,6 @@ ALTER SEQUENCE public.feed_sources_id_seq OWNED BY public.feed_sources.id;
 
 
 --
--- Name: fetch_jobs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.fetch_jobs (
-    id integer NOT NULL,
-    source_id integer,
-    started_at timestamp with time zone DEFAULT now(),
-    completed_at timestamp with time zone,
-    status text DEFAULT 'running'::text,
-    items_fetched integer DEFAULT 0,
-    items_new integer DEFAULT 0,
-    error_message text,
-    metadata jsonb DEFAULT '{}'::jsonb
-);
-
-
---
 -- Name: fetch_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -5388,89 +6102,6 @@ ALTER SEQUENCE public.fmea_adjustments_id_seq OWNED BY public.fmea_adjustments.i
 
 
 --
--- Name: fmea_catalog; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.fmea_catalog (
-    failure_mode_id character varying(32) NOT NULL,
-    category character varying(32) NOT NULL,
-    name character varying(128) NOT NULL,
-    description text,
-    base_severity integer NOT NULL,
-    base_occurrence integer NOT NULL,
-    base_detection integer NOT NULL,
-    detection_method character varying(64),
-    detection_query text,
-    detection_threshold jsonb DEFAULT '{}'::jsonb,
-    recommended_actions text[],
-    escalation_tier integer DEFAULT 0,
-    preventive_controls text[],
-    detective_controls text[],
-    mitigative_controls text[],
-    created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now(),
-    CONSTRAINT fmea_catalog_base_detection_check CHECK (((base_detection >= 1) AND (base_detection <= 10))),
-    CONSTRAINT fmea_catalog_base_occurrence_check CHECK (((base_occurrence >= 1) AND (base_occurrence <= 10))),
-    CONSTRAINT fmea_catalog_base_severity_check CHECK (((base_severity >= 1) AND (base_severity <= 10)))
-);
-
-
---
--- Name: TABLE fmea_catalog; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.fmea_catalog IS 'FMEA failure mode definitions with S/O/D scores';
-
-
---
--- Name: COLUMN fmea_catalog.failure_mode_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.fmea_catalog.failure_mode_id IS 'Unique ID: GPU_001, VLLM_002, MQ_003, etc.';
-
-
---
--- Name: COLUMN fmea_catalog.base_severity; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.fmea_catalog.base_severity IS 'Severity score 1-10: impact on system availability';
-
-
---
--- Name: COLUMN fmea_catalog.base_occurrence; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.fmea_catalog.base_occurrence IS 'Occurrence score 1-10: probability of recurrence';
-
-
---
--- Name: COLUMN fmea_catalog.base_detection; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.fmea_catalog.base_detection IS 'Detection score 1-10: ability to detect before impact (1=certain, 10=none)';
-
-
---
--- Name: fmea_occurrences; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.fmea_occurrences (
-    id integer NOT NULL,
-    failure_mode_id character varying(32) NOT NULL,
-    occurred_at timestamp with time zone DEFAULT now(),
-    endpoint character varying(64),
-    context jsonb DEFAULT '{}'::jsonb
-);
-
-
---
--- Name: TABLE fmea_occurrences; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.fmea_occurrences IS 'History of failure mode occurrences for calculating O score';
-
-
---
 -- Name: fmea_occurrences_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -5488,38 +6119,6 @@ CREATE SEQUENCE public.fmea_occurrences_id_seq
 --
 
 ALTER SEQUENCE public.fmea_occurrences_id_seq OWNED BY public.fmea_occurrences.id;
-
-
---
--- Name: fmea_outcomes; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.fmea_outcomes (
-    id integer NOT NULL,
-    failure_mode_id character varying(32) NOT NULL,
-    aiops_event_id integer,
-    mlops_event_id integer,
-    rpn_score integer NOT NULL,
-    severity integer NOT NULL,
-    occurrence integer NOT NULL,
-    detection integer NOT NULL,
-    action_taken character varying(128),
-    tier_used integer,
-    success boolean NOT NULL,
-    duration_ms integer,
-    downtime_seconds integer,
-    sla_breach boolean DEFAULT false,
-    detection_lead_time_seconds integer,
-    detected_by character varying(32),
-    created_at timestamp with time zone DEFAULT now()
-);
-
-
---
--- Name: TABLE fmea_outcomes; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.fmea_outcomes IS 'Remediation outcomes for adaptive S/O/D learning';
 
 
 --
@@ -5844,60 +6443,6 @@ ALTER TABLE public.sandboxes ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTIT
     NO MAXVALUE
     CACHE 1
 );
-
-
---
--- Name: healing_events; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.healing_events (
-    id bigint NOT NULL,
-    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
-    sequence_id uuid NOT NULL,
-    sequence_num integer NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    event_type character varying(32) NOT NULL,
-    endpoint character varying(64) NOT NULL,
-    tier integer NOT NULL,
-    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
-    aiops_event_id integer,
-    failure_mode_id character varying(32)
-);
-
-
---
--- Name: TABLE healing_events; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.healing_events IS 'Event-sourced audit log for self-healing attempts - append only';
-
-
---
--- Name: COLUMN healing_events.sequence_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.healing_events.sequence_id IS 'Groups all events for one healing sequence (issue detection through resolution)';
-
-
---
--- Name: COLUMN healing_events.sequence_num; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.healing_events.sequence_num IS 'Order within sequence, auto-incremented per sequence';
-
-
---
--- Name: COLUMN healing_events.event_type; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.healing_events.event_type IS 'Event classification: sequence_started/completed, tier_entered/exhausted, attempt_started/succeeded/failed, cooldown_started/cleared, circuit_breaker_tripped/reset';
-
-
---
--- Name: COLUMN healing_events.payload; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.healing_events.payload IS 'Event-specific data varying by event_type';
 
 
 --
@@ -10591,6 +11136,42 @@ ALTER SEQUENCE public.topic_models_id_seq OWNED BY public.topic_models.id;
 
 
 --
+-- Name: triage_assessments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.triage_assessments (
+    id integer NOT NULL,
+    content_item_id integer,
+    assessment_type text NOT NULL,
+    score integer NOT NULL,
+    details jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT triage_assessments_assessment_type_check CHECK ((assessment_type = ANY (ARRAY['heuristic'::text, 'llm'::text]))),
+    CONSTRAINT triage_assessments_score_check CHECK (((score >= 0) AND (score <= 100)))
+);
+
+
+--
+-- Name: triage_assessments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.triage_assessments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: triage_assessments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.triage_assessments_id_seq OWNED BY public.triage_assessments.id;
+
+
+--
 -- Name: ui_preferences; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -11156,6 +11737,34 @@ UNION
 
 
 --
+-- Name: v_pipeline_throughput; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_pipeline_throughput AS
+ WITH hourly AS (
+         SELECT date_trunc('hour'::text, content_items.fetched_at) AS hour,
+            count(*) AS fetched,
+            count(*) FILTER (WHERE (content_items.heuristic_score IS NOT NULL)) AS heuristic_scored,
+            count(*) FILTER (WHERE (content_items.llm_quality_score IS NOT NULL)) AS llm_scored,
+            count(*) FILTER (WHERE (content_items.processed_at IS NOT NULL)) AS written_to_kb,
+            count(*) FILTER (WHERE (content_items.summary_excluded = true)) AS excluded
+           FROM public.content_items
+          WHERE (content_items.fetched_at > (now() - '24:00:00'::interval))
+          GROUP BY (date_trunc('hour'::text, content_items.fetched_at))
+        )
+ SELECT hour,
+    fetched,
+    heuristic_scored,
+    llm_scored,
+    written_to_kb,
+    excluded,
+    round(((100.0 * (heuristic_scored)::numeric) / (NULLIF(fetched, 0))::numeric), 1) AS heuristic_rate,
+    round(((100.0 * (written_to_kb)::numeric) / (NULLIF(llm_scored, 0))::numeric), 1) AS kb_conversion_rate
+   FROM hourly
+  ORDER BY hour DESC;
+
+
+--
 -- Name: v_query_log; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -11272,6 +11881,20 @@ CREATE VIEW public.v_tables AS
     schema,
     is_upload
    FROM public.metabase_table;
+
+
+--
+-- Name: v_task_watchdog; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_task_watchdog AS
+ SELECT task_type,
+    count(*) FILTER (WHERE ((picked_up_at IS NULL) AND (scheduled_for < (now() - '00:30:00'::interval)))) AS stale_pending,
+    count(*) FILTER (WHERE ((picked_up_at IS NOT NULL) AND (completed_at IS NULL) AND (picked_up_at < (now() - '00:10:00'::interval)))) AS stuck_running,
+    count(*) FILTER (WHERE (completed_at > (now() - '01:00:00'::interval))) AS completed_1h,
+    count(*) FILTER (WHERE ((error IS NOT NULL) AND (completed_at > (now() - '24:00:00'::interval)))) AS failed_24h
+   FROM public.scheduled_tasks
+  GROUP BY task_type;
 
 
 --
@@ -11700,6 +12323,18 @@ CREATE SEQUENCE public.x_api_requests_id_seq
 --
 
 ALTER SEQUENCE public.x_api_requests_id_seq OWNED BY public.x_api_requests.id;
+
+
+--
+-- Name: x_oauth_pending; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_oauth_pending (
+    state character varying(64) NOT NULL,
+    verifier character varying(128) NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    expires_at timestamp with time zone DEFAULT (now() + '00:10:00'::interval)
+);
 
 
 --
@@ -12248,6 +12883,13 @@ ALTER TABLE ONLY public.topic_models ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: triage_assessments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_assessments ALTER COLUMN id SET DEFAULT nextval('public.triage_assessments_id_seq'::regclass);
+
+
+--
 -- Name: user_interests id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -12293,6 +12935,14 @@ ALTER TABLE ONLY meta.agent_performance
 
 
 --
+-- Name: alert_thresholds alert_thresholds_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.alert_thresholds
+    ADD CONSTRAINT alert_thresholds_pkey PRIMARY KEY (metric_name);
+
+
+--
 -- Name: data_dependencies data_dependencies_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -12333,11 +12983,43 @@ ALTER TABLE ONLY meta.flow_runs
 
 
 --
+-- Name: fmea_rpn_timeseries fmea_rpn_timeseries_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.fmea_rpn_timeseries
+    ADD CONSTRAINT fmea_rpn_timeseries_pkey PRIMARY KEY (failure_mode_id, hour);
+
+
+--
+-- Name: gpu_hourly_stats gpu_hourly_stats_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.gpu_hourly_stats
+    ADD CONSTRAINT gpu_hourly_stats_pkey PRIMARY KEY (hour, gpu_index);
+
+
+--
+-- Name: gpu_minute_stats gpu_minute_stats_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.gpu_minute_stats
+    ADD CONSTRAINT gpu_minute_stats_pkey PRIMARY KEY (minute, gpu_index);
+
+
+--
 -- Name: gpu_utilization gpu_utilization_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
 ALTER TABLE ONLY meta.gpu_utilization
     ADD CONSTRAINT gpu_utilization_pkey PRIMARY KEY ("timestamp", gpu_index);
+
+
+--
+-- Name: inference_hourly inference_hourly_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.inference_hourly
+    ADD CONSTRAINT inference_hourly_pkey PRIMARY KEY (hour, model, endpoint);
 
 
 --
@@ -12362,6 +13044,22 @@ ALTER TABLE ONLY meta.job_catalog
 
 ALTER TABLE ONLY meta.kb_topology
     ADD CONSTRAINT kb_topology_pkey PRIMARY KEY (snapshot_id);
+
+
+--
+-- Name: lineage_sankey_agg lineage_sankey_agg_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.lineage_sankey_agg
+    ADD CONSTRAINT lineage_sankey_agg_pkey PRIMARY KEY (time_window, window_start, source_namespace, source_name, target_namespace, target_name, via_job);
+
+
+--
+-- Name: metaagent_queries metaagent_queries_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metaagent_queries
+    ADD CONSTRAINT metaagent_queries_pkey PRIMARY KEY (query_hash);
 
 
 --
@@ -14269,6 +14967,14 @@ ALTER TABLE ONLY public.topic_models
 
 
 --
+-- Name: triage_assessments triage_assessments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_assessments
+    ADD CONSTRAINT triage_assessments_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: ui_preferences ui_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14469,6 +15175,14 @@ ALTER TABLE ONLY public.x_bookmarks_sync
 
 
 --
+-- Name: x_oauth_pending x_oauth_pending_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_oauth_pending
+    ADD CONSTRAINT x_oauth_pending_pkey PRIMARY KEY (state);
+
+
+--
 -- Name: x_oauth_tokens x_oauth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14518,6 +15232,34 @@ CREATE INDEX idx_attractors_domain ON meta.semantic_attractors USING btree (doma
 --
 
 CREATE INDEX idx_attractors_name ON meta.semantic_attractors USING btree (name);
+
+
+--
+-- Name: idx_fmea_rpn_ts_hour; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_fmea_rpn_ts_hour ON meta.fmea_rpn_timeseries USING btree (hour DESC);
+
+
+--
+-- Name: idx_gpu_hourly_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_gpu_hourly_time ON meta.gpu_hourly_stats USING btree (hour DESC);
+
+
+--
+-- Name: idx_gpu_minute_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_gpu_minute_time ON meta.gpu_minute_stats USING btree (minute DESC);
+
+
+--
+-- Name: idx_inference_hourly_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_inference_hourly_time ON meta.inference_hourly USING btree (hour DESC);
 
 
 --
@@ -14598,6 +15340,13 @@ CREATE INDEX idx_meta_nifi_flows_status ON meta.nifi_flows USING btree (status);
 
 
 --
+-- Name: idx_metaagent_queries_expires; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_metaagent_queries_expires ON meta.metaagent_queries USING btree (expires_at);
+
+
+--
 -- Name: idx_ngrc_models_active_domain; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -14609,6 +15358,13 @@ CREATE UNIQUE INDEX idx_ngrc_models_active_domain ON meta.ngrc_models USING btre
 --
 
 CREATE INDEX idx_ngrc_models_domain ON meta.ngrc_models USING btree (domain);
+
+
+--
+-- Name: idx_sankey_window; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_sankey_window ON meta.lineage_sankey_agg USING btree (time_window, window_start DESC);
 
 
 --
@@ -15079,6 +15835,20 @@ CREATE INDEX idx_content_excluded ON public.content_items USING btree (source_id
 
 
 --
+-- Name: idx_content_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_content_hash ON public.content_items USING btree (content_hash) WHERE (content_hash IS NOT NULL);
+
+
+--
+-- Name: idx_content_heuristic_null; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_content_heuristic_null ON public.content_items USING btree (fetched_at DESC) WHERE (heuristic_score IS NULL);
+
+
+--
 -- Name: idx_content_items_fetched; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15111,6 +15881,20 @@ CREATE INDEX idx_content_items_published ON public.content_items USING btree (pu
 --
 
 CREATE INDEX idx_content_items_source ON public.content_items USING btree (source_id);
+
+
+--
+-- Name: idx_content_kb_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_content_kb_pending ON public.content_items USING btree (llm_quality_score DESC) WHERE ((llm_quality_score >= 50) AND (processed_at IS NULL) AND (NOT COALESCE(summary_excluded, false)));
+
+
+--
+-- Name: idx_content_llm_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_content_llm_pending ON public.content_items USING btree (heuristic_score DESC) WHERE ((llm_quality_score IS NULL) AND (NOT COALESCE(summary_excluded, false)));
 
 
 --
@@ -17011,6 +17795,20 @@ CREATE INDEX idx_topic_models_type ON public.topic_models USING btree (model_typ
 
 
 --
+-- Name: idx_triage_assessments_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_triage_assessments_item ON public.triage_assessments USING btree (content_item_id);
+
+
+--
+-- Name: idx_triage_assessments_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_triage_assessments_type ON public.triage_assessments USING btree (assessment_type);
+
+
+--
 -- Name: idx_uniq_table_db_id_schema_name_2col; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17179,6 +17977,13 @@ CREATE INDEX idx_x_folders_user ON public.x_bookmark_folders USING btree (user_i
 
 
 --
+-- Name: idx_x_oauth_pending_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_oauth_pending_expires ON public.x_oauth_pending USING btree (expires_at);
+
+
+--
 -- Name: idx_x_sync_runs_status; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17310,6 +18115,14 @@ ALTER TABLE ONLY meta.data_dependencies
 
 ALTER TABLE ONLY meta.document_clusters
     ADD CONSTRAINT document_clusters_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.kb_topology(snapshot_id);
+
+
+--
+-- Name: fmea_rpn_timeseries fmea_rpn_timeseries_failure_mode_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.fmea_rpn_timeseries
+    ADD CONSTRAINT fmea_rpn_timeseries_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
 
 
 --
@@ -18705,6 +19518,14 @@ ALTER TABLE ONLY public.topic_models
 
 
 --
+-- Name: triage_assessments triage_assessments_content_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.triage_assessments
+    ADD CONSTRAINT triage_assessments_content_item_id_fkey FOREIGN KEY (content_item_id) REFERENCES public.content_items(id) ON DELETE CASCADE;
+
+
+--
 -- Name: x_api_requests x_api_requests_sync_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18764,7 +19585,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 82IuwDQDF63iuaHbYFVQp7TythlM2pSBlmmhKrGgDEn4JKdB2rIamTCl4YYqup0
+\unrestrict FnLgWKznwpakrmewWSKOrU3KOye1cwdUATep7LJR2AQbP5eEebmgZsHaOEOuEHg
 
 
 --
@@ -18804,4 +19625,8 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251223000001'),
     ('20251224000001'),
     ('20251225000001'),
-    ('20251227000001');
+    ('20251227000001'),
+    ('20251228000001'),
+    ('20251228000002'),
+    ('20251229000001'),
+    ('20251229000002');

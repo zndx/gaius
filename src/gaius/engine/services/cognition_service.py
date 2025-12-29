@@ -193,6 +193,10 @@ class CognitionService:
         "cognition_cycle",
         "engine_audit",
         "delta_check",
+        # Content pipeline tasks (autonomous triage)
+        "heuristic_triage",
+        "llm_triage",
+        "content_processing",
         # Long-term evolution tasks
         "content_diversity_check",
         "evolution_cycle",
@@ -298,6 +302,10 @@ class CognitionService:
             "cognition_cycle": self._run_cognition_cycle,
             "engine_audit": self._run_engine_audit,
             "delta_check": self._run_delta_check,
+            # Content pipeline tasks (autonomous triage)
+            "heuristic_triage": self._run_heuristic_triage,
+            "llm_triage": self._run_llm_triage,
+            "content_processing": self._run_content_processing,
             # Long-term evolution tasks
             "content_diversity_check": self._run_content_diversity_check,
             "evolution_cycle": self._run_evolution_cycle,
@@ -506,6 +514,434 @@ class CognitionService:
             "tasks_scheduled": len(tasks_scheduled),
             "tasks": tasks_scheduled,
         }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Content Pipeline Task Handlers (Autonomous Triage)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_heuristic_triage(self, payload: dict) -> dict:
+        """Run heuristic triage on newly fetched content.
+
+        Fast keyword/pattern-based scoring without LLM inference.
+        Items scoring >= 30 pass to LLM triage; others are excluded.
+
+        Args:
+            payload: Task payload with optional:
+                - limit: Max items to process (default 100)
+
+        Returns:
+            Result dict with scored/excluded counts
+        """
+        if not self._db_pool:
+            return {"error": "no_database"}
+
+        limit = payload.get("limit", 100)
+        logger.info(f"Running heuristic triage (limit={limit})")
+        self._notify_progress(f"Heuristic triage: processing up to {limit} items...")
+
+        try:
+            # Import the heuristic scorer from workers module
+            try:
+                from ...workers.models import ContentItem
+                from ...workers.triage import HeuristicScorer, TriageConfig
+                config = TriageConfig.from_env()
+                scorer = HeuristicScorer(config)
+                ContentItemCls = ContentItem
+            except (ImportError, Exception) as e:
+                # Fallback: simple keyword-based scoring
+                scorer = None
+                ContentItemCls = None
+                logger.warning(f"HeuristicScorer not available ({e}), using fallback scoring")
+
+            async with self._db_pool.acquire() as conn:
+                # Get items needing heuristic scoring
+                # Note: content is stored in Iceberg, not PostgreSQL, so we use summary instead
+                items = await conn.fetch("""
+                    SELECT ci.id, ci.title, ci.url, ci.summary,
+                           ci.metadata, ci.source_id, ci.authors, ci.published_at,
+                           fs.name as source_name
+                    FROM content_items ci
+                    LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                    WHERE ci.heuristic_score IS NULL
+                    ORDER BY ci.fetched_at DESC
+                    LIMIT $1
+                """, limit)
+
+                if not items:
+                    logger.info("No items need heuristic scoring")
+                    return {"scored": 0, "excluded": 0, "message": "no_items_pending"}
+
+                scored = 0
+                excluded = 0
+                passed = 0
+
+                for item in items:
+                    # Compute score
+                    if scorer and ContentItemCls:
+                        # Convert db row to ContentItem for the scorer
+                        # Note: metadata is stored as TEXT, need to parse as JSON
+                        row_dict = dict(item)
+                        if isinstance(row_dict.get("metadata"), str):
+                            try:
+                                row_dict["metadata"] = json.loads(row_dict["metadata"])
+                            except (json.JSONDecodeError, TypeError):
+                                row_dict["metadata"] = {}
+                        content_item = ContentItemCls.from_row(row_dict)
+                        result = scorer.score(content_item)
+                        score = result.get("total", 50)
+                    else:
+                        # Fallback: basic scoring based on title/summary presence
+                        score = 50  # Default pass
+                        title = item.get("title") or ""
+                        summary = item.get("summary") or ""
+                        if len(title) < 10:
+                            score -= 20
+                        if len(summary) < 50:
+                            score -= 15
+                        if not item.get("url"):
+                            score -= 10
+
+                    # Clamp score to 0-100
+                    score = max(0, min(100, score))
+
+                    # Items < 30 are excluded
+                    is_excluded = score < 30
+                    exclusion_reason = "low_heuristic" if is_excluded else None
+
+                    # Update the item
+                    await conn.execute("""
+                        UPDATE content_items
+                        SET heuristic_score = $1,
+                            summary_excluded = $2,
+                            exclusion_reason = $3
+                        WHERE id = $4
+                    """, score, is_excluded, exclusion_reason, item["id"])
+
+                    # Record in triage_assessments for lineage
+                    await conn.execute("""
+                        INSERT INTO triage_assessments (content_item_id, assessment_type, score, details)
+                        VALUES ($1, 'heuristic', $2, $3)
+                    """, item["id"], score, json.dumps({
+                        "title_length": len(item.get("title") or ""),
+                        "summary_length": len(item.get("summary") or ""),
+                        "source": item.get("source_name"),
+                    }))
+
+                    scored += 1
+                    if is_excluded:
+                        excluded += 1
+                    else:
+                        passed += 1
+
+                logger.info(f"Heuristic triage: {scored} scored, {passed} passed, {excluded} excluded")
+
+                return {
+                    "scored": scored,
+                    "passed": passed,
+                    "excluded": excluded,
+                    "pass_rate": round(passed / scored * 100, 1) if scored > 0 else 0,
+                }
+
+        except Exception as e:
+            logger.error(f"Heuristic triage failed: {e}")
+            return {"error": str(e)}
+
+    async def _run_llm_triage(self, payload: dict) -> dict:
+        """Run LLM quality assessment on heuristic-passed content.
+
+        Uses inference endpoint to assess quality and relevance.
+        Items scoring >= 50 pass to KB write; others are excluded.
+        Also computes content_hash for duplicate detection.
+
+        Args:
+            payload: Task payload with optional:
+                - limit: Max items to process (default 50)
+
+        Returns:
+            Result dict with scored/excluded/duplicate counts
+        """
+        if not self._db_pool:
+            return {"error": "no_database"}
+
+        limit = payload.get("limit", 50)
+        logger.info(f"Running LLM triage (limit={limit})")
+        self._notify_progress(f"LLM triage: assessing up to {limit} items...")
+
+        try:
+            # Import LLM assessor from workers module
+            try:
+                from ...workers.models import ContentItem
+                from ...workers.triage import LLMTriageAssessor, TriageConfig
+                config = TriageConfig.from_env()
+                assessor = LLMTriageAssessor(config)
+                ContentItemCls = ContentItem
+            except (ImportError, Exception) as e:
+                # Fallback: skip LLM assessment, pass through
+                assessor = None
+                ContentItemCls = None
+                logger.warning(f"LLMTriageAssessor not available ({e}), using passthrough")
+
+            import hashlib
+
+            async with self._db_pool.acquire() as conn:
+                # Get items that passed heuristic but need LLM scoring
+                # Note: content is stored in Iceberg, not PostgreSQL, so we use summary instead
+                items = await conn.fetch("""
+                    SELECT ci.id, ci.title, ci.url, ci.summary, ci.metadata,
+                           ci.source_id, ci.authors, ci.published_at,
+                           ci.heuristic_score, fs.name as source_name
+                    FROM content_items ci
+                    LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                    WHERE ci.heuristic_score >= 30
+                      AND ci.llm_quality_score IS NULL
+                      AND NOT COALESCE(ci.summary_excluded, false)
+                    ORDER BY ci.heuristic_score DESC
+                    LIMIT $1
+                """, limit)
+
+                if not items:
+                    logger.info("No items need LLM scoring")
+                    return {"scored": 0, "excluded": 0, "duplicates": 0, "message": "no_items_pending"}
+
+                scored = 0
+                excluded = 0
+                passed = 0
+                duplicates = 0
+
+                for item in items:
+                    # Compute content hash for duplicate detection
+                    content_for_hash = f"{item.get('title', '')}\n{item.get('summary', '')}"
+                    content_hash = hashlib.sha256(content_for_hash.encode()).hexdigest()[:32]
+
+                    # Check for duplicate
+                    dup_row = await conn.fetchrow("""
+                        SELECT id FROM content_items
+                        WHERE content_hash = $1 AND id != $2
+                        LIMIT 1
+                    """, content_hash, item["id"])
+
+                    if dup_row:
+                        # Mark as duplicate
+                        await conn.execute("""
+                            UPDATE content_items
+                            SET llm_quality_score = 0,
+                                content_hash = $1,
+                                summary_excluded = true,
+                                exclusion_reason = 'duplicate'
+                            WHERE id = $2
+                        """, content_hash, item["id"])
+                        duplicates += 1
+                        scored += 1
+                        continue
+
+                    # LLM assessment
+                    if assessor and ContentItemCls:
+                        try:
+                            # Convert db row to ContentItem for the assessor
+                            # Note: metadata is stored as TEXT, need to parse as JSON
+                            row_dict = dict(item)
+                            if isinstance(row_dict.get("metadata"), str):
+                                try:
+                                    row_dict["metadata"] = json.loads(row_dict["metadata"])
+                                except (json.JSONDecodeError, TypeError):
+                                    row_dict["metadata"] = {}
+                            content_item = ContentItemCls.from_row(row_dict)
+                            result = await assessor.assess(content_item)
+                            score = result.get("total", 50)
+                        except Exception as e:
+                            logger.warning(f"LLM assessment failed for {item['id']}: {e}")
+                            score = 50  # Default pass on error
+                    else:
+                        # Fallback: use heuristic score adjusted slightly
+                        score = min(100, item.get("heuristic_score", 50) + 10)
+
+                    # Clamp score
+                    score = max(0, min(100, score))
+
+                    # Items < 50 are excluded
+                    is_excluded = score < 50
+                    exclusion_reason = "low_llm_quality" if is_excluded else None
+
+                    # Update the item
+                    await conn.execute("""
+                        UPDATE content_items
+                        SET llm_quality_score = $1,
+                            content_hash = $2,
+                            summary_excluded = COALESCE(summary_excluded, false) OR $3,
+                            exclusion_reason = COALESCE(exclusion_reason, $4)
+                        WHERE id = $5
+                    """, score, content_hash, is_excluded, exclusion_reason, item["id"])
+
+                    # Record in triage_assessments
+                    await conn.execute("""
+                        INSERT INTO triage_assessments (content_item_id, assessment_type, score, details)
+                        VALUES ($1, 'llm', $2, $3)
+                    """, item["id"], score, json.dumps({
+                        "heuristic_score": item.get("heuristic_score"),
+                        "content_hash": content_hash,
+                        "llm_available": assessor is not None,
+                    }))
+
+                    scored += 1
+                    if is_excluded:
+                        excluded += 1
+                    else:
+                        passed += 1
+
+                logger.info(f"LLM triage: {scored} scored, {passed} passed, {excluded} excluded, {duplicates} duplicates")
+
+                return {
+                    "scored": scored,
+                    "passed": passed,
+                    "excluded": excluded,
+                    "duplicates": duplicates,
+                    "pass_rate": round(passed / scored * 100, 1) if scored > 0 else 0,
+                }
+
+        except Exception as e:
+            logger.error(f"LLM triage failed: {e}")
+            return {"error": str(e)}
+
+    async def _run_content_processing(self, payload: dict) -> dict:
+        """Write triaged content to KB as zettelkasten notes.
+
+        Processes items that passed both heuristic and LLM triage
+        (llm_quality_score >= 50) and writes them to KB.
+
+        Args:
+            payload: Task payload with optional:
+                - limit: Max items to process (default 30)
+
+        Returns:
+            Result dict with processed count
+        """
+        if not self._db_pool:
+            return {"error": "no_database"}
+
+        limit = payload.get("limit", 30)
+        logger.info(f"Running content processing (limit={limit})")
+        self._notify_progress(f"Writing {limit} triaged items to KB...")
+
+        try:
+            import os
+            from pathlib import Path
+            from datetime import datetime
+
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+
+            async with self._db_pool.acquire() as conn:
+                # Get items ready for KB write
+                items = await conn.fetch("""
+                    SELECT ci.*, fs.name as source_name
+                    FROM content_items ci
+                    LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                    WHERE ci.llm_quality_score >= 50
+                      AND ci.processed_at IS NULL
+                      AND NOT COALESCE(ci.summary_excluded, false)
+                    ORDER BY ci.llm_quality_score DESC
+                    LIMIT $1
+                """, limit)
+
+                if not items:
+                    logger.info("No items ready for KB write")
+                    return {"processed": 0, "message": "no_items_pending"}
+
+                processed = 0
+                errors = 0
+
+                for item in items:
+                    try:
+                        # Generate KB path: current/content/{source}/{date}/{slug}.md
+                        source_name = (item.get("source_name") or "unknown").lower()
+                        source_name = "".join(c if c.isalnum() or c == "-" else "_" for c in source_name)
+
+                        title = item.get("title") or "untitled"
+                        slug = "".join(c if c.isalnum() or c in "-_ " else "" for c in title.lower())
+                        slug = "-".join(slug.split())[:60]
+
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        timestamp = datetime.now().strftime("%H%M%S")
+                        kb_path = f"current/content/{source_name}/{today}/{timestamp}_{slug}.md"
+
+                        full_path = kb_root / kb_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+                        # Generate markdown content
+                        lines = [f"# {title}", ""]
+
+                        # Frontmatter
+                        lines.append("---")
+                        if item.get("url"):
+                            lines.append(f"url: {item['url']}")
+                        if item.get("authors"):
+                            authors = item["authors"]
+                            if isinstance(authors, list):
+                                lines.append(f"authors: {', '.join(authors)}")
+                        if item.get("published_at"):
+                            lines.append(f"published: {item['published_at'].isoformat()}")
+                        lines.append(f"source: {source_name}")
+                        lines.append(f"heuristic_score: {item.get('heuristic_score', 0)}")
+                        lines.append(f"llm_quality_score: {item.get('llm_quality_score', 0)}")
+                        lines.append(f"fetched: {item.get('fetched_at').isoformat() if item.get('fetched_at') else 'unknown'}")
+                        lines.append("---")
+                        lines.append("")
+
+                        # Summary
+                        if item.get("summary"):
+                            lines.extend(["## Summary", "", item["summary"], ""])
+
+                        # Content (truncated if very long)
+                        if item.get("content"):
+                            content = item["content"]
+                            if len(content) > 10000:
+                                content = content[:10000] + "\n\n[Content truncated]"
+                            lines.extend(["## Content", "", content, ""])
+
+                        # Write file
+                        full_path.write_text("\n".join(lines))
+
+                        # Update database
+                        await conn.execute("""
+                            UPDATE content_items
+                            SET processed_at = NOW(), kb_path = $1
+                            WHERE id = $2
+                        """, kb_path, item["id"])
+
+                        # Log activity event
+                        await conn.execute("""
+                            INSERT INTO activity_events (event_type, domain, details)
+                            VALUES ('kb_create', $1, $2)
+                        """, source_name, json.dumps({
+                            "content_item_id": item["id"],
+                            "kb_path": kb_path,
+                            "title": title[:100],
+                            "llm_quality_score": item.get("llm_quality_score"),
+                        }))
+
+                        processed += 1
+
+                    except Exception as e:
+                        logger.error(f"Failed to process item {item.get('id')}: {e}")
+                        errors += 1
+
+                logger.info(f"Content processing: {processed} written to KB, {errors} errors")
+
+                # Emit activity event for pipeline monitoring
+                self._emit_activity_event(
+                    event_type="pipeline",
+                    source="content_processing",
+                    title=f"Wrote {processed} items to KB",
+                    summary=f"Processed {processed} triaged content items",
+                )
+
+                return {
+                    "processed": processed,
+                    "errors": errors,
+                }
+
+        except Exception as e:
+            logger.error(f"Content processing failed: {e}")
+            return {"error": str(e)}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Long-Term Evolution Task Handlers
