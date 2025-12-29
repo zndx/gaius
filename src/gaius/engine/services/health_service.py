@@ -7,15 +7,87 @@ BDD Alignment:
 - GPU health monitoring (temperature, VRAM, utilization)
 - Endpoint health checks
 - Health broadcasts to clients
+
+MetaAgent Observability:
+- GPUMinuteStats: Streaming aggregation for 24h retention in meta.gpu_minute_stats
+- Minute-level stats with min/max/avg for Metabase dashboards
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GPUMinuteStats:
+    """One-minute GPU statistics with order statistics.
+
+    Accumulates samples during a minute window and computes
+    min/max/avg for efficient storage in meta.gpu_minute_stats.
+    """
+
+    minute: datetime  # Truncated to minute
+    gpu_index: int
+    samples: int = 0
+    # Memory order statistics (MB)
+    memory_min_mb: float = float("inf")
+    memory_max_mb: float = 0.0
+    memory_sum_mb: float = 0.0
+    # Utilization order statistics (percent)
+    util_min_pct: float = float("inf")
+    util_max_pct: float = 0.0
+    util_sum_pct: float = 0.0
+    # Temperature (max only)
+    temp_max_c: float = 0.0
+    # Power (average)
+    power_sum_w: float = 0.0
+
+    def update(self, memory_mb: float, util_pct: float, temp_c: float, power_w: float = 0.0) -> None:
+        """Update stats with a new sample."""
+        self.samples += 1
+        self.memory_min_mb = min(self.memory_min_mb, memory_mb)
+        self.memory_max_mb = max(self.memory_max_mb, memory_mb)
+        self.memory_sum_mb += memory_mb
+        self.util_min_pct = min(self.util_min_pct, util_pct)
+        self.util_max_pct = max(self.util_max_pct, util_pct)
+        self.util_sum_pct += util_pct
+        self.temp_max_c = max(self.temp_max_c, temp_c)
+        self.power_sum_w += power_w
+
+    @property
+    def memory_avg_mb(self) -> float:
+        """Average memory usage in MB."""
+        return self.memory_sum_mb / self.samples if self.samples > 0 else 0.0
+
+    @property
+    def util_avg_pct(self) -> float:
+        """Average utilization percent."""
+        return self.util_sum_pct / self.samples if self.samples > 0 else 0.0
+
+    @property
+    def power_avg_w(self) -> float:
+        """Average power in watts."""
+        return self.power_sum_w / self.samples if self.samples > 0 else 0.0
+
+    def to_db_row(self) -> dict[str, Any]:
+        """Convert to database row for meta.gpu_minute_stats."""
+        return {
+            "minute": self.minute,
+            "gpu_index": self.gpu_index,
+            "samples": self.samples,
+            "memory_min_mb": self.memory_min_mb if self.samples > 0 else None,
+            "memory_max_mb": self.memory_max_mb if self.samples > 0 else None,
+            "memory_avg_mb": self.memory_avg_mb if self.samples > 0 else None,
+            "util_min_pct": self.util_min_pct if self.samples > 0 else None,
+            "util_max_pct": self.util_max_pct if self.samples > 0 else None,
+            "util_avg_pct": self.util_avg_pct if self.samples > 0 else None,
+            "temp_max_c": self.temp_max_c if self.samples > 0 else None,
+            "power_avg_w": self.power_avg_w if self.samples > 0 else None,
+        }
 
 
 @dataclass
@@ -197,6 +269,12 @@ class HealthService:
         self._check_task: Optional[asyncio.Task] = None
         self._broadcast_task: Optional[asyncio.Task] = None
 
+        # MetaAgent observability: minute-level GPU stats accumulator
+        # Key: (minute_truncated, gpu_index) -> GPUMinuteStats
+        self._gpu_minute_stats: dict[tuple[datetime, int], GPUMinuteStats] = {}
+        self._completed_minute_stats: list[GPUMinuteStats] = []  # Ready for flush
+        self._current_minute: Optional[datetime] = None
+
         logger.info("HealthService initialized")
 
     def set_services(
@@ -266,11 +344,28 @@ class HealthService:
             await asyncio.sleep(self._check_interval)
 
     async def _update_gpu_health(self) -> None:
-        """Update GPU health metrics."""
+        """Update GPU health metrics and accumulate minute stats."""
         try:
             import pynvml
 
             pynvml.nvmlInit()
+
+            # Get current minute for stats accumulation
+            now = datetime.now(timezone.utc)
+            current_minute = now.replace(second=0, microsecond=0)
+
+            # Check if we've moved to a new minute
+            if self._current_minute is not None and current_minute > self._current_minute:
+                # Move completed stats to the flush queue
+                for key, stats in self._gpu_minute_stats.items():
+                    if key[0] < current_minute and stats.samples > 0:
+                        self._completed_minute_stats.append(stats)
+                # Clear old minute stats
+                self._gpu_minute_stats = {
+                    k: v for k, v in self._gpu_minute_stats.items() if k[0] >= current_minute
+                }
+
+            self._current_minute = current_minute
 
             device_count = pynvml.nvmlDeviceGetCount()
             for i in range(device_count):
@@ -281,6 +376,7 @@ class HealthService:
 
                 # Get memory
                 memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                memory_used_mb = memory.used / (1024**2)
 
                 # Get temperature
                 temp = pynvml.nvmlDeviceGetTemperature(
@@ -299,6 +395,7 @@ class HealthService:
                 except Exception:
                     fan = 0
 
+                # Update per-GPU health (existing behavior)
                 self._gpu_health[i] = GPUHealth(
                     gpu_id=i,
                     utilization_pct=util.gpu,
@@ -307,6 +404,20 @@ class HealthService:
                     temperature_c=temp,
                     power_draw_w=power,
                     fan_speed_pct=fan,
+                )
+
+                # Accumulate minute stats for MetaAgent observability
+                key = (current_minute, i)
+                if key not in self._gpu_minute_stats:
+                    self._gpu_minute_stats[key] = GPUMinuteStats(
+                        minute=current_minute,
+                        gpu_index=i,
+                    )
+                self._gpu_minute_stats[key].update(
+                    memory_mb=memory_used_mb,
+                    util_pct=util.gpu,
+                    temp_c=temp,
+                    power_w=power,
                 )
 
             pynvml.nvmlShutdown()
@@ -501,3 +612,42 @@ class HealthService:
     def is_running(self) -> bool:
         """Whether service is running."""
         return self._running
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # MetaAgent Observability
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def get_completed_minute_stats(self) -> list[GPUMinuteStats]:
+        """Get completed minute stats without clearing.
+
+        Returns:
+            List of completed GPUMinuteStats ready for database insertion.
+        """
+        return list(self._completed_minute_stats)
+
+    def flush_minute_stats(self) -> list[dict[str, Any]]:
+        """Get and clear completed minute stats for database insertion.
+
+        Returns:
+            List of dicts ready for insertion into meta.gpu_minute_stats.
+            Each dict contains: minute, gpu_index, samples, memory_*, util_*, temp_*, power_*.
+        """
+        stats = self._completed_minute_stats
+        self._completed_minute_stats = []
+
+        # Convert to database rows
+        rows = [s.to_db_row() for s in stats if s.samples > 0]
+        if rows:
+            logger.debug(f"Flushing {len(rows)} GPU minute stats rows")
+        return rows
+
+    def get_minute_stats_count(self) -> dict[str, int]:
+        """Get counts of minute stats for monitoring.
+
+        Returns:
+            Dict with 'pending' (current minute) and 'completed' (ready to flush) counts.
+        """
+        return {
+            "pending": len(self._gpu_minute_stats),
+            "completed": len(self._completed_minute_stats),
+        }

@@ -269,6 +269,10 @@ async def process_cognition_cycle(
 async def _gather_kb_context(db_pool) -> dict:
     """Gather KB context for cognition from database.
 
+    Uses content_items (RSS feed content) and activity_events (KB creates)
+    as the source of recent content. The non-existent kb_entries table
+    was a design concept that never materialized.
+
     Returns:
         Dict with recent_entries, active_domains, recent_thoughts
     """
@@ -283,38 +287,74 @@ async def _gather_kb_context(db_pool) -> dict:
 
     try:
         async with db_pool.acquire() as conn:
-            # Get recent KB entries (last 24 hours)
-            entries = await conn.fetch(
+            # Get recent content items (RSS/feed content)
+            # These have title, kb_path, and source info
+            content_entries = await conn.fetch(
                 """
-                SELECT path, title, domain, created_at
-                FROM kb_entries
-                WHERE created_at > NOW() - INTERVAL '24 hours'
-                ORDER BY created_at DESC
-                LIMIT 20
+                SELECT
+                    ci.kb_path as path,
+                    ci.title,
+                    fs.name as domain,
+                    ci.fetched_at as created_at
+                FROM content_items ci
+                LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                WHERE ci.fetched_at > NOW() - INTERVAL '24 hours'
+                  AND ci.kb_path IS NOT NULL
+                ORDER BY ci.fetched_at DESC
+                LIMIT 15
                 """
             )
-            context["recent_entries"] = [dict(row) for row in entries]
 
-            # Get active domains
+            # Get recent KB creates from activity log
+            kb_creates = await conn.fetch(
+                """
+                SELECT
+                    details->>'path' as path,
+                    COALESCE(
+                        details->>'title',
+                        SPLIT_PART(details->>'path', '/', -1)
+                    ) as title,
+                    domain,
+                    created_at
+                FROM activity_events
+                WHERE event_type = 'kb_create'
+                  AND created_at > NOW() - INTERVAL '24 hours'
+                ORDER BY created_at DESC
+                LIMIT 5
+                """
+            )
+
+            # Combine both sources
+            all_entries = [dict(row) for row in content_entries]
+            all_entries.extend([dict(row) for row in kb_creates])
+            # Sort by created_at descending
+            all_entries.sort(
+                key=lambda e: e.get("created_at") or e.get("fetched_at", ""),
+                reverse=True
+            )
+            context["recent_entries"] = all_entries[:20]
+
+            # Get active domains from feed sources with recent content
             domains = await conn.fetch(
                 """
-                SELECT DISTINCT domain, COUNT(*) as entry_count
-                FROM kb_entries
-                WHERE domain IS NOT NULL
-                  AND created_at > NOW() - INTERVAL '7 days'
-                GROUP BY domain
+                SELECT fs.name as domain, COUNT(*) as entry_count
+                FROM content_items ci
+                JOIN feed_sources fs ON ci.source_id = fs.id
+                WHERE ci.fetched_at > NOW() - INTERVAL '7 days'
+                GROUP BY fs.name
                 ORDER BY entry_count DESC
                 LIMIT 10
                 """
             )
             context["active_domains"] = [row["domain"] for row in domains]
 
-            # Get recent thoughts for continuity
+            # Get recent thoughts for continuity (correct table name)
             thoughts = await conn.fetch(
                 """
                 SELECT id, thought_type, title, summary, salience
-                FROM thoughts
+                FROM cognition_thoughts
                 WHERE created_at > NOW() - INTERVAL '24 hours'
+                  AND status = 'active'
                 ORDER BY salience DESC, created_at DESC
                 LIMIT 10
                 """
@@ -384,6 +424,9 @@ SALIENCE: 0.0-1.0 (how important/interesting)
 Trigger reason: {trigger_reason}"""
 
     try:
+        logger.info(f"Generating thoughts with prompt length: {len(prompt)}")
+        logger.debug(f"Cognition prompt:\n{prompt[:500]}...")
+
         response = await inference_client.complete(
             messages=[
                 Message(
@@ -396,11 +439,19 @@ Trigger reason: {trigger_reason}"""
             max_tokens=2048,
         )
 
+        logger.info(f"LLM response length: {len(response.content) if response.content else 0}")
+        logger.debug(f"LLM response:\n{response.content[:500] if response.content else 'EMPTY'}...")
+
         # Parse response into thought dicts
-        return _parse_thoughts(response.content)
+        thoughts = _parse_thoughts(response.content)
+        logger.info(f"Parsed {len(thoughts)} thoughts from response")
+
+        return thoughts
 
     except Exception as e:
         logger.warning(f"Thought generation failed: {e}")
+        import traceback
+        logger.debug(f"Traceback: {traceback.format_exc()}")
         return []
 
 

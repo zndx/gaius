@@ -817,7 +817,7 @@
     process-compose = {
       depends_on.postgres.condition = "process_healthy";
       # Disabled by default - enable with: devenv processes up metabase
-      disabled = true;
+      disabled = false;
     };
   };
 

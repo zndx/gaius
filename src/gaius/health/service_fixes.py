@@ -887,6 +887,291 @@ else:
         return actions
 
 
+class PipelineFixStrategy(ServiceFixStrategy):
+    """Fix strategy for content pipeline stalls.
+
+    Handles issues with:
+    - Task queue stalls (stuck/stale scheduled tasks)
+    - Pipeline backlogs at each stage
+    - Content processing failures
+
+    Guru Meditation: #PIPE.00000001.STALLED
+    """
+
+    def __init__(self):
+        super().__init__("pipeline")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix content pipeline issues."""
+        actions = []
+
+        # Step 1: Diagnose - Check task queue and pipeline status
+        actions.append(
+            RemediationAction(
+                name="Diagnose pipeline status",
+                description="Check pipeline stage backlogs and stuck tasks",
+                code='''
+import asyncio
+import os
+import asyncpg
+
+async def diagnose():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        print("=== Pipeline Status ===")
+
+        # Check for stuck tasks
+        stale = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NULL
+              AND scheduled_for < NOW() - interval '30 minutes'
+        """)
+        stuck = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NOT NULL
+              AND completed_at IS NULL
+              AND picked_up_at < NOW() - interval '10 minutes'
+        """)
+
+        print(f"Stale pending tasks: {stale}")
+        print(f"Stuck running tasks: {stuck}")
+
+        # Check content pipeline stages
+        needs_heuristic = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score IS NULL
+        """)
+        needs_llm = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score >= 30
+              AND llm_quality_score IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+        needs_kb = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE llm_quality_score >= 50
+              AND processed_at IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+
+        print(f"\\nPending heuristic triage: {needs_heuristic}")
+        print(f"Pending LLM triage: {needs_llm}")
+        print(f"Pending KB write: {needs_kb}")
+
+        await conn.close()
+        return {"stale": stale, "stuck": stuck}
+
+    except Exception as e:
+        print(f"Diagnosis failed: {e}")
+        return {"error": str(e)}
+
+result = asyncio.run(diagnose())
+print(f"\\nDiagnosis: {result}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 2: Reset stuck tasks
+        actions.append(
+            RemediationAction(
+                name="Reset stuck tasks",
+                description="Reset tasks that have been running too long",
+                code='''
+import asyncio
+import os
+import asyncpg
+
+async def reset_stuck():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        # Reset stuck running tasks
+        stuck_result = await conn.execute("""
+            UPDATE scheduled_tasks
+            SET picked_up_at = NULL,
+                error = 'reset by pipeline fix: stuck running'
+            WHERE picked_up_at IS NOT NULL
+              AND completed_at IS NULL
+              AND picked_up_at < NOW() - interval '10 minutes'
+        """)
+        stuck_count = int(stuck_result.split()[-1]) if stuck_result else 0
+        print(f"Reset {stuck_count} stuck running tasks")
+
+        # Reset stale pending tasks that may have stale metadata
+        stale_result = await conn.execute("""
+            UPDATE scheduled_tasks
+            SET scheduled_for = NOW()
+            WHERE picked_up_at IS NULL
+              AND scheduled_for < NOW() - interval '1 hour'
+              AND completed_at IS NULL
+        """)
+        stale_count = int(stale_result.split()[-1]) if stale_result else 0
+        print(f"Rescheduled {stale_count} stale pending tasks")
+
+        await conn.close()
+        return stuck_count + stale_count
+
+    except Exception as e:
+        print(f"Reset failed: {e}")
+        return 0
+
+count = asyncio.run(reset_stuck())
+print(f"Total tasks reset: {count}")
+''',
+                safety=SafetyLevel.CAUTION,
+                timeout=15,
+            )
+        )
+
+        # Step 3: Schedule immediate triage if backlog exists
+        actions.append(
+            RemediationAction(
+                name="Schedule triage tasks",
+                description="Schedule immediate triage if content backlog exists",
+                code='''
+import asyncio
+import os
+import asyncpg
+import json
+
+async def schedule_triage():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+        scheduled = []
+
+        # Check if heuristic triage is needed
+        needs_heuristic = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score IS NULL
+        """)
+        if needs_heuristic > 0:
+            await conn.execute("""
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('heuristic_triage', $1, 'pipeline_fix', NOW())
+            """, json.dumps({"limit": min(needs_heuristic, 200)}))
+            scheduled.append(f"heuristic_triage ({needs_heuristic} pending)")
+
+        # Check if LLM triage is needed
+        needs_llm = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score >= 30
+              AND llm_quality_score IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+        if needs_llm > 0:
+            await conn.execute("""
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('llm_triage', $1, 'pipeline_fix', NOW())
+            """, json.dumps({"limit": min(needs_llm, 100)}))
+            scheduled.append(f"llm_triage ({needs_llm} pending)")
+
+        # Check if content processing is needed
+        needs_kb = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE llm_quality_score >= 50
+              AND processed_at IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+        if needs_kb > 0:
+            await conn.execute("""
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('content_processing', $1, 'pipeline_fix', NOW())
+            """, json.dumps({"limit": min(needs_kb, 50)}))
+            scheduled.append(f"content_processing ({needs_kb} pending)")
+
+        await conn.close()
+
+        if scheduled:
+            print("Scheduled tasks:")
+            for task in scheduled:
+                print(f"  - {task}")
+        else:
+            print("No triage tasks needed (pipeline is clear)")
+
+        return len(scheduled)
+
+    except Exception as e:
+        print(f"Scheduling failed: {e}")
+        return 0
+
+count = asyncio.run(schedule_triage())
+print(f"\\nScheduled {count} task(s)")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        # Step 4: Verify cognition daemon is processing
+        actions.append(
+            RemediationAction(
+                name="Verify cognition daemon",
+                description="Check that cognition daemon is processing tasks",
+                code='''
+import asyncio
+import os
+import asyncpg
+
+async def verify():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        # Check recent task completions
+        completed = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE completed_at > NOW() - interval '1 hour'
+        """)
+        pending = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NULL
+              AND completed_at IS NULL
+        """)
+        running = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NOT NULL
+              AND completed_at IS NULL
+        """)
+
+        await conn.close()
+
+        print(f"Tasks in last hour: {completed} completed")
+        print(f"Pending tasks: {pending}")
+        print(f"Currently running: {running}")
+
+        if completed == 0 and pending > 0:
+            print("\\n[WARN] Tasks pending but none completed - cognition daemon may not be running")
+            print("  Try: /health fix engine (daemon runs in engine)")
+        elif running > 5:
+            print("\\n[WARN] Many tasks running - may be backlogged")
+        else:
+            print("\\n[OK] Task processing appears healthy")
+
+    except Exception as e:
+        print(f"Verification failed: {e}")
+
+asyncio.run(verify())
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        return actions
+
+
 class RASEFixStrategy(ServiceFixStrategy):
     """Fix strategy for RASE intrinsic verification components.
 
@@ -1142,6 +1427,9 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "kb_oracle": RASEFixStrategy(),  # Alias
     "intrinsic": RASEFixStrategy(),  # Alias
     "objectives": RASEFixStrategy(),  # Alias
+    "pipeline": PipelineFixStrategy(),
+    "triage": PipelineFixStrategy(),  # Alias
+    "content": PipelineFixStrategy(),  # Alias
 }
 
 
