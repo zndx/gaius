@@ -279,6 +279,9 @@ class GaiusCLI:
                 # X Bookmarks - sync X/Twitter bookmarks to KB
                 elif command == "x-bookmarks" or command == "xb":
                     result["data"] = self._run_async(self._cmd_x_bookmarks(args))
+                # Ambient Computing - invisible workloads for baseline GPU activity
+                elif command == "ambient":
+                    result["data"] = self._run_async(self._cmd_ambient(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -5583,6 +5586,37 @@ Respond with:
             except Exception as e:
                 return {"error": str(e), "mode": "recent", "thoughts": []}
 
+        # /thoughts test-cycle - directly call engine gRPC to test cognition logic
+        if args_lower.startswith("test-cycle"):
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    return {"error": "gRPC client not available", "mode": "test-cycle"}
+
+                # Call TriggerCognition via gRPC (may take 60-90s)
+                result = await client.call(
+                    "Cognition",
+                    "trigger",
+                    {"max_thoughts": 3, "trigger_reason": "cli_test"},
+                    timeout=120.0,
+                )
+
+                return {
+                    "mode": "test-cycle",
+                    "success": result.get("success", False),
+                    "thoughts_generated": result.get("thoughts_generated", 0),
+                    "patterns_detected": result.get("patterns_detected", 0),
+                    "connections_found": result.get("connections_found", 0),
+                    "curiosities_generated": result.get("curiosities_generated", 0),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "error": result.get("error"),
+                    "note": "This tests the engine-level cognition logic via gRPC",
+                }
+            except Exception as e:
+                return {"error": str(e), "mode": "test-cycle"}
+
         # Default: trigger full cognition cycle
         depth = "deep" if args_lower == "deep" else "moderate"
 
@@ -6043,11 +6077,141 @@ Respond with:
                         "remediation": "Start the engine: devenv up gaius-engine",
                     }
 
+            elif service in ("pipeline", "triage", "content"):
+                # Pipeline fix - schedule triage tasks and reset stuck tasks
+                try:
+                    import json
+                    import os
+
+                    import asyncpg
+
+                    db_url = os.environ.get(
+                        "GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius"
+                    )
+                    conn = await asyncpg.connect(db_url)
+
+                    try:
+                        if dry_run:
+                            # Show what would be fixed
+                            stale = await conn.fetchval("""
+                                SELECT COUNT(*) FROM scheduled_tasks
+                                WHERE picked_up_at IS NULL
+                                  AND scheduled_for < NOW() - interval '30 minutes'
+                            """)
+                            stuck = await conn.fetchval("""
+                                SELECT COUNT(*) FROM scheduled_tasks
+                                WHERE picked_up_at IS NOT NULL
+                                  AND completed_at IS NULL
+                                  AND picked_up_at < NOW() - interval '10 minutes'
+                            """)
+                            needs_heuristic = await conn.fetchval("""
+                                SELECT COUNT(*) FROM content_items
+                                WHERE heuristic_score IS NULL
+                            """)
+                            needs_llm = await conn.fetchval("""
+                                SELECT COUNT(*) FROM content_items
+                                WHERE heuristic_score >= 30
+                                  AND llm_quality_score IS NULL
+                                  AND NOT COALESCE(summary_excluded, false)
+                            """)
+                            needs_kb = await conn.fetchval("""
+                                SELECT COUNT(*) FROM content_items
+                                WHERE llm_quality_score >= 50
+                                  AND processed_at IS NULL
+                                  AND NOT COALESCE(summary_excluded, false)
+                            """)
+                            await conn.close()
+
+                            return {
+                                "dry_run": True,
+                                "service": service,
+                                "would_reset": {
+                                    "stale_pending": stale,
+                                    "stuck_running": stuck,
+                                },
+                                "would_schedule": {
+                                    "heuristic_triage": needs_heuristic,
+                                    "llm_triage": needs_llm,
+                                    "content_processing": needs_kb,
+                                },
+                                "note": "Run without --dry-run to schedule triage tasks",
+                            }
+
+                        # Reset stuck tasks
+                        stuck_result = await conn.execute("""
+                            UPDATE scheduled_tasks
+                            SET picked_up_at = NULL,
+                                error = 'reset by /health fix pipeline'
+                            WHERE picked_up_at IS NOT NULL
+                              AND completed_at IS NULL
+                              AND picked_up_at < NOW() - interval '10 minutes'
+                        """)
+                        stuck_count = int(stuck_result.split()[-1]) if stuck_result else 0
+
+                        # Schedule triage tasks if backlog exists
+                        scheduled = []
+
+                        needs_heuristic = await conn.fetchval("""
+                            SELECT COUNT(*) FROM content_items WHERE heuristic_score IS NULL
+                        """)
+                        if needs_heuristic > 0:
+                            await conn.execute("""
+                                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                VALUES ('heuristic_triage', $1, 'health_fix', NOW())
+                            """, json.dumps({"limit": min(needs_heuristic, 200)}))
+                            scheduled.append(f"heuristic_triage ({needs_heuristic} pending)")
+
+                        needs_llm = await conn.fetchval("""
+                            SELECT COUNT(*) FROM content_items
+                            WHERE heuristic_score >= 30
+                              AND llm_quality_score IS NULL
+                              AND NOT COALESCE(summary_excluded, false)
+                        """)
+                        if needs_llm > 0:
+                            await conn.execute("""
+                                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                VALUES ('llm_triage', $1, 'health_fix', NOW())
+                            """, json.dumps({"limit": min(needs_llm, 100)}))
+                            scheduled.append(f"llm_triage ({needs_llm} pending)")
+
+                        needs_kb = await conn.fetchval("""
+                            SELECT COUNT(*) FROM content_items
+                            WHERE llm_quality_score >= 50
+                              AND processed_at IS NULL
+                              AND NOT COALESCE(summary_excluded, false)
+                        """)
+                        if needs_kb > 0:
+                            await conn.execute("""
+                                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                VALUES ('content_processing', $1, 'health_fix', NOW())
+                            """, json.dumps({"limit": min(needs_kb, 50)}))
+                            scheduled.append(f"content_processing ({needs_kb} pending)")
+
+                        await conn.close()
+
+                        return {
+                            "service": service,
+                            "stuck_tasks_reset": stuck_count,
+                            "tasks_scheduled": scheduled,
+                            "note": "Pipeline triage tasks scheduled for processing",
+                        }
+
+                    finally:
+                        if not conn.is_closed():
+                            await conn.close()
+
+                except Exception as e:
+                    return {
+                        "error": f"Pipeline fix failed: {e}",
+                        "guru_meditation": "#PIPE.00000001.STALLED",
+                        "remediation": "Check PostgreSQL connection: pg_isready -p 5438",
+                    }
+
             else:
                 return {
                     "error": f"Unknown service: {service}",
-                    "available_services": ["endpoints", "evolution"],
-                    "usage": "/health fix [endpoints|evolution] [--dry-run]",
+                    "available_services": ["endpoints", "evolution", "pipeline"],
+                    "usage": "/health fix [endpoints|evolution|pipeline] [--dry-run]",
                     "note": "Use '/health fix' without args for full HealthObserver remediation",
                 }
 
@@ -10067,6 +10231,112 @@ Examples:
 
         except Exception as e:
             return {"error": f"Failed to list folders: {e}"}
+
+    # =========================================================================
+    # Ambient Computing Commands
+    # =========================================================================
+
+    async def _cmd_ambient(self, args: str) -> dict:
+        """Ambient Computing workload operations.
+
+        Usage:
+            /ambient              - Show ambient workload status
+            /ambient status       - Show ambient workload status
+            /ambient test         - Run full ambient cycle (baseline + reasoning)
+            /ambient test --baseline-only - Run baseline-only test (skip reasoning)
+            /ambient cycle        - Alias for test
+
+        Ambient Computing provides invisible, self-sustaining workloads that:
+        - Maintain baseline endpoints (orchestrator, fast, coding)
+        - Exercise GPU resources with standard tasks
+        - Evict baseline for reasoning when needed
+        - Restore baseline after reasoning completes
+        """
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            if not client.is_connected:
+                return {
+                    "error": "Engine not connected",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": "Start engine: devenv processes up gaius-engine",
+                }
+
+            if subcmd == "status":
+                result = await client.call("Ambient", "status", {})
+                return {
+                    "running": result.get("running", False),
+                    "current_phase": result.get("current_phase", "IDLE"),
+                    "cycles_completed": result.get("cycles_completed", 0),
+                    "last_cycle_at": result.get("last_cycle_at"),
+                    "baseline_endpoints": result.get("baseline_endpoints", []),
+                    "reasoning_endpoint": result.get("reasoning_endpoint"),
+                    "error": result.get("error"),
+                }
+
+            elif subcmd in ("test", "cycle"):
+                # Check for --baseline-only flag
+                skip_reasoning = "--baseline-only" in parts or "--skip-reasoning" in parts
+
+                print(
+                    f"Running ambient {'baseline-only ' if skip_reasoning else ''}cycle...",
+                    file=sys.stderr,
+                )
+
+                # Stream the cycle events for real-time progress
+                events = []
+                async for event in client.ambient_cycle_stream(
+                    skip_reasoning=skip_reasoning,
+                    baseline_task_count=1,
+                ):
+                    phase = event.get("phase", "UNKNOWN")
+                    endpoint = event.get("endpoint", "")
+                    message = event.get("message", "")
+                    success = event.get("success", True)
+                    latency = event.get("latency_ms", 0)
+
+                    # Print progress
+                    status_icon = "✓" if success else "✗"
+                    if endpoint:
+                        print(
+                            f"  {status_icon} [{phase}] {endpoint}: {message} ({latency}ms)",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(f"  {status_icon} [{phase}] {message}", file=sys.stderr)
+
+                    events.append(event)
+
+                    # Check for terminal phase
+                    if phase in ("AMBIENT_PHASE_COMPLETE", "AMBIENT_PHASE_ERROR"):
+                        break
+
+                # Summarize results
+                successful_events = [e for e in events if e.get("success", False)]
+                failed_events = [e for e in events if not e.get("success", True)]
+
+                return {
+                    "cycle_completed": len(failed_events) == 0,
+                    "skip_reasoning": skip_reasoning,
+                    "total_events": len(events),
+                    "successful": len(successful_events),
+                    "failed": len(failed_events),
+                    "events": events,
+                    "errors": [e.get("error") for e in failed_events if e.get("error")],
+                }
+
+            else:
+                return {
+                    "error": f"Unknown ambient command: {subcmd}",
+                    "usage": "/ambient [status|test|cycle] [--baseline-only]",
+                }
+
+        except Exception as e:
+            return {"error": f"Ambient command failed: {e}"}
 
 
 def main():

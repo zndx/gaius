@@ -25,6 +25,17 @@ class WorkloadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WORKLOAD_INFERENCE: _ClassVar[WorkloadType]
     WORKLOAD_EMBEDDING: _ClassVar[WorkloadType]
     WORKLOAD_EVOLUTION: _ClassVar[WorkloadType]
+
+class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    AMBIENT_PHASE_UNSPECIFIED: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_BASELINE_HEALTH: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_BASELINE_WORKLOAD: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_REASONING_EVICTION: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_REASONING_WORKLOAD: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_BASELINE_RESTORATION: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_COMPLETE: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_ERROR: _ClassVar[AmbientPhase]
 PROCESS_STATUS_UNSPECIFIED: ProcessStatus
 PROCESS_STATUS_STOPPED: ProcessStatus
 PROCESS_STATUS_STARTING: ProcessStatus
@@ -37,6 +48,14 @@ WORKLOAD_SWARM: WorkloadType
 WORKLOAD_INFERENCE: WorkloadType
 WORKLOAD_EMBEDDING: WorkloadType
 WORKLOAD_EVOLUTION: WorkloadType
+AMBIENT_PHASE_UNSPECIFIED: AmbientPhase
+AMBIENT_PHASE_BASELINE_HEALTH: AmbientPhase
+AMBIENT_PHASE_BASELINE_WORKLOAD: AmbientPhase
+AMBIENT_PHASE_REASONING_EVICTION: AmbientPhase
+AMBIENT_PHASE_REASONING_WORKLOAD: AmbientPhase
+AMBIENT_PHASE_BASELINE_RESTORATION: AmbientPhase
+AMBIENT_PHASE_COMPLETE: AmbientPhase
+AMBIENT_PHASE_ERROR: AmbientPhase
 
 class OrchestratorStatusResponse(_message.Message):
     __slots__ = ("total_gpus", "available_gpus", "allocations", "endpoints")
@@ -2174,3 +2193,77 @@ class XBookmarksEmitTestEventResponse(_message.Message):
     event_type: str
     message: str
     def __init__(self, success: bool = ..., event_type: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+
+class AmbientCycleRequest(_message.Message):
+    __slots__ = ("skip_reasoning", "baseline_task_count", "reasoning_prompt")
+    SKIP_REASONING_FIELD_NUMBER: _ClassVar[int]
+    BASELINE_TASK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    REASONING_PROMPT_FIELD_NUMBER: _ClassVar[int]
+    skip_reasoning: bool
+    baseline_task_count: int
+    reasoning_prompt: str
+    def __init__(self, skip_reasoning: bool = ..., baseline_task_count: _Optional[int] = ..., reasoning_prompt: _Optional[str] = ...) -> None: ...
+
+class AmbientPhaseEvent(_message.Message):
+    __slots__ = ("phase", "message", "progress", "metrics", "timestamp_ms")
+    class MetricsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    PHASE_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    METRICS_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    phase: AmbientPhase
+    message: str
+    progress: float
+    metrics: _containers.ScalarMap[str, str]
+    timestamp_ms: int
+    def __init__(self, phase: _Optional[_Union[AmbientPhase, str]] = ..., message: _Optional[str] = ..., progress: _Optional[float] = ..., metrics: _Optional[_Mapping[str, str]] = ..., timestamp_ms: _Optional[int] = ...) -> None: ...
+
+class AmbientCycleResponse(_message.Message):
+    __slots__ = ("success", "phases_completed", "total_tasks", "successful_tasks", "endpoint_latencies", "error_message", "duration_ms")
+    class EndpointLatenciesEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: int
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[int] = ...) -> None: ...
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    PHASES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_TASKS_FIELD_NUMBER: _ClassVar[int]
+    SUCCESSFUL_TASKS_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_LATENCIES_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    phases_completed: int
+    total_tasks: int
+    successful_tasks: int
+    endpoint_latencies: _containers.ScalarMap[str, int]
+    error_message: str
+    duration_ms: int
+    def __init__(self, success: bool = ..., phases_completed: _Optional[int] = ..., total_tasks: _Optional[int] = ..., successful_tasks: _Optional[int] = ..., endpoint_latencies: _Optional[_Mapping[str, int]] = ..., error_message: _Optional[str] = ..., duration_ms: _Optional[int] = ...) -> None: ...
+
+class AmbientStatusResponse(_message.Message):
+    __slots__ = ("cycle_running", "current_phase", "cycles_completed", "last_cycle_timestamp_ms", "baseline_endpoints", "reasoning_endpoint", "last_result")
+    CYCLE_RUNNING_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_PHASE_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    LAST_CYCLE_TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    BASELINE_ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
+    REASONING_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    LAST_RESULT_FIELD_NUMBER: _ClassVar[int]
+    cycle_running: bool
+    current_phase: AmbientPhase
+    cycles_completed: int
+    last_cycle_timestamp_ms: int
+    baseline_endpoints: _containers.RepeatedScalarFieldContainer[str]
+    reasoning_endpoint: str
+    last_result: AmbientCycleResponse
+    def __init__(self, cycle_running: bool = ..., current_phase: _Optional[_Union[AmbientPhase, str]] = ..., cycles_completed: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., baseline_endpoints: _Optional[_Iterable[str]] = ..., reasoning_endpoint: _Optional[str] = ..., last_result: _Optional[_Union[AmbientCycleResponse, _Mapping]] = ...) -> None: ...

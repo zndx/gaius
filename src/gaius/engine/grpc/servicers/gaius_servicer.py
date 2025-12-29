@@ -193,6 +193,19 @@ from ...generated import (
     XBookmarksQueueStatusResponse,
     XBookmarksEmitTestEventRequest,
     XBookmarksEmitTestEventResponse,
+    # Ambient Computing Workload
+    AmbientCycleRequest,
+    AmbientPhaseEvent,
+    AmbientStatusResponse,
+    AmbientCycleResponse,
+    AMBIENT_PHASE_UNSPECIFIED,
+    AMBIENT_PHASE_BASELINE_HEALTH,
+    AMBIENT_PHASE_BASELINE_WORKLOAD,
+    AMBIENT_PHASE_REASONING_EVICTION,
+    AMBIENT_PHASE_REASONING_WORKLOAD,
+    AMBIENT_PHASE_BASELINE_RESTORATION,
+    AMBIENT_PHASE_COMPLETE,
+    AMBIENT_PHASE_ERROR,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -4445,4 +4458,142 @@ class GaiusServicer(GaiusServiceServicer):
             return XBookmarksEmitTestEventResponse(
                 success=False,
                 message=str(e),
+            )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Ambient Computing Workload
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def AmbientCycle(
+        self,
+        request: AmbientCycleRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[AmbientPhaseEvent]:
+        """Execute an ambient computing workload cycle with streaming progress.
+
+        This streaming RPC executes a multi-phase workload cycle that:
+        1. Verifies baseline endpoint health
+        2. Runs standard tasks on each baseline endpoint
+        3. (Optional) Evicts baseline endpoints for reasoning
+        4. (Optional) Runs reasoning workload
+        5. (Optional) Restores baseline endpoints
+
+        Args:
+            request: AmbientCycleRequest with skip_reasoning, baseline_task_count
+            context: gRPC context
+
+        Yields:
+            AmbientPhaseEvent for each phase transition
+        """
+        service = self._services.ambient_service
+        if service is None:
+            logger.warning("AmbientCycle: service is None")
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message="AmbientWorkloadService not initialized.\n"
+                "  Guru: #AMB.00000001.SVCNOTINIT\n"
+                "  Check engine startup logs.",
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+            return
+
+        try:
+            logger.info(
+                f"AmbientCycle starting: skip_reasoning={request.skip_reasoning}, "
+                f"baseline_task_count={request.baseline_task_count or 1}"
+            )
+
+            async for event in service.run_cycle(
+                skip_reasoning=request.skip_reasoning,
+                baseline_task_count=request.baseline_task_count or 1,
+                reasoning_prompt=request.reasoning_prompt or None,
+            ):
+                yield event
+
+        except Exception as e:
+            logger.exception(f"AmbientCycle failed: {e}")
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message=str(e),
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+
+    async def AmbientStatus(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> AmbientStatusResponse:
+        """Get current ambient computing status.
+
+        Returns cycle running state, last result, and configuration.
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientStatusResponse(
+                cycle_running=False,
+                current_phase=AMBIENT_PHASE_UNSPECIFIED,
+                cycles_completed=0,
+            )
+
+        try:
+            status = service.get_status()
+
+            # Build last_result if available
+            last_result = None
+            if status.get("last_result"):
+                lr = status["last_result"]
+                last_result = AmbientCycleResponse(
+                    success=lr.get("success", False),
+                    phases_completed=lr.get("phases_completed", 0),
+                    total_tasks=lr.get("total_tasks", 0),
+                    successful_tasks=lr.get("successful_tasks", 0),
+                    error_message=lr.get("error_message", ""),
+                    duration_ms=lr.get("duration_ms", 0),
+                )
+                for ep, lat in lr.get("endpoint_latencies", {}).items():
+                    last_result.endpoint_latencies[ep] = lat
+
+            # Map phase string to enum
+            phase_map = {
+                "baseline_health": AMBIENT_PHASE_BASELINE_HEALTH,
+                "baseline_workload": AMBIENT_PHASE_BASELINE_WORKLOAD,
+                "reasoning_eviction": AMBIENT_PHASE_REASONING_EVICTION,
+                "reasoning_workload": AMBIENT_PHASE_REASONING_WORKLOAD,
+                "baseline_restoration": AMBIENT_PHASE_BASELINE_RESTORATION,
+                "complete": AMBIENT_PHASE_COMPLETE,
+                "error": AMBIENT_PHASE_ERROR,
+            }
+            current_phase = phase_map.get(
+                status.get("current_phase", "complete"),
+                AMBIENT_PHASE_UNSPECIFIED,
+            )
+
+            response = AmbientStatusResponse(
+                cycle_running=status.get("cycle_running", False),
+                current_phase=current_phase,
+                cycles_completed=status.get("cycles_completed", 0),
+                last_cycle_timestamp_ms=(
+                    int(datetime.fromisoformat(status["last_cycle_at"]).timestamp() * 1000)
+                    if status.get("last_cycle_at")
+                    else 0
+                ),
+                reasoning_endpoint=status.get("reasoning_endpoint", "reasoning"),
+            )
+
+            # Add baseline endpoints
+            for ep in status.get("baseline_endpoints", []):
+                response.baseline_endpoints.append(ep)
+
+            if last_result:
+                response.last_result.CopyFrom(last_result)
+
+            return response
+
+        except Exception as e:
+            logger.exception(f"AmbientStatus failed: {e}")
+            return AmbientStatusResponse(
+                cycle_running=False,
+                current_phase=AMBIENT_PHASE_ERROR,
             )

@@ -212,6 +212,20 @@ from .gaius_service_pb2 import (
     XBookmarksQueueStatusResponse,
     XBookmarksEmitTestEventRequest,
     XBookmarksEmitTestEventResponse,
+    # Ambient Computing
+    AmbientPhase,
+    AMBIENT_PHASE_UNSPECIFIED,
+    AMBIENT_PHASE_BASELINE_HEALTH,
+    AMBIENT_PHASE_BASELINE_WORKLOAD,
+    AMBIENT_PHASE_REASONING_EVICTION,
+    AMBIENT_PHASE_REASONING_WORKLOAD,
+    AMBIENT_PHASE_BASELINE_RESTORATION,
+    AMBIENT_PHASE_COMPLETE,
+    AMBIENT_PHASE_ERROR,
+    AmbientCycleRequest,
+    AmbientPhaseEvent,
+    AmbientCycleResponse,
+    AmbientStatusResponse,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -417,6 +431,20 @@ __all__ = [
     "XBookmarksQueueStatusResponse",
     "XBookmarksEmitTestEventRequest",
     "XBookmarksEmitTestEventResponse",
+    # Ambient Computing
+    "AmbientPhase",
+    "AMBIENT_PHASE_UNSPECIFIED",
+    "AMBIENT_PHASE_BASELINE_HEALTH",
+    "AMBIENT_PHASE_BASELINE_WORKLOAD",
+    "AMBIENT_PHASE_REASONING_EVICTION",
+    "AMBIENT_PHASE_REASONING_WORKLOAD",
+    "AMBIENT_PHASE_BASELINE_RESTORATION",
+    "AMBIENT_PHASE_COMPLETE",
+    "AMBIENT_PHASE_ERROR",
+    "AmbientCycleRequest",
+    "AmbientPhaseEvent",
+    "AmbientCycleResponse",
+    "AmbientStatusResponse",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",

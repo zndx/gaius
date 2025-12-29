@@ -101,6 +101,9 @@ class GaiusEngine:
         # X Bookmarks service (sync X/Twitter bookmarks to KB)
         self._x_bookmarks_service = None
 
+        # Ambient computing workload service
+        self._ambient_service = None
+
         # Health service (basic metrics)
         self._health_service = None
 
@@ -187,6 +190,9 @@ class GaiusEngine:
 
         # Start health observer service (autonomous FMEA monitoring + ACP escalation)
         await self._init_health_observer_service()
+
+        # Initialize ambient computing workload service
+        await self._init_ambient_service()
 
         # NOTE: X Bookmarks service is initialized EARLY (after gRPC starts, before PRELOAD)
         # to ensure XB status is available during the ~240s vLLM preload phase
@@ -737,6 +743,47 @@ class GaiusEngine:
             logger.warning(f"X Bookmarks service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize X Bookmarks service: {e}")
+
+    async def _init_ambient_service(self) -> None:
+        """Initialize the Ambient Computing Workload service.
+
+        The AmbientWorkloadService manages ambient computing workload cycles:
+        - Maintains baseline endpoint mix (orchestrator, fast, coding)
+        - Executes standard tasks on each endpoint
+        - Evicts baseline for reasoning tasks
+        - Restores baseline after reasoning completes
+        """
+        try:
+            from .services.ambient_service import AmbientWorkloadService
+
+            logger.info("Initializing Ambient Workload service...")
+
+            # Requires orchestrator and backend_router
+            if not self._orchestrator_service:
+                logger.warning("Ambient service skipped: orchestrator not available")
+                return
+
+            if not self._backend_router:
+                logger.warning("Ambient service skipped: backend_router not available")
+                return
+
+            self._ambient_service = AmbientWorkloadService(
+                config=self.config,
+                orchestrator=self._orchestrator_service,
+                backend_router=self._backend_router,
+            )
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "ambient_service", self._ambient_service
+                )
+                logger.info("Ambient Workload service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"Ambient Workload service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Ambient Workload service: {e}")
 
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).

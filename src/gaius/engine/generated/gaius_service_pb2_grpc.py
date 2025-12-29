@@ -404,6 +404,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
                 _registered_method=True)
+        self.AmbientCycle = channel.unary_stream(
+                '/gaius.engine.GaiusService/AmbientCycle',
+                request_serializer=gaius__service__pb2.AmbientCycleRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientPhaseEvent.FromString,
+                _registered_method=True)
+        self.AmbientStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientStatus',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientStatusResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -922,6 +932,23 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AmbientCycle(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Ambient Computing Workload
+        ─────────────────────────────────────────────────────────────────────────
+        Streaming cycle with progress events
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientStatus(self, request, context):
+        """Current ambient status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1289,6 +1316,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.XBookmarksEmitTestEvent,
                     request_deserializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.FromString,
                     response_serializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.SerializeToString,
+            ),
+            'AmbientCycle': grpc.unary_stream_rpc_method_handler(
+                    servicer.AmbientCycle,
+                    request_deserializer=gaius__service__pb2.AmbientCycleRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientPhaseEvent.SerializeToString,
+            ),
+            'AmbientStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientStatus,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.AmbientStatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -3266,6 +3303,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/XBookmarksEmitTestEvent',
             gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
             gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientCycle(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientCycle',
+            gaius__service__pb2.AmbientCycleRequest.SerializeToString,
+            gaius__service__pb2.AmbientPhaseEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientStatus',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.AmbientStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,

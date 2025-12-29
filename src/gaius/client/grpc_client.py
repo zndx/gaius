@@ -81,6 +81,9 @@ from ..engine.generated import (
     EvolutionEvent,
     ActivityStreamRequest,
     ActivityEvent,
+    # Ambient Computing
+    AmbientCycleRequest,
+    AmbientPhaseEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,6 +305,8 @@ class GrpcEngineClient:
                 return await self._call_health_observer(action, params, timeout)
             elif service == "XBookmarks":
                 return await self._call_x_bookmarks(action, params, timeout)
+            elif service == "Ambient":
+                return await self._call_ambient(action, params, timeout)
             else:
                 raise ValueError(f"Unknown service: {service}")
 
@@ -1342,6 +1347,161 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown XBookmarks action: {action}")
+
+    async def _call_ambient(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Ambient Computing service calls via gRPC.
+
+        Ambient Computing provides invisible, self-sustaining workloads that
+        maintain baseline endpoints and exercise GPU resources.
+
+        Args:
+            action: Action to perform (status, cycle)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with status or cycle results
+        """
+        if action == "status":
+            response = await self._gaius_stub.AmbientStatus(
+                empty_pb2.Empty(), timeout=timeout
+            )
+            # Map the proto field name to a friendlier name for CLI
+            current_phase_value = response.current_phase
+            # Get phase name from proto enum
+            phase_name = "IDLE"
+            try:
+                from ..engine.generated import AmbientPhase
+                phase_name = AmbientPhase.Name(current_phase_value)
+            except Exception:
+                phase_name = str(current_phase_value)
+
+            return {
+                "running": response.cycle_running,
+                "current_phase": phase_name,
+                "last_cycle_at": response.last_cycle_timestamp_ms,
+                "cycles_completed": response.cycles_completed,
+                "baseline_endpoints": list(response.baseline_endpoints),
+                "reasoning_endpoint": response.reasoning_endpoint,
+            }
+
+        elif action == "cycle":
+            # For non-streaming cycle, collect all events and return final result
+            from ..engine.generated import AmbientPhase
+
+            skip_reasoning = params.get("skip_reasoning", False)
+            baseline_task_count = params.get("baseline_task_count", 1)
+            reasoning_prompt = params.get("reasoning_prompt", "")
+
+            request = AmbientCycleRequest(
+                skip_reasoning=skip_reasoning,
+                baseline_task_count=baseline_task_count,
+                reasoning_prompt=reasoning_prompt,
+            )
+
+            events = []
+            final_result = {}
+            async for event in self._gaius_stub.AmbientCycle(request, timeout=timeout):
+                # Get phase name from enum
+                try:
+                    phase_name = AmbientPhase.Name(event.phase)
+                except Exception:
+                    phase_name = str(event.phase)
+
+                # Extract metrics from the map field
+                metrics = dict(event.metrics) if event.metrics else {}
+
+                event_dict = {
+                    "phase": phase_name,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "metrics": metrics,
+                    "timestamp_ms": event.timestamp_ms,
+                    # Derived fields for CLI display
+                    "endpoint": metrics.get("endpoint", ""),
+                    "success": "error" not in event.message.lower(),
+                    "latency_ms": int(metrics.get("latency_ms", 0)) if metrics.get("latency_ms") else 0,
+                }
+                events.append(event_dict)
+
+                # Check if this is a terminal phase
+                if phase_name in ("AMBIENT_PHASE_COMPLETE", "AMBIENT_PHASE_ERROR"):
+                    final_result = event_dict
+
+            return {
+                "events": events,
+                "final": final_result,
+                "total_events": len(events),
+            }
+
+        else:
+            raise ValueError(f"Unknown Ambient action: {action}")
+
+    async def ambient_cycle_stream(
+        self,
+        skip_reasoning: bool = False,
+        baseline_task_count: int = 1,
+        reasoning_prompt: str = "",
+    ) -> AsyncIterator[dict]:
+        """Stream ambient cycle progress events.
+
+        Executes a full ambient computing cycle with real-time progress updates.
+        Use this for CLI/TUI progress display.
+
+        Args:
+            skip_reasoning: Skip reasoning phase (baseline-only test)
+            baseline_task_count: Number of tasks per baseline endpoint
+            reasoning_prompt: Custom reasoning prompt (optional)
+
+        Yields:
+            AmbientPhaseEvent dicts with phase, endpoint, message, progress, success
+        """
+        if not self._connected:
+            await self.connect()
+
+        request = AmbientCycleRequest(
+            skip_reasoning=skip_reasoning,
+            baseline_task_count=baseline_task_count,
+            reasoning_prompt=reasoning_prompt,
+        )
+
+        try:
+            from ..engine.generated import AmbientPhase
+
+            async for event in self._gaius_stub.AmbientCycle(request):
+                # Get phase name from enum
+                try:
+                    phase_name = AmbientPhase.Name(event.phase)
+                except Exception:
+                    phase_name = str(event.phase)
+
+                # Extract metrics from the map field
+                metrics = dict(event.metrics) if event.metrics else {}
+
+                yield {
+                    "phase": phase_name,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "metrics": metrics,
+                    "timestamp_ms": event.timestamp_ms,
+                    # Derived fields for CLI display
+                    "endpoint": metrics.get("endpoint", ""),
+                    "success": "error" not in event.message.lower(),
+                    "latency_ms": int(metrics.get("latency_ms", 0)) if metrics.get("latency_ms") else 0,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"AmbientCycle error: {e}")
+                yield {
+                    "phase": "AMBIENT_PHASE_ERROR",
+                    "message": f"Stream error: {e.details()}",
+                    "progress": 0.0,
+                    "success": False,
+                    "endpoint": "",
+                    "latency_ms": 0,
+                    "metrics": {},
+                    "timestamp_ms": 0,
+                }
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.
