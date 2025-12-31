@@ -32,6 +32,7 @@ from ...generated import (
     PROCESS_STATUS_UNHEALTHY,
     PROCESS_STATUS_STOPPING,
     PROCESS_STATUS_FAILED,
+    PROCESS_STATUS_PENDING,
     # Orchestrator
     OrchestratorStatusResponse,
     GPUAllocation,
@@ -227,10 +228,12 @@ _STATUS_MAP = {
     "starting": PROCESS_STATUS_STARTING,
     "healthy": PROCESS_STATUS_HEALTHY,
     "running": PROCESS_STATUS_HEALTHY,  # alias for healthy
+    "ready": PROCESS_STATUS_HEALTHY,  # alias for healthy (used by InitController)
     "unhealthy": PROCESS_STATUS_UNHEALTHY,
     "stopping": PROCESS_STATUS_STOPPING,
     "failed": PROCESS_STATUS_FAILED,
     "error": PROCESS_STATUS_FAILED,  # alias for failed
+    "pending": PROCESS_STATUS_PENDING,  # queued for startup
 }
 
 
@@ -290,6 +293,7 @@ class GaiusServicer(GaiusServiceServicer):
         """Get orchestrator status including GPU allocations."""
         config = self._services.config
         orchestrator = self._services.orchestrator_service
+        init_controller = self._services.init_controller
 
         response = OrchestratorStatusResponse(
             total_gpus=0,
@@ -299,6 +303,9 @@ class GaiusServicer(GaiusServiceServicer):
         if config:
             response.total_gpus = config.gpus.total
             response.available_gpus = config.gpus.total - len(config.gpus.reserved)
+
+        # Track which endpoints we've already added
+        seen_endpoints = set()
 
         # Use OrchestratorService if available (preferred)
         if orchestrator:
@@ -311,9 +318,29 @@ class GaiusServicer(GaiusServiceServicer):
                     port=ep.get("port", 0),
                 )
                 response.endpoints.append(endpoint)
+                seen_endpoints.add(alias)
+
+        # Add pending endpoints from InitController that haven't been started yet
+        # This surfaces endpoints that are queued for startup during initialization
+        if init_controller:
+            for ep_name, ep_progress in init_controller.state.endpoints.items():
+                if ep_name not in seen_endpoints:
+                    # Map init_controller status to proto status
+                    # "pending" -> PENDING, "starting" -> STARTING, "ready" -> HEALTHY
+                    init_status = ep_progress.status
+                    endpoint = EndpointInfo(
+                        name=ep_name,
+                        model="",  # Not available until started
+                        status=_status_to_enum(init_status),
+                        port=0,  # Not allocated until started
+                    )
+                    response.endpoints.append(endpoint)
+                    seen_endpoints.add(ep_name)
+
+        if seen_endpoints:
             return response
 
-        # Fallback to backend router
+        # Fallback to backend router (no endpoints from orchestrator or init_controller)
         router = self._services.backend_router
         if router:
             status = router.get_status()

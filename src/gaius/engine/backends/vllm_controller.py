@@ -36,6 +36,7 @@ class ProcessStatus(Enum):
     UNHEALTHY = "unhealthy"
     STOPPING = "stopping"
     FAILED = "failed"
+    PENDING = "pending"  # Queued for startup, waiting for another endpoint
 
 
 # vLLM startup progress patterns

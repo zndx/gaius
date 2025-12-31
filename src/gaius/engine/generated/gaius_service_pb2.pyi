@@ -17,6 +17,7 @@ class ProcessStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PROCESS_STATUS_UNHEALTHY: _ClassVar[ProcessStatus]
     PROCESS_STATUS_STOPPING: _ClassVar[ProcessStatus]
     PROCESS_STATUS_FAILED: _ClassVar[ProcessStatus]
+    PROCESS_STATUS_PENDING: _ClassVar[ProcessStatus]
 
 class WorkloadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -43,6 +44,7 @@ PROCESS_STATUS_HEALTHY: ProcessStatus
 PROCESS_STATUS_UNHEALTHY: ProcessStatus
 PROCESS_STATUS_STOPPING: ProcessStatus
 PROCESS_STATUS_FAILED: ProcessStatus
+PROCESS_STATUS_PENDING: ProcessStatus
 WORKLOAD_INIT: WorkloadType
 WORKLOAD_SWARM: WorkloadType
 WORKLOAD_INFERENCE: WorkloadType

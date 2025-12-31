@@ -22,6 +22,7 @@ enum ProcessStatus {
   PROCESS_STATUS_UNHEALTHY = 4;
   PROCESS_STATUS_STOPPING = 5;
   PROCESS_STATUS_FAILED = 6;
+  PROCESS_STATUS_PENDING = 7;  // Queued for startup, waiting for another endpoint to finish starting
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

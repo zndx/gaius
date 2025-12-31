@@ -15,11 +15,16 @@ uv run gaius
 # Run the CLI (non-interactive, for testing)
 uv run gaius-cli --cmd "/state" --format json
 
+# Engine management
+devenv tasks run restart:clean    # Full clean restart (preferred)
+devenv processes up               # Start all platform components
+devenv processes down             # Stop all platform components
+
+# Check endpoint status
+uv run gaius-cli --cmd "/gpu status" --format json
+
 # Build documentation
 mdbook build docs
-
-# Build and open documentation
-mdbook build docs --open
 ```
 
 ## Module Structure
@@ -31,15 +36,25 @@ src/gaius/
 ├── __main__.py         # Module entry point
 ├── core/
 │   └── state.py        # AppState, ViewMode, OverlayMode
-├── widgets/
+├── engine/             # gRPC Engine (central nervous system)
+│   ├── server.py       # Main engine server
+│   ├── proto/          # Protobuf definitions
+│   ├── generated/      # Generated gRPC bindings
+│   ├── grpc/           # gRPC servicers
+│   ├── services/       # Core services (orchestrator, cognition, etc.)
+│   └── backends/       # vLLM controller, inference backends
+├── health/             # Self-healing infrastructure
+│   ├── observe.py      # HealthObserver daemon
+│   └── service_fixes.py # Automated remediation strategies
+├── acp/                # Agent Client Protocol (Claude Code integration)
+├── rase/               # RASE metamodel (agent training verification)
+├── widgets/            # TUI widgets
 │   ├── grid.py         # MainGrid (19×19)
 │   ├── minigrid.py     # MiniGrid (9×9 orthographic views)
 │   ├── filetree.py     # FileTree (KB navigation)
 │   ├── content.py      # ContentPanel (right panel)
 │   └── command.py      # CommandInput (bottom)
-├── static/
-│   └── test_data.py    # Static data for UI development
-└── agents/             # Agent definitions (planned)
+└── commands/           # Slash command implementations
 ```
 
 ## Key Components
@@ -129,7 +144,7 @@ Example:
 error_msg = (
     "DatasetService not initialized.\n"
     "  Try: /health fix dataset\n"
-    "  Or:  process-compose process restart gaius-engine"
+    "  Or:  devenv tasks run restart:clean"
 )
 ```
 
@@ -227,13 +242,14 @@ After every code change, re-test via CLI before declaring success.
 
 The CLI is the product. Previous test outputs are invalidated by code changes. Don't reason from stale context - run the command again.
 
-# After editing orchestrated.py:
+```bash
+# After editing code:
 # BAD: "The fix should work based on my analysis"
 # GOOD: Actually run it
 uv run gaius-cli --cmd "/evolve status" --format json
+```
 
 This isn't redundant tool use - it's verifying the product works.
-- you can use devenv processes down and devenv processes up to control the gaius platform components
 
 ## RASE Metamodel (Rapid Agentic Systems Engineering)
 
@@ -491,3 +507,97 @@ if incident.rpn_score > self.escalation_threshold:
 ```
 
 See [`src/gaius/acp/README.md`](src/gaius/acp/README.md) for complete API documentation.
+
+## gRPC Proto Change Management
+
+The Gaius Engine exposes a gRPC API defined in protobuf. Changes to the proto require a specific workflow.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/gaius/engine/proto/gaius_service.proto` | Proto definitions (source of truth) |
+| `src/gaius/engine/proto/gaius_service_pb2.py` | Generated Python bindings |
+| `src/gaius/engine/proto/gaius_service_pb2_grpc.py` | Generated gRPC stubs |
+| `src/gaius/engine/generated/__init__.py` | Re-exports for clean imports |
+| `src/gaius/engine/grpc/servicers/gaius_servicer.py` | Server-side implementation |
+
+### Proto Change Workflow
+
+1. **Edit the proto file** - Append new enum values (don't renumber for wire compatibility)
+
+2. **Regenerate bindings**:
+   ```bash
+   devenv tasks run proto:generate
+   ```
+
+3. **Update generated exports** - Add new symbols to `src/gaius/engine/generated/__init__.py`:
+   - Add to the import block
+   - Add to the `__all__` list
+   - **Critical**: If you skip this, the engine fails with import errors
+
+4. **Update internal enums** - If there's a parallel Python enum (e.g., in `vllm_controller.py`), sync it
+
+5. **Update status mappings** - Add string-to-proto mappings in the servicer's `_STATUS_MAP`
+
+6. **Verify import before restart**:
+   ```bash
+   uv run python -c "from gaius.engine.generated import NEW_SYMBOL; print('OK')"
+   ```
+
+7. **Restart and test**:
+   ```bash
+   devenv tasks run restart:clean
+   ```
+
+### Endpoint Status Values
+
+```
+PROCESS_STATUS_UNSPECIFIED = 0
+PROCESS_STATUS_STOPPED = 1
+PROCESS_STATUS_STARTING = 2
+PROCESS_STATUS_HEALTHY = 3
+PROCESS_STATUS_UNHEALTHY = 4
+PROCESS_STATUS_STOPPING = 5
+PROCESS_STATUS_FAILED = 6
+PROCESS_STATUS_PENDING = 7   # Queued for startup, waiting in line
+```
+
+State transitions during startup: `PENDING → STARTING → HEALTHY`
+
+### Testing gRPC Features
+
+**gRPC reflection is not enabled**, so `grpcurl` cannot discover services. Use the CLI instead:
+
+```bash
+# Check endpoint status
+uv run gaius-cli --cmd "/gpu status" --format json | jq '.data.endpoints[] | {name, status}'
+
+# Poll during restart to see transitions
+for i in {1..15}; do
+    sleep 10
+    uv run gaius-cli --cmd "/gpu status" --format json | jq '.data.endpoints[] | {name, status}'
+done
+```
+
+### Restart and Monitoring
+
+```bash
+# Full clean restart (stops everything, cleans up, restarts)
+devenv tasks run restart:clean
+
+# Check if gRPC port is listening
+nc -zv localhost 50051
+
+# Watch engine logs
+tail -f .devenv/processes.log | grep gaius-engine
+```
+
+### Common Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Engine fails to start | Missing export in `__init__.py` | Add symbol to imports and `__all__` |
+| Port 50051 not listening | gRPC server didn't initialize | Check logs for import errors |
+| Status shows wrong value | Missing status mapping | Add to `_STATUS_MAP` |
+| `restart:clean` times out | Engine startup slow | Endpoints still loading, check `/gpu status` |

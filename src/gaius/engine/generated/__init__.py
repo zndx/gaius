@@ -42,6 +42,7 @@ from .gaius_service_pb2 import (
     PROCESS_STATUS_UNHEALTHY,
     PROCESS_STATUS_STOPPING,
     PROCESS_STATUS_FAILED,
+    PROCESS_STATUS_PENDING,
     # Orchestrator
     OrchestratorStatusResponse,
     GPUAllocation,
@@ -249,6 +250,7 @@ __all__ = [
     "PROCESS_STATUS_UNHEALTHY",
     "PROCESS_STATUS_STOPPING",
     "PROCESS_STATUS_FAILED",
+    "PROCESS_STATUS_PENDING",
     # OIP
     "ServerLiveRequest",
     "ServerLiveResponse",
