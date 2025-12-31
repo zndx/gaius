@@ -50,6 +50,7 @@ from ...generated import (
     GetJobResultRequest,
     GetJobResultResponse,
     SchedulerStatusResponse,
+    XAIBudgetResponse,
     # Swarm streaming
     SwarmStreamRequest,
     SwarmEvent,
@@ -82,6 +83,10 @@ from ...generated import (
     TriggerCognitionRequest,
     TriggerCognitionResponse,
     CognitionActivityResponse,
+    SelfObservationRequest,
+    SelfObservationResponse,
+    EngineAuditRequest,
+    EngineAuditResponse,
     # State Service (Thin Client Architecture)
     GetStateRequest,
     GridState,
@@ -574,6 +579,37 @@ class GaiusServicer(GaiusServiceServicer):
         return GetJobResultResponse(
             job_id=job_id,
             status="pending",
+        )
+
+    async def XAIBudget(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> XAIBudgetResponse:
+        """Get XAI API budget status.
+
+        Returns daily and weekly request usage against configured limits.
+        Used by health checks and evolution cost management.
+
+        TODO: Track actual XAI API usage through backend_router when
+        integrated with XAI/Grok API. Currently returns static limits.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # Calculate reset time (next midnight UTC)
+        now = datetime.now(timezone.utc)
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+        # TODO: Track actual usage when XAI API integration is complete
+        # For now, return static limits - budget tracking not yet implemented
+        return XAIBudgetResponse(
+            daily_used=0,
+            daily_limit=50,
+            weekly_used=0,
+            weekly_limit=200,
+            reset_at=tomorrow.isoformat(),
         )
 
     # =========================================================================
@@ -1400,26 +1436,49 @@ class GaiusServicer(GaiusServiceServicer):
         request: TriggerCognitionRequest,
         context: aio.ServicerContext,
     ) -> TriggerCognitionResponse:
-        """Trigger a cognition cycle."""
-        from ....agents.cognition import get_cognition_agent
+        """Trigger a cognition cycle via Engine-native L3 logic.
 
+        Uses cognition_service.trigger() which routes to cognition_logic.py,
+        NOT the L5 agent (which would bypass gRPC and call inference directly).
+        """
         max_thoughts = request.max_thoughts or 5
         trigger_reason = request.trigger_reason or "manual"
 
-        try:
-            agent = get_cognition_agent()
-            result = await agent.think(
-                max_thoughts=max_thoughts,
-                trigger_reason=trigger_reason,
+        logger.info(f"TriggerCognition gRPC called: max_thoughts={max_thoughts}, trigger={trigger_reason}")
+
+        # Get cognition service from the Engine's services container
+        cognition = getattr(self._services, "cognition_service", None)
+        logger.info(f"Cognition service available: {cognition is not None}")
+        if not cognition:
+            return TriggerCognitionResponse(
+                success=False,
+                error="Cognition service not available.\n"
+                      "Guru Meditation: #COG.00000018.NOSVC\n"
+                      "Check: Engine startup logs",
             )
 
+        try:
+            # Call L3 cognition_logic via cognition_service.trigger()
+            logger.info("Calling cognition.trigger(cognition_cycle)...")
+            result = await cognition.trigger(
+                task_type="cognition_cycle",
+                payload={
+                    "max_thoughts": max_thoughts,
+                    "trigger": trigger_reason,
+                },
+            )
+            logger.info(f"Cognition trigger result: success={result.get('success')}, thoughts={result.get('thoughts_generated')}, error={result.get('error')}")
+
             return TriggerCognitionResponse(
-                success=True,
-                thoughts_generated=len(result.thoughts),
-                patterns_detected=result.patterns_detected,
-                connections_found=result.connections_found,
-                curiosities_generated=result.curiosities_generated,
-                duration_ms=result.duration_ms,
+                success=result.get("success", False),
+                thoughts_generated=result.get("thoughts_generated", 0),
+                patterns_detected=result.get("patterns_detected", 0),
+                connections_found=result.get("connections_found", 0),
+                curiosities_generated=result.get("curiosities_generated", 0),
+                duration_ms=result.get("duration_ms", 0),
+                kb_path=result.get("kb_path") or "",
+                tokens_out=result.get("tokens_out", 0),
+                error=result.get("error"),
             )
         except Exception as e:
             logger.error(f"Cognition trigger failed: {e}")
@@ -1463,6 +1522,113 @@ class GaiusServicer(GaiusServiceServicer):
             logger.debug(f"Failed to get active thoughts: {e}")
 
         return response
+
+    async def SelfObservation(
+        self,
+        request: SelfObservationRequest,
+        context: aio.ServicerContext,
+    ) -> SelfObservationResponse:
+        """Trigger self-observation - meta-cognition on recent thoughts.
+
+        Uses L3 cognition_logic.process_self_observation() for Engine-native
+        implementation that properly manages inference.
+        """
+        from ...services import cognition_logic
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return SelfObservationResponse(
+                success=False,
+                error="Cognition service not available.\n"
+                      "Guru Meditation: #COG.00000019.NOSVC\n"
+                      "Check: Engine startup logs",
+            )
+
+        try:
+            # Get database pool from cognition service
+            db_pool = getattr(cognition, "_db_pool", None)
+            if not db_pool:
+                return SelfObservationResponse(
+                    success=False,
+                    error="Database pool not available for self-observation.\n"
+                          "Guru Meditation: #COG.00000020.NODB",
+                )
+
+            # Call L3 implementation
+            result = await cognition_logic.process_self_observation(
+                db_pool=db_pool,
+                payload={"max_observations": request.max_observations or 5},
+            )
+
+            return SelfObservationResponse(
+                success=result.success,
+                observations_generated=result.self_observations,
+                duration_ms=result.duration_ms,
+                error=result.error or "",
+                observation_ids=result.thought_ids or [],
+            )
+
+        except Exception as e:
+            logger.error(f"Self-observation failed: {e}")
+            return SelfObservationResponse(
+                success=False,
+                error=f"Self-observation failed: {e}\n"
+                      "Guru Meditation: #COG.00000021.SELFOBS",
+            )
+
+    async def EngineAudit(
+        self,
+        request: EngineAuditRequest,
+        context: aio.ServicerContext,
+    ) -> EngineAuditResponse:
+        """Run engine health audit and record observations.
+
+        Uses L3 cognition_logic.process_engine_audit() for Engine-native
+        implementation.
+        """
+        from ...services import cognition_logic
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return EngineAuditResponse(
+                success=False,
+                error="Cognition service not available.\n"
+                      "Guru Meditation: #COG.00000022.NOSVC\n"
+                      "Check: Engine startup logs",
+            )
+
+        try:
+            # Get database pool from cognition service
+            db_pool = getattr(cognition, "_db_pool", None)
+            if not db_pool:
+                return EngineAuditResponse(
+                    success=False,
+                    error="Database pool not available for engine audit.\n"
+                          "Guru Meditation: #COG.00000023.NODB",
+                )
+
+            # Call L3 implementation
+            result = await cognition_logic.process_engine_audit(
+                db_pool=db_pool,
+                payload={"include_metrics": request.include_metrics},
+            )
+
+            return EngineAuditResponse(
+                success=result.success,
+                observations_recorded=result.observations_recorded,
+                anomalies_found=result.anomalies_found,
+                duration_ms=result.duration_ms,
+                error=result.error or "",
+                anomaly_details=result.anomaly_details or [],
+            )
+
+        except Exception as e:
+            logger.error(f"Engine audit failed: {e}")
+            return EngineAuditResponse(
+                success=False,
+                error=f"Engine audit failed: {e}\n"
+                      "Guru Meditation: #COG.00000024.AUDIT",
+            )
 
     async def SubscribeCognition(
         self,

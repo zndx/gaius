@@ -78,8 +78,12 @@ async def explain_position(
     if client is None:
         try:
             client = InferenceClient()
-        except ImportError:
-            return _fallback_explanation(ctx)
+        except ImportError as e:
+            raise RuntimeError(
+                f"InferenceClient not available: {e}\n"
+                "Guru Meditation: #LLM.00000001.NOCLIENT\n"
+                "Check: /health endpoints"
+            ) from e
 
     # Build contextual prompt
     prompt = _build_explanation_prompt(ctx)
@@ -94,8 +98,11 @@ async def explain_position(
         return result.content.strip()
 
     except Exception as e:
-        logger.warning(f"LLM explanation failed: {e}")
-        return _fallback_explanation(ctx)
+        raise RuntimeError(
+            f"LLM explanation failed: {e}\n"
+            "Guru Meditation: #LLM.00000002.EXPLAIN\n"
+            "Check: /health endpoints"
+        ) from e
 
 
 def _describe_embed_view(embed_grid: list[list[float]]) -> str:

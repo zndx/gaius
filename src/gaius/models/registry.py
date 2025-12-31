@@ -257,6 +257,7 @@ QWQ_32B = ModelSpec(
     vllm_config=VLLMConfig(
         tensor_parallel_size=4,
         max_model_len=32768,
+        max_num_seqs=32,  # Reduced for 32B model on 4x 24GB GPUs
         trust_remote_code=True,
     ),
     description="QwQ reasoning model - excels at complex analysis and chain-of-thought",

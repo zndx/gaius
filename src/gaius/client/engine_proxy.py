@@ -1264,6 +1264,10 @@ def begin_workload_sync(
 ) -> WorkloadAllocation:
     """Synchronous wrapper for begin_workload (for use in thread pools).
 
+    NOTE: This function creates a fresh gRPC connection to avoid event loop
+    conflicts when called from a thread pool (the main TUI may have a gRPC
+    client in a different event loop).
+
     Requests GPU resources from the engine, potentially triggering
     preemption of lower-priority idle endpoints.
 
@@ -1293,15 +1297,25 @@ def begin_workload_sync(
         )
 
     async def _begin():
-        proxy = await get_workload_proxy()
-        return await proxy.begin_workload(
-            workload_id=workload_id,
-            workload_type=workload_type,
-            required_capabilities=required_capabilities,
-            priority=priority,
-            estimated_duration_s=estimated_duration_s,
-            estimated_memory_mb=estimated_memory_mb,
-        )
+        # Create a fresh client for this sync call to avoid event loop conflicts
+        from .grpc_client import GrpcEngineClient, GrpcClientConfig
+
+        # Use config from environment (GrpcClientConfig.from_env())
+        client = GrpcEngineClient()
+        await client.connect()
+
+        try:
+            proxy = WorkloadProxy(client)
+            return await proxy.begin_workload(
+                workload_id=workload_id,
+                workload_type=workload_type,
+                required_capabilities=required_capabilities,
+                priority=priority,
+                estimated_duration_s=estimated_duration_s,
+                estimated_memory_mb=estimated_memory_mb,
+            )
+        finally:
+            await client.close()
 
     try:
         loop = asyncio.new_event_loop()
@@ -1316,6 +1330,9 @@ def complete_workload_sync(workload_id: str) -> None:
 
     Marks a workload complete and triggers restoration of evicted endpoints.
 
+    NOTE: This function creates a fresh gRPC connection to avoid event loop
+    conflicts when called from a thread pool.
+
     Args:
         workload_id: Workload to complete
     """
@@ -1325,8 +1342,18 @@ def complete_workload_sync(workload_id: str) -> None:
         return
 
     async def _complete():
-        proxy = await get_workload_proxy()
-        await proxy.complete_workload(workload_id)
+        # Create a fresh client for this sync call to avoid event loop conflicts
+        from .grpc_client import GrpcEngineClient
+
+        # Use config from environment (GrpcClientConfig.from_env())
+        client = GrpcEngineClient()
+        await client.connect()
+
+        try:
+            proxy = WorkloadProxy(client)
+            await proxy.complete_workload(workload_id)
+        finally:
+            await client.close()
 
     try:
         loop = asyncio.new_event_loop()

@@ -11,7 +11,7 @@ from typing import Any, Optional
 from ..config import AgentConfig, EngineConfig
 from ..resources import ResourceManager
 from .optillm_controller import OptillmController, OptillmRequest, OptillmResponse, OptillmTechnique
-from .vllm_controller import VLLMController, VLLMRequest, VLLMResponse
+from .vllm_controller import VLLMController, VLLMProcess, VLLMRequest, VLLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,12 @@ class BackendRouter:
         agent_config = self.get_agent_config(request.agent_alias)
 
         if not agent_config:
+            # Check for dynamically created vLLM endpoint
+            proc = self.vllm.get_process(request.agent_alias)
+            if proc and proc.status.value == "healthy":
+                logger.info(f"Routing to dynamic vLLM endpoint: {request.agent_alias}")
+                return await self._route_to_dynamic_vllm(request, proc)
+
             return InferenceResponse(
                 content="",
                 model="",
@@ -235,6 +241,43 @@ class BackendRouter:
         vllm_request = VLLMRequest(
             messages=request.messages,
             model=agent_config.model,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            agent_alias=request.agent_alias,
+        )
+
+        # Execute request
+        response = await self.vllm.complete(vllm_request)
+
+        return InferenceResponse(
+            content=response.content,
+            model=response.model,
+            backend="vllm",
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_ms=response.latency_ms,
+            error=response.error,
+        )
+
+    async def _route_to_dynamic_vllm(
+        self, request: InferenceRequest, proc: VLLMProcess
+    ) -> InferenceResponse:
+        """Route request to a dynamically created vLLM endpoint.
+
+        This handles endpoints created by the scheduler that don't have
+        static agent configuration. Uses the running process info directly.
+
+        Args:
+            request: The inference request
+            proc: The running vLLM process info
+
+        Returns:
+            InferenceResponse from vLLM
+        """
+        # Create vLLM request using process info
+        vllm_request = VLLMRequest(
+            messages=request.messages,
+            model=proc.model,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             agent_alias=request.agent_alias,

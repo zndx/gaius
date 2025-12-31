@@ -4,6 +4,10 @@ Daemon that processes scheduled cognition tasks from the database,
 running cognition cycles and engine audits when triggered by pg_cron
 or delta detection.
 
+Implements BaseDaemon protocol with CRITICAL criticality - engine enters
+DEGRADED mode if this daemon fails to start (not exit), allowing ACP-Claude
+to investigate accumulated error states.
+
 Task Types Handled:
 - cognition_cycle: Run a full cognition cycle (patterns, connections, etc.)
 - engine_audit: Audit engine health and record observations
@@ -35,6 +39,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
+from .base_daemon import (
+    BaseDaemon,
+    DaemonCriticality,
+    DaemonHealth,
+    DaemonStartupError,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +73,11 @@ class CognitionConfig:
     database_url: str = ""
 
 
-class CognitionService:
+class CognitionService(BaseDaemon):
     """Cognition daemon for scheduled thought generation.
+
+    Implements BaseDaemon with CRITICAL criticality - if this daemon fails,
+    engine enters DEGRADED mode to allow ACP-Claude investigation.
 
     Monitors the scheduled_tasks table and processes cognition-related
     tasks when they become due. Integrates with the CognitionAgent
@@ -81,6 +95,17 @@ class CognitionService:
     - engine_audit: Run CognitionAgent._audit_engine_health()
     - delta_check: Run detect_cognition_delta() SQL function
     """
+
+    # BaseDaemon protocol implementation
+    @property
+    def name(self) -> str:
+        """Unique daemon name."""
+        return "cognition"
+
+    @property
+    def criticality(self) -> DaemonCriticality:
+        """CRITICAL - engine enters DEGRADED if this fails."""
+        return DaemonCriticality.CRITICAL
 
     def __init__(
         self,
@@ -340,21 +365,32 @@ class CognitionService:
     # Task Handlers
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _run_cognition_cycle(self, payload: dict) -> dict:
+    async def _run_cognition_cycle(self, payload: dict, bypass_rate_limit: bool = False) -> dict:
         """Run a full cognition cycle.
 
         Args:
             payload: Task payload with optional parameters
+            bypass_rate_limit: Skip rate limiting (for manual/CLI triggers)
 
         Returns:
             Result dict with thoughts generated
         """
-        # Check rate limit
-        if not self._can_run_cycle():
+        # Check rate limit (skip for manual triggers)
+        if not bypass_rate_limit and not self._can_run_cycle():
+            logger.info(f"Rate limit: {len(self._recent_cycles)}/{self.config.max_cycles_per_hour} cycles this hour")
             return {
+                "success": False,
+                "thoughts_generated": 0,
+                "patterns_detected": 0,
+                "connections_found": 0,
+                "curiosities_generated": 0,
+                "self_observations": 0,
+                "engine_audits": 0,
+                "tokens_used": 0,
+                "duration_ms": 0,
+                "error": f"Rate limited: {len(self._recent_cycles)}/{self.config.max_cycles_per_hour} cycles this hour",
                 "skipped": True,
                 "reason": "rate_limit",
-                "cycles_this_hour": len(self._recent_cycles),
             }
 
         # Record cycle start for rate limiting
@@ -395,6 +431,7 @@ class CognitionService:
         )
 
         return {
+            "success": result.success,
             "thoughts_generated": result.thoughts_generated,
             "patterns_detected": result.patterns_detected,
             "connections_found": result.connections_found,
@@ -402,7 +439,10 @@ class CognitionService:
             "self_observations": result.self_observations,
             "engine_audits": result.engine_audits,
             "tokens_used": result.tokens_used,
+            "tokens_out": result.tokens_out,
             "duration_ms": result.duration_ms,
+            "kb_path": result.kb_path,
+            "error": result.error,
         }
 
     async def _run_engine_audit(self, payload: dict) -> dict:
@@ -2117,7 +2157,8 @@ Your summary note content"""
 
         if task_type == "cognition_cycle":
             payload.setdefault("trigger", "manual")
-            return await self._run_cognition_cycle(payload)
+            # Manual triggers bypass rate limiting
+            return await self._run_cognition_cycle(payload, bypass_rate_limit=True)
         elif task_type == "engine_audit":
             return await self._run_engine_audit(payload)
         elif task_type == "delta_check":
@@ -2245,8 +2286,70 @@ Your summary note content"""
 
     @property
     def is_running(self) -> bool:
-        """Whether daemon is running."""
+        """Whether daemon is running (BaseDaemon protocol)."""
         return self._running
+
+    async def health_check(self) -> DaemonHealth:
+        """Check daemon health (BaseDaemon protocol).
+
+        Returns:
+            DaemonHealth with status and diagnostics
+        """
+        if not self._running:
+            return DaemonHealth(
+                healthy=False,
+                message="Cognition daemon not running",
+                guru_code="#COG.00000001.NOTRUNNING",
+                details={
+                    "running": False,
+                    "cycles_completed": self._cycles_completed,
+                },
+            )
+
+        # Check if daemon task is alive
+        if self._daemon_task and self._daemon_task.done():
+            try:
+                exc = self._daemon_task.exception()
+                return DaemonHealth(
+                    healthy=False,
+                    message=f"Cognition daemon task crashed: {exc}",
+                    guru_code="#COG.00000003.CRASHED",
+                    details={
+                        "running": False,
+                        "exception": str(exc),
+                        "cycles_completed": self._cycles_completed,
+                    },
+                )
+            except Exception:
+                pass
+
+        # Check if processing is stalled (no task processed in 10x poll interval)
+        if self._last_cycle_at:
+            stall_threshold = self.config.poll_interval_seconds * 10
+            since_last_cycle = (datetime.now() - self._last_cycle_at).total_seconds()
+            if since_last_cycle > stall_threshold:
+                return DaemonHealth(
+                    healthy=False,
+                    message=f"Cognition processing stalled ({since_last_cycle:.0f}s since last cycle)",
+                    guru_code="#COG.00000004.STALLED",
+                    details={
+                        "running": True,
+                        "seconds_since_last_cycle": since_last_cycle,
+                        "cycles_completed": self._cycles_completed,
+                        "current_task": str(self._current_task) if self._current_task else None,
+                    },
+                )
+
+        return DaemonHealth(
+            healthy=True,
+            message=f"Cognition daemon running, {self._cycles_completed} cycles completed",
+            details={
+                "running": True,
+                "cycles_completed": self._cycles_completed,
+                "tasks_processed": self._tasks_processed,
+                "current_task": self._current_task.get("task_type") if self._current_task else None,
+            },
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Streaming Subscriptions (TUI Real-time Updates)

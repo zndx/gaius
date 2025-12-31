@@ -555,7 +555,9 @@ class HealthChecker:
 
             endpoints = status.get("endpoints", {})
             total = len(endpoints)
-            healthy = sum(1 for e in endpoints.values() if isinstance(e, dict) and e.get("status") == "healthy")
+            # Accept both legacy "healthy" and gRPC protobuf enum "PROCESS_STATUS_HEALTHY"
+            healthy_statuses = {"healthy", "PROCESS_STATUS_HEALTHY"}
+            healthy = sum(1 for e in endpoints.values() if isinstance(e, dict) and e.get("status") in healthy_statuses)
 
             if total == 0:
                 return CheckResult(
@@ -575,7 +577,7 @@ class HealthChecker:
                 )
 
             if healthy < total:
-                unhealthy = [name for name, e in endpoints.items() if isinstance(e, dict) and e.get("status") != "healthy"]
+                unhealthy = [name for name, e in endpoints.items() if isinstance(e, dict) and e.get("status") not in healthy_statuses]
                 return CheckResult(
                     name="Engine Endpoints",
                     status=CheckStatus.WARN,

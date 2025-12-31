@@ -434,6 +434,14 @@ class GrpcEngineClient:
             # Run swarm by calling Complete for each agent role
             return await self._run_swarm_via_grpc(params, timeout)
 
+        elif action == "budget":
+            # XAI budget status via gRPC
+            response = await self._gaius_stub.XAIBudget(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
         else:
             raise ValueError(f"Unknown Scheduler action: {action}")
 
@@ -588,10 +596,20 @@ class GrpcEngineClient:
             )
             result = MessageToDict(orch_response, preserving_proto_field_name=True)
             # Convert endpoints list to dict for easier access
+            # Normalize protobuf enum status to simple strings
+            status_map = {
+                "PROCESS_STATUS_HEALTHY": "healthy",
+                "PROCESS_STATUS_UNHEALTHY": "unhealthy",
+                "PROCESS_STATUS_STARTING": "starting",
+                "PROCESS_STATUS_STOPPED": "stopped",
+                "PROCESS_STATUS_STOPPING": "stopping",
+                "PROCESS_STATUS_FAILED": "failed",
+            }
             endpoints = {}
             for ep in result.get("endpoints", []):
+                raw_status = ep.get("status", "unknown")
                 endpoints[ep.get("name", "")] = {
-                    "status": ep.get("status", "unknown"),
+                    "status": status_map.get(raw_status, raw_status),
                     "port": ep.get("port", 0),
                     "model": ep.get("model", ""),
                 }
@@ -623,6 +641,30 @@ class GrpcEngineClient:
                 "endpoints": [],
                 "queue_depth": 0,
             }
+
+        elif action == "gpu_detailed":
+            # Get detailed GPU health via HealthStream (single snapshot)
+            from ..engine.proto import gaius_service_pb2
+            request = gaius_service_pb2.HealthStreamRequest(interval_ms=0)
+            try:
+                # Stream returns first message immediately with interval_ms=0
+                async for metrics in self._gaius_stub.HealthStream(request, timeout=timeout):
+                    # Convert protobuf to dict
+                    gpus = []
+                    for gpu in metrics.gpus:
+                        gpus.append({
+                            "gpu_id": gpu.gpu_id,
+                            "utilization": gpu.utilization,
+                            "memory_used_gb": gpu.memory_used_gb,
+                            "memory_total_gb": gpu.memory_total_gb,
+                            "temperature_c": gpu.temperature_c,
+                            "power_watts": gpu.power_watts,
+                            "is_healthy": gpu.temperature_c < 85 and gpu.memory_used_gb < gpu.memory_total_gb * 0.95,
+                        })
+                    return {"gpus": gpus}
+            except Exception as e:
+                # Fallback: return empty GPU list with error
+                return {"gpus": [], "error": str(e)}
 
         else:
             raise ValueError(f"Unknown Health action: {action}")
@@ -708,7 +750,42 @@ class GrpcEngineClient:
                 "connections_found": response.connections_found,
                 "curiosities_generated": response.curiosities_generated,
                 "duration_ms": response.duration_ms,
+                "kb_path": response.kb_path if response.kb_path else None,
+                "tokens_out": response.tokens_out,
                 "error": response.error or None,
+            }
+
+        elif action == "self_observation":
+            from ..engine.generated import SelfObservationRequest
+
+            max_observations = params.get("max_observations", 5)
+            response = await self._gaius_stub.SelfObservation(
+                SelfObservationRequest(max_observations=max_observations),
+                timeout=timeout,
+            )
+            return {
+                "success": response.success,
+                "observations_generated": response.observations_generated,
+                "duration_ms": response.duration_ms,
+                "error": response.error or None,
+                "observation_ids": list(response.observation_ids),
+            }
+
+        elif action == "engine_audit":
+            from ..engine.generated import EngineAuditRequest
+
+            include_metrics = params.get("include_metrics", True)
+            response = await self._gaius_stub.EngineAudit(
+                EngineAuditRequest(include_metrics=include_metrics),
+                timeout=timeout,
+            )
+            return {
+                "success": response.success,
+                "observations_recorded": response.observations_recorded,
+                "anomalies_found": response.anomalies_found,
+                "duration_ms": response.duration_ms,
+                "error": response.error or None,
+                "anomaly_details": list(response.anomaly_details),
             }
 
         else:

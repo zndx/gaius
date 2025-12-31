@@ -9,6 +9,10 @@ This service runs IN THE ENGINE (not client layer) ensuring:
 - Single source of truth for health state
 - Engine can perform autonomous healing even when no clients are connected
 
+Implements BaseDaemon protocol with CRITICAL criticality - engine enters
+DEGRADED mode if this daemon fails to start (not exit), allowing ACP-Claude
+to investigate accumulated error states.
+
 Architecture:
     ┌─────────────────────────────────────────────────────────────────────┐
     │                      gaius-engine daemon                            │
@@ -34,12 +38,20 @@ BDD Alignment:
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 from uuid import UUID, uuid4
 
+from .base_daemon import (
+    BaseDaemon,
+    DaemonCriticality,
+    DaemonHealth,
+    DaemonStartupError,
+)
+
 if TYPE_CHECKING:
     from ..config import EngineConfig
+    from ..daemon_registry import DaemonRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +66,6 @@ class ObserverConfig:
         burst_interval: Faster polling when healing in progress (default 5)
         backoff_interval: Slower polling after errors (default 120)
         escalate_to_acp: Enable ACP escalation for complex issues
-        acp_timeout: Timeout for ACP prompts in seconds
         github_repo: Repository for issue tracking (required for full workflow)
         kb_root: Path to knowledge base root
         recovery_verification_time: Seconds of stable health before closing incident
@@ -71,7 +82,7 @@ class ObserverConfig:
 
     # ACP integration
     escalate_to_acp: bool = True
-    acp_timeout: float = 300.0  # 5 minutes
+    # No timeout - let Claude Code run until natural completion (issue resolved or GH issue created)
 
     # GitHub integration - internal repo for health tracking
     github_repo: str = "zndx/gaius-internal"
@@ -85,6 +96,7 @@ class ObserverConfig:
     # Cadence controls (prevent runaway remediation)
     min_interval_between_restarts: int = 300  # 5 minutes
     max_restarts_per_hour: int = 3
+    max_issues_per_day: int = 3  # Max GitHub issues per 24 hours
 
 
 @dataclass
@@ -143,8 +155,11 @@ class HealthIncident:
         }
 
 
-class HealthObserverService:
+class HealthObserverService(BaseDaemon):
     """Engine service for autonomous health monitoring and remediation.
+
+    Implements BaseDaemon with CRITICAL criticality - if this daemon fails,
+    engine enters DEGRADED mode to allow ACP-Claude investigation.
 
     Runs as part of gaius-engine daemon, ensuring health monitoring
     persists regardless of client connections.
@@ -155,6 +170,7 @@ class HealthObserverService:
     - Tiered self-healing with escalation to Claude Code via ACP
     - Event-sourced healing audit trail
     - GitHub issue tracking for persistent incidents
+    - Daemon registry integration for lifecycle monitoring
 
     The observer integrates with Claude Code through ACP, delegating:
     - Complex root cause analysis
@@ -162,6 +178,17 @@ class HealthObserverService:
     - GitHub issue management
     - Code-level fixes when needed
     """
+
+    # BaseDaemon protocol implementation
+    @property
+    def name(self) -> str:
+        """Unique daemon name."""
+        return "health_observer"
+
+    @property
+    def criticality(self) -> DaemonCriticality:
+        """CRITICAL - engine enters DEGRADED if this fails."""
+        return DaemonCriticality.CRITICAL
 
     def __init__(
         self,
@@ -198,9 +225,19 @@ class HealthObserverService:
         self._last_poll_at: datetime | None = None
         self._last_report: dict[str, Any] | None = None
 
+        # GitHub issue cadence tracking
+        self._issues_created_today = 0
+        self._last_issue_date: date | None = None
+
         # Callbacks for external notification
         self._on_incident: list[Callable[[HealthIncident], Awaitable[None]]] = []
         self._on_resolution: list[Callable[[HealthIncident], Awaitable[None]]] = []
+
+        # DaemonRegistry reference (set during engine startup)
+        self._daemon_registry: "DaemonRegistry | None" = None
+
+        # Database pool for internal health queries (set via set_db_pool)
+        self._db_pool: Any = None
 
         logger.info("HealthObserverService initialized")
 
@@ -208,6 +245,7 @@ class HealthObserverService:
         self,
         orchestrator: Any = None,
         health: Any = None,
+        db_pool: Any = None,
     ) -> None:
         """Set service references after initialization.
 
@@ -216,11 +254,14 @@ class HealthObserverService:
         Args:
             orchestrator: OrchestratorService instance
             health: HealthService instance
+            db_pool: asyncpg connection pool for direct DB queries
         """
         if orchestrator:
             self._orchestrator = orchestrator
         if health:
             self._health_service = health
+        if db_pool:
+            self._db_pool = db_pool
 
     @property
     def running(self) -> bool:
@@ -314,12 +355,20 @@ class HealthObserverService:
             await asyncio.sleep(interval)
 
     async def _run_health_check(self) -> dict[str, Any]:
-        """Run comprehensive health check.
+        """Run internal health check using direct service access.
 
-        Uses HealthService metrics and OrchestratorService status.
+        Engine-side health monitoring that queries internal services directly,
+        avoiding circular gRPC dependencies. Checks:
+        - GPU health (via HealthService)
+        - Endpoint health (via OrchestratorService)
+        - Pipeline backlog (via direct DB query)
+
+        The client-side HealthChecker has more checks (NiFi, Qdrant, etc.)
+        but those create circular gRPC dependencies. This monitors the core
+        issues that require autonomous remediation.
 
         Returns:
-            Health report dict with all check results
+            Health report dict with check results
         """
         report = {
             "timestamp": datetime.now().isoformat(),
@@ -327,61 +376,139 @@ class HealthObserverService:
             "checks": [],
         }
 
-        # Get GPU health from HealthService
-        if self._health_service:
-            try:
-                health_data = self._health_service.get_health()
-                report["gpus"] = health_data.get("gpus", [])
+        # Check GPU health
+        await self._check_gpu_health(report)
 
-                # Check for GPU issues
-                for gpu in health_data.get("gpus", []):
-                    if not gpu.get("is_healthy", True):
-                        report["healthy"] = False
-                        report["checks"].append({
-                            "name": f"gpu_{gpu['gpu_id']}_health",
-                            "status": "FAIL",
-                            "details": gpu,
-                            "heuristic_id": "GPU_001",
-                        })
-            except Exception as e:
-                logger.debug(f"Health service query failed: {e}")
+        # Check endpoint health
+        await self._check_endpoint_health(report)
 
-        # Get endpoint health from OrchestratorService
-        if self._orchestrator:
-            try:
-                status = self._orchestrator.get_status()
-                endpoints = status.get("endpoints", {})
-                report["endpoints"] = endpoints
-
-                # Check for endpoint issues
-                for alias, ep_info in endpoints.items():
-                    ep_status = ep_info.get("status", "unknown")
-                    if ep_status in ("unhealthy", "error", "failed"):
-                        report["healthy"] = False
-                        report["checks"].append({
-                            "name": f"endpoint_{alias}",
-                            "status": "FAIL",
-                            "details": {
-                                "endpoint": alias,
-                                **ep_info,
-                            },
-                            "heuristic_id": "VLLM_001",
-                        })
-                    elif ep_status == "starting":
-                        # Starting is warning, not failure
-                        report["checks"].append({
-                            "name": f"endpoint_{alias}",
-                            "status": "WARN",
-                            "details": {
-                                "endpoint": alias,
-                                **ep_info,
-                            },
-                            "heuristic_id": None,
-                        })
-            except Exception as e:
-                logger.debug(f"Orchestrator status query failed: {e}")
+        # Check pipeline backlog (new - direct DB query)
+        await self._check_pipeline_backlog(report)
 
         return report
+
+    async def _check_gpu_health(self, report: dict[str, Any]) -> None:
+        """Check GPU health via HealthService.
+
+        Args:
+            report: Health report to append results to
+        """
+        if not self._health_service:
+            return
+
+        try:
+            health_data = self._health_service.get_health()
+            report["gpus"] = health_data.get("gpus", [])
+
+            for gpu in health_data.get("gpus", []):
+                if not gpu.get("is_healthy", True):
+                    report["healthy"] = False
+                    report["checks"].append({
+                        "name": f"gpu_{gpu['gpu_id']}_health",
+                        "status": "FAIL",
+                        "message": f"GPU {gpu['gpu_id']} unhealthy",
+                        "details": gpu,
+                        "heuristic_id": "GPU_001",
+                    })
+        except Exception as e:
+            logger.debug(f"GPU health check failed: {e}")
+
+    async def _check_endpoint_health(self, report: dict[str, Any]) -> None:
+        """Check endpoint health via OrchestratorService.
+
+        Args:
+            report: Health report to append results to
+        """
+        if not self._orchestrator:
+            return
+
+        try:
+            status = self._orchestrator.get_status()
+            endpoints = status.get("endpoints", {})
+            report["endpoints"] = endpoints
+
+            for alias, ep_info in endpoints.items():
+                ep_status = ep_info.get("status", "unknown")
+                # Accept both legacy and protobuf enum formats
+                unhealthy_statuses = {"unhealthy", "error", "failed", "PROCESS_STATUS_UNHEALTHY", "PROCESS_STATUS_FAILED"}
+                if ep_status in unhealthy_statuses:
+                    report["healthy"] = False
+                    report["checks"].append({
+                        "name": f"endpoint_{alias}",
+                        "status": "FAIL",
+                        "message": f"Endpoint {alias} is {ep_status}",
+                        "details": {"endpoint": alias, **ep_info},
+                        "heuristic_id": "VLLM_001",
+                    })
+        except Exception as e:
+            logger.debug(f"Endpoint health check failed: {e}")
+
+    async def _check_pipeline_backlog(self, report: dict[str, Any]) -> None:
+        """Check pipeline backlog via direct database query.
+
+        Queries v_pipeline_status view to detect critical backlogs that
+        indicate stalled LLM triage processing.
+
+        Args:
+            report: Health report to append results to
+        """
+        if not self._db_pool:
+            logger.debug("No DB pool available for pipeline check")
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT stage, pending, completed_1h, backlog_warn, backlog_critical
+                    FROM v_pipeline_status
+                    WHERE pending > backlog_critical
+                """)
+
+                for row in rows:
+                    stage = row["stage"]
+                    pending = row["pending"]
+                    critical = row["backlog_critical"]
+
+                    report["healthy"] = False
+                    report["checks"].append({
+                        "name": f"pipeline_{stage}",
+                        "status": "FAIL",
+                        "message": f"Pipeline backlog critical: {stage}: {pending} pending (threshold: {critical})",
+                        "details": {
+                            "stage": stage,
+                            "pending": pending,
+                            "completed_1h": row["completed_1h"],
+                            "backlog_critical": critical,
+                            "endpoint": f"pipeline_{stage}",  # For incident fingerprinting
+                        },
+                        "heuristic_id": "PIPELINE_001",
+                        "suggestion": "Run: /health fix pipeline",
+                    })
+
+                # Also check for warnings (less severe)
+                warn_rows = await conn.fetch("""
+                    SELECT stage, pending, backlog_warn, backlog_critical
+                    FROM v_pipeline_status
+                    WHERE pending > backlog_warn AND pending <= backlog_critical
+                """)
+
+                for row in warn_rows:
+                    stage = row["stage"]
+                    pending = row["pending"]
+                    report["checks"].append({
+                        "name": f"pipeline_{stage}",
+                        "status": "WARN",
+                        "message": f"Pipeline backlog warning: {stage}: {pending} pending",
+                        "details": {
+                            "stage": stage,
+                            "pending": pending,
+                            "backlog_warn": row["backlog_warn"],
+                        },
+                        "heuristic_id": "PIPELINE_001",
+                    })
+
+        except Exception as e:
+            logger.warning(f"Pipeline backlog check failed: {e}")
 
     async def _process_failures(self, report: dict[str, Any]) -> None:
         """Process failed health checks.
@@ -588,6 +715,14 @@ class HealthObserverService:
                     if incident_gpu in gpu_ids:
                         await self._orchestrator.restart_endpoint(alias)
                 return True
+            elif incident.failure_mode_id.startswith("PIPELINE"):
+                # Pipeline backlogs are capacity issues, not restartable services
+                # Tier 0 cannot resolve - escalate to ACP for analysis
+                logger.info(
+                    f"Pipeline backlog ({incident.endpoint}) requires capacity analysis, "
+                    "escalating to ACP"
+                )
+                return False
             else:
                 logger.warning(
                     f"Unknown failure mode {incident.failure_mode_id}, cannot remediate"
@@ -636,8 +771,8 @@ class HealthObserverService:
 
                     self._acp_client = GaiusACPClient(
                         ACPConfig(
-                            prompt_timeout=self.config.acp_timeout,
-                            auto_approve_terminal=False,
+                            # No timeout - let Claude Code run until natural completion
+                            auto_approve_terminal=True,  # Allow Bash for health investigation
                         )
                     )
                     await self._acp_client.connect()
@@ -647,14 +782,13 @@ class HealthObserverService:
             # Build prompt for Claude Code
             prompt = self._build_acp_prompt(incident)
 
-            # Send to Claude Code
+            # Send to Claude Code - no timeout, let it run until natural completion
             response = await self._acp_client.prompt(
                 message=prompt,
                 context={
                     "incident": incident.to_dict(),
                     "last_report": self._last_report,
                 },
-                timeout=self.config.acp_timeout,
             )
 
             # Parse response for success indicator
@@ -735,11 +869,17 @@ Begin your investigation now."""
         return True
 
     async def _create_github_issue(self, incident: HealthIncident) -> None:
-        """Create GitHub issue for manual incidents.
+        """Create GitHub issue for manual incidents using gh CLI.
+
+        ACP-Claude can then pick up these issues and investigate using
+        the full power of Claude Code with MCP tools.
 
         Args:
             incident: The incident requiring manual intervention
         """
+        import asyncio
+        import subprocess
+
         if not self.config.github_repo:
             logger.info(
                 f"GitHub integration not configured, skipping issue creation "
@@ -747,11 +887,238 @@ Begin your investigation now."""
             )
             return
 
-        # TODO: Implement GitHub issue creation via gh CLI
-        logger.info(
-            f"Would create GitHub issue for {incident.fingerprint} "
-            f"in {self.config.github_repo}"
-        )
+        # Check cadence - max 3 issues per day
+        if not self._can_create_issue():
+            logger.warning(
+                f"Cadence limit reached, skipping issue creation for {incident.fingerprint}\n"
+                "  Guru: #ACP.00000015.CADENCEBLOCKED"
+            )
+            return
+
+        # Check for existing open issue (update recurrence count instead)
+        existing_issue = await self._find_existing_issue(incident.fingerprint)
+        if existing_issue:
+            await self._update_issue_recurrence(existing_issue, incident)
+            return
+
+        try:
+            from ...acp.security import (
+                sanitize_issue_content,
+                validate_issue_title,
+                load_security_config,
+            )
+
+            # Validate repo is allowed
+            security_config = load_security_config()
+            if self.config.github_repo not in security_config.allowed_repos:
+                logger.error(
+                    f"Repository {self.config.github_repo} not in ACP allowlist.\n"
+                    "  Guru: #ACP.SEC.00000002.NOTALLOWED\n"
+                    "  Add to ~/.config/gaius/acp.conf: acp.github.allowed_repos"
+                )
+                return
+
+            # Build issue title
+            title = f"[HEALTH-FIX] {incident.failure_mode_id}: {incident.endpoint}"
+            title = validate_issue_title(title)
+
+            # Build issue body with sanitized content
+            body = self._build_issue_body(incident)
+            body = sanitize_issue_content(body)
+
+            # Create issue via gh CLI
+            cmd = [
+                "gh", "issue", "create",
+                "--repo", self.config.github_repo,
+                "--title", title,
+                "--body", body,
+                "--label", "health-fix,automated",
+            ]
+
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            )
+
+            if result.returncode == 0:
+                # Parse issue number from output (e.g., "https://github.com/owner/repo/issues/123")
+                issue_url = result.stdout.strip()
+                issue_number = int(issue_url.split("/")[-1]) if "/" in issue_url else None
+
+                incident.github_issue = issue_number
+                self._issues_created_today += 1
+
+                logger.info(
+                    f"Created GitHub issue #{issue_number} for {incident.fingerprint}: {issue_url}"
+                )
+            else:
+                logger.error(
+                    f"Failed to create GitHub issue: {result.stderr}\n"
+                    "  Guru: #ACP.00000014.GHISSUEFAIL"
+                )
+
+        except ImportError:
+            logger.warning(
+                "ACP security module not available, skipping issue creation.\n"
+                "  Install with: uv sync --extra acp"
+            )
+        except Exception as e:
+            logger.error(
+                f"Error creating GitHub issue: {e}\n"
+                "  Guru: #ACP.00000014.GHISSUEFAIL"
+            )
+
+    def _build_issue_body(self, incident: HealthIncident) -> str:
+        """Build GitHub issue body with incident details.
+
+        Args:
+            incident: The incident to document
+
+        Returns:
+            Markdown-formatted issue body
+        """
+        # Build heuristic path (convert VLLM_001 to vllm/001.md)
+        failure_parts = incident.failure_mode_id.lower().split("_")
+        heuristic_path = "/".join(failure_parts) + ".md" if len(failure_parts) >= 2 else incident.failure_mode_id
+
+        return f"""## Incident Details
+
+**Fingerprint:** `{incident.fingerprint}`
+**Endpoint:** `{incident.endpoint}`
+**Failure Mode:** `{incident.failure_mode_id}`
+**RPN Score:** {incident.rpn_score} (S={incident.rpn_severity}, O={incident.rpn_occurrence}, D={incident.rpn_detection})
+
+## Timeline
+
+- **Created:** {incident.created_at.isoformat()}
+- **Last Check:** {incident.last_check_at.isoformat()}
+- **Remediation Attempts:** {incident.attempts}
+- **Current Tier:** {incident.current_tier} (escalated to manual)
+
+## Recommended Investigation
+
+1. Check endpoint logs: `journalctl -u gaius-engine --since "1 hour ago" | grep {incident.endpoint}`
+2. Check GPU health: `/health gpu`
+3. Review heuristic: `build/dev/current/heuristics/gaius/{heuristic_path}`
+
+## Actions
+
+- [ ] Investigate root cause
+- [ ] Implement fix or enhancement to `/health fix`
+- [ ] Verify fix resolves the issue
+- [ ] Update KB heuristic if needed
+
+---
+*Auto-generated by HealthObserver daemon*
+*Guru: #{incident.failure_mode_id}*
+"""
+
+    def _can_create_issue(self) -> bool:
+        """Check if cadence policy allows creating an issue.
+
+        Returns:
+            True if within daily limit
+        """
+        # Reset counter if new day
+        if hasattr(self, "_last_issue_date"):
+            from datetime import date
+            if date.today() != self._last_issue_date:
+                self._issues_created_today = 0
+                self._last_issue_date = date.today()
+        else:
+            from datetime import date
+            self._last_issue_date = date.today()
+            self._issues_created_today = 0
+
+        return self._issues_created_today < self.config.max_issues_per_day
+
+    async def _find_existing_issue(self, fingerprint: str) -> int | None:
+        """Find existing open issue for this incident fingerprint.
+
+        Args:
+            fingerprint: Incident fingerprint to search for
+
+        Returns:
+            Issue number if found, None otherwise
+        """
+        import asyncio
+        import subprocess
+
+        if not self.config.github_repo:
+            return None
+
+        try:
+            # Search for open issues with this fingerprint
+            cmd = [
+                "gh", "issue", "list",
+                "--repo", self.config.github_repo,
+                "--state", "open",
+                "--search", f"in:body {fingerprint}",
+                "--json", "number",
+                "--limit", "1",
+            ]
+
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                issues = json.loads(result.stdout)
+                if issues:
+                    return issues[0]["number"]
+
+        except Exception as e:
+            logger.debug(f"Error searching for existing issue: {e}")
+
+        return None
+
+    async def _update_issue_recurrence(self, issue_number: int, incident: HealthIncident) -> None:
+        """Add recurrence comment to existing issue.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Current incident occurrence
+        """
+        import asyncio
+        import subprocess
+
+        try:
+            from ...acp.security import sanitize_issue_content
+
+            comment = f"""## Recurrence Detected
+
+**Time:** {incident.last_check_at.isoformat()}
+**RPN Score:** {incident.rpn_score}
+**Attempts:** {incident.attempts}
+
+This incident has recurred. Previous remediation may not have addressed root cause.
+
+---
+*Auto-comment by HealthObserver*
+"""
+            comment = sanitize_issue_content(comment)
+
+            cmd = [
+                "gh", "issue", "comment",
+                str(issue_number),
+                "--repo", self.config.github_repo,
+                "--body", comment,
+            ]
+
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Updated issue #{issue_number} with recurrence info")
+            else:
+                logger.warning(f"Failed to update issue #{issue_number}: {result.stderr}")
+
+        except Exception as e:
+            logger.warning(f"Error updating issue #{issue_number}: {e}")
 
     async def _check_recoveries(self, report: dict[str, Any]) -> None:
         """Check if recovering incidents have stabilized.
@@ -924,5 +1291,59 @@ Begin your investigation now."""
 
     @property
     def is_running(self) -> bool:
-        """Whether service is running."""
+        """Whether service is running (BaseDaemon protocol)."""
         return self._running
+
+    async def health_check(self) -> DaemonHealth:
+        """Check daemon health (BaseDaemon protocol).
+
+        Returns:
+            DaemonHealth with status and diagnostics
+        """
+        if not self._running:
+            return DaemonHealth(
+                healthy=False,
+                message="HealthObserver daemon not running",
+                guru_code="#HO.00000001.NOTRUNNING",
+                details={
+                    "running": False,
+                    "poll_count": self._poll_count,
+                    "enabled": self.config.enabled,
+                },
+            )
+
+        # Check if polling is stalled (no poll in 5x poll interval)
+        if self._last_poll_at:
+            stall_threshold = self.config.poll_interval * 5
+            since_last_poll = (datetime.now() - self._last_poll_at).total_seconds()
+            if since_last_poll > stall_threshold:
+                return DaemonHealth(
+                    healthy=False,
+                    message=f"Health polling stalled ({since_last_poll:.0f}s since last poll)",
+                    guru_code="#HO.00000003.STALLED",
+                    details={
+                        "running": True,
+                        "seconds_since_last_poll": since_last_poll,
+                        "poll_count": self._poll_count,
+                    },
+                )
+
+        return DaemonHealth(
+            healthy=True,
+            message=f"HealthObserver running, {self._poll_count} polls completed",
+            details={
+                "running": True,
+                "poll_count": self._poll_count,
+                "active_incidents": len(self._active_incidents),
+                "acp_escalations": self._acp_escalations,
+            },
+        )
+
+    def set_daemon_registry(self, registry: "DaemonRegistry") -> None:
+        """Set reference to daemon registry for cross-daemon monitoring.
+
+        Args:
+            registry: The DaemonRegistry instance
+        """
+        self._daemon_registry = registry
+        logger.debug("DaemonRegistry reference set in HealthObserverService")

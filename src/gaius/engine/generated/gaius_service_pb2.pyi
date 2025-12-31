@@ -251,6 +251,20 @@ class SchedulerStatusResponse(_message.Message):
     jobs_by_priority: _containers.ScalarMap[str, int]
     def __init__(self, queue_depth: _Optional[int] = ..., active_jobs: _Optional[int] = ..., avg_latency_ms: _Optional[float] = ..., jobs_by_priority: _Optional[_Mapping[str, int]] = ...) -> None: ...
 
+class XAIBudgetResponse(_message.Message):
+    __slots__ = ("daily_used", "daily_limit", "weekly_used", "weekly_limit", "reset_at")
+    DAILY_USED_FIELD_NUMBER: _ClassVar[int]
+    DAILY_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    WEEKLY_USED_FIELD_NUMBER: _ClassVar[int]
+    WEEKLY_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    RESET_AT_FIELD_NUMBER: _ClassVar[int]
+    daily_used: int
+    daily_limit: int
+    weekly_used: int
+    weekly_limit: int
+    reset_at: str
+    def __init__(self, daily_used: _Optional[int] = ..., daily_limit: _Optional[int] = ..., weekly_used: _Optional[int] = ..., weekly_limit: _Optional[int] = ..., reset_at: _Optional[str] = ...) -> None: ...
+
 class SwarmStreamRequest(_message.Message):
     __slots__ = ("domain", "context", "roles", "clt")
     DOMAIN_FIELD_NUMBER: _ClassVar[int]
@@ -413,7 +427,7 @@ class TriggerCognitionRequest(_message.Message):
     def __init__(self, max_thoughts: _Optional[int] = ..., trigger_reason: _Optional[str] = ...) -> None: ...
 
 class TriggerCognitionResponse(_message.Message):
-    __slots__ = ("success", "thoughts_generated", "patterns_detected", "connections_found", "curiosities_generated", "duration_ms", "error")
+    __slots__ = ("success", "thoughts_generated", "patterns_detected", "connections_found", "curiosities_generated", "duration_ms", "error", "self_observations", "kb_path", "tokens_out")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     THOUGHTS_GENERATED_FIELD_NUMBER: _ClassVar[int]
     PATTERNS_DETECTED_FIELD_NUMBER: _ClassVar[int]
@@ -421,6 +435,9 @@ class TriggerCognitionResponse(_message.Message):
     CURIOSITIES_GENERATED_FIELD_NUMBER: _ClassVar[int]
     DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    SELF_OBSERVATIONS_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_OUT_FIELD_NUMBER: _ClassVar[int]
     success: bool
     thoughts_generated: int
     patterns_detected: int
@@ -428,7 +445,52 @@ class TriggerCognitionResponse(_message.Message):
     curiosities_generated: int
     duration_ms: int
     error: str
-    def __init__(self, success: bool = ..., thoughts_generated: _Optional[int] = ..., patterns_detected: _Optional[int] = ..., connections_found: _Optional[int] = ..., curiosities_generated: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+    self_observations: int
+    kb_path: str
+    tokens_out: int
+    def __init__(self, success: bool = ..., thoughts_generated: _Optional[int] = ..., patterns_detected: _Optional[int] = ..., connections_found: _Optional[int] = ..., curiosities_generated: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ..., self_observations: _Optional[int] = ..., kb_path: _Optional[str] = ..., tokens_out: _Optional[int] = ...) -> None: ...
+
+class SelfObservationRequest(_message.Message):
+    __slots__ = ("max_observations",)
+    MAX_OBSERVATIONS_FIELD_NUMBER: _ClassVar[int]
+    max_observations: int
+    def __init__(self, max_observations: _Optional[int] = ...) -> None: ...
+
+class SelfObservationResponse(_message.Message):
+    __slots__ = ("success", "observations_generated", "duration_ms", "error", "observation_ids")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATIONS_GENERATED_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATION_IDS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    observations_generated: int
+    duration_ms: int
+    error: str
+    observation_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, success: bool = ..., observations_generated: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ..., observation_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class EngineAuditRequest(_message.Message):
+    __slots__ = ("include_metrics",)
+    INCLUDE_METRICS_FIELD_NUMBER: _ClassVar[int]
+    include_metrics: bool
+    def __init__(self, include_metrics: bool = ...) -> None: ...
+
+class EngineAuditResponse(_message.Message):
+    __slots__ = ("success", "observations_recorded", "anomalies_found", "duration_ms", "error", "anomaly_details")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    OBSERVATIONS_RECORDED_FIELD_NUMBER: _ClassVar[int]
+    ANOMALIES_FOUND_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    ANOMALY_DETAILS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    observations_recorded: int
+    anomalies_found: int
+    duration_ms: int
+    error: str
+    anomaly_details: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, success: bool = ..., observations_recorded: _Optional[int] = ..., anomalies_found: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ..., anomaly_details: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class CognitionActivityResponse(_message.Message):
     __slots__ = ("cognition_running", "cycles_completed", "last_cycle_timestamp_ms", "current_task", "thoughts_today", "active_thoughts")

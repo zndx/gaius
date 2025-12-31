@@ -40,7 +40,7 @@ from .core.projection import get_grid_manager, GridData
 from .core.activity import get_activity_tracker, log_activity, ActivityType
 from .core.session import get_session_manager, SessionHandoff
 from .agents import get_swarm_manager
-from .agents.cognition import get_cognition_agent
+# Note: L5 CognitionAgent is deprecated - all cognition routes through Engine gRPC
 from .awareness import generate_startup_report
 from .widgets.grid import MainGrid
 from .widgets.minigrid import MiniGrid
@@ -2447,7 +2447,7 @@ class GaiusApp(App):
         """
         import asyncio
         from .inference.manager import get_inference_manager
-        from .inference.orchestrator import ProcessStatus
+        from .engine.backends.vllm_controller import ProcessStatus
 
         content = self.query_one("#info-panel", InfoPanel)
 
@@ -2965,20 +2965,32 @@ Use `/evolve stop` to stop orchestrated evolution.
             self._trigger_cognition_and_show(content, editor)
 
         elif subcmd == "self":
-            # Trigger self-observation
-            content.show_file("thoughts.md", "# Self-Observation\n\n*Generating self-observation thoughts...*")
+            # Trigger self-observation via Engine gRPC
+            content.show_file("thoughts.md", "# Self-Observation\n\n*Generating self-observation thoughts via Engine...*")
 
             async def run_self_observation():
                 try:
-                    cognition = get_cognition_agent(self.config.profile)
-                    context = await cognition._gather_context()
-                    context.active_thoughts = await cognition.get_active_thoughts(limit=20)
+                    from .client.grpc_client import get_grpc_client
 
-                    thoughts = await cognition._observe_own_thoughts(context)
-                    for thought in thoughts:
-                        await cognition._save_thought(thought)
+                    client = await get_grpc_client()
+                    if not client:
+                        raise RuntimeError(
+                            "Engine not available.\n"
+                            "Guru Meditation: #COG.00000025.NOENGINE\n"
+                            "Check: devenv processes up"
+                        )
 
-                    if thoughts:
+                    # Call SelfObservation via gRPC
+                    result = await client.call(
+                        "Cognition",
+                        "self_observation",
+                        {"max_observations": 5},
+                        timeout=120.0,
+                    )
+
+                    observations_generated = result.get("observations_generated", 0)
+
+                    if observations_generated > 0:
                         # Open the most recent thought note
                         scratch_path = Path(self.config.kb.scratch)
                         recent = self._find_most_recent_thought(scratch_path)
@@ -2989,7 +3001,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                         content.show_file(
                             "thoughts.md",
                             f"# Self-Observation Complete\n\n"
-                            f"**Generated:** {len(thoughts)} self-observation thoughts\n\n"
+                            f"**Generated:** {observations_generated} self-observation thoughts\n\n"
                             f"*Thoughts about own thought patterns have been recorded.*"
                         )
 
@@ -3008,19 +3020,33 @@ Use `/evolve stop` to stop orchestrated evolution.
             asyncio.create_task(run_self_observation())
 
         elif subcmd == "audit":
-            # Trigger engine audit
-            content.show_file("thoughts.md", "# Engine Audit\n\n*Auditing engine health...*")
+            # Trigger engine audit via Engine gRPC
+            content.show_file("thoughts.md", "# Engine Audit\n\n*Auditing engine health via Engine...*")
 
             async def run_audit():
                 try:
-                    cognition = get_cognition_agent(self.config.profile)
-                    context = await cognition._gather_context()
+                    from .client.grpc_client import get_grpc_client
 
-                    thoughts = await cognition._audit_engine_health(context)
-                    for thought in thoughts:
-                        await cognition._save_thought(thought)
+                    client = await get_grpc_client()
+                    if not client:
+                        raise RuntimeError(
+                            "Engine not available.\n"
+                            "Guru Meditation: #COG.00000026.NOENGINE\n"
+                            "Check: devenv processes up"
+                        )
 
-                    if thoughts:
+                    # Call EngineAudit via gRPC
+                    result = await client.call(
+                        "Cognition",
+                        "engine_audit",
+                        {"include_metrics": True},
+                        timeout=120.0,
+                    )
+
+                    observations_recorded = result.get("observations_recorded", 0)
+                    anomalies_found = result.get("anomalies_found", 0)
+
+                    if observations_recorded > 0:
                         # Open the most recent thought note
                         scratch_path = Path(self.config.kb.scratch)
                         recent = self._find_most_recent_thought(scratch_path)
@@ -3031,7 +3057,8 @@ Use `/evolve stop` to stop orchestrated evolution.
                         content.show_file(
                             "thoughts.md",
                             f"# Engine Audit Complete\n\n"
-                            f"**Generated:** {len(thoughts)} audit observations\n\n"
+                            f"**Observations:** {observations_recorded}\n"
+                            f"**Anomalies:** {anomalies_found}\n\n"
                             f"*Engine health observations have been recorded.*"
                         )
 
@@ -3053,40 +3080,67 @@ Use `/evolve stop` to stop orchestrated evolution.
             content.show_file("error.txt", f"Unknown thoughts subcommand: {subcmd}\n\nUsage:\n  /thoughts          - Trigger cognition and show thoughts\n  /thoughts recent   - Show most recent thought\n  /thoughts self     - Trigger self-observation\n  /thoughts audit    - Trigger engine audit")
 
     def _trigger_cognition_and_show(self, content: "InfoPanel", editor: "NoteEditor") -> None:
-        """Trigger a cognition cycle and show the resulting thought note."""
+        """Trigger a cognition cycle via Engine gRPC and show the resulting thought note.
+
+        Uses gRPC to route through the Engine (L3) rather than calling the L5 agent
+        directly. This ensures all inference is properly managed by the Engine.
+        """
         import asyncio
 
-        content.show_file("thoughts.md", "# Cognition\n\n*Generating thoughts...*")
+        content.show_file("thoughts.md", "# Cognition\n\n*Generating thoughts via Engine...*")
 
         async def run_cognition():
             try:
-                cognition = get_cognition_agent(self.config.profile)
-                result = await cognition.think(
-                    max_thoughts=self.config.cognition.greeting_thoughts,
-                    trigger_reason="manual",
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    raise RuntimeError(
+                        "Engine not available.\n"
+                        "Guru Meditation: #COG.00000017.NOENGINE\n"
+                        "Check: devenv processes up"
+                    )
+
+                # Call TriggerCognition via gRPC (routes to cognition_logic.py)
+                max_thoughts = getattr(self.config.cognition, "greeting_thoughts", 5)
+                result = await client.call(
+                    "Cognition",
+                    "trigger",
+                    {"max_thoughts": max_thoughts, "trigger_reason": "manual"},
+                    timeout=120.0,
                 )
 
-                # Open the most recent thought note
-                scratch_path = Path(self.config.kb.scratch)
-                recent = self._find_most_recent_thought(scratch_path)
+                # Open the thought note using kb_path from gRPC response
+                kb_path = result.get("kb_path", "")
+                if kb_path:
+                    # kb_path is relative to KB root (e.g. "scratch/2025-12-31/...")
+                    kb_root = Path(self.config.kb.root)
+                    full_path = kb_root / kb_path
+                    if full_path.exists():
+                        editor.remove_class("hidden")
+                        editor.open_note(str(full_path))
 
-                if recent:
-                    editor.remove_class("hidden")
-                    editor.open_note(str(recent))
+                        # Refresh file tree
+                        file_tree = self.query_one("#file-tree", FileTree)
+                        file_tree.refresh_tree()
 
-                    # Refresh file tree
-                    file_tree = self.query_one("#file-tree", FileTree)
-                    file_tree.refresh_tree()
+                # Parse results from gRPC response
+                thoughts_generated = result.get("thoughts_generated", 0)
+                patterns = result.get("patterns_detected", 0)
+                connections = result.get("connections_found", 0)
+                curiosities = result.get("curiosities_generated", 0)
+                self_obs = result.get("self_observations", 0)
 
+                tokens_out = result.get("tokens_out", 0)
                 content.show_file(
                     "thoughts.md",
                     f"# Cognition Complete\n\n"
-                    f"**Generated:** {len(result.thoughts)} thoughts\n"
-                    f"- Patterns: {result.patterns_detected}\n"
-                    f"- Connections: {result.connections_found}\n"
-                    f"- Curiosities: {result.curiosities_generated}\n"
-                    f"- Self-observations: {result.self_observations}\n\n"
-                    f"*Duration: {result.duration_ms}ms*"
+                    f"**Generated:** {thoughts_generated} thoughts ({tokens_out} tokens)\n"
+                    f"- Patterns: {patterns}\n"
+                    f"- Connections: {connections}\n"
+                    f"- Curiosities: {curiosities}\n"
+                    f"- Self-observations: {self_obs}\n"
+                    + (f"\n**Saved:** `{kb_path}`" if kb_path else "")
                 )
 
                 # Refresh ThinkPanel immediately so new thoughts appear
@@ -3226,6 +3280,149 @@ Use `/evolve stop` to stop orchestrated evolution.
                 content.show_file("error.txt", f"Health check failed: {e}\n\n{traceback.format_exc()}")
 
         asyncio.create_task(run_health_check())
+
+    def _handle_ambient_command(self, args: str) -> None:
+        """Handle /ambient command for ambient computing cycles.
+
+        Usage:
+            /ambient                    - Run full ambient cycle (default)
+            /ambient cycle              - Run full ambient cycle
+            /ambient cycle --baseline-only  - Run baseline tasks only, skip reasoning
+            /ambient status             - Show ambient computing status
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "cycle"
+
+        if subcmd == "cycle":
+            skip_reasoning = "--baseline-only" in parts
+            self._run_ambient_cycle(content, skip_reasoning)
+        elif subcmd == "status":
+            self._run_ambient_status(content)
+        else:
+            content.show_file(
+                "error.txt",
+                f"Unknown ambient subcommand: {subcmd}\n\n"
+                "Usage:\n"
+                "  /ambient                       - Run full cycle\n"
+                "  /ambient cycle                 - Run full cycle\n"
+                "  /ambient cycle --baseline-only - Skip reasoning\n"
+                "  /ambient status                - Show status"
+            )
+
+    def _run_ambient_cycle(self, content: "InfoPanel", skip_reasoning: bool = False) -> None:
+        """Run ambient computing cycle with streaming progress.
+
+        Uses debounced updates to prevent blocking the TUI event loop.
+        Updates at most every 200ms to keep UI responsive while showing progress.
+        """
+        import asyncio
+        import time
+
+        # Show initial status
+        mode = "baseline-only" if skip_reasoning else "full"
+        content.show_file("ambient.md", f"# Ambient Computing\n\n*Starting {mode} cycle...*")
+
+        async def run_cycle():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                think_panel = self.query_one("#think-panel", ThinkPanel)
+
+                client = await get_grpc_client()
+                lines = [f"# Ambient Cycle ({mode})"]
+                completed_phases = []
+                last_update = 0.0
+                UPDATE_INTERVAL = 0.2  # Max 5 updates/sec to keep TUI responsive
+
+                async for event in client.ambient_cycle_stream(
+                    skip_reasoning=skip_reasoning,
+                    baseline_task_count=1,
+                ):
+                    # Extract event data
+                    phase = event.get("phase", "").replace("AMBIENT_PHASE_", "")
+                    message = event.get("message", "")
+                    progress = event.get("progress", 0.0)
+                    metrics = event.get("metrics", {})
+
+                    # Track completed phases
+                    if progress >= 1.0 and phase not in completed_phases:
+                        completed_phases.append(phase)
+                        lines.append(f"✓ **{phase}**: {message}")
+
+                        # Add metrics if present
+                        if metrics:
+                            for key, value in metrics.items():
+                                lines.append(f"  - {key}: {value}")
+
+                    # Debounce UI updates to prevent blocking TUI event loop
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        progress_text = "\n".join(lines)
+                        if progress < 1.0:
+                            progress_text += f"\n\n*In progress: {phase} ({progress:.0%})...*"
+                        content.show_file("ambient.md", progress_text)
+                        last_update = now
+                        await asyncio.sleep(0)  # Yield control to TUI event loop
+
+                # Final summary
+                lines.append("")
+                lines.append("---")
+                lines.append(f"*Completed {len(completed_phases)} phases*")
+                content.show_file("ambient.md", "\n".join(lines))
+
+                # Refresh ThinkPanel
+                try:
+                    await think_panel.refresh_now()
+                except Exception:
+                    pass
+
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Ambient cycle failed: {e}\n\n{traceback.format_exc()}")
+
+        asyncio.create_task(run_cycle())
+
+    def _run_ambient_status(self, content: "InfoPanel") -> None:
+        """Show ambient computing status."""
+        import asyncio
+
+        content.show_file("ambient.md", "# Ambient Status\n\n*Fetching...*")
+
+        async def get_status():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                status = await client.call("Ambient", "status", {})
+
+                # Format status
+                cycle_running = status.get("cycle_running", False)
+                current_phase = status.get("current_phase", "idle")
+                cycles_completed = status.get("cycles_completed", 0)
+                baseline_endpoints = status.get("baseline_endpoints", [])
+
+                output = f"""# Ambient Computing Status
+
+| Field | Value |
+|-------|-------|
+| Cycle Running | {'Yes' if cycle_running else 'No'} |
+| Current Phase | {current_phase} |
+| Cycles Completed | {cycles_completed} |
+| Baseline Endpoints | {', '.join(baseline_endpoints) if baseline_endpoints else 'None'} |
+
+---
+*Commands: `/ambient cycle`, `/ambient status`*
+"""
+                content.show_file("ambient.md", output)
+
+            except Exception as e:
+                content.show_file("error.txt", f"Failed to get ambient status: {e}")
+
+        asyncio.create_task(get_status())
 
     def _handle_x_bookmarks_command(self, args: str) -> None:
         """Handle /x-bookmarks command for X bookmarks sync.
@@ -4444,6 +4641,7 @@ The general-purpose agentic query interface.
 - `/explain [position] [--no-save]`: Explain grid position with LLM
 - `/inference [status|start|stop|restart]`: Manage inference stack
 - `/evolve [start|stop|status|trigger|budget]`: Evolution daemon
+- `/ambient [cycle|status]`: Ambient computing cycles
 - `/q` or `/exit`: Quit Gaius
 
 ## Explain Command
@@ -5487,6 +5685,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "health":
             # Run comprehensive health check
             self._handle_health_command(args)
+        elif command == "ambient":
+            # Ambient computing cycles
+            self._handle_ambient_command(args)
         elif command in ("x-bookmarks", "xb"):
             # X Bookmarks sync and management
             self._handle_x_bookmarks_command(args)

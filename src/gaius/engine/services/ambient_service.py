@@ -316,6 +316,8 @@ class AmbientWorkloadService:
                 return
 
             phases_completed = 3
+            # Get the allocated reasoning endpoint from the eviction result
+            allocated_reasoning_endpoint = eviction_result.get("reasoning_endpoint")
             yield self._make_event(
                 pb.AMBIENT_PHASE_REASONING_EVICTION,
                 f"Reasoning endpoint ready, evicted: {eviction_result.get('evicted', [])}",
@@ -330,7 +332,10 @@ class AmbientWorkloadService:
                 0.0,
             )
 
-            reasoning_result = await self._run_reasoning_workload(reasoning_prompt)
+            reasoning_result = await self._run_reasoning_workload(
+                custom_prompt=reasoning_prompt,
+                endpoint_name=allocated_reasoning_endpoint,
+            )
             total_tasks += 1
 
             if reasoning_result.success:
@@ -517,23 +522,40 @@ class AmbientWorkloadService:
         """
         try:
             # Use begin_workload to request reasoning capability
-            from ..proto import gaius_service_pb2 as pb
+            from ..workloads import WorkloadRequest, WorkloadType, JobPriority
+            from gaius.models.registry import TaskType
 
-            result = await self._orchestrator.begin_workload(
+            request = WorkloadRequest(
                 workload_id=f"ambient-reasoning-{int(time.time())}",
-                workload_type=pb.WORKLOAD_INFERENCE,
-                required_capabilities=["reasoning"],
-                priority="high",
+                workload_type=WorkloadType.INFERENCE,
+                required_capabilities=[TaskType.REASONING],
+                priority=JobPriority.HIGH,
                 estimated_duration_s=120,
+                estimated_memory_mb=32000,  # ~32GB for reasoning model
                 preemptible=False,
             )
 
-            return {
+            result = await self._orchestrator.begin_workload(request)
+
+            response = {
                 "success": result.success,
                 "evicted": list(result.evicted_endpoints) if result.evicted_endpoints else [],
                 "restore_plan": list(result.restore_plan) if result.restore_plan else [],
                 "wait_time_ms": result.wait_time_ms,
+                "workload_id": request.workload_id,
             }
+
+            # Get the allocated reasoning endpoint for use in the reasoning task
+            if result.success and result.allocated_endpoints:
+                reasoning_alloc = result.allocated_endpoints.get(TaskType.REASONING)
+                if reasoning_alloc:
+                    response["reasoning_endpoint"] = reasoning_alloc.endpoint_name
+                    response["reasoning_port"] = reasoning_alloc.port
+
+            # Include error message from WorkloadResult if present
+            if not result.success and result.error:
+                response["error"] = result.error
+            return response
 
         except Exception as e:
             logger.exception("Eviction failed")
@@ -545,23 +567,26 @@ class AmbientWorkloadService:
     async def _run_reasoning_workload(
         self,
         custom_prompt: Optional[str] = None,
+        endpoint_name: Optional[str] = None,
     ) -> TaskResult:
         """Run the reasoning workload task.
 
         Args:
             custom_prompt: Optional custom prompt
+            endpoint_name: Optional endpoint name (from scheduler allocation)
 
         Returns:
             TaskResult for reasoning
         """
-        task = DEFAULT_REASONING_TASK
-        if custom_prompt:
-            task = AmbientTask(
-                endpoint=self._reasoning_endpoint,
-                prompt=custom_prompt,
-                expected_capability="reasoning",
-                timeout_secs=120,
-            )
+        # Use the scheduler-allocated endpoint if provided, otherwise fallback
+        target_endpoint = endpoint_name or self._reasoning_endpoint
+
+        task = AmbientTask(
+            endpoint=target_endpoint,
+            prompt=custom_prompt or DEFAULT_REASONING_TASK.prompt,
+            expected_capability="reasoning",
+            timeout_secs=120,
+        )
 
         return await self._execute_task(task)
 
@@ -577,10 +602,12 @@ class AmbientWorkloadService:
             workloads = self._orchestrator.get_active_workloads()
 
             restored = []
-            for workload in workloads:
-                if workload.workload_id.startswith("ambient-reasoning-"):
-                    await self._orchestrator.complete_workload(workload.workload_id)
-                    restored.extend(workload.restore_plan or [])
+            # workloads is dict[str, dict] - iterate over items
+            for workload_id, workload_info in workloads.items():
+                if workload_id.startswith("ambient-reasoning-"):
+                    await self._orchestrator.complete_workload(workload_id)
+                    # restore_plan is a list in the workload info dict
+                    restored.extend(workload_info.get("restore_plan", []))
 
             # Ensure baseline endpoints are running
             for endpoint in self._baseline_endpoints:

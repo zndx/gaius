@@ -247,8 +247,12 @@ class VectorSearch:
         # Ensure collection exists
         try:
             self.ensure_collection()
-        except Exception:
-            return []  # Qdrant not available
+        except Exception as e:
+            raise RuntimeError(
+                f"Qdrant collection unavailable: {e}\n"
+                "Guru Meditation: #VS.00000001.QDRANT\n"
+                "Check: /health qdrant"
+            ) from e
 
         # Check if collection has points
         info = self.client.get_collection(self.collection_name)

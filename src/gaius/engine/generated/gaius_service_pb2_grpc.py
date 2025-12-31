@@ -89,6 +89,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.GetJobResultRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.GetJobResultResponse.FromString,
                 _registered_method=True)
+        self.XAIBudget = channel.unary_unary(
+                '/gaius.engine.GaiusService/XAIBudget',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.XAIBudgetResponse.FromString,
+                _registered_method=True)
         self.SwarmStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/SwarmStream',
                 request_serializer=gaius__service__pb2.SwarmStreamRequest.SerializeToString,
@@ -158,6 +163,16 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/CognitionActivity',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionActivityResponse.FromString,
+                _registered_method=True)
+        self.SelfObservation = channel.unary_unary(
+                '/gaius.engine.GaiusService/SelfObservation',
+                request_serializer=gaius__service__pb2.SelfObservationRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SelfObservationResponse.FromString,
+                _registered_method=True)
+        self.EngineAudit = channel.unary_unary(
+                '/gaius.engine.GaiusService/EngineAudit',
+                request_serializer=gaius__service__pb2.EngineAuditRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EngineAuditResponse.FromString,
                 _registered_method=True)
         self.SubscribeCognition = channel.unary_stream(
                 '/gaius.engine.GaiusService/SubscribeCognition',
@@ -491,6 +506,13 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def XAIBudget(self, request, context):
+        """XAI budget tracking
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SwarmStream(self, request, context):
         """Streaming swarm analysis - returns progress events then final result
         Handles backend wait internally, streaming QUEUED status while waiting
@@ -587,6 +609,18 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def CognitionActivity(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SelfObservation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EngineAudit(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1002,6 +1036,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.GetJobResultRequest.FromString,
                     response_serializer=gaius__service__pb2.GetJobResultResponse.SerializeToString,
             ),
+            'XAIBudget': grpc.unary_unary_rpc_method_handler(
+                    servicer.XAIBudget,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.XAIBudgetResponse.SerializeToString,
+            ),
             'SwarmStream': grpc.unary_stream_rpc_method_handler(
                     servicer.SwarmStream,
                     request_deserializer=gaius__service__pb2.SwarmStreamRequest.FromString,
@@ -1071,6 +1110,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.CognitionActivity,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.CognitionActivityResponse.SerializeToString,
+            ),
+            'SelfObservation': grpc.unary_unary_rpc_method_handler(
+                    servicer.SelfObservation,
+                    request_deserializer=gaius__service__pb2.SelfObservationRequest.FromString,
+                    response_serializer=gaius__service__pb2.SelfObservationResponse.SerializeToString,
+            ),
+            'EngineAudit': grpc.unary_unary_rpc_method_handler(
+                    servicer.EngineAudit,
+                    request_deserializer=gaius__service__pb2.EngineAuditRequest.FromString,
+                    response_serializer=gaius__service__pb2.EngineAuditResponse.SerializeToString,
             ),
             'SubscribeCognition': grpc.unary_stream_rpc_method_handler(
                     servicer.SubscribeCognition,
@@ -1613,6 +1662,33 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def XAIBudget(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XAIBudget',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.XAIBudgetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def SwarmStream(request,
             target,
             options=(),
@@ -1980,6 +2056,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CognitionActivity',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             gaius__service__pb2.CognitionActivityResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SelfObservation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SelfObservation',
+            gaius__service__pb2.SelfObservationRequest.SerializeToString,
+            gaius__service__pb2.SelfObservationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EngineAudit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EngineAudit',
+            gaius__service__pb2.EngineAuditRequest.SerializeToString,
+            gaius__service__pb2.EngineAuditResponse.FromString,
             options,
             channel_credentials,
             insecure,

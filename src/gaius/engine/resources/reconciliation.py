@@ -5,6 +5,9 @@ This module implements a Kubernetes-style reconciliation loop that:
 2. Compares to expected state
 3. Detects drift and triggers remediation
 
+Implements BaseDaemon protocol with REQUIRED criticality - engine starts with
+ERROR logged if this daemon fails.
+
 The key insight: each endpoint AND infrastructure process is an independent FSM,
 and the reconciliation loop drives state transitions based on observations.
 
@@ -29,9 +32,19 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import httpx
+
+from ..services.base_daemon import (
+    BaseDaemon,
+    DaemonCriticality,
+    DaemonHealth,
+)
+
+if TYPE_CHECKING:
+    from ..daemon_registry import DaemonRegistry
+    from ..services.health_observer_service import HealthObserverService
 
 logger = logging.getLogger(__name__)
 
@@ -1115,11 +1128,15 @@ async def remediate(
 # =============================================================================
 
 
-class ReconciliationService:
+class ReconciliationService(BaseDaemon):
     """Service that runs the reconciliation loop.
 
     Periodically observes all endpoints and compares to expected state.
     Logs drift and optionally triggers remediation.
+
+    Implements BaseDaemon protocol with REQUIRED criticality - engine starts
+    but logs ERROR if this daemon fails. Reconciliation is essential for
+    self-healing but the engine can function in degraded mode without it.
 
     Usage:
         service = ReconciliationService(resource_manager, config)
@@ -1127,6 +1144,21 @@ class ReconciliationService:
         ...
         await service.stop()
     """
+
+    @property
+    def name(self) -> str:
+        """Unique daemon name."""
+        return "reconciliation"
+
+    @property
+    def criticality(self) -> DaemonCriticality:
+        """REQUIRED - engine starts but logs ERROR if this fails."""
+        return DaemonCriticality.REQUIRED
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the reconciliation loop is running."""
+        return self._running
 
     def __init__(
         self,
@@ -1180,6 +1212,14 @@ class ReconciliationService:
         self._successful_remediations = 0
         self._infra_orphans_killed = 0
 
+        # HealthObserver integration for escalation
+        self._health_observer: Optional["HealthObserverService"] = None
+
+        # Escalation thresholds
+        self._high_drift_threshold = 10  # Trigger escalation after 10 unresolved drifts
+        self._consecutive_failures = 0
+        self._escalation_pending = False
+
     async def start(self) -> None:
         """Start the reconciliation loop."""
         if self._running:
@@ -1202,6 +1242,61 @@ class ReconciliationService:
             except asyncio.CancelledError:
                 pass
         logger.info("ReconciliationService stopped")
+
+    async def health_check(self) -> DaemonHealth:
+        """Check reconciliation service health.
+
+        Returns:
+            DaemonHealth with status and diagnostics
+        """
+        if not self._running:
+            return DaemonHealth(
+                healthy=False,
+                message="Reconciliation service not running",
+                guru_code="#RC.00000001.NOTRUNNING",
+                details={"running": False},
+            )
+
+        # Check if reconciliation task is alive
+        if self._task is None or self._task.done():
+            return DaemonHealth(
+                healthy=False,
+                message="Reconciliation task crashed",
+                guru_code="#RC.00000002.CRASHED",
+                details={
+                    "running": True,
+                    "task_done": self._task.done() if self._task else True,
+                },
+            )
+
+        # Check for excessive drift (may indicate systemic issues)
+        excessive_drift = self._drift_count > 50 and self._successful_remediations < self._drift_count / 2
+        if excessive_drift:
+            return DaemonHealth(
+                healthy=False,
+                message=f"High drift with low remediation success ({self._successful_remediations}/{self._drift_count})",
+                guru_code="#RC.00000003.HIGHDRIFT",
+                details={
+                    "running": True,
+                    "drift_count": self._drift_count,
+                    "remediation_count": self._remediation_count,
+                    "successful_remediations": self._successful_remediations,
+                },
+            )
+
+        return DaemonHealth(
+            healthy=True,
+            message=f"Reconciliation running ({self._drift_count} drifts, {self._successful_remediations} fixed)",
+            details={
+                "running": True,
+                "interval_seconds": self._interval,
+                "remediate_enabled": self._remediate,
+                "drift_count": self._drift_count,
+                "remediation_count": self._remediation_count,
+                "successful_remediations": self._successful_remediations,
+                "infra_orphans_killed": self._infra_orphans_killed,
+            },
+        )
 
     async def _run_loop(self) -> None:
         """Main reconciliation loop."""
@@ -1320,6 +1415,7 @@ class ReconciliationService:
 
                         if remediation_result.success:
                             self._successful_remediations += 1
+                            self._consecutive_failures = 0  # Reset on success
                             logger.info(
                                 f"Remediation successful for {name}: "
                                 f"{remediation_result.message}"
@@ -1328,10 +1424,19 @@ class ReconciliationService:
                             if remediation_result.new_state:
                                 result.actual_state = remediation_result.new_state
                         else:
+                            self._consecutive_failures += 1
                             logger.warning(
                                 f"Remediation failed for {name}: "
                                 f"{remediation_result.message}"
                             )
+
+                            # Escalate to HealthObserver after threshold
+                            if self._consecutive_failures >= self._high_drift_threshold:
+                                logger.warning(
+                                    f"#RC.00000003.HIGHDRIFT Consecutive failures ({self._consecutive_failures}) "
+                                    f"exceed threshold, escalating {name} to HealthObserver"
+                                )
+                                await self._escalate_to_health_observer(name, result)
 
             self._observations[name] = obs
             self._results[name] = result
@@ -1351,7 +1456,7 @@ class ReconciliationService:
                 "gpus": list(alloc.gpu_ids),
                 "model": alloc.model,
                 "state": self._allocation_to_endpoint_state(alloc.state),
-                "pid": None,  # TODO: track PID in allocation
+                "pid": alloc.process_pid,  # PID tracking for orphan detection
             }
 
         # Also check config for endpoints that should exist
@@ -1536,6 +1641,103 @@ class ReconciliationService:
         if name in self._infra_processes:
             del self._infra_processes[name]
             logger.info(f"Removed infra process {name}")
+
+    def set_health_observer(self, health_observer: "HealthObserverService") -> None:
+        """Set reference to HealthObserver for escalation.
+
+        When reconciliation detects persistent issues that it cannot
+        remediate, it escalates to HealthObserver for ACP intervention.
+
+        Args:
+            health_observer: HealthObserverService instance
+        """
+        self._health_observer = health_observer
+        logger.info("HealthObserver reference set in ReconciliationService")
+
+    async def _escalate_to_health_observer(
+        self,
+        endpoint: str,
+        result: ReconciliationResult,
+    ) -> None:
+        """Escalate a persistent reconciliation issue to HealthObserver.
+
+        Creates a synthetic incident for HealthObserver to handle via
+        the standard FMEA tiered escalation path.
+
+        Args:
+            endpoint: Affected endpoint name
+            result: The reconciliation result that triggered escalation
+        """
+        if not self._health_observer:
+            logger.warning(
+                f"Cannot escalate {endpoint}: HealthObserver not configured.\n"
+                "  Guru: #RC.00000004.NOOBSERVER"
+            )
+            return
+
+        if not self._health_observer.running:
+            logger.warning(
+                f"Cannot escalate {endpoint}: HealthObserver not running.\n"
+                "  Guru: #HO.00000001.NOTRUNNING"
+            )
+            return
+
+        try:
+            # Import HealthIncident
+            from ..services.health_observer_service import HealthIncident
+            from uuid import uuid4
+
+            # Create synthetic incident for HealthObserver
+            fingerprint = f"RC.DRIFT:{endpoint}"
+
+            # Map reconciliation state to FMEA failure mode
+            failure_mode_map = {
+                EndpointState.ORPHANED: "GPU_ORPHAN",
+                EndpointState.UNHEALTHY: "VLLM_UNHEALTHY",
+                EndpointState.CONFLICT: "PORT_CONFLICT",
+                EndpointState.FAILED: "ENDPOINT_FAILED",
+            }
+            failure_mode = failure_mode_map.get(result.actual_state, "RECONCILIATION_DRIFT")
+
+            incident = HealthIncident(
+                incident_id=uuid4(),
+                fingerprint=fingerprint,
+                endpoint=endpoint,
+                failure_mode_id=failure_mode,
+                rpn_score=200,  # High enough for Tier 2 (ACP) escalation
+                rpn_severity=8,
+                rpn_occurrence=5,
+                rpn_detection=5,
+                current_tier=2,  # Start at Tier 2 since Tier 0/1 (reconciliation) failed
+                attempts=self._consecutive_failures,
+            )
+
+            # Register with HealthObserver's active incidents
+            # This triggers the escalation flow including potential ACP and GitHub issues
+            self._health_observer._active_incidents[fingerprint] = incident
+            self._health_observer._incidents_created += 1
+
+            # Trigger callbacks
+            for callback in self._health_observer._on_incident:
+                try:
+                    await callback(incident)
+                except Exception as e:
+                    logger.warning(f"Incident callback error: {e}")
+
+            # Attempt remediation through HealthObserver's tiered system
+            await self._health_observer._attempt_remediation(incident)
+
+            self._escalation_pending = False
+            logger.info(
+                f"Escalated {endpoint} to HealthObserver: {failure_mode} "
+                f"(tier={incident.current_tier}, attempts={incident.attempts})"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to escalate {endpoint} to HealthObserver: {e}\n"
+                "  Guru: #RC.00000005.ESCALATIONFAIL"
+            )
 
     async def check_infra_orphans(self) -> dict[str, InfraReconciliationResult]:
         """One-shot check for infrastructure orphans.

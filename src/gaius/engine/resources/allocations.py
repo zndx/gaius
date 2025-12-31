@@ -33,6 +33,7 @@ class GPUAllocation:
         started_at: When allocation was created
         activated_at: When model became ready to serve
         endpoint_port: Port where vLLM is serving (if active)
+        process_pid: PID of the vLLM process (for orphan detection)
         error_message: Error details if state is FAILED
     """
 
@@ -44,6 +45,7 @@ class GPUAllocation:
     started_at: datetime = field(default_factory=datetime.now)
     activated_at: Optional[datetime] = None
     endpoint_port: Optional[int] = None
+    process_pid: Optional[int] = None
     error_message: Optional[str] = None
 
     @property
@@ -61,11 +63,17 @@ class GPUAllocation:
         """Whether allocation can accept requests."""
         return self.state in (AllocationState.ALLOCATED, AllocationState.ACTIVE)
 
-    def mark_active(self, port: int) -> None:
-        """Mark allocation as active with serving port."""
+    def mark_active(self, port: int, pid: int | None = None) -> None:
+        """Mark allocation as active with serving port and process PID.
+
+        Args:
+            port: Port where vLLM is serving
+            pid: PID of the vLLM process (for orphan detection)
+        """
         self.state = AllocationState.ACTIVE
         self.activated_at = datetime.now()
         self.endpoint_port = port
+        self.process_pid = pid
 
     def mark_failed(self, error: str) -> None:
         """Mark allocation as failed with error."""
@@ -75,6 +83,42 @@ class GPUAllocation:
     def mark_releasing(self) -> None:
         """Mark allocation as releasing."""
         self.state = AllocationState.RELEASING
+
+    def is_process_alive(self) -> bool:
+        """Check if the tracked vLLM process is still running.
+
+        Returns:
+            True if process is running, False if dead or no PID tracked.
+            Used by reconciliation to detect orphaned allocations.
+        """
+        if self.process_pid is None:
+            return False
+        try:
+            import os
+            # os.kill with signal 0 doesn't kill but checks if process exists
+            os.kill(self.process_pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Process exists but we don't have permission (shouldn't happen)
+            return True
+
+    def is_orphaned(self) -> bool:
+        """Check if allocation is orphaned (active but process dead).
+
+        An orphaned allocation indicates the vLLM process crashed or was killed
+        without going through proper cleanup. Reconciliation should restart these.
+
+        Returns:
+            True if allocation is active/allocated but process is dead.
+        """
+        if self.state not in (AllocationState.ACTIVE, AllocationState.ALLOCATED):
+            return False
+        # If no PID tracked, we can't determine orphan status
+        if self.process_pid is None:
+            return False
+        return not self.is_process_alive()
 
 
 @dataclass

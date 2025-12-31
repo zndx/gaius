@@ -343,11 +343,10 @@ class ThinkPanel(Widget):
         asyncio.create_task(self._start_streaming_or_polling())
 
     async def _start_streaming_or_polling(self) -> None:
-        """Attempt to use gRPC streaming; fall back to polling if unavailable.
+        """Attempt to use gRPC streaming for real-time updates.
 
-        Streaming provides real-time updates with lower latency and resource
-        usage than polling. If the streaming RPC is not available (older engine
-        version), we gracefully degrade to 5-second polling.
+        Fail-fast: If streaming is unavailable, shows error state with
+        actionable remediation instead of silently falling back to polling.
         """
         try:
             from ..client.grpc_client import get_grpc_client
@@ -355,8 +354,15 @@ class ThinkPanel(Widget):
             client = await get_grpc_client()
 
             if not client.is_connected:
-                logger.debug("gRPC client not connected, falling back to polling")
-                self._start_polling()
+                # Fail-fast: Show error instead of silent polling fallback
+                logger.error("gRPC client not connected - engine unavailable")
+                self._engine_activity.engine_healthy = False
+                self._engine_activity.update_error = (
+                    "Engine not connected.\n"
+                    "Guru Meditation: #THINK.00000002.NOENGINE\n"
+                    "Try: devenv processes up gaius-engine"
+                )
+                self.refresh()
                 return
 
             # Try to start streaming - if it works, we're good
@@ -378,8 +384,15 @@ class ThinkPanel(Widget):
             await self._do_poll()
 
         except Exception as e:
-            logger.debug(f"Streaming setup failed: {e}, falling back to polling")
-            self._start_polling()
+            # Fail-fast: Show error instead of silent polling fallback
+            logger.error(f"Streaming setup failed: {e}")
+            self._engine_activity.engine_healthy = False
+            self._engine_activity.update_error = (
+                f"Engine streaming unavailable: {e}\n"
+                "Guru Meditation: #THINK.00000001.STREAMFAIL\n"
+                "Try: /health fix engine"
+            )
+            self.refresh()
 
     def _start_polling(self) -> None:
         """Fall back to polling mode."""
@@ -441,11 +454,16 @@ class ThinkPanel(Widget):
         except asyncio.CancelledError:
             logger.debug("Cognition stream cancelled")
         except Exception as e:
-            logger.warning(f"Cognition stream failed: {e}")
-            # Fall back to polling if streaming dies
-            if self._streaming_active:
-                self._streaming_active = False
-                self._start_polling()
+            # Fail-fast: Show error instead of silent polling fallback
+            logger.error(f"Cognition stream failed: {e}")
+            self._streaming_active = False
+            self._engine_activity.engine_healthy = False
+            self._engine_activity.update_error = (
+                f"Cognition streaming failed: {e}\n"
+                "Guru Meditation: #THINK.00000003.COGFAIL\n"
+                "Try: /health fix engine"
+            )
+            self.refresh()
 
     async def _consume_evolution_stream(self, client) -> None:
         """Consume evolution events and update state.
@@ -487,7 +505,15 @@ class ThinkPanel(Widget):
         except asyncio.CancelledError:
             logger.debug("Evolution stream cancelled")
         except Exception as e:
-            logger.warning(f"Evolution stream failed: {e}")
+            # Fail-fast: Show error instead of silent degradation
+            logger.error(f"Evolution stream failed: {e}")
+            self._engine_activity.engine_healthy = False
+            self._engine_activity.update_error = (
+                f"Evolution streaming failed: {e}\n"
+                "Guru Meditation: #THINK.00000004.EVOLFAIL\n"
+                "Try: /health fix engine"
+            )
+            self.refresh()
 
     def on_unmount(self) -> None:
         """Clean up streaming tasks on unmount."""

@@ -110,7 +110,7 @@ class ACPConfig:
     agent_args: list[str] = field(default_factory=lambda: ["@zed-industries/claude-code-acp"] if _find_acp_adapter() == "npx" else [])
     working_directory: str = field(default_factory=lambda: os.getcwd())
     connection_timeout: float = 30.0
-    prompt_timeout: float = 300.0  # 5 minutes for complex operations
+    prompt_timeout: float | None = None  # None = no timeout, let Claude Code run to completion
     auto_approve_fs: bool = True  # Trust Claude Code with KB files
     auto_approve_terminal: bool = True  # Allow gh CLI for issue management
     mcp_config: dict[str, Any] | None = None  # Additional MCP servers
@@ -471,10 +471,19 @@ class GaiusACPClient:
             start_time = datetime.now()
             self._prompts_sent += 1
 
-            # Send prompt with timeout
+            # Send prompt - no timeout by default, let Claude Code run to completion
             # Response text comes via session_update callbacks, not the return value
-            effective_timeout = timeout or self.config.prompt_timeout
-            async with asyncio.timeout(effective_timeout):
+            effective_timeout = timeout if timeout is not None else self.config.prompt_timeout
+
+            if effective_timeout is not None:
+                # With explicit timeout
+                async with asyncio.timeout(effective_timeout):
+                    await self._connection.prompt(
+                        prompt=[text_block(full_prompt)],
+                        session_id=self._session_id,
+                    )
+            else:
+                # No timeout - let Claude Code run until natural completion
                 await self._connection.prompt(
                     prompt=[text_block(full_prompt)],
                     session_id=self._session_id,

@@ -187,6 +187,19 @@ uv run gaius-cli --cmd "/health fix <service>"
 # Available services: engine, dataset, nifi, postgres, qdrant, minio, endpoints, evolution
 ```
 
+### Self-Healing First (IMPORTANT)
+
+**Always prefer `/health fix` over manual remediation.** When encountering unhealthy services:
+
+1. **Run `/health fix <service>`** - Let Gaius attempt self-healing first
+2. **Only use manual commands** (`devenv tasks run restart:clean`, etc.) if self-healing fails
+3. **Document failures** - If `/health fix` can't remediate, that's a bug to fix
+
+This principle ensures:
+- The self-healing system gets exercised and improved
+- Manual interventions are documented as capability gaps
+- Gaius becomes more autonomous over time
+
 ### Testing for Fail-Fast Compliance
 
 Before committing, verify:

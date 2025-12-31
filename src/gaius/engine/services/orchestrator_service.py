@@ -823,7 +823,11 @@ class OrchestratorService:
         if model_spec.provider == "vllm" and model_spec.vllm_config:
             # Create a temporary agent config for the endpoint
             port = self._find_available_port()
-            cmd, env = model_spec.serve_command(port=port, gpus=gpus)
+            cmd_str, env = model_spec.serve_command(port=port, gpus=gpus)
+
+            # serve_command returns a string; split into list for subprocess
+            import shlex
+            cmd = shlex.split(cmd_str)
 
             # Start via vLLM controller
             proc = await self._vllm.start_model(
@@ -1000,6 +1004,220 @@ class OrchestratorService:
         if self._clt_capability:
             return self._clt_capability[0]
         return None
+
+    def _build_current_scheduling_tasks(self) -> list["SchedulingTask"]:
+        """Build SchedulingTasks from currently running endpoints.
+
+        Returns:
+            List of SchedulingTask objects representing current GPU allocations
+        """
+        from ..scheduling import SchedulingTask
+
+        tasks = []
+
+        # Get all running vLLM processes
+        for proc_name, proc in self._vllm._processes.items():
+            if proc.status.value not in ("healthy", "starting"):
+                continue
+
+            # Get activity info if tracked
+            activity = self._endpoint_activity.get(proc_name)
+            capability = activity.capability if activity else None
+            priority = activity.priority if activity else 2  # NORMAL
+
+            tasks.append(
+                SchedulingTask(
+                    task_id=proc_name,
+                    endpoint_name=proc_name,
+                    model_id=proc.model,
+                    required_gpus=len(proc.gpu_ids),
+                    salience=float(priority),
+                    capability=capability,
+                    prefer_contiguous=len(proc.gpu_ids) > 1,
+                    fixed_gpu_ids=list(proc.gpu_ids),
+                    is_current=True,
+                )
+            )
+
+        return tasks
+
+    def _build_target_scheduling_tasks(
+        self,
+        request: "WorkloadRequest",
+        current_tasks: list["SchedulingTask"],
+    ) -> list["SchedulingTask"]:
+        """Build target SchedulingTasks from a workload request.
+
+        Args:
+            request: WorkloadRequest with required capabilities
+            current_tasks: Currently running tasks
+
+        Returns:
+            List of SchedulingTask for desired target state
+        """
+        from gaius.models.registry import get_model_registry
+        from ..scheduling import SchedulingTask
+
+        registry = get_model_registry()
+        target_tasks = []
+
+        # Check which capabilities we need that aren't already running
+        current_capabilities = {
+            t.capability for t in current_tasks if t.capability
+        }
+
+        for task_type in request.required_capabilities:
+            capability_key = task_type.value
+
+            # If we already have this capability, keep it
+            for task in current_tasks:
+                if task.capability == capability_key:
+                    target_tasks.append(task)
+                    break
+            else:
+                # Need to start a new endpoint for this capability
+                model_spec = registry.get_for_task(task_type, require_local=True)
+                if not model_spec:
+                    logger.warning(f"No model for capability {capability_key}")
+                    continue
+
+                requirements = model_spec.get_resource_requirements()
+
+                target_tasks.append(
+                    SchedulingTask(
+                        task_id=f"cap_{capability_key}",
+                        endpoint_name=f"cap_{capability_key}",
+                        model_id=model_spec.model_id,
+                        required_gpus=requirements.num_gpus,
+                        salience=float(request.priority.value),
+                        capability=capability_key,
+                        prefer_contiguous=requirements.num_gpus > 1,
+                        is_current=False,
+                    )
+                )
+
+        return target_tasks
+
+    async def _execute_transition_plan(
+        self,
+        plan: "TransitionPlan",
+    ) -> bool:
+        """Execute a transition plan from the scheduler.
+
+        Executes stops in parallel, then starts in dependency order.
+
+        Args:
+            plan: TransitionPlan from MakespanScheduler
+
+        Returns:
+            True if all steps succeeded
+        """
+        from ..scheduling import TransitionType
+
+        # Execute stop steps (can run in parallel)
+        stop_tasks = []
+        for step in plan.steps:
+            if step.transition_type == TransitionType.STOP_ENDPOINT:
+                stop_tasks.append(self.stop_endpoint(step.endpoint_name))
+
+        if stop_tasks:
+            logger.info(f"Stopping {len(stop_tasks)} endpoints in parallel")
+            results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to stop endpoint: {result}")
+
+        # Wait for GPU memory release
+        await asyncio.sleep(2)
+
+        # Execute start steps in order (respecting dependencies)
+        completed_steps: set[int] = {
+            s.step_id for s in plan.steps
+            if s.transition_type == TransitionType.STOP_ENDPOINT
+        }
+
+        start_steps = [
+            s for s in plan.steps
+            if s.transition_type == TransitionType.START_ENDPOINT
+        ]
+
+        for step in start_steps:
+            # Wait for dependencies
+            if not all(d in completed_steps for d in step.depends_on):
+                logger.warning(f"Step {step.step_id} has unmet dependencies")
+
+            logger.info(
+                f"Starting {step.endpoint_name} on GPUs {step.gpu_ids}"
+            )
+
+            # Start the endpoint with the scheduled GPU assignment
+            status = await self._start_scheduled_endpoint(
+                endpoint_name=step.endpoint_name,
+                gpu_ids=step.gpu_ids,
+            )
+
+            if status.status not in ("healthy", "starting"):
+                logger.error(f"Failed to start {step.endpoint_name}: {status.status}")
+                return False
+
+            completed_steps.add(step.step_id)
+
+        return True
+
+    async def _start_scheduled_endpoint(
+        self,
+        endpoint_name: str,
+        gpu_ids: list[int],
+    ) -> EndpointStatus:
+        """Start an endpoint with pre-computed GPU assignment.
+
+        Args:
+            endpoint_name: Name of the endpoint (e.g., "cap_REASONING")
+            gpu_ids: GPUs to use (from scheduler)
+
+        Returns:
+            EndpointStatus
+        """
+        from gaius.models.registry import get_model_registry, TaskType
+
+        # Parse capability from endpoint name
+        if endpoint_name.startswith("cap_"):
+            capability_key = endpoint_name[4:]  # Remove "cap_" prefix
+            try:
+                task_type = TaskType(capability_key)
+            except ValueError:
+                return EndpointStatus(
+                    agent_alias=endpoint_name,
+                    model="",
+                    port=None,
+                    gpu_ids=gpu_ids,
+                    status="invalid_capability",
+                    startup_message=f"Unknown capability: {capability_key}",
+                )
+
+            # Get the model for this capability
+            registry = get_model_registry()
+            model_spec = registry.get_for_task(task_type, require_local=True)
+
+            if not model_spec:
+                return EndpointStatus(
+                    agent_alias=endpoint_name,
+                    model="",
+                    port=None,
+                    gpu_ids=gpu_ids,
+                    status="no_model",
+                    startup_message=f"No model for capability: {capability_key}",
+                )
+
+            return await self._start_capability_endpoint(
+                endpoint_name=endpoint_name,
+                model_spec=model_spec,
+                task_type=task_type,
+                gpus=gpu_ids,
+            )
+        else:
+            # Regular endpoint from config
+            return await self.start_endpoint(endpoint_name)
 
     async def _find_and_evict_for_resources(
         self,
@@ -1261,42 +1479,82 @@ class OrchestratorService:
                 metadata=request.metadata,
             )
 
-        # Allocate endpoints for each required capability
-        for task_type in request.required_capabilities:
-            status = await self.ensure_capability(
-                task_type=task_type,
-                priority=request.priority.value,
-            )
+        # Use OR-Tools scheduler for capability-based workloads
+        if request.required_capabilities:
+            from ..scheduling import MakespanScheduler, ORTOOLS_AVAILABLE
 
-            if status.status in ("healthy", "starting"):
-                allocated[task_type] = EndpointAllocation(
-                    endpoint_name=status.agent_alias,
-                    capability=task_type,
-                    port=status.port or 0,
-                    healthy=status.status == "healthy",
-                    model_id=status.model,
-                )
-            elif status.status == "requires_embedding_controller":
-                # This capability needs the embedding controller (Phase 5)
-                # For now, mark as pending
-                allocated[task_type] = EndpointAllocation(
-                    endpoint_name="pending_embedding",
-                    capability=task_type,
-                    port=0,
-                    healthy=False,
-                    model_id=status.model,
-                )
-            else:
-                # Failed to allocate this capability
-                logger.error(
-                    f"Failed to allocate capability {task_type.value}: {status.status}"
-                )
+            if not ORTOOLS_AVAILABLE:
                 return WorkloadResult(
                     success=False,
                     workload_id=request.workload_id,
-                    error=f"Failed to allocate {task_type.value}: {status.startup_message}",
+                    error="OR-Tools not available.\n"
+                          "  Install: uv sync --extra scheduler\n"
+                          "  Guru Meditation: #SCH.00000001.NOORDEPS",
                     wait_time_ms=int((time.time() - start_time) * 1000),
                 )
+
+            # Build current and target scheduling tasks
+            current_tasks = self._build_current_scheduling_tasks()
+            target_tasks = self._build_target_scheduling_tasks(request, current_tasks)
+
+            logger.info(
+                f"Scheduling transition: current={[t.endpoint_name for t in current_tasks]}, "
+                f"target={[t.endpoint_name for t in target_tasks]}"
+            )
+
+            # Plan the transition with OR-Tools
+            scheduler = MakespanScheduler(
+                total_gpus=self.resource_manager.total_gpus,
+                reserved_gpus=set(self.resource_manager.reserved_gpus),
+            )
+
+            schedule_result = scheduler.plan_transition(current_tasks, target_tasks)
+
+            if not schedule_result.success:
+                logger.error(f"Scheduling failed: {schedule_result.error}")
+                return WorkloadResult(
+                    success=False,
+                    workload_id=request.workload_id,
+                    error=schedule_result.error,
+                    wait_time_ms=int((time.time() - start_time) * 1000),
+                )
+
+            logger.info(
+                f"Schedule found: makespan={schedule_result.plan.total_makespan_ms}ms, "
+                f"evicting={schedule_result.plan.evicted_endpoints}, "
+                f"assignments={schedule_result.plan.gpu_assignments}"
+            )
+
+            # Execute the transition plan
+            success = await self._execute_transition_plan(schedule_result.plan)
+
+            if not success:
+                return WorkloadResult(
+                    success=False,
+                    workload_id=request.workload_id,
+                    error="Transition plan execution failed.\n"
+                          "  Guru Meditation: #SCH.00000003.EXECFAIL",
+                    wait_time_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # Build allocated endpoints from the plan
+            evicted = schedule_result.plan.evicted_endpoints
+            restore_plan = schedule_result.plan.restore_plan
+
+            for task_type in request.required_capabilities:
+                capability_key = task_type.value
+                endpoint_name = f"cap_{capability_key}"
+
+                if endpoint_name in schedule_result.plan.gpu_assignments:
+                    status = self.get_endpoint_status(endpoint_name)
+                    if status:
+                        allocated[task_type] = EndpointAllocation(
+                            endpoint_name=endpoint_name,
+                            capability=task_type,
+                            port=status.port or 0,
+                            healthy=status.status == "healthy",
+                            model_id=status.model,
+                        )
 
         # Track this workload
         request.started_at = datetime.now()
@@ -1327,6 +1585,11 @@ class OrchestratorService:
         Called when a workload finishes to release resources and
         potentially restore previously evicted endpoints.
 
+        The sequence is:
+        1. Stop transient endpoints allocated for this workload (e.g., cap_reasoning)
+        2. Wait for GPU memory release
+        3. Restore previously evicted baseline endpoints
+
         Args:
             workload_id: ID of the completed workload
         """
@@ -1342,7 +1605,30 @@ class OrchestratorService:
             f"(duration={workload.elapsed_s:.1f}s)"
         )
 
-        # Restore evicted endpoints if specified
+        # Step 1: Stop transient endpoints allocated for this workload
+        # These are dynamically created endpoints like cap_reasoning
+        allocated_endpoints = [
+            alloc.endpoint_name
+            for alloc in workload.result.allocated_endpoints.values()
+        ]
+
+        if allocated_endpoints:
+            logger.info(f"Stopping transient endpoints: {allocated_endpoints}")
+            stop_tasks = [
+                self.stop_endpoint(endpoint_name)
+                for endpoint_name in allocated_endpoints
+            ]
+            results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(
+                        f"Failed to stop transient endpoint {allocated_endpoints[i]}: {result}"
+                    )
+
+            # Wait for GPU memory to be released
+            await asyncio.sleep(3)
+
+        # Step 2: Restore evicted endpoints if specified
         for endpoint_name in workload.result.restore_plan:
             try:
                 logger.info(f"Restoring evicted endpoint: {endpoint_name}")
@@ -1370,6 +1656,7 @@ class OrchestratorService:
                     alloc.endpoint_name
                     for alloc in workload.result.allocated_endpoints.values()
                 ],
+                "restore_plan": workload.result.restore_plan,
             }
         return result
 

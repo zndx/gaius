@@ -606,6 +606,12 @@ class SessionManager:
 
     async def _save_session(self, session: Session) -> str | None:
         """Save session to database."""
+        from ..storage.grid_state import check_database_availability
+
+        # Check availability first (cached, logs once)
+        if not await check_database_availability():
+            return None
+
         try:
             import asyncpg
             import json
@@ -635,7 +641,7 @@ class SessionManager:
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to save session: {e}")
+            logger.warning(f"Failed to save session unexpectedly: {e}")
             return None
 
     async def _update_session(self, session: Session) -> bool:
@@ -690,6 +696,12 @@ class SessionManager:
 
     async def _get_previous_session(self) -> Session | None:
         """Get most recent completed session."""
+        from ..storage.grid_state import check_database_availability
+
+        # Check availability first (cached, logs once)
+        if not await check_database_availability():
+            return None
+
         try:
             import asyncpg
 
@@ -738,7 +750,7 @@ class SessionManager:
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to get previous session: {e}")
+            logger.warning(f"Failed to get previous session unexpectedly: {e}")
             return None
 
     async def _gather_session_metrics(self, session: Session) -> None:

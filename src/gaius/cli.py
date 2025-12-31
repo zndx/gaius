@@ -4595,67 +4595,42 @@ Respond with:
         return status
 
     async def _watch_traces(self, filter_arg: str, otel_available: bool) -> dict:
-        """Watch recent traces with optional filtering."""
+        """Watch recent traces with optional filtering.
+
+        Raises:
+            NotImplementedError: Trace streaming is not yet implemented.
+        """
         if not otel_available:
-            return {
-                "traces": [],
-                "error": "OpenTelemetry not available",
-                "suggestion": "Install with: uv sync --extra telemetry",
-            }
+            raise RuntimeError(
+                "OpenTelemetry not available.\n"
+                "Guru Meditation: #OTEL.00000001.NOTAVAIL\n"
+                "Install with: uv sync --extra telemetry"
+            )
 
-        # Parse filter
-        filters = self._parse_watch_filter(filter_arg)
-
-        # For now, return traces from our in-memory buffer
-        # In a full implementation, this would query the OTel collector
-        traces = []
-
-        # Check if we have reasoning traces in state
-        if hasattr(self.state, 'reasoning_traces'):
-            for t in self.state.reasoning_traces[-20:]:
-                trace_entry = {
-                    "timestamp": t.timestamp.isoformat() if hasattr(t, 'timestamp') else None,
-                    "operation": t.operation if hasattr(t, 'operation') else "unknown",
-                    "query": t.query[:50] if hasattr(t, 'query') else "",
-                    "tokens": t.tokens if hasattr(t, 'tokens') else 0,
-                    "sources": t.sources if hasattr(t, 'sources') else 0,
-                    "duration_ms": t.duration_ms if hasattr(t, 'duration_ms') else 0,
-                }
-
-                # Apply filters
-                if self._matches_filter(trace_entry, filters):
-                    traces.append(trace_entry)
-
-        # Also try to get traces from engine
-        engine_client = await self._get_engine_client_cached()
-        if engine_client:
-            try:
-                # Query engine for recent operations
-                # This is a placeholder - real impl would use OTel collector API
-                pass
-            except Exception:
-                pass
-
-        return {
-            "traces": traces,
-            "count": len(traces),
-            "filter": filters if filters else "none",
-        }
+        raise NotImplementedError(
+            "Trace streaming not yet implemented.\n"
+            "Guru Meditation: #OTEL.00000003.TRACES_NYI\n"
+            "Requires: OTel Collector API integration"
+        )
 
     async def _watch_spans(self, filter_arg: str, otel_available: bool) -> dict:
-        """Watch recent spans with optional filtering."""
+        """Watch recent spans with optional filtering.
+
+        Raises:
+            NotImplementedError: Span streaming is not yet implemented.
+        """
         if not otel_available:
-            return {"spans": [], "error": "OpenTelemetry not available"}
+            raise RuntimeError(
+                "OpenTelemetry not available.\n"
+                "Guru Meditation: #OTEL.00000001.NOTAVAIL\n"
+                "Install with: uv sync --extra telemetry"
+            )
 
-        filters = self._parse_watch_filter(filter_arg)
-
-        # Placeholder - real impl would query OTel collector
-        return {
-            "spans": [],
-            "count": 0,
-            "filter": filters if filters else "none",
-            "note": "Span streaming requires OTel collector API access",
-        }
+        raise NotImplementedError(
+            "Span streaming not yet implemented.\n"
+            "Guru Meditation: #OTEL.00000002.SPANS_NYI\n"
+            "Requires: OTel Collector API integration"
+        )
 
     async def _watch_metrics(self, metric_name: str, otel_available: bool) -> dict:
         """Watch specific metrics."""
@@ -5617,34 +5592,50 @@ Respond with:
             except Exception as e:
                 return {"error": str(e), "mode": "test-cycle"}
 
-        # Default: trigger full cognition cycle
+        # Default: trigger full cognition cycle via Engine gRPC
+        # (L5 agents must not call inference directly - all cognition goes through Engine)
         depth = "deep" if args_lower == "deep" else "moderate"
+        max_thoughts = 10 if depth == "deep" else 5
 
         try:
-            result = await trigger_cognition(
-                reason="cli_thoughts",
-                max_thoughts=5 if depth != "deep" else 10,
-                profile=self.config.profile,
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            if not client:
+                raise RuntimeError(
+                    "Engine not available.\n"
+                    "Guru Meditation: #COG.00000017.NOENGINE\n"
+                    "Check: devenv processes up"
+                )
+
+            # Call TriggerCognition via gRPC (may take 60-90s)
+            result = await client.call(
+                "Cognition",
+                "trigger",
+                {"max_thoughts": max_thoughts, "trigger_reason": "cli_thoughts"},
+                timeout=120.0,
             )
 
-            return {
+            # Fail-fast: check for gRPC errors
+            if not result.get("success", False):
+                error_msg = result.get("error", "Cognition cycle failed (unknown reason)")
+                raise RuntimeError(error_msg)
+
+            # gRPC TriggerCognition returns counts and kb_path
+            response = {
                 "mode": "cognition",
-                "thoughts_generated": len(result.thoughts) if hasattr(result, 'thoughts') else 0,
-                "patterns_detected": result.patterns_detected,
-                "connections_found": result.connections_found,
-                "self_observations": result.self_observations,
-                "engine_audits": result.engine_audits,
-                "thoughts": [
-                    {
-                        "title": t.title,
-                        "content": t.content[:150] + "..." if len(t.content) > 150 else t.content,
-                        "type": t.thought_type.value,
-                        "generation": t.generation,
-                        "note_path": t.note_path,
-                    }
-                    for t in (result.thoughts if hasattr(result, 'thoughts') else [])
-                ][:5],  # Preview first 5
+                "thoughts_generated": result.get("thoughts_generated", 0),
+                "patterns_detected": result.get("patterns_detected", 0),
+                "connections_found": result.get("connections_found", 0),
+                "self_observations": result.get("self_observations", 0),
+                "engine_audits": result.get("engine_audits", 0),
+                "duration_ms": result.get("duration_ms", 0),
+                "tokens_out": result.get("tokens_out", 0),
             }
+            # Include kb_path if available (path to zettelkasten file)
+            if result.get("kb_path"):
+                response["kb_path"] = result["kb_path"]
+            return response
         except Exception as e:
             return {
                 "error": str(e),

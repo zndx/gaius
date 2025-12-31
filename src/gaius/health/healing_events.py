@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 class HealingEventType(str, Enum):
     """Event types for healing audit trail."""
 
+    # Healing sequence events
     SEQUENCE_STARTED = "sequence_started"
     SEQUENCE_COMPLETED = "sequence_completed"
     TIER_ENTERED = "tier_entered"
@@ -47,6 +48,17 @@ class HealingEventType(str, Enum):
     COOLDOWN_CLEARED = "cooldown_cleared"
     CIRCUIT_BREAKER_TRIPPED = "circuit_breaker_tripped"
     CIRCUIT_BREAKER_RESET = "circuit_breaker_reset"
+
+    # Preflight check events (gate for ambient cycles)
+    PREFLIGHT_STARTED = "preflight_started"
+    PREFLIGHT_COMPLETED = "preflight_completed"
+    PREFLIGHT_BLOCKER = "preflight_blocker"  # Hard failure blocking ambient
+
+    # Ambient compute cycle events
+    AMBIENT_CYCLE_STARTED = "ambient_cycle_started"
+    AMBIENT_PHASE_COMPLETED = "ambient_phase_completed"
+    AMBIENT_CYCLE_COMPLETED = "ambient_cycle_completed"
+    AMBIENT_CYCLE_FAILED = "ambient_cycle_failed"
 
 
 @dataclass
@@ -491,6 +503,79 @@ class HealingEventRecorder:
             sequence_id=sequence_id,
             payload={},
         )
+
+    # Simple event recording (for preflight/ambient events)
+
+    async def record_event(
+        self,
+        event_type: HealingEventType,
+        payload: dict[str, Any],
+        endpoint: str = "system",
+    ) -> HealingEvent | None:
+        """Record a simple event without full sequence tracking.
+
+        Used for preflight and ambient cycle events that don't follow
+        the healing sequence pattern.
+
+        Args:
+            event_type: Type of event
+            payload: Event-specific data (should include sequence_id for linking)
+            endpoint: Optional endpoint name (default: "system")
+
+        Returns:
+            HealingEvent if recorded, None if recording failed
+        """
+        pool = await self._get_pool()
+        if not pool:
+            logger.warning(f"Cannot record {event_type.value} event: no database pool")
+            return None
+
+        # Use sequence_id from payload if provided, otherwise generate one
+        sequence_id_str = payload.get("sequence_id")
+        if sequence_id_str:
+            try:
+                sequence_id = UUID(sequence_id_str) if isinstance(sequence_id_str, str) else sequence_id_str
+            except (ValueError, TypeError):
+                sequence_id = uuid4()
+        else:
+            sequence_id = uuid4()
+
+        sequence_num = self._next_sequence_num(sequence_id)
+        event = HealingEvent(
+            event_type=event_type,
+            endpoint=endpoint,
+            tier=0,  # Not used for preflight/ambient
+            sequence_id=sequence_id,
+            sequence_num=sequence_num,
+            payload=payload,
+        )
+
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO healing_events (
+                        event_id, sequence_id, sequence_num, event_type,
+                        endpoint, tier, payload, aiops_event_id, failure_mode_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    """,
+                    event.event_id,
+                    sequence_id,
+                    sequence_num,
+                    event_type.value,
+                    endpoint,
+                    0,
+                    json.dumps(payload),
+                    None,
+                    None,
+                )
+
+            logger.debug(f"Recorded event: {event_type.value} (sequence {sequence_id})")
+            return event
+
+        except Exception as e:
+            logger.error(f"Failed to record event: {e}")
+            return None
 
     # Query methods
 

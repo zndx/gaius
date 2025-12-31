@@ -286,8 +286,8 @@ class VLLMController:
         success = await self._start_vllm_process(proc)
 
         if success:
-            # Update allocation state
-            allocation.mark_active(port)
+            # Update allocation state with PID for orphan detection
+            allocation.mark_active(port, pid=proc.pid)
             proc.status = ProcessStatus.HEALTHY
         else:
             # Release resources on failure
@@ -297,42 +297,126 @@ class VLLMController:
 
         return proc
 
-    async def _start_vllm_process(self, proc: VLLMProcess) -> bool:
-        """Start the actual vLLM subprocess."""
-        # Build CUDA_VISIBLE_DEVICES
+    async def start_model(
+        self,
+        endpoint_name: str,
+        model_id: str,
+        port: int,
+        gpu_ids: list[int],
+        serve_command: list[str] | None = None,
+        env_vars: dict[str, str] | None = None,
+        context_length: int = 32768,
+        max_num_seqs: int = 256,
+        tensor_parallel: int = 1,
+    ) -> VLLMProcess:
+        """Start a vLLM endpoint for a dynamic model (not from agent config).
+
+        This method supports starting any model from the registry, not just
+        pre-configured agents. Used by workload allocation for capabilities
+        like reasoning that may require different models.
+
+        Args:
+            endpoint_name: Name for this endpoint
+            model_id: HuggingFace model ID
+            port: Port to serve on
+            gpu_ids: GPU IDs to use
+            serve_command: Optional custom vLLM command (uses default if None)
+            env_vars: Optional environment variables to merge
+            context_length: Max context length
+            max_num_seqs: Max concurrent sequences
+            tensor_parallel: Tensor parallel size
+
+        Returns:
+            VLLMProcess with startup state
+        """
+        async with self._lock:
+            # Check if already running
+            if endpoint_name in self._processes:
+                proc = self._processes[endpoint_name]
+                if proc.status in (ProcessStatus.HEALTHY, ProcessStatus.STARTING):
+                    logger.info(f"Endpoint {endpoint_name} already running")
+                    return proc
+
+            # Create process state
+            proc = VLLMProcess(
+                agent_alias=endpoint_name,
+                model=model_id,
+                port=port,
+                gpu_ids=gpu_ids,
+                tensor_parallel=tensor_parallel,
+                context_length=context_length,
+                max_num_seqs=max_num_seqs,
+                task="generate",
+                status=ProcessStatus.STARTING,
+            )
+            self._processes[endpoint_name] = proc
+
+        # Start outside lock
+        success = await self._start_vllm_process(proc, serve_command, env_vars)
+
+        if success:
+            proc.status = ProcessStatus.HEALTHY
+        else:
+            proc.status = ProcessStatus.FAILED
+            self._release_port(port)
+
+        return proc
+
+    async def _start_vllm_process(
+        self,
+        proc: VLLMProcess,
+        serve_command: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> bool:
+        """Start the actual vLLM subprocess.
+
+        Args:
+            proc: VLLMProcess state object
+            serve_command: Optional custom command (uses default vLLM command if None)
+            extra_env: Optional extra environment variables to merge
+        """
+        # Build environment
         gpu_str = ",".join(str(g) for g in proc.gpu_ids)
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_str
 
-        # Build vLLM command
-        cmd = [
-            self._binary,
-            "serve",
-            proc.model,
-            "--port",
-            str(proc.port),
-            "--gpu-memory-utilization",
-            str(self._gpu_memory_util),
-            "--max-model-len",
-            str(proc.context_length),  # Use per-endpoint context length
-            "--max-num-seqs",
-            str(proc.max_num_seqs),  # Use per-endpoint max concurrent sequences
-            "--dtype",
-            self._dtype,
-        ]
+        # Merge extra environment variables if provided
+        if extra_env:
+            env.update(extra_env)
 
-        # Add task if not default (generate)
-        if proc.task and proc.task != "generate":
-            cmd.extend(["--task", proc.task])
-            # Embedding models often need trust-remote-code for custom tokenizers
-            cmd.append("--trust-remote-code")
+        # Use custom serve_command if provided, otherwise build default
+        if serve_command:
+            cmd = serve_command
+        else:
+            # Build default vLLM command
+            cmd = [
+                self._binary,
+                "serve",
+                proc.model,
+                "--port",
+                str(proc.port),
+                "--gpu-memory-utilization",
+                str(self._gpu_memory_util),
+                "--max-model-len",
+                str(proc.context_length),
+                "--max-num-seqs",
+                str(proc.max_num_seqs),
+                "--dtype",
+                self._dtype,
+            ]
 
-        # Add tensor parallelism if needed
-        if proc.tensor_parallel > 1:
-            cmd.extend(["--tensor-parallel-size", str(proc.tensor_parallel)])
+            # Add task if not default (generate)
+            if proc.task and proc.task != "generate":
+                cmd.extend(["--task", proc.task])
+                # Embedding models often need trust-remote-code for custom tokenizers
+                cmd.append("--trust-remote-code")
 
-        # Add extra args from config
-        cmd.extend(self._extra_args)
+            # Add tensor parallelism if needed
+            if proc.tensor_parallel > 1:
+                cmd.extend(["--tensor-parallel-size", str(proc.tensor_parallel)])
+
+            # Add extra args from config
+            cmd.extend(self._extra_args)
 
         logger.info(
             f"Starting vLLM for {proc.agent_alias}: "

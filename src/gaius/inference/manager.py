@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Any
 
-from .orchestrator import ProcessStatus
+from ..engine.backends.vllm_controller import ProcessStatus
 
 logger = logging.getLogger(__name__)
 

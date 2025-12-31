@@ -144,6 +144,15 @@ message SchedulerStatusResponse {
   map<string, int32> jobs_by_priority = 4;
 }
 
+// XAI API budget status
+message XAIBudgetResponse {
+  int32 daily_used = 1;      // Requests used today
+  int32 daily_limit = 2;     // Daily request limit
+  int32 weekly_used = 3;     // Requests used this week
+  int32 weekly_limit = 4;    // Weekly request limit
+  string reset_at = 5;       // ISO timestamp when daily budget resets
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Swarm Streaming Messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -255,6 +264,36 @@ message TriggerCognitionResponse {
   int32 curiosities_generated = 5;
   int32 duration_ms = 6;
   string error = 7;
+  int32 self_observations = 8;
+  string kb_path = 9;  // Path to zettelkasten file where thoughts were saved
+  int32 tokens_out = 10;  // Output tokens used by LLM for thought generation
+}
+
+// Self-observation - meta-cognition on recent thoughts
+message SelfObservationRequest {
+  int32 max_observations = 1;  // Default: 5
+}
+
+message SelfObservationResponse {
+  bool success = 1;
+  int32 observations_generated = 2;
+  int32 duration_ms = 3;
+  string error = 4;
+  repeated string observation_ids = 5;
+}
+
+// Engine audit - health analysis and anomaly detection
+message EngineAuditRequest {
+  bool include_metrics = 1;  // Include detailed metrics in response
+}
+
+message EngineAuditResponse {
+  bool success = 1;
+  int32 observations_recorded = 2;
+  int32 anomalies_found = 3;
+  int32 duration_ms = 4;
+  string error = 5;
+  repeated string anomaly_details = 6;
 }
 
 message CognitionActivityResponse {
@@ -1542,6 +1581,7 @@ service GaiusService {
   rpc Complete(CompleteRequest) returns (CompleteResponse);
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
   rpc GetJobResult(GetJobResultRequest) returns (GetJobResultResponse);
+  rpc XAIBudget(google.protobuf.Empty) returns (XAIBudgetResponse);  // XAI budget tracking
 
   // Streaming swarm analysis - returns progress events then final result
   // Handles backend wait internally, streaming QUEUED status while waiting
@@ -1579,6 +1619,8 @@ service GaiusService {
   rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
+  rpc SelfObservation(SelfObservationRequest) returns (SelfObservationResponse);
+  rpc EngineAudit(EngineAuditRequest) returns (EngineAuditResponse);
 
   // Cognition streaming - replaces TUI polling
   rpc SubscribeCognition(CognitionStreamRequest) returns (stream CognitionEvent);

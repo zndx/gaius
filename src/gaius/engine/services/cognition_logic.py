@@ -40,6 +40,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -63,9 +64,11 @@ class CognitionCycleResult:
     self_observations: int = 0
     engine_audits: int = 0
     tokens_used: int = 0
+    tokens_out: int = 0  # Output tokens from LLM thought generation
     duration_ms: int = 0
     error: Optional[str] = None
     thought_ids: list[str] = field(default_factory=list)
+    kb_path: Optional[str] = None  # Zettelkasten file where thoughts were saved
 
 
 @dataclass
@@ -201,6 +204,9 @@ async def process_cognition_cycle(
         max_thoughts = payload.get("max_thoughts", 5)
         trigger_reason = payload.get("trigger", "scheduled")
 
+        logger.info(f"Starting cognition cycle: max_thoughts={max_thoughts}, trigger={trigger_reason}")
+        logger.info(f"db_pool available: {db_pool is not None}")
+
         if span:
             span.set_attribute("max_thoughts", max_thoughts)
             span.set_attribute("trigger", trigger_reason)
@@ -211,12 +217,15 @@ async def process_cognition_cycle(
                 from ...inference import get_client
 
                 inference_client = get_client()
-            except ImportError:
+                logger.info(f"Inference client obtained: {type(inference_client).__name__}")
+            except ImportError as e:
+                logger.error(f"Failed to import inference client: {e}")
                 result.error = "Inference client not available"
                 return result
 
         # Gather KB context from database
         context = await _gather_kb_context(db_pool)
+        logger.info(f"KB context gathered: {len(context.get('recent_entries', []))} entries, {len(context.get('active_domains', []))} domains, {len(context.get('recent_thoughts', []))} recent thoughts")
 
         if not context.get("recent_entries"):
             logger.info("No recent KB entries for cognition cycle")
@@ -224,20 +233,22 @@ async def process_cognition_cycle(
             return result
 
         # Generate thoughts via inference
-        thoughts = await _generate_thoughts(
+        thoughts, tokens_out = await _generate_thoughts(
             inference_client,
             context,
             max_thoughts=max_thoughts,
             trigger_reason=trigger_reason,
         )
 
-        # Save thoughts to database
-        saved_ids = await _save_thoughts(db_pool, thoughts)
+        # Save thoughts to database and zettelkasten
+        saved_ids, kb_path = await _save_thoughts(db_pool, thoughts)
 
         # Update result
         result.success = True
         result.thoughts_generated = len(saved_ids)
         result.thought_ids = saved_ids
+        result.kb_path = kb_path
+        result.tokens_out = tokens_out
         result.patterns_detected = sum(1 for t in thoughts if t.get("type") == "pattern")
         result.connections_found = sum(
             1 for t in thoughts if t.get("type") == "connection"
@@ -255,7 +266,9 @@ async def process_cognition_cycle(
         )
 
     except Exception as e:
+        import traceback
         logger.error(f"Cognition cycle failed: {e}")
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         result.error = str(e)
 
     finally:
@@ -283,10 +296,15 @@ async def _gather_kb_context(db_pool) -> dict:
     }
 
     if not db_pool:
-        return context
+        raise RuntimeError(
+            "Cognition cycle requires database connection but db_pool is None.\n"
+            "Guru Meditation: #COG.00000019.NODBPOOL\n"
+            "Check: Engine startup logs for database initialization"
+        )
 
     try:
         async with db_pool.acquire() as conn:
+            logger.debug("DB connection acquired for _gather_kb_context")
             # Get recent content items (RSS/feed content)
             # These have title, kb_path, and source info
             content_entries = await conn.fetch(
@@ -372,7 +390,7 @@ async def _generate_thoughts(
     context: dict,
     max_thoughts: int = 5,
     trigger_reason: str = "scheduled",
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """Generate thoughts using inference endpoint.
 
     Args:
@@ -382,7 +400,7 @@ async def _generate_thoughts(
         trigger_reason: Why cognition was triggered
 
     Returns:
-        List of thought dicts
+        Tuple of (list of thought dicts, output tokens used)
     """
     from ...inference import Message
 
@@ -398,7 +416,7 @@ async def _generate_thoughts(
     thoughts_text = ""
     if recent_thoughts:
         thoughts_text = "\n\nRecent thoughts:\n" + "\n".join(
-            f"- {t.get('title', 'Untitled')}: {t.get('summary', '')[:100]}"
+            f"- {t.get('title', 'Untitled')}: {(t.get('summary') or '')[:100]}"
             for t in recent_thoughts[:5]
         )
 
@@ -439,24 +457,390 @@ Trigger reason: {trigger_reason}"""
             max_tokens=2048,
         )
 
-        logger.info(f"LLM response length: {len(response.content) if response.content else 0}")
-        logger.debug(f"LLM response:\n{response.content[:500] if response.content else 'EMPTY'}...")
+        tokens_out = getattr(response, 'output_tokens', 0)
+        logger.info(f"LLM response length: {len(response.content) if response.content else 0}, tokens_out: {tokens_out}")
+        if response.content:
+            # Log first 500 chars to help debug parsing issues
+            logger.info(f"LLM response preview:\n{response.content[:500]}...")
+        else:
+            logger.warning("LLM returned empty response!")
 
         # Parse response into thought dicts
         thoughts = _parse_thoughts(response.content)
         logger.info(f"Parsed {len(thoughts)} thoughts from response")
 
-        return thoughts
+        return thoughts, tokens_out
 
     except Exception as e:
         logger.warning(f"Thought generation failed: {e}")
         import traceback
         logger.debug(f"Traceback: {traceback.format_exc()}")
-        return []
+        return [], 0
 
 
 def _parse_thoughts(response_text: str) -> list[dict]:
-    """Parse LLM response into thought dicts."""
+    """Parse LLM response into thought dicts with adaptive format detection.
+
+    Supports multiple LLM output formats:
+    - Strict format: TYPE: / TITLE: / SUMMARY: / SALIENCE:
+    - Numbered lists: 1. TYPE: / 2. TITLE: etc.
+    - Markdown: **TYPE:** / ### TITLE: etc.
+    - JSON array of thought objects
+
+    Uses dynamic programming approach: try fast strict parsing first,
+    fall back to format detection and transformation.
+    """
+    import re
+
+    if not response_text or not response_text.strip():
+        logger.warning("Empty response text provided to parser")
+        return []
+
+    # Log full response for debugging
+    logger.info(f"Parser input ({len(response_text)} chars):\n{response_text[:1000]}{'...' if len(response_text) > 1000 else ''}")
+
+    # Phase 1: Try strict parsing (fastest path)
+    thoughts = _parse_thoughts_strict(response_text)
+    if thoughts:
+        logger.debug(f"Strict parsing succeeded: {len(thoughts)} thoughts")
+        return thoughts
+
+    # Phase 2: Detect format and apply transformer
+    format_type = _detect_response_format(response_text)
+    logger.info(f"Detected LLM response format: {format_type}")
+
+    if format_type == "json":
+        thoughts = _parse_thoughts_json(response_text)
+    elif format_type == "numbered":
+        thoughts = _parse_thoughts_numbered(response_text)
+    elif format_type == "markdown":
+        thoughts = _parse_thoughts_markdown(response_text)
+    elif format_type == "prose":
+        thoughts = _parse_thoughts_prose(response_text)
+    else:
+        # Unknown format - log for analysis
+        logger.warning(
+            f"Unknown LLM response format. First 300 chars:\n{response_text[:300]}"
+        )
+        thoughts = []
+
+    if not thoughts:
+        # Log detailed format mismatch for heuristic collection
+        logger.warning(
+            f"#COG.00000020.LLMPATTERN - Format mismatch. "
+            f"Detected: {format_type}, response length: {len(response_text)}"
+        )
+
+    return thoughts
+
+
+def _parse_thoughts_strict(response_text: str) -> list[dict]:
+    """Parse strict TYPE:/TITLE:/SUMMARY:/SALIENCE: format.
+
+    Handles:
+    - Leading/trailing whitespace on lines
+    - TYPE values containing pipes (e.g., 'pattern|connection') - takes first valid value
+    - Multi-line SUMMARY (concatenates until next field or blank line)
+    """
+    thoughts = []
+    current_thought = {}
+    collecting_summary = False
+    summary_lines = []
+
+    def _extract_type(value: str) -> str | None:
+        """Extract first valid type from value (handles 'pattern|connection|curiosity')."""
+        value = value.lower().strip()
+        valid_types = ("pattern", "connection", "curiosity", "self_observation")
+        # Check for pipe-separated values
+        if "|" in value:
+            for part in value.split("|"):
+                part = part.strip()
+                if part in valid_types:
+                    return part
+        # Check direct match
+        if value in valid_types:
+            return value
+        return None
+
+    for line in response_text.split("\n"):
+        line = line.strip()
+
+        # Check if we hit a new field - this ends summary collection
+        is_field_line = any(line.upper().startswith(f) for f in ("TYPE:", "TITLE:", "SUMMARY:", "SALIENCE:"))
+
+        if collecting_summary and (is_field_line or not line):
+            # Save collected summary
+            if summary_lines:
+                current_thought["summary"] = " ".join(summary_lines)
+                summary_lines = []
+            collecting_summary = False
+
+        if not line:
+            if current_thought.get("type") and current_thought.get("title"):
+                thoughts.append(current_thought)
+                current_thought = {}
+            continue
+
+        if line.upper().startswith("TYPE:"):
+            value = line.split(":", 1)[1].strip()
+            extracted_type = _extract_type(value)
+            if extracted_type:
+                current_thought["type"] = extracted_type
+        elif line.upper().startswith("TITLE:"):
+            current_thought["title"] = line.split(":", 1)[1].strip()[:100]
+        elif line.upper().startswith("SUMMARY:"):
+            # Start collecting summary (may span multiple lines)
+            first_line = line.split(":", 1)[1].strip()
+            if first_line:
+                summary_lines = [first_line]
+            else:
+                summary_lines = []
+            collecting_summary = True
+        elif line.upper().startswith("SALIENCE:"):
+            try:
+                value = line.split(":", 1)[1].strip()
+                # Handle "0.8" or just "8" (normalize to 0-1)
+                salience = float(value)
+                if salience > 1.0:
+                    salience = salience / 10.0  # Normalize if > 1
+                current_thought["salience"] = min(1.0, max(0.0, salience))
+            except ValueError:
+                current_thought["salience"] = 0.5
+        elif collecting_summary:
+            # Continue collecting multi-line summary
+            summary_lines.append(line)
+
+    # Handle any remaining summary
+    if summary_lines:
+        current_thought["summary"] = " ".join(summary_lines)
+
+    # Don't forget last thought
+    if current_thought.get("type") and current_thought.get("title"):
+        thoughts.append(current_thought)
+
+    return thoughts
+
+
+def _detect_response_format(response_text: str) -> str:
+    """Detect the format of LLM response using pattern matching."""
+    import re
+
+    text = response_text.strip()
+
+    # Check for JSON
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            json.loads(text)
+            return "json"
+        except json.JSONDecodeError:
+            pass
+
+    # Check for numbered list format: "1. TYPE:" or "1) TYPE:" or "1. Pattern:"
+    if re.search(r"^\d+[\.\)]\s*(?:TYPE|Type|type|Pattern|Connection|Curiosity|Observation):", text, re.MULTILINE):
+        return "numbered"
+
+    # Check for markdown format: "**TYPE:**" or "### Type:" or "- **Type:**"
+    if re.search(r"(?:\*\*|###?\s*|^-\s*\*\*)\s*(?:TYPE|Type|type):", text, re.MULTILINE):
+        return "markdown"
+
+    # Check for strict format (may have been malformed)
+    if re.search(r"^(?:TYPE|Type|type)\s*:", text, re.MULTILINE):
+        return "strict"
+
+    # Prose format - contains thought-like content without structured fields
+    if any(word in text.lower() for word in ["pattern", "connection", "curiosity", "observation"]):
+        return "prose"
+
+    return "unknown"
+
+
+def _parse_thoughts_json(response_text: str) -> list[dict]:
+    """Parse JSON-formatted thought response."""
+    import re
+
+    text = response_text.strip()
+
+    # Extract JSON from possible markdown code block
+    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if json_match:
+        text = json_match.group(1).strip()
+
+    try:
+        data = json.loads(text)
+
+        # Handle array of thoughts
+        if isinstance(data, list):
+            thoughts = []
+            for item in data:
+                thought = _normalize_thought_dict(item)
+                if thought:
+                    thoughts.append(thought)
+            return thoughts
+
+        # Handle single thought object
+        if isinstance(data, dict):
+            thought = _normalize_thought_dict(data)
+            return [thought] if thought else []
+
+    except json.JSONDecodeError as e:
+        logger.debug(f"JSON parsing failed: {e}")
+
+    return []
+
+
+def _normalize_thought_dict(item: dict) -> dict | None:
+    """Normalize a thought dict from various key formats."""
+    if not isinstance(item, dict):
+        return None
+
+    # Map various key names to canonical form
+    type_keys = ["type", "TYPE", "Type", "thought_type", "category"]
+    title_keys = ["title", "TITLE", "Title", "name"]
+    summary_keys = ["summary", "SUMMARY", "Summary", "description", "content"]
+    salience_keys = ["salience", "SALIENCE", "Salience", "importance", "score"]
+
+    thought = {}
+
+    for key in type_keys:
+        if key in item:
+            value = str(item[key]).lower()
+            if value in ("pattern", "connection", "curiosity", "self_observation"):
+                thought["type"] = value
+                break
+
+    for key in title_keys:
+        if key in item:
+            thought["title"] = str(item[key])[:100]
+            break
+
+    for key in summary_keys:
+        if key in item:
+            thought["summary"] = str(item[key])
+            break
+
+    for key in salience_keys:
+        if key in item:
+            try:
+                thought["salience"] = float(item[key])
+            except (ValueError, TypeError):
+                thought["salience"] = 0.5
+            break
+
+    if thought.get("type") and thought.get("title"):
+        thought.setdefault("salience", 0.5)
+        thought.setdefault("summary", "")
+        return thought
+
+    return None
+
+
+def _parse_thoughts_numbered(response_text: str) -> list[dict]:
+    """Parse numbered list format.
+
+    Handles multiple variations:
+    - "1. TYPE: pattern\\n   TITLE: ..." (explicit fields)
+    - "1. Pattern: Emphasis on..." (type-as-header format)
+    - "1. title\\n   Connection: description" (inline type label)
+    """
+    import re
+
+    thoughts = []
+    current_thought = {}
+    collecting_content = False
+    content_lines = []
+
+    # Type keywords that can appear as labels
+    type_keywords = ("pattern", "connection", "curiosity", "observation", "self_observation")
+
+    def _finish_thought():
+        nonlocal current_thought, content_lines, collecting_content
+        if content_lines:
+            current_thought["summary"] = " ".join(content_lines)
+            content_lines = []
+        if current_thought.get("type") and current_thought.get("title"):
+            thoughts.append(current_thought)
+        current_thought = {}
+        collecting_content = False
+
+    for line in response_text.split("\n"):
+        line = line.strip()
+
+        # Empty line can end a thought
+        if not line:
+            _finish_thought()
+            continue
+
+        # Check for numbered entry: "1. " or "1) " or "- "
+        num_match = re.match(r"^([\d]+[\.\)]|\-)\s*(.*)$", line)
+        if num_match:
+            # Save previous thought if any
+            _finish_thought()
+
+            rest = num_match.group(2)
+
+            # Check for type-as-header format: "1. Pattern: Title goes here"
+            type_header_match = re.match(r"^(Pattern|Connection|Curiosity|Observation):\s*(.*)$", rest, re.IGNORECASE)
+            if type_header_match:
+                thought_type = type_header_match.group(1).lower()
+                if thought_type == "observation":
+                    thought_type = "self_observation"
+                current_thought["type"] = thought_type
+                current_thought["title"] = type_header_match.group(2)[:100]
+                collecting_content = True
+                continue
+
+            # Check for explicit TYPE: field
+            if rest.upper().startswith("TYPE:"):
+                value = rest.split(":", 1)[1].strip().lower()
+                if value in type_keywords:
+                    current_thought["type"] = value
+                continue
+
+            # Otherwise it might be just a title
+            current_thought["title"] = rest[:100]
+            collecting_content = True
+            continue
+
+        # Non-numbered continuation line
+        cleaned = line
+
+        # Check for explicit field markers
+        if cleaned.upper().startswith("TYPE:"):
+            value = cleaned.split(":", 1)[1].strip().lower()
+            if value in type_keywords:
+                current_thought["type"] = value
+        elif cleaned.upper().startswith("TITLE:"):
+            current_thought["title"] = cleaned.split(":", 1)[1].strip()[:100]
+        elif cleaned.upper().startswith("SUMMARY:"):
+            current_thought["summary"] = cleaned.split(":", 1)[1].strip()
+        elif cleaned.upper().startswith("SALIENCE:"):
+            try:
+                current_thought["salience"] = float(cleaned.split(":", 1)[1].strip())
+            except ValueError:
+                current_thought["salience"] = 0.5
+        elif cleaned.upper().startswith("CONNECTION:"):
+            # Inline type label - this is content with type embedded
+            if not current_thought.get("type"):
+                current_thought["type"] = "connection"
+            content_lines.append(cleaned.split(":", 1)[1].strip())
+        elif cleaned.upper().startswith("CURIOSITY:"):
+            if not current_thought.get("type"):
+                current_thought["type"] = "curiosity"
+            content_lines.append(cleaned.split(":", 1)[1].strip())
+        elif collecting_content:
+            # Collect as summary content
+            content_lines.append(cleaned)
+
+    # Don't forget the last thought
+    _finish_thought()
+
+    return thoughts
+
+
+def _parse_thoughts_markdown(response_text: str) -> list[dict]:
+    """Parse markdown-formatted thoughts like '**TYPE:** pattern'."""
+    import re
+
     thoughts = []
     current_thought = {}
 
@@ -468,59 +852,233 @@ def _parse_thoughts(response_text: str) -> list[dict]:
                 current_thought = {}
             continue
 
-        if line.upper().startswith("TYPE:"):
-            value = line.split(":", 1)[1].strip().lower()
-            if value in ("pattern", "connection", "curiosity"):
+        # Strip markdown formatting: **, *, ###, -
+        cleaned = re.sub(r"\*\*|\*|^#+\s*|^[-*]\s*", "", line)
+
+        # Try strict parsing on cleaned line
+        if cleaned.upper().startswith("TYPE:"):
+            value = cleaned.split(":", 1)[1].strip().lower()
+            if value in ("pattern", "connection", "curiosity", "self_observation"):
                 current_thought["type"] = value
-        elif line.upper().startswith("TITLE:"):
-            current_thought["title"] = line.split(":", 1)[1].strip()[:100]
-        elif line.upper().startswith("SUMMARY:"):
-            current_thought["summary"] = line.split(":", 1)[1].strip()
-        elif line.upper().startswith("SALIENCE:"):
+        elif cleaned.upper().startswith("TITLE:"):
+            current_thought["title"] = cleaned.split(":", 1)[1].strip()[:100]
+        elif cleaned.upper().startswith("SUMMARY:"):
+            current_thought["summary"] = cleaned.split(":", 1)[1].strip()
+        elif cleaned.upper().startswith("SALIENCE:"):
             try:
-                current_thought["salience"] = float(line.split(":", 1)[1].strip())
+                current_thought["salience"] = float(cleaned.split(":", 1)[1].strip())
             except ValueError:
                 current_thought["salience"] = 0.5
 
-    # Don't forget last thought
     if current_thought.get("type") and current_thought.get("title"):
         thoughts.append(current_thought)
 
     return thoughts
 
 
-async def _save_thoughts(db_pool, thoughts: list[dict]) -> list[str]:
-    """Save thoughts to database.
+def _parse_thoughts_prose(response_text: str) -> list[dict]:
+    """Extract thoughts from prose/natural language response.
+
+    This is a best-effort fallback that tries to identify thought-like
+    content from unstructured text. Less reliable than structured formats.
+    """
+    import re
+
+    thoughts = []
+
+    # Look for paragraph-like blocks that mention thought types
+    paragraphs = re.split(r"\n\n+", response_text)
+
+    for para in paragraphs:
+        para = para.strip()
+        if len(para) < 20:
+            continue
+
+        thought = {}
+        para_lower = para.lower()
+
+        # Detect type from content
+        if "pattern" in para_lower:
+            thought["type"] = "pattern"
+        elif "connection" in para_lower:
+            thought["type"] = "connection"
+        elif "curious" in para_lower or "question" in para_lower:
+            thought["type"] = "curiosity"
+        else:
+            continue
+
+        # First sentence as title
+        sentences = re.split(r"[.!?]", para)
+        if sentences:
+            thought["title"] = sentences[0].strip()[:100]
+
+        # Rest as summary
+        thought["summary"] = para
+        thought["salience"] = 0.5
+
+        if thought.get("title"):
+            thoughts.append(thought)
+
+    return thoughts
+
+
+async def _save_thoughts(db_pool, thoughts: list[dict]) -> tuple[list[str], str | None]:
+    """Save thoughts to database and a single zettelkasten file per cycle.
+
+    All thoughts from a single cognition cycle are saved to one zettelkasten
+    note to avoid cluttering the scratch directory with many small files.
 
     Returns:
-        List of saved thought IDs
+        Tuple of (list of saved thought IDs, kb_path to zettelkasten file)
     """
     if not db_pool or not thoughts:
-        return []
+        return [], None
 
     saved_ids = []
+
+    # First save all thoughts to the zettelkasten (one file for all)
+    kb_path = _save_thoughts_as_zettel(thoughts)
 
     try:
         async with db_pool.acquire() as conn:
             for thought in thoughts:
                 thought_id = str(uuid4())
+                thought_type = thought.get("type", "pattern")
+                title = thought.get("title", "Untitled")
+                # content is NOT NULL, summary is optional
+                # Parser puts main text in "summary" key, which maps to "content" column
+                content = thought.get("summary") or thought.get("content") or thought.get("title", "No content")
+                salience = thought.get("salience", 0.5)
+
+                # Save to database with shared kb_path
                 await conn.execute(
                     """
-                    INSERT INTO thoughts (id, thought_type, title, summary, salience, created_at)
-                    VALUES ($1, $2, $3, $4, $5, NOW())
+                    INSERT INTO cognition_thoughts (id, thought_type, title, content, salience, created_at, note_path)
+                    VALUES ($1, $2, $3, $4, $5, NOW(), $6)
                     """,
                     thought_id,
-                    thought.get("type", "pattern"),
-                    thought.get("title", "Untitled"),
-                    thought.get("summary", ""),
-                    thought.get("salience", 0.5),
+                    thought_type,
+                    title,
+                    content,
+                    salience,
+                    kb_path,  # All thoughts in this cycle share the same note
                 )
+
                 saved_ids.append(thought_id)
 
     except Exception as e:
-        logger.warning(f"Failed to save thoughts: {e}")
+        raise RuntimeError(
+            f"Failed to save thoughts to database: {e}\n"
+            "Guru Meditation: #COG.00000001.DBSAVE\n"
+            "Check: /health postgres"
+        ) from e
 
-    return saved_ids
+    return saved_ids, kb_path
+
+
+def _save_thoughts_as_zettel(thoughts: list[dict]) -> str | None:
+    """Save all thoughts from a cognition cycle as a single zettelkasten note.
+
+    Creates one note per cognition cycle containing all generated thoughts,
+    with bidirectional prev/next linking to previous cognition cycles.
+
+    Returns:
+        Relative path to created note, or None if save failed
+    """
+    if not thoughts:
+        return None
+
+    try:
+        from gaius.core.project_notes import find_previous_project_note, _update_next_link
+
+        kb_root = Path(os.environ.get("GAIUS_KB_ROOT", "build/dev"))
+        note_type = "thoughts_cycle"
+
+        # Find previous cognition cycle note
+        prev_note = find_previous_project_note(kb_root, note_type)
+
+        # Create today's scratch directory
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+        scratch_dir = kb_root / "scratch" / date_str
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build prev: link
+        prev_link = ""
+        if prev_note:
+            try:
+                prev_rel = prev_note.relative_to(kb_root)
+                prev_link = f"[[{prev_rel}]]"
+            except ValueError:
+                prev_link = f"[[{prev_note.stem}]]"
+
+        # Count thought types
+        type_counts = {}
+        for t in thoughts:
+            ttype = t.get("type", "pattern")
+            type_counts[ttype] = type_counts.get(ttype, 0) + 1
+        type_summary = ", ".join(f"{v} {k}" for k, v in sorted(type_counts.items()))
+
+        # Build note content with all thoughts
+        note_lines = [
+            "[[current/agents/cognition]]",
+            f"prev: {prev_link}",
+            "next:",
+            "",
+            f"# Cognition Cycle - {now.strftime('%H:%M:%S')}",
+            "",
+            "---",
+            f"created: {now.isoformat()}",
+            f"thoughts: {len(thoughts)}",
+            f"types: {type_summary}",
+            "---",
+            "",
+        ]
+
+        # Add each thought as a section
+        for i, thought in enumerate(thoughts, 1):
+            thought_type = thought.get("type", "pattern")
+            title = thought.get("title", "Untitled")
+            content = thought.get("summary") or thought.get("content") or thought.get("title", "No content")
+            salience = thought.get("salience", 0.5)
+
+            note_lines.extend([
+                f"## {i}. {title}",
+                "",
+                f"**Type:** {thought_type} | **Salience:** {salience:.2f}",
+                "",
+                content,
+                "",
+            ])
+
+        note_lines.extend([
+            "---",
+            "",
+            "*This note is part of the knowledge base. Edit, link, or dismiss as you wish.*",
+        ])
+
+        note_content = "\n".join(note_lines)
+
+        # Write the note
+        note_path = scratch_dir / f"{time_str}_{note_type}.md"
+        note_path.write_text(note_content)
+
+        # Update previous note's next: field
+        if prev_note and prev_note.exists():
+            _update_next_link(prev_note, kb_root, note_path)
+
+        rel_path = str(note_path.relative_to(kb_root))
+        logger.info(f"Saved {len(thoughts)} thoughts to zettelkasten: {rel_path}")
+        return rel_path
+
+    except Exception as e:
+        logger.warning(
+            f"Failed to save thoughts as zettelkasten note: {e}\n"
+            "Guru Meditation: #COG.00000015.KBWRITE\n"
+            "Check: KB scratch directory is writable"
+        )
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -629,12 +1187,13 @@ SALIENCE: 0.0-1.0"""
         for obs in observations:
             obs["type"] = "self_observation"
 
-        saved_ids = await _save_thoughts(db_pool, observations)
+        saved_ids, kb_path = await _save_thoughts(db_pool, observations)
 
         result.success = True
         result.thoughts_generated = len(saved_ids)
         result.self_observations = len(saved_ids)
         result.thought_ids = saved_ids
+        result.kb_path = kb_path
 
         logger.info(f"Self-observation complete: {len(saved_ids)} observations")
 

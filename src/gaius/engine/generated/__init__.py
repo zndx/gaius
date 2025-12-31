@@ -61,6 +61,7 @@ from .gaius_service_pb2 import (
     GetJobResultRequest,
     GetJobResultResponse,
     SchedulerStatusResponse,
+    XAIBudgetResponse,
     # Workload
     WorkloadType,
     BeginWorkloadRequest,
@@ -81,6 +82,10 @@ from .gaius_service_pb2 import (
     TriggerCognitionRequest,
     TriggerCognitionResponse,
     CognitionActivityResponse,
+    SelfObservationRequest,
+    SelfObservationResponse,
+    EngineAuditRequest,
+    EngineAuditResponse,
     # State Service
     GetStateRequest,
     GridState,
@@ -280,6 +285,7 @@ __all__ = [
     "GetJobResultRequest",
     "GetJobResultResponse",
     "SchedulerStatusResponse",
+    "XAIBudgetResponse",
     # Workload
     "WorkloadType",
     "BeginWorkloadRequest",
@@ -300,6 +306,10 @@ __all__ = [
     "TriggerCognitionRequest",
     "TriggerCognitionResponse",
     "CognitionActivityResponse",
+    "SelfObservationRequest",
+    "SelfObservationResponse",
+    "EngineAuditRequest",
+    "EngineAuditResponse",
     # State Service
     "GetStateRequest",
     "GridState",
