@@ -43,6 +43,10 @@
 - [Contributing](./contributing.md)
 - [Roadmap](./roadmap.md)
 
+# Appendix
+
+- [ACP Incident: 2026-01-01](./appendix/acp-incident-2026-01-01.md)
+
 ---
 
 [Notes](./notes/README.md)
