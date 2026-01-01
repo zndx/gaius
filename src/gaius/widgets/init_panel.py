@@ -210,6 +210,10 @@ class InitPanel(Widget):
             conn_line.append("● ", style="bold green")
             conn_line.append("gRPC: ", style="cyan")
             conn_line.append("connected", style="green")
+        elif init_state.phase == "reconnecting":
+            conn_line.append("◌ ", style="yellow")
+            conn_line.append("gRPC: ", style="yellow")
+            conn_line.append("reconnecting", style="yellow")
         else:
             conn_line.append("○ ", style="dim")
             conn_line.append("gRPC: ", style="dim")
@@ -227,6 +231,9 @@ class InitPanel(Widget):
         if init_state.is_ready:
             border_style = "green"
             title = "[bold green]✓[/bold green] [bold]Init[/bold]"
+        elif init_state.phase == "reconnecting":
+            border_style = "yellow"
+            title = "[bold yellow]◌[/bold yellow] [bold]Init[/bold]"
         elif init_state.error:
             border_style = "red"
             title = "[bold red]✗[/bold red] [bold]Init[/bold]"
@@ -394,15 +401,17 @@ class InitPanel(Widget):
     async def _poll_init_status(self) -> None:
         """Fallback: poll for init status if streaming fails.
 
-        Continues polling even after init completes to keep endpoint
-        status in sync with ThinkPanel.
+        Polls forever to handle dynamic connection state changes (engine
+        restarts, network reconnections). Uses exponential backoff during
+        failures to avoid spamming logs.
         """
         logger.debug("InitPanel falling back to polling mode")
 
-        max_retries = 5
         consecutive_failures = 0
+        base_retry_interval = 5.0
+        max_retry_interval = 30.0
 
-        while True:  # Keep polling to stay in sync
+        while True:  # Poll forever - connection may come and go
             try:
                 from ..client.engine_proxy import get_health_proxy
 
@@ -412,6 +421,12 @@ class InitPanel(Widget):
                 # Update state from health check
                 init_state = self.state.initialization_state
                 init_state.connected = True
+                init_state.error = None  # Clear any previous error
+
+                # Log reconnection if we were previously disconnected
+                if consecutive_failures > 0:
+                    logger.info(f"InitPanel: reconnected after {consecutive_failures} failures")
+
                 consecutive_failures = 0  # Reset on success
 
                 # Populate endpoints from health status
@@ -457,23 +472,38 @@ class InitPanel(Widget):
 
                 self.refresh()
 
+                # Poll every 5 seconds when healthy, 2 seconds during init
+                poll_interval = 5.0 if init_state.is_ready else 2.0
+                await asyncio.sleep(poll_interval)
+
+            except asyncio.CancelledError:
+                logger.debug("InitPanel polling cancelled")
+                return
+
             except Exception as e:
                 consecutive_failures += 1
-                self.state.initialization_state.connected = False
-                self.state.initialization_state.error = str(e)[:40]
+                init_state = self.state.initialization_state
+                init_state.connected = False
+                init_state.phase = "reconnecting"
+
+                # Show retry attempt in message
+                init_state.message = f"Reconnecting... (attempt {consecutive_failures})"
+                init_state.error = str(e)[:40]
+
+                # Only log first failure and then periodically
+                if consecutive_failures == 1:
+                    logger.debug(f"InitPanel: gRPC connection lost: {e}")
+                elif consecutive_failures % 10 == 0:
+                    logger.debug(f"InitPanel: still reconnecting after {consecutive_failures} attempts")
+
                 self.refresh()
 
-                # Stop polling after too many consecutive failures
-                if consecutive_failures >= max_retries:
-                    logger.debug(f"InitPanel: stopping polling after {max_retries} failures")
-                    self.state.initialization_state.phase = "disconnected"
-                    self.state.initialization_state.message = "Engine unavailable"
-                    self.refresh()
-                    return
-
-            # Poll every 5 seconds (slower than during init since we're in steady state)
-            poll_interval = 5.0 if self.state.initialization_state.is_ready else 2.0
-            await asyncio.sleep(poll_interval)
+                # Exponential backoff with cap
+                retry_interval = min(
+                    base_retry_interval * (1.5 ** min(consecutive_failures - 1, 5)),
+                    max_retry_interval
+                )
+                await asyncio.sleep(retry_interval)
 
     async def _fetch_xb_queue_status(self, init_state: InitializationState) -> None:
         """Fetch XB queue and auth status from engine.
