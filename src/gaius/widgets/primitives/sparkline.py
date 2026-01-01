@@ -56,7 +56,10 @@ def render_sparkline(
 
     # Handle flat line (all same value) or zero range
     if value_range == 0 or math.isnan(value_range):
-        # Use middle block for flat line
+        # If all zeros, show empty (no visual noise when idle)
+        if actual_max == 0:
+            return Text(" " * len(resampled), style="dim")
+        # Non-zero flat line: use middle block
         return Text(SPARK_BLOCKS[4] * len(resampled), style=color)
 
     # Map values to block indices

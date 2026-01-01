@@ -267,6 +267,15 @@ class InitPanel(Widget):
 
         return bar
 
+    def _friendly_endpoint_name(self, name: str) -> str:
+        """Convert internal endpoint name to user-friendly display name.
+
+        Strips internal prefixes like 'cap_' that are implementation details.
+        """
+        if name.startswith("cap_"):
+            return name[4:]  # Remove "cap_" prefix
+        return name
+
     def _render_endpoint(self, name: str, ep: EndpointInitProgress) -> Text:
         """Render a single endpoint status line."""
         line = Text()
@@ -282,8 +291,9 @@ class InitPanel(Widget):
         icon, style = status_icons.get(ep.status, ("? ", "dim"))
         line.append(icon, style=style)
 
-        # Name (truncated)
-        name_display = name[:12].ljust(12)
+        # Name (truncated) - use friendly name for display
+        friendly_name = self._friendly_endpoint_name(name)
+        name_display = friendly_name[:12].ljust(12)
         line.append(name_display, style="white")
 
         # Mini progress bar or status
