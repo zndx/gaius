@@ -204,6 +204,11 @@ from ...generated import (
     AmbientPhaseEvent,
     AmbientStatusResponse,
     AmbientCycleResponse,
+    AmbientStartRequest,
+    AmbientStartResponse,
+    AmbientStopRequest,
+    AmbientStopResponse,
+    AmbientSubscribeRequest,
     AMBIENT_PHASE_UNSPECIFIED,
     AMBIENT_PHASE_BASELINE_HEALTH,
     AMBIENT_PHASE_BASELINE_WORKLOAD,
@@ -4763,6 +4768,15 @@ class GaiusServicer(GaiusServiceServicer):
                 AMBIENT_PHASE_UNSPECIFIED,
             )
 
+            # Convert daemon timestamps to ms since epoch
+            def iso_to_ms(iso_str: str | None) -> int:
+                if not iso_str:
+                    return 0
+                try:
+                    return int(datetime.fromisoformat(iso_str).timestamp() * 1000)
+                except Exception:
+                    return 0
+
             response = AmbientStatusResponse(
                 cycle_running=status.get("cycle_running", False),
                 current_phase=current_phase,
@@ -4773,6 +4787,12 @@ class GaiusServicer(GaiusServiceServicer):
                     else 0
                 ),
                 reasoning_endpoint=status.get("reasoning_endpoint", "reasoning"),
+                # Daemon mode fields
+                daemon_running=status.get("daemon_running", False),
+                max_cycles=status.get("max_cycles") or 0,
+                current_cycle=status.get("daemon_cycle", 0),
+                daemon_started_at_ms=iso_to_ms(status.get("daemon_started_at")),
+                daemon_stopped_at_ms=iso_to_ms(status.get("daemon_stopped_at")),
             )
 
             # Add baseline endpoints
@@ -4789,4 +4809,130 @@ class GaiusServicer(GaiusServiceServicer):
             return AmbientStatusResponse(
                 cycle_running=False,
                 current_phase=AMBIENT_PHASE_ERROR,
+            )
+
+    async def AmbientStart(
+        self,
+        request: AmbientStartRequest,
+        context: aio.ServicerContext,
+    ) -> AmbientStartResponse:
+        """Start continuous ambient cycling daemon.
+
+        Returns immediately. Events can be consumed via AmbientSubscribe.
+
+        Args:
+            request: AmbientStartRequest with baseline_only and max_cycles
+            context: gRPC context
+
+        Returns:
+            AmbientStartResponse with success status
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientStartResponse(
+                success=False,
+                message="AmbientWorkloadService not initialized.\n"
+                "  Guru: #AMB.00000001.SVCNOTINIT\n"
+                "  Check engine startup logs.",
+            )
+
+        try:
+            max_cycles = request.max_cycles if request.max_cycles > 0 else None
+            result = await service.start_daemon(
+                baseline_only=request.baseline_only,
+                max_cycles=max_cycles,
+            )
+
+            return AmbientStartResponse(
+                success=result["success"],
+                message=result["message"],
+                max_cycles=result.get("max_cycles") or 0,
+            )
+
+        except Exception as e:
+            logger.exception(f"AmbientStart failed: {e}")
+            return AmbientStartResponse(
+                success=False,
+                message=str(e),
+            )
+
+    async def AmbientStop(
+        self,
+        request: AmbientStopRequest,
+        context: aio.ServicerContext,
+    ) -> AmbientStopResponse:
+        """Stop ambient cycling daemon gracefully.
+
+        Returns summary of cycles completed.
+
+        Args:
+            request: AmbientStopRequest (empty)
+            context: gRPC context
+
+        Returns:
+            AmbientStopResponse with cycle count and summary
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientStopResponse(
+                success=False,
+                message="AmbientWorkloadService not initialized.",
+                cycles_completed=0,
+            )
+
+        try:
+            result = await service.stop_daemon()
+
+            return AmbientStopResponse(
+                success=result["success"],
+                message=result["message"],
+                cycles_completed=result.get("cycles_completed", 0),
+            )
+
+        except Exception as e:
+            logger.exception(f"AmbientStop failed: {e}")
+            return AmbientStopResponse(
+                success=False,
+                message=str(e),
+                cycles_completed=0,
+            )
+
+    async def AmbientSubscribe(
+        self,
+        request: AmbientSubscribeRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[AmbientPhaseEvent]:
+        """Subscribe to ambient events stream.
+
+        Streams events from the running daemon to the caller.
+        Used by TUI InfoPanel to display progress.
+
+        Args:
+            request: AmbientSubscribeRequest (empty)
+            context: gRPC context
+
+        Yields:
+            AmbientPhaseEvent for each phase transition
+        """
+        service = self._services.ambient_service
+        if service is None:
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message="AmbientWorkloadService not initialized.",
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+            return
+
+        try:
+            async for event in service.subscribe_events():
+                yield event
+
+        except Exception as e:
+            logger.exception(f"AmbientSubscribe failed: {e}")
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message=str(e),
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
             )

@@ -493,6 +493,12 @@ class GaiusApp(App):
         super().__init__()
         self.config = get_config(profile=profile)
         init_telemetry(self.config, entry_point="tui")  # Initialize OpenTelemetry
+
+        # Configure gRPC client for TUI: infinite retries, poll every 5 seconds
+        # Must be done before any get_grpc_client() calls
+        from .client.grpc_client import configure_grpc_client, GrpcClientConfig
+        configure_grpc_client(GrpcClientConfig.for_tui())
+
         self.state = AppState()
         self._graph_update_timer: Timer | None = None
         self._connection_status: ConnectionStatus = ConnectionStatus.PENDING
@@ -3181,33 +3187,101 @@ Use `/evolve stop` to stop orchestrated evolution.
         import asyncio
         from pathlib import Path
 
-        from .health import HealthChecker, CheckStatus
+        from .health import HealthChecker, CheckStatus, CheckResult
 
         content = self.query_one("#info-panel", InfoPanel)
 
         parts = args.split() if args else []
         subcmd = parts[0].lower() if parts else ""
 
+        # Determine title based on subcmd
+        if subcmd == "quick":
+            title = "Quick Health Check"
+        elif subcmd in ("engine", "data", "cognition", "inference"):
+            title = f"{subcmd.title()} Health Check"
+        else:
+            title = "System Health Check"
+
         # Show initial status
-        content.show_file("health.md", "# Health Check\n\n*Running diagnostics...*")
+        content.show_file("health.md", f"# {title}\n\n*Starting diagnostics...*")
 
         async def run_health_check():
             try:
+                import time
+
                 kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
                 checker = HealthChecker(kb_root)
 
-                # Run appropriate checks
-                if subcmd == "quick":
-                    report = await checker.run_quick()
-                    title = "Quick Health Check"
-                elif subcmd in ("engine", "data", "cognition", "inference"):
-                    report = await checker.run_category(subcmd)
-                    title = f"{subcmd.title()} Health Check"
-                else:
-                    report = await checker.run_all()
-                    title = "System Health Check"
+                # Progress tracking for info panel updates
+                completed_checks: list[CheckResult] = []
+                last_update = 0.0
+                UPDATE_INTERVAL = 0.2  # Max 5 updates/sec to keep TUI responsive
 
-                # Format report
+                # Status indicators for compact display
+                status_icons = {
+                    CheckStatus.PASS: "[OK]",
+                    CheckStatus.WARN: "[!]",
+                    CheckStatus.FAIL: "[X]",
+                    CheckStatus.SKIP: "[-]",
+                }
+
+                async def on_progress(result: CheckResult, completed: int, total: int) -> None:
+                    nonlocal last_update
+                    completed_checks.append(result)
+
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        # Build compact progress display
+                        lines = [
+                            f"# {title}",
+                            "",
+                            f"*Checking {completed}/{total}...*",
+                            "",
+                        ]
+
+                        # Show last 6 completed checks (compact - fits in ~2/3 panel)
+                        for check in completed_checks[-6:]:
+                            icon = status_icons.get(check.status, "[?]")
+                            lines.append(f"{icon} {check.name}")
+
+                        content.show_file("health.md", "\n".join(lines))
+                        last_update = now
+                        await asyncio.sleep(0)  # Yield to TUI event loop
+
+                # Run appropriate checks with progress callback
+                if subcmd == "quick":
+                    report = await checker.run_quick(progress_callback=on_progress)
+                elif subcmd in ("engine", "data", "cognition", "inference"):
+                    report = await checker.run_category(subcmd, progress_callback=on_progress)
+                else:
+                    report = await checker.run_all(progress_callback=on_progress)
+
+                # Show compact completion summary in info panel
+                summary_lines = [
+                    f"# {title}",
+                    "",
+                    f"{report.status_indicator} {report.passed}/{len(report.checks)} passed",
+                    "",
+                    f"Duration: {report.duration_ms}ms",
+                    f"Data points: {len(report.checks)} checks",
+                    "",
+                ]
+
+                # Add warning/failure count if any
+                if report.warnings > 0 or report.failures > 0:
+                    issues = []
+                    if report.warnings > 0:
+                        issues.append(f"{report.warnings} warnings")
+                    if report.failures > 0:
+                        issues.append(f"{report.failures} failures")
+                    summary_lines.append(f"Issues: {', '.join(issues)}")
+                    summary_lines.append("")
+
+                summary_lines.append("*Report saved to editor*")
+
+                content.show_file("health.md", "\n".join(summary_lines))
+
+                # Format full report for saved file
                 lines = [
                     f"# {title}",
                     "",
@@ -3219,16 +3293,8 @@ Use `/evolve stop` to stop orchestrated evolution.
                     "",
                 ]
 
-                # Status indicators
-                status_indicators = {
-                    CheckStatus.PASS: "[OK]",
-                    CheckStatus.WARN: "[WARN]",
-                    CheckStatus.FAIL: "[FAIL]",
-                    CheckStatus.SKIP: "[SKIP]",
-                }
-
                 for check in report.checks:
-                    icon = status_indicators.get(check.status, "[?]")
+                    icon = status_icons.get(check.status, "[?]")
                     line = f"{icon} **{check.name}**: {check.message}"
                     lines.append(line)
 
@@ -3285,36 +3351,203 @@ Use `/evolve stop` to stop orchestrated evolution.
         """Handle /ambient command for ambient computing cycles.
 
         Usage:
-            /ambient                    - Run full ambient cycle (default)
-            /ambient cycle              - Run full ambient cycle
-            /ambient cycle --baseline-only  - Run baseline tasks only, skip reasoning
-            /ambient status             - Show ambient computing status
+            /ambient                         - Show status (if no --cycle) or start
+            /ambient start                   - Start continuous cycling daemon
+            /ambient start --cycle 4         - Run exactly 4 cycles then stop
+            /ambient start --baseline-only   - Skip reasoning phases
+            /ambient --cycle 4               - Same as start --cycle 4 (start implied)
+            /ambient stop                    - Stop daemon gracefully
+            /ambient status                  - Show daemon status
+            /ambient cycle                   - (Legacy) Run single cycle
         """
         import asyncio
 
         content = self.query_one("#info-panel", InfoPanel)
 
         parts = args.split() if args else []
-        subcmd = parts[0].lower() if parts else "cycle"
 
-        if subcmd == "cycle":
-            skip_reasoning = "--baseline-only" in parts
-            self._run_ambient_cycle(content, skip_reasoning)
+        # Parse --cycle N option
+        max_cycles = None
+        if "--cycle" in parts:
+            idx = parts.index("--cycle")
+            if idx + 1 < len(parts):
+                try:
+                    max_cycles = int(parts[idx + 1])
+                    parts = [p for i, p in enumerate(parts) if i not in (idx, idx + 1)]
+                except ValueError:
+                    content.show_file(
+                        "error.txt",
+                        f"Invalid --cycle value: {parts[idx + 1]}\n\n"
+                        "Usage: /ambient --cycle 4"
+                    )
+                    return
+
+        baseline_only = "--baseline-only" in parts
+        parts = [p for p in parts if p != "--baseline-only"]
+
+        # Determine subcommand - if --cycle given, default to start
+        if max_cycles:
+            subcmd = parts[0].lower() if parts else "start"
+        else:
+            subcmd = parts[0].lower() if parts else "status"
+
+        if subcmd == "start" or max_cycles:
+            self._run_ambient_start(content, baseline_only, max_cycles)
+        elif subcmd == "stop":
+            self._run_ambient_stop(content)
         elif subcmd == "status":
             self._run_ambient_status(content)
+        elif subcmd == "cycle":
+            # Legacy single-shot cycle
+            self._run_ambient_cycle(content, baseline_only)
         else:
             content.show_file(
                 "error.txt",
                 f"Unknown ambient subcommand: {subcmd}\n\n"
                 "Usage:\n"
-                "  /ambient                       - Run full cycle\n"
-                "  /ambient cycle                 - Run full cycle\n"
-                "  /ambient cycle --baseline-only - Skip reasoning\n"
-                "  /ambient status                - Show status"
+                "  /ambient start               - Start continuous cycling\n"
+                "  /ambient start --cycle 4     - Run 4 cycles then stop\n"
+                "  /ambient start --baseline-only - Skip reasoning\n"
+                "  /ambient stop                - Stop gracefully\n"
+                "  /ambient status              - Show status\n"
+                "  /ambient cycle               - (Legacy) Single cycle"
             )
 
+    def _run_ambient_start(
+        self,
+        content: "InfoPanel",
+        baseline_only: bool = False,
+        max_cycles: int | None = None,
+    ) -> None:
+        """Start ambient cycling daemon and subscribe to events.
+
+        Fire and forget - starts the daemon and attaches InfoPanel to event stream.
+        """
+        import asyncio
+        import time
+
+        # Show initial status
+        mode = "baseline-only" if baseline_only else "full"
+        cycles_text = f" ({max_cycles} cycles)" if max_cycles else " (continuous)"
+        content.show_file("ambient.md", f"# Ambient Cycle\n\n*Starting {mode}{cycles_text}...*")
+
+        async def start_and_subscribe():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+
+                # Start daemon (fire-and-forget)
+                result = await client.call("Ambient", "start", {
+                    "baseline_only": baseline_only,
+                    "max_cycles": max_cycles or 0,
+                })
+
+                if not result.get("success"):
+                    # Already running - just re-subscribe
+                    pass
+
+                # Subscribe to event stream
+                lines = ["# Ambient Cycle"]
+                if max_cycles:
+                    lines.append(f"*{max_cycles} cycles*")
+                lines.append("")
+
+                last_update = 0.0
+                UPDATE_INTERVAL = 0.2
+
+                async for event in client.ambient_subscribe_stream():
+                    phase = event.get("phase", "").replace("AMBIENT_PHASE_", "")
+                    message = event.get("message", "")
+                    progress = event.get("progress", 0.0)
+                    metrics = event.get("metrics", {})
+                    daemon_cycle = metrics.get("daemon_cycle", "")
+
+                    # Update cycle header if new cycle started
+                    if phase == "BASELINE_HEALTH" and progress == 0.0 and daemon_cycle:
+                        # Clear old lines for new cycle, keep header
+                        lines = ["# Ambient Cycle", f"*Cycle {daemon_cycle}*", ""]
+
+                    # Handle COMPLETE with "Completed" - final message
+                    if phase == "COMPLETE" and "Completed" in message:
+                        lines.append("")
+                        lines.append(f"✓ {message}")
+                        content.show_file("ambient.md", "\n".join(lines))
+                        break
+
+                    # Handle COMPLETE with cooldown
+                    if phase == "COMPLETE" and "Next cycle" in message:
+                        lines.append(f"⏳ {message}")
+
+                    # Regular phase progress
+                    elif progress >= 1.0:
+                        lines.append(f"✓ **{phase}**: {message}")
+                        if metrics and phase != "COMPLETE":
+                            for key, value in metrics.items():
+                                if key not in ("daemon_cycle", "cooldown_s"):
+                                    lines.append(f"  - {key}: {value}")
+
+                    # Debounced UI updates
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        display_lines = lines[-15:]  # Last 15 lines
+                        if progress < 1.0 and phase not in ("COMPLETE",):
+                            display_lines.append(f"\n*{phase}: {message}...*")
+                        content.show_file("ambient.md", "\n".join(display_lines))
+                        last_update = now
+                        await asyncio.sleep(0)
+
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Ambient start failed: {e}\n\n{traceback.format_exc()}")
+
+        asyncio.create_task(start_and_subscribe())
+
+    def _run_ambient_stop(self, content: "InfoPanel") -> None:
+        """Stop ambient daemon and show summary."""
+        import asyncio
+
+        content.show_file("ambient.md", "# Ambient Cycle\n\n*Stopping...*")
+
+        async def stop_daemon():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Ambient", "stop", {})
+
+                if result.get("success"):
+                    cycles = result.get("cycles_completed", 0)
+                    tasks = result.get("total_tasks", 0)
+                    successful = result.get("successful_tasks", 0)
+                    message = result.get("message", "Stopped")
+                    # Chrome-free format with trailing spaces for line breaks
+                    stop_lines = [
+                        "# Ambient Cycle",
+                        "",
+                        f"✓ {message}",
+                        "",
+                        f"Cycles     {cycles}  ",
+                        f"Tasks      {tasks}  ",
+                        f"Successful {successful}",
+                    ]
+                    content.show_file("ambient.md", "\n".join(stop_lines))
+                else:
+                    content.show_file("ambient.md", f"""# Ambient Cycle
+
+{result.get('message', 'Not running')}
+
+*Use `/ambient start` to begin cycling.*
+""")
+
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Ambient stop failed: {e}\n\n{traceback.format_exc()}")
+
+        asyncio.create_task(stop_daemon())
+
     def _run_ambient_cycle(self, content: "InfoPanel", skip_reasoning: bool = False) -> None:
-        """Run ambient computing cycle with streaming progress.
+        """Run ambient computing cycle with streaming progress (legacy single-shot).
 
         Uses debounced updates to prevent blocking the TUI event loop.
         Updates at most every 200ms to keep UI responsive while showing progress.
@@ -3400,23 +3633,76 @@ Use `/evolve stop` to stop orchestrated evolution.
                 status = await client.call("Ambient", "status", {})
 
                 # Format status
-                cycle_running = status.get("cycle_running", False)
+                daemon_running = status.get("daemon_running", False)
+                current_cycle = status.get("current_cycle", 0)
+                max_cycles = status.get("max_cycles", 0)
                 current_phase = status.get("current_phase", "idle")
                 cycles_completed = status.get("cycles_completed", 0)
                 baseline_endpoints = status.get("baseline_endpoints", [])
+                daemon_started_at_ms = status.get("daemon_started_at", 0)
+                daemon_stopped_at_ms = status.get("daemon_stopped_at", 0)
 
-                output = f"""# Ambient Computing Status
+                # Format times as HH:MM or --:--
+                from datetime import datetime as dt
+                def fmt_time_ms(ms: int) -> str:
+                    if not ms or ms == 0:
+                        return "--:--"
+                    try:
+                        return dt.fromtimestamp(ms / 1000).strftime("%H:%M")
+                    except Exception:
+                        return "--:--"
 
-| Field | Value |
-|-------|-------|
-| Cycle Running | {'Yes' if cycle_running else 'No'} |
-| Current Phase | {current_phase} |
-| Cycles Completed | {cycles_completed} |
-| Baseline Endpoints | {', '.join(baseline_endpoints) if baseline_endpoints else 'None'} |
+                started_str = fmt_time_ms(daemon_started_at_ms)
+                stopped_str = fmt_time_ms(daemon_stopped_at_ms) if not daemon_running else "--:--"
 
----
-*Commands: `/ambient cycle`, `/ambient status`*
-"""
+                # Daemon mode indicator (keep short to avoid wrap)
+                if daemon_running:
+                    mode = "RUNNING"
+                    if max_cycles:
+                        cycle_str = f"{current_cycle}/{max_cycles}"
+                    else:
+                        cycle_str = f"{current_cycle}"
+                else:
+                    mode = "STOPPED"
+                    cycle_str = str(cycles_completed)
+
+                phase_str = current_phase.split('_')[-1] if current_phase else 'UNKNOWN'
+
+                # Format endpoints with aligned wrapping (11 char indent for continuation)
+                # Use non-breaking spaces (\u00a0) so markdown doesn't strip them
+                if baseline_endpoints:
+                    nbsp = "\u00a0"  # Non-breaking space
+                    indent = nbsp * 11  # Align with value column
+                    endpoints_lines = []
+                    for i, ep in enumerate(baseline_endpoints):
+                        if i == 0:
+                            endpoints_lines.append(f"Endpoints{nbsp}{nbsp}{ep}")
+                        else:
+                            endpoints_lines.append(f"{indent}{ep}")
+                    endpoints_block = "  \n".join(endpoints_lines)  # trailing spaces for line break
+                else:
+                    endpoints_block = "Endpoints  NONE"
+
+                # Build with explicit line breaks (two trailing spaces in markdown)
+                lines = [
+                    "# Ambient Cycle",
+                    "",
+                    f"Started    {started_str}  ",
+                    f"Stopped    {stopped_str}",
+                    "",
+                    "---",
+                    "",
+                    f"Daemon     {mode}  ",
+                    f"Phase      {phase_str}  ",
+                    f"Cycles     {cycles_completed}  ",
+                    endpoints_block,
+                    "",
+                    "---",
+                    "`/ambient start`  ",
+                    "`/ambient stop`  ",
+                    "`/ambient status`",
+                ]
+                output = "\n".join(lines)
                 content.show_file("ambient.md", output)
 
             except Exception as e:

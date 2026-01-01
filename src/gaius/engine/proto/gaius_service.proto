@@ -1558,7 +1558,45 @@ message AmbientStatusResponse {
   repeated string baseline_endpoints = 5;
   string reasoning_endpoint = 6;
   AmbientCycleResponse last_result = 7;
+  // New fields for daemon mode
+  bool daemon_running = 8;          // Is continuous daemon running?
+  int32 max_cycles = 9;             // Target cycles (0 = infinite)
+  int32 current_cycle = 10;         // Current cycle number in daemon
+  int64 daemon_started_at_ms = 11;  // When daemon started (ms since epoch, 0 = never)
+  int64 daemon_stopped_at_ms = 12;  // When daemon stopped (ms since epoch, 0 = never/running)
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Ambient Daemon Messages (Start/Stop continuous cycling)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Start ambient daemon request
+message AmbientStartRequest {
+  bool baseline_only = 1;           // Skip reasoning phases
+  int32 max_cycles = 2;             // 0 = infinite, N = run N cycles then stop
+}
+
+// Start ambient daemon response (fire-and-forget)
+message AmbientStartResponse {
+  bool success = 1;
+  string message = 2;
+  int32 max_cycles = 3;             // Echo back for confirmation
+}
+
+// Stop ambient daemon request
+message AmbientStopRequest {}
+
+// Stop ambient daemon response
+message AmbientStopResponse {
+  bool success = 1;
+  string message = 2;
+  int32 cycles_completed = 3;       // How many cycles ran before stop
+}
+
+// Subscribe to ambient events (for TUI InfoPanel)
+message AmbientSubscribeRequest {}
+
+// Note: Reuses AmbientPhaseEvent for streaming events
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
@@ -1737,6 +1775,9 @@ service GaiusService {
   // ─────────────────────────────────────────────────────────────────────────
   // Ambient Computing Workload
   // ─────────────────────────────────────────────────────────────────────────
-  rpc AmbientCycle(AmbientCycleRequest) returns (stream AmbientPhaseEvent);  // Streaming cycle with progress events
+  rpc AmbientCycle(AmbientCycleRequest) returns (stream AmbientPhaseEvent);  // Streaming cycle with progress events (deprecated: use AmbientStart)
   rpc AmbientStatus(google.protobuf.Empty) returns (AmbientStatusResponse);  // Current ambient status
+  rpc AmbientStart(AmbientStartRequest) returns (AmbientStartResponse);      // Start continuous ambient cycling daemon
+  rpc AmbientStop(AmbientStopRequest) returns (AmbientStopResponse);         // Stop ambient daemon gracefully
+  rpc AmbientSubscribe(AmbientSubscribeRequest) returns (stream AmbientPhaseEvent);  // Subscribe to ambient events (TUI)
 }

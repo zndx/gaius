@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,7 +28,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from ..backends import ProcessStatus
-from ..proto import gaius_service_pb2 as pb
+from ..generated import gaius_service_pb2 as pb
 
 if TYPE_CHECKING:
     from ..backends import BackendRouter
@@ -113,6 +114,88 @@ DEFAULT_REASONING_TASK = AmbientTask(
     timeout_secs=120,
 )
 
+# Varied task pools for daemon mode
+VARIED_BASELINE_TASKS: list[tuple[str, AmbientTask]] = [
+    # Fast endpoint tasks
+    ("fast", AmbientTask(
+        endpoint="fast",
+        prompt="Explain what a hash table is in one sentence.",
+        expected_capability="generation",
+        timeout_secs=15,
+    )),
+    ("fast", AmbientTask(
+        endpoint="fast",
+        prompt="What is the time complexity of binary search?",
+        expected_capability="generation",
+        timeout_secs=15,
+    )),
+    ("fast", AmbientTask(
+        endpoint="fast",
+        prompt="Define polymorphism in OOP.",
+        expected_capability="generation",
+        timeout_secs=15,
+    )),
+    ("fast", AmbientTask(
+        endpoint="fast",
+        prompt="Name three common design patterns.",
+        expected_capability="generation",
+        timeout_secs=15,
+    )),
+    # Coding endpoint tasks
+    ("coding", AmbientTask(
+        endpoint="coding",
+        prompt="Complete this function:\ndef fibonacci(n):\n    ",
+        expected_capability="coding",
+        timeout_secs=20,
+    )),
+    ("coding", AmbientTask(
+        endpoint="coding",
+        prompt="Write a Python one-liner to reverse a string.",
+        expected_capability="coding",
+        timeout_secs=20,
+    )),
+    ("coding", AmbientTask(
+        endpoint="coding",
+        prompt="Implement a simple stack class in Python.",
+        expected_capability="coding",
+        timeout_secs=20,
+    )),
+    ("coding", AmbientTask(
+        endpoint="coding",
+        prompt="Write a function to check if a number is prime.",
+        expected_capability="coding",
+        timeout_secs=20,
+    )),
+    # Orchestrator tasks
+    ("orchestrator", AmbientTask(
+        endpoint="orchestrator",
+        prompt="Route this request: 'Write a Python function'",
+        expected_capability="routing",
+        timeout_secs=10,
+    )),
+    ("orchestrator", AmbientTask(
+        endpoint="orchestrator",
+        prompt="Route this request: 'Explain recursion'",
+        expected_capability="routing",
+        timeout_secs=10,
+    )),
+    ("orchestrator", AmbientTask(
+        endpoint="orchestrator",
+        prompt="Route this request: 'Analyze the following code for bugs'",
+        expected_capability="routing",
+        timeout_secs=10,
+    )),
+]
+
+VARIED_REASONING_PROMPTS: list[str] = [
+    "Analyze the trade-offs between microservices and monoliths for a startup.",
+    "Compare REST vs GraphQL for a mobile app backend.",
+    "Evaluate pros and cons of event sourcing for an e-commerce system.",
+    "When should you use a message queue vs direct API calls?",
+    "Discuss trade-offs between SQL and NoSQL for a social media platform.",
+    "Analyze the CAP theorem implications for a globally distributed system.",
+]
+
 
 class AmbientWorkloadService:
     """Manages ambient computing workload cycles.
@@ -150,6 +233,18 @@ class AmbientWorkloadService:
         self._last_cycle_at: Optional[datetime] = None
         self._last_result: Optional[CycleResult] = None
 
+        # Daemon state for continuous cycling
+        self._daemon_running = False
+        self._stop_requested = False
+        self._max_cycles: Optional[int] = None  # None = infinite
+        self._daemon_cycle: int = 0  # Current cycle in daemon mode
+        self._daemon_task: Optional[asyncio.Task[None]] = None
+        self._event_queue: asyncio.Queue[pb.AmbientPhaseEvent] = asyncio.Queue()
+        self._total_daemon_tasks: int = 0
+        self._successful_daemon_tasks: int = 0
+        self._daemon_started_at: Optional[datetime] = None
+        self._daemon_stopped_at: Optional[datetime] = None
+
         logger.info(
             f"AmbientWorkloadService initialized with baseline: {self._baseline_endpoints}"
         )
@@ -169,6 +264,18 @@ class AmbientWorkloadService:
             ),
             "baseline_endpoints": self._baseline_endpoints,
             "reasoning_endpoint": self._reasoning_endpoint,
+            # Daemon state
+            "daemon_running": self._daemon_running,
+            "daemon_cycle": self._daemon_cycle,
+            "max_cycles": self._max_cycles,
+            "total_daemon_tasks": self._total_daemon_tasks,
+            "successful_daemon_tasks": self._successful_daemon_tasks,
+            "daemon_started_at": (
+                self._daemon_started_at.isoformat() if self._daemon_started_at else None
+            ),
+            "daemon_stopped_at": (
+                self._daemon_stopped_at.isoformat() if self._daemon_stopped_at else None
+            ),
             "last_result": (
                 {
                     "success": self._last_result.success,
@@ -185,7 +292,379 @@ class AmbientWorkloadService:
         }
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Main Cycle Execution
+    # Daemon Mode (Start/Stop)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def start_daemon(
+        self,
+        baseline_only: bool = False,
+        max_cycles: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Start continuous ambient cycling in background.
+
+        Returns immediately. Events are pushed to internal queue
+        and can be consumed via subscribe_events().
+
+        Args:
+            baseline_only: If True, skip reasoning phases
+            max_cycles: Run exactly N cycles then stop (None = infinite)
+
+        Returns:
+            Dict with success status and message
+        """
+        if self._daemon_running:
+            return {
+                "success": False,
+                "message": "Already running",
+                "max_cycles": self._max_cycles,
+            }
+
+        self._daemon_running = True
+        self._stop_requested = False
+        self._max_cycles = max_cycles
+        self._daemon_cycle = 0
+        self._total_daemon_tasks = 0
+        self._successful_daemon_tasks = 0
+        self._daemon_started_at = datetime.now()
+        self._daemon_stopped_at = None  # Clear previous stop time
+
+        # Clear any stale events from queue
+        while not self._event_queue.empty():
+            try:
+                self._event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        # Launch background task
+        self._daemon_task = asyncio.create_task(
+            self._daemon_loop(baseline_only),
+            name="ambient-daemon",
+        )
+
+        msg = "Started" if max_cycles is None else f"Started ({max_cycles} cycles)"
+        logger.info(f"Ambient daemon started: baseline_only={baseline_only}, max_cycles={max_cycles}")
+
+        return {
+            "success": True,
+            "message": msg,
+            "max_cycles": max_cycles,
+        }
+
+    async def stop_daemon(self) -> dict[str, Any]:
+        """Request graceful stop and return summary.
+
+        Returns:
+            Dict with cycle count and summary
+        """
+        if not self._daemon_running:
+            return {
+                "success": False,
+                "message": "Not running",
+                "cycles_completed": 0,
+            }
+
+        self._stop_requested = True
+        logger.info("Ambient daemon stop requested")
+
+        # Wait briefly for clean shutdown
+        for _ in range(10):  # Wait up to 1 second
+            if not self._daemon_running:
+                break
+            await asyncio.sleep(0.1)
+
+        success_rate = (
+            f"{self._successful_daemon_tasks}/{self._total_daemon_tasks}"
+            if self._total_daemon_tasks > 0
+            else "0/0"
+        )
+
+        return {
+            "success": True,
+            "message": f"Stopped after {self._daemon_cycle} cycles ({success_rate} tasks)",
+            "cycles_completed": self._daemon_cycle,
+            "total_tasks": self._total_daemon_tasks,
+            "successful_tasks": self._successful_daemon_tasks,
+        }
+
+    async def _daemon_loop(self, baseline_only: bool) -> None:
+        """Background loop that runs cycles continuously."""
+        try:
+            while not self._stop_requested:
+                self._daemon_cycle += 1
+
+                # Check cycle limit
+                if self._max_cycles and self._daemon_cycle > self._max_cycles:
+                    break
+
+                self._emit_event(
+                    pb.AMBIENT_PHASE_BASELINE_HEALTH,
+                    f"Cycle {self._daemon_cycle}" + (
+                        f" of {self._max_cycles}" if self._max_cycles else ""
+                    ),
+                    0.0,
+                    {"cycle": str(self._daemon_cycle)},
+                )
+
+                # Run one cycle with varied tasks
+                async for event in self._run_varied_cycle(baseline_only):
+                    self._emit_event(
+                        event.phase,
+                        event.message,
+                        event.progress,
+                        dict(event.metrics) if event.metrics else None,
+                    )
+                    if self._stop_requested:
+                        break
+
+                if self._stop_requested:
+                    break
+
+                # Cycle completed successfully - increment counter
+                self._cycles_completed += 1
+
+                # Check if we've hit the limit
+                if self._max_cycles and self._daemon_cycle >= self._max_cycles:
+                    break
+
+                # Random cooldown between cycles
+                cooldown = random.randint(10, 30)
+                self._emit_event(
+                    pb.AMBIENT_PHASE_COMPLETE,
+                    f"Next cycle in {cooldown}s",
+                    1.0,
+                    {"cooldown_s": str(cooldown)},
+                )
+
+                # Interruptible sleep
+                for _ in range(cooldown):
+                    if self._stop_requested:
+                        break
+                    await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            logger.info("Ambient daemon cancelled")
+        except Exception as e:
+            logger.exception("Ambient daemon error")
+            self._emit_event(pb.AMBIENT_PHASE_ERROR, str(e), 0.0)
+        finally:
+            self._daemon_running = False
+            self._daemon_stopped_at = datetime.now()
+            success_rate = (
+                f"{self._successful_daemon_tasks}/{self._total_daemon_tasks}"
+                if self._total_daemon_tasks > 0
+                else "0/0"
+            )
+            self._emit_event(
+                pb.AMBIENT_PHASE_COMPLETE,
+                f"Completed {self._daemon_cycle} cycles ({success_rate} tasks)",
+                1.0,
+                {
+                    "cycles": str(self._daemon_cycle),
+                    "tasks": str(self._total_daemon_tasks),
+                    "success_rate": success_rate,
+                },
+            )
+            logger.info(f"Ambient daemon stopped: {self._daemon_cycle} cycles, {success_rate} tasks")
+
+    async def _run_varied_cycle(self, baseline_only: bool) -> AsyncIterator[pb.AmbientPhaseEvent]:
+        """Run a single cycle with varied task selection.
+
+        Unlike run_cycle(), this selects random tasks from the varied pools.
+        """
+        start_time = time.time()
+
+        # Phase 1: Health check
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_HEALTH,
+            "Checking endpoint health",
+            0.0,
+        )
+
+        health_results = await self._verify_baseline_health()
+        healthy_count = sum(1 for h in health_results.values() if h)
+
+        if healthy_count == 0:
+            yield self._make_event(
+                pb.AMBIENT_PHASE_ERROR,
+                f"No healthy endpoints (0/{len(self._baseline_endpoints)})",
+                0.0,
+            )
+            return
+
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_HEALTH,
+            f"{healthy_count}/{len(self._baseline_endpoints)} healthy",
+            1.0,
+            {ep: "healthy" if h else "unhealthy" for ep, h in health_results.items()},
+        )
+
+        # Phase 2: Varied baseline workload
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+            "Running baseline tasks",
+            0.0,
+        )
+
+        # Select 2-4 random tasks from varied pool
+        available_tasks = [
+            (ep, task) for ep, task in VARIED_BASELINE_TASKS
+            if health_results.get(ep, False)
+        ]
+        num_tasks = min(random.randint(2, 4), len(available_tasks))
+        selected_tasks = random.sample(available_tasks, num_tasks) if available_tasks else []
+
+        task_results = []
+        for ep, task in selected_tasks:
+            result = await self._execute_task(task)
+            task_results.append(result)
+            self._total_daemon_tasks += 1
+            if result.success:
+                self._successful_daemon_tasks += 1
+
+        successful = sum(1 for r in task_results if r.success)
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_WORKLOAD,
+            f"{successful}/{len(task_results)} tasks",
+            1.0,
+            {r.endpoint: f"{r.latency_ms}ms" for r in task_results if r.success},
+        )
+
+        if baseline_only:
+            duration_ms = int((time.time() - start_time) * 1000)
+            yield self._make_event(
+                pb.AMBIENT_PHASE_COMPLETE,
+                f"Cycle complete ({duration_ms}ms)",
+                1.0,
+                {"duration_ms": str(duration_ms)},
+            )
+            return
+
+        # Phase 3: Reasoning eviction
+        yield self._make_event(
+            pb.AMBIENT_PHASE_REASONING_EVICTION,
+            "Preparing reasoning endpoint",
+            0.0,
+        )
+
+        eviction_result = await self._evict_for_reasoning()
+        if not eviction_result["success"]:
+            yield self._make_event(
+                pb.AMBIENT_PHASE_ERROR,
+                f"Eviction failed: {eviction_result.get('error', 'unknown')}",
+                0.0,
+            )
+            return
+
+        allocated_endpoint = eviction_result.get("reasoning_endpoint")
+        yield self._make_event(
+            pb.AMBIENT_PHASE_REASONING_EVICTION,
+            f"Ready, evicted: {eviction_result.get('evicted', [])}",
+            1.0,
+        )
+
+        # Phase 4: Reasoning workload with varied prompt
+        yield self._make_event(
+            pb.AMBIENT_PHASE_REASONING_WORKLOAD,
+            "Running reasoning task",
+            0.0,
+        )
+
+        reasoning_prompt = random.choice(VARIED_REASONING_PROMPTS)
+        reasoning_result = await self._run_reasoning_workload(
+            custom_prompt=reasoning_prompt,
+            endpoint_name=allocated_endpoint,
+        )
+        self._total_daemon_tasks += 1
+        if reasoning_result.success:
+            self._successful_daemon_tasks += 1
+
+        yield self._make_event(
+            pb.AMBIENT_PHASE_REASONING_WORKLOAD,
+            f"{'Complete' if reasoning_result.success else 'Failed'} ({reasoning_result.latency_ms}ms)",
+            1.0,
+            {self._reasoning_endpoint: f"{reasoning_result.latency_ms}ms"} if reasoning_result.success else {},
+        )
+
+        # Phase 5: Restoration
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_RESTORATION,
+            "Restoring baseline endpoints",
+            0.0,
+        )
+
+        restoration_result = await self._restore_baseline()
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BASELINE_RESTORATION,
+            f"Restored: {restoration_result.get('restored', [])}",
+            1.0,
+        )
+
+        duration_ms = int((time.time() - start_time) * 1000)
+        yield self._make_event(
+            pb.AMBIENT_PHASE_COMPLETE,
+            f"Full cycle complete ({duration_ms}ms)",
+            1.0,
+            {"duration_ms": str(duration_ms)},
+        )
+
+    def _emit_event(
+        self,
+        phase: int,
+        message: str,
+        progress: float,
+        metrics: Optional[dict[str, str]] = None,
+    ) -> None:
+        """Push event to queue for subscribers."""
+        self._current_phase = AmbientPhase(
+            {
+                pb.AMBIENT_PHASE_BASELINE_HEALTH: "baseline_health",
+                pb.AMBIENT_PHASE_BASELINE_WORKLOAD: "baseline_workload",
+                pb.AMBIENT_PHASE_REASONING_EVICTION: "reasoning_eviction",
+                pb.AMBIENT_PHASE_REASONING_WORKLOAD: "reasoning_workload",
+                pb.AMBIENT_PHASE_BASELINE_RESTORATION: "baseline_restoration",
+                pb.AMBIENT_PHASE_COMPLETE: "complete",
+                pb.AMBIENT_PHASE_ERROR: "error",
+            }.get(phase, "complete")
+        )
+
+        event = self._make_event(phase, message, progress, metrics)
+
+        # Add cycle info
+        event.metrics["daemon_cycle"] = str(self._daemon_cycle)
+
+        try:
+            self._event_queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Drop oldest event if queue is full
+            try:
+                self._event_queue.get_nowait()
+                self._event_queue.put_nowait(event)
+            except asyncio.QueueEmpty:
+                pass
+
+    async def subscribe_events(self) -> AsyncIterator[pb.AmbientPhaseEvent]:
+        """Stream events to a subscriber (TUI InfoPanel).
+
+        Yields events as they are produced by the daemon loop.
+        Completes when daemon stops and queue is drained.
+        """
+        while self._daemon_running or not self._event_queue.empty():
+            try:
+                event = await asyncio.wait_for(
+                    self._event_queue.get(),
+                    timeout=1.0,
+                )
+                yield event
+            except asyncio.TimeoutError:
+                # Check if we should continue waiting
+                if not self._daemon_running and self._event_queue.empty():
+                    break
+                continue
+            except asyncio.CancelledError:
+                break
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Main Cycle Execution (Legacy - single shot)
     # ─────────────────────────────────────────────────────────────────────────
 
     async def run_cycle(
@@ -462,6 +941,10 @@ class AmbientWorkloadService:
 
         Returns:
             TaskResult with latency and success status
+
+        Note:
+            Metrics are recorded automatically by BackendRouter.route()
+            at the core inference layer.
         """
         start_time = time.time()
 

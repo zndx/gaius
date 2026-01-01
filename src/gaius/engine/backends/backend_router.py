@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from ..config import AgentConfig, EngineConfig
+from ..metrics import EngineMetrics
 from ..resources import ResourceManager
 from .optillm_controller import OptillmController, OptillmRequest, OptillmResponse, OptillmTechnique
 from .vllm_controller import VLLMController, VLLMProcess, VLLMRequest, VLLMResponse
@@ -131,34 +132,48 @@ class BackendRouter:
         # Get agent configuration
         agent_config = self.get_agent_config(request.agent_alias)
 
+        response: InferenceResponse
+
         if not agent_config:
             # Check for dynamically created vLLM endpoint
             proc = self.vllm.get_process(request.agent_alias)
             if proc and proc.status.value == "healthy":
                 logger.info(f"Routing to dynamic vLLM endpoint: {request.agent_alias}")
-                return await self._route_to_dynamic_vllm(request, proc)
-
-            return InferenceResponse(
-                content="",
-                model="",
-                backend="",
-                error=f"Unknown agent: {request.agent_alias}",
-            )
-
-        # Determine backend
-        backend = agent_config.backend.lower()
-
-        if backend == "optillm":
-            return await self._route_to_optillm(request, agent_config)
-        elif backend == "vllm":
-            return await self._route_to_vllm(request, agent_config)
+                response = await self._route_to_dynamic_vllm(request, proc)
+            else:
+                response = InferenceResponse(
+                    content="",
+                    model="",
+                    backend="",
+                    error=f"Unknown agent: {request.agent_alias}",
+                )
         else:
-            return InferenceResponse(
-                content="",
-                model=agent_config.model,
-                backend=backend,
-                error=f"Unknown backend: {backend}",
-            )
+            # Determine backend
+            backend = agent_config.backend.lower()
+
+            if backend == "optillm":
+                response = await self._route_to_optillm(request, agent_config)
+            elif backend == "vllm":
+                response = await self._route_to_vllm(request, agent_config)
+            else:
+                response = InferenceResponse(
+                    content="",
+                    model=agent_config.model,
+                    backend=backend,
+                    error=f"Unknown backend: {backend}",
+                )
+
+        # Record metrics at core layer - ALL inference flows through here
+        metrics = EngineMetrics.get_instance()
+        tokens = (response.input_tokens or 0) + (response.output_tokens or 0)
+        metrics.record_inference(
+            model=request.agent_alias,
+            latency_ms=response.latency_ms,
+            tokens=tokens,
+            success=response.error is None,
+        )
+
+        return response
 
     async def _route_to_optillm(
         self, request: InferenceRequest, agent_config: AgentConfig

@@ -232,6 +232,11 @@ from .gaius_service_pb2 import (
     AmbientPhaseEvent,
     AmbientCycleResponse,
     AmbientStatusResponse,
+    AmbientStartRequest,
+    AmbientStartResponse,
+    AmbientStopRequest,
+    AmbientStopResponse,
+    AmbientSubscribeRequest,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -457,6 +462,11 @@ __all__ = [
     "AmbientPhaseEvent",
     "AmbientCycleResponse",
     "AmbientStatusResponse",
+    "AmbientStartRequest",
+    "AmbientStartResponse",
+    "AmbientStopRequest",
+    "AmbientStopResponse",
+    "AmbientSubscribeRequest",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",

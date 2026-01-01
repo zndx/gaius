@@ -84,6 +84,11 @@ from ..engine.generated import (
     # Ambient Computing
     AmbientCycleRequest,
     AmbientPhaseEvent,
+    AmbientStartRequest,
+    AmbientStartResponse,
+    AmbientStopRequest,
+    AmbientStopResponse,
+    AmbientSubscribeRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,12 +103,16 @@ class GrpcClientConfig:
         port: Server port
         timeout: Request timeout in seconds
         connect_timeout: Connection timeout in seconds
+        max_retries: Max connection retries (-1 = infinite, for TUI)
+        retry_interval: Seconds between retry attempts
     """
 
     host: str = "localhost"
     port: int = 50051
     timeout: float = 30.0
     connect_timeout: float = 5.0
+    max_retries: int = 3  # Default for CLI/MCP (finite)
+    retry_interval: float = 5.0  # Poll every 5 seconds
 
     @classmethod
     def from_env(cls) -> "GrpcClientConfig":
@@ -113,7 +122,39 @@ class GrpcClientConfig:
             port=int(os.environ.get("GAIUS_GRPC_PORT", "50051")),
             timeout=float(os.environ.get("GAIUS_ENGINE_TIMEOUT", "30")),
             connect_timeout=float(os.environ.get("GAIUS_CONNECT_TIMEOUT", "5")),
+            max_retries=int(os.environ.get("GAIUS_MAX_RETRIES", "3")),
+            retry_interval=float(os.environ.get("GAIUS_RETRY_INTERVAL", "5")),
         )
+
+    @classmethod
+    def for_tui(cls) -> "GrpcClientConfig":
+        """Create config for TUI (infinite retries).
+
+        TUI should never give up - it polls forever until engine is available.
+        """
+        config = cls.from_env()
+        config.max_retries = -1  # Infinite retries
+        return config
+
+    @classmethod
+    def for_cli(cls, max_retries: int = 3) -> "GrpcClientConfig":
+        """Create config for CLI (finite retries).
+
+        CLI operations are transactional - fail after max_retries.
+        """
+        config = cls.from_env()
+        config.max_retries = max_retries
+        return config
+
+    @classmethod
+    def for_mcp(cls, max_retries: int = 3) -> "GrpcClientConfig":
+        """Create config for MCP server (finite retries).
+
+        MCP operations are transactional - fail after max_retries.
+        """
+        config = cls.from_env()
+        config.max_retries = max_retries
+        return config
 
 
 class GrpcEngineClient:
@@ -246,9 +287,10 @@ class GrpcEngineClient:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Call a service action.
+        """Call a service action with automatic retry on connection failure.
 
-        Maps service/action pairs to gRPC method calls.
+        Maps service/action pairs to gRPC method calls. Retries on connection
+        failures according to config.max_retries (-1 = infinite for TUI).
 
         Args:
             service: Service name (Orchestrator, Scheduler, etc.)
@@ -261,68 +303,123 @@ class GrpcEngineClient:
 
         Raises:
             TimeoutError: If request times out
-            ConnectionError: If not connected after retry
+            ConnectionError: If not connected after max retries
             RuntimeError: If request fails
         """
-        # Attempt reconnection if not connected
-        if not self._connected:
-            connected = await self.connect()
-            if not connected:
-                raise ConnectionError("Not connected to engine (reconnection failed)")
-
         timeout = timeout or self.config.timeout
         params = params or {}
 
-        try:
-            # Route to appropriate gRPC method
-            if service == "Orchestrator":
-                return await self._call_orchestrator(action, params, timeout)
-            elif service == "Scheduler":
-                return await self._call_scheduler(action, params, timeout)
-            elif service == "Evolution":
-                return await self._call_evolution(action, params, timeout)
-            elif service == "Grid":
-                return await self._call_grid(action, params, timeout)
-            elif service == "Tda":
-                return await self._call_tda(action, params, timeout)
-            elif service == "Health":
-                return await self._call_health(action, params, timeout)
-            elif service == "Cognition":
-                return await self._call_cognition(action, params, timeout)
-            elif service == "Workload":
-                return await self._call_workload(action, params, timeout)
-            elif service == "Embedding":
-                return await self._call_embedding(action, params, timeout)
-            elif service == "Init":
-                return await self._call_init(action, params, timeout)
-            elif service == "Search":
-                return await self._call_search(action, params, timeout)
-            elif service == "Gaius":
-                return await self._call_gaius(action, params, timeout)
-            elif service == "CLT":
-                return await self._call_clt(action, params, timeout)
-            elif service == "HealthObserver":
-                return await self._call_health_observer(action, params, timeout)
-            elif service == "XBookmarks":
-                return await self._call_x_bookmarks(action, params, timeout)
-            elif service == "Ambient":
-                return await self._call_ambient(action, params, timeout)
-            else:
-                raise ValueError(f"Unknown service: {service}")
+        attempt = 0
+        last_error: Optional[Exception] = None
 
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"Request {service}.{action} timed out")
-        except grpc.RpcError as e:
-            code = e.code()
-            details = e.details()
-            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+        while True:
+            attempt += 1
+            infinite_retries = self.config.max_retries == -1
+
+            # Attempt connection if not connected
+            if not self._connected:
+                connected = await self.connect()
+                if not connected:
+                    # Check if we should retry
+                    if infinite_retries or attempt <= self.config.max_retries:
+                        logger.debug(
+                            f"gRPC connection failed, retry {attempt}"
+                            f"{'/' + str(self.config.max_retries) if not infinite_retries else ' (infinite)'}"
+                            f" in {self.config.retry_interval}s"
+                        )
+                        await asyncio.sleep(self.config.retry_interval)
+                        continue
+                    else:
+                        # #GR.00000001.CONNFAIL - gRPC connection failed after max retries
+                        error_msg = (
+                            f"#GR.00000001.CONNFAIL: gRPC connection failed after {attempt} attempts.\n"
+                            f"  Engine may not be running. Try:\n"
+                            f"  1. Check engine status: devenv processes\n"
+                            f"  2. Restart engine: devenv tasks run restart:clean\n"
+                            f"  3. Check logs: tail -f .devenv/processes.log"
+                        )
+                        logger.error(error_msg)
+                        raise ConnectionError(error_msg)
+
+            try:
+                # Route to appropriate gRPC method
+                return await self._dispatch_call(service, action, params, timeout)
+
+            except asyncio.TimeoutError:
                 raise TimeoutError(f"Request {service}.{action} timed out")
-            elif code == grpc.StatusCode.UNAVAILABLE:
-                # Mark as disconnected so next call triggers reconnection
-                self._connected = False
-                raise ConnectionError(f"Service unavailable: {details}")
-            else:
-                raise RuntimeError(f"gRPC error ({code.name}): {details}")
+            except grpc.RpcError as e:
+                code = e.code()
+                details = e.details()
+
+                if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    raise TimeoutError(f"Request {service}.{action} timed out")
+
+                elif code == grpc.StatusCode.UNAVAILABLE:
+                    # Mark as disconnected for retry
+                    self._connected = False
+                    last_error = ConnectionError(f"Service unavailable: {details}")
+
+                    # Check if we should retry
+                    if infinite_retries or attempt <= self.config.max_retries:
+                        logger.debug(
+                            f"gRPC service unavailable, retry {attempt}"
+                            f"{'/' + str(self.config.max_retries) if not infinite_retries else ' (infinite)'}"
+                            f" in {self.config.retry_interval}s"
+                        )
+                        await asyncio.sleep(self.config.retry_interval)
+                        continue
+                    else:
+                        # #GR.00000002.SVCUNAVAIL - Service unavailable after max retries
+                        error_msg = (
+                            f"#GR.00000002.SVCUNAVAIL: gRPC service unavailable after {attempt} attempts.\n"
+                            f"  Engine may have crashed or restarted. Try:\n"
+                            f"  1. Check engine status: /health quick\n"
+                            f"  2. Restart engine: devenv tasks run restart:clean"
+                        )
+                        logger.error(error_msg)
+                        raise ConnectionError(error_msg)
+
+                else:
+                    raise RuntimeError(f"gRPC error ({code.name}): {details}")
+
+    async def _dispatch_call(
+        self, service: str, action: str, params: dict, timeout: float
+    ) -> dict[str, Any]:
+        """Dispatch call to appropriate service handler."""
+        if service == "Orchestrator":
+            return await self._call_orchestrator(action, params, timeout)
+        elif service == "Scheduler":
+            return await self._call_scheduler(action, params, timeout)
+        elif service == "Evolution":
+            return await self._call_evolution(action, params, timeout)
+        elif service == "Grid":
+            return await self._call_grid(action, params, timeout)
+        elif service == "Tda":
+            return await self._call_tda(action, params, timeout)
+        elif service == "Health":
+            return await self._call_health(action, params, timeout)
+        elif service == "Cognition":
+            return await self._call_cognition(action, params, timeout)
+        elif service == "Workload":
+            return await self._call_workload(action, params, timeout)
+        elif service == "Embedding":
+            return await self._call_embedding(action, params, timeout)
+        elif service == "Init":
+            return await self._call_init(action, params, timeout)
+        elif service == "Search":
+            return await self._call_search(action, params, timeout)
+        elif service == "Gaius":
+            return await self._call_gaius(action, params, timeout)
+        elif service == "CLT":
+            return await self._call_clt(action, params, timeout)
+        elif service == "HealthObserver":
+            return await self._call_health_observer(action, params, timeout)
+        elif service == "XBookmarks":
+            return await self._call_x_bookmarks(action, params, timeout)
+        elif service == "Ambient":
+            return await self._call_ambient(action, params, timeout)
+        else:
+            raise ValueError(f"Unknown service: {service}")
 
     async def _call_orchestrator(
         self, action: str, params: dict, timeout: float
@@ -1460,6 +1557,41 @@ class GrpcEngineClient:
                 "cycles_completed": response.cycles_completed,
                 "baseline_endpoints": list(response.baseline_endpoints),
                 "reasoning_endpoint": response.reasoning_endpoint,
+                # Daemon mode fields
+                "daemon_running": response.daemon_running,
+                "current_cycle": response.current_cycle,
+                "max_cycles": response.max_cycles,
+                "daemon_started_at": response.daemon_started_at_ms,
+                "daemon_stopped_at": response.daemon_stopped_at_ms,
+            }
+
+        elif action == "start":
+            # Start ambient daemon
+            baseline_only = params.get("baseline_only", False)
+            max_cycles = params.get("max_cycles", 0)
+
+            request = AmbientStartRequest(
+                baseline_only=baseline_only,
+                max_cycles=max_cycles,
+            )
+
+            response = await self._gaius_stub.AmbientStart(request, timeout=timeout)
+
+            return {
+                "success": response.success,
+                "message": response.message,
+                "max_cycles": response.max_cycles,
+            }
+
+        elif action == "stop":
+            # Stop ambient daemon
+            request = AmbientStopRequest()
+            response = await self._gaius_stub.AmbientStop(request, timeout=timeout)
+
+            return {
+                "success": response.success,
+                "message": response.message,
+                "cycles_completed": response.cycles_completed,
             }
 
         elif action == "cycle":
@@ -1576,6 +1708,51 @@ class GrpcEngineClient:
                     "success": False,
                     "endpoint": "",
                     "latency_ms": 0,
+                    "metrics": {},
+                    "timestamp_ms": 0,
+                }
+
+    async def ambient_subscribe_stream(self) -> AsyncIterator[dict]:
+        """Subscribe to ambient daemon events stream.
+
+        Yields events from a running ambient daemon.
+        Used by TUI to display progress while daemon runs.
+
+        Yields:
+            AmbientPhaseEvent dicts with phase, message, progress, metrics
+        """
+        if not self._connected:
+            await self.connect()
+
+        request = AmbientSubscribeRequest()
+
+        try:
+            from ..engine.generated import AmbientPhase
+
+            async for event in self._gaius_stub.AmbientSubscribe(request):
+                # Get phase name from enum
+                try:
+                    phase_name = AmbientPhase.Name(event.phase)
+                except Exception:
+                    phase_name = str(event.phase)
+
+                # Extract metrics from the map field
+                metrics = dict(event.metrics) if event.metrics else {}
+
+                yield {
+                    "phase": phase_name,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "metrics": metrics,
+                    "timestamp_ms": event.timestamp_ms,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"AmbientSubscribe error: {e}")
+                yield {
+                    "phase": "AMBIENT_PHASE_ERROR",
+                    "message": f"Stream error: {e.details()}",
+                    "progress": 0.0,
                     "metrics": {},
                     "timestamp_ms": 0,
                 }
@@ -2336,6 +2513,24 @@ class GrpcEngineClient:
 
 _grpc_client: Optional[GrpcEngineClient] = None
 _grpc_connect_lock: asyncio.Lock | None = None
+_grpc_default_config: Optional[GrpcClientConfig] = None
+
+
+def configure_grpc_client(config: GrpcClientConfig) -> None:
+    """Configure the gRPC client singleton before first use.
+
+    Call this early in application startup (e.g., in TUI __init__) to set
+    the retry behavior. Must be called before first get_grpc_client() call.
+
+    Args:
+        config: Configuration to use. Common patterns:
+            - GrpcClientConfig.for_tui() - TUI with infinite retries
+            - GrpcClientConfig.for_cli() - CLI with finite retries
+            - GrpcClientConfig.for_mcp() - MCP with finite retries
+    """
+    global _grpc_default_config
+    _grpc_default_config = config
+    logger.debug(f"gRPC client configured: max_retries={config.max_retries}")
 
 
 def _get_connect_lock() -> asyncio.Lock:
@@ -2346,7 +2541,9 @@ def _get_connect_lock() -> asyncio.Lock:
     return _grpc_connect_lock
 
 
-async def get_grpc_client() -> GrpcEngineClient:
+async def get_grpc_client(
+    config: Optional[GrpcClientConfig] = None,
+) -> GrpcEngineClient:
     """Get or create the gRPC engine client singleton.
 
     If the client exists but is not connected, attempts to reconnect.
@@ -2354,11 +2551,19 @@ async def get_grpc_client() -> GrpcEngineClient:
 
     Uses a lock to prevent concurrent connection attempts (which cause
     ENHANCE_YOUR_CALM errors from the server).
+
+    Args:
+        config: Optional config to use when creating a new client.
+                - Use GrpcClientConfig.for_tui() for infinite retries
+                - Use GrpcClientConfig.for_cli() for finite retries (default)
+                Ignored if client already exists.
     """
-    global _grpc_client
+    global _grpc_client, _grpc_default_config
 
     if _grpc_client is None:
-        _grpc_client = GrpcEngineClient()
+        # Use provided config, or default config, or create from env
+        effective_config = config or _grpc_default_config
+        _grpc_client = GrpcEngineClient(effective_config)
 
     # Use lock to prevent concurrent connect attempts
     if not _grpc_client.is_connected:

@@ -27,7 +27,9 @@ if _version_not_supported:
 
 
 class GaiusServiceStub(object):
-    """═══════════════════════════════════════════════════════════════════════════
+    """Note: Reuses AmbientPhaseEvent for streaming events
+
+    ═══════════════════════════════════════════════════════════════════════════
     Service Definition
     ═══════════════════════════════════════════════════════════════════════════
 
@@ -429,10 +431,27 @@ class GaiusServiceStub(object):
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.AmbientStatusResponse.FromString,
                 _registered_method=True)
+        self.AmbientStart = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientStart',
+                request_serializer=gaius__service__pb2.AmbientStartRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientStartResponse.FromString,
+                _registered_method=True)
+        self.AmbientStop = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientStop',
+                request_serializer=gaius__service__pb2.AmbientStopRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientStopResponse.FromString,
+                _registered_method=True)
+        self.AmbientSubscribe = channel.unary_stream(
+                '/gaius.engine.GaiusService/AmbientSubscribe',
+                request_serializer=gaius__service__pb2.AmbientSubscribeRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientPhaseEvent.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
-    """═══════════════════════════════════════════════════════════════════════════
+    """Note: Reuses AmbientPhaseEvent for streaming events
+
+    ═══════════════════════════════════════════════════════════════════════════
     Service Definition
     ═══════════════════════════════════════════════════════════════════════════
 
@@ -970,7 +989,7 @@ class GaiusServiceServicer(object):
         """─────────────────────────────────────────────────────────────────────────
         Ambient Computing Workload
         ─────────────────────────────────────────────────────────────────────────
-        Streaming cycle with progress events
+        Streaming cycle with progress events (deprecated: use AmbientStart)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -978,6 +997,27 @@ class GaiusServiceServicer(object):
 
     def AmbientStatus(self, request, context):
         """Current ambient status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientStart(self, request, context):
+        """Start continuous ambient cycling daemon
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientStop(self, request, context):
+        """Stop ambient daemon gracefully
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientSubscribe(self, request, context):
+        """Subscribe to ambient events (TUI)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1376,6 +1416,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.AmbientStatusResponse.SerializeToString,
             ),
+            'AmbientStart': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientStart,
+                    request_deserializer=gaius__service__pb2.AmbientStartRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientStartResponse.SerializeToString,
+            ),
+            'AmbientStop': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientStop,
+                    request_deserializer=gaius__service__pb2.AmbientStopRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientStopResponse.SerializeToString,
+            ),
+            'AmbientSubscribe': grpc.unary_stream_rpc_method_handler(
+                    servicer.AmbientSubscribe,
+                    request_deserializer=gaius__service__pb2.AmbientSubscribeRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientPhaseEvent.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'gaius.engine.GaiusService', rpc_method_handlers)
@@ -1385,7 +1440,9 @@ def add_GaiusServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class GaiusService(object):
-    """═══════════════════════════════════════════════════════════════════════════
+    """Note: Reuses AmbientPhaseEvent for streaming events
+
+    ═══════════════════════════════════════════════════════════════════════════
     Service Definition
     ═══════════════════════════════════════════════════════════════════════════
 
@@ -3487,6 +3544,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/AmbientStatus',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             gaius__service__pb2.AmbientStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientStart(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientStart',
+            gaius__service__pb2.AmbientStartRequest.SerializeToString,
+            gaius__service__pb2.AmbientStartResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientStop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientStop',
+            gaius__service__pb2.AmbientStopRequest.SerializeToString,
+            gaius__service__pb2.AmbientStopResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientSubscribe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientSubscribe',
+            gaius__service__pb2.AmbientSubscribeRequest.SerializeToString,
+            gaius__service__pb2.AmbientPhaseEvent.FromString,
             options,
             channel_credentials,
             insecure,

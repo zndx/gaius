@@ -10231,11 +10231,14 @@ Examples:
         """Ambient Computing workload operations.
 
         Usage:
-            /ambient              - Show ambient workload status
-            /ambient status       - Show ambient workload status
-            /ambient test         - Run full ambient cycle (baseline + reasoning)
-            /ambient test --baseline-only - Run baseline-only test (skip reasoning)
-            /ambient cycle        - Alias for test
+            /ambient                         - Show status (if no --cycle) or start
+            /ambient start                   - Start continuous cycling daemon
+            /ambient start --cycle 4         - Run exactly 4 cycles then stop
+            /ambient start --baseline-only   - Skip reasoning phases
+            /ambient --cycle 4               - Same as start --cycle 4 (start implied)
+            /ambient stop                    - Stop daemon gracefully
+            /ambient status                  - Show daemon status
+            /ambient cycle                   - (Legacy) Run single cycle
 
         Ambient Computing provides invisible, self-sustaining workloads that:
         - Maintain baseline endpoints (orchestrator, fast, coding)
@@ -10244,7 +10247,29 @@ Examples:
         - Restore baseline after reasoning completes
         """
         parts = args.split() if args else []
-        subcmd = parts[0].lower() if parts else "status"
+
+        # Parse --cycle N option
+        max_cycles = None
+        if "--cycle" in parts:
+            idx = parts.index("--cycle")
+            if idx + 1 < len(parts):
+                try:
+                    max_cycles = int(parts[idx + 1])
+                    parts = [p for i, p in enumerate(parts) if i not in (idx, idx + 1)]
+                except ValueError:
+                    return {
+                        "error": f"Invalid --cycle value: {parts[idx + 1]}",
+                        "usage": "/ambient --cycle 4",
+                    }
+
+        baseline_only = "--baseline-only" in parts or "--skip-reasoning" in parts
+        parts = [p for p in parts if p not in ("--baseline-only", "--skip-reasoning")]
+
+        # Determine subcommand - if --cycle given, default to start
+        if max_cycles:
+            subcmd = parts[0].lower() if parts else "start"
+        else:
+            subcmd = parts[0].lower() if parts else "status"
 
         from .client.grpc_client import get_grpc_client
 
@@ -10257,31 +10282,61 @@ Examples:
                     "remediation": "Start engine: devenv processes up gaius-engine",
                 }
 
-            if subcmd == "status":
+            if subcmd == "start" or max_cycles:
+                # Fire-and-forget start
+                result = await client.call("Ambient", "start", {
+                    "baseline_only": baseline_only,
+                    "max_cycles": max_cycles or 0,
+                })
+
+                return {
+                    "command": "ambient",
+                    "action": "start",
+                    "success": result.get("success", False),
+                    "message": result.get("message", ""),
+                    "max_cycles": result.get("max_cycles"),
+                    "baseline_only": baseline_only,
+                }
+
+            elif subcmd == "stop":
+                # Stop daemon and return summary
+                result = await client.call("Ambient", "stop", {})
+
+                return {
+                    "command": "ambient",
+                    "action": "stop",
+                    "success": result.get("success", False),
+                    "message": result.get("message", ""),
+                    "cycles_completed": result.get("cycles_completed", 0),
+                }
+
+            elif subcmd == "status":
                 result = await client.call("Ambient", "status", {})
                 return {
-                    "running": result.get("running", False),
+                    "command": "ambient",
+                    "action": "status",
+                    "daemon_running": result.get("daemon_running", False),
+                    "current_cycle": result.get("current_cycle", 0),
+                    "max_cycles": result.get("max_cycles", 0),
                     "current_phase": result.get("current_phase", "IDLE"),
                     "cycles_completed": result.get("cycles_completed", 0),
-                    "last_cycle_at": result.get("last_cycle_at"),
                     "baseline_endpoints": result.get("baseline_endpoints", []),
                     "reasoning_endpoint": result.get("reasoning_endpoint"),
-                    "error": result.get("error"),
+                    "daemon_started_at": result.get("daemon_started_at"),
+                    "daemon_stopped_at": result.get("daemon_stopped_at"),
                 }
 
             elif subcmd in ("test", "cycle"):
-                # Check for --baseline-only flag
-                skip_reasoning = "--baseline-only" in parts or "--skip-reasoning" in parts
-
+                # Legacy: single-shot cycle with streaming
                 print(
-                    f"Running ambient {'baseline-only ' if skip_reasoning else ''}cycle...",
+                    f"Running ambient {'baseline-only ' if baseline_only else ''}cycle...",
                     file=sys.stderr,
                 )
 
                 # Stream the cycle events for real-time progress
                 events = []
                 async for event in client.ambient_cycle_stream(
-                    skip_reasoning=skip_reasoning,
+                    skip_reasoning=baseline_only,
                     baseline_task_count=1,
                 ):
                     phase = event.get("phase", "UNKNOWN")
@@ -10311,19 +10366,20 @@ Examples:
                 failed_events = [e for e in events if not e.get("success", True)]
 
                 return {
+                    "command": "ambient",
+                    "action": "cycle",
                     "cycle_completed": len(failed_events) == 0,
-                    "skip_reasoning": skip_reasoning,
+                    "skip_reasoning": baseline_only,
                     "total_events": len(events),
                     "successful": len(successful_events),
                     "failed": len(failed_events),
                     "events": events,
-                    "errors": [e.get("error") for e in failed_events if e.get("error")],
                 }
 
             else:
                 return {
                     "error": f"Unknown ambient command: {subcmd}",
-                    "usage": "/ambient [status|test|cycle] [--baseline-only]",
+                    "usage": "/ambient [start|stop|status|cycle] [--cycle N] [--baseline-only]",
                 }
 
         except Exception as e:

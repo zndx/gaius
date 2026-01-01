@@ -7,6 +7,7 @@ Example output:
     ▁▂▃▂▁▂▄▅▃▂▁  (20 chars, 8 levels)
 """
 
+import math
 from typing import Sequence, Optional
 
 from rich.text import Text
@@ -41,19 +42,30 @@ def render_sparkline(
     # Resample to fit target width
     resampled = _resample(list(values), width)
 
-    # Determine scale
-    actual_min = min_val if min_val is not None else min(resampled)
-    actual_max = max_val if max_val is not None else max(resampled)
+    # Filter out NaN values for min/max calculation
+    valid_values = [v for v in resampled if not math.isnan(v)]
+
+    # If all values are NaN, show empty placeholder
+    if not valid_values:
+        return Text("─" * width, style="dim")
+
+    # Determine scale from valid values only
+    actual_min = min_val if min_val is not None else min(valid_values)
+    actual_max = max_val if max_val is not None else max(valid_values)
     value_range = actual_max - actual_min
 
-    # Handle flat line (all same value)
-    if value_range == 0:
+    # Handle flat line (all same value) or zero range
+    if value_range == 0 or math.isnan(value_range):
         # Use middle block for flat line
         return Text(SPARK_BLOCKS[4] * len(resampled), style=color)
 
     # Map values to block indices
     blocks = []
     for v in resampled:
+        # Handle NaN values as empty
+        if math.isnan(v):
+            blocks.append(" ")
+            continue
         # Normalize to 0-1
         normalized = (v - actual_min) / value_range
         # Map to block index (0-8)

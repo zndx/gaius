@@ -2315,7 +2315,7 @@ class AmbientCycleResponse(_message.Message):
     def __init__(self, success: bool = ..., phases_completed: _Optional[int] = ..., total_tasks: _Optional[int] = ..., successful_tasks: _Optional[int] = ..., endpoint_latencies: _Optional[_Mapping[str, int]] = ..., error_message: _Optional[str] = ..., duration_ms: _Optional[int] = ...) -> None: ...
 
 class AmbientStatusResponse(_message.Message):
-    __slots__ = ("cycle_running", "current_phase", "cycles_completed", "last_cycle_timestamp_ms", "baseline_endpoints", "reasoning_endpoint", "last_result")
+    __slots__ = ("cycle_running", "current_phase", "cycles_completed", "last_cycle_timestamp_ms", "baseline_endpoints", "reasoning_endpoint", "last_result", "daemon_running", "max_cycles", "current_cycle", "daemon_started_at_ms", "daemon_stopped_at_ms")
     CYCLE_RUNNING_FIELD_NUMBER: _ClassVar[int]
     CURRENT_PHASE_FIELD_NUMBER: _ClassVar[int]
     CYCLES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
@@ -2323,6 +2323,11 @@ class AmbientStatusResponse(_message.Message):
     BASELINE_ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
     REASONING_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
     LAST_RESULT_FIELD_NUMBER: _ClassVar[int]
+    DAEMON_RUNNING_FIELD_NUMBER: _ClassVar[int]
+    MAX_CYCLES_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_CYCLE_FIELD_NUMBER: _ClassVar[int]
+    DAEMON_STARTED_AT_MS_FIELD_NUMBER: _ClassVar[int]
+    DAEMON_STOPPED_AT_MS_FIELD_NUMBER: _ClassVar[int]
     cycle_running: bool
     current_phase: AmbientPhase
     cycles_completed: int
@@ -2330,4 +2335,45 @@ class AmbientStatusResponse(_message.Message):
     baseline_endpoints: _containers.RepeatedScalarFieldContainer[str]
     reasoning_endpoint: str
     last_result: AmbientCycleResponse
-    def __init__(self, cycle_running: bool = ..., current_phase: _Optional[_Union[AmbientPhase, str]] = ..., cycles_completed: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., baseline_endpoints: _Optional[_Iterable[str]] = ..., reasoning_endpoint: _Optional[str] = ..., last_result: _Optional[_Union[AmbientCycleResponse, _Mapping]] = ...) -> None: ...
+    daemon_running: bool
+    max_cycles: int
+    current_cycle: int
+    daemon_started_at_ms: int
+    daemon_stopped_at_ms: int
+    def __init__(self, cycle_running: bool = ..., current_phase: _Optional[_Union[AmbientPhase, str]] = ..., cycles_completed: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., baseline_endpoints: _Optional[_Iterable[str]] = ..., reasoning_endpoint: _Optional[str] = ..., last_result: _Optional[_Union[AmbientCycleResponse, _Mapping]] = ..., daemon_running: bool = ..., max_cycles: _Optional[int] = ..., current_cycle: _Optional[int] = ..., daemon_started_at_ms: _Optional[int] = ..., daemon_stopped_at_ms: _Optional[int] = ...) -> None: ...
+
+class AmbientStartRequest(_message.Message):
+    __slots__ = ("baseline_only", "max_cycles")
+    BASELINE_ONLY_FIELD_NUMBER: _ClassVar[int]
+    MAX_CYCLES_FIELD_NUMBER: _ClassVar[int]
+    baseline_only: bool
+    max_cycles: int
+    def __init__(self, baseline_only: bool = ..., max_cycles: _Optional[int] = ...) -> None: ...
+
+class AmbientStartResponse(_message.Message):
+    __slots__ = ("success", "message", "max_cycles")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    MAX_CYCLES_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    message: str
+    max_cycles: int
+    def __init__(self, success: bool = ..., message: _Optional[str] = ..., max_cycles: _Optional[int] = ...) -> None: ...
+
+class AmbientStopRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class AmbientStopResponse(_message.Message):
+    __slots__ = ("success", "message", "cycles_completed")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    message: str
+    cycles_completed: int
+    def __init__(self, success: bool = ..., message: _Optional[str] = ..., cycles_completed: _Optional[int] = ...) -> None: ...
+
+class AmbientSubscribeRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
