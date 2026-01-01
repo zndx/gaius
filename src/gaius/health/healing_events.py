@@ -60,6 +60,19 @@ class HealingEventType(str, Enum):
     AMBIENT_CYCLE_COMPLETED = "ambient_cycle_completed"
     AMBIENT_CYCLE_FAILED = "ambient_cycle_failed"
 
+    # RCA (Root Cause Analysis) events
+    RCA_STARTED = "rca_started"
+    RCA_COMPLETED = "rca_completed"
+    RCA_CLASSIFICATION = "rca_classification"  # operational vs architectural
+    RCA_CONSTRAINT_VIOLATION = "rca_constraint_violation"  # CP-SAT constraint mapped
+    RCA_GITHUB_ISSUE_CREATED = "rca_github_issue_created"
+    RCA_FAILED = "rca_failed"
+
+    # ACP (Agent Client Protocol) escalation events
+    ACP_ESCALATION_STARTED = "acp_escalation_started"
+    ACP_ESCALATION_COMPLETED = "acp_escalation_completed"
+    ACP_ESCALATION_FAILED = "acp_escalation_failed"
+
 
 @dataclass
 class HealingEvent:
@@ -502,6 +515,288 @@ class HealingEventRecorder:
             tier=-1,
             sequence_id=sequence_id,
             payload={},
+        )
+
+    # RCA (Root Cause Analysis) event recording
+
+    async def record_rca_started(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        incident_fingerprint: str,
+        failure_mode_id: str | None = None,
+    ) -> HealingEvent | None:
+        """Record start of RCA analysis phase.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            incident_fingerprint: Unique incident identifier
+            failure_mode_id: FMEA failure mode if mapped
+        """
+        return await self._record_event(
+            event_type=HealingEventType.RCA_STARTED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload={
+                "incident_fingerprint": incident_fingerprint,
+            },
+            failure_mode_id=failure_mode_id,
+        )
+
+    async def record_rca_completed(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        classification: str,  # "operational" or "architectural"
+        highest_order: int,  # 0-4 (symptom to design_principle)
+        observations_count: int,
+        constraint_violations_count: int,
+        github_issue_needed: bool,
+        duration_ms: int,
+    ) -> HealingEvent | None:
+        """Record completion of RCA analysis.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            classification: operational or architectural
+            highest_order: Highest abstraction level reached (0-4)
+            observations_count: Number of observations recorded
+            constraint_violations_count: Number of constraint violations found
+            github_issue_needed: Whether code fix is required
+            duration_ms: Time taken for RCA analysis
+        """
+        return await self._record_event(
+            event_type=HealingEventType.RCA_COMPLETED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload={
+                "classification": classification,
+                "highest_order": highest_order,
+                "observations_count": observations_count,
+                "constraint_violations_count": constraint_violations_count,
+                "github_issue_needed": github_issue_needed,
+                "duration_ms": duration_ms,
+            },
+        )
+
+    async def record_rca_classification(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        classification: str,
+        reasoning: str | None = None,
+    ) -> HealingEvent | None:
+        """Record RCA classification determination.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            classification: operational or architectural
+            reasoning: Why this classification was chosen
+        """
+        payload = {"classification": classification}
+        if reasoning:
+            payload["reasoning"] = reasoning
+
+        return await self._record_event(
+            event_type=HealingEventType.RCA_CLASSIFICATION,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload=payload,
+        )
+
+    async def record_rca_constraint_violation(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        constraint_id: str,
+        constraint_name: str,
+        location: str | None = None,
+        evidence: str | None = None,
+        failure_mode_id: str | None = None,
+    ) -> HealingEvent | None:
+        """Record a CP-SAT constraint violation found during RCA.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            constraint_id: Constraint identifier (e.g., GPU_MUTUAL_EXCLUSION)
+            constraint_name: Human-readable constraint name
+            location: Code location where constraint is defined
+            evidence: Evidence of the violation
+            failure_mode_id: FMEA failure mode if mapped
+        """
+        payload = {
+            "constraint_id": constraint_id,
+            "constraint_name": constraint_name,
+        }
+        if location:
+            payload["location"] = location
+        if evidence:
+            payload["evidence"] = evidence
+
+        return await self._record_event(
+            event_type=HealingEventType.RCA_CONSTRAINT_VIOLATION,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload=payload,
+            failure_mode_id=failure_mode_id,
+        )
+
+    async def record_rca_github_issue_created(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        issue_number: int,
+        issue_url: str,
+        classification: str,
+        fix_location: str | None = None,
+    ) -> HealingEvent | None:
+        """Record GitHub issue created for RCA findings.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            issue_number: GitHub issue number
+            issue_url: Full URL to the issue
+            classification: RCA classification (should be architectural)
+            fix_location: Proposed code location for fix
+        """
+        payload = {
+            "issue_number": issue_number,
+            "issue_url": issue_url,
+            "classification": classification,
+        }
+        if fix_location:
+            payload["fix_location"] = fix_location
+
+        return await self._record_event(
+            event_type=HealingEventType.RCA_GITHUB_ISSUE_CREATED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload=payload,
+        )
+
+    async def record_rca_failed(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        error: str,
+        stage: str = "analysis",  # analysis, parsing, github
+    ) -> HealingEvent | None:
+        """Record RCA analysis failure.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            error: Error message
+            stage: Which stage failed (analysis, parsing, github)
+        """
+        return await self._record_event(
+            event_type=HealingEventType.RCA_FAILED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload={
+                "error": error,
+                "stage": stage,
+            },
+        )
+
+    # ACP escalation event recording
+
+    async def record_acp_escalation_started(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        incident_fingerprint: str,
+        rpn_score: int,
+        failure_mode_id: str | None = None,
+    ) -> HealingEvent | None:
+        """Record start of ACP escalation to Claude Code.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            incident_fingerprint: Unique incident identifier
+            rpn_score: FMEA RPN score triggering escalation
+            failure_mode_id: FMEA failure mode if mapped
+        """
+        return await self._record_event(
+            event_type=HealingEventType.ACP_ESCALATION_STARTED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload={
+                "incident_fingerprint": incident_fingerprint,
+                "rpn_score": rpn_score,
+            },
+            failure_mode_id=failure_mode_id,
+        )
+
+    async def record_acp_escalation_completed(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        session_id: str,
+        result_summary: str | None = None,
+        duration_ms: int | None = None,
+    ) -> HealingEvent | None:
+        """Record successful ACP escalation completion.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            session_id: ACP session identifier
+            result_summary: Brief summary of Claude Code's response
+            duration_ms: Time taken for ACP interaction
+        """
+        payload = {"session_id": session_id}
+        if result_summary:
+            payload["result_summary"] = result_summary[:500]  # Truncate for DB
+        if duration_ms:
+            payload["duration_ms"] = duration_ms
+
+        return await self._record_event(
+            event_type=HealingEventType.ACP_ESCALATION_COMPLETED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload=payload,
+        )
+
+    async def record_acp_escalation_failed(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        error: str,
+        error_code: str | None = None,
+    ) -> HealingEvent | None:
+        """Record ACP escalation failure.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            error: Error message
+            error_code: Guru meditation code if applicable
+        """
+        payload = {"error": error}
+        if error_code:
+            payload["error_code"] = error_code
+
+        return await self._record_event(
+            event_type=HealingEventType.ACP_ESCALATION_FAILED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload=payload,
         )
 
     # Simple event recording (for preflight/ambient events)

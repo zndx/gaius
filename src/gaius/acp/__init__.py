@@ -30,9 +30,14 @@ from .prompts import (
     CadencePolicy,
     build_system_prompt,
     build_incident_prompt,
+    build_rca_prompt,
+    format_rca_observations,
+    format_rca_constraint_violations,
     ISSUE_BODY_TEMPLATE,
     ISSUE_UPDATE_TEMPLATE,
     ISSUE_RESOLUTION_TEMPLATE,
+    SYSTEM_PROMPT_RCA,
+    RCA_ISSUE_BODY_TEMPLATE,
 )
 from .security import (
     GitHubSecurityError,
@@ -44,6 +49,16 @@ from .security import (
     load_security_config,
     sanitize_issue_content,
     validate_issue_title,
+)
+from .constraint_vocab import (
+    CPSATConstraint,
+    EnforcementMode,
+    CPSAT_CONSTRAINTS,
+    FAILURE_MODE_CONSTRAINTS,
+    get_constraints_for_failure_mode,
+    format_constraints_table,
+    get_constraint_by_id,
+    get_design_principles,
 )
 
 __all__ = [
@@ -58,9 +73,14 @@ __all__ = [
     "CadencePolicy",
     "build_system_prompt",
     "build_incident_prompt",
+    "build_rca_prompt",
+    "format_rca_observations",
+    "format_rca_constraint_violations",
     "ISSUE_BODY_TEMPLATE",
     "ISSUE_UPDATE_TEMPLATE",
     "ISSUE_RESOLUTION_TEMPLATE",
+    "SYSTEM_PROMPT_RCA",
+    "RCA_ISSUE_BODY_TEMPLATE",
     # Security
     "GitHubSecurityError",
     "RepositoryNotAllowedError",
@@ -71,4 +91,13 @@ __all__ = [
     "load_security_config",
     "sanitize_issue_content",
     "validate_issue_title",
+    # Constraint Vocabulary (RCA)
+    "CPSATConstraint",
+    "EnforcementMode",
+    "CPSAT_CONSTRAINTS",
+    "FAILURE_MODE_CONSTRAINTS",
+    "get_constraints_for_failure_mode",
+    "format_constraints_table",
+    "get_constraint_by_id",
+    "get_design_principles",
 ]

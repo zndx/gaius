@@ -23,6 +23,7 @@ class WorkflowMode(Enum):
     OBSERVE = "observe"  # Gather info, update issues, recommend (no execution)
     INTERVENE = "intervene"  # Execute remediation with approval gates
     REPORT = "report"  # Generate summary report, no action
+    RCA = "rca"  # Root Cause Analysis - climb the abstraction ladder
 
 
 @dataclass
@@ -482,6 +483,8 @@ def build_system_prompt(
         )
     elif mode == WorkflowMode.INTERVENE:
         mode_prompt = SYSTEM_PROMPT_INTERVENE
+    elif mode == WorkflowMode.RCA:
+        mode_prompt = SYSTEM_PROMPT_RCA
     else:
         mode_prompt = SYSTEM_PROMPT_REPORT
 
@@ -622,3 +625,323 @@ ISSUE_RESOLUTION_TEMPLATE = """## ✅ Resolved
 - Remediation Actions: {remediation_count}
 - Escalations: {escalation_count}
 """
+
+
+# =============================================================================
+# System Prompt: RCA (Root Cause Analysis) Mode
+# =============================================================================
+
+SYSTEM_PROMPT_RCA = """## Current Mode: ROOT CAUSE ANALYSIS
+
+After successful remediation, you must analyze the root cause using the
+**abstraction ladder** - a framework inspired by numerical PDE methods for
+climbing from local symptoms to global design insights.
+
+### The Abstraction Ladder
+
+| Order | Analogy | Level | Question to Answer |
+|-------|---------|-------|--------------------|
+| **0** | Euler | Symptom | What is the observable failure? |
+| **1** | RK2 | Immediate Cause | What action triggered the symptom? |
+| **2** | RK4 | Structural Cause | What configuration allowed this? |
+| **3** | BDF/Implicit | Invariant Violation | What CP-SAT constraint was violated? |
+| **4** | Spectral | Design Principle | How should the system be modeled? |
+
+**Key insight**: Order 3+ observations connect symptoms to CP-SAT constraints
+in `makespan_scheduler.py`, enabling systematic framework improvements.
+
+### Order 0 - Symptom
+
+What is the observable failure? What metrics/logs show it?
+
+Use MCP tools:
+- `gpu_health` - Check GPU VRAM, temp, power
+- `orchestrator_status` - Get endpoint status
+- `orchestrator_logs` - View recent stderr/stdout
+
+### Order 1 - Immediate Cause
+
+What action or state change triggered the symptom?
+
+Use MCP tools:
+- `health_observer_incidents` - Check incident timeline
+- `scheduler_status` - Check queue and transitions
+
+### Order 2 - Structural Cause
+
+What configuration pattern or architecture allowed this?
+
+Consider:
+- Were multiple endpoints configured for overlapping GPUs?
+- Was there a race condition in startup sequence?
+- Did the scheduler make conflicting allocations?
+
+### Order 3 - Invariant Violation
+
+What CP-SAT constraint was violated? Reference the constraint vocabulary:
+
+| Constraint | Location | CP-SAT Form |
+|------------|----------|-------------|
+| `GPU_MUTUAL_EXCLUSION` | `makespan_scheduler.py:210-212` | `sum(x[task, gpu]) <= 1` |
+| `CONTIGUITY_REQUIREMENT` | `makespan_scheduler.py:283-324` | `AddExactlyOne(y[starts])` |
+| `PRECEDENCE` | `makespan_scheduler.py:245-253` | `start >= stop.OnlyEnforceIf(x)` |
+| `RESOURCE_FEASIBILITY` | `makespan_scheduler.py:181-191` | `required <= available` |
+
+**Critical question**: Is this constraint enforced point-in-time (at scheduling)
+or continuously (during execution)? Most constraints have gaps here.
+
+### Order 4 - Design Principle
+
+How should the system be modeled to prevent this class of failure?
+
+Key principles to consider:
+- **CONTINUOUS_RESOURCE_ALLOCATION**: GPU allocation as continuous constraint
+- **RUNTIME_CONSTRAINT_MONITORING**: Add monitors for transition-time constraints
+- **TOPOLOGY_AWARE_VALIDATION**: Verify NVLink topology at startup, not just planning
+- **CONCURRENT_REQUEST_SERIALIZATION**: Handle racing scheduler requests
+
+### Classification Criteria
+
+**ARCHITECTURAL** (open GitHub issue) if ANY of:
+- Fingerprint recurred within 24 hours
+- GPU overlap conflict detected (multiple endpoints claiming same GPU)
+- Scheduler constraint gap identified at Order 3+
+- High-confidence Order 3+ observations
+
+**OPERATIONAL** (close incident) if ALL of:
+- First occurrence in 7 days
+- Standard restart resolved without complications
+- No constraint violations detected
+- Only Order 0-2 observations needed
+
+### Output Format
+
+You MUST end your analysis with valid JSON:
+
+```json
+{{
+  "classification": "operational" | "architectural",
+  "observations": [
+    {{
+      "order": 0-4,
+      "statement": "Description of the observation",
+      "evidence": ["log line 1", "metric value"],
+      "confidence": 0.0-1.0,
+      "constraint_id": "GPU_MUTUAL_EXCLUSION" | null
+    }}
+  ],
+  "highest_order_reached": 0-4,
+  "constraint_violations": [
+    {{
+      "constraint_id": "GPU_MUTUAL_EXCLUSION",
+      "location": "makespan_scheduler.py:210-212",
+      "description": "Why this constraint was violated"
+    }}
+  ],
+  "github_issue_needed": true | false,
+  "fix_location": "src/gaius/engine/scheduling/makespan_scheduler.py" | null,
+  "proposed_fix": "Description of code change needed" | null
+}}
+```
+
+**Climb as high as you can on the ladder.** Order 3+ observations are the most
+valuable because they connect operational incidents to framework improvements.
+"""
+
+
+RCA_ISSUE_BODY_TEMPLATE = """## Root Cause Analysis Report
+
+| Field | Value |
+|-------|-------|
+| Incident | `{fingerprint}` |
+| Classification | **ARCHITECTURAL** |
+| Highest Order | {highest_order} ({highest_order_name}) |
+| Confidence | {confidence:.0%} |
+
+### Observations by Order
+
+{observations_by_order}
+
+### Constraint Violations
+
+{constraint_violations}
+
+### Proposed Fix
+
+**Location**: `{fix_location}`
+
+{proposed_fix}
+
+### Acceptance Criteria
+
+- [ ] Incident fingerprint does not recur within 72h
+- [ ] Constraint added/modified in MakespanScheduler (if applicable)
+- [ ] KB heuristic updated with Order 3-4 sections
+- [ ] `/health fix` handles this autonomously
+
+---
+*Generated by RCA phase of HealthObserver daemon*
+*Guru: #{failure_mode_id}*
+"""
+
+
+def build_rca_prompt(
+    incident: dict[str, Any],
+    remediation_result: dict[str, Any],
+    scheduler_context: dict[str, Any] | None = None,
+    incident_history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Build incident-specific RCA prompt with constraint context.
+
+    This is called after successful remediation to analyze root cause
+    and determine if this is an operational or architectural issue.
+
+    Args:
+        incident: Incident data from HealthIncident.to_dict()
+        remediation_result: Result of the successful remediation
+        scheduler_context: Optional scheduler state at time of incident
+        incident_history: Previous occurrences of this fingerprint
+
+    Returns:
+        RCA prompt string
+    """
+    from .constraint_vocab import (
+        get_constraints_for_failure_mode,
+        format_constraints_table,
+    )
+
+    # Get relevant constraints for this failure mode
+    failure_mode_id = incident.get("failure_mode_id", "UNKNOWN")
+    relevant_constraints = get_constraints_for_failure_mode(failure_mode_id)
+
+    # Format history
+    history_text = "_First occurrence._"
+    if incident_history:
+        lines = []
+        for h in incident_history[-5:]:  # Last 5 occurrences
+            lines.append(
+                f"- **{h.get('created_at', 'unknown')}**: "
+                f"Tier {h.get('current_tier', '?')}, "
+                f"{h.get('attempts', '?')} attempts"
+            )
+        history_text = "\n".join(lines)
+
+    # Format scheduler context
+    scheduler_text = "_Not available._"
+    if scheduler_context:
+        scheduler_text = f"""
+- **Active Endpoints**: {scheduler_context.get('active_endpoints', [])}
+- **GPU Assignments**: {scheduler_context.get('gpu_assignments', {})}
+- **Queue Depth**: {scheduler_context.get('queue_depth', 0)}
+"""
+
+    return f"""## Root Cause Analysis Required
+
+**Fingerprint**: `{incident.get('fingerprint', 'unknown')}`
+**Failure Mode**: `{failure_mode_id}`
+**Endpoint**: `{incident.get('endpoint', 'unknown')}`
+**Remediation Applied**: {remediation_result.get('action', 'unknown')}
+**Remediation Outcome**: {remediation_result.get('outcome', 'unknown')}
+
+### Relevant CP-SAT Constraints
+
+{format_constraints_table(relevant_constraints)}
+
+### Incident History (same fingerprint)
+
+{history_text}
+
+### Scheduler State at Incident Time
+
+{scheduler_text}
+
+### Your Task
+
+Climb the abstraction ladder:
+
+1. **Order 0-1**: Use MCP tools to gather symptoms and immediate cause
+2. **Order 2**: Identify the structural pattern that allowed this
+3. **Order 3**: Connect to violated constraints in `makespan_scheduler.py`
+4. **Order 4**: Propose design improvements if Order 3 violations found
+
+**Classify as ARCHITECTURAL (needs code fix) or OPERATIONAL (transient).**
+
+Remember: Climbing to Order 3+ is what makes Gaius smarter over time.
+"""
+
+
+def format_rca_observations(observations: list[dict[str, Any]]) -> str:
+    """Format RCA observations for GitHub issue body.
+
+    Args:
+        observations: List of observation dicts from RCAResult
+
+    Returns:
+        Formatted markdown string
+    """
+    order_names = {
+        0: "Symptom",
+        1: "Immediate Cause",
+        2: "Structural Cause",
+        3: "Invariant Violation",
+        4: "Design Principle",
+    }
+
+    # Group by order
+    by_order: dict[int, list[dict]] = {}
+    for obs in observations:
+        order = obs.get("order", 0)
+        if order not in by_order:
+            by_order[order] = []
+        by_order[order].append(obs)
+
+    lines = []
+    for order in sorted(by_order.keys()):
+        order_name = order_names.get(order, f"Order {order}")
+        lines.append(f"#### Order {order}: {order_name}")
+        lines.append("")
+
+        for obs in by_order[order]:
+            confidence = obs.get("confidence", 1.0)
+            constraint = obs.get("constraint_id")
+
+            lines.append(f"- {obs.get('statement', 'No statement')}")
+            lines.append(f"  - Confidence: {confidence:.0%}")
+
+            if constraint:
+                lines.append(f"  - Constraint: `{constraint}`")
+
+            if obs.get("evidence"):
+                lines.append("  - Evidence:")
+                for e in obs["evidence"]:
+                    lines.append(f"    - `{e}`")
+
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_rca_constraint_violations(violations: list[dict[str, Any]]) -> str:
+    """Format constraint violations for GitHub issue body.
+
+    Args:
+        violations: List of violation dicts from RCAResult
+
+    Returns:
+        Formatted markdown string
+    """
+    if not violations:
+        return "_No constraint violations identified._"
+
+    lines = ["| Constraint | Location | Description |", "|------------|----------|-------------|"]
+
+    for v in violations:
+        cid = v.get("constraint_id", "?")
+        loc = v.get("location", "?")
+        desc = v.get("description", "")
+        # Truncate description for table
+        if len(desc) > 50:
+            desc = desc[:47] + "..."
+        lines.append(f"| `{cid}` | `{loc}` | {desc} |")
+
+    return "\n".join(lines)

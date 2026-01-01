@@ -48,12 +48,29 @@ from .base_daemon import (
     DaemonHealth,
     DaemonStartupError,
 )
+from ...health.healing_events import HealingEventRecorder, HealingEventType
 
 if TYPE_CHECKING:
     from ..config import EngineConfig
     from ..daemon_registry import DaemonRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def friendly_endpoint_name(name: str) -> str:
+    """Convert internal endpoint name to user-friendly display name.
+
+    Strips internal prefixes like 'cap_' that are implementation details.
+
+    Args:
+        name: Internal endpoint name (e.g., "cap_reasoning")
+
+    Returns:
+        User-friendly name (e.g., "reasoning")
+    """
+    if name.startswith("cap_"):
+        return name[4:]  # Remove "cap_" prefix
+    return name
 
 
 @dataclass
@@ -116,6 +133,9 @@ class HealthIncident:
         attempts: Number of remediation attempts
         github_issue: Linked GitHub issue number
         status: active, healing, recovering, resolved
+        rca_classification: RCA classification (operational/architectural)
+        rca_highest_order: Highest abstraction order reached in RCA
+        rca_issue: GitHub issue opened by RCA phase (if architectural)
     """
 
     incident_id: UUID
@@ -133,6 +153,10 @@ class HealthIncident:
     attempts: int = 0
     github_issue: int | None = None
     status: str = "active"
+    # RCA phase results
+    rca_classification: str | None = None
+    rca_highest_order: int | None = None
+    rca_issue: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -152,6 +176,17 @@ class HealthIncident:
             "attempts": self.attempts,
             "github_issue": self.github_issue,
             "status": self.status,
+            # RCA results
+            "rca_classification": self.rca_classification,
+            "rca_highest_order": self.rca_highest_order,
+            "rca_issue": self.rca_issue,
+            # Nested RPN for backward compatibility
+            "rpn": {
+                "rpn": self.rpn_score,
+                "severity": self.rpn_severity,
+                "occurrence": self.rpn_occurrence,
+                "detection": self.rpn_detection,
+            },
         }
 
 
@@ -239,6 +274,9 @@ class HealthObserverService(BaseDaemon):
         # Database pool for internal health queries (set via set_db_pool)
         self._db_pool: Any = None
 
+        # Event recorder for healing audit trail (all DB writes go through engine)
+        self._event_recorder: HealingEventRecorder | None = None
+
         logger.info("HealthObserverService initialized")
 
     def set_services(
@@ -262,6 +300,9 @@ class HealthObserverService(BaseDaemon):
             self._health_service = health
         if db_pool:
             self._db_pool = db_pool
+            # Initialize event recorder with pool for DB writes
+            self._event_recorder = HealingEventRecorder(pool=db_pool)
+            logger.info("HealingEventRecorder initialized for engine-side DB writes")
 
     @property
     def running(self) -> bool:
@@ -573,6 +614,19 @@ class HealthObserverService(BaseDaemon):
 
             fingerprint = f"{failure_mode_id}:{endpoint}"
 
+            # Start healing sequence for event tracking
+            sequence_id = None
+            if self._event_recorder:
+                sequence_id = await self._event_recorder.start_sequence(
+                    endpoint=endpoint,
+                    issue_type=failure_mode_id,
+                    check_name=check.get("name"),
+                    severity="critical" if rpn_result.get("tier", 0) >= 2 else "warning",
+                    rpn_score=rpn_result.get("rpn", 125),
+                    context=details,
+                    failure_mode_id=failure_mode_id,
+                )
+
             incident = HealthIncident(
                 incident_id=uuid4(),
                 fingerprint=fingerprint,
@@ -583,6 +637,7 @@ class HealthObserverService(BaseDaemon):
                 rpn_occurrence=rpn_result.get("occurrence", 5),
                 rpn_detection=rpn_result.get("detection", 5),
                 current_tier=rpn_result.get("tier", 0),
+                sequence_id=sequence_id,
             )
 
             logger.info(
@@ -642,36 +697,142 @@ class HealthObserverService(BaseDaemon):
         Tier 2: Escalate to Claude Code via ACP for approval
         Manual: Create GitHub issue and notify
 
+        After successful remediation, runs RCA phase to analyze root cause
+        and determine if the issue is operational (transient) or architectural
+        (requiring code changes).
+
         Args:
             incident: The incident to remediate
         """
+        import time
+        start_time = time.monotonic()
+
         incident.attempts += 1
         incident.status = "healing"
 
         tier = incident.current_tier
+        remediation_result = {"action": None, "outcome": None}
 
         logger.info(
             f"Attempting remediation for {incident.fingerprint} "
             f"(attempt {incident.attempts}, tier {tier})"
         )
 
+        # Record tier entry if escalating
+        if self._event_recorder and incident.sequence_id and incident.attempts > 1:
+            await self._event_recorder.record_tier_entered(
+                sequence_id=incident.sequence_id,
+                endpoint=incident.endpoint,
+                to_tier=tier,
+                from_tier=tier - 1 if tier > 0 else None,
+                reason="escalation" if tier > 0 else "initial",
+            )
+
         try:
+            # Record attempt start
+            action_map = {0: "restart", 1: "restart_with_validation", 2: "acp_escalation"}
+            action = action_map.get(tier, "manual")
+
+            if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_attempt_started(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    tier=tier,
+                    attempt_num=incident.attempts,
+                    action=action,
+                )
+
             if tier == 0:
                 success = await self._tier0_remediate(incident)
+                remediation_result["action"] = "restart"
             elif tier == 1:
                 success = await self._tier1_remediate(incident)
+                remediation_result["action"] = "restart_with_validation"
             elif tier == 2:
                 success = await self._tier2_remediate_acp(incident)
+                remediation_result["action"] = "acp_escalation"
             else:  # tier >= 3 = MANUAL
                 await self._create_github_issue(incident)
                 incident.status = "manual_required"
                 return
 
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            remediation_result["outcome"] = "success" if success else "failure"
+            remediation_result["duration_ms"] = duration_ms
+
             if success:
+                # Record success
+                if self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_attempt_succeeded(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        tier=tier,
+                        attempt_num=incident.attempts,
+                        action=action,
+                        duration_ms=duration_ms,
+                    )
+
+                # Run RCA phase after successful remediation
+                rca_start = time.monotonic()
+                rca_result = await self._run_rca_phase(incident, remediation_result)
+                rca_duration_ms = int((time.monotonic() - rca_start) * 1000)
+
+                # Store RCA classification on incident and record to DB
+                if rca_result:
+                    incident.rca_classification = rca_result.get("classification")
+                    incident.rca_highest_order = rca_result.get("highest_order_reached")
+
+                    # Record RCA completion
+                    if self._event_recorder and incident.sequence_id:
+                        await self._event_recorder.record_rca_completed(
+                            sequence_id=incident.sequence_id,
+                            endpoint=incident.endpoint,
+                            classification=incident.rca_classification or "operational",
+                            highest_order=incident.rca_highest_order or 0,
+                            observations_count=len(rca_result.get("observations", [])),
+                            constraint_violations_count=len(rca_result.get("constraint_violations", [])),
+                            github_issue_needed=rca_result.get("github_issue_needed", False),
+                            duration_ms=rca_duration_ms,
+                        )
+
+                        # Record constraint violations
+                        for violation in rca_result.get("constraint_violations", []):
+                            await self._event_recorder.record_rca_constraint_violation(
+                                sequence_id=incident.sequence_id,
+                                endpoint=incident.endpoint,
+                                constraint_id=violation.get("constraint_id", "UNKNOWN"),
+                                constraint_name=violation.get("name", ""),
+                                location=violation.get("location"),
+                                evidence=violation.get("evidence"),
+                                failure_mode_id=incident.failure_mode_id,
+                            )
+
+                    # Open GitHub issue if architectural
+                    if rca_result.get("github_issue_needed"):
+                        issue_number = await self._create_rca_github_issue(
+                            incident, rca_result
+                        )
+                        incident.rca_issue = issue_number
+
                 incident.status = "recovering"
                 self._recovery_start[incident.fingerprint] = datetime.now()
-                logger.info(f"Remediation succeeded for {incident.fingerprint}")
+                logger.info(
+                    f"Remediation succeeded for {incident.fingerprint} "
+                    f"(RCA: {incident.rca_classification})"
+                )
             else:
+                # Record failure
+                if self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_attempt_failed(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        tier=tier,
+                        attempt_num=incident.attempts,
+                        action=action,
+                        duration_ms=duration_ms,
+                        reason="remediation_failed",
+                    )
+
                 # Escalate to next tier
                 incident.current_tier = min(incident.current_tier + 1, 3)
                 logger.info(
@@ -682,6 +843,17 @@ class HealthObserverService(BaseDaemon):
 
         except Exception as e:
             logger.error(f"Remediation error for {incident.fingerprint}: {e}")
+            # Record failure
+            if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_attempt_failed(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    tier=tier,
+                    attempt_num=incident.attempts,
+                    action=action_map.get(tier, "unknown"),
+                    duration_ms=int((time.monotonic() - start_time) * 1000),
+                    reason=str(e),
+                )
 
     async def _tier0_remediate(self, incident: HealthIncident) -> bool:
         """Tier 0 procedural remediation.
@@ -807,10 +979,11 @@ class HealthObserverService(BaseDaemon):
         Returns:
             Prompt string for Claude Code
         """
+        display_endpoint = friendly_endpoint_name(incident.endpoint)
         return f"""## Health Incident Requiring Diagnosis
 
 **Fingerprint**: `{incident.fingerprint}`
-**Endpoint**: {incident.endpoint}
+**Endpoint**: {display_endpoint}
 **Failure Mode**: {incident.failure_mode_id}
 **RPN Score**: {incident.rpn_score} (S:{incident.rpn_severity} x O:{incident.rpn_occurrence} x D:{incident.rpn_detection})
 **Escalation Tier**: {incident.current_tier}
@@ -821,12 +994,12 @@ class HealthObserverService(BaseDaemon):
 1. Use the Gaius MCP tools to investigate this health issue:
    - `health_check` - Run diagnostics
    - `orchestrator_status` - Check GPU/endpoint status
-   - `orchestrator_logs <endpoint>` - View endpoint logs
+   - `orchestrator_logs {display_endpoint}` - View endpoint logs
 
 2. Diagnose the root cause
 
 3. If safe to remediate:
-   - Use `orchestrator_restart <endpoint>` for endpoint issues
+   - Use `orchestrator_restart {display_endpoint}` for endpoint issues
    - Use appropriate fix commands for other issues
 
 4. Report your findings and whether remediation succeeded
@@ -867,6 +1040,326 @@ Begin your investigation now."""
 
         # Default to success if no clear indicators
         return True
+
+    async def _run_rca_phase(
+        self,
+        incident: HealthIncident,
+        remediation_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Run Root Cause Analysis phase after successful remediation.
+
+        Uses the abstraction ladder framework to analyze the root cause
+        and determine if this is an operational (transient) or architectural
+        (systemic) issue requiring code changes.
+
+        Args:
+            incident: The incident that was remediated
+            remediation_result: Result of the remediation attempt
+
+        Returns:
+            RCA result dict with classification, observations, etc.
+            None if RCA was skipped or failed
+        """
+        # Skip RCA for trivial first-occurrence tier-0 incidents
+        if incident.current_tier == 0 and incident.attempts == 1:
+            logger.debug(
+                f"Skipping RCA for trivial incident {incident.fingerprint} "
+                "(tier 0, first attempt)"
+            )
+            return {
+                "classification": "operational",
+                "observations": [],
+                "highest_order_reached": 0,
+                "constraint_violations": [],
+                "github_issue_needed": False,
+            }
+
+        if not self.config.escalate_to_acp:
+            logger.debug("ACP escalation disabled, skipping RCA phase")
+            return None
+
+        try:
+            from ...acp import (
+                WorkflowMode,
+                build_system_prompt,
+                build_rca_prompt,
+            )
+
+            async with self._acp_lock:
+                # Lazy-load ACP client
+                if self._acp_client is None:
+                    from ...acp import GaiusACPClient, ACPConfig
+
+                    self._acp_client = GaiusACPClient(
+                        ACPConfig(
+                            auto_approve_terminal=True,
+                        )
+                    )
+                    await self._acp_client.connect()
+
+            # Get incident history (previous occurrences of same fingerprint)
+            incident_history = await self._get_incident_history(incident.fingerprint)
+
+            # Get scheduler context
+            scheduler_context = await self._get_scheduler_context()
+
+            # Build RCA prompt
+            rca_prompt = build_rca_prompt(
+                incident.to_dict(),
+                remediation_result,
+                scheduler_context,
+                incident_history,
+            )
+
+            # Build system prompt with RCA mode
+            system_prompt = build_system_prompt(
+                WorkflowMode.RCA,
+                github_repo=self.config.github_repo,
+            )
+
+            logger.info(
+                f"Running RCA phase for {incident.fingerprint} via ACP"
+            )
+
+            # Send to Claude Code
+            response = await self._acp_client.prompt(
+                message=rca_prompt,
+                system_prompt=system_prompt,
+                context={
+                    "incident": incident.to_dict(),
+                    "remediation_result": remediation_result,
+                },
+            )
+
+            # Parse RCA response
+            return self._parse_rca_response(response)
+
+        except Exception as e:
+            logger.error(f"RCA phase failed for {incident.fingerprint}: {e}")
+            return None
+
+    async def _get_incident_history(
+        self,
+        fingerprint: str,
+    ) -> list[dict[str, Any]]:
+        """Get history of previous occurrences of this fingerprint.
+
+        Args:
+            fingerprint: Incident fingerprint to search for
+
+        Returns:
+            List of previous incident dicts
+        """
+        # For now, return empty - would query healing_events table
+        # This could be enhanced to query the database for historical incidents
+        return []
+
+    async def _get_scheduler_context(self) -> dict[str, Any] | None:
+        """Get current scheduler state for RCA context.
+
+        Returns:
+            Scheduler context dict or None
+        """
+        if not self._orchestrator:
+            return None
+
+        try:
+            status = self._orchestrator.get_status()
+            endpoints = status.get("endpoints", {})
+
+            return {
+                "active_endpoints": list(endpoints.keys()),
+                "gpu_assignments": {
+                    alias: info.get("gpu_ids", [])
+                    for alias, info in endpoints.items()
+                },
+                "queue_depth": status.get("queue_depth", 0),
+            }
+        except Exception as e:
+            logger.debug(f"Failed to get scheduler context: {e}")
+            return None
+
+    def _parse_rca_response(self, response: str) -> dict[str, Any] | None:
+        """Parse Claude Code's RCA response.
+
+        Extracts the JSON block from the response containing classification,
+        observations, constraint violations, and proposed fix.
+
+        Args:
+            response: Claude Code response text
+
+        Returns:
+            Parsed RCA result dict or None on parse failure
+        """
+        import json
+        import re
+
+        try:
+            # Find JSON block in response
+            # Look for ```json ... ``` or { ... } pattern
+            json_match = re.search(r"```json\s*(\{.*?\})\s*```", response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Try to find raw JSON object
+                json_match = re.search(r"\{[^{}]*\"classification\"[^{}]*\}", response, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                else:
+                    logger.warning("No JSON found in RCA response")
+                    return None
+
+            result = json.loads(json_str)
+
+            # Validate required fields
+            if "classification" not in result:
+                logger.warning("RCA response missing classification")
+                return None
+
+            # Normalize classification
+            classification = result.get("classification", "").lower()
+            if classification not in ("operational", "architectural"):
+                classification = "operational"  # Default to operational
+
+            return {
+                "classification": classification,
+                "observations": result.get("observations", []),
+                "highest_order_reached": result.get("highest_order_reached", 0),
+                "constraint_violations": result.get("constraint_violations", []),
+                "github_issue_needed": result.get("github_issue_needed", False),
+                "fix_location": result.get("fix_location"),
+                "proposed_fix": result.get("proposed_fix"),
+            }
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse RCA JSON: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error parsing RCA response: {e}")
+            return None
+
+    async def _create_rca_github_issue(
+        self,
+        incident: HealthIncident,
+        rca_result: dict[str, Any],
+    ) -> int | None:
+        """Create GitHub issue for architectural RCA findings.
+
+        Args:
+            incident: The incident that was analyzed
+            rca_result: RCA result with observations and proposed fix
+
+        Returns:
+            Issue number if created, None otherwise
+        """
+        import asyncio
+        import subprocess
+
+        if not self.config.github_repo:
+            logger.info("GitHub integration not configured, skipping RCA issue creation")
+            return None
+
+        if not self._can_create_issue():
+            logger.warning(
+                f"Cadence limit reached, skipping RCA issue for {incident.fingerprint}"
+            )
+            return None
+
+        try:
+            from ...acp import (
+                format_rca_observations,
+                format_rca_constraint_violations,
+                RCA_ISSUE_BODY_TEMPLATE,
+            )
+            from ...acp.security import (
+                sanitize_issue_content,
+                validate_issue_title,
+                load_security_config,
+            )
+
+            # Validate repo is allowed
+            security_config = load_security_config()
+            if self.config.github_repo not in security_config.allowed_repos:
+                logger.error(
+                    f"Repository {self.config.github_repo} not in ACP allowlist"
+                )
+                return None
+
+            # Build issue title
+            highest_order = rca_result.get("highest_order_reached", 0)
+            order_names = ["SYMPTOM", "IMMEDIATE", "STRUCTURAL", "INVARIANT", "DESIGN"]
+            order_name = order_names[highest_order] if highest_order < len(order_names) else f"ORDER_{highest_order}"
+
+            display_endpoint = friendly_endpoint_name(incident.endpoint)
+            title = f"[RCA] {incident.failure_mode_id}: {order_name} analysis for {display_endpoint}"
+            title = validate_issue_title(title)
+
+            # Format observations and violations
+            observations_text = format_rca_observations(
+                rca_result.get("observations", [])
+            )
+            violations_text = format_rca_constraint_violations(
+                rca_result.get("constraint_violations", [])
+            )
+
+            # Build issue body
+            body = RCA_ISSUE_BODY_TEMPLATE.format(
+                fingerprint=incident.fingerprint,
+                highest_order=highest_order,
+                highest_order_name=order_name,
+                confidence=rca_result.get("avg_confidence", 0.5),
+                observations_by_order=observations_text,
+                constraint_violations=violations_text,
+                fix_location=rca_result.get("fix_location") or "_Not identified_",
+                proposed_fix=rca_result.get("proposed_fix") or "_No specific fix proposed_",
+                failure_mode_id=incident.failure_mode_id,
+            )
+            body = sanitize_issue_content(body)
+
+            # Create issue via gh CLI
+            cmd = [
+                "gh", "issue", "create",
+                "--repo", self.config.github_repo,
+                "--title", title,
+                "--body", body,
+                "--label", "rca,architectural,health-fix",
+            ]
+
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            )
+
+            if result.returncode == 0:
+                issue_url = result.stdout.strip()
+                issue_number = int(issue_url.split("/")[-1]) if "/" in issue_url else None
+                self._issues_created_today += 1
+
+                # Record GitHub issue creation to DB
+                if self._event_recorder and incident.sequence_id and issue_number:
+                    await self._event_recorder.record_rca_github_issue_created(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        issue_number=issue_number,
+                        issue_url=issue_url,
+                        classification="architectural",
+                        fix_location=rca_result.get("fix_location"),
+                    )
+
+                logger.info(
+                    f"Created RCA GitHub issue #{issue_number} for {incident.fingerprint}: {issue_url}"
+                )
+                return issue_number
+            else:
+                logger.error(f"Failed to create RCA issue: {result.stderr}")
+                return None
+
+        except ImportError:
+            logger.warning("ACP module not available for RCA issue creation")
+            return None
+        except Exception as e:
+            logger.error(f"Error creating RCA GitHub issue: {e}")
+            return None
 
     async def _create_github_issue(self, incident: HealthIncident) -> None:
         """Create GitHub issue for manual incidents using gh CLI.
@@ -919,7 +1412,8 @@ Begin your investigation now."""
                 return
 
             # Build issue title
-            title = f"[HEALTH-FIX] {incident.failure_mode_id}: {incident.endpoint}"
+            display_endpoint = friendly_endpoint_name(incident.endpoint)
+            title = f"[HEALTH-FIX] {incident.failure_mode_id}: {display_endpoint}"
             title = validate_issue_title(title)
 
             # Build issue body with sanitized content
@@ -981,10 +1475,13 @@ Begin your investigation now."""
         failure_parts = incident.failure_mode_id.lower().split("_")
         heuristic_path = "/".join(failure_parts) + ".md" if len(failure_parts) >= 2 else incident.failure_mode_id
 
+        # Use friendly name for user-facing display
+        display_endpoint = friendly_endpoint_name(incident.endpoint)
+
         return f"""## Incident Details
 
 **Fingerprint:** `{incident.fingerprint}`
-**Endpoint:** `{incident.endpoint}`
+**Endpoint:** `{display_endpoint}`
 **Failure Mode:** `{incident.failure_mode_id}`
 **RPN Score:** {incident.rpn_score} (S={incident.rpn_severity}, O={incident.rpn_occurrence}, D={incident.rpn_detection})
 
@@ -997,7 +1494,7 @@ Begin your investigation now."""
 
 ## Recommended Investigation
 
-1. Check endpoint logs: `journalctl -u gaius-engine --since "1 hour ago" | grep {incident.endpoint}`
+1. Check endpoint logs: `journalctl -u gaius-engine --since "1 hour ago" | grep {display_endpoint}`
 2. Check GPU health: `/health gpu`
 3. Review heuristic: `build/dev/current/heuristics/gaius/{heuristic_path}`
 
@@ -1153,6 +1650,20 @@ This incident has recurred. Previous remediation may not have addressed root cau
             incident = self._active_incidents.pop(fingerprint)
             self._recovery_start.pop(fingerprint, None)
             self._incidents_resolved += 1
+
+            # Record sequence completion
+            if self._event_recorder and incident.sequence_id:
+                total_duration_ms = int(
+                    (datetime.now() - incident.created_at).total_seconds() * 1000
+                )
+                await self._event_recorder.complete_sequence(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    outcome="success",
+                    total_attempts=incident.attempts,
+                    final_tier=incident.current_tier,
+                    total_duration_ms=total_duration_ms,
+                )
 
             logger.info(f"Incident resolved: {fingerprint}")
 
