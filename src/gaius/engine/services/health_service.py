@@ -11,13 +11,19 @@ BDD Alignment:
 MetaAgent Observability:
 - GPUMinuteStats: Streaming aggregation for 24h retention in meta.gpu_minute_stats
 - Minute-level stats with min/max/avg for Metabase dashboards
+
+FLOPS Utilization:
+- WelfordEstimator: O(1) streaming statistics for FLOPS-weighted GPU utilization
+- Exports to OTel gauge for Prometheus/Observe panel sparkline
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
+
+from .gpu_stats import WelfordEstimator, GPU_TFLOPS, DEFAULT_TFLOPS
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +281,12 @@ class HealthService:
         self._completed_minute_stats: list[GPUMinuteStats] = []  # Ready for flush
         self._current_minute: Optional[datetime] = None
 
+        # Streaming FLOPS utilization (Welford's algorithm)
+        self._flops_estimator = WelfordEstimator()
+        self._flops_reset_interval = timedelta(hours=1)  # Periodic reset for stability
+        self._last_flops_reset: Optional[datetime] = None
+        self._gpu_names: dict[int, str] = {}  # Cache GPU names for TFLOPS lookup
+
         logger.info("HealthService initialized")
 
     def set_services(
@@ -395,6 +407,13 @@ class HealthService:
                 except Exception:
                     fan = 0
 
+                # Get GPU name for FLOPS weighting (cache for efficiency)
+                if i not in self._gpu_names:
+                    try:
+                        self._gpu_names[i] = pynvml.nvmlDeviceGetName(handle)
+                    except Exception:
+                        self._gpu_names[i] = "Unknown"
+
                 # Update per-GPU health (existing behavior)
                 self._gpu_health[i] = GPUHealth(
                     gpu_id=i,
@@ -419,6 +438,25 @@ class HealthService:
                     temp_c=temp,
                     power_w=power,
                 )
+
+                # Update FLOPS-weighted streaming estimator
+                gpu_name = self._gpu_names.get(i, "Unknown")
+                tflops = GPU_TFLOPS.get(gpu_name, DEFAULT_TFLOPS)
+                self._flops_estimator.update(util.gpu, weight=tflops)
+
+            # Export current FLOPS utilization to OTel
+            try:
+                from ..metrics import EngineMetrics
+                metrics = EngineMetrics.get_instance()
+                metrics.record_gpu_flops_utilization(self._flops_estimator.mean)
+            except Exception as e:
+                logger.debug(f"Failed to export FLOPS utilization: {e}")
+
+            # Periodic reset for numerical stability
+            if (self._last_flops_reset is None or
+                now - self._last_flops_reset > self._flops_reset_interval):
+                self._flops_estimator.reset()
+                self._last_flops_reset = now
 
             pynvml.nvmlShutdown()
 
@@ -580,6 +618,17 @@ class HealthService:
         avg_util = sum(h.utilization_pct for h in self._gpu_health.values())
         avg_util /= len(self._gpu_health)
         return avg_util < threshold
+
+    def get_flops_utilization(self) -> float:
+        """Get current FLOPS-weighted GPU utilization (0-100%).
+
+        Uses Welford's online algorithm for streaming mean across all GPUs,
+        weighted by each GPU's theoretical TFLOPS capacity.
+
+        Returns:
+            FLOPS-weighted utilization percentage
+        """
+        return self._flops_estimator.mean
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status

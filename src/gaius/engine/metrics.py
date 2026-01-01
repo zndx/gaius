@@ -59,6 +59,7 @@ class EngineMetrics:
         self._gpu_memory_used: Any = None
         self._gpu_memory_total: Any = None
         self._gpu_utilization: Any = None
+        self._gpu_flops_utilization: Any = None  # FLOPS-weighted aggregate
 
         # Endpoint metrics
         self._endpoint_healthy: Any = None
@@ -177,6 +178,12 @@ class EngineMetrics:
         self._gpu_utilization = self._meter.create_histogram(
             "gaius.gpu.utilization",
             description="GPU utilization percentage",
+            unit="%",
+        )
+        # FLOPS-weighted aggregate utilization for Observe panel sparkline
+        self._gpu_flops_utilization = self._meter.create_gauge(
+            "gaius.gpu.flops_utilization",
+            description="FLOPS-weighted GPU utilization across all GPUs",
             unit="%",
         )
 
@@ -395,6 +402,20 @@ class EngineMetrics:
         attrs = {"gpu_id": str(gpu_id)}
         self._gpu_memory_used.record(memory_used_mb, attrs)
         self._gpu_utilization.record(utilization_percent, attrs)
+
+    def record_gpu_flops_utilization(self, utilization_pct: float) -> None:
+        """Record FLOPS-weighted GPU utilization aggregate.
+
+        This is the streaming Welford mean across all GPUs, weighted by
+        each GPU's theoretical TFLOPS capacity. Used for the Observe panel
+        Compute sparkline.
+
+        Args:
+            utilization_pct: Current FLOPS-weighted utilization (0-100)
+        """
+        if not self._gpu_flops_utilization:
+            return
+        self._gpu_flops_utilization.set(utilization_pct)
 
     def record_endpoint_health(
         self,

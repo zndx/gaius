@@ -91,11 +91,15 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         id="inference_latency_p95",
         name="Latency p95",
         source="prometheus",
-        query='histogram_quantile(0.95, rate(gaius_gaius_inference_latency_milliseconds_bucket[5m]))',
-        display=MetricDisplay.SPARKLINE,
+        # Sum across all models, keeping only the 'le' bucket label for histogram_quantile
+        query='histogram_quantile(0.95, sum by (le) (rate(gaius_gaius_inference_latency_milliseconds_bucket[5m])))',
+        display=MetricDisplay.GAUGE,
         unit="ms",
         warning_threshold=500,
         critical_threshold=1000,
+        max_value=2000.0,  # 2s max for gauge scale
+        width=12,
+        precision=0,
     ),
     MetricDefinition(
         id="inference_rate",
@@ -130,21 +134,24 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         critical_threshold=5,
         precision=2,
     ),
-    # --- Engine metrics (gauges for current state) ---
-    # Compute capacity: % of GPU compute that is functional (not just "process alive")
-    # This accounts for GPUs per endpoint and shows capacity relative to total
+    # --- GPU FLOPS Utilization (Prometheus via OTel) ---
+    # FLOPS-weighted GPU utilization across all GPUs using Welford streaming mean.
+    # Shows actual compute load relative to theoretical peak FLOPS for 6x RTX 4090s.
+    # - Near 0% when idle or during changeover
+    # - High % when inference is active
+    # - 100% when all GPUs under full load (e.g., TP=2, PP=3 with active inference)
     MetricDefinition(
-        id="compute_capacity",
+        id="gpu_flops_utilization",
         name="Compute",
-        source="engine",
-        query="compute_capacity",
-        display=MetricDisplay.GAUGE,
+        source="prometheus",
+        query="gaius_gaius_gpu_flops_utilization_percent",  # From OTel export
+        display=MetricDisplay.SPARKLINE,  # Now with history!
         unit="%",
-        warning_threshold=80,
-        critical_threshold=50,
-        threshold_direction="below",  # Below 50% is red, below 80% is yellow
+        warning_threshold=95,
+        critical_threshold=99,
+        threshold_direction="above",
+        width=15,
         precision=0,
-        max_value=100.0,
     ),
     MetricDefinition(
         id="evolution",
