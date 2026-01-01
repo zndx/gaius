@@ -68,7 +68,7 @@ class OrchestratorProxy:
         """Stop the orchestrator."""
         self._running = False
 
-    async def ensure_endpoint(self, endpoint: str) -> dict:
+    async def ensure_endpoint(self, endpoint: str, timeout: float = 120.0) -> dict:
         """Ensure endpoint is running, starting if needed and resources available.
 
         This is the primary method for agent-first architecture. CLI and agents
@@ -76,6 +76,7 @@ class OrchestratorProxy:
 
         Args:
             endpoint: Endpoint/agent name
+            timeout: Request timeout in seconds (default 120s for vLLM startup)
 
         Returns:
             Dict with:
@@ -86,21 +87,22 @@ class OrchestratorProxy:
                 - message: str - Error message if not healthy
         """
         result = await self._client.call(
-            "Orchestrator", "ensure", {"endpoint": endpoint}
+            "Orchestrator", "ensure", {"endpoint": endpoint}, timeout=timeout
         )
         return result
 
-    async def start_endpoint(self, endpoint: str) -> bool:
+    async def start_endpoint(self, endpoint: str, timeout: float = 120.0) -> bool:
         """Start a vLLM endpoint.
 
         Args:
             endpoint: Endpoint/agent name
+            timeout: Request timeout in seconds (default 120s for vLLM startup)
 
         Returns:
             True if started successfully
         """
         result = await self._client.call(
-            "Orchestrator", "start", {"endpoint": endpoint}
+            "Orchestrator", "start", {"endpoint": endpoint}, timeout=timeout
         )
         return result.get("status") == "healthy"
 

@@ -300,7 +300,20 @@ class InferenceManager:
             if self._use_engine:
                 # Engine mode - use ensure_endpoint for proper resource management
                 proxy = await self._get_engine_proxy()
-                result = await proxy.ensure_endpoint(default_endpoint)
+                try:
+                    result = await proxy.ensure_endpoint(default_endpoint)
+                except TimeoutError:
+                    # #EP.00000002.ENSURETIMEOUT - Endpoint ensure operation timed out
+                    error_msg = (
+                        f"Endpoint startup timed out for {default_endpoint}.\n"
+                        "  The vLLM model is still loading. Try:\n"
+                        "  1. Wait 30-60 seconds and retry\n"
+                        "  2. Check endpoint status: /gpu status\n"
+                        "  3. View logs: /health diagnose inference"
+                    )
+                    logger.warning(f"#EP.00000002.ENSURETIMEOUT: {error_msg}")
+                    report(0.0, f"Timeout - model still loading")
+                    return False
 
                 if result.get("healthy"):
                     report(1.0, "Ready")
@@ -405,8 +418,17 @@ class InferenceManager:
             if self._use_engine:
                 # Engine mode - use ensure_endpoint
                 proxy = await self._get_engine_proxy()
-                result = await proxy.ensure_endpoint(endpoint_name)
-                success = result.get("healthy", False)
+                try:
+                    result = await proxy.ensure_endpoint(endpoint_name)
+                    success = result.get("healthy", False)
+                except TimeoutError:
+                    # #EP.00000002.ENSURETIMEOUT - Endpoint ensure operation timed out
+                    logger.warning(
+                        f"#EP.00000002.ENSURETIMEOUT: Endpoint {endpoint_name} startup timed out. "
+                        "Model may still be loading."
+                    )
+                    report(0.0, "Timeout - model still loading")
+                    return False
             else:
                 # Legacy mode
                 success = await self._orchestrator.start_endpoint(endpoint_name)

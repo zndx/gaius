@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .heuristics import Heuristic, HeuristicLoader
 
@@ -303,8 +303,14 @@ class HealthChecker:
             ),
         ]
 
-    async def run_all(self) -> HealthReport:
-        """Run all health checks.
+    async def run_all(
+        self,
+        progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+    ) -> HealthReport:
+        """Run all health checks with optional progress reporting.
+
+        Args:
+            progress_callback: Called after each check with (result, completed, total)
 
         Returns:
             Comprehensive health report
@@ -312,16 +318,21 @@ class HealthChecker:
         start_time = time.time()
         results = []
         metrics = {}
+        total_checks = len(self._checks)
 
-        for check in self._checks:
+        for i, check in enumerate(self._checks):
             result = await self._run_check(check)
             results.append(result)
+
+            # Report progress if callback provided
+            if progress_callback:
+                await progress_callback(result, i + 1, total_checks)
 
             # Stop on critical failure
             if check.critical and result.status == CheckStatus.FAIL:
                 logger.warning(f"Critical check failed: {check.name}")
                 # Mark remaining as skipped
-                for remaining in self._checks[self._checks.index(check) + 1 :]:
+                for remaining in self._checks[i + 1 :]:
                     results.append(
                         CheckResult(
                             name=remaining.name,
@@ -363,11 +374,16 @@ class HealthChecker:
 
         return report
 
-    async def run_category(self, category: str) -> HealthReport:
-        """Run health checks for a specific category.
+    async def run_category(
+        self,
+        category: str,
+        progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+    ) -> HealthReport:
+        """Run health checks for a specific category with optional progress reporting.
 
         Args:
             category: Category name (engine, data, cognition, inference)
+            progress_callback: Called after each check with (result, completed, total)
 
         Returns:
             Health report for that category
@@ -375,10 +391,17 @@ class HealthChecker:
         start_time = time.time()
         results = []
 
-        for check in self._checks:
-            if check.category == category:
-                result = await self._run_check(check)
-                results.append(result)
+        # Filter checks for this category
+        category_checks = [c for c in self._checks if c.category == category]
+        total_checks = len(category_checks)
+
+        for i, check in enumerate(category_checks):
+            result = await self._run_check(check)
+            results.append(result)
+
+            # Report progress if callback provided
+            if progress_callback:
+                await progress_callback(result, i + 1, total_checks)
 
         duration_ms = int((time.time() - start_time) * 1000)
 
@@ -400,8 +423,11 @@ class HealthChecker:
             interventions=interventions,
         )
 
-    async def run_quick(self) -> HealthReport:
-        """Run essential service connectivity checks.
+    async def run_quick(
+        self,
+        progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+    ) -> HealthReport:
+        """Run essential service connectivity checks with optional progress reporting.
 
         Shows all primary services and their roles:
         - gRPC Engine: Orchestration, cognition, evolution (primary)
@@ -410,6 +436,9 @@ class HealthChecker:
         - PostgreSQL: Activity logs, state (critical)
         - Qdrant: Vector embeddings, semantic search (primary)
         - S3/MinIO: Object storage (primary)
+
+        Args:
+            progress_callback: Called after each check with (result, completed, total)
 
         Returns:
             Health report with service connectivity status
@@ -427,10 +456,17 @@ class HealthChecker:
             "s3_minio_service",     # Object storage
         ]
 
-        for check in self._checks:
-            if check.id in essential_ids:
-                result = await self._run_check(check)
-                results.append(result)
+        # Filter checks for quick view
+        quick_checks = [c for c in self._checks if c.id in essential_ids]
+        total_checks = len(quick_checks)
+
+        for i, check in enumerate(quick_checks):
+            result = await self._run_check(check)
+            results.append(result)
+
+            # Report progress if callback provided
+            if progress_callback:
+                await progress_callback(result, i + 1, total_checks)
 
         duration_ms = int((time.time() - start_time) * 1000)
 

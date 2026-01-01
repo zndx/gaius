@@ -9,7 +9,9 @@ from .grpc_client import (
     GrpcClientConfig,
     GrpcEngineClient,
     call_grpc,
+    configure_grpc_client,
     get_grpc_client,
+    reset_grpc_client,
 )
 from .engine_proxy import (
     CompletionResult,
@@ -53,8 +55,10 @@ __all__ = [
     "GrpcClientConfig",
     "GrpcEngineClient",
     "call_grpc",
+    "configure_grpc_client",
     "get_grpc_client",
     "get_engine_client",
+    "reset_grpc_client",
     # Proxies
     "CompletionResult",
     "EvolutionProxy",
