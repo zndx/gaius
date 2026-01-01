@@ -3620,30 +3620,22 @@ Use `/evolve stop` to stop orchestrated evolution.
         asyncio.create_task(run_cycle())
 
     def _run_ambient_status(self, content: "InfoPanel") -> None:
-        """Show ambient computing status."""
+        """Show ambient computing status with live updates when daemon is running."""
         import asyncio
+        import time
 
         content.show_file("ambient.md", "# Ambient Status\n\n*Fetching...*")
 
-        async def get_status():
+        async def get_status_and_subscribe():
             try:
                 from .client.grpc_client import get_grpc_client
+                from datetime import datetime as dt
 
                 client = await get_grpc_client()
                 status = await client.call("Ambient", "status", {})
 
-                # Format status
                 daemon_running = status.get("daemon_running", False)
-                current_cycle = status.get("current_cycle", 0)
-                max_cycles = status.get("max_cycles", 0)
-                current_phase = status.get("current_phase", "idle")
-                cycles_completed = status.get("cycles_completed", 0)
-                baseline_endpoints = status.get("baseline_endpoints", [])
-                daemon_started_at_ms = status.get("daemon_started_at", 0)
-                daemon_stopped_at_ms = status.get("daemon_stopped_at", 0)
 
-                # Format times as HH:MM or --:--
-                from datetime import datetime as dt
                 def fmt_time_ms(ms: int) -> str:
                     if not ms or ms == 0:
                         return "--:--"
@@ -3652,63 +3644,111 @@ Use `/evolve stop` to stop orchestrated evolution.
                     except Exception:
                         return "--:--"
 
-                started_str = fmt_time_ms(daemon_started_at_ms)
-                stopped_str = fmt_time_ms(daemon_stopped_at_ms) if not daemon_running else "--:--"
+                def format_status_display(status: dict, phase_override: str | None = None, message: str | None = None) -> str:
+                    """Format status dict into display string."""
+                    running = status.get("daemon_running", False)
+                    current_cycle = status.get("current_cycle", 0)
+                    max_cycles = status.get("max_cycles", 0)
+                    current_phase = phase_override or status.get("current_phase", "idle")
+                    cycles_completed = status.get("cycles_completed", 0)
+                    baseline_endpoints = status.get("baseline_endpoints", [])
+                    daemon_started_at_ms = status.get("daemon_started_at", 0)
+                    daemon_stopped_at_ms = status.get("daemon_stopped_at", 0)
 
-                # Daemon mode indicator (keep short to avoid wrap)
-                if daemon_running:
-                    mode = "RUNNING"
-                    if max_cycles:
-                        cycle_str = f"{current_cycle}/{max_cycles}"
-                    else:
-                        cycle_str = f"{current_cycle}"
-                else:
-                    mode = "STOPPED"
-                    cycle_str = str(cycles_completed)
+                    started_str = fmt_time_ms(daemon_started_at_ms)
+                    stopped_str = fmt_time_ms(daemon_stopped_at_ms) if not running else "--:--"
 
-                phase_str = current_phase.split('_')[-1] if current_phase else 'UNKNOWN'
-
-                # Format endpoints with aligned wrapping (11 char indent for continuation)
-                # Use non-breaking spaces (\u00a0) so markdown doesn't strip them
-                if baseline_endpoints:
-                    nbsp = "\u00a0"  # Non-breaking space
-                    indent = nbsp * 11  # Align with value column
-                    endpoints_lines = []
-                    for i, ep in enumerate(baseline_endpoints):
-                        if i == 0:
-                            endpoints_lines.append(f"Endpoints{nbsp}{nbsp}{ep}")
+                    if running:
+                        mode = "RUNNING"
+                        if max_cycles:
+                            cycle_str = f"{current_cycle}/{max_cycles}"
                         else:
-                            endpoints_lines.append(f"{indent}{ep}")
-                    endpoints_block = "  \n".join(endpoints_lines)  # trailing spaces for line break
-                else:
-                    endpoints_block = "Endpoints  NONE"
+                            cycle_str = f"{current_cycle}"
+                    else:
+                        mode = "STOPPED"
+                        cycle_str = str(cycles_completed)
 
-                # Build with explicit line breaks (two trailing spaces in markdown)
-                lines = [
-                    "# Ambient Cycle",
-                    "",
-                    f"Started    {started_str}  ",
-                    f"Stopped    {stopped_str}",
-                    "",
-                    "---",
-                    "",
-                    f"Daemon     {mode}  ",
-                    f"Phase      {phase_str}  ",
-                    f"Cycles     {cycles_completed}  ",
-                    endpoints_block,
-                    "",
-                    "---",
-                    "`/ambient start`  ",
-                    "`/ambient stop`  ",
-                    "`/ambient status`",
-                ]
-                output = "\n".join(lines)
-                content.show_file("ambient.md", output)
+                    phase_str = current_phase.split('_')[-1] if current_phase else 'UNKNOWN'
+
+                    # Format endpoints
+                    nbsp = "\u00a0"
+                    if baseline_endpoints:
+                        indent = nbsp * 11
+                        endpoints_lines = []
+                        for i, ep in enumerate(baseline_endpoints):
+                            if i == 0:
+                                endpoints_lines.append(f"Endpoints{nbsp}{nbsp}{ep}")
+                            else:
+                                endpoints_lines.append(f"{indent}{ep}")
+                        endpoints_block = "  \n".join(endpoints_lines)
+                    else:
+                        endpoints_block = "Endpoints  NONE"
+
+                    lines = [
+                        "# Ambient Cycle",
+                        "",
+                        f"Started    {started_str}  ",
+                        f"Stopped    {stopped_str}",
+                        "",
+                        "---",
+                        "",
+                        f"Daemon     {mode}  ",
+                        f"Phase      {phase_str}  ",
+                        f"Cycles     {cycles_completed}  ",
+                        endpoints_block,
+                    ]
+
+                    # Add live message if provided
+                    if message and running:
+                        lines.extend(["", f"*{message}*"])
+
+                    lines.extend([
+                        "",
+                        "---",
+                        "`/ambient start`  ",
+                        "`/ambient stop`  ",
+                        "`/ambient status`",
+                    ])
+
+                    return "\n".join(lines)
+
+                # Show initial status
+                content.show_file("ambient.md", format_status_display(status))
+
+                # If daemon is running, subscribe to event stream for live updates
+                if daemon_running:
+                    last_update = 0.0
+                    UPDATE_INTERVAL = 0.5  # Update every 500ms max
+
+                    async for event in client.ambient_subscribe_stream():
+                        phase = event.get("phase", "").replace("AMBIENT_PHASE_", "")
+                        message = event.get("message", "")
+                        metrics = event.get("metrics", {})
+
+                        # Update status with current cycle info from metrics
+                        if metrics.get("daemon_cycle"):
+                            status["current_cycle"] = int(metrics["daemon_cycle"])
+                        if metrics.get("cycles_completed"):
+                            status["cycles_completed"] = int(metrics["cycles_completed"])
+                        status["current_phase"] = f"AMBIENT_PHASE_{phase}"
+
+                        # Handle daemon stopped
+                        if phase == "COMPLETE" and "Completed" in message:
+                            status["daemon_running"] = False
+                            content.show_file("ambient.md", format_status_display(status))
+                            break
+
+                        # Debounced UI updates
+                        now = time.monotonic()
+                        if now - last_update >= UPDATE_INTERVAL:
+                            content.show_file("ambient.md", format_status_display(status, phase, message))
+                            last_update = now
+                            await asyncio.sleep(0)
 
             except Exception as e:
                 content.show_file("error.txt", f"Failed to get ambient status: {e}")
 
-        asyncio.create_task(get_status())
+        asyncio.create_task(get_status_and_subscribe())
 
     def _handle_x_bookmarks_command(self, args: str) -> None:
         """Handle /x-bookmarks command for X bookmarks sync.
@@ -5337,8 +5377,10 @@ The general-purpose agentic query interface.
                     grid_manager = get_grid_manager()
                     grid_manager.set_cached_data(grid_data)
 
-                    # Update minigrids on main thread
-                    self.call_from_thread(self._update_minigrids)
+                    # Update minigrids - we're in Textual's event loop so call directly
+                    self._update_minigrids()
+                    # Force refresh to ensure visual update
+                    self.refresh()
 
                     self.log.info(
                         f"Minigrid data loaded: {len(grid_data.grid_to_embedding)} mappings"
