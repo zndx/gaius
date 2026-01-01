@@ -229,12 +229,22 @@ class EngineSource(MetricSource):
             if status and "endpoints" in status:
                 healthy = sum(
                     1 for ep in status["endpoints"]
-                    if ep.get("status") == "healthy"
+                    if self._is_healthy_status(ep.get("status"))
                 )
                 return float(healthy)
         except Exception as e:
             logger.debug(f"Endpoint count fetch failed: {e}")
         return None
+
+    def _is_healthy_status(self, status: Optional[str]) -> bool:
+        """Check if endpoint status indicates healthy.
+
+        Handles both proto enum names and short names.
+        """
+        if not status:
+            return False
+        status_lower = status.lower()
+        return "healthy" in status_lower and "unhealthy" not in status_lower
 
     async def _get_compute_capacity(self, client: "GrpcEngineClient") -> Optional[float]:
         """Get percentage of GPU compute capacity that is functional.
@@ -243,6 +253,8 @@ class EngineSource(MetricSource):
         crashing is a much bigger capacity loss than a 1-GPU endpoint.
 
         Capacity = (healthy GPUs / total allocated GPUs) * 100
+
+        Falls back to endpoint count if GPU allocation info is unavailable.
 
         Returns:
             Percentage (0-100) of allocated GPU capacity that is functional
@@ -258,16 +270,27 @@ class EngineSource(MetricSource):
 
             total_gpus = 0
             healthy_gpus = 0
+            has_gpu_info = False
 
             for ep in endpoints:
-                # Get GPU count for this endpoint (default to 1 if not specified)
+                # Get GPU count for this endpoint
                 gpu_ids = ep.get("gpu_ids", [])
-                gpu_count = len(gpu_ids) if gpu_ids else 1
+                gpu_count = len(gpu_ids) if gpu_ids else 0
 
-                total_gpus += gpu_count
+                if gpu_count > 0:
+                    has_gpu_info = True
+                    total_gpus += gpu_count
+                    if self._is_healthy_status(ep.get("status")):
+                        healthy_gpus += gpu_count
 
-                if ep.get("status") == "healthy":
-                    healthy_gpus += gpu_count
+            # If no GPU info available, fall back to simple endpoint ratio
+            if not has_gpu_info:
+                total_endpoints = len(endpoints)
+                healthy_endpoints = sum(
+                    1 for ep in endpoints
+                    if self._is_healthy_status(ep.get("status"))
+                )
+                return (healthy_endpoints / total_endpoints) * 100 if total_endpoints > 0 else 0.0
 
             # Return percentage of GPU capacity that is healthy
             return (healthy_gpus / total_gpus) * 100 if total_gpus > 0 else 0.0
