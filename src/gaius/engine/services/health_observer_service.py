@@ -1121,10 +1121,13 @@ Begin your investigation now."""
                 f"Running RCA phase for {incident.fingerprint} via ACP"
             )
 
+            # Combine system prompt and RCA prompt into a single message
+            # The ACP client's prompt() method doesn't accept system_prompt separately
+            full_message = f"{system_prompt}\n\n---\n\n{rca_prompt}"
+
             # Send to Claude Code
             response = await self._acp_client.prompt(
-                message=rca_prompt,
-                system_prompt=system_prompt,
+                message=full_message,
                 context={
                     "incident": incident.to_dict(),
                     "remediation_result": remediation_result,
