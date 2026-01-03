@@ -2173,7 +2173,7 @@ class GaiusApp(App):
         asyncio.create_task(show())
 
     def _explain_grid_view(self, args: str = "") -> None:
-        """Explain current grid view using local LLM with differential geometry.
+        """Explain current grid view using Engine gRPC (all computation server-side).
 
         Args:
             args: Optional arguments: [position] [--no-save]
@@ -2181,12 +2181,7 @@ class GaiusApp(App):
                   --no-save: Don't save explanation to KB (default: save)
         """
         import asyncio
-        from datetime import datetime
-        from pathlib import Path
-        from .inference.llm import explain_position, ExplanationContext
-        from .core.projection import get_grid_manager
-        from .core.tda import get_tda_manager
-        from .core.minigrids import get_embed_view, get_iso_view
+        import math
 
         content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
@@ -2197,235 +2192,181 @@ class GaiusApp(App):
         save_to_kb = "--no-save" not in args
         args = args.replace("--no-save", "").replace("--save", "").strip()
 
+        # Determine position (from args or cursor)
+        cx, cy = self.state.cursor_x, self.state.cursor_y
+        if args:
+            # Parse Go notation (e.g., K10)
+            try:
+                col = args[0].upper()
+                row = int(args[1:])
+                # Convert to grid coords (A=0, skip I, 1=bottom)
+                col_idx = ord(col) - ord('A')
+                if col >= 'I':
+                    col_idx -= 1
+                cx = col_idx
+                cy = 19 - row
+            except (ValueError, IndexError):
+                pass  # Use cursor position
+
+        # Convert to Go notation for display
+        col_letter = chr(ord('A') + cx + (1 if cx >= 8 else 0))
+        position_str = f"{col_letter}{19 - cy}"
+
+        # Show immediate feedback in InfoPanel
+        save_text = "saving to KB" if save_to_kb else "not saving"
+        content.show_file(
+            "explain.md",
+            f"# Explain: {position_str}\n\n"
+            f"*Generating explanation for position {position_str} ({cx}, {cy})...*\n\n"
+            f"*Mode: {save_text}*\n\n"
+            f"This may take 10-20 seconds while the LLM generates an interpretation."
+        )
+
         async def generate():
+            from .client.grpc_client import get_grpc_client
+
             try:
                 think.start_trace(
                     operation="explanation",
                     query="grid interpretation",
-                    model="local LLM"
+                    model="Engine gRPC"
                 )
 
-                start_time = datetime.now()
-
-                # Get grid data and TDA features from managers
-                try:
-                    grid_data = get_grid_manager().get_grid_data()
-                    tda_manager = get_tda_manager()
-                    tda_features = tda_manager._cached_features  # May be None
-                except Exception as e:
-                    content.show_file("error.txt", f"Failed to get grid data: {e}")
-                    think.clear_active()
-                    return
-
-                # Determine position (from args or cursor)
-                cx, cy = self.state.cursor_x, self.state.cursor_y
-                if args:
-                    # Parse Go notation (e.g., K10)
-                    try:
-                        col = args[0].upper()
-                        row = int(args[1:])
-                        # Convert to grid coords (A=0, skip I, 1=bottom)
-                        col_idx = ord(col) - ord('A')
-                        if col >= 'I':
-                            col_idx -= 1
-                        cx = col_idx
-                        cy = 19 - row
-                    except (ValueError, IndexError):
-                        pass  # Use cursor position
-
-                # Get document at cursor (if any)
-                document_title = None
-                document_path = None
-                point_idx = grid_data.grid_to_embedding.get((cx, cy))
-                if point_idx is not None and point_idx < len(grid_data.points):
-                    point = grid_data.points[point_idx]
-                    document_title = point.title
-                    document_path = point.path
-
-                # Extract geometric features (differential geometry)
-                curvature = None
-                gradient_x = None
-                gradient_y = None
-                divergence = None
-
-                if self.state.curvature_map and cy < len(self.state.curvature_map):
-                    if cx < len(self.state.curvature_map[cy]):
-                        curvature = self.state.curvature_map[cy][cx]
-
-                # Find gradient at cursor position
-                if self.state.gradient_field:
-                    for entry in self.state.gradient_field:
-                        if len(entry) == 4 and entry[0] == cx and entry[1] == cy:
-                            gradient_x = entry[2]
-                            gradient_y = entry[3]
-                            break
-
-                if self.state.divergence_map and cy < len(self.state.divergence_map):
-                    if cx < len(self.state.divergence_map[cy]):
-                        divergence = self.state.divergence_map[cy][cx]
-
-                # Extract TDA features
-                tda_entropy = tda_features.entropy if tda_features else None
-                h0_count = tda_features.h0_count if tda_features else None
-                h1_count = tda_features.h1_count if tda_features else None
-                h2_count = tda_features.h2_count if tda_features else None
-
-                # Risk score at cursor
-                risk_score = None
-                if tda_features and point_idx is not None:
-                    if point_idx < len(tda_features.risk_scores):
-                        risk_score = tda_features.risk_scores[point_idx]
-
-                # Find nearby documents (3x3 neighborhood)
-                nearby_documents = []
-                for dy in [-1, 0, 1]:
-                    for dx in [-1, 0, 1]:
-                        if dx == 0 and dy == 0:
-                            continue
-                        nx, ny = cx + dx, cy + dy
-                        if 0 <= nx < 19 and 0 <= ny < 19:
-                            neighbor_idx = grid_data.grid_to_embedding.get((nx, ny))
-                            if neighbor_idx is not None and neighbor_idx < len(grid_data.points):
-                                nearby_documents.append(grid_data.points[neighbor_idx].title)
-
-                # Get mini-grid data for visual descriptions
-                embed_grid = None
-                iso_grid = None
-                embed_data = get_embed_view(grid_data, cx, cy)
-                embed_grid = embed_data.grid
-
-                curvatures = getattr(self.state, 'curvatures_raw', None)
-                iso_data = get_iso_view(
-                    grid_data, curvatures, cx, cy,
-                    iso_features=grid_data.iso_features
-                )
-                iso_grid = iso_data.grid
-
-                # Create explanation context
-                ctx = ExplanationContext(
-                    cursor_x=cx,
-                    cursor_y=cy,
-                    document_title=document_title,
-                    document_path=document_path,
-                    curvature=curvature,
-                    gradient_x=gradient_x,
-                    gradient_y=gradient_y,
-                    divergence=divergence,
-                    tda_entropy=tda_entropy,
-                    h0_count=h0_count,
-                    h1_count=h1_count,
-                    h2_count=h2_count,
-                    risk_score=risk_score,
-                    view_mode=self.state.view_mode.value,
-                    overlay_mode=self.state.overlay_mode.value,
-                    grid_coverage=grid_data.coverage,
-                    total_documents=grid_data.n_documents,
-                    nearby_documents=nearby_documents if nearby_documents else None,
-                    embed_grid=embed_grid,
-                    iso_grid=iso_grid,
+                # Update status - connecting
+                content.show_file(
+                    "explain.md",
+                    f"# Explain: {position_str}\n\n"
+                    f"*Connecting to Engine...*"
                 )
 
-                # Generate explanation using new LLM interface
-                explanation = await explain_position(ctx)
+                client = await get_grpc_client()
+                if not client:
+                    raise RuntimeError(
+                        "Engine not available.\n"
+                        "Guru Meditation: #EXP.00000001.NOENGINE\n"
+                        "Try: /health fix engine\n"
+                        "Or: devenv tasks run restart:clean"
+                    )
 
-                # Strip thinking tags if present
-                if '<think>' in explanation and '</think>' in explanation:
-                    explanation = explanation.split('</think>')[-1].strip()
+                # Update status - generating
+                content.show_file(
+                    "explain.md",
+                    f"# Explain: {position_str}\n\n"
+                    f"*Computing geometry, TDA features, and generating LLM interpretation...*\n\n"
+                    f"This typically takes 10-20 seconds."
+                )
 
-                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                # Call Engine - all heavy lifting happens server-side
+                response = await client.explain(
+                    kb_root="build/dev",
+                    x=cx,
+                    y=cy,
+                    save_to_kb=save_to_kb,
+                    max_tokens=800,
+                    client_id="tui",
+                )
 
-                # Convert coordinates to Go notation
-                col = chr(ord('A') + cx + (1 if cx >= 8 else 0))
-                position_str = f"{col}{19 - cy}"
+                if not response.success:
+                    raise RuntimeError(response.error or "Explain request failed")
 
-                # Build output with geometric context
+                # Build output from response
                 output = [
-                    f"# Grid Explanation: {position_str}",
+                    f"# Grid Explanation: {response.position}",
                     "",
-                    f"**Position:** {position_str} ({cx}, {cy})",
-                    f"**Document:** {document_title or 'Empty cell'}",
-                    f"**View:** {self.state.view_mode.value}",
-                    f"**Overlay:** {self.state.overlay_mode.value}",
+                    f"**Position:** {response.position} ({response.x}, {response.y})",
+                    f"**Document:** {response.document_title or 'Empty cell'}",
                     "",
                 ]
 
                 # Add geometric features summary
-                if curvature is not None:
+                if response.curvature != 0:
                     output.append("## Differential Geometry")
                     output.append("")
-                    output.append(f"- **Ricci curvature κ:** {curvature:.3f}")
-                    if gradient_x is not None and gradient_y is not None:
-                        import math
-                        mag = math.sqrt(gradient_x**2 + gradient_y**2)
+                    output.append(f"- **Ricci curvature κ:** {response.curvature:.3f}")
+                    if response.gradient_x != 0 or response.gradient_y != 0:
+                        mag = math.sqrt(response.gradient_x**2 + response.gradient_y**2)
                         output.append(f"- **Gradient magnitude:** {mag:.3f}")
-                    if divergence is not None:
-                        output.append(f"- **Divergence:** {divergence:.3f}")
+                    if response.divergence != 0:
+                        output.append(f"- **Divergence:** {response.divergence:.3f}")
+                    output.append("")
+
+                # TDA context
+                if response.h0_count or response.h1_count or response.h2_count:
+                    output.append("## Topological Context")
+                    output.append("")
+                    output.append(f"- **H0 (components):** {response.h0_count}")
+                    output.append(f"- **H1 (loops):** {response.h1_count}")
+                    output.append(f"- **H2 (voids):** {response.h2_count}")
+                    if response.tda_entropy:
+                        output.append(f"- **Entropy:** {response.tda_entropy:.3f}")
+                    if response.risk_score:
+                        output.append(f"- **Risk score:** {response.risk_score:.3f}")
                     output.append("")
 
                 output.extend([
                     "## LLM Interpretation",
                     "",
-                    explanation,
+                    response.explanation,
                 ])
 
-                # Save to KB if requested
-                kb_path = None
-                if save_to_kb:
-                    from .core.kb_capture import ExplainCapture
+                # Display results (following /ambient buffer pattern)
+                from pathlib import Path
+                import os
 
-                    capture = ExplainCapture(
-                        position=position_str,
-                        x=cx,
-                        y=cy,
-                        document_title=document_title,
-                        document_path=document_path,
-                        nearby_documents=nearby_documents[:8],
-                        curvature=curvature,
-                        gradient=(gradient_x, gradient_y) if gradient_x is not None else None,
-                        risk_score=risk_score,
-                        h0_count=h0_count or 0,
-                        h1_count=h1_count or 0,
-                        h2_count=h2_count or 0,
-                        tda_entropy=tda_entropy or 0.0,
-                        embed_grid=embed_grid,
-                        iso_grid=iso_grid,
-                        grid_coverage=grid_data.coverage,
-                        total_documents=grid_data.n_documents,
-                        view_mode=self.state.view_mode.value,
-                        overlay_mode=self.state.overlay_mode.value,
-                        explanation=explanation,
-                        model="local LLM",
-                        elapsed_ms=duration_ms,
-                    )
+                if response.saved_path:
+                    saved_file = Path(response.saved_path)
 
-                    scratch_root = Path("build/dev/scratch")
-                    kb_path = capture.save_to_kb(scratch_root)
+                    # Show status summary in InfoPanel (like /ambient buffer)
+                    nbsp = "\u00a0"
+                    status_lines = [
+                        f"# Explain: {response.position}",
+                        "",
+                        f"Document{nbsp * 3}{response.document_title or 'Empty cell'}  ",
+                        f"Curvature{nbsp * 2}κ = {response.curvature:.3f}  ",
+                        f"Duration{nbsp * 3}{response.duration_ms}ms  ",
+                        f"Model{nbsp * 6}{response.model or 'unknown'}  ",
+                        "",
+                        f"Saved{nbsp * 6}`{os.path.basename(response.saved_path)}`  ",
+                        "",
+                        "---",
+                        "",
+                        "*File opened in Editor panel with full minigrid visualizations.*",
+                    ]
+                    content.show_file("explain.md", "\n".join(status_lines))
+
+                    # Open the saved file in Editor (has proper minigrids)
+                    if saved_file.exists():
+                        editor.remove_class("hidden")
+                        editor.open_note(str(saved_file))
+                        file_tree.refresh_tree()
+                    else:
+                        content.show_file(
+                            "error.txt",
+                            f"Saved file not found: {response.saved_path}\n\n"
+                            f"The Engine reported saving but file doesn't exist."
+                        )
+                else:
+                    # No save (--no-save mode) - show in InfoPanel only
                     output.extend([
                         "",
-                        f"---",
-                        f"*Saved to: {kb_path}*",
+                        "---",
+                        "",
+                        "*Not saved to KB (--no-save mode)*",
                     ])
-
-                    # Open the saved note in the editor
-                    editor.remove_class("hidden")
-                    editor.open_note(str(kb_path))
-
-                    # Refresh file tree to show the new note
-                    file_tree.refresh_tree()
-
-                self._show_output("explain", "\n".join(output))
+                    content.show_file("explain.md", "\n".join(output))
 
                 # Record trace
-                summary = f"Generated explanation in {duration_ms}ms"
-                if kb_path:
-                    summary += f" (saved to {kb_path.name})"
+                summary = f"Generated explanation in {response.duration_ms}ms"
+                if response.saved_path:
+                    import os
+                    summary += f" (saved to {os.path.basename(response.saved_path)})"
                 think.complete_trace(
                     operation="explanation",
                     query="grid interpretation",
                     summary=summary,
                     tokens=0,
                     sources=1,
-                    duration_ms=duration_ms,
+                    duration_ms=response.duration_ms,
                 )
 
             except Exception as e:
@@ -2435,7 +2376,7 @@ class GaiusApp(App):
                 content.show_file(
                     "error.txt",
                     f"Explanation failed: {e}\n\n"
-                    f"Make sure optillm/vLLM is running.\n\n"
+                    f"Ensure Engine is running with inference endpoints.\n\n"
                     f"Details:\n{error_detail}"
                 )
 

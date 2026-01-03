@@ -2190,8 +2190,7 @@ class GaiusServicer(GaiusServiceServicer):
             from ....core.tda import get_tda_manager
             from ....core.geometry import GeometryComputer
             from ....core.minigrids import get_embed_view, get_iso_view
-            from ....inference.llm import explain_position, ExplanationContext
-            from ....inference.client import InferenceClient
+            from ....inference.llm import ExplanationContext
             from ....storage.grid_state import load_full_grid_data_for_minigrids
 
             # Get grid manager to check cache first
@@ -2331,16 +2330,73 @@ class GaiusServicer(GaiusServiceServicer):
                 iso_grid=iso_data.grid if iso_data else None,
             )
 
-            # Generate LLM explanation
-            client = InferenceClient()
-            await client._discover_vllm_model()
-            explanation = await explain_position(ctx, client=client, max_tokens=max_tokens)
+            # Generate LLM explanation via Engine's BackendRouter
+            # FAIL-FAST: no fallbacks, no empty content
+            if not self._services.backend_router:
+                return ExplainResponse(
+                    success=False,
+                    error=(
+                        "Backend router not available.\n"
+                        "Guru Meditation: #EXP.00000001.NOROUTER\n"
+                        "Check: /health endpoints"
+                    ),
+                    position=position,
+                    x=cx, y=cy,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            try:
+                from ....inference.llm import _build_explanation_prompt
+                prompt = _build_explanation_prompt(ctx)
+
+                result = await self._services.backend_router.complete(
+                    prompt=prompt,
+                    agent_alias="fast",  # Use fast endpoint for explain
+                    temperature=0.7,
+                    max_tokens=max_tokens,
+                )
+
+                if result.error:
+                    raise RuntimeError(result.error)
+
+                explanation = result.content
+                model_name = result.model or "unknown"
+
+            except Exception as llm_error:
+                # Fail-fast: LLM failure is an error, not a fallback condition
+                logger.error(f"LLM explanation failed: {llm_error}")
+                return ExplainResponse(
+                    success=False,
+                    error=(
+                        f"LLM explanation failed: {llm_error}\n"
+                        "Guru Meditation: #EXP.00000002.LLMFAIL\n"
+                        "Check: /health endpoints\n"
+                        "Or: devenv tasks run restart:clean"
+                    ),
+                    position=position,
+                    x=cx, y=cy,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # Fail-fast: Empty explanation is an error
+            if not explanation or not explanation.strip():
+                logger.error("LLM returned empty explanation")
+                return ExplainResponse(
+                    success=False,
+                    error=(
+                        "LLM returned empty explanation.\n"
+                        "Guru Meditation: #EXP.00000003.EMPTYRESP\n"
+                        "Check: /health endpoints\n"
+                        "Inference endpoint may be overloaded or unhealthy."
+                    ),
+                    position=position,
+                    x=cx, y=cy,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
 
             # Strip thinking tags if present
             if '<think>' in explanation and '</think>' in explanation:
                 explanation = explanation.split('</think>')[-1].strip()
-
-            model_name = getattr(client, '_vllm_model', 'unknown')
 
             # Save to KB if requested
             saved_path = ""
@@ -2353,24 +2409,31 @@ class GaiusServicer(GaiusServiceServicer):
                     x=cx,
                     y=cy,
                     document_title=document_title,
+                    document_path=document_path,
+                    nearby_documents=nearby_documents[:5],
                     curvature=curvature,
                     gradient=(gradient_x, gradient_y),
-                    tda_entropy=tda_entropy,
+                    risk_score=risk_score,
                     h0_count=h0_count,
                     h1_count=h1_count,
                     h2_count=h2_count,
-                    risk_score=risk_score,
-                    nearby_documents=nearby_documents[:5],
+                    tda_entropy=tda_entropy,
+                    embed_grid=embed_data.grid if embed_data else None,
+                    iso_grid=iso_data.grid if iso_data else None,
+                    grid_coverage=len(grid_data.points) / 361,
+                    total_documents=len(grid_data.points),
                     explanation=explanation,
                     model=model_name,
+                    elapsed_ms=int((time.time() - start_time) * 1000),
                 )
                 try:
-                    saved_path = capture.save_to_kb(Path(kb_root) / "scratch")
+                    saved_path = str(capture.save_to_kb(Path(kb_root) / "scratch"))
                 except Exception as e:
                     logger.warning(f"Failed to save explanation: {e}")
 
             duration_ms = int((time.time() - start_time) * 1000)
 
+            # Convert to native Python types for protobuf (numpy types not supported)
             return ExplainResponse(
                 success=True,
                 position=position,
@@ -2378,20 +2441,20 @@ class GaiusServicer(GaiusServiceServicer):
                 y=cy,
                 document_title=document_title,
                 document_path=document_path,
-                curvature=curvature,
-                gradient_x=gradient_x,
-                gradient_y=gradient_y,
+                curvature=float(curvature),
+                gradient_x=float(gradient_x),
+                gradient_y=float(gradient_y),
                 divergence=0.0,
-                tda_entropy=tda_entropy,
-                h0_count=h0_count,
-                h1_count=h1_count,
-                h2_count=h2_count,
-                risk_score=risk_score,
-                grid_coverage=len(grid_data.points) / 361,
-                total_documents=len(grid_data.points),
+                tda_entropy=float(tda_entropy),
+                h0_count=int(h0_count),
+                h1_count=int(h1_count),
+                h2_count=int(h2_count),
+                risk_score=float(risk_score),
+                grid_coverage=float(len(grid_data.points) / 361),
+                total_documents=int(len(grid_data.points)),
                 nearby_documents=nearby_documents[:5],
-                embed_grid=embed_grid_flat,
-                iso_grid=iso_grid_flat,
+                embed_grid=[float(v) for v in embed_grid_flat],
+                iso_grid=[float(v) for v in iso_grid_flat],
                 explanation=explanation,
                 model=model_name,
                 duration_ms=duration_ms,
