@@ -79,15 +79,62 @@ uv run gaius-cli --cmd "/state" --format json
 
 ## Key Bindings
 
+### Global Navigation
+
 | Key | Action |
 |-----|--------|
-| `hjkl` | Navigate grid |
+| `hjkl` | Navigate grid cursor |
+| `g` | Cycle center panels (Graph → Think → Evolve → Observe) |
 | `v` | Cycle view modes |
 | `o` | Cycle overlays |
-| `g` | Toggle center panel (Graph/Think) |
-| `[` `]` | Toggle side panels |
-| `/` | Command input |
-| `?` | Help |
+| `[` | Toggle left panel (FileTree) |
+| `]` | Toggle right panel (Info) |
+| `\` | Toggle both side panels |
+| `/` | Enter command mode |
+| `?` | Show help |
+| `q` | Quit |
+
+### FileTree (Left Panel)
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Navigate tree items |
+| `Enter` | Open selected file |
+| `Space` | Expand/collapse folder |
+| `G` | Jump to last item (expands folders to find deepest leaf) |
+| `Ctrl-F` | Page down (half page) |
+| `Ctrl-BB` | Page up (half page) — requires double-press, known bug |
+
+### Editor Panel (Normal Mode)
+
+Vim-style modal editing for KB files.
+
+| Key | Action |
+|-----|--------|
+| `i` | Insert at cursor |
+| `I` | Insert at line beginning |
+| `a` | Append after cursor |
+| `A` | Append at line end |
+| `o` | Open line below |
+| `O` | Open line above |
+| `ESC` | Exit insert mode → normal mode |
+| `:q` | Close editor |
+| `:wq` | Save and close (auto-saves, so same as :q) |
+| `:<number>` | Go to line number (e.g., `:42`) |
+| `:mv <path>` | Move file to path |
+| `:rename [name]` | Move to scratch with optional name |
+
+### Editor Panel (Navigation)
+
+Works in both normal and insert modes.
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` `←` `→` | Scroll viewport (browser-style) |
+| `Ctrl-F` | Page down |
+| `Ctrl-B` | Page up |
+| `G` | Jump to end of document |
+| `hjkl` | Pass through to main grid (normal mode only) |
 
 ## Commands
 
@@ -102,6 +149,13 @@ uv run gaius-cli --cmd "/state" --format json
 | `/activity` | View activity log |
 | `/tda` | Show topological features |
 | `/reindex` | Refresh embeddings |
+| `/ambient status` | Show ambient workload daemon status |
+| `/ambient start` | Start ambient background processing |
+| `/ambient stop` | Stop ambient background processing |
+| `/ambient buffer` | Export buffered content to zettelkasten note |
+| `/gpu status` | Show GPU endpoint status |
+| `/health` | Run health diagnostics |
+| `/health fix <svc>` | Auto-remediate unhealthy service |
 
 ## Layout
 
