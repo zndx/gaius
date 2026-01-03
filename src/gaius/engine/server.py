@@ -999,9 +999,8 @@ class GaiusEngine:
 
             # Wire to HealthObserverService for incident escalation
             if self._health_observer_service:
-                # AgendaTracker notifies HealthObserver of agenda incidents
-                self._agenda_tracker.on_incident(self._on_agenda_incident)
-                self._agenda_tracker.on_resolved(self._on_agenda_resolved)
+                # AgendaTracker notifies HealthObserver when control degrades
+                self._agenda_tracker.on_control_degraded(self._on_agenda_control_degraded)
                 logger.info("Wired AgendaTracker → HealthObserverService callbacks")
 
             # Update gRPC service registry
@@ -1018,35 +1017,34 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to create AgendaTracker: {e}")
 
-    async def _on_agenda_incident(self, incident) -> None:
-        """Callback when a new agenda incident is created or status changes."""
-        from .incidents import AgendaStatus
+    async def _on_agenda_control_degraded(self, operation) -> None:
+        """Callback when an operation's control mode degrades from POSITIVE.
 
-        # Escalate BLOCKED incidents to HealthObserver for potential ACP intervention
-        if incident.status == AgendaStatus.BLOCKED:
-            logger.warning(
-                f"Agenda {incident.agenda_id} is BLOCKED at phase "
-                f"{incident.current_phase_index}: {incident.current_phase.name if incident.current_phase else 'unknown'}"
-            )
-
-            # Escalate to HealthObserver if available
-            if self._health_observer_service:
-                await self._escalate_agenda_to_health_observer(incident)
-
-        elif incident.status == AgendaStatus.DELAYED:
-            logger.info(
-                f"Agenda incident {incident.agenda_id}: "
-                f"status={incident.status.value}, severity={incident.severity_score}, "
-                f"makespan_variance={incident.makespan_variance_pct:.1%}"
-            )
-
-    async def _escalate_agenda_to_health_observer(self, incident) -> None:
-        """Escalate a BLOCKED agenda incident to HealthObserver.
-
-        Creates a synthetic health incident so ACP can investigate.
+        This indicates that an endpoint transition was not orchestrated (e.g.,
+        failure recovery or restart recovery), which may require investigation.
 
         Args:
-            incident: AgendaIncident that is blocked
+            operation: AgendaOperation with degraded control mode
+        """
+        from .incidents import ControlMode
+
+        logger.warning(
+            f"Operation {operation.workload_id} control degraded to {operation.control_mode.value}"
+        )
+
+        # Escalate to HealthObserver if control mode is particularly bad
+        if self._health_observer_service and operation.control_mode == ControlMode.RESTART_RECOVERY:
+            await self._escalate_operation_to_health_observer(operation)
+
+    async def _escalate_operation_to_health_observer(self, operation) -> None:
+        """Escalate an operation with degraded control to HealthObserver.
+
+        Creates a synthetic health incident so ACP can investigate why
+        the operation required restart/failure recovery instead of
+        positive orchestrated control.
+
+        Args:
+            operation: AgendaOperation with degraded control mode
         """
         if not self._health_observer_service:
             return
@@ -1055,30 +1053,28 @@ class GaiusEngine:
             from .services.health_observer_service import HealthIncident
             from uuid import uuid4
 
-            # Create a synthetic health incident for the blocked agenda
-            fingerprint = f"AGENDA_BLOCKED:{incident.agenda_id}"
+            # Create a synthetic health incident for the degraded operation
+            fingerprint = f"CONTROL_DEGRADED:{operation.workload_id}"
 
             health_incident = HealthIncident(
                 incident_id=uuid4(),
                 fingerprint=fingerprint,
-                endpoint=incident.current_phase.name if incident.current_phase else "unknown",
-                failure_mode_id="AGENDA_BLOCKED",
-                rpn_score=incident.severity_score,
-                rpn_severity=8,
+                endpoint=operation.phases[0].name if operation.phases else "unknown",
+                failure_mode_id="CONTROL_DEGRADED",
+                rpn_score=200,  # Moderate severity
+                rpn_severity=6,
                 rpn_occurrence=5,
                 rpn_detection=5,
-                current_tier=2,  # Start at Tier 2 (ACP escalation)
+                current_tier=1,  # Start at Tier 1 (local remediation)
                 attempts=0,
             )
 
-            # Add agenda context to the incident
+            # Add operation context to the incident
             health_incident.context = {
-                "agenda_id": incident.agenda_id,
-                "agenda_type": incident.agenda_type.value,
-                "current_phase": incident.current_phase.name if incident.current_phase else None,
-                "makespan_variance_pct": incident.makespan_variance_pct,
-                "control_mode": incident.control_mode.value,
-                "endpoint_transitions": len(incident.endpoint_transitions),
+                "workload_id": operation.workload_id,
+                "workload_type": operation.workload_type.value if hasattr(operation.workload_type, 'value') else str(operation.workload_type),
+                "control_mode": operation.control_mode.value,
+                "endpoint_transitions": len(operation.endpoint_transitions),
             }
 
             # Register with HealthObserver
@@ -1086,32 +1082,12 @@ class GaiusEngine:
             self._health_observer_service._incidents_created += 1
 
             logger.info(
-                f"Escalated blocked agenda {incident.agenda_id} to HealthObserver "
-                f"(severity={incident.severity_score})"
+                f"Escalated degraded operation {operation.workload_id} to HealthObserver "
+                f"(control={operation.control_mode.value})"
             )
 
         except Exception as e:
-            logger.error(f"Failed to escalate agenda to HealthObserver: {e}")
-
-    async def _on_agenda_resolved(self, incident) -> None:
-        """Callback when an agenda incident is resolved."""
-        from .incidents import AgendaStatus, ControlMode
-
-        if incident.status == AgendaStatus.FULFILLED:
-            logger.info(
-                f"Agenda {incident.agenda_id} FULFILLED under positive control "
-                f"(makespan variance: {incident.makespan_variance_pct:.1%})"
-            )
-        elif incident.status == AgendaStatus.DEGRADED:
-            logger.warning(
-                f"Agenda {incident.agenda_id} completed but DEGRADED to "
-                f"{incident.control_mode.value} control "
-                f"(makespan variance: {incident.makespan_variance_pct:.1%})"
-            )
-        elif incident.status == AgendaStatus.FAILED:
-            logger.error(
-                f"Agenda {incident.agenda_id} FAILED: severity={incident.severity_score}"
-            )
+            logger.error(f"Failed to escalate operation to HealthObserver: {e}")
 
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).

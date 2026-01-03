@@ -154,7 +154,7 @@ class AgendaOperation:
             endpoint=endpoint,
             from_state=from_state,
             to_state=to_state,
-            control=control,
+            control_mode=control,
             timestamp=datetime.now(timezone.utc),
         )
         self.endpoint_transitions.append(transition)
