@@ -49,6 +49,11 @@ class NoteEditor(Widget, can_focus=True):
     - o: Open line below
     - O: Open line above
     - :q or :wq: Close editor (auto-saves, so w is no-op)
+
+    Navigation (normal mode):
+    - Arrow keys: Scroll viewport (browser-style)
+    - PageUp/PageDown: Scroll by page
+    - hjkl: Pass through to main grid cursor
     """
 
     DEFAULT_CSS = """
@@ -417,32 +422,7 @@ class NoteEditor(Widget, can_focus=True):
             self._enter_command_mode()
             event.prevent_default()
             event.stop()
-        # Navigation in normal mode (hjkl moves cursor, arrows scroll viewport)
-        elif event.character == "h" and self._editor:
-            row, col = self._editor.cursor_location
-            if col > 0:
-                self._editor.cursor_location = (row, col - 1)
-            event.prevent_default()
-            event.stop()
-        elif event.character == "j" and self._editor:
-            row, col = self._editor.cursor_location
-            if row < self._editor.document.line_count - 1:
-                self._editor.cursor_location = (row + 1, col)
-            event.prevent_default()
-            event.stop()
-        elif event.character == "k" and self._editor:
-            row, col = self._editor.cursor_location
-            if row > 0:
-                self._editor.cursor_location = (row - 1, col)
-            event.prevent_default()
-            event.stop()
-        elif event.character == "l" and self._editor:
-            row, col = self._editor.cursor_location
-            line = self._editor.document.get_line(row)
-            if col < len(line) - 1:
-                self._editor.cursor_location = (row, col + 1)
-            event.prevent_default()
-            event.stop()
+        # hjkl passes through to main grid for cursor movement
         # Arrow keys scroll viewport (browser-style navigation)
         elif event.key == "down" and self._editor:
             self._editor.scroll_relative(y=1)
