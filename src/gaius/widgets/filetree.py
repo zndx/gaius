@@ -42,10 +42,14 @@ class VimTree(Tree):
 
         if self.root.children:
             last_node = get_absolute_last_leaf(self.root.children[-1])
-            # Use move_cursor instead of select_node to avoid triggering NodeSelected
-            # User can press Enter to select after navigating
-            self.move_cursor(last_node)
-            self.scroll_to_node(last_node)
+            # Schedule cursor move after tree refreshes from expansions
+            self.call_after_refresh(self._focus_node, last_node)
+
+    def _focus_node(self, node: TreeNode) -> None:
+        """Move cursor to node and ensure it's visible (called after refresh)."""
+        self.move_cursor(node)
+        self.scroll_to_node(node)
+        self.focus()
 
     def action_goto_first_prefix(self) -> None:
         """Handle first 'g' press - wait for second 'g' for gg."""
@@ -54,10 +58,7 @@ class VimTree(Tree):
             self._g_pressed = False
             if self.root.children:
                 first_node = self.root.children[0]
-                # Use move_cursor instead of select_node to avoid triggering NodeSelected
-                # User can press Enter to select after navigating
-                self.move_cursor(first_node)
-                self.scroll_to_node(first_node)
+                self._focus_node(first_node)
         else:
             # First g - set flag, reset after short timeout
             self._g_pressed = True
