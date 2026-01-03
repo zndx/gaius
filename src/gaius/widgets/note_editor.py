@@ -18,16 +18,27 @@ EDITABLE_EXTENSIONS = {".md", ".owl", ".json", ".yaml", ".yml", ".ttl", ".txt", 
 
 
 class VimTextArea(TextArea):
-    """TextArea that sends ESC to parent for vim-style mode switching."""
+    """TextArea that sends ESC to parent and handles vim-style scrolling."""
 
     class EscapePressed(Message):
         """Sent when ESC is pressed in the TextArea."""
         pass
 
     def _on_key(self, event: events.Key) -> None:
-        """Intercept ESC before TextArea handles it."""
+        """Intercept ESC and vim scroll keys before TextArea handles them."""
         if event.key == "escape":
             self.post_message(self.EscapePressed())
+            event.prevent_default()
+            event.stop()
+            return
+        # Vim-style page scrolling (works in insert mode too)
+        if event.key == "ctrl+f":
+            self.scroll_page_down()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+b":
+            self.scroll_page_up()
             event.prevent_default()
             event.stop()
             return
@@ -50,10 +61,12 @@ class NoteEditor(Widget, can_focus=True):
     - O: Open line above
     - :q or :wq: Close editor (auto-saves, so w is no-op)
 
-    Navigation (normal mode):
+    Navigation (both modes):
     - Arrow keys: Scroll viewport (browser-style)
-    - PageUp/PageDown: Scroll by page
-    - hjkl: Pass through to main grid cursor
+    - Ctrl-F/Ctrl-B: Page down/up (vim-style)
+    - G (shift-g): Jump to end of document
+    - gg: Jump to start of document
+    - hjkl: Pass through to main grid cursor (normal mode)
     """
 
     DEFAULT_CSS = """
@@ -138,6 +151,7 @@ class NoteEditor(Widget, can_focus=True):
         self._mode_indicator: Static | None = None
         self._command_line: Static | None = None
         self._in_command_mode = False
+        self._g_pressed = False  # For gg navigation
 
     def compose(self):
         """Compose the editor widget."""
@@ -247,6 +261,22 @@ class NoteEditor(Widget, can_focus=True):
         self._in_command_mode = True
         self.command_buffer = ""
         self._update_mode_display()
+
+    def _handle_g_press(self) -> None:
+        """Handle 'g' press - wait for second 'g' for gg (go to start)."""
+        if self._g_pressed:
+            # Second g - go to start of document
+            self._g_pressed = False
+            if self._editor:
+                self._editor.scroll_home()
+        else:
+            # First g - set flag, reset after short timeout
+            self._g_pressed = True
+            self.set_timer(0.5, self._reset_g_pressed)
+
+    def _reset_g_pressed(self) -> None:
+        """Reset the g-pressed state after timeout."""
+        self._g_pressed = False
 
     def _move_file(self, new_path: str) -> None:
         """Move file to arbitrary path in KB.
@@ -446,6 +476,26 @@ class NoteEditor(Widget, can_focus=True):
             event.stop()
         elif event.key == "pageup" and self._editor:
             self._editor.scroll_page_up()
+            event.prevent_default()
+            event.stop()
+        # Vim-style page scrolling
+        elif event.key == "ctrl+f" and self._editor:
+            self._editor.scroll_page_down()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "ctrl+b" and self._editor:
+            self._editor.scroll_page_up()
+            event.prevent_default()
+            event.stop()
+        # G (shift-g) - jump to end of document
+        elif event.character == "G" and self._editor:
+            last_line = self._editor.document.line_count - 1
+            self._editor.scroll_end()
+            event.prevent_default()
+            event.stop()
+        # gg - jump to start of document
+        elif event.character == "g" and self._editor:
+            self._handle_g_press()
             event.prevent_default()
             event.stop()
 
