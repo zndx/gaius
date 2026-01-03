@@ -60,6 +60,7 @@ class NoteEditor(Widget, can_focus=True):
     - o: Open line below
     - O: Open line above
     - :q or :wq: Close editor (auto-saves, so w is no-op)
+    - :<number>: Go to line number (e.g., :42 goes to line 42)
 
     Navigation (both modes):
     - Arrow keys: Scroll viewport (browser-style)
@@ -358,9 +359,22 @@ class NoteEditor(Widget, can_focus=True):
             parts = cmd_stripped.split(maxsplit=1)
             name = parts[1].strip() if len(parts) > 1 else None
             self._rename_to_scratch(name)
+        elif cmd_stripped.isdigit():
+            # :123 - go to line 123 (vim-style)
+            self._goto_line(int(cmd_stripped))
 
         self._in_command_mode = False
         self.command_buffer = ""
+
+    def _goto_line(self, line_num: int) -> None:
+        """Navigate to a specific line number (1-indexed, vim-style)."""
+        if not self._editor:
+            return
+        # Convert to 0-indexed, clamp to valid range
+        target_row = max(0, min(line_num - 1, self._editor.document.line_count - 1))
+        self._editor.cursor_location = (target_row, 0)
+        # Scroll to make the line visible
+        self._editor.scroll_cursor_visible()
 
     def on_key(self, event: events.Key) -> None:
         """Handle key presses for vim-style navigation."""
