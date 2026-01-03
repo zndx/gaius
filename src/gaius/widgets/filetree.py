@@ -16,17 +16,11 @@ class VimTree(Tree):
 
     BINDINGS = [
         Binding("G", "goto_last", "Go to last", show=False),
-        Binding("g", "goto_first_prefix", "Go to first (gg)", show=False),
+        # 'g' passes through to main app for panel cycling
     ]
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._g_pressed = False
 
     def action_goto_last(self) -> None:
         """Jump to the absolute last leaf node, expanding folders as needed (G)."""
-        self._g_pressed = False  # Reset any pending g
-
         # Find the absolute last leaf, expanding collapsed folders along the way
         def get_absolute_last_leaf(node: TreeNode) -> TreeNode:
             """Recursively find the absolute last leaf, expanding as we go."""
@@ -50,23 +44,6 @@ class VimTree(Tree):
         self.move_cursor(node)
         self.scroll_to_node(node)
         self.focus()
-
-    def action_goto_first_prefix(self) -> None:
-        """Handle first 'g' press - wait for second 'g' for gg."""
-        if self._g_pressed:
-            # Second g - go to first
-            self._g_pressed = False
-            if self.root.children:
-                first_node = self.root.children[0]
-                self._focus_node(first_node)
-        else:
-            # First g - set flag, reset after short timeout
-            self._g_pressed = True
-            self.set_timer(0.5, self._reset_g_pressed)
-
-    def _reset_g_pressed(self) -> None:
-        """Reset the g-pressed state after timeout."""
-        self._g_pressed = False
 
 
 class FileTreeSelection(Message):

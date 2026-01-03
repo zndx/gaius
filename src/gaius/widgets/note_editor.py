@@ -65,8 +65,7 @@ class NoteEditor(Widget, can_focus=True):
     - Arrow keys: Scroll viewport (browser-style)
     - Ctrl-F/Ctrl-B: Page down/up (vim-style)
     - G (shift-g): Jump to end of document
-    - gg: Jump to start of document
-    - hjkl: Pass through to main grid cursor (normal mode)
+    - hjkl, g: Pass through to main grid/panels (normal mode)
     """
 
     DEFAULT_CSS = """
@@ -151,7 +150,6 @@ class NoteEditor(Widget, can_focus=True):
         self._mode_indicator: Static | None = None
         self._command_line: Static | None = None
         self._in_command_mode = False
-        self._g_pressed = False  # For gg navigation
 
     def compose(self):
         """Compose the editor widget."""
@@ -261,22 +259,6 @@ class NoteEditor(Widget, can_focus=True):
         self._in_command_mode = True
         self.command_buffer = ""
         self._update_mode_display()
-
-    def _handle_g_press(self) -> None:
-        """Handle 'g' press - wait for second 'g' for gg (go to start)."""
-        if self._g_pressed:
-            # Second g - go to start of document
-            self._g_pressed = False
-            if self._editor:
-                self._editor.scroll_home()
-        else:
-            # First g - set flag, reset after short timeout
-            self._g_pressed = True
-            self.set_timer(0.5, self._reset_g_pressed)
-
-    def _reset_g_pressed(self) -> None:
-        """Reset the g-pressed state after timeout."""
-        self._g_pressed = False
 
     def _move_file(self, new_path: str) -> None:
         """Move file to arbitrary path in KB.
@@ -489,15 +471,10 @@ class NoteEditor(Widget, can_focus=True):
             event.stop()
         # G (shift-g) - jump to end of document
         elif event.character == "G" and self._editor:
-            last_line = self._editor.document.line_count - 1
             self._editor.scroll_end()
             event.prevent_default()
             event.stop()
-        # gg - jump to start of document
-        elif event.character == "g" and self._editor:
-            self._handle_g_press()
-            event.prevent_default()
-            event.stop()
+        # 'g' passes through to main app for panel cycling
 
     def new_note(self) -> str:
         """Create a new Zettelkasten note with timestamp filename."""
