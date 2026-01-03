@@ -417,7 +417,7 @@ class NoteEditor(Widget, can_focus=True):
             self._enter_command_mode()
             event.prevent_default()
             event.stop()
-        # Navigation in normal mode (hjkl)
+        # Navigation in normal mode (hjkl moves cursor, arrows scroll viewport)
         elif event.character == "h" and self._editor:
             row, col = self._editor.cursor_location
             if col > 0:
@@ -441,6 +441,31 @@ class NoteEditor(Widget, can_focus=True):
             line = self._editor.document.get_line(row)
             if col < len(line) - 1:
                 self._editor.cursor_location = (row, col + 1)
+            event.prevent_default()
+            event.stop()
+        # Arrow keys scroll viewport (browser-style navigation)
+        elif event.key == "down" and self._editor:
+            self._editor.scroll_relative(y=1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "up" and self._editor:
+            self._editor.scroll_relative(y=-1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "right" and self._editor:
+            self._editor.scroll_relative(x=3)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "left" and self._editor:
+            self._editor.scroll_relative(x=-3)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "pagedown" and self._editor:
+            self._editor.scroll_page_down()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "pageup" and self._editor:
+            self._editor.scroll_page_up()
             event.prevent_default()
             event.stop()
 
