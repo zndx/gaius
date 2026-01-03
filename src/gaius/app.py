@@ -3664,7 +3664,8 @@ Use `/evolve stop` to stop orchestrated evolution.
                     "",
                     "`/ambient start`  ",
                     "`/ambient stop`  ",
-                    "`/ambient status`",
+                    "`/ambient status`  ",
+                    "`/ambient buffer`",
                 ]
                 content.show_file("ambient.md", "\n".join(lines))
 
@@ -3768,7 +3769,8 @@ Use `/evolve stop` to stop orchestrated evolution.
                         "---",
                         "`/ambient start`  ",
                         "`/ambient stop`  ",
-                        "`/ambient status`",
+                        "`/ambient status`  ",
+                        "`/ambient buffer`",
                     ])
 
                     return "\n".join(lines)
