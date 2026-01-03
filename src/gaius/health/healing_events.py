@@ -49,6 +49,10 @@ class HealingEventType(str, Enum):
     CIRCUIT_BREAKER_TRIPPED = "circuit_breaker_tripped"
     CIRCUIT_BREAKER_RESET = "circuit_breaker_reset"
 
+    # Recovery timer events (for incident lifecycle persistence)
+    RECOVERY_TIMER_STARTED = "recovery_timer_started"
+    RECOVERY_TIMER_CLEARED = "recovery_timer_cleared"
+
     # Preflight check events (gate for ambient cycles)
     PREFLIGHT_STARTED = "preflight_started"
     PREFLIGHT_COMPLETED = "preflight_completed"
@@ -515,6 +519,66 @@ class HealingEventRecorder:
             tier=-1,
             sequence_id=sequence_id,
             payload={},
+        )
+
+    # Recovery timer events (for incident lifecycle persistence)
+
+    async def record_recovery_timer_started(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        fingerprint: str,
+        started_at: datetime,
+    ) -> HealingEvent | None:
+        """Record that a recovery timer has started.
+
+        This event allows recovery timers to be persisted and restored
+        after engine restart.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            fingerprint: Incident fingerprint
+            started_at: When the timer was started
+        """
+        return await self._record_event(
+            event_type=HealingEventType.RECOVERY_TIMER_STARTED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload={
+                "fingerprint": fingerprint,
+                "started_at": started_at.isoformat(),
+            },
+        )
+
+    async def record_recovery_timer_cleared(
+        self,
+        sequence_id: UUID,
+        endpoint: str,
+        fingerprint: str,
+        reason: str = "recovery_failed",
+    ) -> HealingEvent | None:
+        """Record that a recovery timer has been cleared.
+
+        Called when an incident regresses from recovering back to active,
+        or when the incident is fully resolved.
+
+        Args:
+            sequence_id: The healing sequence
+            endpoint: Affected endpoint
+            fingerprint: Incident fingerprint
+            reason: Why timer was cleared (recovery_failed, resolved)
+        """
+        return await self._record_event(
+            event_type=HealingEventType.RECOVERY_TIMER_CLEARED,
+            endpoint=endpoint,
+            tier=0,
+            sequence_id=sequence_id,
+            payload={
+                "fingerprint": fingerprint,
+                "reason": reason,
+            },
         )
 
     # RCA (Root Cause Analysis) event recording

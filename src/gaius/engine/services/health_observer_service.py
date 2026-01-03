@@ -49,6 +49,8 @@ from .base_daemon import (
     DaemonStartupError,
 )
 from ...health.healing_events import HealingEventRecorder, HealingEventType
+from ...acp.security import get_github_repo_from_remote
+from ..metrics import record_exception_caught, record_incident_change
 
 if TYPE_CHECKING:
     from ..config import EngineConfig
@@ -101,8 +103,9 @@ class ObserverConfig:
     escalate_to_acp: bool = True
     # No timeout - let Claude Code run until natural completion (issue resolved or GH issue created)
 
-    # GitHub integration - internal repo for health tracking
-    github_repo: str = "zndx/gaius-internal"
+    # GitHub integration - reads from git remote 'internal' by default
+    # Supports full URL format for on-prem: github.example.com/org/repo
+    github_repo: str = field(default_factory=lambda: get_github_repo_from_remote() or "")
 
     # KB and FMEA
     kb_root: str = "build/dev"
@@ -310,6 +313,9 @@ class HealthObserverService(BaseDaemon):
         Queries healing_events for sequences that started but never completed,
         reconstructing HealthIncident objects to resume monitoring.
 
+        Also restores recovery timer state from RECOVERY_TIMER_STARTED events
+        to properly handle incidents that were in "recovering" status at shutdown.
+
         Returns:
             Number of incidents restored
         """
@@ -320,6 +326,7 @@ class HealthObserverService(BaseDaemon):
         try:
             async with self._db_pool.acquire() as conn:
                 # Find active sequences (started but not completed) from last 7 days
+                # Also include recovery timer state to restore proper status
                 rows = await conn.fetch(
                     """
                     WITH started AS (
@@ -345,15 +352,27 @@ class HealthObserverService(BaseDaemon):
                         FROM healing_events
                         WHERE event_type IN ('attempt_started', 'attempt_failed', 'attempt_succeeded')
                         GROUP BY sequence_id
+                    ),
+                    -- Find the latest recovery timer state per sequence
+                    latest_timer_event AS (
+                        SELECT DISTINCT ON (sequence_id)
+                            sequence_id, event_type, payload, created_at as timer_event_at
+                        FROM healing_events
+                        WHERE event_type IN ('recovery_timer_started', 'recovery_timer_cleared')
+                        ORDER BY sequence_id, created_at DESC
                     )
                     SELECT
                         s.sequence_id, s.endpoint, s.created_at, s.payload, s.failure_mode_id,
                         COALESCE(lt.tier, 0) as current_tier,
-                        COALESCE(ac.attempts, 0) as attempts
+                        COALESCE(ac.attempts, 0) as attempts,
+                        lte.event_type as timer_event_type,
+                        lte.payload as timer_payload,
+                        lte.timer_event_at
                     FROM started s
                     LEFT JOIN completed c ON s.sequence_id = c.sequence_id
                     LEFT JOIN latest_tier lt ON s.sequence_id = lt.sequence_id
                     LEFT JOIN attempt_counts ac ON s.sequence_id = ac.sequence_id
+                    LEFT JOIN latest_timer_event lte ON s.sequence_id = lte.sequence_id
                     WHERE c.sequence_id IS NULL
                     ORDER BY s.created_at DESC
                     """
@@ -369,17 +388,40 @@ class HealthObserverService(BaseDaemon):
 
                         # Construct fingerprint from failure_mode_id and endpoint
                         failure_mode_id = row["failure_mode_id"] or payload.get("issue_type", "UNKNOWN")
-                        fingerprint = f"{failure_mode_id}:{row['endpoint']}"
+                        # Normalize endpoint name in fingerprint
+                        endpoint = friendly_endpoint_name(row["endpoint"])
+                        fingerprint = f"{failure_mode_id}:{endpoint}"
 
                         # Skip if we already have this incident (shouldn't happen on fresh start)
                         if fingerprint in self._active_incidents:
                             continue
 
+                        # Determine status based on recovery timer state
+                        status = "active"
+                        timer_start = None
+
+                        if row["timer_event_type"] == "recovery_timer_started":
+                            # Timer is still active - incident was recovering
+                            status = "recovering"
+                            # Parse timer start time from payload
+                            timer_payload = row["timer_payload"]
+                            if isinstance(timer_payload, str):
+                                timer_payload = json.loads(timer_payload)
+                            timer_start_str = timer_payload.get("started_at")
+                            if timer_start_str:
+                                try:
+                                    timer_start = datetime.fromisoformat(timer_start_str)
+                                except (ValueError, TypeError):
+                                    # Fall back to event timestamp
+                                    timer_start = row["timer_event_at"]
+                            else:
+                                timer_start = row["timer_event_at"]
+
                         # Reconstruct the incident
                         incident = HealthIncident(
                             incident_id=uuid4(),  # New ID for this session
                             fingerprint=fingerprint,
-                            endpoint=row["endpoint"],
+                            endpoint=endpoint,
                             failure_mode_id=failure_mode_id,
                             rpn_score=payload.get("rpn_score", 125),
                             current_tier=row["current_tier"],
@@ -387,16 +429,24 @@ class HealthObserverService(BaseDaemon):
                             created_at=row["created_at"],
                             last_check_at=datetime.now(),
                             attempts=row["attempts"],
-                            status="active",
+                            status=status,
                         )
 
                         self._active_incidents[fingerprint] = incident
+
+                        # Restore recovery timer if incident was recovering
+                        if timer_start:
+                            self._recovery_start[fingerprint] = timer_start
+
+                        # Record restored incident for Observe panel
+                        record_incident_change(delta=1, status=status)
+
                         restored += 1
 
                         logger.info(
                             f"Restored incident {fingerprint} from DB "
-                            f"(tier={row['current_tier']}, attempts={row['attempts']}, "
-                            f"created={row['created_at'].isoformat()})"
+                            f"(status={status}, tier={row['current_tier']}, "
+                            f"attempts={row['attempts']}, created={row['created_at'].isoformat()})"
                         )
 
                     except Exception as e:
@@ -699,6 +749,9 @@ class HealthObserverService(BaseDaemon):
                 self._active_incidents[fingerprint] = incident
                 self._incidents_created += 1
 
+                # Record incident for Observe panel
+                record_incident_change(delta=1, status="active")
+
                 # Notify callbacks
                 for callback in self._on_incident:
                     try:
@@ -957,6 +1010,14 @@ class HealthObserverService(BaseDaemon):
 
         except Exception as e:
             logger.error(f"Remediation error for {incident.fingerprint}: {e}")
+            # Record OTel metric for observability
+            record_exception_caught(
+                component="health",
+                operation="remediation",
+                exception_type=type(e).__name__,
+                failure_mode_id=incident.failure_mode_id,
+                guru_code="#HO.00000001.REMFAIL",
+            )
             # Record failure
             if self._event_recorder and incident.sequence_id:
                 await self._event_recorder.record_attempt_failed(
@@ -1082,6 +1143,14 @@ class HealthObserverService(BaseDaemon):
 
         except Exception as e:
             logger.error(f"ACP escalation failed: {e}")
+            # Record OTel metric for observability
+            record_exception_caught(
+                component="acp",
+                operation="escalation",
+                exception_type=type(e).__name__,
+                failure_mode_id=incident.failure_mode_id,
+                guru_code="#ACP.00000005.ESCFAIL",
+            )
             return False
 
     def _build_acp_prompt(self, incident: HealthIncident) -> str:
@@ -1253,6 +1322,14 @@ Begin your investigation now."""
 
         except Exception as e:
             logger.error(f"RCA phase failed for {incident.fingerprint}: {e}")
+            # Record OTel metric for observability
+            record_exception_caught(
+                component="health",
+                operation="rca_analysis",
+                exception_type=type(e).__name__,
+                failure_mode_id=incident.failure_mode_id,
+                guru_code="#HO.00000002.RCAFAIL",
+            )
             return None
 
     async def _get_incident_history(
@@ -1516,15 +1593,24 @@ Begin your investigation now."""
                 sanitize_issue_content,
                 validate_issue_title,
                 load_security_config,
+                is_repo_in_allowlist,
             )
 
             # Validate repo is allowed
             security_config = load_security_config()
-            if self.config.github_repo not in security_config.allowed_repos:
+            if not is_repo_in_allowlist(self.config.github_repo, security_config.allowed_repos):
                 logger.error(
                     f"Repository {self.config.github_repo} not in ACP allowlist.\n"
                     "  Guru: #ACP.SEC.00000002.NOTALLOWED\n"
                     "  Add to ~/.config/gaius/acp.conf: acp.github.allowed_repos"
+                )
+                # Record OTel metric for observability
+                record_exception_caught(
+                    component="acp",
+                    operation="security_check",
+                    exception_type="RepositoryNotAllowedError",
+                    failure_mode_id=incident.failure_mode_id,
+                    guru_code="#ACP.SEC.00000002.NOTALLOWED",
                 )
                 return
 
@@ -1567,6 +1653,14 @@ Begin your investigation now."""
                     f"Failed to create GitHub issue: {result.stderr}\n"
                     "  Guru: #ACP.00000014.GHISSUEFAIL"
                 )
+                # Record OTel metric for observability
+                record_exception_caught(
+                    component="acp",
+                    operation="issue_create",
+                    exception_type="GHIssueCreateFailed",
+                    failure_mode_id=incident.failure_mode_id,
+                    guru_code="#ACP.00000014.GHISSUEFAIL",
+                )
 
         except ImportError:
             logger.warning(
@@ -1577,6 +1671,14 @@ Begin your investigation now."""
             logger.error(
                 f"Error creating GitHub issue: {e}\n"
                 "  Guru: #ACP.00000014.GHISSUEFAIL"
+            )
+            # Record OTel metric for observability
+            record_exception_caught(
+                component="acp",
+                operation="issue_create",
+                exception_type=type(e).__name__,
+                failure_mode_id=incident.failure_mode_id,
+                guru_code="#ACP.00000014.GHISSUEFAIL",
             )
 
     def _build_issue_body(self, incident: HealthIncident) -> str:
@@ -1688,6 +1790,47 @@ Begin your investigation now."""
 
         return None
 
+    async def _is_github_issue_closed(self, issue_number: int) -> bool:
+        """Check if a GitHub issue is closed.
+
+        Used to resolve MANUAL_REQUIRED incidents when their linked
+        GitHub issue is closed.
+
+        Args:
+            issue_number: GitHub issue number
+
+        Returns:
+            True if issue is closed, False otherwise (or on error)
+        """
+        import asyncio
+        import subprocess
+
+        if not self.config.github_repo:
+            return False
+
+        try:
+            cmd = [
+                "gh", "issue", "view",
+                str(issue_number),
+                "--repo", self.config.github_repo,
+                "--json", "state",
+            ]
+
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                data = json.loads(result.stdout)
+                return data.get("state") == "CLOSED"
+
+        except Exception as e:
+            logger.debug(f"Error checking GitHub issue #{issue_number}: {e}")
+
+        return False
+
     async def _update_issue_recurrence(self, issue_number: int, incident: HealthIncident) -> None:
         """Add recurrence comment to existing issue.
 
@@ -1752,18 +1895,63 @@ This incident has recurred. Previous remediation may not have addressed root cau
             # Check if the associated check is now passing
             check_passed = self._check_passed_for_incident(report, incident)
 
+            # If check status is indeterminate, skip this incident
+            # (don't assume passed or failed when we can't find matching check)
+            if check_passed is None:
+                continue
+
             # Handle "active" incidents that are now healthy
             # This catches incidents restored from DB that recovered during downtime
             if incident.status == "active" and check_passed:
                 incident.status = "recovering"
-                self._recovery_start[fingerprint] = datetime.now()
+                timer_start = datetime.now()
+                self._recovery_start[fingerprint] = timer_start
+
+                # Persist recovery timer start to DB for restart resilience
+                if self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_recovery_timer_started(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        fingerprint=fingerprint,
+                        started_at=timer_start,
+                    )
+
                 logger.info(
                     f"Incident {fingerprint} now healthy, starting recovery verification"
                 )
                 continue
 
+            # Handle MANUAL_REQUIRED incidents with closed GitHub issues
+            if incident.status == "manual_required" and incident.github_issue:
+                if await self._is_github_issue_closed(incident.github_issue):
+                    logger.info(
+                        f"GitHub issue #{incident.github_issue} closed for {fingerprint}, "
+                        "resolving incident"
+                    )
+                    resolved.append(fingerprint)
+                continue
+
             if incident.status != "recovering":
                 continue
+
+            # Defensive check: if incident is recovering but timer is missing,
+            # start the timer now. This can happen if timer was lost (e.g., old
+            # incidents that predate timer persistence, or corruption).
+            if fingerprint not in self._recovery_start:
+                logger.warning(
+                    f"Recovery timer missing for {fingerprint}, starting now"
+                )
+                timer_start = datetime.now()
+                self._recovery_start[fingerprint] = timer_start
+
+                # Persist the timer start for future restarts
+                if self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_recovery_timer_started(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        fingerprint=fingerprint,
+                        started_at=timer_start,
+                    )
 
             if check_passed:
                 recovery_start = self._recovery_start.get(fingerprint)
@@ -1772,8 +1960,18 @@ This incident has recurred. Previous remediation may not have addressed root cau
                     if elapsed >= self.config.recovery_verification_time:
                         resolved.append(fingerprint)
             else:
+                # Recovery failed - transition back to active
                 incident.status = "active"
                 self._recovery_start.pop(fingerprint, None)
+
+                # Record timer cleared due to regression
+                if self._event_recorder and incident.sequence_id:
+                    await self._event_recorder.record_recovery_timer_cleared(
+                        sequence_id=incident.sequence_id,
+                        endpoint=incident.endpoint,
+                        fingerprint=fingerprint,
+                        reason="recovery_failed",
+                    )
 
         # Resolve completed recoveries
         for fingerprint in resolved:
@@ -1781,8 +1979,18 @@ This incident has recurred. Previous remediation may not have addressed root cau
             self._recovery_start.pop(fingerprint, None)
             self._incidents_resolved += 1
 
-            # Record sequence completion
+            # Record incident resolution for Observe panel
+            record_incident_change(delta=-1, status="resolved")
+
+            # Record timer cleared due to successful resolution
             if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_recovery_timer_cleared(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    fingerprint=fingerprint,
+                    reason="resolved",
+                )
+
                 total_duration_ms = int(
                     (datetime.now() - incident.created_at).total_seconds() * 1000
                 )
@@ -1807,7 +2015,7 @@ This incident has recurred. Previous remediation may not have addressed root cau
         self,
         report: dict[str, Any],
         incident: HealthIncident,
-    ) -> bool:
+    ) -> bool | None:
         """Check if the health check for an incident is now passing.
 
         Args:
@@ -1815,16 +2023,24 @@ This incident has recurred. Previous remediation may not have addressed root cau
             incident: The incident to check
 
         Returns:
-            True if associated check is passing
+            True if associated check is passing, False if failing,
+            None if no matching check found (status indeterminate)
         """
+        # Normalize incident endpoint for matching
+        normalized_endpoint = friendly_endpoint_name(incident.endpoint)
+
         for check in report.get("checks", []):
-            if incident.endpoint in check.get("name", "").lower():
+            # Normalize check endpoint for comparison
+            check_endpoint = friendly_endpoint_name(
+                check.get("endpoint", check.get("name", "")).lower()
+            )
+            if normalized_endpoint == check_endpoint or normalized_endpoint in check_endpoint:
                 return check.get("status") != "FAIL"
             if check.get("heuristic_id") == incident.failure_mode_id:
                 return check.get("status") != "FAIL"
 
-        # If no matching check found, assume passed
-        return True
+        # If no matching check found, return None (don't assume passed or failed)
+        return None
 
     def _generate_fingerprint(self, check: dict[str, Any]) -> str:
         """Generate deduplication fingerprint for a check result.
@@ -1838,6 +2054,8 @@ This incident has recurred. Previous remediation may not have addressed root cau
         failure_mode = check.get("heuristic_id") or f"UNKNOWN_{check['name'][:10].upper()}"
         details = check.get("details", {})
         endpoint = details.get("endpoint", check["name"].lower().replace(" ", "_"))
+        # Normalize endpoint name to strip internal prefixes (e.g., cap_reasoning -> reasoning)
+        endpoint = friendly_endpoint_name(endpoint)
         return f"{failure_mode}:{endpoint}"
 
     def _has_active_healing(self) -> bool:

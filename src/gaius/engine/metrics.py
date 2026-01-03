@@ -86,9 +86,15 @@ class EngineMetrics:
         self._healing_in_progress: Any = None
         self._healing_cooldown: Any = None
 
+        # Incident tracking (for Observe panel visibility)
+        self._incidents_active: Any = None
+
         # Error/request metrics for rate calculations
         self._request_total: Any = None
         self._error_total: Any = None
+
+        # Operational exception tracking (for fail-fast visibility)
+        self._exception_caught: Any = None
 
         self._init_instruments()
 
@@ -128,6 +134,7 @@ class EngineMetrics:
             self._create_search_instruments()
             self._create_healing_instruments()
             self._create_general_instruments()
+            self._create_exception_instruments()
 
             self._initialized = True
             logger.info("Engine OTel metrics instruments created")
@@ -298,6 +305,14 @@ class EngineMetrics:
             unit="1",
         )
 
+        # Incident tracking gauge for Observe panel
+        # This tracks currently active incidents (including those with open GitHub issues)
+        self._incidents_active = self._meter.create_up_down_counter(
+            "gaius.incidents.active",
+            description="Currently active health incidents",
+            unit="1",
+        )
+
     def _create_general_instruments(self) -> None:
         """Create general request/error instruments for rate calculations."""
         if not self._meter:
@@ -311,6 +326,28 @@ class EngineMetrics:
         self._error_total = self._meter.create_counter(
             "gaius.error",
             description="Total errors",
+            unit="1",
+        )
+
+    def _create_exception_instruments(self) -> None:
+        """Create instruments for tracking caught operational exceptions.
+
+        This provides visibility into operational errors that are caught and
+        handled but should still be surfaced for observability (fail-fast principle).
+
+        The counter is labeled with:
+        - component: Which component caught the exception (health, acp, engine)
+        - operation: What operation was being attempted
+        - exception_type: The exception class name
+        - failure_mode_id: FMEA failure mode if applicable
+        - guru_code: Guru Meditation code if applicable
+        """
+        if not self._meter:
+            return
+
+        self._exception_caught = self._meter.create_counter(
+            "gaius.exception.caught",
+            description="Operational exceptions caught and handled",
             unit="1",
         )
 
@@ -560,6 +597,21 @@ class EngineMetrics:
         delta = 1 if active else -1
         self._healing_cooldown.add(delta, {"endpoint": endpoint})
 
+    def record_incident_change(self, delta: int, status: str = "active") -> None:
+        """Record incident count change for Observe panel.
+
+        Used to track currently active incidents. An incident remains "active"
+        even if it transitions to manual_required (GitHub issue opened) until
+        the issue is closed.
+
+        Args:
+            delta: Change in incident count (+1 for new, -1 for resolved)
+            status: Current incident status (active, recovering, manual_required)
+        """
+        if not self._incidents_active:
+            return
+        self._incidents_active.add(delta, {"status": status})
+
     def record_error(self, error_type: str = "general") -> None:
         """Record a general error.
 
@@ -569,6 +621,46 @@ class EngineMetrics:
         if not self._error_total:
             return
         self._error_total.add(1, {"type": error_type})
+
+    def record_exception_caught(
+        self,
+        component: str,
+        operation: str,
+        exception_type: str,
+        failure_mode_id: str | None = None,
+        guru_code: str | None = None,
+    ) -> None:
+        """Record an exception that was caught and handled.
+
+        This is for operational visibility following fail-fast principles.
+        Even when exceptions are handled gracefully, they should be recorded
+        for observability so silent failures don't accumulate.
+
+        Args:
+            component: Component catching the exception (health, acp, engine)
+            operation: Operation being attempted (remediation, escalation, etc.)
+            exception_type: Exception class name (e.g., "RepositoryNotAllowedError")
+            failure_mode_id: FMEA failure mode ID if applicable (e.g., "GPU_001")
+            guru_code: Guru Meditation code (e.g., "#ACP.SEC.00000002.NOTALLOWED")
+        """
+        if not self._exception_caught:
+            return
+
+        attrs = {
+            "component": component,
+            "operation": operation,
+            "exception_type": exception_type,
+        }
+        if failure_mode_id:
+            attrs["failure_mode_id"] = failure_mode_id
+        if guru_code:
+            attrs["guru_code"] = guru_code
+
+        self._exception_caught.add(1, attrs)
+        logger.debug(
+            f"Recorded exception: component={component} operation={operation} "
+            f"type={exception_type} guru={guru_code}"
+        )
 
     @classmethod
     def get_instance(cls) -> "EngineMetrics":
@@ -614,3 +706,41 @@ def record_healing_attempt(
 def record_healing_escalation(endpoint: str, from_tier: int, to_tier: int) -> None:
     """Record a healing tier escalation."""
     EngineMetrics.get_instance().record_healing_escalation(endpoint, from_tier, to_tier)
+
+
+def record_exception_caught(
+    component: str,
+    operation: str,
+    exception_type: str,
+    failure_mode_id: str | None = None,
+    guru_code: str | None = None,
+) -> None:
+    """Record an exception that was caught and handled.
+
+    This provides operational visibility following fail-fast principles.
+    Even when exceptions are handled gracefully, they should be recorded
+    for observability so silent failures don't accumulate.
+
+    Args:
+        component: Component catching the exception (health, acp, engine)
+        operation: Operation being attempted (remediation, escalation, etc.)
+        exception_type: Exception class name
+        failure_mode_id: FMEA failure mode ID if applicable
+        guru_code: Guru Meditation code if applicable
+    """
+    EngineMetrics.get_instance().record_exception_caught(
+        component, operation, exception_type, failure_mode_id, guru_code
+    )
+
+
+def record_incident_change(delta: int, status: str = "active") -> None:
+    """Record incident count change for Observe panel.
+
+    Used to track currently active incidents for observability.
+    Incidents remain counted even with GitHub issues until resolved.
+
+    Args:
+        delta: Change in incident count (+1 for new, -1 for resolved)
+        status: Current incident status (active, recovering, manual_required)
+    """
+    EngineMetrics.get_instance().record_incident_change(delta, status)

@@ -132,7 +132,7 @@ OBSERVE_METRICS: list[MetricDefinition] = [
     # query='rate(gaius_gaius_search_count_total[10m]) * 60'
     MetricDefinition(
         id="error_rate",
-        name="Errors",
+        name="LLM Errors",
         source="prometheus",
         # 10-minute windowed error rate for stability
         query='rate(gaius_gaius_error_total[10m]) / (rate(gaius_gaius_request_total[10m]) + 0.0001) * 100',
@@ -141,6 +141,21 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         warning_threshold=1,
         critical_threshold=5,
         precision=2,
+    ),
+    # --- Operational Errors (fail-fast visibility) ---
+    # Tracks caught operational exceptions that should be surfaced for observability.
+    # Separate from "Errors" which tracks LLM inference error rate.
+    # Shows count of operational failures (GitHub issues, ACP escalation, RCA, etc.)
+    MetricDefinition(
+        id="ops_errors",
+        name="Ops Errors",
+        source="prometheus",
+        query='sum(increase(gaius_gaius_exception_caught_total[10m])) or vector(0)',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=1,
+        critical_threshold=5,
+        precision=0,
     ),
     # --- GPU FLOPS Utilization (Prometheus via OTel) ---
     # FLOPS-weighted GPU utilization across all GPUs using Welford streaming mean.
@@ -172,29 +187,17 @@ OBSERVE_METRICS: list[MetricDefinition] = [
     ),
     # --- Healing metrics (self-healing observability) ---
     # These use gaius_gaius_healing_* metrics from healing_metrics.py or engine/metrics.py
+    # Active incidents count - includes incidents with open GitHub issues
     MetricDefinition(
-        id="healing_success_rate",
-        name="Heal Rate",
+        id="active_incidents",
+        name="Incidents",
         source="prometheus",
-        # 10-minute windowed rate for healing success ratio
-        query='sum(rate(gaius_gaius_healing_success_total[10m])) / (sum(rate(gaius_gaius_healing_attempts_total[10m])) + 0.0001) * 100',
-        display=MetricDisplay.PERCENTAGE,
-        unit="%",
-        warning_threshold=80,
-        critical_threshold=50,
-        threshold_direction="below",
+        query='sum(gaius_gaius_incidents_active) or vector(0)',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=1,
+        critical_threshold=3,
         precision=0,
-    ),
-    MetricDefinition(
-        id="healing_attempts_rate",
-        name="Heals/hr",
-        source="prometheus",
-        # 10-minute windowed rate extrapolated to hourly
-        query='sum(rate(gaius_gaius_healing_attempts_total[10m])) * 3600',
-        display=MetricDisplay.SPARKLINE,
-        warning_threshold=60,   # 1/min average = concerning
-        critical_threshold=120,  # 2/min average = critical
-        width=15,
     ),
     MetricDefinition(
         id="healing_escalations",
