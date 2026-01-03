@@ -1527,6 +1527,9 @@ enum AmbientPhase {
   AMBIENT_PHASE_BASELINE_RESTORATION = 5;
   AMBIENT_PHASE_COMPLETE = 6;
   AMBIENT_PHASE_ERROR = 7;
+  // New phases for content fetch and summarization
+  AMBIENT_PHASE_FETCH_CONTENT = 8;
+  AMBIENT_PHASE_SUMMARIZATION = 9;
 }
 
 // Streaming event for ambient cycle progress
@@ -1597,6 +1600,18 @@ message AmbientStopResponse {
 message AmbientSubscribeRequest {}
 
 // Note: Reuses AmbientPhaseEvent for streaming events
+
+// Export ambient buffer to zettelkasten file
+message AmbientBufferExportRequest {
+  string kb_root = 1;  // Optional, defaults to build/dev
+}
+
+message AmbientBufferExportResponse {
+  string path = 1;           // Relative path: scratch/2026-01-03/143025_buffer.md
+  int32 entry_count = 2;
+  int64 total_bytes = 3;
+  string error = 4;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
@@ -1780,4 +1795,5 @@ service GaiusService {
   rpc AmbientStart(AmbientStartRequest) returns (AmbientStartResponse);      // Start continuous ambient cycling daemon
   rpc AmbientStop(AmbientStopRequest) returns (AmbientStopResponse);         // Stop ambient daemon gracefully
   rpc AmbientSubscribe(AmbientSubscribeRequest) returns (stream AmbientPhaseEvent);  // Subscribe to ambient events (TUI)
+  rpc AmbientBufferExport(AmbientBufferExportRequest) returns (AmbientBufferExportResponse);  // Export buffer to zettelkasten file
 }

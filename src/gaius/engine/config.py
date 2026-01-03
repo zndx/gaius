@@ -180,6 +180,29 @@ class FlowSchedulerConfig:
 
 
 @dataclass
+class AmbientBufferConfig:
+    """Ambient buffer configuration for content fetching and summarization.
+
+    The ambient workload ALWAYS fetches external content and summarizes it.
+    This is core to ambient computing - exercising real operations to discover
+    failures and accumulate operational metrics.
+
+    Uses Firebase API for HN new comments (RSS doesn't support comments).
+    """
+
+    # HN Firebase API endpoint
+    source_url: str = "https://hacker-news.firebaseio.com/v0/updates.json"
+    newcomments: bool = True  # Fetch new comments via Firebase API
+    max_items: int = 10  # Items per fetch cycle
+
+    # Buffer sizing (byte-based FIFO)
+    buffer_max_bytes: int = 256 * 1024  # 256KB default
+
+    # Summarization
+    summarize_max_tokens: int = 256
+
+
+@dataclass
 class StartupConfig:
     """Autonomous startup configuration."""
 
@@ -207,6 +230,7 @@ class EngineConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     flow_scheduler: FlowSchedulerConfig = field(default_factory=FlowSchedulerConfig)
+    ambient_buffer: AmbientBufferConfig = field(default_factory=AmbientBufferConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
 
 
@@ -474,6 +498,26 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         else False,
     )
 
+    # Parse ambient_buffer config (mandatory content fetching and summarization)
+    ambient_conf = get("gaius.ambient_buffer", {})
+    ambient_buffer = AmbientBufferConfig(
+        source_url=ambient_conf.get("source-url", "https://hacker-news.firebaseio.com/v0/updates.json")
+        if hasattr(ambient_conf, "get")
+        else "https://hacker-news.firebaseio.com/v0/updates.json",
+        newcomments=ambient_conf.get("newcomments", True)
+        if hasattr(ambient_conf, "get")
+        else True,
+        max_items=ambient_conf.get("max-items", 10)
+        if hasattr(ambient_conf, "get")
+        else 10,
+        buffer_max_bytes=ambient_conf.get("buffer-max-bytes", 256 * 1024)
+        if hasattr(ambient_conf, "get")
+        else 256 * 1024,
+        summarize_max_tokens=ambient_conf.get("summarize-max-tokens", 256)
+        if hasattr(ambient_conf, "get")
+        else 256,
+    )
+
     # Parse startup config
     startup_conf = get("gaius.startup", {})
     startup = StartupConfig(
@@ -512,6 +556,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         scheduling=scheduling,
         evolution=evolution,
         flow_scheduler=flow_scheduler,
+        ambient_buffer=ambient_buffer,
         startup=startup,
     )
 

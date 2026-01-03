@@ -228,6 +228,8 @@ from .gaius_service_pb2 import (
     AMBIENT_PHASE_BASELINE_RESTORATION,
     AMBIENT_PHASE_COMPLETE,
     AMBIENT_PHASE_ERROR,
+    AMBIENT_PHASE_FETCH_CONTENT,
+    AMBIENT_PHASE_SUMMARIZATION,
     AmbientCycleRequest,
     AmbientPhaseEvent,
     AmbientCycleResponse,
@@ -237,6 +239,8 @@ from .gaius_service_pb2 import (
     AmbientStopRequest,
     AmbientStopResponse,
     AmbientSubscribeRequest,
+    AmbientBufferExportRequest,
+    AmbientBufferExportResponse,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -458,6 +462,8 @@ __all__ = [
     "AMBIENT_PHASE_BASELINE_RESTORATION",
     "AMBIENT_PHASE_COMPLETE",
     "AMBIENT_PHASE_ERROR",
+    "AMBIENT_PHASE_FETCH_CONTENT",
+    "AMBIENT_PHASE_SUMMARIZATION",
     "AmbientCycleRequest",
     "AmbientPhaseEvent",
     "AmbientCycleResponse",
@@ -467,6 +473,8 @@ __all__ = [
     "AmbientStopRequest",
     "AmbientStopResponse",
     "AmbientSubscribeRequest",
+    "AmbientBufferExportRequest",
+    "AmbientBufferExportResponse",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceServicer",

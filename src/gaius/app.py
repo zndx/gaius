@@ -3400,6 +3400,8 @@ Use `/evolve stop` to stop orchestrated evolution.
         elif subcmd == "cycle":
             # Legacy single-shot cycle
             self._run_ambient_cycle(content, baseline_only)
+        elif subcmd == "buffer":
+            self._run_ambient_buffer(content)
         else:
             content.show_file(
                 "error.txt",
@@ -3410,6 +3412,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                 "  /ambient start --baseline-only - Skip reasoning\n"
                 "  /ambient stop                - Stop gracefully\n"
                 "  /ambient status              - Show status\n"
+                "  /ambient buffer              - Export buffer to zettelkasten\n"
                 "  /ambient cycle               - (Legacy) Single cycle"
             )
 
@@ -3618,6 +3621,64 @@ Use `/evolve stop` to stop orchestrated evolution.
                 content.show_file("error.txt", f"Ambient cycle failed: {e}\n\n{traceback.format_exc()}")
 
         asyncio.create_task(run_cycle())
+
+    def _run_ambient_buffer(self, content: "InfoPanel") -> None:
+        """Export ambient buffer to zettelkasten file and open in Editor Panel."""
+        import asyncio
+        from pathlib import Path
+
+        content.show_file("ambient.md", "# Buffer Export\n\n*Exporting buffer...*")
+
+        async def export_buffer():
+            try:
+                from .client.grpc_client import get_grpc_client
+                from .widgets.note_editor import NoteEditor
+
+                client = await get_grpc_client()
+                result = await client.call("Ambient", "buffer_export", {"kb_root": "build/dev"})
+
+                if result.get("error"):
+                    content.show_file("error.txt", f"Buffer export failed: {result.get('error')}")
+                    return
+
+                path = result.get("path", "")
+                entry_count = result.get("entry_count", 0)
+                total_bytes = result.get("total_bytes", 0)
+
+                if not path:
+                    content.show_file("ambient.md", "# Buffer Export\n\n*Buffer is empty.*")
+                    return
+
+                full_path = Path("build/dev") / path
+
+                # Show status in InfoPanel (same style as /ambient status)
+                nbsp = "\u00a0"
+                lines = [
+                    "# Buffer Export",
+                    "",
+                    f"Path{nbsp * 7}{path}  ",
+                    f"Entries{nbsp * 4}{entry_count}  ",
+                    f"Size{nbsp * 7}{total_bytes:,} bytes  ",
+                    "",
+                    "---",
+                    "",
+                    "`/ambient start`  ",
+                    "`/ambient stop`  ",
+                    "`/ambient status`",
+                ]
+                content.show_file("ambient.md", "\n".join(lines))
+
+                # Open the exported file in the Editor Panel
+                if full_path.exists():
+                    editor = self.query_one("#note-editor", NoteEditor)
+                    editor.remove_class("hidden")
+                    editor.open_note(str(full_path))
+
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Buffer export failed: {e}\n\n{traceback.format_exc()}")
+
+        asyncio.create_task(export_buffer())
 
     def _run_ambient_status(self, content: "InfoPanel") -> None:
         """Show ambient computing status with live updates when daemon is running."""

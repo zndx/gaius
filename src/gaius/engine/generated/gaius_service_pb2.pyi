@@ -37,6 +37,8 @@ class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AMBIENT_PHASE_BASELINE_RESTORATION: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_COMPLETE: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_ERROR: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_FETCH_CONTENT: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_SUMMARIZATION: _ClassVar[AmbientPhase]
 PROCESS_STATUS_UNSPECIFIED: ProcessStatus
 PROCESS_STATUS_STOPPED: ProcessStatus
 PROCESS_STATUS_STARTING: ProcessStatus
@@ -58,6 +60,8 @@ AMBIENT_PHASE_REASONING_WORKLOAD: AmbientPhase
 AMBIENT_PHASE_BASELINE_RESTORATION: AmbientPhase
 AMBIENT_PHASE_COMPLETE: AmbientPhase
 AMBIENT_PHASE_ERROR: AmbientPhase
+AMBIENT_PHASE_FETCH_CONTENT: AmbientPhase
+AMBIENT_PHASE_SUMMARIZATION: AmbientPhase
 
 class OrchestratorStatusResponse(_message.Message):
     __slots__ = ("total_gpus", "available_gpus", "allocations", "endpoints")
@@ -2377,3 +2381,21 @@ class AmbientStopResponse(_message.Message):
 class AmbientSubscribeRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class AmbientBufferExportRequest(_message.Message):
+    __slots__ = ("kb_root",)
+    KB_ROOT_FIELD_NUMBER: _ClassVar[int]
+    kb_root: str
+    def __init__(self, kb_root: _Optional[str] = ...) -> None: ...
+
+class AmbientBufferExportResponse(_message.Message):
+    __slots__ = ("path", "entry_count", "total_bytes", "error")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    ENTRY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    entry_count: int
+    total_bytes: int
+    error: str
+    def __init__(self, path: _Optional[str] = ..., entry_count: _Optional[int] = ..., total_bytes: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...

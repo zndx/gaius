@@ -1643,6 +1643,21 @@ class GrpcEngineClient:
                 "total_events": len(events),
             }
 
+        elif action == "buffer_export":
+            # Export buffer to zettelkasten file
+            from ..engine.generated import AmbientBufferExportRequest
+
+            kb_root = params.get("kb_root", "build/dev")
+            request = AmbientBufferExportRequest(kb_root=kb_root)
+            response = await self._gaius_stub.AmbientBufferExport(request, timeout=timeout)
+
+            return {
+                "path": response.path,
+                "entry_count": response.entry_count,
+                "total_bytes": response.total_bytes,
+                "error": response.error if response.error else None,
+            }
+
         else:
             raise ValueError(f"Unknown Ambient action: {action}")
 

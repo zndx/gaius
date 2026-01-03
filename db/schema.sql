@@ -1,4 +1,4 @@
-\restrict FnLgWKznwpakrmewWSKOrU3KOye1cwdUATep7LJR2AQbP5eEebmgZsHaOEOuEHg
+\restrict fI90uaUAJ5QtDHKTQoZYjDcCF3i29akVbgs35ZaTTjM11AZbf8X4pQd5yattpNJ
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -106,6 +106,34 @@ CREATE TYPE public.activity_type AS ENUM (
 
 
 --
+-- Name: agenda_status; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.agenda_status AS ENUM (
+    'scheduling',
+    'on_track',
+    'delayed',
+    'blocked',
+    'fulfilled',
+    'failed',
+    'degraded'
+);
+
+
+--
+-- Name: agenda_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.agenda_type AS ENUM (
+    'ambient_cycle',
+    'swarm',
+    'evolution',
+    'inference',
+    'flow'
+);
+
+
+--
 -- Name: aiops_severity; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -129,6 +157,17 @@ CREATE TYPE public.aiops_status AS ENUM (
     'rejected',
     'failed',
     'resolved'
+);
+
+
+--
+-- Name: control_mode; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.control_mode AS ENUM (
+    'positive',
+    'failure_recovery',
+    'restart_recovery'
 );
 
 
@@ -2003,6 +2042,285 @@ CREATE SEQUENCE gaius_hx._label_id_seq
 
 
 --
+-- Name: agenda_incidents; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agenda_incidents (
+    id integer NOT NULL,
+    incident_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agenda_id text NOT NULL,
+    agenda_type public.agenda_type NOT NULL,
+    phases jsonb NOT NULL,
+    current_phase_index integer DEFAULT 0,
+    scheduler_plan_id text,
+    makespan_projection_ms integer,
+    actual_duration_ms integer DEFAULT 0,
+    makespan_variance_pct real DEFAULT 0.0,
+    status public.agenda_status DEFAULT 'scheduling'::public.agenda_status NOT NULL,
+    control_mode public.control_mode DEFAULT 'positive'::public.control_mode NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    baseline_departed_at timestamp with time zone,
+    baseline_restored_at timestamp with time zone,
+    resolved_at timestamp with time zone,
+    severity_score integer DEFAULT 0,
+    endpoint_transitions jsonb DEFAULT '[]'::jsonb,
+    healing_event_ids jsonb DEFAULT '[]'::jsonb,
+    escalation_reason text,
+    source_operation_id uuid,
+    acp_escalated boolean DEFAULT false,
+    acp_escalated_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE agenda_incidents; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agenda_incidents IS 'Agenda-centric incident tracking - success = makespan fulfillment + positive control';
+
+
+--
+-- Name: COLUMN agenda_incidents.agenda_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.agenda_id IS 'WorkloadRequest.workload_id - correlates with orchestrator';
+
+
+--
+-- Name: COLUMN agenda_incidents.phases; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.phases IS 'Ordered capability phases: [{name, required_capabilities, target_endpoints}]';
+
+
+--
+-- Name: COLUMN agenda_incidents.makespan_variance_pct; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.makespan_variance_pct IS 'Deviation from OR-Tools projection: (actual - projected) / projected';
+
+
+--
+-- Name: COLUMN agenda_incidents.control_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.control_mode IS 'How transitions occurred: positive (planned), failure_recovery, restart_recovery';
+
+
+--
+-- Name: COLUMN agenda_incidents.escalation_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.escalation_reason IS 'Why this operation became an incident (e.g., "control_degraded", "makespan_exceeded", "phase_blocked")';
+
+
+--
+-- Name: COLUMN agenda_incidents.source_operation_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.source_operation_id IS 'Links back to agenda_operations if escalated from there';
+
+
+--
+-- Name: COLUMN agenda_incidents.acp_escalated; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_incidents.acp_escalated IS 'Whether this incident was escalated to ACP for intervention';
+
+
+--
+-- Name: active_incidents; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.active_incidents AS
+ SELECT incident_id,
+    agenda_id,
+    (agenda_type)::text AS agenda_type,
+    (status)::text AS status,
+    (control_mode)::text AS control_mode,
+    escalation_reason,
+    severity_score,
+    acp_escalated,
+    acp_escalated_at,
+    created_at,
+    (now() - created_at) AS age,
+    ((phases -> current_phase_index) ->> 'name'::text) AS blocked_at_phase
+   FROM public.agenda_incidents ai
+  WHERE (status <> ALL (ARRAY['fulfilled'::public.agenda_status, 'failed'::public.agenda_status, 'degraded'::public.agenda_status]))
+  ORDER BY severity_score DESC, created_at;
+
+
+--
+-- Name: VIEW active_incidents; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.active_incidents IS 'Currently active incidents requiring attention - for ACP/Health dashboard';
+
+
+--
+-- Name: agenda_phase_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agenda_phase_events (
+    id bigint NOT NULL,
+    event_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agenda_incident_id integer,
+    phase_index integer NOT NULL,
+    phase_name text NOT NULL,
+    event_type text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    projected_duration_ms integer,
+    actual_duration_ms integer,
+    control_mode public.control_mode DEFAULT 'positive'::public.control_mode NOT NULL,
+    endpoint text,
+    endpoint_from_state text,
+    endpoint_to_state text,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL
+);
+
+
+--
+-- Name: TABLE agenda_phase_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agenda_phase_events IS 'Event-sourced log of agenda phase transitions';
+
+
+--
+-- Name: COLUMN agenda_phase_events.control_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_phase_events.control_mode IS 'Control mode at time of event - may differ from agenda-level';
+
+
+--
+-- Name: agenda_phase_metrics; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.agenda_phase_metrics AS
+ SELECT date_trunc('hour'::text, created_at) AS hour,
+    phase_name,
+    event_type,
+    (control_mode)::text AS control_mode,
+    count(*) AS event_count,
+    (avg(actual_duration_ms))::integer AS avg_duration_ms,
+    (percentile_cont((0.50)::double precision) WITHIN GROUP (ORDER BY ((actual_duration_ms)::double precision)))::integer AS p50_duration_ms,
+    (percentile_cont((0.95)::double precision) WITHIN GROUP (ORDER BY ((actual_duration_ms)::double precision)))::integer AS p95_duration_ms,
+    (percentile_cont((0.99)::double precision) WITHIN GROUP (ORDER BY ((actual_duration_ms)::double precision)))::integer AS p99_duration_ms
+   FROM public.agenda_phase_events ape
+  WHERE (actual_duration_ms IS NOT NULL)
+  GROUP BY (date_trunc('hour'::text, created_at)), phase_name, event_type, (control_mode)::text
+  ORDER BY (date_trunc('hour'::text, created_at)) DESC;
+
+
+--
+-- Name: VIEW agenda_phase_metrics; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.agenda_phase_metrics IS 'Hourly phase-level metrics with latency percentiles for Metabase';
+
+
+--
+-- Name: agenda_operations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.agenda_operations (
+    id integer NOT NULL,
+    operation_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    workload_id text NOT NULL,
+    workload_type public.agenda_type NOT NULL,
+    phases jsonb DEFAULT '[]'::jsonb NOT NULL,
+    current_phase_index integer DEFAULT 0,
+    scheduler_plan_id text,
+    makespan_projection_ms integer,
+    actual_duration_ms integer DEFAULT 0,
+    makespan_variance_pct real DEFAULT 0.0,
+    status public.agenda_status DEFAULT 'scheduling'::public.agenda_status NOT NULL,
+    control_mode public.control_mode DEFAULT 'positive'::public.control_mode NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    endpoint_transitions jsonb DEFAULT '[]'::jsonb,
+    escalated_to_incident_id integer
+);
+
+
+--
+-- Name: TABLE agenda_operations; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.agenda_operations IS 'All workload executions for state recovery and operational metrics';
+
+
+--
+-- Name: COLUMN agenda_operations.workload_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_operations.workload_id IS 'WorkloadRequest.workload_id - correlates with orchestrator';
+
+
+--
+-- Name: COLUMN agenda_operations.escalated_to_incident_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.agenda_operations.escalated_to_incident_id IS 'Links to agenda_incidents if operation became an incident';
+
+
+--
+-- Name: agenda_resolution_daily; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.agenda_resolution_daily AS
+ SELECT date_trunc('day'::text, completed_at) AS day,
+    (workload_type)::text AS agenda_type,
+    count(*) AS total_completed,
+    (sum(
+        CASE
+            WHEN (status = 'fulfilled'::public.agenda_status) THEN 1
+            ELSE 0
+        END))::integer AS fulfilled_count,
+    (sum(
+        CASE
+            WHEN (status = 'degraded'::public.agenda_status) THEN 1
+            ELSE 0
+        END))::integer AS degraded_count,
+    (sum(
+        CASE
+            WHEN (status = 'failed'::public.agenda_status) THEN 1
+            ELSE 0
+        END))::integer AS failed_count,
+    (avg(actual_duration_ms))::integer AS avg_completion_time_ms,
+    (avg(makespan_variance_pct))::real AS avg_makespan_variance_pct,
+        CASE
+            WHEN (count(*) > 0) THEN ((sum(
+            CASE
+                WHEN (status = 'fulfilled'::public.agenda_status) THEN 1
+                ELSE 0
+            END))::real / (count(*))::real)
+            ELSE (0)::real
+        END AS fulfillment_rate,
+        CASE
+            WHEN (count(*) > 0) THEN ((sum(
+            CASE
+                WHEN (escalated_to_incident_id IS NOT NULL) THEN 1
+                ELSE 0
+            END))::real / (count(*))::real)
+            ELSE (0)::real
+        END AS escalation_rate
+   FROM public.agenda_operations ao
+  WHERE (completed_at IS NOT NULL)
+  GROUP BY (date_trunc('day'::text, completed_at)), (workload_type)::text
+  ORDER BY (date_trunc('day'::text, completed_at)) DESC;
+
+
+--
+-- Name: VIEW agenda_resolution_daily; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.agenda_resolution_daily IS 'Daily operation completion metrics with fulfillment and escalation rates';
+
+
+--
 -- Name: agent_performance; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -2039,6 +2357,103 @@ CREATE TABLE meta.alert_thresholds (
 --
 
 COMMENT ON TABLE meta.alert_thresholds IS 'Alert thresholds for Metabase dashboard alerts';
+
+
+--
+-- Name: ambient_cycle_metrics; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.ambient_cycle_metrics AS
+ SELECT date_trunc('hour'::text, created_at) AS hour,
+    (workload_type)::text AS agenda_type,
+    (status)::text AS status,
+    (control_mode)::text AS control_mode,
+    count(*) AS cycle_count,
+    (avg(actual_duration_ms))::integer AS avg_duration_ms,
+    (avg(makespan_variance_pct))::real AS avg_variance_pct,
+    (sum(
+        CASE
+            WHEN (status = 'fulfilled'::public.agenda_status) THEN 1
+            ELSE 0
+        END))::integer AS fulfilled_count,
+    (sum(
+        CASE
+            WHEN (status = 'degraded'::public.agenda_status) THEN 1
+            ELSE 0
+        END))::integer AS degraded_count,
+    (sum(
+        CASE
+            WHEN (status = 'failed'::public.agenda_status) THEN 1
+            ELSE 0
+        END))::integer AS failed_count,
+    (sum(
+        CASE
+            WHEN (control_mode <> 'positive'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS non_positive_count,
+    (sum(
+        CASE
+            WHEN (escalated_to_incident_id IS NOT NULL) THEN 1
+            ELSE 0
+        END))::integer AS escalated_count
+   FROM public.agenda_operations ao
+  GROUP BY (date_trunc('hour'::text, created_at)), (workload_type)::text, (status)::text, (control_mode)::text
+  ORDER BY (date_trunc('hour'::text, created_at)) DESC;
+
+
+--
+-- Name: VIEW ambient_cycle_metrics; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.ambient_cycle_metrics IS 'Hourly aggregate metrics from agenda_operations for Metabase dashboards';
+
+
+--
+-- Name: control_mode_health; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.control_mode_health AS
+ SELECT date_trunc('day'::text, created_at) AS day,
+    count(*) AS total_operations,
+    (sum(
+        CASE
+            WHEN (control_mode = 'positive'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS positive_control_count,
+    (sum(
+        CASE
+            WHEN (control_mode = 'failure_recovery'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS failure_recovery_count,
+    (sum(
+        CASE
+            WHEN (control_mode = 'restart_recovery'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS restart_recovery_count,
+        CASE
+            WHEN (count(*) > 0) THEN ((sum(
+            CASE
+                WHEN (control_mode = 'positive'::public.control_mode) THEN 1
+                ELSE 0
+            END))::real / (count(*))::real)
+            ELSE (0)::real
+        END AS positive_control_rate,
+    (sum(
+        CASE
+            WHEN (escalated_to_incident_id IS NOT NULL) THEN 1
+            ELSE 0
+        END))::integer AS escalation_count
+   FROM public.agenda_operations ao
+  WHERE (created_at > (now() - '7 days'::interval))
+  GROUP BY (date_trunc('day'::text, created_at))
+  ORDER BY (date_trunc('day'::text, created_at)) DESC;
+
+
+--
+-- Name: VIEW control_mode_health; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.control_mode_health IS 'Daily control mode health from operations, showing positive vs recovery transitions';
 
 
 --
@@ -2126,6 +2541,45 @@ CREATE SEQUENCE meta.document_clusters_id_seq
 --
 
 ALTER SEQUENCE meta.document_clusters_id_seq OWNED BY meta.document_clusters.id;
+
+
+--
+-- Name: endpoint_transition_metrics; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.endpoint_transition_metrics AS
+ SELECT date_trunc('hour'::text, created_at) AS hour,
+    endpoint,
+    endpoint_from_state,
+    endpoint_to_state,
+    (control_mode)::text AS control_mode,
+    count(*) AS transition_count,
+    (sum(
+        CASE
+            WHEN (control_mode = 'positive'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS positive_count,
+    (sum(
+        CASE
+            WHEN (control_mode = 'failure_recovery'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS failure_recovery_count,
+    (sum(
+        CASE
+            WHEN (control_mode = 'restart_recovery'::public.control_mode) THEN 1
+            ELSE 0
+        END))::integer AS restart_recovery_count
+   FROM public.agenda_phase_events ape
+  WHERE ((endpoint IS NOT NULL) AND (endpoint_from_state IS NOT NULL) AND (endpoint_to_state IS NOT NULL))
+  GROUP BY (date_trunc('hour'::text, created_at)), endpoint, endpoint_from_state, endpoint_to_state, (control_mode)::text
+  ORDER BY (date_trunc('hour'::text, created_at)) DESC;
+
+
+--
+-- Name: VIEW endpoint_transition_metrics; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.endpoint_transition_metrics IS 'Endpoint state transitions by control mode for Metabase';
 
 
 --
@@ -2233,6 +2687,35 @@ CREATE TABLE meta.gpu_utilization (
     temperature_c integer,
     active_endpoint text
 );
+
+
+--
+-- Name: incident_summary; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.incident_summary AS
+ SELECT date_trunc('day'::text, created_at) AS day,
+    (agenda_type)::text AS agenda_type,
+    escalation_reason,
+    count(*) AS incident_count,
+    (sum(
+        CASE
+            WHEN acp_escalated THEN 1
+            ELSE 0
+        END))::integer AS acp_escalated_count,
+    (avg(severity_score))::integer AS avg_severity,
+    (avg(EXTRACT(epoch FROM (COALESCE(resolved_at, now()) - created_at))))::integer AS avg_resolution_seconds
+   FROM public.agenda_incidents ai
+  WHERE (created_at > (now() - '30 days'::interval))
+  GROUP BY (date_trunc('day'::text, created_at)), (agenda_type)::text, escalation_reason
+  ORDER BY (date_trunc('day'::text, created_at)) DESC, (count(*)) DESC;
+
+
+--
+-- Name: VIEW incident_summary; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.incident_summary IS 'Daily incident summary by type and escalation reason';
 
 
 --
@@ -2455,6 +2938,38 @@ CREATE SEQUENCE meta.nifi_flows_id_seq
 --
 
 ALTER SEQUENCE meta.nifi_flows_id_seq OWNED BY meta.nifi_flows.id;
+
+
+--
+-- Name: recent_agendas_summary; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.recent_agendas_summary AS
+ SELECT workload_id AS agenda_id,
+    (workload_type)::text AS agenda_type,
+    (status)::text AS status,
+    (control_mode)::text AS control_mode,
+    current_phase_index,
+    ((phases -> current_phase_index) ->> 'name'::text) AS current_phase_name,
+    makespan_projection_ms,
+    actual_duration_ms,
+    makespan_variance_pct,
+    0 AS severity_score,
+    created_at,
+    completed_at AS resolved_at,
+    (EXTRACT(epoch FROM (COALESCE(completed_at, now()) - created_at)))::integer AS elapsed_seconds,
+    jsonb_array_length(endpoint_transitions) AS transition_count,
+    (escalated_to_incident_id IS NOT NULL) AS is_escalated
+   FROM public.agenda_operations ao
+  WHERE (created_at > (now() - '24:00:00'::interval))
+  ORDER BY created_at DESC;
+
+
+--
+-- Name: VIEW recent_agendas_summary; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.recent_agendas_summary IS 'Last 24 hours of operations for Metabase real-time dashboard';
 
 
 --
@@ -3444,6 +3959,31 @@ ALTER TABLE public.action ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
 
 
 --
+-- Name: active_agendas; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.active_agendas AS
+ SELECT incident_id,
+    agenda_id,
+    (agenda_type)::text AS agenda_type,
+    (status)::text AS status,
+    (control_mode)::text AS control_mode,
+    current_phase_index,
+    ((phases -> current_phase_index) ->> 'name'::text) AS current_phase_name,
+    makespan_projection_ms,
+    actual_duration_ms,
+    makespan_variance_pct,
+    severity_score,
+    created_at,
+    baseline_departed_at,
+    escalation_reason,
+    acp_escalated,
+    (now() - created_at) AS elapsed
+   FROM public.agenda_incidents ai
+  WHERE (status <> ALL (ARRAY['fulfilled'::public.agenda_status, 'failed'::public.agenda_status, 'degraded'::public.agenda_status]));
+
+
+--
 -- Name: agent_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3476,6 +4016,36 @@ CREATE VIEW public.active_agent_configs AS
     created_at
    FROM public.agent_versions
   WHERE (is_active = true);
+
+
+--
+-- Name: active_operations; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.active_operations AS
+ SELECT operation_id,
+    workload_id,
+    (workload_type)::text AS workload_type,
+    (status)::text AS status,
+    (control_mode)::text AS control_mode,
+    current_phase_index,
+    ((phases -> current_phase_index) ->> 'name'::text) AS current_phase_name,
+    makespan_projection_ms,
+    actual_duration_ms,
+    makespan_variance_pct,
+    created_at,
+    started_at,
+    (now() - created_at) AS elapsed,
+    (escalated_to_incident_id IS NOT NULL) AS is_escalated
+   FROM public.agenda_operations ao
+  WHERE (status <> ALL (ARRAY['fulfilled'::public.agenda_status, 'failed'::public.agenda_status, 'degraded'::public.agenda_status]));
+
+
+--
+-- Name: VIEW active_operations; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.active_operations IS 'Currently active workload operations';
 
 
 --
@@ -3537,6 +4107,90 @@ CREATE VIEW public.activity_today AS
    FROM public.activity_events
   WHERE (created_at >= CURRENT_DATE)
   GROUP BY event_type;
+
+
+--
+-- Name: agenda_health_summary; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.agenda_health_summary AS
+ SELECT (agenda_type)::text AS agenda_type,
+    (status)::text AS status,
+    (control_mode)::text AS control_mode,
+    count(*) AS count,
+    avg(makespan_variance_pct) AS avg_variance_pct,
+    avg(severity_score) AS avg_severity,
+    max(created_at) AS latest
+   FROM public.agenda_incidents
+  WHERE (created_at > (now() - '7 days'::interval))
+  GROUP BY agenda_type, status, control_mode
+  ORDER BY (agenda_type)::text, (status)::text;
+
+
+--
+-- Name: VIEW agenda_health_summary; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.agenda_health_summary IS 'Aggregate stats by agenda type and status';
+
+
+--
+-- Name: agenda_incidents_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.agenda_incidents_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: agenda_incidents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.agenda_incidents_id_seq OWNED BY public.agenda_incidents.id;
+
+
+--
+-- Name: agenda_operations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.agenda_operations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: agenda_operations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.agenda_operations_id_seq OWNED BY public.agenda_operations.id;
+
+
+--
+-- Name: agenda_phase_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.agenda_phase_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: agenda_phase_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.agenda_phase_events_id_seq OWNED BY public.agenda_phase_events.id;
 
 
 --
@@ -10551,10 +11205,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__xbo2_cawqvv61fpn_ortu; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__xbo2_cawqvv61fpn_ortu (
+CREATE TABLE public.search_index__gjiwsik_6j3c6ta8rhd13 (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -10587,11 +11241,61 @@ CREATE TABLE public.search_index__xbo2_cawqvv61fpn_ortu (
 
 
 --
--- Name: search_index__xbo2_cawqvv61fpn_ortu_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__xbo2_cawqvv61fpn_ortu ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__xbo2_cawqvv61fpn_ortu_id_seq
+ALTER TABLE public.search_index__gjiwsik_6j3c6ta8rhd13 ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__gjiwsik_6j3c6ta8rhd13_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.search_index__jrwcealdwwfqhcqrmzn9r (
+    id bigint NOT NULL,
+    search_vector tsvector NOT NULL,
+    with_native_query_vector tsvector NOT NULL,
+    model character varying(32) NOT NULL,
+    display_data text NOT NULL,
+    legacy_input text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    archived boolean DEFAULT false NOT NULL,
+    model_updated_at timestamp with time zone,
+    pinned boolean,
+    collection_id integer,
+    official_collection boolean,
+    name text NOT NULL,
+    has_temporal_dim boolean,
+    last_edited_at timestamp with time zone,
+    dashboardcard_count integer,
+    non_temporal_dim_ids text,
+    dashboard_id integer,
+    last_editor_id integer,
+    model_id text,
+    display_type text,
+    last_viewed_at timestamp with time zone,
+    database_id integer,
+    creator_id integer,
+    view_count integer,
+    model_created_at timestamp with time zone,
+    verified boolean
+);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.search_index__jrwcealdwwfqhcqrmzn9r ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__jrwcealdwwfqhcqrmzn9r_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -12540,6 +13244,27 @@ ALTER TABLE ONLY public.activity_events ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: agenda_incidents id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_incidents ALTER COLUMN id SET DEFAULT nextval('public.agenda_incidents_id_seq'::regclass);
+
+
+--
+-- Name: agenda_operations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_operations ALTER COLUMN id SET DEFAULT nextval('public.agenda_operations_id_seq'::regclass);
+
+
+--
+-- Name: agenda_phase_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_phase_events ALTER COLUMN id SET DEFAULT nextval('public.agenda_phase_events_id_seq'::regclass);
+
+
+--
 -- Name: agent_evaluations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -13164,6 +13889,54 @@ ALTER TABLE ONLY public.action
 
 ALTER TABLE ONLY public.activity_events
     ADD CONSTRAINT activity_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: agenda_incidents agenda_incidents_incident_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_incidents
+    ADD CONSTRAINT agenda_incidents_incident_id_key UNIQUE (incident_id);
+
+
+--
+-- Name: agenda_incidents agenda_incidents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_incidents
+    ADD CONSTRAINT agenda_incidents_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: agenda_operations agenda_operations_operation_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_operations
+    ADD CONSTRAINT agenda_operations_operation_id_key UNIQUE (operation_id);
+
+
+--
+-- Name: agenda_operations agenda_operations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_operations
+    ADD CONSTRAINT agenda_operations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: agenda_phase_events agenda_phase_events_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_phase_events
+    ADD CONSTRAINT agenda_phase_events_event_id_key UNIQUE (event_id);
+
+
+--
+-- Name: agenda_phase_events agenda_phase_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_phase_events
+    ADD CONSTRAINT agenda_phase_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -14823,11 +15596,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__xbo2_cawqvv61fpn_ortu search_index__xbo2_cawqvv61fpn_ortu_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13 search_index__gjiwsik_6j3c6ta8rhd13_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__xbo2_cawqvv61fpn_ortu
-    ADD CONSTRAINT search_index__xbo2_cawqvv61fpn_ortu_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__gjiwsik_6j3c6ta8rhd13
+    ADD CONSTRAINT search_index__gjiwsik_6j3c6ta8rhd13_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r search_index__jrwcealdwwfqhcqrmzn9r_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.search_index__jrwcealdwwfqhcqrmzn9r
+    ADD CONSTRAINT search_index__jrwcealdwwfqhcqrmzn9r_pkey PRIMARY KEY (id);
 
 
 --
@@ -15456,6 +16237,90 @@ CREATE INDEX idx_activity_events_profile ON public.activity_events USING btree (
 --
 
 CREATE INDEX idx_activity_events_type ON public.activity_events USING btree (event_type);
+
+
+--
+-- Name: idx_agenda_incidents_agenda; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_incidents_agenda ON public.agenda_incidents USING btree (agenda_id);
+
+
+--
+-- Name: idx_agenda_incidents_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_incidents_recent ON public.agenda_incidents USING btree (created_at DESC);
+
+
+--
+-- Name: idx_agenda_incidents_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_incidents_status ON public.agenda_incidents USING btree (status) WHERE (status <> ALL (ARRAY['fulfilled'::public.agenda_status, 'failed'::public.agenda_status, 'degraded'::public.agenda_status]));
+
+
+--
+-- Name: idx_agenda_incidents_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_incidents_type ON public.agenda_incidents USING btree (agenda_type, created_at DESC);
+
+
+--
+-- Name: idx_agenda_ops_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_ops_recent ON public.agenda_operations USING btree (created_at DESC);
+
+
+--
+-- Name: idx_agenda_ops_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_ops_status ON public.agenda_operations USING btree (status) WHERE (status <> ALL (ARRAY['fulfilled'::public.agenda_status, 'failed'::public.agenda_status, 'degraded'::public.agenda_status]));
+
+
+--
+-- Name: idx_agenda_ops_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_ops_type ON public.agenda_operations USING btree (workload_type, created_at DESC);
+
+
+--
+-- Name: idx_agenda_ops_workload; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_ops_workload ON public.agenda_operations USING btree (workload_id);
+
+
+--
+-- Name: idx_agenda_phase_events_endpoint; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_phase_events_endpoint ON public.agenda_phase_events USING btree (endpoint, created_at DESC) WHERE (endpoint IS NOT NULL);
+
+
+--
+-- Name: idx_agenda_phase_events_incident; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_phase_events_incident ON public.agenda_phase_events USING btree (agenda_incident_id, phase_index);
+
+
+--
+-- Name: idx_agenda_phase_events_recent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_phase_events_recent ON public.agenda_phase_events USING btree (created_at DESC);
+
+
+--
+-- Name: idx_agenda_phase_events_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agenda_phase_events_type ON public.agenda_phase_events USING btree (event_type, created_at DESC);
 
 
 --
@@ -17998,38 +18863,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__xbo2_cawqvv61fpn_ortu_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__xbo2_cawqvv61fpn_ortu_archived_idx ON public.search_index__xbo2_cawqvv61fpn_ortu USING btree (archived);
-
-
---
--- Name: search_index__xbo2_cawqvv61fpn_ortu_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__xbo2_cawqvv61fpn_ortu_identity_idx ON public.search_index__xbo2_cawqvv61fpn_ortu USING btree (model, model_id);
+CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_archived_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING btree (archived);
 
 
 --
--- Name: search_index__xbo2_cawqvv61fpn_ortu_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__xbo2_cawqvv61fpn_ortu_model_archived_idx ON public.search_index__xbo2_cawqvv61fpn_ortu USING btree (model, archived);
-
-
---
--- Name: search_index__xbo2_cawqvv61fpn_ortu_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__xbo2_cawqvv61fpn_ortu_native_tsvector_idx ON public.search_index__xbo2_cawqvv61fpn_ortu USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index__gjiwsik_6j3c6ta8rhd13_identity_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING btree (model, model_id);
 
 
 --
--- Name: search_index__xbo2_cawqvv61fpn_ortu_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__xbo2_cawqvv61fpn_ortu_tsvector_idx ON public.search_index__xbo2_cawqvv61fpn_ortu USING gin (search_vector);
+CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_model_archived_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING btree (model, archived);
+
+
+--
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_native_tsvector_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__gjiwsik_6j3c6ta8rhd13_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_tsvector_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING gin (search_vector);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_archived_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING btree (archived);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__jrwcealdwwfqhcqrmzn9r_identity_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING btree (model, model_id);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_model_archived_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING btree (model, archived);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_native_tsvector_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__jrwcealdwwfqhcqrmzn9r_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_tsvector_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING gin (search_vector);
 
 
 --
@@ -18147,6 +19047,22 @@ ALTER TABLE ONLY meta.semantic_attractors
 
 ALTER TABLE ONLY meta.swarm_agent_positions
     ADD CONSTRAINT swarm_agent_positions_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.swarm_snapshots(snapshot_id) ON DELETE CASCADE;
+
+
+--
+-- Name: agenda_operations agenda_operations_escalated_to_incident_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_operations
+    ADD CONSTRAINT agenda_operations_escalated_to_incident_id_fkey FOREIGN KEY (escalated_to_incident_id) REFERENCES public.agenda_incidents(id);
+
+
+--
+-- Name: agenda_phase_events agenda_phase_events_agenda_incident_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.agenda_phase_events
+    ADD CONSTRAINT agenda_phase_events_agenda_incident_id_fkey FOREIGN KEY (agenda_incident_id) REFERENCES public.agenda_incidents(id) ON DELETE CASCADE;
 
 
 --
@@ -19585,7 +20501,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict FnLgWKznwpakrmewWSKOrU3KOye1cwdUATep7LJR2AQbP5eEebmgZsHaOEOuEHg
+\unrestrict fI90uaUAJ5QtDHKTQoZYjDcCF3i29akVbgs35ZaTTjM11AZbf8X4pQd5yattpNJ
 
 
 --
@@ -19593,6 +20509,7 @@ ALTER TABLE ONLY public.x_sync_runs
 --
 
 INSERT INTO public.schema_migrations (version) VALUES
+    ('20250102000001'),
     ('20251130000001'),
     ('20251130000002'),
     ('20251130000003'),
@@ -19629,4 +20546,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251228000001'),
     ('20251228000002'),
     ('20251229000001'),
-    ('20251229000002');
+    ('20251229000002'),
+    ('20260102000002'),
+    ('20260102000003');

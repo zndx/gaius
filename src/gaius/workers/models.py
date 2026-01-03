@@ -22,6 +22,7 @@ class SourceType(Enum):
     DOCS = "docs"
     BRAVE = "brave"  # Uses Brave Search API for RSS-less sources
     X_BOOKMARKS = "x_bookmarks"  # X (Twitter) bookmarks via OAuth 2.0
+    HACKERNEWS = "hackernews"  # Hacker News front page and newcomments
 
 
 class JobStatus(Enum):

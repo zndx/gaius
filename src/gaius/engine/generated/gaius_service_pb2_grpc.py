@@ -27,9 +27,7 @@ if _version_not_supported:
 
 
 class GaiusServiceStub(object):
-    """Note: Reuses AmbientPhaseEvent for streaming events
-
-    ═══════════════════════════════════════════════════════════════════════════
+    """═══════════════════════════════════════════════════════════════════════════
     Service Definition
     ═══════════════════════════════════════════════════════════════════════════
 
@@ -446,12 +444,15 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.AmbientSubscribeRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.AmbientPhaseEvent.FromString,
                 _registered_method=True)
+        self.AmbientBufferExport = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientBufferExport',
+                request_serializer=gaius__service__pb2.AmbientBufferExportRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientBufferExportResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
-    """Note: Reuses AmbientPhaseEvent for streaming events
-
-    ═══════════════════════════════════════════════════════════════════════════
+    """═══════════════════════════════════════════════════════════════════════════
     Service Definition
     ═══════════════════════════════════════════════════════════════════════════
 
@@ -1023,6 +1024,13 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AmbientBufferExport(self, request, context):
+        """Export buffer to zettelkasten file
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1431,6 +1439,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.AmbientSubscribeRequest.FromString,
                     response_serializer=gaius__service__pb2.AmbientPhaseEvent.SerializeToString,
             ),
+            'AmbientBufferExport': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientBufferExport,
+                    request_deserializer=gaius__service__pb2.AmbientBufferExportRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientBufferExportResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'gaius.engine.GaiusService', rpc_method_handlers)
@@ -1440,9 +1453,7 @@ def add_GaiusServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class GaiusService(object):
-    """Note: Reuses AmbientPhaseEvent for streaming events
-
-    ═══════════════════════════════════════════════════════════════════════════
+    """═══════════════════════════════════════════════════════════════════════════
     Service Definition
     ═══════════════════════════════════════════════════════════════════════════
 
@@ -3625,6 +3636,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/AmbientSubscribe',
             gaius__service__pb2.AmbientSubscribeRequest.SerializeToString,
             gaius__service__pb2.AmbientPhaseEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientBufferExport(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientBufferExport',
+            gaius__service__pb2.AmbientBufferExportRequest.SerializeToString,
+            gaius__service__pb2.AmbientBufferExportResponse.FromString,
             options,
             channel_credentials,
             insecure,

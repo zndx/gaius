@@ -45,6 +45,7 @@ from ..services.base_daemon import (
 if TYPE_CHECKING:
     from ..daemon_registry import DaemonRegistry
     from ..services.health_observer_service import HealthObserverService
+    from ..services.agenda_tracker import AgendaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -1215,6 +1216,12 @@ class ReconciliationService(BaseDaemon):
         # HealthObserver integration for escalation
         self._health_observer: Optional["HealthObserverService"] = None
 
+        # AgendaTracker integration for workload-centric incident tracking
+        self._agenda_tracker: Optional["AgendaTracker"] = None
+
+        # Track previous endpoint states for transition detection
+        self._previous_states: dict[str, EndpointState] = {}
+
         # Escalation thresholds
         self._high_drift_threshold = 10  # Trigger escalation after 10 unresolved drifts
         self._consecutive_failures = 0
@@ -1441,6 +1448,45 @@ class ReconciliationService(BaseDaemon):
             self._observations[name] = obs
             self._results[name] = result
 
+            # Notify AgendaTracker of state transitions
+            await self._notify_agenda_tracker(name, obs.expected_state, actual_state)
+
+    async def _notify_agenda_tracker(
+        self,
+        endpoint: str,
+        from_state: EndpointState,
+        to_state: EndpointState,
+    ) -> None:
+        """Notify AgendaTracker of endpoint state transitions.
+
+        Compares current state with previous observed state to detect
+        actual transitions (not just drift).
+
+        Args:
+            endpoint: Endpoint name
+            from_state: Expected state (what engine thinks)
+            to_state: Actual state (what we observed)
+        """
+        if not self._agenda_tracker:
+            return
+
+        # Get previous observed state
+        previous_state = self._previous_states.get(endpoint)
+
+        # Update previous state
+        self._previous_states[endpoint] = to_state
+
+        # Only notify if state actually changed
+        if previous_state is not None and previous_state != to_state:
+            try:
+                await self._agenda_tracker.on_endpoint_transition(
+                    endpoint=endpoint,
+                    from_state=previous_state,
+                    to_state=to_state,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify AgendaTracker of transition: {e}")
+
     def _get_expected_endpoints(self) -> dict[str, dict[str, Any]]:
         """Get expected endpoint configurations.
 
@@ -1653,6 +1699,18 @@ class ReconciliationService(BaseDaemon):
         """
         self._health_observer = health_observer
         logger.info("HealthObserver reference set in ReconciliationService")
+
+    def set_agenda_tracker(self, agenda_tracker: "AgendaTracker") -> None:
+        """Set reference to AgendaTracker for workload-centric incident tracking.
+
+        When reconciliation detects endpoint state transitions, it notifies
+        the AgendaTracker so it can track control mode (positive vs failure/restart).
+
+        Args:
+            agenda_tracker: AgendaTracker instance
+        """
+        self._agenda_tracker = agenda_tracker
+        logger.info("AgendaTracker reference set in ReconciliationService")
 
     async def _escalate_to_health_observer(
         self,

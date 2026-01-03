@@ -29,6 +29,7 @@ from ..resources import ResourceManager
 
 if TYPE_CHECKING:
     from gaius.models.registry import TaskType
+    from .agenda_tracker import AgendaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,10 @@ class OrchestratorService:
         # Stores (CLTService, allocated_gpu_id) when CLT is active
         self._clt_capability: Optional[tuple[Any, int]] = None
 
+        # Agenda-centric incident tracking
+        # Wired via set_agenda_tracker() after server initialization
+        self._agenda_tracker: Optional["AgendaTracker"] = None
+
         logger.info("OrchestratorService initialized")
 
     async def start(self) -> None:
@@ -223,6 +228,20 @@ class OrchestratorService:
                 pass
 
         logger.info("OrchestratorService stopped")
+
+    def set_agenda_tracker(self, tracker: "AgendaTracker") -> None:
+        """Set the agenda tracker for workload incident tracking.
+
+        This enables agenda-centric incident tracking where:
+        - Agenda (scheduled capability phases) is the unit of health
+        - Makespan fulfillment is the success metric
+        - Positive control is required for resolution
+
+        Args:
+            tracker: AgendaTracker instance
+        """
+        self._agenda_tracker = tracker
+        logger.info("AgendaTracker wired to OrchestratorService")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Endpoint Management
@@ -1464,6 +1483,7 @@ class OrchestratorService:
         allocated: dict = {}
         evicted: list[str] = []
         restore_plan: list[str] = []
+        schedule_result = None  # Will hold OR-Tools result if capability-based
 
         logger.info(
             f"Beginning workload {request.workload_id} "
@@ -1572,6 +1592,16 @@ class OrchestratorService:
             result=result,
         )
 
+        # Create agenda incident for tracking makespan and control mode
+        if self._agenda_tracker:
+            try:
+                await self._agenda_tracker.on_workload_begin(
+                    request=request,
+                    schedule_result=schedule_result,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create agenda incident: {e}")
+
         logger.info(
             f"Workload {request.workload_id} started with "
             f"{len(allocated)} endpoints allocated"
@@ -1629,12 +1659,35 @@ class OrchestratorService:
             await asyncio.sleep(3)
 
         # Step 2: Restore evicted endpoints if specified
+        restore_success = True
+        restore_error = None
         for endpoint_name in workload.result.restore_plan:
             try:
                 logger.info(f"Restoring evicted endpoint: {endpoint_name}")
                 await self.start_endpoint(endpoint_name)
             except Exception as e:
+                restore_success = False
+                restore_error = str(e)
                 logger.error(f"Failed to restore endpoint {endpoint_name}: {e}")
+
+        # Complete agenda incident tracking
+        if self._agenda_tracker:
+            try:
+                from ..workloads import WorkloadResult
+
+                # Create completion result for agenda tracker
+                completion_result = WorkloadResult(
+                    success=restore_success,
+                    workload_id=workload_id,
+                    error=restore_error,
+                    wait_time_ms=int(workload.elapsed_s * 1000),
+                )
+                await self._agenda_tracker.on_workload_complete(
+                    workload_id=workload_id,
+                    result=completion_result,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to complete agenda incident: {e}")
 
     def get_active_workloads(self) -> dict[str, dict]:
         """Get information about active workloads.

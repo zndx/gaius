@@ -304,6 +304,115 @@ class HealthObserverService(BaseDaemon):
             self._event_recorder = HealingEventRecorder(pool=db_pool)
             logger.info("HealingEventRecorder initialized for engine-side DB writes")
 
+    async def _restore_incidents_from_db(self) -> int:
+        """Restore active incidents from database on startup.
+
+        Queries healing_events for sequences that started but never completed,
+        reconstructing HealthIncident objects to resume monitoring.
+
+        Returns:
+            Number of incidents restored
+        """
+        if not self._db_pool:
+            logger.warning("Cannot restore incidents: no database pool")
+            return 0
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                # Find active sequences (started but not completed) from last 7 days
+                rows = await conn.fetch(
+                    """
+                    WITH started AS (
+                        SELECT sequence_id, endpoint, created_at, payload, failure_mode_id
+                        FROM healing_events
+                        WHERE event_type = 'sequence_started'
+                        AND created_at > NOW() - INTERVAL '7 days'
+                    ),
+                    completed AS (
+                        SELECT sequence_id
+                        FROM healing_events
+                        WHERE event_type = 'sequence_completed'
+                    ),
+                    latest_tier AS (
+                        SELECT DISTINCT ON (sequence_id)
+                            sequence_id, tier
+                        FROM healing_events
+                        WHERE event_type = 'tier_entered'
+                        ORDER BY sequence_id, created_at DESC
+                    ),
+                    attempt_counts AS (
+                        SELECT sequence_id, COUNT(*) as attempts
+                        FROM healing_events
+                        WHERE event_type IN ('attempt_started', 'attempt_failed', 'attempt_succeeded')
+                        GROUP BY sequence_id
+                    )
+                    SELECT
+                        s.sequence_id, s.endpoint, s.created_at, s.payload, s.failure_mode_id,
+                        COALESCE(lt.tier, 0) as current_tier,
+                        COALESCE(ac.attempts, 0) as attempts
+                    FROM started s
+                    LEFT JOIN completed c ON s.sequence_id = c.sequence_id
+                    LEFT JOIN latest_tier lt ON s.sequence_id = lt.sequence_id
+                    LEFT JOIN attempt_counts ac ON s.sequence_id = ac.sequence_id
+                    WHERE c.sequence_id IS NULL
+                    ORDER BY s.created_at DESC
+                    """
+                )
+
+                restored = 0
+                for row in rows:
+                    try:
+                        payload = row["payload"]
+                        if isinstance(payload, str):
+                            import json
+                            payload = json.loads(payload)
+
+                        # Construct fingerprint from failure_mode_id and endpoint
+                        failure_mode_id = row["failure_mode_id"] or payload.get("issue_type", "UNKNOWN")
+                        fingerprint = f"{failure_mode_id}:{row['endpoint']}"
+
+                        # Skip if we already have this incident (shouldn't happen on fresh start)
+                        if fingerprint in self._active_incidents:
+                            continue
+
+                        # Reconstruct the incident
+                        incident = HealthIncident(
+                            incident_id=uuid4(),  # New ID for this session
+                            fingerprint=fingerprint,
+                            endpoint=row["endpoint"],
+                            failure_mode_id=failure_mode_id,
+                            rpn_score=payload.get("rpn_score", 125),
+                            current_tier=row["current_tier"],
+                            sequence_id=row["sequence_id"],
+                            created_at=row["created_at"],
+                            last_check_at=datetime.now(),
+                            attempts=row["attempts"],
+                            status="active",
+                        )
+
+                        self._active_incidents[fingerprint] = incident
+                        restored += 1
+
+                        logger.info(
+                            f"Restored incident {fingerprint} from DB "
+                            f"(tier={row['current_tier']}, attempts={row['attempts']}, "
+                            f"created={row['created_at'].isoformat()})"
+                        )
+
+                    except Exception as e:
+                        logger.warning(f"Failed to restore incident from row: {e}")
+                        continue
+
+                if restored > 0:
+                    logger.info(f"Restored {restored} active incidents from database")
+                    self._incidents_created += restored
+
+                return restored
+
+        except Exception as e:
+            logger.error(f"Failed to restore incidents from database: {e}")
+            return 0
+
     @property
     def running(self) -> bool:
         """Check if daemon is running."""
@@ -323,7 +432,8 @@ class HealthObserverService(BaseDaemon):
         """Start the health observer daemon.
 
         Begins background health monitoring loop. Called by engine
-        during autonomous startup.
+        during autonomous startup. Restores any active incidents from
+        the database to resume monitoring across restarts.
         """
         if self._running:
             logger.warning("HealthObserverService already running")
@@ -333,11 +443,15 @@ class HealthObserverService(BaseDaemon):
             logger.info("HealthObserverService disabled by config")
             return
 
+        # Restore active incidents from database before starting poll loop
+        # This ensures we resume monitoring incidents that survived a restart
+        restored = await self._restore_incidents_from_db()
+
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
         logger.info(
             f"HealthObserverService started (poll_interval={self.config.poll_interval}s, "
-            f"acp_enabled={self.config.escalate_to_acp})"
+            f"acp_enabled={self.config.escalate_to_acp}, restored_incidents={restored})"
         )
 
     async def stop(self) -> None:
@@ -1626,17 +1740,30 @@ This incident has recurred. Previous remediation may not have addressed root cau
         Incidents in "recovering" status are checked for sustained health.
         If healthy for recovery_verification_time, they are resolved.
 
+        Also handles "active" incidents that may have recovered while the
+        engine was down (restored from DB) - transitions them to "recovering".
+
         Args:
             report: Current health report
         """
         resolved = []
 
         for fingerprint, incident in self._active_incidents.items():
-            if incident.status != "recovering":
-                continue
-
             # Check if the associated check is now passing
             check_passed = self._check_passed_for_incident(report, incident)
+
+            # Handle "active" incidents that are now healthy
+            # This catches incidents restored from DB that recovered during downtime
+            if incident.status == "active" and check_passed:
+                incident.status = "recovering"
+                self._recovery_start[fingerprint] = datetime.now()
+                logger.info(
+                    f"Incident {fingerprint} now healthy, starting recovery verification"
+                )
+                continue
+
+            if incident.status != "recovering":
+                continue
 
             if check_passed:
                 recovery_start = self._recovery_start.get(fingerprint)

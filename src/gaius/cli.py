@@ -10239,12 +10239,14 @@ Examples:
             /ambient stop                    - Stop daemon gracefully
             /ambient status                  - Show daemon status
             /ambient cycle                   - (Legacy) Run single cycle
+            /ambient buffer                  - Export buffer to zettelkasten file
 
         Ambient Computing provides invisible, self-sustaining workloads that:
         - Maintain baseline endpoints (orchestrator, fast, coding)
         - Exercise GPU resources with standard tasks
         - Evict baseline for reasoning when needed
         - Restore baseline after reasoning completes
+        - Fetch content and summarize (HN newcomments via Firebase)
         """
         parts = args.split() if args else []
 
@@ -10376,10 +10378,41 @@ Examples:
                     "events": events,
                 }
 
+            elif subcmd == "buffer":
+                # Export buffer to zettelkasten file
+                result = await client.call("Ambient", "buffer_export", {
+                    "kb_root": "build/dev",
+                })
+
+                if result.get("error"):
+                    return {
+                        "command": "ambient",
+                        "action": "buffer",
+                        "error": result.get("error"),
+                    }
+
+                # Read file content for display
+                path = result.get("path", "")
+                content = ""
+                if path:
+                    from pathlib import Path
+                    full_path = Path("build/dev") / path
+                    if full_path.exists():
+                        content = full_path.read_text()
+
+                return {
+                    "command": "ambient",
+                    "action": "buffer",
+                    "path": path,
+                    "entry_count": result.get("entry_count", 0),
+                    "total_bytes": result.get("total_bytes", 0),
+                    "content": content,
+                }
+
             else:
                 return {
                     "error": f"Unknown ambient command: {subcmd}",
-                    "usage": "/ambient [start|stop|status|cycle] [--cycle N] [--baseline-only]",
+                    "usage": "/ambient [start|stop|status|cycle|buffer] [--cycle N] [--baseline-only]",
                 }
 
         except Exception as e:

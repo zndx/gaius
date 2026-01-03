@@ -209,6 +209,8 @@ from ...generated import (
     AmbientStopRequest,
     AmbientStopResponse,
     AmbientSubscribeRequest,
+    AmbientBufferExportRequest,
+    AmbientBufferExportResponse,
     AMBIENT_PHASE_UNSPECIFIED,
     AMBIENT_PHASE_BASELINE_HEALTH,
     AMBIENT_PHASE_BASELINE_WORKLOAD,
@@ -4936,3 +4938,40 @@ class GaiusServicer(GaiusServiceServicer):
                 progress=0.0,
                 timestamp_ms=int(time.time() * 1000),
             )
+
+    async def AmbientBufferExport(
+        self,
+        request: AmbientBufferExportRequest,
+        context: aio.ServicerContext,
+    ) -> AmbientBufferExportResponse:
+        """Export ambient buffer to zettelkasten file.
+
+        Creates a markdown file at scratch/{date}/{HHMMSS}_buffer.md
+        containing all current buffer entries grouped by role.
+
+        Args:
+            request: AmbientBufferExportRequest with optional kb_root
+            context: gRPC context
+
+        Returns:
+            AmbientBufferExportResponse with path or error
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientBufferExportResponse(
+                error="AmbientWorkloadService not initialized."
+            )
+
+        try:
+            kb_root = request.kb_root or "build/dev"
+            result = await service.export_buffer(kb_root)
+
+            return AmbientBufferExportResponse(
+                path=result.get("path", ""),
+                entry_count=result.get("entry_count", 0),
+                total_bytes=result.get("total_bytes", 0),
+                error=result.get("error", ""),
+            )
+        except Exception as e:
+            logger.exception(f"AmbientBufferExport failed: {e}")
+            return AmbientBufferExportResponse(error=str(e))

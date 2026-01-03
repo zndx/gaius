@@ -22,17 +22,21 @@ import asyncio
 import logging
 import random
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from ..backends import ProcessStatus
 from ..generated import gaius_service_pb2 as pb
+from .ambient_buffer import AmbientBuffer, BufferEntry, BufferRole
 
 if TYPE_CHECKING:
     from ..backends import BackendRouter
     from ..config import EngineConfig
+    from .agenda_tracker import AgendaTracker
     from .orchestrator_service import OrchestratorService
 
 logger = logging.getLogger(__name__)
@@ -43,6 +47,8 @@ class AmbientPhase(Enum):
 
     BASELINE_HEALTH = "baseline_health"
     BASELINE_WORKLOAD = "baseline_workload"
+    FETCH_CONTENT = "fetch_content"  # New: fetch external content
+    SUMMARIZATION = "summarization"  # New: summarize fetched content
     REASONING_EVICTION = "reasoning_eviction"
     REASONING_WORKLOAD = "reasoning_workload"
     BASELINE_RESTORATION = "baseline_restoration"
@@ -245,9 +251,29 @@ class AmbientWorkloadService:
         self._daemon_started_at: Optional[datetime] = None
         self._daemon_stopped_at: Optional[datetime] = None
 
+        # AgendaTracker integration for incident tracking
+        self._agenda_tracker: Optional["AgendaTracker"] = None
+        self._current_workload_id: Optional[str] = None
+        self._evicted_endpoints: list[str] = []
+
+        # Ambient buffer for content fetching (byte-sized FIFO)
+        # Fetch and summarize are ALWAYS enabled - this is core ambient work
+        buffer_cfg = config.ambient_buffer
+        self._buffer = AmbientBuffer(max_bytes=buffer_cfg.buffer_max_bytes)
+
         logger.info(
-            f"AmbientWorkloadService initialized with baseline: {self._baseline_endpoints}"
+            f"AmbientWorkloadService initialized with baseline: {self._baseline_endpoints}, "
+            f"buffer: {buffer_cfg.buffer_max_bytes} bytes"
         )
+
+    def set_agenda_tracker(self, tracker: "AgendaTracker") -> None:
+        """Set the agenda tracker for incident tracking.
+
+        Args:
+            tracker: AgendaTracker instance for recording phase events
+        """
+        self._agenda_tracker = tracker
+        logger.info("AgendaTracker connected to AmbientWorkloadService")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status
@@ -276,6 +302,8 @@ class AmbientWorkloadService:
             "daemon_stopped_at": (
                 self._daemon_stopped_at.isoformat() if self._daemon_stopped_at else None
             ),
+            # Buffer state (fetch/summarize always enabled)
+            "buffer": self._buffer.get_stats(),
             "last_result": (
                 {
                     "success": self._last_result.success,
@@ -529,6 +557,62 @@ class AmbientWorkloadService:
             {r.endpoint: f"{r.latency_ms}ms" for r in task_results if r.success},
         )
 
+        # Phase 2.5: Fetch Content (ALWAYS - core ambient work)
+        yield self._make_event(
+            pb.AMBIENT_PHASE_FETCH_CONTENT,
+            "Fetching external content",
+            0.0,
+        )
+
+        fetch_result = await self._fetch_content()
+        if fetch_result.get("success"):
+            items = fetch_result.get("items_fetched", 0)
+            bytes_added = fetch_result.get("bytes_added", 0)
+            yield self._make_event(
+                pb.AMBIENT_PHASE_FETCH_CONTENT,
+                f"Fetched {items} items ({bytes_added} bytes)",
+                1.0,
+                {
+                    "items": str(items),
+                    "bytes": str(bytes_added),
+                    "latency_ms": str(fetch_result.get("latency_ms", 0)),
+                },
+            )
+            self._total_daemon_tasks += 1
+            self._successful_daemon_tasks += 1
+        else:
+            yield self._make_event(
+                pb.AMBIENT_PHASE_FETCH_CONTENT,
+                f"Fetch failed: {fetch_result.get('error', 'unknown')}",
+                1.0,
+            )
+            self._total_daemon_tasks += 1
+
+        # Phase 2.6: Summarization (ALWAYS - core ambient work)
+        yield self._make_event(
+            pb.AMBIENT_PHASE_SUMMARIZATION,
+            "Summarizing content",
+            0.0,
+        )
+
+        summarize_result = await self._summarize_content()
+        if summarize_result.get("success"):
+            yield self._make_event(
+                pb.AMBIENT_PHASE_SUMMARIZATION,
+                f"Summary: {summarize_result.get('summary_length', 0)} chars",
+                1.0,
+                {"latency_ms": str(summarize_result.get("latency_ms", 0))},
+            )
+            self._total_daemon_tasks += 1
+            self._successful_daemon_tasks += 1
+        else:
+            yield self._make_event(
+                pb.AMBIENT_PHASE_SUMMARIZATION,
+                f"Summarization failed: {summarize_result.get('error', 'unknown')}",
+                1.0,
+            )
+            self._total_daemon_tasks += 1
+
         if baseline_only:
             duration_ms = int((time.time() - start_time) * 1000)
             yield self._make_event(
@@ -619,6 +703,8 @@ class AmbientWorkloadService:
             {
                 pb.AMBIENT_PHASE_BASELINE_HEALTH: "baseline_health",
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD: "baseline_workload",
+                pb.AMBIENT_PHASE_FETCH_CONTENT: "fetch_content",
+                pb.AMBIENT_PHASE_SUMMARIZATION: "summarization",
                 pb.AMBIENT_PHASE_REASONING_EVICTION: "reasoning_eviction",
                 pb.AMBIENT_PHASE_REASONING_WORKLOAD: "reasoning_workload",
                 pb.AMBIENT_PHASE_BASELINE_RESTORATION: "baseline_restoration",
@@ -933,6 +1019,208 @@ class AmbientWorkloadService:
 
         return results
 
+    async def _fetch_content(self) -> dict[str, Any]:
+        """Fetch external content and add to buffer.
+
+        Uses HNFetcher to fetch from Hacker News and adds content
+        to the ambient buffer for later summarization.
+
+        Returns:
+            Dict with success, item_count, bytes_added, and buffer stats
+        """
+        import httpx
+        from gaius.workers.fetchers.hackernews import HNFetcher
+        from gaius.workers.models import FeedSource, SourceType
+        from gaius.workers.config import WorkerConfig
+
+        buffer_cfg = self._config.ambient_buffer
+        start_time = time.time()
+
+        try:
+            # Create a virtual source for HN fetch
+            source = FeedSource(
+                id=0,  # Virtual source
+                name="ambient-hn",
+                source_type=SourceType.HACKERNEWS,
+                base_url=buffer_cfg.source_url,
+                config={
+                    "newcomments": buffer_cfg.newcomments,
+                    "max_items": buffer_cfg.max_items,
+                    "buffer_only": True,  # Always buffer-only for ambient
+                },
+            )
+
+            # Create fetcher with required dependencies
+            # Overall timeout of 60s for the entire fetch phase
+            worker_config = WorkerConfig()
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                fetcher = HNFetcher(worker_config, http_client)
+
+                # Wrap fetch in timeout to prevent runaway cycles
+                result = await asyncio.wait_for(
+                    fetcher.fetch(source),
+                    timeout=60,  # 60s max for entire fetch phase
+                )
+
+                if result.error:
+                    return {
+                        "success": False,
+                        "error": result.error,
+                        "latency_ms": int((time.time() - start_time) * 1000),
+                    }
+
+                # Add fetched items to buffer
+                bytes_added = 0
+                for item in result.items:
+                    content = item.content or item.summary or item.title
+                    if content:
+                        # Build metadata with author and story info
+                        item_meta = item.metadata or {}
+                        meta = {
+                            "title": item.title,
+                            "hn_id": item_meta.get("hn_id"),
+                            "is_comment": item_meta.get("is_comment", False),
+                            "fetched_at": datetime.now().isoformat(),
+                        }
+                        # Include author if available
+                        if item_meta.get("author"):
+                            meta["author"] = item_meta["author"]
+                        elif item.authors:
+                            meta["author"] = item.authors[0]
+                        # Include story info if available
+                        if item_meta.get("story_title"):
+                            meta["story_title"] = item_meta["story_title"]
+                        if item_meta.get("story_id"):
+                            meta["story_id"] = item_meta["story_id"]
+
+                        entry = BufferEntry.create(
+                            role=BufferRole.CONTENT,
+                            content=content,
+                            source_url=item.url or "",
+                            metadata=meta,
+                        )
+                        await self._buffer.add_entry(entry)
+                        bytes_added += entry.content_bytes
+
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                return {
+                    "success": True,
+                    "items_fetched": len(result.items),
+                    "bytes_added": bytes_added,
+                    "buffer_stats": self._buffer.get_stats(),
+                    "latency_ms": latency_ms,
+                }
+
+        except asyncio.TimeoutError:
+            return {
+                "success": False,
+                "error": "Fetch timeout (60s)",
+                "latency_ms": int((time.time() - start_time) * 1000),
+            }
+        except Exception as e:
+            logger.exception("Fetch content failed")
+            return {
+                "success": False,
+                "error": str(e),
+                "latency_ms": int((time.time() - start_time) * 1000),
+            }
+
+    async def _summarize_content(self) -> dict[str, Any]:
+        """Summarize buffered content using reasoning endpoint.
+
+        Takes content from buffer and creates a summary using the
+        reasoning (or fast) endpoint. Adds summary back to buffer
+        with role=SUMMARY.
+
+        Returns:
+            Dict with success, summary_length, and latency
+        """
+        buffer_cfg = self._config.ambient_buffer
+        start_time = time.time()
+
+        try:
+            # Get recent content entries from buffer
+            content_entries = await self._buffer.get_entries_by_role(
+                BufferRole.CONTENT, limit=10
+            )
+
+            if not content_entries:
+                return {
+                    "success": True,
+                    "message": "No content to summarize",
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+
+            # Build prompt from content entries
+            content_texts = []
+            for entry in content_entries:
+                title = entry.metadata.get("title", "")
+                preview = entry.content_preview
+                if title:
+                    content_texts.append(f"- {title}: {preview}")
+                else:
+                    content_texts.append(f"- {preview}")
+
+            content_block = "\n".join(content_texts)
+            summarize_prompt = (
+                "Summarize the key themes from these Hacker News items in 2-3 sentences:\n\n"
+                f"{content_block}\n\n"
+                "Focus on the most interesting or important topics."
+            )
+
+            # Use fast endpoint for summarization (lower latency)
+            response = await asyncio.wait_for(
+                self._backend_router.complete(
+                    prompt=summarize_prompt,
+                    agent_alias="fast",
+                    max_tokens=buffer_cfg.summarize_max_tokens,
+                    temperature=0.7,
+                ),
+                timeout=30,
+            )
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            if response.error:
+                return {
+                    "success": False,
+                    "error": response.error,
+                    "latency_ms": latency_ms,
+                }
+
+            # Add summary to buffer
+            summary_entry = BufferEntry.create(
+                role=BufferRole.SUMMARY,
+                content=response.content or "",
+                metadata={
+                    "source_count": len(content_entries),
+                    "created_at": datetime.now().isoformat(),
+                },
+            )
+            await self._buffer.add_entry(summary_entry)
+
+            return {
+                "success": True,
+                "summary_length": len(response.content or ""),
+                "source_count": len(content_entries),
+                "latency_ms": latency_ms,
+            }
+
+        except asyncio.TimeoutError:
+            return {
+                "success": False,
+                "error": "Summarization timeout",
+                "latency_ms": int((time.time() - start_time) * 1000),
+            }
+        except Exception as e:
+            logger.exception("Summarization failed")
+            return {
+                "success": False,
+                "error": str(e),
+                "latency_ms": int((time.time() - start_time) * 1000),
+            }
+
     async def _execute_task(self, task: AmbientTask) -> TaskResult:
         """Execute a single ambient task.
 
@@ -999,6 +1287,7 @@ class AmbientWorkloadService:
         """Evict baseline endpoints to make room for reasoning.
 
         Uses the orchestrator's workload management to handle eviction.
+        Tracks endpoint transitions via AgendaTracker for incident tracking.
 
         Returns:
             Dict with success status and evicted endpoints
@@ -1027,6 +1316,29 @@ class AmbientWorkloadService:
                 "wait_time_ms": result.wait_time_ms,
                 "workload_id": request.workload_id,
             }
+
+            # Track eviction for AgendaTracker integration
+            if result.success:
+                self._current_workload_id = request.workload_id
+                self._evicted_endpoints = list(result.evicted_endpoints) if result.evicted_endpoints else []
+
+                # Record eviction transitions as POSITIVE control (orchestrated)
+                # Note: ABSENT represents a stopped/non-running endpoint state
+                if self._agenda_tracker and self._evicted_endpoints:
+                    from ..resources.reconciliation import EndpointState
+                    from ..incidents import ControlMode
+
+                    for endpoint in self._evicted_endpoints:
+                        try:
+                            await self._agenda_tracker.on_endpoint_transition(
+                                endpoint=endpoint,
+                                from_state=EndpointState.HEALTHY,
+                                to_state=EndpointState.ABSENT,  # ABSENT = not running
+                                observed_control=ControlMode.POSITIVE,  # Orchestrated eviction
+                            )
+                            logger.debug(f"Recorded eviction transition for {endpoint}")
+                        except Exception as e:
+                            logger.warning(f"Failed to record eviction transition for {endpoint}: {e}")
 
             # Get the allocated reasoning endpoint for use in the reasoning task
             if result.success and result.allocated_endpoints:
@@ -1076,10 +1388,31 @@ class AmbientWorkloadService:
     async def _restore_baseline(self) -> dict[str, Any]:
         """Restore baseline endpoints after reasoning completes.
 
+        Tracks restoration transitions via AgendaTracker for incident tracking.
+
         Returns:
             Dict with restoration status
         """
         try:
+            # Record restoration transitions BEFORE completing workload
+            # This ensures the transitions are recorded with POSITIVE control
+            # Note: ABSENT represents a stopped/non-running endpoint state
+            if self._agenda_tracker and self._evicted_endpoints:
+                from ..resources.reconciliation import EndpointState
+                from ..incidents import ControlMode
+
+                for endpoint in self._evicted_endpoints:
+                    try:
+                        await self._agenda_tracker.on_endpoint_transition(
+                            endpoint=endpoint,
+                            from_state=EndpointState.ABSENT,  # Was stopped (ABSENT)
+                            to_state=EndpointState.HEALTHY,
+                            observed_control=ControlMode.POSITIVE,  # Orchestrated restoration
+                        )
+                        logger.debug(f"Recorded restoration transition for {endpoint}")
+                    except Exception as e:
+                        logger.warning(f"Failed to record restoration transition for {endpoint}: {e}")
+
             # Complete the workload to trigger restoration
             # The orchestrator tracks active workloads and will restore
             workloads = self._orchestrator.get_active_workloads()
@@ -1100,6 +1433,10 @@ class AmbientWorkloadService:
                         restored.append(endpoint)
                 except Exception as e:
                     logger.warning(f"Failed to restore {endpoint}: {e}")
+
+            # Clear tracking state after successful restoration
+            self._current_workload_id = None
+            self._evicted_endpoints = []
 
             return {
                 "success": True,
@@ -1187,3 +1524,123 @@ class AmbientWorkloadService:
             f"phases={phases_completed}, tasks={successful_tasks}/{total_tasks}, "
             f"duration={duration_ms}ms"
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Buffer Export
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def export_buffer(self, kb_root: str = "build/dev") -> dict[str, Any]:
+        """Export buffer contents to zettelkasten file.
+
+        Creates file at: {kb_root}/scratch/{date}/{HHMMSS}_buffer.md
+
+        Args:
+            kb_root: Root directory for KB (default: build/dev)
+
+        Returns:
+            dict with path, entry_count, total_bytes, error
+        """
+        # Get all buffer entries under lock
+        stats = self._buffer.get_stats()
+
+        async with self._buffer._lock:
+            entries = list(self._buffer._entries)
+
+        if not entries:
+            return {
+                "path": "",
+                "entry_count": 0,
+                "total_bytes": 0,
+                "error": "Buffer empty",
+            }
+
+        # Format as markdown
+        content = self._format_buffer_markdown(entries, stats)
+
+        # Write to KB
+        now = datetime.now()
+        date_dir = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")
+        filename = f"{timestamp}_buffer.md"
+
+        rel_path = f"scratch/{date_dir}/{filename}"
+        full_path = Path(kb_root) / rel_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(content, encoding="utf-8")
+
+        logger.info(
+            f"Exported buffer to {rel_path}: "
+            f"{len(entries)} entries, {stats['current_bytes']} bytes"
+        )
+
+        return {
+            "path": rel_path,
+            "entry_count": len(entries),
+            "total_bytes": stats["current_bytes"],
+        }
+
+    def _format_buffer_markdown(
+        self, entries: list[BufferEntry], stats: dict[str, Any]
+    ) -> str:
+        """Format buffer entries as zettelkasten markdown.
+
+        Args:
+            entries: List of BufferEntry objects
+            stats: Buffer statistics dict
+
+        Returns:
+            Markdown content string
+        """
+        now = datetime.now()
+        lines = [
+            "---",
+            f"date: {now.isoformat()}",
+            "type: buffer-export",
+            f"entries: {len(entries)}",
+            f"bytes: {stats['current_bytes']}",
+            "---",
+            "",
+            "# Ambient Buffer Export",
+            "",
+            f"**Exported:** {now.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**Entries:** {len(entries)}",
+            f"**Size:** {stats['current_bytes']:,} / {stats['max_bytes']:,} bytes",
+            f"**Utilization:** {stats['utilization']:.1%}",
+            "",
+        ]
+
+        # Group by role
+        by_role: dict[str, list[BufferEntry]] = defaultdict(list)
+        for entry in entries:
+            by_role[entry.role.value].append(entry)
+
+        for role, role_entries in by_role.items():
+            lines.append(f"## {role.title()} ({len(role_entries)} entries)")
+            lines.append("")
+            for entry in role_entries:
+                # Use author + story as heading if available
+                meta = entry.metadata or {}
+                author = meta.get("author", "")
+                story_title = meta.get("story_title", "")
+
+                if author and story_title:
+                    lines.append(f"### [{author}] on: {story_title}")
+                elif author:
+                    lines.append(f"### [{author}]")
+                else:
+                    lines.append(f"### Entry: {entry.id[:8]}")
+
+                lines.append(f"- **Created:** {entry.created_at.strftime('%H:%M:%S')}")
+                if author:
+                    lines.append(f"- **Author:** {author}")
+                if story_title:
+                    lines.append(f"- **Story:** {story_title}")
+                if entry.source_url:
+                    lines.append(f"- **Link:** {entry.source_url}")
+                lines.append("")
+                lines.append(entry.content)
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+
+        return "\n".join(lines)

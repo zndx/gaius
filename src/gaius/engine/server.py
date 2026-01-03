@@ -108,6 +108,9 @@ class GaiusEngine:
         # Health service (basic metrics)
         self._health_service = None
 
+        # Agenda tracker for workload-centric incident tracking
+        self._agenda_tracker = None
+
         # Daemon registry for lifecycle management
         self._daemon_registry: Optional[DaemonRegistry] = None
 
@@ -826,6 +829,9 @@ class GaiusEngine:
             self._reconciliation_service.set_health_observer(self._health_observer_service)
             logger.info("Wired Reconciliation → HealthObserver escalation path")
 
+        # Create and wire AgendaTracker for workload-centric incident tracking
+        await self._create_agenda_tracker()
+
         # Start all daemons in topological order
         results = await self._daemon_registry.start_all()
 
@@ -948,6 +954,164 @@ class GaiusEngine:
             logger.warning(f"Reconciliation service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to create Reconciliation daemon: {e}")
+
+    async def _create_agenda_tracker(self) -> None:
+        """Create and wire AgendaTracker for workload-centric incident tracking.
+
+        The AgendaTracker bridges:
+        - OrchestratorService (workload begin/complete lifecycle)
+        - ReconciliationService (endpoint state transitions)
+        - HealthObserverService (incident escalation)
+
+        It tracks Agenda incidents where:
+        - Agenda (scheduled capability phases) is the unit of health
+        - Makespan fulfillment is the success metric
+        - Positive control is required for resolution
+        """
+        try:
+            from .services.agenda_tracker import AgendaTracker
+
+            logger.info("Creating AgendaTracker...")
+
+            # Create tracker with database pool for persistence
+            self._agenda_tracker = AgendaTracker(
+                db_pool=self._db_pool,
+                baseline_endpoints=["orchestrator", "fast", "coding"],
+            )
+
+            # Wire to OrchestratorService
+            if self._orchestrator_service:
+                self._orchestrator_service.set_agenda_tracker(self._agenda_tracker)
+                logger.info("Wired AgendaTracker → OrchestratorService")
+
+            # Wire to ReconciliationService for endpoint transition callbacks
+            if self._reconciliation_service:
+                self._reconciliation_service.set_agenda_tracker(self._agenda_tracker)
+                logger.info("Wired AgendaTracker ← ReconciliationService")
+
+            # Wire to AmbientWorkloadService for phase event tracking
+            if self._ambient_service:
+                self._ambient_service.set_agenda_tracker(self._agenda_tracker)
+                logger.info("Wired AgendaTracker → AmbientWorkloadService")
+
+            # Start the tracker (restores from DB, starts persistence loop)
+            await self._agenda_tracker.start()
+
+            # Wire to HealthObserverService for incident escalation
+            if self._health_observer_service:
+                # AgendaTracker notifies HealthObserver of agenda incidents
+                self._agenda_tracker.on_incident(self._on_agenda_incident)
+                self._agenda_tracker.on_resolved(self._on_agenda_resolved)
+                logger.info("Wired AgendaTracker → HealthObserverService callbacks")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service("agenda_tracker", self._agenda_tracker)
+
+            logger.info(
+                f"AgendaTracker started with "
+                f"{len(self._agenda_tracker.get_active_agendas())} active agendas"
+            )
+
+        except ImportError as e:
+            logger.warning(f"AgendaTracker not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create AgendaTracker: {e}")
+
+    async def _on_agenda_incident(self, incident) -> None:
+        """Callback when a new agenda incident is created or status changes."""
+        from .incidents import AgendaStatus
+
+        # Escalate BLOCKED incidents to HealthObserver for potential ACP intervention
+        if incident.status == AgendaStatus.BLOCKED:
+            logger.warning(
+                f"Agenda {incident.agenda_id} is BLOCKED at phase "
+                f"{incident.current_phase_index}: {incident.current_phase.name if incident.current_phase else 'unknown'}"
+            )
+
+            # Escalate to HealthObserver if available
+            if self._health_observer_service:
+                await self._escalate_agenda_to_health_observer(incident)
+
+        elif incident.status == AgendaStatus.DELAYED:
+            logger.info(
+                f"Agenda incident {incident.agenda_id}: "
+                f"status={incident.status.value}, severity={incident.severity_score}, "
+                f"makespan_variance={incident.makespan_variance_pct:.1%}"
+            )
+
+    async def _escalate_agenda_to_health_observer(self, incident) -> None:
+        """Escalate a BLOCKED agenda incident to HealthObserver.
+
+        Creates a synthetic health incident so ACP can investigate.
+
+        Args:
+            incident: AgendaIncident that is blocked
+        """
+        if not self._health_observer_service:
+            return
+
+        try:
+            from .services.health_observer_service import HealthIncident
+            from uuid import uuid4
+
+            # Create a synthetic health incident for the blocked agenda
+            fingerprint = f"AGENDA_BLOCKED:{incident.agenda_id}"
+
+            health_incident = HealthIncident(
+                incident_id=uuid4(),
+                fingerprint=fingerprint,
+                endpoint=incident.current_phase.name if incident.current_phase else "unknown",
+                failure_mode_id="AGENDA_BLOCKED",
+                rpn_score=incident.severity_score,
+                rpn_severity=8,
+                rpn_occurrence=5,
+                rpn_detection=5,
+                current_tier=2,  # Start at Tier 2 (ACP escalation)
+                attempts=0,
+            )
+
+            # Add agenda context to the incident
+            health_incident.context = {
+                "agenda_id": incident.agenda_id,
+                "agenda_type": incident.agenda_type.value,
+                "current_phase": incident.current_phase.name if incident.current_phase else None,
+                "makespan_variance_pct": incident.makespan_variance_pct,
+                "control_mode": incident.control_mode.value,
+                "endpoint_transitions": len(incident.endpoint_transitions),
+            }
+
+            # Register with HealthObserver
+            self._health_observer_service._active_incidents[fingerprint] = health_incident
+            self._health_observer_service._incidents_created += 1
+
+            logger.info(
+                f"Escalated blocked agenda {incident.agenda_id} to HealthObserver "
+                f"(severity={incident.severity_score})"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to escalate agenda to HealthObserver: {e}")
+
+    async def _on_agenda_resolved(self, incident) -> None:
+        """Callback when an agenda incident is resolved."""
+        from .incidents import AgendaStatus, ControlMode
+
+        if incident.status == AgendaStatus.FULFILLED:
+            logger.info(
+                f"Agenda {incident.agenda_id} FULFILLED under positive control "
+                f"(makespan variance: {incident.makespan_variance_pct:.1%})"
+            )
+        elif incident.status == AgendaStatus.DEGRADED:
+            logger.warning(
+                f"Agenda {incident.agenda_id} completed but DEGRADED to "
+                f"{incident.control_mode.value} control "
+                f"(makespan variance: {incident.makespan_variance_pct:.1%})"
+            )
+        elif incident.status == AgendaStatus.FAILED:
+            logger.error(
+                f"Agenda {incident.agenda_id} FAILED: severity={incident.severity_score}"
+            )
 
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).

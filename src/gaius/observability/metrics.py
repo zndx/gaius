@@ -84,6 +84,11 @@ class MetricDefinition:
 # Note: Prometheus metrics have "gaius_gaius_" prefix:
 #   - "gaius_" from OTel Collector namespace config
 #   - "gaius." from SDK metric naming (becomes "gaius_" after export)
+#
+# Windowed Stats Philosophy (Flink-inspired):
+# - Use 10-minute windows for rate calculations to survive bursty workloads
+# - Sparklines show 5-minute history at 15-second resolution
+# - Current value shows meaningful aggregate rather than instantaneous zero
 OBSERVE_METRICS: list[MetricDefinition] = [
     # --- Prometheus metrics (time series with sparklines) ---
     # Note: Metric names follow the pattern gaius_gaius_<name>_<unit> from OTel export
@@ -92,7 +97,8 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         name="Latency p95",
         source="prometheus",
         # Sum across all models, keeping only the 'le' bucket label for histogram_quantile
-        query='histogram_quantile(0.95, sum by (le) (rate(gaius_gaius_inference_latency_milliseconds_bucket[5m])))',
+        # 10-minute window for bursty workloads like ambient reasoning
+        query='histogram_quantile(0.95, sum by (le) (rate(gaius_gaius_inference_latency_milliseconds_bucket[10m])))',
         display=MetricDisplay.GAUGE,
         unit="ms",
         warning_threshold=500,
@@ -105,29 +111,31 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         id="inference_rate",
         name="Infer/hr",
         source="prometheus",
-        query='sum(rate(gaius_gaius_inference_count_total[1m])) * 3600',
+        # 10-minute windowed rate extrapolated to hourly
+        # This keeps the metric hydrated even during quiet periods
+        query='sum(rate(gaius_gaius_inference_count_total[10m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         unit="",
         width=15,
-        # Run rate: current minute's rate extrapolated to hourly
     ),
     MetricDefinition(
         id="tokens_rate",
         name="Tokens/hr",
         source="prometheus",
-        query='sum(rate(gaius_gaius_inference_tokens_total[1m])) * 3600',
+        # 10-minute windowed rate extrapolated to hourly
+        query='sum(rate(gaius_gaius_inference_tokens_total[10m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         unit="",
         width=15,
-        # Run rate: current minute's rate extrapolated to hourly
     ),
     # Note: Search/min metric available but not displayed in panel
-    # query='rate(gaius_gaius_search_count_total[1m]) * 60'
+    # query='rate(gaius_gaius_search_count_total[10m]) * 60'
     MetricDefinition(
         id="error_rate",
         name="Errors",
         source="prometheus",
-        query='rate(gaius_gaius_error_total[5m]) / (rate(gaius_gaius_request_total[5m]) + 0.0001) * 100',
+        # 10-minute windowed error rate for stability
+        query='rate(gaius_gaius_error_total[10m]) / (rate(gaius_gaius_request_total[10m]) + 0.0001) * 100',
         display=MetricDisplay.PERCENTAGE,
         unit="%",
         warning_threshold=1,
@@ -168,7 +176,8 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         id="healing_success_rate",
         name="Heal Rate",
         source="prometheus",
-        query='sum(rate(gaius_gaius_healing_success_total[5m])) / (sum(rate(gaius_gaius_healing_attempts_total[5m])) + 0.0001) * 100',
+        # 10-minute windowed rate for healing success ratio
+        query='sum(rate(gaius_gaius_healing_success_total[10m])) / (sum(rate(gaius_gaius_healing_attempts_total[10m])) + 0.0001) * 100',
         display=MetricDisplay.PERCENTAGE,
         unit="%",
         warning_threshold=80,
@@ -180,7 +189,8 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         id="healing_attempts_rate",
         name="Heals/hr",
         source="prometheus",
-        query='sum(rate(gaius_gaius_healing_attempts_total[1m])) * 3600',
+        # 10-minute windowed rate extrapolated to hourly
+        query='sum(rate(gaius_gaius_healing_attempts_total[10m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         warning_threshold=60,   # 1/min average = concerning
         critical_threshold=120,  # 2/min average = critical
