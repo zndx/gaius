@@ -2365,7 +2365,7 @@ class GaiusServicer(GaiusServiceServicer):
                     model=model_name,
                 )
                 try:
-                    saved_path = capture.save(Path(kb_root) / "scratch")
+                    saved_path = capture.save_to_kb(Path(kb_root) / "scratch")
                 except Exception as e:
                     logger.warning(f"Failed to save explanation: {e}")
 
