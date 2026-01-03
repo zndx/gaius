@@ -24,18 +24,24 @@ class VimTree(Tree):
         self._g_pressed = False
 
     def action_goto_last(self) -> None:
-        """Jump to the last visible node (G)."""
+        """Jump to the absolute last leaf node, expanding folders as needed (G)."""
         self._g_pressed = False  # Reset any pending g
 
-        # Find the last visible node by traversing the tree
-        def get_last_visible(node: TreeNode) -> TreeNode:
-            """Recursively find the last visible node."""
-            if node.is_expanded and node.children:
-                return get_last_visible(node.children[-1])
-            return node
+        # Find the absolute last leaf, expanding collapsed folders along the way
+        def get_absolute_last_leaf(node: TreeNode) -> TreeNode:
+            """Recursively find the absolute last leaf, expanding as we go."""
+            if not node.children:
+                return node
+
+            # Expand the node to access children
+            if not node.is_expanded:
+                node.expand()
+
+            # Recurse into the last child
+            return get_absolute_last_leaf(node.children[-1])
 
         if self.root.children:
-            last_node = get_last_visible(self.root.children[-1])
+            last_node = get_absolute_last_leaf(self.root.children[-1])
             # Use move_cursor instead of select_node to avoid triggering NodeSelected
             # User can press Enter to select after navigating
             self.move_cursor(last_node)
