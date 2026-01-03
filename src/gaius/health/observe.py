@@ -32,6 +32,7 @@ from .checker import HealthChecker, HealthReport, CheckResult, CheckStatus
 from .self_healing import SelfHealingCoordinator, HealthIssue, HealingResult
 from .healing_events import HealingEventRecorder, HealingEventType
 from .fmea.models import RPNScore, EscalationTier
+from ..acp.security import get_github_repo_from_remote
 
 if TYPE_CHECKING:
     from ..acp import GaiusACPClient
@@ -71,8 +72,9 @@ class ObserverConfig:
     escalate_to_acp: bool = True
     acp_timeout: float = 300.0  # 5 minutes
 
-    # GitHub integration - internal repo for health tracking
-    github_repo: str = "zndx/gaius-internal"
+    # GitHub integration - reads from git remote 'internal' by default
+    # Supports full URL format for on-prem: github.example.com/org/repo
+    github_repo: str = field(default_factory=lambda: get_github_repo_from_remote() or "")
     github_token_env: str = "GITHUB_TOKEN"
 
     # KB and FMEA

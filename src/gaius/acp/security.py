@@ -30,6 +30,83 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Git Remote Helper
+# =============================================================================
+
+
+def get_github_repo_from_remote(remote_name: str = "internal") -> str | None:
+    """Read GitHub repo URL from git remote.
+
+    Parses git remote URLs and returns in normalized format:
+    - "github.com/owner/repo" for github.com
+    - "github.example.com/owner/repo" for on-prem GitHub Enterprise
+
+    Supports:
+    - git@github.com:owner/repo.git (SSH)
+    - https://github.com/owner/repo.git (HTTPS)
+    - git@github.example.com:owner/repo.git (on-prem SSH)
+    - https://github.example.com/owner/repo (on-prem HTTPS)
+
+    Args:
+        remote_name: Git remote name to read (default: "internal")
+
+    Returns:
+        Normalized repo URL like "github.com/owner/repo" or None if not found
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", remote_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=Path(__file__).parent.parent.parent.parent,  # Project root
+        )
+        if result.returncode != 0:
+            logger.debug(f"Git remote '{remote_name}' not found: {result.stderr}")
+            return None
+
+        url = result.stdout.strip()
+        return parse_git_remote_url(url)
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout reading git remote '{remote_name}'")
+        return None
+    except FileNotFoundError:
+        logger.debug("Git command not found")
+        return None
+    except Exception as e:
+        logger.debug(f"Error reading git remote '{remote_name}': {e}")
+        return None
+
+
+def parse_git_remote_url(url: str) -> str | None:
+    """Parse git remote URL and return normalized format.
+
+    Args:
+        url: Git remote URL (SSH or HTTPS format)
+
+    Returns:
+        Normalized format "host/owner/repo" or None if unparseable
+    """
+    # SSH format: git@github.com:owner/repo.git
+    ssh_pattern = r"^git@([^:]+):([^/]+)/([^/]+?)(?:\.git)?$"
+    ssh_match = re.match(ssh_pattern, url)
+    if ssh_match:
+        host, owner, repo = ssh_match.groups()
+        return f"{host}/{owner}/{repo}"
+
+    # HTTPS format: https://github.com/owner/repo.git or https://github.com/owner/repo
+    https_pattern = r"^https?://([^/]+)/([^/]+)/([^/]+?)(?:\.git)?$"
+    https_match = re.match(https_pattern, url)
+    if https_match:
+        host, owner, repo = https_match.groups()
+        return f"{host}/{owner}/{repo}"
+
+    logger.debug(f"Could not parse git remote URL: {url}")
+    return None
+
+
 class GitHubSecurityError(Exception):
     """Security violation in GitHub operations.
 
@@ -189,54 +266,95 @@ def load_security_config(config_path: Path | None = None) -> GitHubSecurityConfi
     return config
 
 
-def validate_repo_format(repo: str) -> tuple[str, str]:
+def validate_repo_format(repo: str) -> tuple[str | None, str, str]:
     """Validate and parse repository format.
 
+    Supports two formats:
+    - "owner/repo" - legacy format (github.com assumed)
+    - "host/owner/repo" - full URL format for on-prem GitHub Enterprise
+
     Args:
-        repo: Repository in "owner/repo" format
+        repo: Repository in "owner/repo" or "host/owner/repo" format
 
     Returns:
-        Tuple of (owner, repo_name)
+        Tuple of (host, owner, repo_name) where host is None for legacy format
 
     Raises:
         GitHubSecurityError: If format is invalid
     """
-    # Strict validation: only alphanumeric, hyphen, underscore
-    pattern = r"^([a-zA-Z0-9][-a-zA-Z0-9]*)/([a-zA-Z0-9][-a-zA-Z0-9_.]*)$"
-    match = re.match(pattern, repo)
+    # Full URL format: host/owner/repo (e.g., github.com/zndx/gaius-acp)
+    full_url_pattern = r"^([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,})/([a-zA-Z0-9][-a-zA-Z0-9]*)/([a-zA-Z0-9][-a-zA-Z0-9_.]*)$"
+    full_match = re.match(full_url_pattern, repo)
+    if full_match:
+        host, owner, repo_name = full_match.groups()
+        return host, owner, repo_name
 
-    if not match:
-        raise GitHubSecurityError(
-            f"Invalid repository format: {repo!r}. "
-            f"Expected 'owner/repo' with alphanumeric characters.\n"
-            f"Guru Meditation: #ACP.SEC.00000005.BADFORMAT"
-        )
+    # Legacy format: owner/repo (github.com assumed)
+    legacy_pattern = r"^([a-zA-Z0-9][-a-zA-Z0-9]*)/([a-zA-Z0-9][-a-zA-Z0-9_.]*)$"
+    legacy_match = re.match(legacy_pattern, repo)
+    if legacy_match:
+        owner, repo_name = legacy_match.groups()
+        return None, owner, repo_name
 
-    return match.group(1), match.group(2)
+    raise GitHubSecurityError(
+        f"Invalid repository format: {repo!r}. "
+        f"Expected 'owner/repo' or 'host/owner/repo' with alphanumeric characters.\n"
+        f"Guru Meditation: #ACP.SEC.00000005.BADFORMAT"
+    )
 
 
 def is_repo_in_allowlist(repo: str, allowed_repos: list[str]) -> bool:
     """Check if repository is in the allowlist.
 
-    Supports exact matches and glob patterns:
+    Supports exact matches and glob patterns for both formats:
+
+    Full URL format (recommended for on-prem support):
+    - "github.com/zndx/gaius-acp" - exact match
+    - "github.com/zndx/*" - any repo under zndx org on github.com
+    - "github.example.com/*/gaius-*" - any gaius-prefixed repo on on-prem
+
+    Legacy format (github.com assumed):
     - "zndx/gaius-internal" - exact match
     - "zndx/*" - any repo under zndx org
-    - "*/gaius-*" - any gaius-prefixed repo
 
     Args:
-        repo: Repository to check ("owner/repo")
+        repo: Repository to check ("owner/repo" or "host/owner/repo")
         allowed_repos: List of allowed patterns
 
     Returns:
         True if repo matches any pattern
     """
-    owner, name = validate_repo_format(repo)
+    repo_host, repo_owner, repo_name = validate_repo_format(repo)
 
     for pattern in allowed_repos:
-        pattern_owner, pattern_name = pattern.split("/", 1)
+        parts = pattern.split("/")
+
+        if len(parts) == 3:
+            # Full URL pattern: host/owner/repo
+            pattern_host, pattern_owner, pattern_name = parts
+        elif len(parts) == 2:
+            # Legacy pattern: owner/repo (github.com assumed)
+            pattern_host = None
+            pattern_owner, pattern_name = parts
+        else:
+            logger.warning(f"Invalid allowlist pattern: {pattern}")
+            continue
+
+        # Check host (None matches github.com or None)
+        if pattern_host is not None and repo_host is not None:
+            if pattern_host != "*" and pattern_host != repo_host:
+                continue
+        elif pattern_host is not None and repo_host is None:
+            # Pattern has host but repo doesn't - repo assumes github.com
+            if pattern_host != "*" and pattern_host != "github.com":
+                continue
+        elif pattern_host is None and repo_host is not None:
+            # Pattern is legacy, repo has explicit host - only match github.com
+            if repo_host != "github.com":
+                continue
 
         # Check owner
-        if pattern_owner != "*" and pattern_owner != owner:
+        if pattern_owner != "*" and pattern_owner != repo_owner:
             continue
 
         # Check name (support * suffix for prefix matching)
@@ -244,9 +362,9 @@ def is_repo_in_allowlist(repo: str, allowed_repos: list[str]) -> bool:
             return True
         if pattern_name.endswith("*"):
             prefix = pattern_name[:-1]
-            if name.startswith(prefix):
+            if repo_name.startswith(prefix):
                 return True
-        elif pattern_name == name:
+        elif pattern_name == repo_name:
             return True
 
     return False
@@ -256,7 +374,7 @@ async def verify_repo_visibility(repo: str, timeout: float = 10.0) -> str:
     """Verify repository visibility using gh CLI.
 
     Args:
-        repo: Repository in "owner/repo" format
+        repo: Repository in "owner/repo" or "host/owner/repo" format
         timeout: Timeout in seconds for gh command
 
     Returns:
@@ -265,9 +383,14 @@ async def verify_repo_visibility(repo: str, timeout: float = 10.0) -> str:
     Raises:
         GitHubSecurityError: If verification fails
     """
-    owner, name = validate_repo_format(repo)
+    host, owner, name = validate_repo_format(repo)
 
     try:
+        # Build gh api command - host is used for GH_HOST env var if on-prem
+        env = None
+        if host and host != "github.com":
+            env = {**os.environ, "GH_HOST": host}
+
         # Use gh api to get repository info
         proc = await asyncio.create_subprocess_exec(
             "gh",
@@ -277,6 +400,7 @@ async def verify_repo_visibility(repo: str, timeout: float = 10.0) -> str:
             ".visibility",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
 
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -314,13 +438,18 @@ def verify_repo_visibility_sync(repo: str, timeout: float = 10.0) -> str:
     """Synchronous version of verify_repo_visibility.
 
     Args:
-        repo: Repository in "owner/repo" format
+        repo: Repository in "owner/repo" or "host/owner/repo" format
         timeout: Timeout in seconds
 
     Returns:
         Visibility string: "private", "public", "internal"
     """
-    owner, name = validate_repo_format(repo)
+    host, owner, name = validate_repo_format(repo)
+
+    # Build environment for on-prem GitHub
+    env = None
+    if host and host != "github.com":
+        env = {**os.environ, "GH_HOST": host}
 
     try:
         result = subprocess.run(
@@ -328,6 +457,7 @@ def verify_repo_visibility_sync(repo: str, timeout: float = 10.0) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
 
         if result.returncode != 0:
