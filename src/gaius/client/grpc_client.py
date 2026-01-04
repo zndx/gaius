@@ -1241,6 +1241,7 @@ class GrpcEngineClient:
                 "last_poll_at": response.last_poll_at or None,
                 "poll_interval": response.config.poll_interval if response.config else 30,
                 "escalate_to_acp": response.config.escalate_to_acp if response.config else True,
+                "github_repo": response.config.github_repo if response.config else "",
                 "incidents_created": response.metrics.incidents_created if response.metrics else 0,
                 "incidents_resolved": response.metrics.incidents_resolved if response.metrics else 0,
                 "acp_escalations": response.metrics.acp_escalations if response.metrics else 0,
@@ -1256,6 +1257,7 @@ class GrpcEngineClient:
                         "attempts": inc.attempts,
                         "status": inc.status,
                         "created_at": inc.created_at,
+                        "github_issue": inc.github_issue if inc.github_issue else None,
                     }
                     for inc in response.incidents
                 ],
@@ -1300,6 +1302,7 @@ class GrpcEngineClient:
                         "attempts": inc.attempts,
                         "status": inc.status,
                         "created_at": inc.created_at,
+                        "github_issue": inc.github_issue if inc.github_issue else None,
                     }
                     for inc in response.incidents
                 ],

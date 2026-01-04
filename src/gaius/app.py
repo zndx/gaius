@@ -3230,9 +3230,109 @@ Use `/evolve stop` to stop orchestrated evolution.
                     "",
                     f"*Completed in {report.duration_ms}ms at {report.timestamp.strftime('%H:%M:%S')}*",
                     "",
+                ]
+
+                # Fetch and display active incidents prominently at the top
+                try:
+                    from .client.engine_proxy import use_engine_proxy
+                    from .client.grpc_client import get_grpc_client
+
+                    if use_engine_proxy():
+                        client = await get_grpc_client()
+                        incidents_result = await client.health_observer(
+                            action="incidents",
+                            params={"status": "active"},
+                        )
+                        incidents = incidents_result.get("incidents", [])
+
+                        if incidents:
+                            # Get GitHub repo for issue links
+                            try:
+                                observer_status = await client.health_observer(action="status")
+                                github_repo = observer_status.get("github_repo", "")
+                            except Exception:
+                                github_repo = ""
+
+                            lines.extend([
+                                "## Active Incidents",
+                                "",
+                                f"**{len(incidents)} incident(s) require attention:**",
+                                "",
+                            ])
+
+                            for inc in incidents:
+                                fingerprint = inc.get("fingerprint", "unknown")
+                                endpoint = inc.get("endpoint", "unknown")
+                                failure_mode = inc.get("failure_mode_id", "unknown")
+                                status = inc.get("status", "active")
+                                rpn = inc.get("rpn_score", 0)
+                                created_at = inc.get("created_at", "")
+                                github_issue = inc.get("github_issue", 0)
+                                attempts = inc.get("attempts", 0)
+
+                                # Status icon
+                                status_icons = {
+                                    "active": "🔴",
+                                    "healing": "🟡",
+                                    "recovering": "🟢",
+                                    "manual_required": "🟠",
+                                }
+                                icon = status_icons.get(status, "⚪")
+
+                                # Format incident entry
+                                lines.append(f"### {icon} {fingerprint}")
+                                lines.append("")
+                                lines.append(f"- **Endpoint:** `{endpoint}`")
+                                lines.append(f"- **Failure Mode:** `{failure_mode}`")
+                                lines.append(f"- **Status:** {status}")
+                                lines.append(f"- **RPN Score:** {rpn}")
+                                lines.append(f"- **Attempts:** {attempts}")
+
+                                # Format created_at timestamp
+                                if created_at:
+                                    try:
+                                        from datetime import datetime as dt
+                                        created = dt.fromisoformat(created_at.replace("Z", "+00:00"))
+                                        age = dt.now(created.tzinfo) - created if created.tzinfo else dt.now() - created
+                                        age_hours = age.total_seconds() / 3600
+                                        if age_hours < 1:
+                                            age_str = f"{int(age.total_seconds() / 60)} minutes"
+                                        elif age_hours < 24:
+                                            age_str = f"{age_hours:.1f} hours"
+                                        else:
+                                            age_str = f"{age_hours / 24:.1f} days"
+                                        lines.append(f"- **Age:** {age_str}")
+                                    except (ValueError, TypeError):
+                                        lines.append(f"- **Created:** {created_at}")
+
+                                # Add GitHub issue link if available
+                                if github_issue and github_issue > 0:
+                                    if github_repo:
+                                        # Handle on-prem GitHub (github.example.com/org/repo)
+                                        if "/" in github_repo and "." in github_repo.split("/")[0]:
+                                            # Full URL format: github.example.com/org/repo
+                                            issue_url = f"https://{github_repo}/issues/{github_issue}"
+                                        else:
+                                            # Standard GitHub: org/repo
+                                            issue_url = f"https://github.com/{github_repo}/issues/{github_issue}"
+                                        lines.append(f"- **GitHub Issue:** [#{github_issue}]({issue_url})")
+                                    else:
+                                        lines.append(f"- **GitHub Issue:** #{github_issue}")
+
+                                lines.append("")
+
+                            lines.append("---")
+                            lines.append("")
+
+                except Exception as e:
+                    # Log but don't fail the health report
+                    import logging
+                    logging.getLogger(__name__).debug(f"Failed to fetch incidents: {e}")
+
+                lines.extend([
                     "## Check Results",
                     "",
-                ]
+                ])
 
                 for check in report.checks:
                     icon = status_icons.get(check.status, "[?]")
