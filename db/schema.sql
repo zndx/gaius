@@ -1,4 +1,4 @@
-\restrict fI90uaUAJ5QtDHKTQoZYjDcCF3i29akVbgs35ZaTTjM11AZbf8X4pQd5yattpNJ
+\restrict ZVDvknLxNc0KXFnePpFCCcuujXgZD3nzwwoNawfzWI4zyyrou82ret1UwL3Jabh
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -954,6 +954,25 @@ $$;
 
 
 --
+-- Name: increment_ambient_cycle(integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.increment_ambient_cycle(p_tasks_in_cycle integer DEFAULT 0, p_successful_in_cycle integer DEFAULT 0) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE ambient_daemon_state
+    SET
+        cycles_completed = cycles_completed + 1,
+        total_tasks = total_tasks + p_tasks_in_cycle,
+        successful_tasks = successful_tasks + p_successful_in_cycle,
+        updated_at = NOW()
+    WHERE id = 1 AND running = TRUE;
+END;
+$$;
+
+
+--
 -- Name: is_duplicate_thought(text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1372,6 +1391,68 @@ CREATE FUNCTION public.time_since_last_session(p_profile text DEFAULT 'default':
         ),
         INTERVAL '999 days'
     );
+$$;
+
+
+--
+-- Name: ambient_daemon_state; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.ambient_daemon_state (
+    id integer DEFAULT 1 NOT NULL,
+    running boolean DEFAULT false NOT NULL,
+    baseline_only boolean DEFAULT false NOT NULL,
+    max_cycles integer,
+    cycles_completed integer DEFAULT 0 NOT NULL,
+    total_tasks integer DEFAULT 0 NOT NULL,
+    successful_tasks integer DEFAULT 0 NOT NULL,
+    started_at timestamp with time zone,
+    stopped_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT ambient_daemon_state_singleton CHECK ((id = 1))
+);
+
+
+--
+-- Name: TABLE ambient_daemon_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.ambient_daemon_state IS 'Singleton table for ambient daemon state persistence. Auto-restart on engine restart.';
+
+
+--
+-- Name: update_ambient_daemon_state(boolean, boolean, integer, integer, integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.update_ambient_daemon_state(p_running boolean, p_baseline_only boolean DEFAULT false, p_max_cycles integer DEFAULT NULL::integer, p_cycles_completed integer DEFAULT 0, p_total_tasks integer DEFAULT 0, p_successful_tasks integer DEFAULT 0) RETURNS public.ambient_daemon_state
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    result ambient_daemon_state;
+BEGIN
+    UPDATE ambient_daemon_state
+    SET
+        running = p_running,
+        baseline_only = p_baseline_only,
+        max_cycles = p_max_cycles,
+        cycles_completed = p_cycles_completed,
+        total_tasks = p_total_tasks,
+        successful_tasks = p_successful_tasks,
+        started_at = CASE
+            WHEN p_running AND NOT running THEN NOW()  -- Starting fresh
+            WHEN p_running THEN started_at             -- Keep existing start time
+            ELSE NULL                                   -- Stopped
+        END,
+        stopped_at = CASE
+            WHEN NOT p_running AND running THEN NOW()  -- Just stopped
+            ELSE stopped_at                             -- Keep existing
+        END,
+        updated_at = NOW()
+    WHERE id = 1
+    RETURNING * INTO result;
+
+    RETURN result;
+END;
 $$;
 
 
@@ -4343,6 +4424,36 @@ CREATE SEQUENCE public.aiops_events_id_seq
 --
 
 ALTER SEQUENCE public.aiops_events_id_seq OWNED BY public.aiops_events.id;
+
+
+--
+-- Name: ambient_daemon_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.ambient_daemon_status AS
+ SELECT running,
+    baseline_only,
+    max_cycles,
+    cycles_completed,
+        CASE
+            WHEN (max_cycles IS NOT NULL) THEN (max_cycles - cycles_completed)
+            ELSE NULL::integer
+        END AS cycles_remaining,
+    total_tasks,
+    successful_tasks,
+        CASE
+            WHEN (total_tasks > 0) THEN round((((successful_tasks)::numeric / (total_tasks)::numeric) * (100)::numeric), 1)
+            ELSE NULL::numeric
+        END AS success_rate_pct,
+    started_at,
+    stopped_at,
+    updated_at,
+        CASE
+            WHEN (running AND (started_at IS NOT NULL)) THEN (EXTRACT(epoch FROM (now() - started_at)))::integer
+            ELSE NULL::integer
+        END AS uptime_seconds
+   FROM public.ambient_daemon_state
+  WHERE (id = 1);
 
 
 --
@@ -11205,10 +11316,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__gjiwsik_6j3c6ta8rhd13; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__gjiwsik_6j3c6ta8rhd13 (
+CREATE TABLE public.search_index__5gnfmzucyyw0fuje_nyjv (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11241,11 +11352,11 @@ CREATE TABLE public.search_index__gjiwsik_6j3c6ta8rhd13 (
 
 
 --
--- Name: search_index__gjiwsik_6j3c6ta8rhd13_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__gjiwsik_6j3c6ta8rhd13 ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__gjiwsik_6j3c6ta8rhd13_id_seq
+ALTER TABLE public.search_index__5gnfmzucyyw0fuje_nyjv ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__5gnfmzucyyw0fuje_nyjv_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -11255,10 +11366,10 @@ ALTER TABLE public.search_index__gjiwsik_6j3c6ta8rhd13 ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__jrwcealdwwfqhcqrmzn9r; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__jrwcealdwwfqhcqrmzn9r (
+CREATE TABLE public.search_index__oa_t4n8digk_h8zdjmsjx (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11291,11 +11402,11 @@ CREATE TABLE public.search_index__jrwcealdwwfqhcqrmzn9r (
 
 
 --
--- Name: search_index__jrwcealdwwfqhcqrmzn9r_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__jrwcealdwwfqhcqrmzn9r ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__jrwcealdwwfqhcqrmzn9r_id_seq
+ALTER TABLE public.search_index__oa_t4n8digk_h8zdjmsjx ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__oa_t4n8digk_h8zdjmsjx_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -13972,6 +14083,14 @@ ALTER TABLE ONLY public.aiops_events
 
 
 --
+-- Name: ambient_daemon_state ambient_daemon_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.ambient_daemon_state
+    ADD CONSTRAINT ambient_daemon_state_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: api_key api_key_key_prefix_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -15596,19 +15715,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__gjiwsik_6j3c6ta8rhd13 search_index__gjiwsik_6j3c6ta8rhd13_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv search_index__5gnfmzucyyw0fuje_nyjv_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__gjiwsik_6j3c6ta8rhd13
-    ADD CONSTRAINT search_index__gjiwsik_6j3c6ta8rhd13_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__5gnfmzucyyw0fuje_nyjv
+    ADD CONSTRAINT search_index__5gnfmzucyyw0fuje_nyjv_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__jrwcealdwwfqhcqrmzn9r search_index__jrwcealdwwfqhcqrmzn9r_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx search_index__oa_t4n8digk_h8zdjmsjx_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__jrwcealdwwfqhcqrmzn9r
-    ADD CONSTRAINT search_index__jrwcealdwwfqhcqrmzn9r_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__oa_t4n8digk_h8zdjmsjx
+    ADD CONSTRAINT search_index__oa_t4n8digk_h8zdjmsjx_pkey PRIMARY KEY (id);
 
 
 --
@@ -18863,73 +18982,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__gjiwsik_6j3c6ta8rhd13_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_archived_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING btree (archived);
-
-
---
--- Name: search_index__gjiwsik_6j3c6ta8rhd13_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__gjiwsik_6j3c6ta8rhd13_identity_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING btree (model, model_id);
+CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_archived_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING btree (archived);
 
 
 --
--- Name: search_index__gjiwsik_6j3c6ta8rhd13_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_model_archived_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING btree (model, archived);
-
-
---
--- Name: search_index__gjiwsik_6j3c6ta8rhd13_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_native_tsvector_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index__5gnfmzucyyw0fuje_nyjv_identity_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING btree (model, model_id);
 
 
 --
--- Name: search_index__gjiwsik_6j3c6ta8rhd13_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__gjiwsik_6j3c6ta8rhd13_tsvector_idx ON public.search_index__gjiwsik_6j3c6ta8rhd13 USING gin (search_vector);
-
-
---
--- Name: search_index__jrwcealdwwfqhcqrmzn9r_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_archived_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING btree (archived);
+CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_model_archived_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING btree (model, archived);
 
 
 --
--- Name: search_index__jrwcealdwwfqhcqrmzn9r_identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__jrwcealdwwfqhcqrmzn9r_identity_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING btree (model, model_id);
-
-
---
--- Name: search_index__jrwcealdwwfqhcqrmzn9r_model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_model_archived_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING btree (model, archived);
+CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_native_tsvector_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING gin (with_native_query_vector);
 
 
 --
--- Name: search_index__jrwcealdwwfqhcqrmzn9r_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__5gnfmzucyyw0fuje_nyjv_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_native_tsvector_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING gin (with_native_query_vector);
+CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_tsvector_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING gin (search_vector);
 
 
 --
--- Name: search_index__jrwcealdwwfqhcqrmzn9r_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__jrwcealdwwfqhcqrmzn9r_tsvector_idx ON public.search_index__jrwcealdwwfqhcqrmzn9r USING gin (search_vector);
+CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_archived_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING btree (archived);
+
+
+--
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__oa_t4n8digk_h8zdjmsjx_identity_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING btree (model, model_id);
+
+
+--
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_model_archived_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING btree (model, archived);
+
+
+--
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_native_tsvector_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__oa_t4n8digk_h8zdjmsjx_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_tsvector_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING gin (search_vector);
 
 
 --
@@ -20501,7 +20620,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict fI90uaUAJ5QtDHKTQoZYjDcCF3i29akVbgs35ZaTTjM11AZbf8X4pQd5yattpNJ
+\unrestrict ZVDvknLxNc0KXFnePpFCCcuujXgZD3nzwwoNawfzWI4zyyrou82ret1UwL3Jabh
 
 
 --
@@ -20548,4 +20667,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251229000001'),
     ('20251229000002'),
     ('20260102000002'),
-    ('20260102000003');
+    ('20260102000003'),
+    ('20260103000001');

@@ -287,6 +287,9 @@ class GaiusEngine:
         # 9. Mark initialization complete
         await self._init_controller.complete_init()
 
+        # 10. Auto-resume ambient workload if it was running before restart
+        await self._maybe_resume_ambient()
+
         logger.info(
             f"Gaius Engine started with {len(self.config.agents)} agents configured"
         )
@@ -760,6 +763,7 @@ class GaiusEngine:
                 config=self.config,
                 orchestrator=self._orchestrator_service,
                 backend_router=self._backend_router,
+                db_pool=self._db_pool,  # Enable state persistence for auto-resume
             )
 
             # Update gRPC service registry
@@ -773,6 +777,43 @@ class GaiusEngine:
             logger.warning(f"Ambient Workload service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize Ambient Workload service: {e}")
+
+    async def _maybe_resume_ambient(self) -> None:
+        """Auto-resume ambient workload if it was running before restart.
+
+        Called during engine startup AFTER endpoints are ready. Uses
+        persisted state from ambient_daemon_state table to determine
+        if the daemon should be auto-resumed.
+
+        Controlled by startup.auto_resume_ambient config (default: True).
+        """
+        # Check config flag
+        if not self.config.startup.auto_resume_ambient:
+            logger.info("Ambient auto-resume disabled in config")
+            return
+
+        # Check if ambient service is available
+        if not self._ambient_service:
+            logger.debug("Ambient service not initialized, skipping resume check")
+            return
+
+        try:
+            result = await self._ambient_service.resume_from_persisted_state()
+            status = result.get("status", "unknown")
+
+            if status == "resumed":
+                logger.info(
+                    f"Ambient workload auto-resumed: "
+                    f"cycle {result.get('cycles_completed', 0)}, "
+                    f"{result.get('total_tasks', 0)} tasks completed previously"
+                )
+            elif status == "not_running":
+                logger.debug(f"Ambient workload not resumed: {result.get('message', 'was not running')}")
+            else:
+                logger.warning(f"Ambient workload resume failed: {result.get('message', 'unknown error')}")
+
+        except Exception as e:
+            logger.warning(f"Failed to check ambient resume state: {e}")
 
     async def _init_daemon_registry(self) -> None:
         """Initialize daemon registry and start all daemons with FAIL-FAST semantics.

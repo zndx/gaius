@@ -29,6 +29,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
+import asyncpg
+
 from ..backends import ProcessStatus
 from ..generated import gaius_service_pb2 as pb
 from .ambient_buffer import AmbientBuffer, BufferEntry, BufferRole
@@ -216,6 +218,7 @@ class AmbientWorkloadService:
         config: "EngineConfig",
         orchestrator: "OrchestratorService",
         backend_router: "BackendRouter",
+        db_pool: Optional[asyncpg.Pool] = None,
     ):
         """Initialize ambient workload service.
 
@@ -223,10 +226,12 @@ class AmbientWorkloadService:
             config: Engine configuration
             orchestrator: Orchestrator service for endpoint management
             backend_router: Backend router for inference requests
+            db_pool: Database pool for state persistence (enables auto-resume)
         """
         self._config = config
         self._orchestrator = orchestrator
         self._backend_router = backend_router
+        self._db_pool = db_pool
 
         # Get baseline endpoints from config
         self._baseline_endpoints = list(config.startup.preload_endpoints)
@@ -369,6 +374,9 @@ class AmbientWorkloadService:
             name="ambient-daemon",
         )
 
+        # Persist state for auto-restart after engine restart
+        await self._persist_daemon_state(running=True)
+
         msg = "Started" if max_cycles is None else f"Started ({max_cycles} cycles)"
         logger.info(f"Ambient daemon started: baseline_only={baseline_only}, max_cycles={max_cycles}")
 
@@ -405,6 +413,9 @@ class AmbientWorkloadService:
             if self._total_daemon_tasks > 0
             else "0/0"
         )
+
+        # Persist stopped state (clears running flag)
+        await self._persist_daemon_state(running=False)
 
         return {
             "success": True,
@@ -449,6 +460,12 @@ class AmbientWorkloadService:
 
                 # Cycle completed successfully - increment counter
                 self._cycles_completed += 1
+
+                # Persist progress after each cycle for crash recovery
+                await self._increment_cycle_in_db(
+                    tasks_in_cycle=0,  # Already tracked in _run_varied_cycle
+                    successful=0,
+                )
 
                 # Check if we've hit the limit
                 if self._max_cycles and self._daemon_cycle >= self._max_cycles:
@@ -1524,6 +1541,160 @@ class AmbientWorkloadService:
             f"phases={phases_completed}, tasks={successful_tasks}/{total_tasks}, "
             f"duration={duration_ms}ms"
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # State Persistence (for auto-restart after engine restart)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _persist_daemon_state(self, running: bool) -> None:
+        """Persist daemon state to database for auto-restart.
+
+        Uses the update_ambient_daemon_state() database function to
+        atomically update the singleton state row.
+
+        Args:
+            running: Whether the daemon should be marked as running
+        """
+        if not self._db_pool:
+            logger.debug("No db_pool, skipping state persistence")
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    SELECT update_ambient_daemon_state(
+                        $1,  -- running
+                        $2,  -- baseline_only (not persisted in current impl, default false)
+                        $3,  -- max_cycles
+                        $4,  -- cycles_completed
+                        $5,  -- total_tasks
+                        $6   -- successful_tasks
+                    )
+                    """,
+                    running,
+                    False,  # baseline_only - could persist this too
+                    self._max_cycles,
+                    self._daemon_cycle,
+                    self._total_daemon_tasks,
+                    self._successful_daemon_tasks,
+                )
+            logger.debug(
+                f"Persisted ambient daemon state: running={running}, "
+                f"cycles={self._daemon_cycle}, tasks={self._total_daemon_tasks}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to persist daemon state: {e}")
+
+    async def _increment_cycle_in_db(self, tasks_in_cycle: int, successful: int) -> None:
+        """Increment cycle count in database after each cycle.
+
+        Args:
+            tasks_in_cycle: Number of tasks executed in this cycle
+            successful: Number of successful tasks
+        """
+        if not self._db_pool:
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    "SELECT increment_ambient_cycle($1, $2)",
+                    tasks_in_cycle,
+                    successful,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to increment cycle in DB: {e}")
+
+    async def load_persisted_state(self) -> Optional[dict[str, Any]]:
+        """Load persisted daemon state from database.
+
+        Returns:
+            Dict with running, baseline_only, max_cycles, cycles_completed,
+            total_tasks, successful_tasks, started_at, or None if no state.
+        """
+        if not self._db_pool:
+            logger.debug("No db_pool, cannot load persisted state")
+            return None
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT running, baseline_only, max_cycles, cycles_completed,
+                           total_tasks, successful_tasks, started_at, stopped_at,
+                           updated_at
+                    FROM ambient_daemon_state
+                    WHERE id = 1
+                    """
+                )
+                if row:
+                    return dict(row)
+                return None
+        except Exception as e:
+            logger.warning(f"Failed to load persisted state: {e}")
+            return None
+
+    async def resume_from_persisted_state(self) -> dict[str, Any]:
+        """Resume daemon from persisted state if it was running.
+
+        Called during engine startup to auto-resume ambient workload.
+
+        Returns:
+            Dict with status: 'resumed', 'not_running', or 'error'
+        """
+        state = await self.load_persisted_state()
+
+        if not state:
+            return {"status": "not_running", "message": "No persisted state found"}
+
+        if not state.get("running"):
+            return {
+                "status": "not_running",
+                "message": "Daemon was not running before shutdown",
+                "last_stopped": state.get("stopped_at"),
+            }
+
+        # Restore state from DB
+        baseline_only = state.get("baseline_only", False)
+        max_cycles = state.get("max_cycles")
+        cycles_completed = state.get("cycles_completed", 0)
+        total_tasks = state.get("total_tasks", 0)
+        successful_tasks = state.get("successful_tasks", 0)
+        started_at = state.get("started_at")
+
+        logger.info(
+            f"Resuming ambient daemon from persisted state: "
+            f"cycles={cycles_completed}, tasks={total_tasks}, "
+            f"started_at={started_at}"
+        )
+
+        # Restore counters before starting
+        self._daemon_cycle = cycles_completed
+        self._total_daemon_tasks = total_tasks
+        self._successful_daemon_tasks = successful_tasks
+        if started_at:
+            self._daemon_started_at = started_at
+
+        # Start the daemon (will continue from where it left off)
+        result = await self.start_daemon(
+            baseline_only=baseline_only,
+            max_cycles=max_cycles,
+        )
+
+        if result.get("success"):
+            return {
+                "status": "resumed",
+                "message": f"Resumed from cycle {cycles_completed}",
+                "cycles_completed": cycles_completed,
+                "total_tasks": total_tasks,
+                "baseline_only": baseline_only,
+            }
+        else:
+            return {
+                "status": "error",
+                "message": result.get("message", "Failed to resume"),
+            }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Buffer Export

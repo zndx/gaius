@@ -214,6 +214,9 @@ class StartupConfig:
     auto_restart_failed: bool = True  # Auto-restart failed endpoints
     max_restart_attempts: int = 3
 
+    # Ambient workload auto-restart after engine restart
+    auto_resume_ambient: bool = True  # Resume ambient daemon if it was running before restart
+
 
 @dataclass
 class EngineConfig:
@@ -542,6 +545,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         max_restart_attempts=startup_conf.get("max-restart-attempts", 3)
         if hasattr(startup_conf, "get")
         else 3,
+        auto_resume_ambient=startup_conf.get("auto-resume-ambient", True)
+        if hasattr(startup_conf, "get")
+        else True,
     )
 
     return EngineConfig(
