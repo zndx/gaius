@@ -759,3 +759,25 @@ def reset_config() -> None:
     """Reset the global config singleton (for testing)."""
     global _config
     _config = None
+
+
+def get_database_url() -> str:
+    """Get database URL from config.
+
+    This is a convenience function that provides a consistent way to get the
+    database URL across the codebase. Previously this was defined in multiple
+    places (storage/database.py, storage/grid_state.py, etc.).
+
+    Returns:
+        PostgreSQL connection URL from config.
+    """
+    import os
+
+    # Check environment first (highest priority)
+    env_url = os.environ.get("GAIUS_DATABASE_URL")
+    if env_url:
+        return env_url
+
+    # Fall back to config
+    config = get_config()
+    return config.database.url

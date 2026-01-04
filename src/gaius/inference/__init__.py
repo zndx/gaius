@@ -62,6 +62,7 @@ __all__ = [
     # Factory functions
     "get_client",
     "get_search",
+    "ask_local",
 ]
 
 # Module-level singletons (lazy initialized)
@@ -89,3 +90,35 @@ def get_search():
         else:
             raise RuntimeError("BRAVE_API_KEY not set")
     return _search
+
+
+async def ask_local(
+    question: str,
+    technique: str = "",
+    max_tokens: int = 2048,
+) -> str:
+    """Query local LLM via the gRPC engine.
+
+    Uses the engine-centric architecture for all inference.
+
+    Args:
+        question: The question or prompt
+        technique: optillm technique (cot_reflection, bon, moa, etc.) - empty for passthrough
+        max_tokens: Maximum tokens to generate
+
+    Returns:
+        LLM response text
+    """
+    from gaius.client import get_grpc_client
+
+    client = await get_grpc_client()
+    result = await client.call(
+        service="scheduler",
+        action="complete",
+        params={
+            "agent": "fast",  # Use fast agent for quick queries
+            "prompt": question,
+            "max_tokens": max_tokens,
+        },
+    )
+    return result.get("content", "")
