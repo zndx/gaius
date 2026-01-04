@@ -24,7 +24,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import numpy as np
@@ -283,7 +283,7 @@ class TopologyService:
             DriftMetrics with drift velocity, well depth, stability
         """
         if self._db_pool is None:
-            return DriftMetrics(domain=domain, computed_at=datetime.utcnow())
+            return DriftMetrics(domain=domain, computed_at=datetime.now(timezone.utc))
 
         async with self._db_pool.acquire() as conn:
             # Get snapshots within time window
@@ -304,7 +304,7 @@ class TopologyService:
             if len(rows) < 2:
                 return DriftMetrics(
                     domain=domain,
-                    computed_at=datetime.utcnow(),
+                    computed_at=datetime.now(timezone.utc),
                     time_window_hours=hours,
                     n_snapshots=len(rows),
                 )
@@ -394,7 +394,7 @@ class TopologyService:
 
             metrics = DriftMetrics(
                 domain=domain,
-                computed_at=datetime.utcnow(),
+                computed_at=datetime.now(timezone.utc),
                 time_window_hours=hours,
                 n_snapshots=len(rows),
                 drift_magnitude=drift_magnitude,
@@ -563,7 +563,7 @@ class TopologyService:
             return -1
 
         async with self._db_pool.acquire() as conn:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             position_history = [
                 {"ts": now.isoformat(), "embedding": embedding.tolist(), "grid": [grid_x, grid_y]}
             ]
@@ -642,7 +642,7 @@ class TopologyService:
 
             # Update position history
             history = json.loads(row['position_history'] or '[]')
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             history.append({
                 "ts": now.isoformat(),
                 "embedding": embedding.tolist(),

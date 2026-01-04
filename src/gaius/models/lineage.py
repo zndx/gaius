@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,7 @@ class ModelLineageEntry:
     merge_config: dict[str, Any] = field(default_factory=dict)
 
     # Metadata
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str = "gaius"
 
     # Evaluation
@@ -377,7 +377,7 @@ class ModelLineageTracker:
                 "score": score,
                 "queries_evaluated": queries_evaluated,
                 "improvement_percent": improvement_percent,
-                "evaluated_at": datetime.utcnow().isoformat(),
+                "evaluated_at": datetime.now(timezone.utc).isoformat(),
             }
 
             await conn.execute(

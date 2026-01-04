@@ -19,7 +19,7 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ...models.merging import (
@@ -59,7 +59,7 @@ class MergeCycleResult:
     # Metadata
     duration_ms: int = 0
     error: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""

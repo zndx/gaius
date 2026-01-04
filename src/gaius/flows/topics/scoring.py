@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +47,7 @@ class ScoringRubric:
     model_preference: str = "ensemble"  # local, remote, ensemble
     local_model: str | None = None
     remote_model: str | None = None
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     @property
     def total_weight(self) -> float:
@@ -81,7 +81,7 @@ class ScoringRubric:
                 )
                 for c in data["criteria"]
             ],
-            created_at=data.get("created_at", datetime.utcnow().isoformat()),
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -97,7 +97,7 @@ class PaperScore:
     model_used: str
     reasoning: str | None = None
     confidence: float | None = None
-    scored_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    scored_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
         return {

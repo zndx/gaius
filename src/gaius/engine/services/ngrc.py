@@ -23,7 +23,7 @@ import io
 import logging
 import pickle
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -221,7 +221,7 @@ class NGRCPredictor:
             embed_dim=embed_dim,
             n_training_samples=n_samples,
             training_time_span_hours=time_span_hours,
-            trained_at=datetime.utcnow(),
+            trained_at=datetime.now(timezone.utc),
             validation_mse=val_mse,
             forecast_horizon=horizon,
             kb_document_count=kb_document_count,

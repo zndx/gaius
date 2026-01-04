@@ -32,7 +32,7 @@ Usage:
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from .reasoning_tasks import load_reasoning_tasks, ReasoningTask
@@ -58,7 +58,7 @@ class TaskConcept:
     example_domains: list[str]  # Domains for example generation
     estimated_difficulty: float = 0.6  # Target difficulty
     novelty_score: float = 0.0  # How novel vs existing tasks
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
         return {
@@ -82,7 +82,7 @@ class GapAnalysis:
     existing_capabilities: set[str]
     identified_gaps: list[str]
     gap_rationales: dict[str, str]  # gap -> why it matters
-    analysis_timestamp: datetime = field(default_factory=datetime.utcnow)
+    analysis_timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class TaskIdeationAgent:
@@ -201,7 +201,7 @@ class TaskIdeationAgent:
         """
         if self._last_gap_analysis and not refresh:
             # Cache for 1 hour
-            age = (datetime.utcnow() - self._last_gap_analysis.analysis_timestamp).seconds
+            age = (datetime.now(timezone.utc) - self._last_gap_analysis.analysis_timestamp).seconds
             if age < 3600:
                 return self._last_gap_analysis
 

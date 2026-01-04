@@ -100,7 +100,7 @@ class MetaSyncFlow(FlowSpec):
             if self.sync_mode == "full":
                 time_filter = ""
             else:
-                cutoff = datetime.utcnow() - timedelta(hours=self.lookback_hours)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
                 time_filter = f"WHERE event_time > '{cutoff.isoformat()}'"
 
             # Extract datasets from lineage_events
@@ -217,7 +217,7 @@ class MetaSyncFlow(FlowSpec):
             if self.sync_mode == "full":
                 time_filter = ""
             else:
-                cutoff = datetime.utcnow() - timedelta(hours=self.lookback_hours)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
                 time_filter = f"WHERE started.event_time > '{cutoff.isoformat()}'"
 
             cur.execute(f"""
@@ -493,7 +493,7 @@ class MetaSyncFlow(FlowSpec):
         cur = conn.cursor()
 
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             for sync_type, stats in self.sync_stats.items():
                 total = sum(stats.values())
                 cur.execute(
