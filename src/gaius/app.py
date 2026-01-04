@@ -3270,14 +3270,14 @@ Use `/evolve stop` to stop orchestrated evolution.
                                 github_issue = inc.get("github_issue", 0)
                                 attempts = inc.get("attempts", 0)
 
-                                # Status icon
-                                status_icons = {
-                                    "active": "🔴",
-                                    "healing": "🟡",
-                                    "recovering": "🟢",
-                                    "manual_required": "🟠",
+                                # Status icon (matching health check style)
+                                incident_status_icons = {
+                                    "active": "[X]",
+                                    "healing": "[~]",
+                                    "recovering": "[+]",
+                                    "manual_required": "[!]",
                                 }
-                                icon = status_icons.get(status, "⚪")
+                                icon = incident_status_icons.get(status, "[?]")
 
                                 # Format incident entry
                                 lines.append(f"### {icon} {fingerprint}")
