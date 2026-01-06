@@ -269,7 +269,7 @@ class NiFiSoMGenerator:
         flow_name: str,
         steps: list[str],
         capture_screenshot: bool = True,
-    ) -> list[DatasetExample]:
+    ) -> list[DatasetExample | TraceExample]:
         """Generate Set-of-Mark examples (single image per example)."""
         # Sync flow to NiFi (creates process group with processors)
         pg_id = await self.nifi.sync_flow(flow_name, steps)
@@ -348,7 +348,7 @@ class NiFiSoMGenerator:
         flow_name: str,
         steps: list[str],
         capture_screenshot: bool = True,
-    ) -> list[TraceExample]:
+    ) -> list[DatasetExample | TraceExample]:
         """Generate Trace-of-Mark examples (multi-frame with trajectory)."""
         # Sync flow to NiFi
         pg_id = await self.nifi.sync_flow(flow_name, steps)

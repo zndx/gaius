@@ -382,6 +382,12 @@ class ColPaliController:
         """
         import torch
 
+        if endpoint.model is None or endpoint.processor is None:
+            raise RuntimeError(
+                f"ColPali endpoint {endpoint.name} model/processor not loaded. "
+                f"Status: {endpoint.status}"
+            )
+
         model = endpoint.model
         processor = endpoint.processor
 
@@ -532,11 +538,12 @@ class ColPaliController:
         Returns:
             List of endpoint info dicts
         """
-        return [
-            self.get_endpoint_info(name)
-            for name in self._endpoints
-            if self.get_endpoint_info(name) is not None
-        ]
+        result: list[dict] = []
+        for name in self._endpoints:
+            info = self.get_endpoint_info(name)
+            if info is not None:
+                result.append(info)
+        return result
 
 
 # Module-level singleton

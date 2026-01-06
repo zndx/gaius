@@ -44,7 +44,7 @@ async def save_cached_state_async(
     projection_method: str,
     embedding_type: str = "single",
     iso_features: "IsoFeatures | None" = None,
-) -> str | None:
+) -> int | None:
     """Save computed state to Postgres cache (async).
 
     Args:
@@ -170,7 +170,7 @@ def save_cached_state(
     projection_method: str,
     embedding_type: str = "single",
     iso_features: "IsoFeatures | None" = None,
-) -> str | None:
+) -> int | None:
     """Save computed state (sync wrapper).
 
     Note: This creates a new event loop. Do not call from within an async context.

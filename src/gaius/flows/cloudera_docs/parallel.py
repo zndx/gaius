@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .progress import ProgressTracker, get_sync_progress, format_progress_human
+from .flow import SyncResult
 
 logger = logging.getLogger(__name__)
 
@@ -634,7 +635,7 @@ def sync_product_parallel(
     kb_root: Path,
     num_gpus: int = 6,
     force: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, Any] | SyncResult:
     """Sync a product using parallel GPU processing.
 
     Drop-in replacement for sync_product() that uses parallel processing.

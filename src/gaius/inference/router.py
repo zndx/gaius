@@ -666,6 +666,10 @@ class EndpointRouter:
                         f"Engine could not start {endpoint}: {result.get('message', result.get('status'))}"
                     )
                     return False
+            else:
+                # Engine proxy not enabled - cannot start endpoints without engine
+                logger.debug(f"Engine proxy not enabled, cannot start {endpoint}")
+                return False
 
         except (ConnectionError, ImportError) as e:
             # Engine Federation Architecture: fail-fast when engine unavailable

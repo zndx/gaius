@@ -238,8 +238,13 @@ class NomicEmbeddings:
             )
             return vector
 
-        # Fallback to raw transformers
+        # Fallback to raw transformers - tokenizer and model must be set
         import torch
+
+        if self._text_tokenizer is None or self._text_model is None:
+            raise RuntimeError(
+                "Text tokenizer/model not loaded. This indicates a bug in _load_text_model()."
+            )
 
         inputs = self._text_tokenizer(
             text,
@@ -313,8 +318,13 @@ class NomicEmbeddings:
             )
             return vectors
 
-        # Fallback: process in batches
+        # Fallback: process in batches - tokenizer and model must be set
         import torch
+
+        if self._text_tokenizer is None or self._text_model is None:
+            raise RuntimeError(
+                "Text tokenizer/model not loaded. This indicates a bug in _load_text_model()."
+            )
 
         all_vectors = []
         for i in range(0, len(texts), batch_size):
@@ -377,6 +387,11 @@ class NomicEmbeddings:
         import torch
 
         self._load_vision_model()
+
+        if self._vision_processor is None or self._vision_model is None:
+            raise RuntimeError(
+                "Vision model not loaded. This indicates a bug in _load_vision_model()."
+            )
 
         # Load image if path
         if isinstance(image, (str, Path)):
@@ -446,6 +461,11 @@ class NomicEmbeddings:
         import torch
 
         self._load_vision_model()
+
+        if self._vision_processor is None or self._vision_model is None:
+            raise RuntimeError(
+                "Vision model not loaded. This indicates a bug in _load_vision_model()."
+            )
 
         # Load all images
         pil_images = []

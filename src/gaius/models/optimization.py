@@ -173,7 +173,7 @@ def compute_pareto_ranks(candidates: list[CandidateConfig]) -> None:
         rank += 1
 
 
-def crowding_distance(candidates: list[CandidateConfig], objectives: list[OptimizationObjective]) -> dict[str, float]:
+def crowding_distance(candidates: list[CandidateConfig], objectives: list[OptimizationObjective]) -> dict[int, float]:
     """Compute crowding distance for diversity preservation.
 
     Used to select among Pareto-equivalent solutions.

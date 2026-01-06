@@ -362,14 +362,22 @@ class TieredEvaluator:
             return cached
 
         # Decide which tier
+        result: EvaluationResult
         if use_tier == "local":
             result = await self.local.evaluate(
                 agent_output, task_prompt, context, dimensions
             )
         elif use_tier == "xai":
-            result = await self._xai_evaluate(
+            xai_result = await self._xai_evaluate(
                 agent_output, task_prompt, context, dimensions, force_xai
             )
+            if xai_result is None:
+                # Fall back to local if XAI not available
+                result = await self.local.evaluate(
+                    agent_output, task_prompt, context, dimensions
+                )
+            else:
+                result = xai_result
         else:  # auto
             result = await self._auto_evaluate(
                 agent_output, task_prompt, context, dimensions

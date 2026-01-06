@@ -570,8 +570,9 @@ class NoteEditor(Widget, can_focus=True):
             Path to created scratch file
         """
         safe_title = re.sub(r'[^\w\-]', '_', title)[:30]
-        today = datetime.now().strftime("%Y-%m-%d")
-        timestamp = int(time.time())
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")  # HHMMSS format to match CLI pattern
         filename = f"{timestamp}_{safe_title}{extension}"
 
         filepath = self.scratch_dir / today / filename

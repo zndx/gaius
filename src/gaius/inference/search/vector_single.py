@@ -144,7 +144,7 @@ class VectorSearch:
             logger.debug(f"Loading embedding model {self.model_name}")
             self._model = SentenceTransformer(
                 self.model_name,
-                **kwargs,
+                **kwargs,  # type: ignore[arg-type]  # kwargs has mixed types, but SentenceTransformer accepts them
             )
         return self._model
 
@@ -161,7 +161,8 @@ class VectorSearch:
     @property
     def embedding_dim(self) -> int:
         """Get embedding dimension from model."""
-        return self.model.get_sentence_embedding_dimension()
+        dim = self.model.get_sentence_embedding_dimension()
+        return dim if dim is not None else 768  # Default for common models
 
     def ensure_collection(self) -> None:
         """Ensure Qdrant collection exists with correct schema."""

@@ -22,7 +22,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Re-export common types for backwards compatibility
-from .client import Message, CompletionResult
+from .client import Message
+from ..client.engine_proxy import CompletionResult
 
 
 @dataclass

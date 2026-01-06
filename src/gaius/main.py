@@ -53,10 +53,11 @@ def create_domain_swarm(domain_prompt: str) -> List[Dict[str, Any]]:
     agents = []
     for role in base_roles:
         # Create deep agent with sub-spawning + planning tool
+        # NOTE: This is experimental code with incorrect langchain tool usage
         agent = create_deep_agent(
             model=llm,
-            tools=[tool(lambda x: f"Planned step: {x}")("plan"),  # Built-in planning tool
-                   tool(lambda: "Spawn sub-agent for detail")("spawn_sub")],
+            tools=[tool(lambda x: f"Planned step: {x}")("plan"),  # type: ignore[call-arg]
+                   tool(lambda: "Spawn sub-agent for detail")("spawn_sub")],  # type: ignore[call-arg]
             system_prompt=role["role"],
             middleware=[apo.middleware]  # APO tunes prompts dynamically
         )

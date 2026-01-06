@@ -20,8 +20,6 @@ class LocationIndicator(Widget):
     LocationIndicator {
         width: 100%;
         height: 1;
-        background: $surface-darken-1;
-        color: $text-muted;
         text-align: center;
         padding: 0 1;
     }
@@ -35,7 +33,7 @@ class LocationIndicator(Widget):
         self.cursor_x = x
         self.cursor_y = y
 
-    def _grid_to_hypersphere(self, x: int, y: int) -> tuple[float, float, float]:
+    def _grid_to_hypersphere(self, x: int, y: int) -> tuple[int, int, float, float]:
         """Map grid coordinates to hypersphere celestial coordinates.
 
         The 19×19 grid maps to a 3-sphere (hypersphere) via:

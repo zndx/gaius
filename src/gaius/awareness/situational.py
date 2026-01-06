@@ -348,7 +348,7 @@ class SituationalAwareness:
             )
 
             info = client.get_collection(config.vector_store.collection)
-            return info.points_count
+            return info.points_count or 0
 
         except Exception as e:
             raise RuntimeError(
