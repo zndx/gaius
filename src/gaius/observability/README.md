@@ -28,7 +28,7 @@ graph TB
 
     subgraph "Display"
         TUI[ObservePanel Widget]
-        CLI[/observe Command]
+        CLI["CLI /observe"]
     end
 
     APP --> OTEL
@@ -350,7 +350,7 @@ graph TB
 
     subgraph Display
         OP[ObservePanel<br/>Widget]
-        CLI[/observe<br/>CLI cmd]
+        CLI["CLI /observe"]
     end
 
     APP --> OTEL
