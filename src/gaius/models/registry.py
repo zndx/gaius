@@ -33,6 +33,7 @@ class ModelCapability(Enum):
     FUNCTION_CALLING = auto()  # Tool use
     LONG_CONTEXT = auto()  # Extended context window
     LATENT_MAS_CLT = auto()  # Cross-Layer Transcoder for latent-space operations
+    THINKING = auto()  # Model produces thinking traces (extended reasoning)
 
 
 class TaskType(Enum):
@@ -58,6 +59,10 @@ class TaskType(Enum):
     # Interpretability / Latent operations
     CLT_TRACING = "clt_tracing"  # Circuit tracing with CLT
 
+    # Extended capabilities (on-demand scheduling)
+    THINKING = "thinking"  # Extended reasoning with thinking traces
+    INSTRUCT = "instruct"  # Long-context instruction following
+
 
 @dataclass
 class VLLMConfig:
@@ -69,6 +74,10 @@ class VLLMConfig:
     max_num_seqs: int = 256
     dtype: str = "auto"  # "auto", "float16", "bfloat16"
     trust_remote_code: bool = False
+
+    # Startup optimization
+    enforce_eager: bool = False  # Skip CUDA graph compilation for fast startup
+    swap_space: int = 0  # Swap space in GB for KV cache overflow
 
     # Tool/reasoning support
     tool_call_parser: str | None = None  # e.g., "glm45", "hermes"
@@ -93,6 +102,10 @@ class VLLMConfig:
             args.append(f"--max-model-len={self.max_model_len}")
         if self.trust_remote_code:
             args.append("--trust-remote-code")
+        if self.enforce_eager:
+            args.append("--enforce-eager")
+        if self.swap_space > 0:
+            args.append(f"--swap-space={self.swap_space}")
         if self.tool_call_parser:
             args.append(f"--tool-call-parser={self.tool_call_parser}")
         if self.reasoning_parser:
@@ -591,23 +604,62 @@ DEVSTRAL_SMALL_2_24B_INSTRUCT_2512 = ModelSpec(
         ModelCapability.LONG_CONTEXT,
     ],
     task_scores={
+        TaskType.INSTRUCT: 1.0,  # Primary use: long-context instruction following
         TaskType.CHAT: 0.85,
         TaskType.CODING: 0.95,
         TaskType.SWARM_AGENT: 0.80,
     },
     context_length=262144,
     parameters_b=24.0,
-    memory_mb=15000,  # ~15GB with TP=2 (fp8 quantized)
+    memory_mb=24000,  # ~24GB FP8 weights, distributed across 4 GPUs
     default_temperature=0.7,
     default_max_tokens=2048,
-    default_port=8085,
+    default_port=8091,
     vllm_config=VLLMConfig(
-        tensor_parallel_size=2,
-        max_model_len=65536,
-        trust_remote_code=False,
+        tensor_parallel_size=4,
+        max_model_len=262144,  # Full 256K context
+        max_num_seqs=32,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,  # Skip CUDA graph compilation
+        swap_space=8,
     ),
-    description="Devstral Small 2 24B Instruct 2512 - agentic LLM for software engineering tasks with vision capabilities",
-    tags=["vllm", "safetensors", "mistral3", "mistral-common", "fp8", "agentic", "coding", "vision"],
+    description="Devstral Small 2 24B Instruct - 256K context for multi-turn instruction following",
+    tags=["vllm", "fp8", "long-context", "instruct", "coding", "256k"],
+)
+
+# OLMo3-32B-Think - Extended reasoning with thinking traces
+OLMO3_32B_THINK = ModelSpec(
+    model_id="allenai/Olmo-3-32B-Think",
+    name="OLMo3-32B-Think",
+    provider="vllm",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.THINKING,
+    ],
+    task_scores={
+        TaskType.THINKING: 1.0,  # Primary use: extended reasoning
+        TaskType.REASONING: 0.95,
+        TaskType.EVALUATION: 0.85,
+        TaskType.SYNTHESIS: 0.80,
+    },
+    context_length=65536,
+    parameters_b=32.0,
+    memory_mb=64000,  # ~64GB BF16 weights, distributed across 4 GPUs
+    default_temperature=0.6,
+    default_max_tokens=4096,
+    default_port=8090,
+    vllm_config=VLLMConfig(
+        tensor_parallel_size=4,
+        max_model_len=65536,  # Full 64K native context
+        max_num_seqs=16,
+        dtype="bfloat16",
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,  # Skip CUDA graph compilation
+        swap_space=8,
+    ),
+    description="OLMo3-32B-Think - extended reasoning with thinking traces (64K context)",
+    tags=["vllm", "thinking", "reasoning", "64k", "olmo"],
 )
 
 
@@ -634,6 +686,8 @@ class ModelRegistry:
             GLM_46V_FLASH,
             MISTRAL_7B,
             QWEN3_CODER,
+            # On-demand capabilities (thinking + instruct)
+            OLMO3_32B_THINK,
             # Embedding models
             NOMIC_EMBED_TEXT,
             NOMIC_EMBED_VISION,
