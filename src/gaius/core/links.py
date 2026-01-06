@@ -10,6 +10,50 @@ from typing import Iterator
 # Pattern to match [[path]] wiki-links
 WIKILINK_PATTERN = re.compile(r'\[\[([^\]]+)\]\]')
 
+# Pattern to match [action:/command args] action links (slash command syntax)
+# Matches: [action:/datasets info foo/bar] or [action:/models add my-model]
+ACTION_LINK_PATTERN = re.compile(r'\[action:(\/[^\]]+)\]')
+
+
+@dataclass
+class ActionLink:
+    """A parsed action link with slash command syntax.
+
+    Represents links like [action:/datasets info foo/bar].
+    """
+
+    command: str  # Full command including leading slash, e.g., "/datasets info foo"
+
+    @property
+    def base_command(self) -> str:
+        """Extract the base command (first word after slash)."""
+        parts = self.command.strip().split()
+        return parts[0] if parts else "/"
+
+    @property
+    def subcommand(self) -> str | None:
+        """Extract the subcommand (second word) if present."""
+        parts = self.command.strip().split()
+        return parts[1] if len(parts) > 1 else None
+
+    @property
+    def args(self) -> str | None:
+        """Extract remaining arguments after command and subcommand."""
+        parts = self.command.strip().split(maxsplit=2)
+        return parts[2] if len(parts) > 2 else None
+
+    @property
+    def display_name(self) -> str:
+        """Short display name for graph visualization."""
+        # Show subcommand + first part of args (e.g., "info foo")
+        sub = self.subcommand or ""
+        args = self.args or ""
+        if args:
+            # Truncate long args
+            short_args = args.split("/")[-1][:10]
+            return f"{sub} {short_args}"
+        return sub or self.base_command
+
 
 def parse_wikilinks(text: str) -> list[str]:
     """Extract all wiki-link paths from text.
@@ -21,6 +65,18 @@ def parse_wikilinks(text: str) -> list[str]:
         List of link paths (without brackets)
     """
     return WIKILINK_PATTERN.findall(text)
+
+
+def parse_action_links(text: str) -> list[ActionLink]:
+    """Extract all action links from text.
+
+    Args:
+        text: Markdown text containing [action:/command args] links
+
+    Returns:
+        List of ActionLink objects
+    """
+    return [ActionLink(command=cmd) for cmd in ACTION_LINK_PATTERN.findall(text)]
 
 
 def iter_wikilinks(text: str) -> Iterator[tuple[int, int, str]]:

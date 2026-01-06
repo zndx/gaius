@@ -8,6 +8,7 @@ from .command import CommandInput
 from .location import LocationIndicator
 from .note_editor import NoteEditor
 from .graph_view import GraphView
+from .link_preview import LinkPreview
 from .think_panel import ThinkPanel
 from .evolution_panel import EvolutionPanel
 from .connection_indicator import ConnectionIndicator, ConnectionStatusBar
@@ -26,6 +27,7 @@ __all__ = [
     "LocationIndicator",
     "NoteEditor",
     "GraphView",
+    "LinkPreview",
     "ThinkPanel",
     "EvolutionPanel",
     "ConnectionIndicator",

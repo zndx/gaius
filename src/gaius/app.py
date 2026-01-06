@@ -50,6 +50,7 @@ from .widgets.command import CommandInput, CommandSubmitted
 from .widgets.location import LocationIndicator
 from .widgets.note_editor import NoteEditor, EDITABLE_EXTENSIONS
 from .widgets.graph_view import GraphView
+from .widgets.link_preview import LinkPreview
 from .widgets.think_panel import ThinkPanel
 from .widgets.evolution_panel import EvolutionPanel
 from .widgets.init_panel import InitPanel
@@ -291,7 +292,6 @@ class GaiusApp(App):
     #grid-row {
         width: auto;
         height: auto;
-        overflow: hidden;
     }
 
     #grid-row.hidden {
@@ -331,16 +331,33 @@ class GaiusApp(App):
         overflow: hidden;
     }
 
+    /* Graph wrapper (mirrors main-grid-wrapper for vertical alignment) */
+    #graph-wrapper {
+        width: 40;
+        height: auto;
+        margin-left: 1;
+    }
+
+    #graph-wrapper.hidden {
+        display: none;
+    }
+
     /* Graph view (wiki-link visualization) - 19x19 borderless grid */
     #graph-view {
         width: 40;
         height: 21;
-        margin-left: 1;
         overflow: hidden;
     }
 
-    #graph-view.hidden {
-        display: none;
+    /* Link preview (below graph, mirrors LocationIndicator) */
+    #link-preview {
+        width: 40;
+        height: 1;
+        margin-top: 0;
+        background: #004295;
+        color: #e0e0e0;
+        text-align: left;
+        padding: 0 1;
     }
 
     /* Think panel (reasoning traces) - bordered panel */
@@ -360,8 +377,8 @@ class GaiusApp(App):
         width: 100%;
         height: 1;
         margin-top: 0;
-        background: $primary-darken-3;
-        color: $text;
+        background: #004295;
+        color: #e0e0e0;
     }
 
     /* Note editor below location indicator */
@@ -1515,7 +1532,7 @@ class GaiusApp(App):
         import asyncio
 
         content = self.query_one("#info-panel", InfoPanel)
-        domain = domain_override or self.state.domain
+        domain = domain_override or self.state.domain or "general"
 
         # Update domain if override provided
         if domain_override:
@@ -3135,13 +3152,16 @@ Use `/evolve stop` to stop orchestrated evolution.
         parts = args.split() if args else []
         subcmd = parts[0].lower() if parts else ""
 
-        # Determine title based on subcmd
+        # Determine title and check_type based on subcmd (matches CLI pattern)
         if subcmd == "quick":
             title = "Quick Health Check"
+            check_type = "quick"
         elif subcmd in ("engine", "data", "cognition", "inference"):
             title = f"{subcmd.title()} Health Check"
+            check_type = subcmd
         else:
             title = "System Health Check"
+            check_type = "full"
 
         # Show initial status
         content.show_file("health.md", f"# {title}\n\n*Starting diagnostics...*")
@@ -3239,16 +3259,17 @@ Use `/evolve stop` to stop orchestrated evolution.
 
                     if use_engine_proxy():
                         client = await get_grpc_client()
-                        incidents_result = await client.health_observer(
-                            action="incidents",
-                            params={"status": "active"},
+                        incidents_result = await client.call(
+                            "HealthObserver", "incidents", {"status": "active"}, timeout=5.0
                         )
                         incidents = incidents_result.get("incidents", [])
 
                         if incidents:
                             # Get GitHub repo for issue links
                             try:
-                                observer_status = await client.health_observer(action="status")
+                                observer_status = await client.call(
+                                    "HealthObserver", "status", {}, timeout=5.0
+                                )
                                 github_repo = observer_status.get("github_repo", "")
                             except Exception:
                                 github_repo = ""
@@ -3325,9 +3346,18 @@ Use `/evolve stop` to stop orchestrated evolution.
                             lines.append("")
 
                 except Exception as e:
-                    # Log but don't fail the health report
+                    # Log but don't fail the health report - record via OTel for observability
                     import logging
                     logging.getLogger(__name__).debug(f"Failed to fetch incidents: {e}")
+                    try:
+                        from .core.telemetry import get_tracer
+                        tracer = get_tracer()
+                        with tracer.start_as_current_span("health.fetch_incidents.error") as span:
+                            span.set_attribute("error.type", type(e).__name__)
+                            span.set_attribute("error.message", str(e))
+                            span.record_exception(e)
+                    except Exception:
+                        pass  # Don't fail on telemetry errors
 
                 lines.extend([
                     "## Check Results",
@@ -3373,7 +3403,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                     "*Categories: engine, data, cognition, inference*",
                 ])
 
-                self._show_output("health", "\n".join(lines))
+                self._show_output(f"health_{check_type}", "\n".join(lines))
 
                 # Refresh ThinkPanel to show any updates
                 try:
@@ -4122,6 +4152,680 @@ Tokens have been saved securely and will auto-refresh.
 
         asyncio.create_task(do_complete())
 
+    def _handle_datasets_command(self, args: str) -> None:
+        """Handle /datasets command for HuggingFace dataset discovery.
+
+        Usage:
+            /datasets list [limit]     - List trending HuggingFace datasets
+            /datasets add <id> [notes] - Add external dataset to KB
+            /datasets info <id>        - Get detailed info about a dataset
+            /datasets kb               - List datasets in KB (internal + external)
+            /ds                        - Shortcut alias
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.strip().split(maxsplit=2)
+        subcommand = parts[0] if parts else "kb"
+
+        if subcommand == "list":
+            limit = 5  # Default to 5 for meaningful context per item
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    pass
+            self._datasets_list(content, limit)
+        elif subcommand == "add":
+            if len(parts) < 2:
+                content.show_file("datasets.md", """# Add Dataset
+
+**Usage:** `/datasets add <dataset_id> [notes]`
+
+**Example:**
+```
+/datasets add nvidia/OpenMathReasoning-Nemotron
+/datasets add nvidia/OpenMathReasoning-Nemotron "For reasoning training"
+```
+""")
+                return
+            dataset_id = parts[1]
+            notes = parts[2] if len(parts) > 2 else ""
+            self._datasets_add(content, dataset_id, notes)
+        elif subcommand == "info":
+            if len(parts) < 2:
+                content.show_file("datasets.md", """# Dataset Info
+
+**Usage:** `/datasets info <dataset_id>`
+
+**Example:**
+```
+/datasets info nvidia/OpenMathReasoning-Nemotron
+```
+""")
+                return
+            dataset_id = parts[1]
+            self._datasets_info(content, dataset_id)
+        elif subcommand in ("kb", ""):
+            self._datasets_kb(content)
+        else:
+            content.show_file("datasets.md", f"""# HuggingFace Dataset Discovery
+
+Unknown subcommand: {subcommand}
+
+**Usage:**
+- `/datasets list [limit]` - List trending HuggingFace datasets
+- `/datasets add <id> [notes]` - Add external dataset to KB
+- `/datasets info <id>` - Get detailed info about a dataset
+- `/datasets kb` - List datasets in KB (internal + external)
+- `/ds` - Shortcut alias
+""")
+
+    def _datasets_list(self, content: "InfoPanel", limit: int) -> None:
+        """List trending HuggingFace datasets via gRPC."""
+        import asyncio
+
+        content.show_file("datasets.md", "# HuggingFace Datasets\n\n*Fetching...*")
+
+        async def do_list():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Datasets", "list", {"limit": limit})
+
+                if "error" in result and result["error"]:
+                    content.show_file("datasets.md", f"# Error\n\n{result['error']}")
+                    return
+
+                datasets = result.get("datasets", [])
+                count = result.get("count", 0)
+                saved_to = result.get("saved_to", "")
+
+                if not datasets:
+                    content.show_file("datasets.md", "# HuggingFace Datasets\n\n*No datasets found.*")
+                    return
+
+                # Show brief status in InfoPanel
+                nbsp = "\u00a0"
+                status_lines = [
+                    "# Datasets List",
+                    "",
+                    f"Count{nbsp * 6}{count}  ",
+                    "",
+                    "---",
+                    "",
+                    "`/datasets add <id>`  ",
+                    "`/datasets info <id>`  ",
+                    "`/datasets kb`",
+                ]
+                content.show_file("datasets.md", "\n".join(status_lines))
+
+                # Build prose format for zettelkasten with action links
+                lines = ["# Trending HuggingFace Datasets", ""]
+                lines.append(f"*{count} recent datasets from HuggingFace Hub*")
+                lines.append("")
+
+                for ds in datasets:
+                    ds_id = ds.get("id", "unknown")
+                    downloads = ds.get("downloads", 0)
+                    likes = ds.get("likes", 0)
+                    desc = ds.get("description", "") or "No description available."
+                    author = ds.get("author", "") or ds_id.split("/")[0] if "/" in ds_id else ""
+                    tags = ds.get("tags", [])
+
+                    lines.append(f"## {ds_id}")
+                    lines.append("")
+                    if author:
+                        lines.append(f"**Author:** {author}")
+                    lines.append(f"**Downloads:** {downloads:,} | **Likes:** {likes}")
+                    if tags:
+                        # Show first few meaningful tags
+                        display_tags = [t for t in tags[:5] if not t.startswith("region:")]
+                        if display_tags:
+                            lines.append(f"**Tags:** {', '.join(display_tags)}")
+                    lines.append("")
+                    lines.append(desc[:300] + ("..." if len(desc) > 300 else ""))
+                    lines.append("")
+                    # Action links for graph panel execution
+                    lines.append(f"- [action:/datasets info {ds_id}]")
+                    lines.append(f"- [action:/datasets add {ds_id}]")
+                    lines.append("")
+
+                # Open in NoteEditor
+                self._show_output("hf_datasets", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("datasets.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_list())
+
+    def _datasets_add(self, content: "InfoPanel", dataset_id: str, notes: str) -> None:
+        """Add external dataset to KB via gRPC."""
+        import asyncio
+
+        content.show_file("datasets.md", f"# Adding Dataset\n\nFetching `{dataset_id}`...")
+
+        async def do_add():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Datasets", "add", {"dataset_id": dataset_id, "notes": notes})
+
+                if "error" in result and result["error"]:
+                    content.show_file("datasets.md", f"# Error\n\n{result['error']}")
+                    return
+
+                saved_to = result.get("saved_to", "")
+                downloads = result.get("downloads", 0)
+                likes = result.get("likes", 0)
+                description = result.get("description", "")
+
+                output = f"""# Dataset Added
+
+**Dataset:** `{dataset_id}`
+**Saved to:** `{saved_to}`
+
+| Metric | Value |
+|--------|-------|
+| Downloads | {downloads:,} |
+| Likes | {likes} |
+
+**Description:**
+{description}
+
+---
+
+Use `/datasets kb` to see all KB datasets.
+"""
+                content.show_file("datasets.md", output)
+
+            except Exception as e:
+                content.show_file("datasets.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_add())
+
+    def _datasets_info(self, content: "InfoPanel", dataset_id: str) -> None:
+        """Get detailed info about a dataset via gRPC."""
+        import asyncio
+
+        content.show_file("datasets.md", f"# Dataset Info\n\nFetching `{dataset_id}`...")
+
+        async def do_info():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Datasets", "info", {"dataset_id": dataset_id})
+
+                if "error" in result and result["error"]:
+                    content.show_file("datasets.md", f"# Error\n\n{result['error']}")
+                    return
+
+                # Client returns flat dict with info fields directly
+                url = result.get("url", "")
+
+                ds_id = result.get("id", dataset_id)
+                author = result.get("author", "")
+                description = result.get("description", "")
+                downloads = result.get("downloads", 0)
+                likes = result.get("likes", 0)
+                created_at = result.get("created_at", "")
+                last_modified = result.get("last_modified", "")
+                tags = result.get("tags", [])
+
+                output = f"""# {ds_id}
+
+**Author:** {author}
+**URL:** {url}
+
+| Metric | Value |
+|--------|-------|
+| Downloads | {downloads:,} |
+| Likes | {likes} |
+| Created | {created_at} |
+| Modified | {last_modified} |
+
+**Tags:** {', '.join(tags) if tags else 'None'}
+
+**Description:**
+{description}
+
+---
+
+**Actions:** `/datasets add {dataset_id}` to add to KB
+"""
+                content.show_file("datasets.md", output)
+
+            except Exception as e:
+                content.show_file("datasets.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_info())
+
+    def _datasets_kb(self, content: "InfoPanel") -> None:
+        """List datasets in KB via gRPC."""
+        import asyncio
+
+        content.show_file("datasets.md", "# KB Datasets\n\n*Loading...*")
+
+        async def do_list_kb():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Datasets", "list_kb", {})
+
+                internal = result.get("internal", [])
+                external = result.get("external", [])
+                internal_count = result.get("internal_count", 0)
+                external_count = result.get("external_count", 0)
+
+                # Show brief status in InfoPanel
+                nbsp = "\u00a0"
+                status_lines = [
+                    "# KB Datasets",
+                    "",
+                    f"Internal{nbsp * 3}{internal_count}  ",
+                    f"External{nbsp * 3}{external_count}  ",
+                    "",
+                    "---",
+                    "",
+                    "`/datasets list`  ",
+                    "`/datasets add <id>`  ",
+                    "`/datasets info <id>`",
+                ]
+                content.show_file("datasets.md", "\n".join(status_lines))
+
+                # Build full table for zettelkasten
+                lines = ["# KB Datasets", ""]
+                lines.append(f"*{internal_count} internal, {external_count} external*")
+                lines.append("")
+
+                if internal:
+                    lines.append(f"## Internal Datasets ({internal_count})")
+                    lines.append("")
+                    lines.append("| ID | Type | Path |")
+                    lines.append("|----|------|------|")
+                    for ds in internal:
+                        lines.append(f"| `{ds.get('id', '')}` | {ds.get('type', '')} | `{ds.get('path', '')}` |")
+                    lines.append("")
+
+                if external:
+                    lines.append(f"## External Datasets ({external_count})")
+                    lines.append("")
+                    lines.append("| ID | Type | Path |")
+                    lines.append("|----|------|------|")
+                    for ds in external:
+                        lines.append(f"| `{ds.get('id', '')}` | {ds.get('type', '')} | `{ds.get('path', '')}` |")
+                    lines.append("")
+
+                if not internal and not external:
+                    lines.append("No datasets in KB yet.")
+                    lines.append("")
+                    lines.append("**Actions:**")
+                    lines.append("- `/datasets list` - Browse HuggingFace datasets")
+                    lines.append("- `/datasets add <id>` - Add external dataset")
+
+                lines.append("")
+                lines.append("---")
+                lines.append("**Actions:** `/datasets list` to browse HuggingFace, `/datasets add <id>` to add external")
+
+                # Open in NoteEditor
+                self._show_output("kb_datasets", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("datasets.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_list_kb())
+
+    def _handle_models_command(self, args: str) -> None:
+        """Handle /models command for HuggingFace model discovery.
+
+        Usage:
+            /models list [limit]     - List trending HuggingFace models
+            /models add <id> [notes] - Add external model to KB
+            /models info <id>        - Get detailed info about a model
+            /models kb               - List models in KB (internal + external)
+            /m                       - Shortcut alias
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.strip().split(maxsplit=2)
+        subcommand = parts[0] if parts else "kb"
+
+        if subcommand == "list":
+            limit = 5  # Default to 5 for meaningful context per item
+            filter_str = ""
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    # Could be a filter like "text-generation"
+                    filter_str = parts[1]
+            self._models_list(content, limit, filter_str)
+        elif subcommand == "add":
+            if len(parts) < 2:
+                content.show_file("models.md", """# Add Model
+
+**Usage:** `/models add <model_id> [notes]`
+
+**Example:**
+```
+/models add meta-llama/Llama-3.3-70B-Instruct
+/models add meta-llama/Llama-3.3-70B-Instruct "Main reasoning model"
+```
+""")
+                return
+            model_id = parts[1]
+            notes = parts[2] if len(parts) > 2 else ""
+            self._models_add(content, model_id, notes)
+        elif subcommand == "info":
+            if len(parts) < 2:
+                content.show_file("models.md", """# Model Info
+
+**Usage:** `/models info <model_id>`
+
+**Example:**
+```
+/models info meta-llama/Llama-3.3-70B-Instruct
+```
+""")
+                return
+            model_id = parts[1]
+            self._models_info(content, model_id)
+        elif subcommand in ("kb", ""):
+            self._models_kb(content)
+        else:
+            content.show_file("models.md", f"""# HuggingFace Model Discovery
+
+Unknown subcommand: {subcommand}
+
+**Usage:**
+- `/models list [limit]` - List trending HuggingFace models
+- `/models add <id> [notes]` - Add external model to KB
+- `/models info <id>` - Get detailed info about a model
+- `/models kb` - List models in KB (internal + external)
+- `/m` - Shortcut alias
+""")
+
+    def _models_list(self, content: "InfoPanel", limit: int, filter_str: str = "") -> None:
+        """List trending HuggingFace models via gRPC."""
+        import asyncio
+        from pathlib import Path
+
+        content.show_file("models.md", "# HuggingFace Models\n\n*Fetching...*")
+
+        async def do_list():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Models", "list", {"limit": limit, "filter": filter_str})
+
+                if "error" in result and result["error"]:
+                    content.show_file("models.md", f"# Error\n\n{result['error']}")
+                    return
+
+                models = result.get("models", [])
+                count = result.get("count", 0)
+                saved_to = result.get("saved_to", "")
+
+                if not models:
+                    content.show_file("models.md", "# HuggingFace Models\n\n*No models found.*")
+                    return
+
+                # Show brief status in InfoPanel
+                nbsp = "\u00a0"
+                status_lines = [
+                    "# Models List",
+                    "",
+                    f"Count{nbsp * 6}{count}  ",
+                    f"Filter{nbsp * 5}{filter_str or 'all'}  ",
+                    "",
+                    "---",
+                    "",
+                    "`/models add <id>`  ",
+                    "`/models info <id>`  ",
+                    "`/models kb`",
+                ]
+                content.show_file("models.md", "\n".join(status_lines))
+
+                # Build prose format for zettelkasten with action links
+                lines = ["# Trending HuggingFace Models", ""]
+                filter_note = f" (filter: {filter_str})" if filter_str else ""
+                lines.append(f"*{count} models from HuggingFace Hub{filter_note}*")
+                lines.append("")
+
+                for m in models:
+                    m_id = m.get("id", "unknown")
+                    downloads = m.get("downloads", 0)
+                    likes = m.get("likes", 0)
+                    pipeline = m.get("pipeline_tag", "")
+                    author = m.get("author", "") or (m_id.split("/")[0] if "/" in m_id else "")
+                    model_type = m.get("model_type", "")
+                    library = m.get("library_name", "")
+                    tags = m.get("tags", [])
+
+                    lines.append(f"## {m_id}")
+                    lines.append("")
+                    if author:
+                        lines.append(f"**Author:** {author}")
+                    lines.append(f"**Downloads:** {downloads:,} | **Likes:** {likes}")
+                    if pipeline:
+                        lines.append(f"**Pipeline:** {pipeline}")
+                    if library:
+                        lines.append(f"**Library:** {library}")
+                    if model_type:
+                        lines.append(f"**Type:** {model_type}")
+                    if tags:
+                        # Show first few meaningful tags
+                        display_tags = [t for t in tags[:5] if not t.startswith("region:") and not t.startswith("license:")]
+                        if display_tags:
+                            lines.append(f"**Tags:** {', '.join(display_tags)}")
+                    lines.append("")
+                    # Action links for graph panel execution
+                    lines.append(f"- [action:/models info {m_id}]")
+                    lines.append(f"- [action:/models add {m_id}]")
+                    lines.append("")
+
+                # Open in NoteEditor
+                self._show_output("hf_models", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("models.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_list())
+
+    def _models_add(self, content: "InfoPanel", model_id: str, notes: str) -> None:
+        """Add external model to KB via gRPC."""
+        import asyncio
+
+        content.show_file("models.md", f"# Adding Model\n\nFetching `{model_id}`...")
+
+        async def do_add():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Models", "add", {"model_id": model_id, "notes": notes})
+
+                if "error" in result and result["error"]:
+                    content.show_file("models.md", f"# Error\n\n{result['error']}")
+                    return
+
+                saved_to = result.get("saved_to", "")
+                downloads = result.get("downloads", 0)
+                likes = result.get("likes", 0)
+                pipeline_tag = result.get("pipeline_tag", "")
+
+                output = f"""# Model Added
+
+**Model:** `{model_id}`
+**Saved to:** `{saved_to}`
+
+| Metric | Value |
+|--------|-------|
+| Downloads | {downloads:,} |
+| Likes | {likes} |
+| Pipeline | {pipeline_tag} |
+
+---
+
+Use `/models kb` to see all KB models.
+"""
+                content.show_file("models.md", output)
+
+            except Exception as e:
+                content.show_file("models.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_add())
+
+    def _models_info(self, content: "InfoPanel", model_id: str) -> None:
+        """Get detailed info about a model via gRPC."""
+        import asyncio
+
+        content.show_file("models.md", f"# Model Info\n\nFetching `{model_id}`...")
+
+        async def do_info():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Models", "info", {"model_id": model_id})
+
+                if "error" in result and result["error"]:
+                    content.show_file("models.md", f"# Error\n\n{result['error']}")
+                    return
+
+                # Client returns flat dict with info fields directly
+                url = result.get("url", "")
+
+                m_id = result.get("id", model_id)
+                author = result.get("author", "")
+                pipeline_tag = result.get("pipeline_tag", "")
+                downloads = result.get("downloads", 0)
+                likes = result.get("likes", 0)
+                created_at = result.get("created_at", "")
+                last_modified = result.get("last_modified", "")
+                tags = result.get("tags", [])
+                gated = result.get("gated", False)
+                library_name = result.get("library_name", "")
+
+                output = f"""# {m_id}
+
+**Author:** {author}
+**URL:** {url}
+
+| Metric | Value |
+|--------|-------|
+| Downloads | {downloads:,} |
+| Likes | {likes} |
+| Pipeline | {pipeline_tag} |
+| Library | {library_name} |
+| Gated | {"Yes" if gated else "No"} |
+| Created | {created_at} |
+| Modified | {last_modified} |
+
+**Tags:** {', '.join(tags) if tags else 'None'}
+
+---
+
+**Actions:** `/models add {model_id}` to add to KB
+"""
+                content.show_file("models.md", output)
+
+            except Exception as e:
+                content.show_file("models.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_info())
+
+    def _models_kb(self, content: "InfoPanel") -> None:
+        """List models in KB via gRPC."""
+        import asyncio
+
+        content.show_file("models.md", "# KB Models\n\n*Loading...*")
+
+        async def do_list_kb():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Models", "list_kb", {})
+
+                internal = result.get("internal", [])
+                external = result.get("external", [])
+                internal_count = result.get("internal_count", 0)
+                external_count = result.get("external_count", 0)
+                total_cache_bytes = result.get("total_cache_bytes", 0)
+                cache_gb = total_cache_bytes / (1024 ** 3)
+
+                # Show brief status in InfoPanel
+                nbsp = "\u00a0"
+                status_lines = [
+                    "# KB Models",
+                    "",
+                    f"Internal{nbsp * 3}{internal_count}  ",
+                    f"External{nbsp * 3}{external_count}  ",
+                    f"Cache{nbsp * 6}{cache_gb:.1f} GB  ",
+                    "",
+                    "---",
+                    "",
+                    "`/models list`  ",
+                    "`/models add <id>`  ",
+                    "`/models info <id>`",
+                ]
+                content.show_file("models.md", "\n".join(status_lines))
+
+                # Build full table for zettelkasten
+                lines = ["# KB Models", ""]
+                lines.append(f"*{internal_count} internal, {external_count} external - {cache_gb:.1f} GB cached*")
+                lines.append("")
+
+                if internal:
+                    lines.append(f"## Internal Models ({internal_count})")
+                    lines.append("")
+                    lines.append("| ID | Pipeline | Size |")
+                    lines.append("|----|----------|------|")
+                    for m in internal:
+                        m_id = m.get("id", "")
+                        pipeline = m.get("pipeline_tag", "")
+                        size_bytes = m.get("size_bytes", 0)
+                        size_gb = size_bytes / (1024 ** 3)
+                        lines.append(f"| `{m_id}` | {pipeline} | {size_gb:.1f} GB |")
+                    lines.append("")
+
+                if external:
+                    lines.append(f"## External Models ({external_count})")
+                    lines.append("")
+                    lines.append("| ID | Pipeline | Path |")
+                    lines.append("|----|----------|------|")
+                    for m in external:
+                        lines.append(f"| `{m.get('id', '')}` | {m.get('pipeline_tag', '')} | `{m.get('path', '')}` |")
+                    lines.append("")
+
+                if not internal and not external:
+                    lines.append("No models in KB yet.")
+                    lines.append("")
+                    lines.append("**Actions:**")
+                    lines.append("- `/models list` - Browse HuggingFace models")
+                    lines.append("- `/models add <id>` - Add external model")
+
+                lines.append("")
+                lines.append("---")
+                lines.append("**Actions:** `/models list` to browse HuggingFace, `/models add <id>` to add external")
+
+                # Open in NoteEditor
+                self._show_output("kb_models", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("models.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_list_kb())
+
     def _handle_iso_command(self, args: str, content: "InfoPanel") -> None:
         """Handle /iso command for Iso view mode control.
 
@@ -4767,8 +5471,10 @@ The general-purpose agentic query interface.
                             yield MiniGrid("Embed", id="minigrid-top", classes="right")
                             yield MiniGrid("Iso", id="minigrid-bottom", classes="bottom-right")
 
-                        # Graph view (wiki-links) - hidden by default, 'g' cycles modes
-                        yield GraphView(kb_root=self.config.kb.root, id="graph-view", classes="hidden")
+                        # Graph view wrapper (mirrors main-grid-wrapper) - hidden by default, 'g' cycles modes
+                        with Vertical(id="graph-wrapper", classes="hidden"):
+                            yield GraphView(kb_root=self.config.kb.root, id="graph-view")
+                            yield LinkPreview(id="link-preview")
 
                         # Think panel (reasoning traces) - hidden by default, 'g' cycles modes
                         yield ThinkPanel(self.state, id="think-panel", classes="hidden")
@@ -5223,8 +5929,9 @@ The general-purpose agentic query interface.
         file_tree.refresh_tree()
 
         # Update graph if visible
-        graph = self.query_one("#graph-view", GraphView)
-        if not graph.has_class("hidden"):
+        graph_wrapper = self.query_one("#graph-wrapper", Vertical)
+        if not graph_wrapper.has_class("hidden"):
+            graph = self.query_one("#graph-view", GraphView)
             graph.update_for_file(filepath)
 
         # Update status to show we're editing
@@ -5275,6 +5982,7 @@ The general-purpose agentic query interface.
         During init: INIT → GRAPH → THINK → EVOLUTION → OBSERVE → NONE → INIT
         After ready: GRAPH → THINK → EVOLUTION → OBSERVE → NONE → GRAPH (skips INIT)
         """
+        graph_wrapper = self.query_one("#graph-wrapper", Vertical)
         graph = self.query_one("#graph-view", GraphView)
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
@@ -5285,7 +5993,7 @@ The general-purpose agentic query interface.
         new_mode = self.state.cycle_center_panel_mode()
 
         # Hide all first
-        graph.add_class("hidden")
+        graph_wrapper.add_class("hidden")
         think.add_class("hidden")
         evolution.add_class("hidden")
         init_panel.add_class("hidden")
@@ -5296,12 +6004,21 @@ The general-purpose agentic query interface.
             init_panel.remove_class("hidden")
             init_panel.refresh()
         elif new_mode == CenterPanelMode.GRAPH:
-            graph.remove_class("hidden")
+            graph_wrapper.remove_class("hidden")
             # Refresh graph content
             graph.scan_kb()
             editor = self.query_one("#note-editor", NoteEditor)
+            link_preview = self.query_one("#link-preview", LinkPreview)
             if editor.current_file:
                 graph.update_for_file(editor.current_file)
+                # Initialize LinkPreview with current file
+                link_preview.update_from_node("current", filepath=editor.current_file)
+            elif graph.current_file:
+                # Use graph's current file if editor has none
+                link_preview.update_from_node("current", filepath=graph.current_file)
+            else:
+                # Clear LinkPreview if no file is open
+                link_preview.clear()
         elif new_mode == CenterPanelMode.THINK:
             think.remove_class("hidden")
             think.refresh()
@@ -5322,7 +6039,7 @@ The general-purpose agentic query interface.
 
     def action_show_evolution(self) -> None:
         """Show evolution panel directly."""
-        graph = self.query_one("#graph-view", GraphView)
+        graph_wrapper = self.query_one("#graph-wrapper", Vertical)
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
         init_panel = self.query_one("#init-panel", InitPanel)
@@ -5332,7 +6049,7 @@ The general-purpose agentic query interface.
         self.state.center_panel_mode = CenterPanelMode.EVOLUTION
 
         # Hide others, show evolution
-        graph.add_class("hidden")
+        graph_wrapper.add_class("hidden")
         think.add_class("hidden")
         init_panel.add_class("hidden")
         observe_panel.add_class("hidden")
@@ -5578,7 +6295,7 @@ The general-purpose agentic query interface.
         During engine initialization, automatically shows InitPanel.
         After initialization completes, respects the configured mode.
         """
-        graph = self.query_one("#graph-view", GraphView)
+        graph_wrapper = self.query_one("#graph-wrapper", Vertical)
         think = self.query_one("#think-panel", ThinkPanel)
         evolution = self.query_one("#evolution-panel", EvolutionPanel)
         init_panel = self.query_one("#init-panel", InitPanel)
@@ -5591,7 +6308,7 @@ The general-purpose agentic query interface.
         mode = self.state.center_panel_mode
 
         # Hide all first
-        graph.add_class("hidden")
+        graph_wrapper.add_class("hidden")
         think.add_class("hidden")
         evolution.add_class("hidden")
         init_panel.add_class("hidden")
@@ -5601,7 +6318,7 @@ The general-purpose agentic query interface.
         if mode == CenterPanelMode.INIT:
             init_panel.remove_class("hidden")
         elif mode == CenterPanelMode.GRAPH:
-            graph.remove_class("hidden")
+            graph_wrapper.remove_class("hidden")
         elif mode == CenterPanelMode.THINK:
             think.remove_class("hidden")
         elif mode == CenterPanelMode.EVOLUTION:
@@ -5746,12 +6463,13 @@ The general-purpose agentic query interface.
         data = event.data
         content = self.query_one("#info-panel", InfoPanel)
         editor = self.query_one("#note-editor", NoteEditor)
+        graph_wrapper = self.query_one("#graph-wrapper", Vertical)
         graph = self.query_one("#graph-view", GraphView)
 
         if data["type"] == "file":
             filepath = data["path"]
             # Update graph view if visible
-            if not graph.has_class("hidden"):
+            if not graph_wrapper.has_class("hidden"):
                 graph.update_for_file(filepath)
 
             # Check if it's an editable KB file (supported extension under archive/, current/, or scratch/)
@@ -5804,9 +6522,10 @@ The general-purpose agentic query interface.
 
         # Set new debounced timer (150ms)
         def update_graph() -> None:
-            graph = self.query_one("#graph-view", GraphView)
-            if not graph.has_class("hidden"):
+            graph_wrapper = self.query_one("#graph-wrapper", Vertical)
+            if not graph_wrapper.has_class("hidden"):
                 # Try to select this node in the graph if it exists
+                graph = self.query_one("#graph-view", GraphView)
                 graph.select_node_by_path(filepath)
 
         self._graph_update_timer = self.set_timer(0.15, update_graph)
@@ -5818,50 +6537,70 @@ The general-purpose agentic query interface.
         file_tree.refresh_tree()
 
         # Update graph if visible
-        graph = self.query_one("#graph-view", GraphView)
-        if not graph.has_class("hidden"):
+        graph_wrapper = self.query_one("#graph-wrapper", Vertical)
+        if not graph_wrapper.has_class("hidden"):
+            graph = self.query_one("#graph-view", GraphView)
             graph.scan_kb()  # Rescan for updated paths
             graph.update_for_file(event.new_path)
 
     def on_graph_view_node_highlighted(self, event: GraphView.NodeHighlighted) -> None:
-        """Sync FileTree cursor and preview content when graph cursor moves."""
-        file_tree = self.query_one("#file-tree", FileTree)
-        file_tree.highlight_path(event.filepath)
+        """Sync FileTree cursor, LinkPreview, and content when graph cursor moves."""
+        # Update the LinkPreview widget
+        link_preview = self.query_one("#link-preview", LinkPreview)
+        self.log.info(f"NodeHighlighted: type={event.node_type}, path={event.filepath}, cmd={event.command}")
+        link_preview.update_from_node(
+            node_type=event.node_type,
+            filepath=event.filepath,
+            command=event.command,
+        )
+        self.log.info(f"LinkPreview updated: render={link_preview.render()}")
 
-        # Preview file content in InfoPanel
-        content_panel = self.query_one("#info-panel", InfoPanel)
-        filepath = event.filepath
+        # For document nodes, sync FileTree and show preview
+        if event.filepath:
+            file_tree = self.query_one("#file-tree", FileTree)
+            file_tree.highlight_path(event.filepath)
 
-        # Ensure .md extension
-        if not filepath.endswith(".md"):
-            filepath = f"{filepath}.md"
+            # Preview file content in InfoPanel
+            content_panel = self.query_one("#info-panel", InfoPanel)
+            filepath = event.filepath
 
-        path = Path(filepath)
-        # Normalize relative paths to KB root
-        if not path.is_absolute():
-            kb_root = Path("build/dev")
-            allowed_dirs = ("archive", "current", "scratch")
-            parts = path.parts
-            kb_parts = kb_root.parts
+            # Ensure .md extension
+            if not filepath.endswith(".md"):
+                filepath = f"{filepath}.md"
 
-            if parts[:len(kb_parts)] != kb_parts:
-                if parts and parts[0] in allowed_dirs:
-                    path = kb_root / path
-                else:
-                    path = kb_root / path
+            path = Path(filepath)
+            # Normalize relative paths to KB root
+            if not path.is_absolute():
+                kb_root = Path("build/dev")
+                allowed_dirs = ("archive", "current", "scratch")
+                parts = path.parts
+                kb_parts = kb_root.parts
 
-        # Show preview if file exists
-        if path.exists() and path.is_file():
-            try:
-                text = path.read_text()
-                # Truncate for preview (first 500 chars or 20 lines)
-                lines = text.split("\n")[:20]
-                preview = "\n".join(lines)
-                if len(text) > len(preview):
-                    preview += "\n\n... (truncated)"
-                content_panel.show_file(path.name, preview)
-            except Exception:
-                pass  # Silently ignore read errors during preview
+                if parts[:len(kb_parts)] != kb_parts:
+                    if parts and parts[0] in allowed_dirs:
+                        path = kb_root / path
+                    else:
+                        path = kb_root / path
+
+            # Show preview if file exists
+            if path.exists() and path.is_file():
+                try:
+                    text = path.read_text()
+                    # Truncate for preview (first 500 chars or 20 lines)
+                    lines = text.split("\n")[:20]
+                    preview = "\n".join(lines)
+                    if len(text) > len(preview):
+                        preview += "\n\n... (truncated)"
+                    content_panel.show_file(path.name, preview)
+                except Exception:
+                    pass  # Silently ignore read errors during preview
+        elif event.command:
+            # For action nodes, show command preview
+            content_panel = self.query_one("#info-panel", InfoPanel)
+            content_panel.show_file(
+                "action.txt",
+                f"Action Link\n\nCommand: {event.command}\n\nPress Enter to execute."
+            )
 
     def on_graph_view_node_selected(self, event: GraphView.NodeSelected) -> None:
         """Open file when Enter pressed on graph node."""
@@ -5936,6 +6675,17 @@ The general-purpose agentic query interface.
                 content.show_file(path.name, text)
             except Exception as e:
                 content.show_file("error.txt", f"Cannot read file: {e}")
+
+    def on_graph_view_action_selected(self, event: GraphView.ActionSelected) -> None:
+        """Execute slash command when Enter pressed on action link node.
+
+        Action links like [action:/datasets info foo/bar] are parsed from
+        documents and displayed in the link graph. When selected, the command
+        is executed as if the user typed it in the command input.
+        """
+        command = event.command
+        # The command already includes the leading slash
+        self._execute_command(command)
 
     def on_init_panel_xb_auth_completed(
         self, event: InitPanel.XBAuthCompleted
@@ -6123,6 +6873,12 @@ Use `/reindex` to refresh TDA from current KB.
         elif command in ("x-bookmarks", "xb"):
             # X Bookmarks sync and management
             self._handle_x_bookmarks_command(args)
+        elif command in ("datasets", "ds"):
+            # HuggingFace dataset discovery
+            self._handle_datasets_command(args)
+        elif command in ("models", "m"):
+            # HuggingFace model discovery
+            self._handle_models_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:
