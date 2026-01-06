@@ -418,6 +418,10 @@ class GrpcEngineClient:
             return await self._call_x_bookmarks(action, params, timeout)
         elif service == "Ambient":
             return await self._call_ambient(action, params, timeout)
+        elif service == "Datasets":
+            return await self._call_datasets(action, params, timeout)
+        elif service == "Models":
+            return await self._call_models(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
 
@@ -762,6 +766,8 @@ class GrpcEngineClient:
             except Exception as e:
                 # Fallback: return empty GPU list with error
                 return {"gpus": [], "error": str(e)}
+            # Stream was empty (no messages received)
+            return {"gpus": [], "error": "No GPU metrics received from stream"}
 
         else:
             raise ValueError(f"Unknown Health action: {action}")
@@ -1316,11 +1322,10 @@ class GrpcEngineClient:
             return {
                 "healthy": response.healthy,
                 "summary": response.summary,
-                "passed": list(response.passed),
-                "warnings": list(response.warnings),
-                "failures": list(response.failures),
-                "active_incidents": response.active_incidents,
-                "interventions": list(response.interventions)[:5],
+                "passed": response.passed,
+                "warnings": response.warnings,
+                "failures": response.failures,
+                "new_incidents": response.new_incidents,
             }
 
         elif action == "incident_detail":
@@ -1775,6 +1780,243 @@ class GrpcEngineClient:
                     "timestamp_ms": 0,
                 }
 
+    async def _call_datasets(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle HuggingFace Dataset Discovery service calls via gRPC.
+
+        Provides operations for discovering datasets from HuggingFace Hub
+        and managing dataset references in the KB.
+
+        Args:
+            action: Action to perform (list, add, info, list_kb)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with datasets or operation status
+        """
+        from ..engine.generated import (
+            ListHFDatasetsRequest,
+            AddExternalDatasetRequest,
+            GetHFDatasetInfoRequest,
+            ListKBDatasetsRequest,
+        )
+
+        if action == "list":
+            limit = params.get("limit", 20)
+            request = ListHFDatasetsRequest(limit=limit)
+            response = await self._gaius_stub.ListHFDatasets(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            return {
+                "datasets": [
+                    {
+                        "id": ds.id,
+                        "author": ds.author,
+                        "description": ds.description,
+                        "downloads": ds.downloads,
+                        "likes": ds.likes,
+                        "private": ds.private,
+                        "created_at": ds.created_at,
+                        "last_modified": ds.last_modified,
+                        "tags": list(ds.tags),
+                    }
+                    for ds in response.datasets
+                ],
+                "count": response.count,
+                "saved_to": response.saved_to,
+            }
+
+        elif action == "add":
+            dataset_id = params.get("dataset_id", "")
+            notes = params.get("notes", "")
+            request = AddExternalDatasetRequest(dataset_id=dataset_id, notes=notes)
+            response = await self._gaius_stub.AddExternalDataset(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error, "success": False}
+
+            return {
+                "success": response.success,
+                "dataset_id": response.dataset_id,
+                "saved_to": response.saved_to,
+                "downloads": response.downloads,
+                "likes": response.likes,
+                "description": response.description,
+            }
+
+        elif action == "info":
+            dataset_id = params.get("dataset_id", "")
+            request = GetHFDatasetInfoRequest(dataset_id=dataset_id)
+            response = await self._gaius_stub.GetHFDatasetInfo(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            info = response.info
+            return {
+                "id": info.id,
+                "author": info.author,
+                "description": info.description,
+                "downloads": info.downloads,
+                "likes": info.likes,
+                "private": info.private,
+                "created_at": info.created_at,
+                "last_modified": info.last_modified,
+                "tags": list(info.tags),
+                "url": response.url,
+            }
+
+        elif action == "list_kb":
+            request = ListKBDatasetsRequest()
+            response = await self._gaius_stub.ListKBDatasets(request, timeout=timeout)
+
+            return {
+                "internal": [
+                    {"id": ds.id, "type": ds.type, "path": ds.path}
+                    for ds in response.internal
+                ],
+                "external": [
+                    {"id": ds.id, "type": ds.type, "path": ds.path}
+                    for ds in response.external
+                ],
+                "internal_count": response.internal_count,
+                "external_count": response.external_count,
+            }
+
+        else:
+            raise ValueError(f"Unknown Datasets action: {action}")
+
+    async def _call_models(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Models service calls via gRPC.
+
+        Actions:
+            list: List recent models from HuggingFace
+            add: Add external model reference to KB
+            info: Get detailed info for a specific model
+            list_kb: List models in KB (internal = cached, external = references)
+
+        Args:
+            action: Action to perform
+            params: Action parameters (model_id, limit, filter, notes)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with models list or model info
+        """
+        from ..engine.generated import (
+            ListHFModelsRequest,
+            AddExternalModelRequest,
+            GetHFModelInfoRequest,
+            ListKBModelsRequest,
+        )
+
+        if action == "list":
+            limit = params.get("limit", 20)
+            filter_tag = params.get("filter", "")
+            request = ListHFModelsRequest(limit=limit, filter=filter_tag)
+            response = await self._gaius_stub.ListHFModels(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            return {
+                "models": [
+                    {
+                        "id": m.id,
+                        "author": m.author,
+                        "pipeline_tag": m.pipeline_tag,
+                        "downloads": m.downloads,
+                        "likes": m.likes,
+                        "private": m.private,
+                        "created_at": m.created_at,
+                        "last_modified": m.last_modified,
+                        "tags": list(m.tags),
+                        "gated": m.gated,
+                        "library_name": m.library_name,
+                    }
+                    for m in response.models
+                ],
+                "count": response.count,
+                "saved_to": response.saved_to,
+            }
+
+        elif action == "add":
+            model_id = params.get("model_id", "")
+            notes = params.get("notes", "")
+            request = AddExternalModelRequest(model_id=model_id, notes=notes)
+            response = await self._gaius_stub.AddExternalModel(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            return {
+                "success": response.success,
+                "model_id": response.model_id,
+                "saved_to": response.saved_to,
+                "downloads": response.downloads,
+                "likes": response.likes,
+                "pipeline_tag": response.pipeline_tag,
+            }
+
+        elif action == "info":
+            model_id = params.get("model_id", "")
+            request = GetHFModelInfoRequest(model_id=model_id)
+            response = await self._gaius_stub.GetHFModelInfo(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            info = response.info
+            return {
+                "id": info.id,
+                "author": info.author,
+                "pipeline_tag": info.pipeline_tag,
+                "downloads": info.downloads,
+                "likes": info.likes,
+                "private": info.private,
+                "created_at": info.created_at,
+                "last_modified": info.last_modified,
+                "tags": list(info.tags),
+                "gated": info.gated,
+                "library_name": info.library_name,
+                "url": response.url,
+            }
+
+        elif action == "list_kb":
+            request = ListKBModelsRequest()
+            response = await self._gaius_stub.ListKBModels(request, timeout=timeout)
+
+            return {
+                "internal": [
+                    {
+                        "id": m.id,
+                        "type": m.type,
+                        "path": m.path,
+                        "size_bytes": m.size_bytes,
+                        "pipeline_tag": m.pipeline_tag,
+                    }
+                    for m in response.internal
+                ],
+                "external": [
+                    {
+                        "id": m.id,
+                        "type": m.type,
+                        "path": m.path,
+                        "size_bytes": m.size_bytes,
+                        "pipeline_tag": m.pipeline_tag,
+                    }
+                    for m in response.external
+                ],
+                "internal_count": response.internal_count,
+                "external_count": response.external_count,
+                "total_cache_bytes": response.total_cache_bytes,
+            }
+
+        else:
+            raise ValueError(f"Unknown Models action: {action}")
+
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.
 
@@ -1953,7 +2195,7 @@ class GrpcEngineClient:
 
     async def _run_swarm_via_grpc(
         self, params: dict, timeout: float
-    ) -> dict[str, dict]:
+    ) -> dict[str, dict | str]:
         """Run swarm analysis by calling Complete for each agent role.
 
         Maps role capabilities to appropriate agent endpoints and runs

@@ -40,12 +40,9 @@ from .dataset_service import (
     ProgressEvent,
     ProgressEventType,
 )
-from .clt_service import (
-    AgentCLTState,
-    CLTProjectionBridge,
-    CLTService,
-    SwarmCLTResult,
-)
+# CLT service is lazy-loaded to avoid heavy transformer_lens import at startup
+# Use: from gaius.engine.services.clt_service import CLTService
+# Or just access gaius.engine.services.CLTService (uses __getattr__ below)
 from .topology_service import (
     AgentPosition,
     DriftMetrics,
@@ -135,4 +132,31 @@ __all__ = [
     "XBookmarksConfig",
     "XBookmarksService",
     "XSyncRun",
+    # CLT (lazy-loaded)
+    "AgentCLTState",
+    "CLTProjectionBridge",
+    "CLTService",
+    "SwarmCLTResult",
 ]
+
+
+# Lazy loading for CLT service (avoids heavy transformer_lens import at startup)
+_CLT_NAMES = {"AgentCLTState", "CLTProjectionBridge", "CLTService", "SwarmCLTResult"}
+
+
+def __getattr__(name: str):
+    """Lazy-load CLT service components on first access."""
+    if name in _CLT_NAMES:
+        from .clt_service import (
+            AgentCLTState,
+            CLTProjectionBridge,
+            CLTService,
+            SwarmCLTResult,
+        )
+        return {
+            "AgentCLTState": AgentCLTState,
+            "CLTProjectionBridge": CLTProjectionBridge,
+            "CLTService": CLTService,
+            "SwarmCLTResult": SwarmCLTResult,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

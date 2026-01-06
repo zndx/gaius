@@ -622,6 +622,58 @@ class AgendaTracker:
         """
         return self._active_operations.get(workload_id)
 
+    def is_endpoint_in_scheduled_transition(self, endpoint: str) -> bool:
+        """Check if an endpoint is part of a scheduled operation.
+
+        Used by HealthObserver to distinguish between:
+        - Intentionally stopped/starting (part of makespan schedule) → not an incident
+        - Unexpectedly failed (not part of any operation) → create incident
+
+        Args:
+            endpoint: Endpoint name to check
+
+        Returns:
+            True if endpoint is in an active operation with POSITIVE control
+        """
+        for operation in self._active_operations.values():
+            # Only consider operations under positive control
+            if operation.control_mode != ControlMode.POSITIVE:
+                continue
+
+            # Check if endpoint is a target of any phase
+            for phase in operation.phases:
+                if endpoint in phase.target_endpoints:
+                    return True
+
+            # Also check planned transitions
+            workload_id = str(operation.workload_id) if operation.workload_id else ""
+            planned = self._planned_transitions.get(workload_id, [])
+            for ep, _, _ in planned:
+                if ep == endpoint:
+                    return True
+
+        return False
+
+    def get_scheduled_endpoint_state(self, endpoint: str) -> str | None:
+        """Get the expected state for an endpoint in a scheduled operation.
+
+        Args:
+            endpoint: Endpoint name
+
+        Returns:
+            Expected state ("HEALTHY", "STOPPED") or None if not scheduled
+        """
+        for workload_id, operation in self._active_operations.items():
+            if operation.control_mode != ControlMode.POSITIVE:
+                continue
+
+            planned = self._planned_transitions.get(workload_id, [])
+            for ep, _, to_state in planned:
+                if ep == endpoint:
+                    return to_state
+
+        return None
+
     def get_status(self) -> dict[str, Any]:
         """Get tracker status for API.
 
@@ -823,3 +875,28 @@ class AgendaTracker:
 
         except Exception as e:
             logger.error(f"Database restoration error: {e}")
+
+
+# Module-level singleton
+_tracker_instance: AgendaTracker | None = None
+
+
+def get_agenda_tracker() -> AgendaTracker | None:
+    """Get the singleton AgendaTracker instance.
+
+    Returns:
+        AgendaTracker instance or None if not initialized
+    """
+    return _tracker_instance
+
+
+def set_agenda_tracker(tracker: AgendaTracker) -> None:
+    """Set the singleton AgendaTracker instance.
+
+    Called by engine startup to register the active tracker.
+
+    Args:
+        tracker: The AgendaTracker instance to use
+    """
+    global _tracker_instance
+    _tracker_instance = tracker

@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, AsyncIterator, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
 
 import grpc
 from grpc import aio
@@ -212,6 +212,28 @@ from ...generated import (
     AmbientBufferExportRequest,
     AmbientBufferExportResponse,
     AMBIENT_PHASE_UNSPECIFIED,
+    # HuggingFace Dataset Discovery
+    ListHFDatasetsRequest,
+    ListHFDatasetsResponse,
+    HFDatasetInfo,
+    AddExternalDatasetRequest,
+    AddExternalDatasetResponse,
+    GetHFDatasetInfoRequest,
+    GetHFDatasetInfoResponse,
+    ListKBDatasetsRequest,
+    ListKBDatasetsResponse,
+    KBDatasetEntry,
+    # HuggingFace Model Discovery
+    ListHFModelsRequest,
+    ListHFModelsResponse,
+    HFModelInfo,
+    AddExternalModelRequest,
+    AddExternalModelResponse,
+    GetHFModelInfoRequest,
+    GetHFModelInfoResponse,
+    ListKBModelsRequest,
+    ListKBModelsResponse,
+    KBModelEntry,
     AMBIENT_PHASE_BASELINE_HEALTH,
     AMBIENT_PHASE_BASELINE_WORKLOAD,
     AMBIENT_PHASE_REASONING_EVICTION,
@@ -222,6 +244,8 @@ from ...generated import (
     # Servicer base
     GaiusServiceServicer,
 )
+
+from ...metrics import record_exception_caught
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
@@ -244,7 +268,7 @@ _STATUS_MAP = {
 }
 
 
-def _status_to_enum(status_str: str) -> int:
+def _status_to_enum(status_str: str) -> ProcessStatus:
     """Convert string status to ProcessStatus enum value."""
     return _STATUS_MAP.get(status_str.lower(), PROCESS_STATUS_UNSPECIFIED)
 
@@ -1876,7 +1900,8 @@ class GaiusServicer(GaiusServiceServicer):
                     flat = [int(v) for row in allocations for v in row]
                     response.allocations.extend(flat)
                 else:
-                    response.allocations.extend([int(v) for v in allocations])
+                    # allocations is flat list of ints when not nested
+                    response.allocations.extend([int(v) for v in allocations])  # type: ignore[arg-type]
 
             # Add TDA features directly from cached dataclass
             tda_features = ProtoTDAFeatures(
@@ -2263,11 +2288,12 @@ class GaiusServicer(GaiusServiceServicer):
                     curvature = curvature_map.get((cx, cy), 0.0)
 
                     # Build gradient field
-                    if hasattr(geom_features, 'gradient_field') and geom_features.gradient_field is not None:
+                    gradient_field = getattr(geom_features, 'gradient_field', None)
+                    if gradient_field is not None:
                         for i, (px, py) in enumerate(grid_coords):
-                            if i < len(geom_features.gradient_field):
+                            if i < len(gradient_field):
                                 if (int(px), int(py)) == (cx, cy):
-                                    gradient_x, gradient_y = geom_features.gradient_field[i]
+                                    gradient_x, gradient_y = gradient_field[i]
                                     break
 
             # Get TDA features
@@ -3062,16 +3088,17 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 # Build grid_coords array from embedding_to_grid mapping
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -3079,13 +3106,13 @@ class GaiusServicer(GaiusServiceServicer):
 
                 # 3. Compute geometry features (curvature, gradients, divergence)
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:  # Need at least 2 neighbors
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
-                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                        logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
@@ -3200,15 +3227,16 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -3216,13 +3244,13 @@ class GaiusServicer(GaiusServiceServicer):
 
                 # Compute geometry features
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
-                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                        logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
@@ -3288,7 +3316,9 @@ class GaiusServicer(GaiusServiceServicer):
         client_id = request.client_id or "grpc"
         force = request.force
         embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
-        projection_method = request.projection_method or "umap"
+        projection_method: Literal["umap", "pca"] = "umap"
+        if request.projection_method in ("umap", "pca"):
+            projection_method = request.projection_method  # type: ignore[assignment]
 
         logger.info(f"Init: kb_root={kb_root} force={force} from {client_id}")
 
@@ -3340,15 +3370,16 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -3356,13 +3387,13 @@ class GaiusServicer(GaiusServiceServicer):
 
                 # 3. Compute geometry features (curvature, gradients, divergence)
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
-                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                        logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
@@ -3414,7 +3445,9 @@ class GaiusServicer(GaiusServiceServicer):
         client_id = request.client_id or "grpc"
         force = request.force
         embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
-        projection_method = request.projection_method or "umap"
+        projection_method: Literal["umap", "pca"] = "umap"
+        if request.projection_method in ("umap", "pca"):
+            projection_method = request.projection_method  # type: ignore[assignment]
 
         logger.info(f"InitProgressStream: kb_root={kb_root} from {client_id}")
 
@@ -3501,15 +3534,16 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -3522,15 +3556,15 @@ class GaiusServicer(GaiusServiceServicer):
                 message="Computing geometry features (curvature, gradients)...",
             )
 
-            logger.info(f"Geometry check: raw_embeddings={grid_data.raw_embeddings is not None}, grid_coords={grid_coords is not None}")
-            if grid_data.raw_embeddings is not None and grid_coords is not None:
+            logger.info(f"Geometry check: raw_embeddings={raw_embeddings is not None}, grid_coords={grid_coords is not None}")
+            if raw_embeddings is not None and grid_coords is not None:
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
-                    logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(grid_data.raw_embeddings)}")
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
+                    logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(raw_embeddings)}")
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
                         logger.info(f"Computed geometry features: curvatures={len(geometry_features.curvatures)}, gradients={len(geometry_features.gradients)}")
                 except Exception as geom_err:
@@ -4283,6 +4317,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"HealthObserverListIncidents failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverListIncidents",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00001.LISTFAIL",
+            )
             return ListIncidentsResponse()
 
     async def HealthObserverGetIncident(
@@ -4290,41 +4330,60 @@ class GaiusServicer(GaiusServiceServicer):
         request: GetIncidentDetailRequest,
         context: grpc.aio.ServicerContext,
     ) -> GetIncidentDetailResponse:
-        """Get details of a specific incident."""
+        """Get details of a specific incident including ACP history."""
         try:
             observer = self._services.health_observer_service
             if not observer:
                 return GetIncidentDetailResponse(found=False)
 
-            incident = observer.get_incident(request.fingerprint)
-            if not incident:
+            # Use the new detailed method that includes healing events and ACP history
+            detail = await observer.get_incident_detail(request.fingerprint)
+            if not detail:
                 return GetIncidentDetailResponse(found=False)
 
+            # Extract RPN values from nested dict
+            rpn_data = detail.get("rpn", {})
+
             proto_incident = ProtoHealthIncident(
-                incident_id=str(incident.incident_id),
-                fingerprint=incident.fingerprint,
-                endpoint=incident.endpoint,
-                failure_mode_id=incident.failure_mode_id,
-                rpn_score=incident.rpn_score,
-                rpn_severity=incident.rpn_severity,
-                rpn_occurrence=incident.rpn_occurrence,
-                rpn_detection=incident.rpn_detection,
-                current_tier=incident.current_tier,
-                sequence_id=str(incident.sequence_id) if incident.sequence_id else "",
-                created_at=incident.created_at.isoformat(),
-                last_check_at=incident.last_check_at.isoformat(),
-                attempts=incident.attempts,
-                github_issue=incident.github_issue or 0,
-                status=incident.status,
+                incident_id=detail.get("incident_id", ""),
+                fingerprint=detail.get("fingerprint", ""),
+                endpoint=detail.get("endpoint", ""),
+                failure_mode_id=detail.get("failure_mode_id", ""),
+                rpn_score=rpn_data.get("rpn", 0),
+                rpn_severity=rpn_data.get("severity", 5),
+                rpn_occurrence=rpn_data.get("occurrence", 5),
+                rpn_detection=rpn_data.get("detection", 5),
+                current_tier=detail.get("current_tier", 0),
+                sequence_id=detail.get("sequence_id") or "",
+                created_at=detail.get("created_at", ""),
+                last_check_at=detail.get("last_check_at", ""),
+                attempts=detail.get("attempts", 0),
+                github_issue=detail.get("github_issue") or 0,
+                status=detail.get("status", "unknown"),
             )
+
+            # Include healing events and ACP history as JSON strings
+            import json
+            healing_events_json = json.dumps(detail.get("healing_events", []))
+            acp_history_json = json.dumps(detail.get("acp_history", []))
+            github_issue_detail_json = json.dumps(detail.get("github_issue_detail"))
 
             return GetIncidentDetailResponse(
                 incident=proto_incident,
                 found=True,
+                healing_events_json=healing_events_json,
+                acp_history_json=acp_history_json,
+                github_issue_detail_json=github_issue_detail_json,
             )
 
         except Exception as e:
             logger.exception(f"HealthObserverGetIncident failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverGetIncident",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00002.GETFAIL",
+            )
             return GetIncidentDetailResponse(found=False)
 
     # =========================================================================
@@ -4357,6 +4416,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksGetAuthUrl failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksGetAuthUrl",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00001.AUTHURLFAIL",
+            )
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return XBookmarksAuthResponse()
@@ -4389,6 +4454,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksCompleteAuth failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksCompleteAuth",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00002.COMPLETEFAIL",
+            )
             return XBookmarksCompleteAuthResponse(
                 success=False,
                 error=str(e),
@@ -4434,6 +4505,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksCompleteAuthByState failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksCompleteAuthByState",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00003.COMPLETEBYSTATEFAIL",
+            )
             return XBookmarksCompleteAuthResponse(
                 success=False,
                 error=str(e),
@@ -4475,6 +4552,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksAuthStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksAuthStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00004.AUTHSTATUSFAIL",
+            )
             return XBookmarksAuthStatusResponse(
                 authenticated=False,
                 error=str(e),
@@ -4521,6 +4604,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksTriggerSync failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksTriggerSync",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00005.SYNCFAIL",
+            )
             # Check if it's an auth error
             error_str = str(e)
             action_required = ""
@@ -4578,6 +4667,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksSyncStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksSyncStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00006.SYNCSTATUSFAIL",
+            )
             return XBookmarksSyncStatusResponse(
                 configured=False,
                 action_required="ERROR",
@@ -4607,6 +4702,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksServiceStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksServiceStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00007.SVCSTATUSFAIL",
+            )
             return XBookmarksServiceStatusResponse(running=False)
 
     async def XBookmarksListFolders(
@@ -4652,6 +4753,12 @@ class GaiusServicer(GaiusServiceServicer):
 
         except Exception as e:
             logger.exception(f"XBookmarksListFolders failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksListFolders",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00008.LISTFOLDERSFAIL",
+            )
             return XBookmarksListFoldersResponse(
                 folders_available=False,
                 message=str(e),
@@ -4683,6 +4790,12 @@ class GaiusServicer(GaiusServiceServicer):
             )
         except Exception as e:
             logger.warning(f"XBookmarksQueueStatus error: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksQueueStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00009.QUEUESTATUSFAIL",
+            )
             return XBookmarksQueueStatusResponse(
                 queue_depth=0,
                 can_request=False,
@@ -4718,6 +4831,12 @@ class GaiusServicer(GaiusServiceServicer):
             )
         except Exception as e:
             logger.warning(f"XBookmarksEmitTestEvent error: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksEmitTestEvent",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00010.TESTEMITFAIL",
+            )
             return XBookmarksEmitTestEventResponse(
                 success=False,
                 message=str(e),
@@ -4767,15 +4886,20 @@ class GaiusServicer(GaiusServiceServicer):
                 f"baseline_task_count={request.baseline_task_count or 1}"
             )
 
-            async for event in service.run_cycle(
-                skip_reasoning=request.skip_reasoning,
-                baseline_task_count=request.baseline_task_count or 1,
-                reasoning_prompt=request.reasoning_prompt or None,
-            ):
+            # Use _run_varied_cycle which includes all phases:
+            # FETCH_CONTENT, BUFFER_ANALYSIS, SUMMARIZATION
+            baseline_only = request.skip_reasoning
+            async for event in service._run_varied_cycle(baseline_only):
                 yield event
 
         except Exception as e:
             logger.exception(f"AmbientCycle failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="AmbientCycle",
+                exception_type=type(e).__name__,
+                guru_code="#GR.AMB.00001.CYCLEFAIL",
+            )
             yield AmbientPhaseEvent(
                 phase=AMBIENT_PHASE_ERROR,
                 message=str(e),
@@ -5038,3 +5162,542 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.exception(f"AmbientBufferExport failed: {e}")
             return AmbientBufferExportResponse(error=str(e))
+
+    # =========================================================================
+    # HuggingFace Dataset Discovery
+    # =========================================================================
+
+    async def ListHFDatasets(
+        self,
+        request: ListHFDatasetsRequest,
+        context: aio.ServicerContext,
+    ) -> ListHFDatasetsResponse:
+        """List recent datasets from HuggingFace Hub with rich content.
+
+        Uses two-phase fetch with Iceberg caching:
+        1. Fetch larger batch from HF API
+        2. Check Iceberg cache for README content
+        3. Fetch README for uncached items via DatasetCard
+        4. Return top N with richest content (README > 100 chars)
+        """
+        from pathlib import Path
+        from datetime import datetime
+
+        try:
+            from ....hx import get_hf_capture
+
+            limit = request.limit if request.limit > 0 else 5  # Default to 5 for rich content
+            capture = get_hf_capture()
+
+            # Use two-phase fetch with Iceberg caching
+            rich_datasets = await capture.get_rich_datasets(
+                limit=limit,
+                fetch_batch=50,  # Fetch more to find ones with README
+                min_readme_length=100,
+            )
+
+            if not rich_datasets:
+                return ListHFDatasetsResponse(
+                    count=0,
+                    error="No datasets with rich README content found",
+                )
+
+            # Generate zettelkasten note with README content
+            today = datetime.now().strftime("%Y-%m-%d")
+            lines = [
+                f"# HuggingFace Dataset Discovery - {today}",
+                "",
+                f"*{len(rich_datasets)} datasets with informative README content*",
+                "",
+            ]
+
+            for ds in rich_datasets:
+                ds_id = ds.get("dataset_id", "unknown")
+                author = ds.get("author", "")
+                downloads = ds.get("downloads", 0)
+                likes = ds.get("likes", 0)
+                readme = ds.get("readme_content", "")
+                tags = ds.get("tags", [])
+
+                lines.append(f"## {ds_id}")
+                lines.append("")
+                if author:
+                    lines.append(f"**Author:** {author}")
+                lines.append(f"**Downloads:** {downloads:,} | **Likes:** {likes}")
+                if tags:
+                    display_tags = [t for t in tags[:5] if not t.startswith("region:")]
+                    if display_tags:
+                        lines.append(f"**Tags:** {', '.join(display_tags)}")
+                lines.append("")
+
+                # Include README excerpt
+                if readme:
+                    excerpt = readme[:500] + ("..." if len(readme) > 500 else "")
+                    lines.append(excerpt)
+                    lines.append("")
+
+                # Action links
+                lines.append(f"- [action:/datasets info {ds_id}]")
+                lines.append(f"- [action:/datasets add {ds_id}]")
+                lines.append("")
+
+            content = "\n".join(lines)
+
+            # Save to scratch directory
+            kb_root = Path("build/dev")
+            scratch_dir = kb_root / "scratch" / today
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{timestamp}_hf_datasets.md"
+            file_path = scratch_dir / filename
+            file_path.write_text(content)
+
+            # Build response with README as description
+            hf_datasets = []
+            for ds in rich_datasets:
+                readme = ds.get("readme_content", "")
+                hf_datasets.append(HFDatasetInfo(
+                    id=ds.get("dataset_id", ""),
+                    author=ds.get("author", ""),
+                    description=readme[:500] if readme else "",
+                    downloads=ds.get("downloads", 0),
+                    likes=ds.get("likes", 0),
+                    private=ds.get("private", False),
+                    created_at=ds.get("created_at").isoformat() if ds.get("created_at") else "",
+                    last_modified=ds.get("last_modified").isoformat() if ds.get("last_modified") else "",
+                    tags=ds.get("tags", [])[:10],
+                ))
+
+            return ListHFDatasetsResponse(
+                datasets=hf_datasets,
+                count=len(rich_datasets),
+                saved_to=str(file_path.relative_to(kb_root)),
+            )
+
+        except Exception as e:
+            logger.exception(f"ListHFDatasets failed: {e}")
+            return ListHFDatasetsResponse(error=str(e))
+
+    async def AddExternalDataset(
+        self,
+        request: AddExternalDatasetRequest,
+        context: aio.ServicerContext,
+    ) -> AddExternalDatasetResponse:
+        """Add an external HuggingFace dataset to the KB registry."""
+        from pathlib import Path
+
+        try:
+            from ....integrations import get_dataset_info
+
+            dataset_id = request.dataset_id
+            notes = request.notes or ""
+
+            info = get_dataset_info(dataset_id)
+
+            # Determine path: current/datasets/external/<org>/<name>.md
+            if "/" in dataset_id:
+                org, name = dataset_id.split("/", 1)
+            else:
+                org = "community"
+                name = dataset_id
+
+            kb_root = Path("build/dev")
+            external_dir = kb_root / "current" / "datasets" / "external" / org
+            external_dir.mkdir(parents=True, exist_ok=True)
+
+            file_path = external_dir / f"{name}.md"
+
+            if file_path.exists():
+                return AddExternalDatasetResponse(
+                    success=False,
+                    dataset_id=dataset_id,
+                    error=f"Dataset already exists in KB: {file_path.relative_to(kb_root)}",
+                )
+
+            # Generate KB entry
+            content = info.to_kb_entry(notes=notes)
+            file_path.write_text(content)
+
+            return AddExternalDatasetResponse(
+                success=True,
+                dataset_id=dataset_id,
+                saved_to=str(file_path.relative_to(kb_root)),
+                downloads=info.downloads,
+                likes=info.likes,
+                description=info.description[:200] if info.description else "",
+            )
+
+        except Exception as e:
+            logger.exception(f"AddExternalDataset failed: {e}")
+            return AddExternalDatasetResponse(
+                success=False,
+                dataset_id=request.dataset_id,
+                error=str(e),
+            )
+
+    async def GetHFDatasetInfo(
+        self,
+        request: GetHFDatasetInfoRequest,
+        context: aio.ServicerContext,
+    ) -> GetHFDatasetInfoResponse:
+        """Get detailed info for a specific HuggingFace dataset."""
+        try:
+            from ....integrations import get_dataset_info
+
+            info = get_dataset_info(request.dataset_id)
+
+            return GetHFDatasetInfoResponse(
+                info=HFDatasetInfo(
+                    id=info.id,
+                    author=info.author,
+                    description=info.description,
+                    downloads=info.downloads,
+                    likes=info.likes,
+                    private=info.private,
+                    created_at=info.created_at.isoformat() if info.created_at else "",
+                    last_modified=info.last_modified.isoformat() if info.last_modified else "",
+                    tags=info.tags,
+                ),
+                url=f"https://huggingface.co/datasets/{info.id}",
+            )
+
+        except Exception as e:
+            logger.exception(f"GetHFDatasetInfo failed: {e}")
+            return GetHFDatasetInfoResponse(error=str(e))
+
+    async def ListKBDatasets(
+        self,
+        request: ListKBDatasetsRequest,
+        context: aio.ServicerContext,
+    ) -> ListKBDatasetsResponse:
+        """List known datasets in the KB (internal + external)."""
+        from pathlib import Path
+
+        kb_root = Path("build/dev")
+        datasets_dir = kb_root / "current" / "datasets"
+
+        internal = []
+        external = []
+
+        # Scan internal datasets
+        internal_dir = datasets_dir / "internal"
+        if internal_dir.exists():
+            for item in internal_dir.iterdir():
+                # Skip README.md and other metadata files
+                if item.name.upper() == "README.MD":
+                    continue
+                if item.is_dir() or (item.is_file() and item.suffix == ".md"):
+                    internal.append(KBDatasetEntry(
+                        id=item.stem if item.is_file() else item.name,
+                        type="internal",
+                        path=str(item.relative_to(kb_root)),
+                    ))
+
+        # Scan external datasets
+        external_dir = datasets_dir / "external"
+        if external_dir.exists():
+            for org_dir in external_dir.iterdir():
+                if org_dir.is_dir():
+                    for ds_file in org_dir.glob("*.md"):
+                        external.append(KBDatasetEntry(
+                            id=f"{org_dir.name}/{ds_file.stem}",
+                            type="external",
+                            path=str(ds_file.relative_to(kb_root)),
+                        ))
+
+        return ListKBDatasetsResponse(
+            internal=internal,
+            external=external,
+            internal_count=len(internal),
+            external_count=len(external),
+        )
+
+    # =========================================================================
+    # HuggingFace Model Discovery
+    # =========================================================================
+
+    async def ListHFModels(
+        self,
+        request: ListHFModelsRequest,
+        context: aio.ServicerContext,
+    ) -> ListHFModelsResponse:
+        """List recent models from HuggingFace Hub with rich content.
+
+        Uses two-phase fetch with Iceberg caching:
+        1. Fetch larger batch from HF API
+        2. Check Iceberg cache for README content
+        3. Fetch README for uncached items via ModelCard
+        4. Return top N with richest content (README > 100 chars)
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        try:
+            from ....hx import get_hf_capture
+
+            limit = request.limit if request.limit > 0 else 5  # Default to 5 for rich content
+            filter_tag = request.filter if request.filter else None
+            capture = get_hf_capture()
+
+            # Use two-phase fetch with Iceberg caching
+            rich_models = await capture.get_rich_models(
+                limit=limit,
+                fetch_batch=50,  # Fetch more to find ones with README
+                min_readme_length=100,
+                filter_tag=filter_tag,
+            )
+
+            if not rich_models:
+                return ListHFModelsResponse(
+                    count=0,
+                    error="No models with rich README content found",
+                )
+
+            # Generate zettelkasten note with README content
+            today = datetime.now().strftime("%Y-%m-%d")
+            lines = [
+                f"# HuggingFace Model Discovery - {today}",
+                "",
+                f"*{len(rich_models)} models with informative README content*",
+                "",
+            ]
+
+            for m in rich_models:
+                m_id = m.get("model_id", "unknown")
+                author = m.get("author", "")
+                pipeline = m.get("pipeline_tag", "")
+                library = m.get("library_name", "")
+                downloads = m.get("downloads", 0)
+                likes = m.get("likes", 0)
+                readme = m.get("readme_content", "")
+                tags = m.get("tags", [])
+
+                lines.append(f"## {m_id}")
+                lines.append("")
+                if author:
+                    lines.append(f"**Author:** {author}")
+                lines.append(f"**Downloads:** {downloads:,} | **Likes:** {likes}")
+                if pipeline:
+                    lines.append(f"**Pipeline:** {pipeline}")
+                if library:
+                    lines.append(f"**Library:** {library}")
+                if tags:
+                    display_tags = [t for t in tags[:5] if not t.startswith("region:") and not t.startswith("license:")]
+                    if display_tags:
+                        lines.append(f"**Tags:** {', '.join(display_tags)}")
+                lines.append("")
+
+                # Include README excerpt
+                if readme:
+                    excerpt = readme[:500] + ("..." if len(readme) > 500 else "")
+                    lines.append(excerpt)
+                    lines.append("")
+
+                # Action links
+                lines.append(f"- [action:/models info {m_id}]")
+                lines.append(f"- [action:/models add {m_id}]")
+                lines.append("")
+
+            content = "\n".join(lines)
+
+            # Save to scratch directory
+            kb_root = Path("build/dev")
+            scratch_dir = kb_root / "scratch" / today
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{timestamp}_hf_models.md"
+            file_path = scratch_dir / filename
+            file_path.write_text(content)
+
+            # Build response with README as description
+            model_infos = []
+            for m in rich_models:
+                readme = m.get("readme_content", "")
+                model_infos.append(HFModelInfo(
+                    id=m.get("model_id", ""),
+                    author=m.get("author", ""),
+                    pipeline_tag=m.get("pipeline_tag", ""),
+                    downloads=m.get("downloads", 0),
+                    likes=m.get("likes", 0),
+                    private=m.get("private", False),
+                    created_at=m.get("created_at").isoformat() if m.get("created_at") else "",
+                    last_modified=m.get("last_modified").isoformat() if m.get("last_modified") else "",
+                    tags=m.get("tags", [])[:10],
+                    gated=m.get("gated", False),
+                    library_name=m.get("library_name", ""),
+                ))
+
+            return ListHFModelsResponse(
+                models=model_infos,
+                count=len(rich_models),
+                saved_to=str(file_path.relative_to(kb_root)),
+            )
+
+        except Exception as e:
+            logger.exception(f"ListHFModels failed: {e}")
+            return ListHFModelsResponse(error=str(e))
+
+    async def AddExternalModel(
+        self,
+        request: AddExternalModelRequest,
+        context: aio.ServicerContext,
+    ) -> AddExternalModelResponse:
+        """Add an external model reference to KB."""
+        from pathlib import Path
+
+        try:
+            from huggingface_hub import model_info
+
+            model_id = request.model_id
+            notes = request.notes
+
+            # Fetch model info
+            info = model_info(model_id)
+
+            # Determine path: current/models/external/<org>/<name>.md
+            if "/" in model_id:
+                org, name = model_id.split("/", 1)
+            else:
+                org = "community"
+                name = model_id
+
+            kb_root = Path("build/dev")
+            external_dir = kb_root / "current" / "models" / "external" / org
+            external_dir.mkdir(parents=True, exist_ok=True)
+
+            file_path = external_dir / f"{name}.md"
+
+            # Check if already exists
+            if file_path.exists():
+                return AddExternalModelResponse(
+                    success=False,
+                    model_id=model_id,
+                    error=f"Model already exists in KB: {file_path.relative_to(kb_root)}",
+                )
+
+            # Generate KB entry
+            content = f"""# {model_id}
+
+**URL**: https://huggingface.co/{model_id}
+**Pipeline**: {info.pipeline_tag or 'N/A'}
+**Library**: {info.library_name or 'N/A'}
+**Downloads**: {info.downloads or 0:,}
+**Likes**: {info.likes or 0}
+**Gated**: {'Yes' if info.gated else 'No'}
+
+## Tags
+{', '.join(info.tags) if info.tags else 'None'}
+
+## Notes
+{notes if notes else 'No notes provided.'}
+
+---
+*Added to KB on {Path(file_path).stat().st_mtime if file_path.exists() else 'now'}*
+"""
+            file_path.write_text(content)
+
+            return AddExternalModelResponse(
+                success=True,
+                model_id=model_id,
+                saved_to=str(file_path.relative_to(kb_root)),
+                downloads=info.downloads or 0,
+                likes=info.likes or 0,
+                pipeline_tag=info.pipeline_tag or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"AddExternalModel failed: {e}")
+            return AddExternalModelResponse(error=str(e))
+
+    async def GetHFModelInfo(
+        self,
+        request: GetHFModelInfoRequest,
+        context: aio.ServicerContext,
+    ) -> GetHFModelInfoResponse:
+        """Get detailed info for a specific HuggingFace model."""
+        try:
+            from huggingface_hub import model_info
+
+            info = model_info(request.model_id)
+
+            return GetHFModelInfoResponse(
+                info=HFModelInfo(
+                    id=info.id,
+                    author=info.author or "",
+                    pipeline_tag=info.pipeline_tag or "",
+                    downloads=info.downloads or 0,
+                    likes=info.likes or 0,
+                    private=info.private or False,
+                    created_at=info.created_at.isoformat() if info.created_at else "",
+                    last_modified=info.last_modified.isoformat() if info.last_modified else "",
+                    tags=list(info.tags) if info.tags else [],
+                    gated=bool(info.gated) if hasattr(info, 'gated') else False,
+                    library_name=info.library_name or "",
+                ),
+                url=f"https://huggingface.co/{info.id}",
+            )
+
+        except Exception as e:
+            logger.exception(f"GetHFModelInfo failed: {e}")
+            return GetHFModelInfoResponse(error=str(e))
+
+    async def ListKBModels(
+        self,
+        request: ListKBModelsRequest,
+        context: aio.ServicerContext,
+    ) -> ListKBModelsResponse:
+        """List known models in the KB (internal = cached, external = references)."""
+        from pathlib import Path
+        import os
+
+        kb_root = Path("build/dev")
+        models_dir = kb_root / "current" / "models"
+        hf_cache = Path(os.environ.get("HF_HOME", "/raid/cache/huggingface")) / "hub"
+
+        internal = []
+        external = []
+        total_cache_bytes = 0
+
+        # Scan HuggingFace cache for internal (cached) models
+        if hf_cache.exists():
+            for item in hf_cache.iterdir():
+                if item.is_dir() and item.name.startswith("models--"):
+                    # Parse model ID from cache dir name: models--org--name -> org/name
+                    parts = item.name.replace("models--", "").split("--")
+                    if len(parts) >= 2:
+                        model_id = f"{parts[0]}/{parts[1]}"
+                    else:
+                        model_id = parts[0]
+
+                    # Calculate size
+                    size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                    total_cache_bytes += size
+
+                    internal.append(KBModelEntry(
+                        id=model_id,
+                        type="internal",
+                        path=str(item),
+                        size_bytes=size,
+                    ))
+
+        # Scan external model references in KB
+        external_dir = models_dir / "external"
+        if external_dir.exists():
+            for org_dir in external_dir.iterdir():
+                if org_dir.is_dir():
+                    for model_file in org_dir.glob("*.md"):
+                        external.append(KBModelEntry(
+                            id=f"{org_dir.name}/{model_file.stem}",
+                            type="external",
+                            path=str(model_file.relative_to(kb_root)),
+                        ))
+
+        return ListKBModelsResponse(
+            internal=internal,
+            external=external,
+            internal_count=len(internal),
+            external_count=len(external),
+            total_cache_bytes=total_cache_bytes,
+        )

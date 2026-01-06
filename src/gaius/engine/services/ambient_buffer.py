@@ -32,6 +32,7 @@ class BufferRole(Enum):
     - SUMMARY: Reasoning-derived summaries of content
     - OBJECTIVE: Goals/objectives for processing
     - BENCHMARK: Reference data for comparison
+    - SEARCH_QUERY: Generated Brave Search query candidates
     """
 
     CONTENT = "content"
@@ -40,6 +41,7 @@ class BufferRole(Enum):
     SUMMARY = "summary"
     OBJECTIVE = "objective"
     BENCHMARK = "benchmark"
+    SEARCH_QUERY = "search_query"
 
 
 @dataclass

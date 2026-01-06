@@ -238,8 +238,8 @@ class GaiusCLI:
                 # Self-healing - tiered recovery system
                 elif command == "heal":
                     result["data"] = self._run_async(self._cmd_heal(args))
-                # Model registry commands
-                elif command == "model" or command == "models":
+                # Model registry commands (local model specs)
+                elif command == "model":
                     result["data"] = self._cmd_model(args)
                 # Execute via Engine's CommandService (unified entry point)
                 elif command == "exec":
@@ -282,6 +282,12 @@ class GaiusCLI:
                 # Ambient Computing - invisible workloads for baseline GPU activity
                 elif command == "ambient":
                     result["data"] = self._run_async(self._cmd_ambient(args))
+                # Datasets - HuggingFace dataset discovery and KB management
+                elif command == "datasets" or command == "ds":
+                    result["data"] = self._run_async(self._cmd_datasets(args))
+                # Models - HuggingFace model discovery and KB management
+                elif command == "models" or command == "m":
+                    result["data"] = self._run_async(self._cmd_models(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -791,7 +797,7 @@ class GaiusCLI:
         )
 
         # Check if grids have any non-zero values
-        def grid_has_data(grid: list[list[float]]) -> bool:
+        def grid_has_data(grid: list) -> bool:  # type: ignore[type-arg]
             return any(v > 0 for row in grid for v in row)
 
         return {
@@ -5840,16 +5846,53 @@ Respond with:
                 for ep, state in healing_info["endpoint_states"].items():
                     md_report += f"- {ep}: tier {state.get('tier', '?')}, attempts {state.get('attempts', '?')}\n"
 
+        # Add HealthObserver active incidents
+        active_incidents = []
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if engine_client:
+                incidents_result = await engine_client.call(
+                    "HealthObserver", "incidents", {"status": "active"}, timeout=5.0
+                )
+                if incidents_result.get("incidents"):
+                    active_incidents = incidents_result["incidents"]
+        except Exception as e:
+            # Continue without incidents - record via OTel for observability
+            try:
+                from .core.telemetry import get_tracer
+                tracer = get_tracer()
+                with tracer.start_as_current_span("health.fetch_incidents.error") as span:
+                    span.set_attribute("error.type", type(e).__name__)
+                    span.set_attribute("error.message", str(e))
+                    span.record_exception(e)
+            except Exception:
+                pass  # Don't fail on telemetry errors
+
+        if active_incidents:
+            md_report += "\n## Active Incidents\n\n"
+            md_report += "| Fingerprint | Endpoint | RPN | Tier | Attempts | Created |\n"
+            md_report += "|-------------|----------|-----|------|----------|----------|\n"
+            for inc in active_incidents:
+                fp = inc.get("fingerprint", "?")
+                ep = inc.get("endpoint", "?")
+                rpn = inc.get("rpn_score", "?")
+                tier = inc.get("current_tier", "?")
+                attempts = inc.get("attempts", "?")
+                created = inc.get("created_at", "?")[:19] if inc.get("created_at") else "?"
+                md_report += f"| {fp} | {ep} | {rpn} | {tier} | {attempts} | {created} |\n"
+            md_report += "\n"
+            md_report += "Use `/health observer incidents` for full details.\n"
+
         # Add action links
         md_report += "\n## Actions\n\n"
         for check in report.checks:
             if check.status.value == "fail":
                 # Add relevant fix actions
                 if "endpoint" in check.name.lower():
-                    md_report += f"- [[action:/health fix]] - Fix unhealthy services\n"
+                    md_report += f"- [action:/health fix] - Fix unhealthy services\n"
                     break
-        md_report += "- [[action:/health history]] - View healing history\n"
-        md_report += "- [[action:/health stats]] - View healing statistics\n"
+        md_report += "- [action:/health history] - View healing history\n"
+        md_report += "- [action:/health stats] - View healing statistics\n"
 
         md_report += f"""
 ---
@@ -5884,6 +5927,7 @@ Respond with:
             "interventions": report.interventions,
             "metrics": report.metrics if report.metrics else None,
             "self_healing": healing_info,
+            "active_incidents": active_incidents if active_incidents else None,
             "message": f"Report saved to {filepath}",
         }
 
@@ -6990,12 +7034,12 @@ Generated: {now.isoformat()}
             for ep in unhealthy_endpoints:
                 ep_name = ep.get('name', 'unknown')
                 if ep.get("status") in ("UNHEALTHY", "unhealthy"):
-                    report += f"- [[action:/health fix {ep_name}]] - Restart unhealthy endpoint\n"
+                    report += f"- [action:/health fix {ep_name}] - Restart unhealthy endpoint\n"
                 elif ep.get("status") in ("FAILED", "failed"):
-                    report += f"- [[action:/gpu restart {ep_name}]] - Force restart failed endpoint\n"
+                    report += f"- [action:/gpu restart {ep_name}] - Force restart failed endpoint\n"
 
             for approval in pending_approvals:
-                report += f"- [[action:/aiops approve {approval.get('id', '?')}]] - {approval.get('description', 'Pending action')}\n"
+                report += f"- [action:/aiops approve {approval.get('id', '?')}] - {approval.get('description', 'Pending action')}\n"
 
         report += f"""
 ## Recent Events
@@ -7326,10 +7370,10 @@ Generated: {now.isoformat()}
         report += "\n## Available Actions\n\n"
         for agent in agent_versions:
             agent_id = agent.get('agent_id', 'unknown')
-            report += f"- [[action:/evolve trigger {agent_id}]] - Trigger evolution for {agent_id}\n"
+            report += f"- [action:/evolve trigger {agent_id}] - Trigger evolution for {agent_id}\n"
 
         if evolution_status.get('daemon_running') == 'stopped':
-            report += "- [[action:/evolve start]] - Start evolution daemon\n"
+            report += "- [action:/evolve start] - Start evolution daemon\n"
 
         report += f"""
 ## Recent Events
@@ -7692,7 +7736,7 @@ Generated: {now.isoformat()}
                     for p in pending:
                         fm_id = p['failure_mode_id'] or 'N/A'
                         rpn = p['rpn_score'] or 'N/A'
-                        report += f"- [[action:/fmea approve {p['id']}]] - {p['description']} (RPN={rpn})\n"
+                        report += f"- [action:/fmea approve {p['id']}] - {p['description']} (RPN={rpn})\n"
 
                 report += "\n## RPN Thresholds\n\n"
                 report += "| RPN Range | Tier | Action |\n"
@@ -10417,6 +10461,152 @@ Examples:
 
         except Exception as e:
             return {"error": f"Ambient command failed: {e}"}
+
+    # =========================================================================
+    # Datasets - HuggingFace Dataset Discovery (Engine-only, no fallbacks)
+    # =========================================================================
+
+    async def _cmd_datasets(self, args: str) -> dict:
+        """HuggingFace dataset discovery and KB management via Engine gRPC.
+
+        All operations go through the Gaius Engine. No local fallbacks.
+
+        Usage:
+            /datasets                    - List datasets in KB (internal + external)
+            /datasets kb                 - Same as above
+            /datasets list [N]           - Fetch N recent datasets from HuggingFace (default: 20)
+            /datasets add <id> [notes]   - Add dataset to KB external registry
+            /datasets info <id>          - Get detailed info for a specific dataset
+
+        Examples:
+            /datasets                        # List KB datasets
+            /datasets list 50                # Latest 50 from HuggingFace
+            /datasets add facebook/research-plan-gen
+            /datasets info facebook/research-plan-gen
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split(maxsplit=2) if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        client = await get_grpc_client()
+
+        # Subcommand: add
+        if subcmd == "add":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /datasets add <dataset_id> [notes]",
+                    "example": "/datasets add facebook/research-plan-gen",
+                }
+            dataset_id = parts[1]
+            notes = parts[2] if len(parts) > 2 else ""
+            result = await client.call("Datasets", "add", {"dataset_id": dataset_id, "notes": notes})
+            return {"command": "datasets", "action": "add", **result}
+
+        # Subcommand: info
+        if subcmd == "info":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /datasets info <dataset_id>",
+                    "example": "/datasets info facebook/research-plan-gen",
+                }
+            dataset_id = parts[1]
+            result = await client.call("Datasets", "info", {"dataset_id": dataset_id})
+            return {"command": "datasets", "action": "info", **result}
+
+        # Subcommand: list (fetch from HuggingFace)
+        if subcmd == "list":
+            limit = 20
+            if len(parts) > 1 and parts[1].isdigit():
+                limit = int(parts[1])
+            result = await client.call("Datasets", "list", {"limit": limit})
+            return {"command": "datasets", "action": "list_hf", **result}
+
+        # Default / kb: list datasets in KB
+        if subcmd in ("", "kb"):
+            result = await client.call("Datasets", "list_kb", {})
+            return {"command": "datasets", "action": "list_kb", **result}
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown datasets subcommand: {subcmd}",
+            "usage": "/datasets [kb|list|add|info] ...",
+        }
+
+    async def _cmd_models(self, args: str) -> dict:
+        """HuggingFace model discovery and KB management via Engine gRPC.
+
+        All operations go through the Gaius Engine. No local fallbacks.
+
+        Usage:
+            /models                    - List models in KB (internal + external)
+            /models kb                 - Same as above
+            /models list [N] [filter]  - Fetch N recent models from HuggingFace (default: 20)
+            /models add <id> [notes]   - Add model to KB external registry
+            /models info <id>          - Get detailed info for a specific model
+
+        Examples:
+            /models                            # List KB models
+            /models list 50                    # Latest 50 from HuggingFace
+            /models list 20 text-generation    # Latest 20 text-generation models
+            /models add meta-llama/Llama-3.3-70B-Instruct
+            /models info meta-llama/Llama-3.3-70B-Instruct
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split(maxsplit=2) if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        client = await get_grpc_client()
+
+        # Subcommand: add
+        if subcmd == "add":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /models add <model_id> [notes]",
+                    "example": "/models add meta-llama/Llama-3.3-70B-Instruct",
+                }
+            model_id = parts[1]
+            notes = parts[2] if len(parts) > 2 else ""
+            result = await client.call("Models", "add", {"model_id": model_id, "notes": notes})
+            return {"command": "models", "action": "add", **result}
+
+        # Subcommand: info
+        if subcmd == "info":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /models info <model_id>",
+                    "example": "/models info meta-llama/Llama-3.3-70B-Instruct",
+                }
+            model_id = parts[1]
+            result = await client.call("Models", "info", {"model_id": model_id})
+            return {"command": "models", "action": "info", **result}
+
+        # Subcommand: list (fetch from HuggingFace)
+        if subcmd == "list":
+            limit = 20
+            filter_str = ""
+            if len(parts) > 1:
+                # Could be limit or filter
+                if parts[1].isdigit():
+                    limit = int(parts[1])
+                    if len(parts) > 2:
+                        filter_str = parts[2]
+                else:
+                    filter_str = parts[1]
+            result = await client.call("Models", "list", {"limit": limit, "filter": filter_str})
+            return {"command": "models", "action": "list_hf", **result}
+
+        # Default / kb: list models in KB
+        if subcmd in ("", "kb"):
+            result = await client.call("Models", "list_kb", {})
+            return {"command": "models", "action": "list_kb", **result}
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown models subcommand: {subcmd}",
+            "usage": "/models [kb|list|add|info] ...",
+        }
 
 
 def main():

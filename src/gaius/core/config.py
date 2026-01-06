@@ -14,7 +14,7 @@ Usage:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pyhocon import ConfigFactory, ConfigTree
 
@@ -182,7 +182,7 @@ class TDAConfig:
 
     enabled: bool = True
     compute_interval_minutes: int = 60
-    projection_method: str = "umap"  # or "pca"
+    projection_method: Literal["umap", "pca"] = "umap"
     max_points: int = 500  # Subsample for TDA (giotto-tda is O(n^3))
 
 
@@ -528,10 +528,15 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         roles=list(g.get("swarm.roles", [])) or SwarmConfig().roles,
     )
 
+    # Validate projection_method is a valid literal
+    raw_projection_method = g.get("tda.projection_method", "umap")
+    projection_method: Literal["umap", "pca"] = (
+        raw_projection_method if raw_projection_method in ("umap", "pca") else "umap"
+    )  # type: ignore[assignment]
     tda = TDAConfig(
         enabled=g.get("tda.enabled", True),
         compute_interval_minutes=int(g.get("tda.compute_interval_minutes", 60)),
-        projection_method=g.get("tda.projection_method", "umap"),
+        projection_method=projection_method,
         max_points=int(g.get("tda.max_points", 500)),
     )
 

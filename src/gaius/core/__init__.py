@@ -1,7 +1,14 @@
 """Core application logic."""
 
 from .state import AppState, ViewMode, OverlayMode, CenterPanelMode, ReasoningTrace
-from .links import LinkGraph, parse_wikilinks, resolve_link, create_linked_file
+from .links import (
+    ActionLink,
+    LinkGraph,
+    parse_action_links,
+    parse_wikilinks,
+    resolve_link,
+    create_linked_file,
+)
 from .config import (
     GaiusConfig,
     get_config,
@@ -61,7 +68,9 @@ __all__ = [
     "CenterPanelMode",
     "ReasoningTrace",
     # Links
+    "ActionLink",
     "LinkGraph",
+    "parse_action_links",
     "parse_wikilinks",
     "resolve_link",
     "create_linked_file",
