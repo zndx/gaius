@@ -12,7 +12,7 @@ OpenTelemetry (OTel) instrumentation strategy for metrics and distributed tracin
 | **Entry-point tracing** | Beta | Command-level spans work |
 | **Service tracing** | Alpha | Most services lack span instrumentation |
 | **Trace context propagation** | Alpha | Breaks at gRPC/async boundaries |
-| **Correlation IDs** | Missing | No request ID threading |
+| **Trace Correlation** | Alpha | Request ID via span context |
 
 ### What Works Today
 
@@ -98,34 +98,6 @@ async def extract_document(url: str, flow_id: str) -> Document:
         span.set_attribute("document.url", url)
         # ... extraction logic
 ```
-
-#### Tier 3: Flow ID Correlation
-
-Pass a `flow_id` through method calls for grep-able logs even when spans break:
-
-```python
-import uuid
-import logging
-
-logger = logging.getLogger(__name__)
-
-async def process_bookmark(bookmark: XBookmark) -> None:
-    flow_id = str(uuid.uuid4())[:8]  # Short for readability
-
-    logger.info(f"[flow:{flow_id}] Starting bookmark processing", extra={"flow_id": flow_id})
-
-    # Pass flow_id to all downstream calls
-    article = await fetch_article(bookmark.url, flow_id=flow_id)
-    content = await extract_content(article, flow_id=flow_id)
-    await index_to_kb(content, flow_id=flow_id)
-
-    logger.info(f"[flow:{flow_id}] Bookmark processing complete")
-```
-
-This provides correlation even when:
-- OTel tracing fails
-- Spans cross async boundaries incorrectly
-- External systems don't propagate trace context
 
 ## Federated Engine Topology
 
@@ -284,7 +256,7 @@ When black box APIs have variable latency or transient failures:
 
 1. **Timeout spans** - Record timeout as explicit event, not just error
 2. **Retry spans** - Each retry is a child span with `retry.attempt` attribute
-3. **Circuit breaker state** - Log state transitions as span events
+3. **Circuit breaker state** - Record state transitions as span events
 
 ```python
 @trace_operation("api_with_retry")
@@ -552,34 +524,10 @@ When investigating a latency spike in Prometheus, click through to the specific 
 
 **Trade-off**: Only traces linked from metrics are accessible; no browsing.
 
-#### 5. Correlation ID Logging (Trace-Lite)
-
-The lightest approach: just pass an ID through logs without OTel machinery:
-
-```python
-import uuid
-import structlog
-
-logger = structlog.get_logger()
-
-async def process_request(request):
-    correlation_id = str(uuid.uuid4())[:8]
-    log = logger.bind(correlation_id=correlation_id)
-
-    log.info("starting_processing")
-    result = await do_work(correlation_id)
-    log.info("completed_processing", result_size=len(result))
-```
-
-Then grep: `grep "correlation_id=abc123" /var/log/gaius/*.log`
-
-**Trade-off**: No visualization, no timing, but nearly zero overhead.
-
 ### Decision Framework
 
 | If you need... | Use... | Overhead |
 |---------------|--------|----------|
-| Post-mortem debugging | Correlation ID logging | Minimal |
 | Latency investigation | Exemplars + selective spans | Low |
 | Cross-service visibility | Manual span instrumentation | Medium |
 | Full request tracing | Auto-instrumentation + sampling | High |
@@ -590,9 +538,8 @@ Then grep: `grep "correlation_id=abc123" /var/log/gaius/*.log`
 Gaius adopts a **pragmatic middle ground**:
 
 1. **Always**: Metrics (zero-overhead design, essential for operations)
-2. **Default**: Correlation ID in logs (grep-able, minimal overhead)
-3. **Selective**: Manual spans at service boundaries and black-box wrappers
-4. **Optional**: Full W3C when debugging specific issues (enable via config)
+2. **Selective**: Manual spans at service boundaries and black-box wrappers
+3. **Optional**: Full W3C when debugging specific issues (enable via config)
 
 This provides 80% of the debugging value at 20% of the implementation and runtime cost.
 
@@ -603,7 +550,6 @@ This provides 80% of the debugging value at 20% of the implementation and runtim
 - [x] Metrics infrastructure (complete)
 - [x] Entry-point tracing (complete)
 - [ ] Exception recording at all catch sites
-- [ ] flow_id convention documented
 
 ### Phase 2: Service Layer
 
@@ -666,9 +612,10 @@ When debugging an issue:
    curl 'http://localhost:9090/api/v1/query?query=gaius_gaius_exception_caught_total{component="ambient"}'
    ```
 
-2. **Find flow_id in logs** - Grep for the time window
-   ```bash
-   grep "flow:" /var/log/gaius/engine.log | grep "2026-01-06T10:3"
+2. **Find exemplar** - Click through from Prometheus metric to trace
+   ```
+   # In Prometheus UI, hover over spike → click "Exemplar" link
+   # Opens trace viewer with the exact request that caused the spike
    ```
 
 3. **Trace in Jaeger/Tempo** - Search by flow_id attribute
