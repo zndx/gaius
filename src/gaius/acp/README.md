@@ -330,3 +330,30 @@ async def test():
 asyncio.run(test())
 "
 ```
+
+---
+
+<!-- GAI:META
+module: gaius.acp
+layer: L3-engine
+key_types: [GaiusACPClient, ACPConfig, StreamCallback, WorkflowMode, GitHubSecurityGuard, VisibilityCache]
+key_funcs: [prompt, build_system_prompt, build_incident_prompt, sanitize_issue_content, validate_issue_title, verify_repo, from_config]
+submodules: [client, prompts, security]
+depends: [agent-client-protocol, gh-cli, pyhocon]
+dependents: [health.observe]
+config_keys: [acp.github.allowed_repos, acp.github.require_private, acp.github.verify_on_each_operation, acp.github.cache_visibility_seconds]
+env_vars: [ANTHROPIC_API_KEY]
+grpc_services: []
+cross_module_calls:
+  - from: health.observe.HealthObserver._tier2_remediate_acp
+    to: acp.GaiusACPClient.prompt
+    purpose: Escalate complex health incidents to Claude Code for framework evolution
+  - from: health.observe.HealthObserver._tier2_remediate_acp
+    to: acp.build_incident_prompt
+    purpose: Format incident details for Claude Code analysis
+  - from: health.healing_events.HealingEventRecorder.record_acp_escalation_*
+    to: storage.database.get_pool
+    purpose: Persist verbose ACP session history for narrative reports
+guru_codes: [ACP.00000001.CONNFAIL, ACP.00000002.TIMEOUT, ACP.00000003.NOTCONN, ACP.00000004.PROMPTTIMEOUT, ACP.00000005.PROMPTFAIL, ACP.00000010.GHSECFAIL, ACP.SEC.00000002.NOTALLOWED, ACP.SEC.00000003.NOTPRIVATE, ACP.SEC.00000004.NOTCONFIGURED]
+fail_fast: true
+-->

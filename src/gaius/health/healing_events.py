@@ -783,6 +783,12 @@ class HealingEventRecorder:
         incident_fingerprint: str,
         rpn_score: int,
         failure_mode_id: str | None = None,
+        prior_attempts: int = 0,
+        prior_tiers: list[int] | None = None,
+        escalation_reason: str | None = None,
+        incident_age_seconds: int | None = None,
+        prompt_sent: str | None = None,
+        context_summary: str | None = None,
     ) -> HealingEvent | None:
         """Record start of ACP escalation to Claude Code.
 
@@ -792,18 +798,50 @@ class HealingEventRecorder:
             incident_fingerprint: Unique incident identifier
             rpn_score: FMEA RPN score triggering escalation
             failure_mode_id: FMEA failure mode if mapped
+            prior_attempts: Number of healing attempts before escalation
+            prior_tiers: List of tiers attempted before escalation
+            escalation_reason: Why escalation was triggered
+            incident_age_seconds: How long the incident has been active
+            prompt_sent: The prompt sent to Claude Code (truncated)
+            context_summary: Summary of health context sent
         """
+        payload = {
+            "incident_fingerprint": incident_fingerprint,
+            "rpn_score": rpn_score,
+            "prior_attempts": prior_attempts,
+            "narrative": f"Escalating to Claude Code after {prior_attempts} failed attempts",
+        }
+        if prior_tiers:
+            payload["prior_tiers"] = prior_tiers
+        if escalation_reason:
+            payload["escalation_reason"] = escalation_reason
+        if incident_age_seconds is not None:
+            payload["incident_age_seconds"] = incident_age_seconds
+            payload["incident_age_human"] = self._format_duration(incident_age_seconds)
+        if prompt_sent:
+            payload["prompt_sent"] = prompt_sent[:2000]  # Truncate for DB
+        if context_summary:
+            payload["context_summary"] = context_summary[:1000]
+
         return await self._record_event(
             event_type=HealingEventType.ACP_ESCALATION_STARTED,
             endpoint=endpoint,
-            tier=0,
+            tier=2,  # ACP is tier 2
             sequence_id=sequence_id,
-            payload={
-                "incident_fingerprint": incident_fingerprint,
-                "rpn_score": rpn_score,
-            },
+            payload=payload,
             failure_mode_id=failure_mode_id,
         )
+
+    def _format_duration(self, seconds: int) -> str:
+        """Format duration in human-readable form."""
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            return f"{seconds // 60}m {seconds % 60}s"
+        else:
+            hours = seconds // 3600
+            mins = (seconds % 3600) // 60
+            return f"{hours}h {mins}m"
 
     async def record_acp_escalation_completed(
         self,
@@ -812,6 +850,12 @@ class HealingEventRecorder:
         session_id: str,
         result_summary: str | None = None,
         duration_ms: int | None = None,
+        success: bool = True,
+        actions_taken: list[str] | None = None,
+        tools_used: list[str] | None = None,
+        full_response: str | None = None,
+        diagnosis: str | None = None,
+        remediation_applied: str | None = None,
     ) -> HealingEvent | None:
         """Record successful ACP escalation completion.
 
@@ -821,17 +865,46 @@ class HealingEventRecorder:
             session_id: ACP session identifier
             result_summary: Brief summary of Claude Code's response
             duration_ms: Time taken for ACP interaction
+            success: Whether Claude Code determined remediation succeeded
+            actions_taken: List of actions Claude Code performed
+            tools_used: List of MCP tools Claude Code used
+            full_response: Full response text (truncated)
+            diagnosis: Claude Code's diagnosis of the issue
+            remediation_applied: What remediation was applied
         """
-        payload = {"session_id": session_id}
+        # Build narrative
+        duration_str = self._format_duration(duration_ms // 1000) if duration_ms else "unknown"
+        narrative = f"Claude Code completed analysis in {duration_str}"
+        if success:
+            narrative += " - remediation successful"
+        else:
+            narrative += " - remediation failed or incomplete"
+
+        payload = {
+            "session_id": session_id,
+            "success": success,
+            "narrative": narrative,
+        }
         if result_summary:
-            payload["result_summary"] = result_summary[:500]  # Truncate for DB
+            payload["result_summary"] = result_summary[:500]
         if duration_ms:
             payload["duration_ms"] = duration_ms
+            payload["duration_human"] = self._format_duration(duration_ms // 1000)
+        if actions_taken:
+            payload["actions_taken"] = actions_taken[:10]  # Limit to 10 actions
+        if tools_used:
+            payload["tools_used"] = tools_used[:20]  # Limit to 20 tools
+        if full_response:
+            payload["full_response"] = full_response[:5000]  # Store more context
+        if diagnosis:
+            payload["diagnosis"] = diagnosis[:1000]
+        if remediation_applied:
+            payload["remediation_applied"] = remediation_applied[:500]
 
         return await self._record_event(
             event_type=HealingEventType.ACP_ESCALATION_COMPLETED,
             endpoint=endpoint,
-            tier=0,
+            tier=2,  # ACP is tier 2
             sequence_id=sequence_id,
             payload=payload,
         )
@@ -842,6 +915,12 @@ class HealingEventRecorder:
         endpoint: str,
         error: str,
         error_code: str | None = None,
+        duration_ms: int | None = None,
+        failure_stage: str | None = None,
+        partial_response: str | None = None,
+        connection_state: str | None = None,
+        retry_recommended: bool = False,
+        escalation_path: str | None = None,
     ) -> HealingEvent | None:
         """Record ACP escalation failure.
 
@@ -850,15 +929,43 @@ class HealingEventRecorder:
             endpoint: Affected endpoint
             error: Error message
             error_code: Guru meditation code if applicable
+            duration_ms: How long before failure occurred
+            failure_stage: At what stage failure occurred (connection, prompt, timeout)
+            partial_response: Any partial response received
+            connection_state: State of ACP connection at failure
+            retry_recommended: Whether retry is recommended
+            escalation_path: Next escalation path (manual intervention, etc.)
         """
-        payload = {"error": error}
+        # Build narrative
+        narrative = f"ACP escalation failed: {error[:100]}"
+        if failure_stage:
+            narrative = f"ACP escalation failed at {failure_stage} stage: {error[:80]}"
+
+        payload = {
+            "error": error,
+            "narrative": narrative,
+        }
         if error_code:
             payload["error_code"] = error_code
+        if duration_ms:
+            payload["duration_ms"] = duration_ms
+            payload["duration_human"] = self._format_duration(duration_ms // 1000)
+        if failure_stage:
+            payload["failure_stage"] = failure_stage
+        if partial_response:
+            payload["partial_response"] = partial_response[:1000]
+        if connection_state:
+            payload["connection_state"] = connection_state
+        payload["retry_recommended"] = retry_recommended
+        if escalation_path:
+            payload["escalation_path"] = escalation_path
+        else:
+            payload["escalation_path"] = "Manual intervention required"
 
         return await self._record_event(
             event_type=HealingEventType.ACP_ESCALATION_FAILED,
             endpoint=endpoint,
-            tier=0,
+            tier=2,  # ACP is tier 2
             sequence_id=sequence_id,
             payload=payload,
         )

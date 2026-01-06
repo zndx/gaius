@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable, ClassVar
 from uuid import UUID, uuid4
+import time
 
 from .checker import HealthChecker, HealthReport, CheckResult, CheckStatus
 from .self_healing import SelfHealingCoordinator, HealthIssue, HealingResult
@@ -35,6 +36,7 @@ from .fmea.models import RPNScore, EscalationTier
 from ..acp.security import get_github_repo_from_remote
 
 if TYPE_CHECKING:
+    from asyncpg import Pool
     from ..acp import GaiusACPClient
     from ..acp.prompts import WorkflowMode, CadencePolicy
 
@@ -171,6 +173,7 @@ class HealthObserver:
         self._coordinator: SelfHealingCoordinator | None = None
         self._event_recorder: HealingEventRecorder | None = None
         self._acp_client: "GaiusACPClient | None" = None
+        self._agenda_tracker: "AgendaTracker | None" = None
 
         # State
         self._running = False
@@ -244,6 +247,138 @@ class HealthObserver:
         # ACP client (lazy-loaded when needed)
         # Will be initialized on first ACP escalation
 
+        # Load persisted state from database
+        await self._load_state_from_db()
+
+    async def _get_pool(self) -> "Pool | None":
+        """Get database pool."""
+        try:
+            from ..storage.database import get_pool
+            return await get_pool()
+        except Exception as e:
+            logger.warning(f"Cannot get database pool: {e}")
+            return None
+
+    async def _load_state_from_db(self) -> None:
+        """Load persisted state from health_observer_state table.
+
+        Restores counters and active incidents from previous run.
+        """
+        pool = await self._get_pool()
+        if not pool:
+            logger.info("No database pool, starting with fresh state")
+            return
+
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT poll_count, active_incidents, acp_prompts_sent,
+                           acp_prompts_succeeded, last_poll_at
+                    FROM health_observer_state
+                    WHERE id = 1
+                    """
+                )
+
+                if row:
+                    self._poll_count = row["poll_count"] or 0
+                    self._acp_escalations = row["acp_prompts_sent"] or 0
+                    if row["last_poll_at"]:
+                        self._last_poll_at = row["last_poll_at"]
+
+                    # Restore active incidents from JSON
+                    active_incidents_json = row["active_incidents"]
+                    if active_incidents_json:
+                        for fingerprint, data in active_incidents_json.items():
+                            try:
+                                incident = HealthIncident(
+                                    incident_id=UUID(data["incident_id"]),
+                                    fingerprint=fingerprint,
+                                    endpoint=data["endpoint"],
+                                    failure_mode_id=data["failure_mode_id"],
+                                    rpn=RPNScore(
+                                        severity=data["rpn"]["severity"],
+                                        occurrence=data["rpn"]["occurrence"],
+                                        detection=data["rpn"]["detection"],
+                                        rpn=data["rpn"]["rpn"],
+                                        failure_mode_id=data["rpn"].get("failure_mode_id", ""),
+                                    ),
+                                    current_tier=data.get("current_tier", 0),
+                                    sequence_id=UUID(data["sequence_id"]) if data.get("sequence_id") else None,
+                                    created_at=datetime.fromisoformat(data["created_at"]),
+                                    last_check_at=datetime.fromisoformat(data.get("last_check_at", data["created_at"])),
+                                    attempts=data.get("attempts", 0),
+                                    github_issue=data.get("github_issue"),
+                                    status=data.get("status", "active"),
+                                )
+                                self._active_incidents[fingerprint] = incident
+                            except Exception as e:
+                                logger.warning(f"Could not restore incident {fingerprint}: {e}")
+
+                    logger.info(
+                        f"Loaded state from DB: poll_count={self._poll_count}, "
+                        f"active_incidents={len(self._active_incidents)}, "
+                        f"acp_escalations={self._acp_escalations}"
+                    )
+
+                # Also count ACP escalations from healing_events as fallback
+                acp_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM healing_events
+                    WHERE event_type = 'acp_escalation_started'
+                    """
+                )
+                if acp_count and acp_count > self._acp_escalations:
+                    self._acp_escalations = acp_count
+                    logger.debug(f"Updated acp_escalations from healing_events: {acp_count}")
+
+        except Exception as e:
+            logger.error(f"Failed to load state from DB: {e}")
+
+    async def _save_state_to_db(self) -> None:
+        """Save current state to health_observer_state table.
+
+        Called after each poll cycle to persist state.
+        """
+        pool = await self._get_pool()
+        if not pool:
+            return
+
+        try:
+            # Convert active incidents to JSON
+            active_incidents_json = {
+                fp: inc.to_dict() for fp, inc in self._active_incidents.items()
+            }
+
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE health_observer_state SET
+                        started_at = COALESCE(started_at, $1),
+                        last_poll_at = $2,
+                        poll_count = $3,
+                        active_incidents = $4,
+                        acp_prompts_sent = $5,
+                        config = $6
+                    WHERE id = 1
+                    """,
+                    datetime.now() if self._running else None,
+                    self._last_poll_at,
+                    self._poll_count,
+                    json.dumps(active_incidents_json),
+                    self._acp_escalations,
+                    json.dumps({
+                        "poll_interval": self.config.poll_interval,
+                        "escalate_to_acp": self.config.escalate_to_acp,
+                        "github_repo": self.config.github_repo,
+                    }),
+                )
+
+            logger.debug(f"Saved state to DB: poll_count={self._poll_count}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save state to DB: {e}")
+
     async def stop(self) -> None:
         """Stop the health observer daemon gracefully."""
         if not self._running:
@@ -285,6 +420,9 @@ class HealthObserver:
                 # Check for recoveries
                 await self._check_recoveries(report)
 
+                # Persist state to database
+                await self._save_state_to_db()
+
                 # Determine next poll interval
                 if self._has_active_healing():
                     interval = self.config.burst_interval
@@ -311,18 +449,39 @@ class HealthObserver:
         """Process failed health checks.
 
         For each failure:
-        1. Calculate fingerprint for deduplication
-        2. Check if incident exists
-        3. Create or update incident
-        4. Calculate RPN
-        5. Attempt remediation based on tier
+        1. Check if endpoint is in scheduled transition (not a real failure)
+        2. Calculate fingerprint for deduplication
+        3. Check if incident exists
+        4. Create or update incident
+        5. Calculate RPN
+        6. Attempt remediation based on tier
 
         Args:
             report: Health report with check results
         """
+        # Lazy-load AgendaTracker if available
+        if self._agenda_tracker is None:
+            try:
+                from ..engine.services.agenda_tracker import get_agenda_tracker
+                self._agenda_tracker = get_agenda_tracker()
+            except Exception:
+                pass  # AgendaTracker not available, proceed without it
+
         for check in report.checks:
             if check.status != CheckStatus.FAIL:
                 continue
+
+            # Extract endpoint from check details
+            endpoint = check.details.get("endpoint", check.name.lower().replace(" ", "_"))
+
+            # Skip if endpoint is in a scheduled transition (not a real failure)
+            if self._agenda_tracker is not None:
+                if self._agenda_tracker.is_endpoint_in_scheduled_transition(endpoint):
+                    expected_state = self._agenda_tracker.get_scheduled_endpoint_state(endpoint)
+                    logger.debug(
+                        f"Skipping incident for {endpoint}: scheduled transition to {expected_state}"
+                    )
+                    continue
 
             # Generate fingerprint for deduplication
             fingerprint = self._generate_fingerprint(check)
@@ -426,7 +585,7 @@ class HealthObserver:
             from .fmea.engine import FMEAEngine
 
             engine = FMEAEngine(kb_root=self.config.kb_root)
-            return engine.calculate_rpn(
+            return await engine.calculate_rpn(
                 failure_mode_id=failure_mode_id,
                 context=check.details,
             )
@@ -587,6 +746,34 @@ class HealthObserver:
                 reason="ACP escalation disabled",
             )
 
+        start_time = time.time()
+
+        # Build prompt and context for Claude Code
+        prompt = self._build_acp_prompt(incident)
+        context_summary = self._build_context_summary(incident)
+
+        # Calculate incident age
+        incident_age_seconds = int((datetime.now() - incident.created_at).total_seconds())
+
+        # Build escalation reason
+        escalation_reason = self._build_escalation_reason(incident)
+
+        # Record escalation start with full context
+        if self._event_recorder and incident.sequence_id:
+            await self._event_recorder.record_acp_escalation_started(
+                sequence_id=incident.sequence_id,
+                endpoint=incident.endpoint,
+                incident_fingerprint=incident.fingerprint,
+                rpn_score=incident.rpn.rpn,
+                failure_mode_id=incident.failure_mode_id,
+                prior_attempts=incident.attempts,
+                prior_tiers=list(range(incident.current_tier)),
+                escalation_reason=escalation_reason,
+                incident_age_seconds=incident_age_seconds,
+                prompt_sent=prompt,
+                context_summary=context_summary,
+            )
+
         try:
             # Lazy-load ACP client
             if self._acp_client is None:
@@ -602,9 +789,6 @@ class HealthObserver:
 
             self._acp_escalations += 1
 
-            # Build prompt for Claude Code
-            prompt = self._build_acp_prompt(incident)
-
             # Send to Claude Code
             response = await self._acp_client.prompt(
                 message=prompt,
@@ -615,8 +799,27 @@ class HealthObserver:
                 timeout=self.config.acp_timeout,
             )
 
-            # Parse response for success indicator
+            # Parse response for success indicator and extract details
             success = self._parse_acp_response(response)
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Extract actions and diagnosis from response
+            diagnosis, remediation = self._extract_response_details(response)
+
+            # Record escalation completion with full details
+            if self._event_recorder and incident.sequence_id:
+                session_id = getattr(self._acp_client, 'session_id', 'unknown')
+                await self._event_recorder.record_acp_escalation_completed(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    session_id=str(session_id),
+                    result_summary=response[:200] if response else None,
+                    duration_ms=duration_ms,
+                    success=success,
+                    full_response=response,
+                    diagnosis=diagnosis,
+                    remediation_applied=remediation,
+                )
 
             return HealingResult(
                 success=success,
@@ -628,11 +831,105 @@ class HealthObserver:
 
         except Exception as e:
             logger.error(f"ACP escalation failed: {e}")
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            # Determine failure stage
+            failure_stage = "connection"
+            if self._acp_client is not None:
+                failure_stage = "prompt" if "timeout" not in str(e).lower() else "timeout"
+
+            # Record escalation failure with full context
+            if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_acp_escalation_failed(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    error=str(e),
+                    error_code=getattr(e, 'code', None),
+                    duration_ms=duration_ms,
+                    failure_stage=failure_stage,
+                    connection_state="connected" if self._acp_client else "disconnected",
+                    retry_recommended=incident.attempts < 5,
+                    escalation_path="Manual intervention via /health fix or GitHub issue",
+                )
+
             return HealingResult(
                 success=False,
                 escalate=True,
                 reason=f"ACP escalation failed: {e}",
             )
+
+    def _build_context_summary(self, incident: HealthIncident) -> str:
+        """Build a summary of the health context for the incident."""
+        parts = [
+            f"Incident: {incident.fingerprint}",
+            f"Endpoint: {incident.endpoint}",
+            f"RPN: {incident.rpn.rpn} (S:{incident.rpn.severity} O:{incident.rpn.occurrence} D:{incident.rpn.detection})",
+            f"Tier: {incident.current_tier}",
+            f"Attempts: {incident.attempts}",
+            f"Status: {incident.status}",
+        ]
+        if self._last_report:
+            parts.append(f"Last health: {self._last_report.summary()}")
+        return " | ".join(parts)
+
+    def _build_escalation_reason(self, incident: HealthIncident) -> str:
+        """Build a human-readable explanation for why escalation occurred."""
+        reasons = []
+        if incident.rpn.rpn >= 200:
+            reasons.append(f"High RPN score ({incident.rpn.rpn})")
+        if incident.attempts >= 3:
+            reasons.append(f"Multiple failed attempts ({incident.attempts})")
+        if incident.current_tier >= 2:
+            reasons.append("Reached tier 2 escalation threshold")
+
+        age_hours = (datetime.now() - incident.created_at).total_seconds() / 3600
+        if age_hours > 1:
+            reasons.append(f"Incident persisting for {age_hours:.1f}h")
+
+        return "; ".join(reasons) if reasons else "Escalation triggered by tier progression"
+
+    def _extract_response_details(self, response: str) -> tuple[str | None, str | None]:
+        """Extract diagnosis and remediation from Claude Code response.
+
+        Args:
+            response: Full response from Claude Code
+
+        Returns:
+            Tuple of (diagnosis, remediation_applied)
+        """
+        diagnosis = None
+        remediation = None
+
+        response_lower = response.lower()
+
+        # Look for diagnosis patterns
+        diagnosis_markers = ["diagnosis:", "root cause:", "issue:", "problem:"]
+        for marker in diagnosis_markers:
+            if marker in response_lower:
+                idx = response_lower.find(marker)
+                # Extract until next section or 500 chars
+                end_idx = min(idx + 500, len(response))
+                for end_marker in ["\n\n", "##", "remediation:", "fix:", "action:"]:
+                    next_section = response_lower.find(end_marker, idx + len(marker))
+                    if next_section > 0:
+                        end_idx = min(end_idx, next_section)
+                diagnosis = response[idx:end_idx].strip()
+                break
+
+        # Look for remediation patterns
+        remediation_markers = ["remediation:", "fix:", "action:", "restarted", "applied"]
+        for marker in remediation_markers:
+            if marker in response_lower:
+                idx = response_lower.find(marker)
+                end_idx = min(idx + 300, len(response))
+                for end_marker in ["\n\n", "##"]:
+                    next_section = response_lower.find(end_marker, idx + len(marker))
+                    if next_section > 0:
+                        end_idx = min(end_idx, next_section)
+                remediation = response[idx:end_idx].strip()
+                break
+
+        return diagnosis, remediation
 
     def _build_acp_prompt(self, incident: HealthIncident) -> str:
         """Build prompt for Claude Code via ACP.
@@ -730,17 +1027,31 @@ Begin your investigation now."""
         Incidents in "recovering" status are checked for sustained health.
         If healthy for recovery_verification_time, they are resolved.
 
+        Also checks "active" incidents for spontaneous recovery (e.g., due to
+        ambient workload changes or manual intervention outside the healing loop).
+
         Args:
             report: Current health report
         """
         resolved = []
 
         for fingerprint, incident in self._active_incidents.items():
-            if incident.status != "recovering":
-                continue
-
             # Check if the associated check is now passing
             check_passed = self._check_passed_for_incident(report, incident)
+
+            # Handle active incidents that have spontaneously recovered
+            if incident.status == "active" and check_passed:
+                # Move to recovering status and start verification timer
+                incident.status = "recovering"
+                self._recovery_start[fingerprint] = datetime.now()
+                logger.info(
+                    f"Incident {fingerprint} spontaneously recovered, "
+                    f"starting verification period"
+                )
+                continue
+
+            if incident.status != "recovering":
+                continue
 
             if check_passed:
                 # Check if recovery period elapsed
@@ -885,6 +1196,242 @@ Begin your investigation now."""
                 "github_repo": self.config.github_repo,
             },
         }
+
+    async def get_incident_detail(self, fingerprint: str) -> dict[str, Any] | None:
+        """Get detailed incident info including ACP history.
+
+        Args:
+            fingerprint: Incident fingerprint (failure_mode_id:endpoint)
+
+        Returns:
+            Detailed incident dict with healing history, or None if not found
+        """
+        incident = self._active_incidents.get(fingerprint)
+        if not incident:
+            return None
+
+        result = incident.to_dict()
+
+        # Add healing event history from database
+        if self._event_recorder and incident.sequence_id:
+            events = await self._event_recorder.get_sequence_events(incident.sequence_id)
+            result["healing_events"] = events
+
+            # Extract ACP-specific events for easy access
+            acp_events = [
+                e for e in events
+                if e["event_type"].startswith("acp_")
+            ]
+            result["acp_history"] = acp_events
+
+            # Generate human-readable narrative from events
+            result["narrative"] = self._generate_incident_narrative(incident, events)
+
+        # Add GitHub issue from database if linked
+        pool = await self._get_pool()
+        if pool:
+            try:
+                async with pool.acquire() as conn:
+                    issue_row = await conn.fetchrow(
+                        """
+                        SELECT issue_number, repo, issue_url, status,
+                               created_at, closed_at, recurrence_count
+                        FROM github_issues
+                        WHERE fingerprint = $1
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        fingerprint,
+                    )
+                    if issue_row:
+                        result["github_issue_detail"] = {
+                            "issue_number": issue_row["issue_number"],
+                            "repo": issue_row["repo"],
+                            "issue_url": issue_row["issue_url"],
+                            "status": issue_row["status"],
+                            "created_at": issue_row["created_at"].isoformat(),
+                            "closed_at": issue_row["closed_at"].isoformat() if issue_row["closed_at"] else None,
+                            "recurrence_count": issue_row["recurrence_count"],
+                        }
+            except Exception as e:
+                logger.warning(f"Could not fetch GitHub issue for {fingerprint}: {e}")
+
+        return result
+
+    def _generate_incident_narrative(
+        self,
+        incident: HealthIncident,
+        events: list[dict[str, Any]],
+    ) -> str:
+        """Generate a human-readable narrative from incident events.
+
+        Args:
+            incident: The incident
+            events: List of healing events
+
+        Returns:
+            Markdown narrative suitable for /health reports
+        """
+        lines = []
+        lines.append(f"### Incident Timeline: {incident.fingerprint}")
+        lines.append("")
+
+        # Calculate incident age
+        age = datetime.now() - incident.created_at
+        age_str = self._format_age(age.total_seconds())
+        lines.append(f"**Duration**: {age_str} | **Attempts**: {incident.attempts} | **Current Tier**: {incident.current_tier}")
+        lines.append("")
+
+        if not events:
+            lines.append("*No healing events recorded yet.*")
+            return "\n".join(lines)
+
+        lines.append("**Event Log:**")
+        lines.append("")
+
+        for event in events:
+            event_type = event.get("event_type", "unknown")
+            created_at = event.get("created_at", "")
+            payload = event.get("payload", {})
+
+            # Format timestamp
+            if created_at:
+                try:
+                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    ts = dt.strftime("%H:%M:%S")
+                except Exception:
+                    ts = created_at[:19]
+            else:
+                ts = "??:??:??"
+
+            # Get narrative from payload or generate one
+            narrative = payload.get("narrative", "")
+            if not narrative:
+                narrative = self._event_to_narrative(event_type, payload)
+
+            # Format based on event type
+            if event_type == "sequence_started":
+                lines.append(f"- **{ts}** 🚨 Incident detected: {payload.get('issue_type', 'unknown issue')}")
+            elif event_type == "tier_entered":
+                to_tier = payload.get("to_tier", "?")
+                reason = payload.get("reason", "escalation")
+                lines.append(f"- **{ts}** ⬆️ Entered tier {to_tier} ({reason})")
+            elif event_type == "attempt_started":
+                action = payload.get("action", "unknown")
+                lines.append(f"- **{ts}** 🔧 Started: {action}")
+            elif event_type == "attempt_succeeded":
+                action = payload.get("action", "unknown")
+                duration = payload.get("duration_ms", 0)
+                lines.append(f"- **{ts}** ✅ Succeeded: {action} ({duration}ms)")
+            elif event_type == "attempt_failed":
+                action = payload.get("action", "unknown")
+                reason = payload.get("reason", "")[:50]
+                lines.append(f"- **{ts}** ❌ Failed: {action} - {reason}")
+            elif event_type == "acp_escalation_started":
+                rpn = payload.get("rpn_score", "?")
+                prior = payload.get("prior_attempts", 0)
+                reason = payload.get("escalation_reason", "")[:80]
+                lines.append(f"- **{ts}** 🤖 ACP escalation started (RPN:{rpn}, {prior} prior attempts)")
+                if reason:
+                    lines.append(f"  - Reason: {reason}")
+            elif event_type == "acp_escalation_completed":
+                success = "✅" if payload.get("success") else "⚠️"
+                duration = payload.get("duration_human", "?")
+                lines.append(f"- **{ts}** {success} ACP completed ({duration})")
+                if payload.get("diagnosis"):
+                    lines.append(f"  - Diagnosis: {payload['diagnosis'][:100]}...")
+                if payload.get("remediation_applied"):
+                    lines.append(f"  - Remediation: {payload['remediation_applied'][:100]}...")
+            elif event_type == "acp_escalation_failed":
+                stage = payload.get("failure_stage", "unknown")
+                error = payload.get("error", "")[:60]
+                lines.append(f"- **{ts}** 💥 ACP failed at {stage}: {error}")
+                if payload.get("escalation_path"):
+                    lines.append(f"  - Next: {payload['escalation_path']}")
+            elif event_type == "sequence_completed":
+                outcome = payload.get("outcome", "unknown")
+                total = payload.get("total_attempts", 0)
+                lines.append(f"- **{ts}** 🏁 Sequence completed: {outcome} after {total} attempts")
+            else:
+                # Generic format for other events
+                lines.append(f"- **{ts}** {event_type}: {narrative or 'no details'}")
+
+        return "\n".join(lines)
+
+    def _event_to_narrative(self, event_type: str, payload: dict[str, Any]) -> str:
+        """Convert event to a narrative string when not provided in payload."""
+        if event_type == "cooldown_started":
+            secs = payload.get("cooldown_seconds", "?")
+            return f"Cooldown started for {secs}s"
+        elif event_type == "cooldown_cleared":
+            return "Cooldown cleared"
+        elif event_type == "circuit_breaker_tripped":
+            return f"Circuit breaker tripped after {payload.get('failure_count', '?')} failures"
+        elif event_type == "recovery_timer_started":
+            return "Recovery timer started"
+        else:
+            return ""
+
+    def _format_age(self, seconds: float) -> str:
+        """Format age in human-readable form."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+        elif seconds < 86400:
+            hours = int(seconds // 3600)
+            mins = int((seconds % 3600) // 60)
+            return f"{hours}h {mins}m"
+        else:
+            days = int(seconds // 86400)
+            hours = int((seconds % 86400) // 3600)
+            return f"{days}d {hours}h"
+
+    async def get_acp_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get recent ACP escalation history from database.
+
+        Args:
+            limit: Maximum number of events to return
+
+        Returns:
+            List of ACP escalation events
+        """
+        if not self._event_recorder:
+            return []
+
+        pool = await self._get_pool()
+        if not pool:
+            return []
+
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT event_id, event_type, endpoint, sequence_id,
+                           payload, created_at, failure_mode_id
+                    FROM healing_events
+                    WHERE event_type LIKE 'acp_%'
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+
+                return [
+                    {
+                        "event_id": str(row["event_id"]),
+                        "event_type": row["event_type"],
+                        "endpoint": row["endpoint"],
+                        "sequence_id": str(row["sequence_id"]),
+                        "payload": row["payload"],
+                        "created_at": row["created_at"].isoformat(),
+                        "failure_mode_id": row["failure_mode_id"],
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            logger.error(f"Failed to get ACP history: {e}")
+            return []
 
     async def force_check(self) -> HealthReport:
         """Force an immediate health check.

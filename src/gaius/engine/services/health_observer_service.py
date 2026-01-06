@@ -38,7 +38,7 @@ BDD Alignment:
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 from uuid import UUID, uuid4
 
@@ -545,6 +545,9 @@ class HealthObserverService(BaseDaemon):
                 # Check for recoveries
                 await self._check_recoveries(report)
 
+                # Escalate stale incidents (long-duration without progress)
+                await self._escalate_stale_incidents(report)
+
                 # Determine next poll interval
                 if self._has_active_healing():
                     interval = self.config.burst_interval
@@ -739,8 +742,31 @@ class HealthObserverService(BaseDaemon):
             if fingerprint in self._active_incidents:
                 incident = self._active_incidents[fingerprint]
                 incident.last_check_at = datetime.now()
-                incident.status = "active"  # Reset from recovering
-                self._recovery_start.pop(fingerprint, None)
+
+                # If recovering, reset to active
+                if incident.status == "recovering":
+                    incident.status = "active"
+                    self._recovery_start.pop(fingerprint, None)
+                    logger.info(f"Incident {fingerprint} regressed, reset to active")
+                    continue
+
+                # Skip if already being healed
+                if incident.status == "healing":
+                    continue
+
+                # For tier >= 3 (manual), create GitHub issue if not yet created
+                if incident.current_tier >= 3 and not incident.github_issue:
+                    await self._create_github_issue(incident)
+                    incident.status = "manual_required"
+                    continue
+
+                # For active incidents at tier 2 with no recent remediation, retry ACP
+                # This handles incidents restored from DB that need continued escalation
+                if incident.status == "active" and incident.current_tier == 2:
+                    # Check if ACP escalation should be retried (at most once per poll)
+                    # We use a simple heuristic: if status is active, attempt remediation
+                    await self._attempt_remediation(incident)
+
                 continue
 
             # Create new incident
@@ -1956,7 +1982,11 @@ This incident has recurred. Previous remediation may not have addressed root cau
             if check_passed:
                 recovery_start = self._recovery_start.get(fingerprint)
                 if recovery_start:
-                    elapsed = (datetime.now() - recovery_start).total_seconds()
+                    # Handle timezone-aware recovery_start (from DB restore)
+                    now = datetime.now(timezone.utc)
+                    if recovery_start.tzinfo is None:
+                        recovery_start = recovery_start.replace(tzinfo=timezone.utc)
+                    elapsed = (now - recovery_start).total_seconds()
                     if elapsed >= self.config.recovery_verification_time:
                         resolved.append(fingerprint)
             else:
@@ -1991,8 +2021,13 @@ This incident has recurred. Previous remediation may not have addressed root cau
                     reason="resolved",
                 )
 
+                # Handle timezone-aware created_at
+                now = datetime.now(timezone.utc)
+                created_at = incident.created_at
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
                 total_duration_ms = int(
-                    (datetime.now() - incident.created_at).total_seconds() * 1000
+                    (now - created_at).total_seconds() * 1000
                 )
                 await self._event_recorder.complete_sequence(
                     sequence_id=incident.sequence_id,
@@ -2010,6 +2045,90 @@ This incident has recurred. Previous remediation may not have addressed root cau
                     await callback(incident)
                 except Exception as e:
                     logger.warning(f"Resolution callback error: {e}")
+
+    async def _escalate_stale_incidents(self, report: dict[str, Any]) -> None:
+        """Escalate long-duration incidents that haven't progressed.
+
+        This is the key mechanism for ensuring ACP escalation happens for
+        incidents that are stuck - whether due to false positives, recovery
+        detection bugs, or genuine issues that need Claude Code investigation.
+
+        Stale incident criteria:
+        - Status is "active" (not healing, recovering, or manual_required)
+        - Age exceeds stale threshold (default 1 hour)
+        - Current tier < 3 (not yet at manual level)
+
+        For stale incidents:
+        - Tier 0-1: Escalate to tier 2 (ACP)
+        - Tier 2: Retry ACP escalation, then escalate to tier 3 (GitHub issue)
+
+        Args:
+            report: Current health report (for context in escalation)
+        """
+        # Stale threshold: 1 hour without resolution or tier progression
+        stale_threshold_seconds = 3600  # 1 hour
+
+        now = datetime.now()
+
+        for fingerprint, incident in self._active_incidents.items():
+            # Only escalate "active" incidents (not healing/recovering/manual)
+            if incident.status != "active":
+                continue
+
+            # Calculate incident age
+            # Use created_at if timezone-aware, else use last_check_at
+            try:
+                if incident.created_at.tzinfo:
+                    # Timezone-aware: convert to naive for comparison
+                    created_naive = incident.created_at.replace(tzinfo=None)
+                else:
+                    created_naive = incident.created_at
+                age_seconds = (now - created_naive).total_seconds()
+            except Exception:
+                # Fallback to last_check_at
+                age_seconds = (now - incident.last_check_at).total_seconds()
+
+            # Check if incident is stale
+            if age_seconds < stale_threshold_seconds:
+                continue
+
+            # Incident is stale - needs escalation
+            logger.warning(
+                f"Stale incident detected: {fingerprint} "
+                f"(age={age_seconds/3600:.1f}h, tier={incident.current_tier}, "
+                f"attempts={incident.attempts}, status={incident.status})"
+            )
+
+            # Escalation logic based on current tier
+            if incident.current_tier < 2:
+                # Tier 0-1: Escalate directly to tier 2 (ACP)
+                logger.info(
+                    f"Escalating stale incident {fingerprint} from tier "
+                    f"{incident.current_tier} to tier 2 (ACP)"
+                )
+                incident.current_tier = 2
+                await self._attempt_remediation(incident)
+
+            elif incident.current_tier == 2:
+                # Tier 2: Try ACP one more time, then escalate to tier 3
+                # Check if we've already attempted ACP recently
+                if incident.attempts < 3:
+                    logger.info(
+                        f"Retrying ACP escalation for stale incident {fingerprint} "
+                        f"(attempt {incident.attempts + 1})"
+                    )
+                    await self._attempt_remediation(incident)
+                else:
+                    # Too many ACP attempts - escalate to tier 3 (GitHub issue)
+                    logger.info(
+                        f"Escalating stale incident {fingerprint} to tier 3 "
+                        f"(GitHub issue) after {incident.attempts} ACP attempts"
+                    )
+                    incident.current_tier = 3
+                    await self._create_github_issue(incident)
+                    incident.status = "manual_required"
+
+            # Tier 3+ already has GitHub issue - no further escalation needed
 
     def _check_passed_for_incident(
         self,
@@ -2029,6 +2148,33 @@ This incident has recurred. Previous remediation may not have addressed root cau
         # Normalize incident endpoint for matching
         normalized_endpoint = friendly_endpoint_name(incident.endpoint)
 
+        # For VLLM incidents, first check the endpoints dict directly
+        # The internal health report stores all endpoint statuses here,
+        # but only creates "checks" entries for FAILED endpoints.
+        # So when an endpoint recovers, we need to look here.
+        if incident.failure_mode_id.startswith("VLLM"):
+            endpoints_dict = report.get("endpoints", {})
+            for alias, ep_info in endpoints_dict.items():
+                if friendly_endpoint_name(alias) == normalized_endpoint:
+                    ep_status = ep_info.get("status", "unknown")
+                    healthy_statuses = {
+                        "healthy", "running", "ready",
+                        "PROCESS_STATUS_HEALTHY",
+                    }
+                    if ep_status in healthy_statuses:
+                        logger.debug(
+                            f"Incident {incident.fingerprint}: endpoint {alias} "
+                            f"is healthy ({ep_status})"
+                        )
+                        return True
+                    else:
+                        logger.debug(
+                            f"Incident {incident.fingerprint}: endpoint {alias} "
+                            f"is still unhealthy ({ep_status})"
+                        )
+                        return False
+
+        # Fall back to checking individual check entries
         for check in report.get("checks", []):
             # Normalize check endpoint for comparison
             check_endpoint = friendly_endpoint_name(
@@ -2038,6 +2184,15 @@ This incident has recurred. Previous remediation may not have addressed root cau
                 return check.get("status") != "FAIL"
             if check.get("heuristic_id") == incident.failure_mode_id:
                 return check.get("status") != "FAIL"
+
+            # For VLLM incidents, check if endpoint is in the healthy endpoints list
+            # The "Engine Endpoints" check contains a list of healthy endpoints
+            if incident.failure_mode_id.startswith("VLLM"):
+                details = check.get("details", {})
+                endpoints_list = details.get("endpoints", [])
+                if normalized_endpoint in endpoints_list:
+                    # Endpoint is in the healthy list, check passed
+                    return check.get("status") != "FAIL"
 
         # If no matching check found, return None (don't assume passed or failed)
         return None
@@ -2095,6 +2250,7 @@ This incident has recurred. Previous remediation may not have addressed root cau
         """Force an immediate health check.
 
         Bypasses the poll interval for on-demand checking.
+        Also triggers stale incident escalation.
 
         Returns:
             Health report dict with current status
@@ -2106,6 +2262,7 @@ This incident has recurred. Previous remediation may not have addressed root cau
 
         await self._process_failures(report)
         await self._check_recoveries(report)
+        await self._escalate_stale_incidents(report)
 
         return report
 
@@ -2119,6 +2276,40 @@ This incident has recurred. Previous remediation may not have addressed root cau
             HealthIncident if found, None otherwise
         """
         return self._active_incidents.get(fingerprint)
+
+    async def get_incident_detail(self, fingerprint: str) -> dict[str, Any] | None:
+        """Get detailed incident info including healing event history.
+
+        Args:
+            fingerprint: Incident fingerprint (failure_mode_id:endpoint)
+
+        Returns:
+            Detailed incident dict with healing history, or None if not found
+        """
+        incident = self._active_incidents.get(fingerprint)
+        if not incident:
+            return None
+
+        result = incident.to_dict()
+
+        # Add healing event history from database if we have event recorder
+        if self._event_recorder and incident.sequence_id:
+            try:
+                events = await self._event_recorder.get_sequence_events(incident.sequence_id)
+                result["healing_events"] = events
+
+                # Extract ACP-specific events for easy access
+                acp_events = [
+                    e for e in events
+                    if e.get("event_type", "").startswith("acp_")
+                ]
+                result["acp_history"] = acp_events
+            except Exception as e:
+                logger.warning(f"Could not fetch healing events for {fingerprint}: {e}")
+                result["healing_events"] = []
+                result["acp_history"] = []
+
+        return result
 
     def get_status(self) -> dict[str, Any]:
         """Get daemon status for monitoring.
@@ -2174,7 +2365,15 @@ This incident has recurred. Previous remediation may not have addressed root cau
         # Check if polling is stalled (no poll in 5x poll interval)
         if self._last_poll_at:
             stall_threshold = self.config.poll_interval * 5
-            since_last_poll = (datetime.now() - self._last_poll_at).total_seconds()
+            # Handle timezone consistency
+            now = datetime.now()
+            last_poll = self._last_poll_at
+            if last_poll.tzinfo and now.tzinfo is None:
+                now = datetime.now(timezone.utc)
+                last_poll = last_poll if last_poll.tzinfo else last_poll.replace(tzinfo=timezone.utc)
+            elif last_poll.tzinfo is None and now.tzinfo:
+                last_poll = last_poll.replace(tzinfo=timezone.utc)
+            since_last_poll = (now - last_poll).total_seconds()
             if since_last_poll > stall_threshold:
                 return DaemonHealth(
                     healthy=False,

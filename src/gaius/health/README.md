@@ -501,24 +501,41 @@ See [ACP README](../acp/README.md) for full security documentation.
 <!-- GAI:META
 module: gaius.health
 layer: L5-orchestration
-key_types: [HealthChecker, HealthIssue, FMEAEngine, RPNScore, FailureMode, SelfHealer, HealingResult, AdaptiveLearner]
-key_funcs: [run_all_checks, diagnose, calculate_rpn, heal, apply_fix]
+key_types: [HealthChecker, HealthIssue, FMEAEngine, RPNScore, FailureMode, SelfHealer, HealingResult, AdaptiveLearner, HealthObserver, HealthIncident]
+key_funcs: [run_all_checks, diagnose, calculate_rpn, heal, apply_fix, get_agenda_tracker]
 submodules: [fmea]
-depends: [client, storage.database, engine.orchestrator, pynvml]
+depends: [client, storage.database, engine.orchestrator, engine.services.agenda_tracker, pynvml, acp]
 dependents: [mcp_server, engine.services.health_service, cli]
 config_keys: [health.check_interval, health.fmea.learning_rate, health.self_healing.enabled]
 env_vars: []
 grpc_services: []
-postgres_tables: [fmea_catalog, fmea_occurrences, fmea_outcomes, fmea_approvals]
+postgres_tables: [fmea_catalog, fmea_occurrences, fmea_outcomes, fmea_approvals, healing_events, health_observer_state]
 external_deps: [pynvml, asyncpg]
 call_paths:
   check: mcp.aiops_report→HealthChecker.run_all→[checks]→list[HealthIssue]
   fmea: HealthChecker.diagnose→FMEAEngine.calculate_rpn→RPNScore
   heal: HealthWatcher.on_issue→SelfHealer.heal→tier0|tier1|tier2
   fix: cli./health_fix→service_fixes.apply_fix→FixStrategy.execute
+  observe_check_scheduled: HealthObserver._process_failures→agenda_tracker.is_endpoint_in_scheduled_transition→skip_if_scheduled
+  observe_recovery: HealthObserver._check_recoveries→detect_spontaneous_recovery→move_to_recovering
+  acp_escalate: HealthObserver._tier2_remediate_acp→GaiusACPClient.prompt→healing_events.record_acp_*
 test_cmds:
   health: 'uv run gaius-cli --cmd "/health" --format json'
   fmea: 'uv run gaius-cli --cmd "/fmea" --format json'
+  observer: 'uv run gaius-cli --cmd "/health observer" --format json'
 guru_codes: [HL.00001.GRPC_DOWN, HL.00002.GPU_OOM, HL.00003.STUCK_ENDPOINT]
 fail_fast: true
+cross_module_calls:
+  - from: observe.HealthObserver._process_failures
+    to: engine.services.agenda_tracker.AgendaTracker.is_endpoint_in_scheduled_transition
+    purpose: Skip incident creation for endpoints in scheduled makespan operations
+  - from: observe.HealthObserver._tier2_remediate_acp
+    to: acp.GaiusACPClient.prompt
+    purpose: Escalate complex issues to Claude Code for meta-level framework evolution
+  - from: observe.HealthObserver._check_recoveries
+    to: healing_events.HealingEventRecorder.complete_sequence
+    purpose: Record incident resolution in audit trail
+  - from: healing_events.HealingEventRecorder.record_acp_escalation_*
+    to: storage.database.get_pool
+    purpose: Persist verbose ACP escalation history to healing_events table
 -->
