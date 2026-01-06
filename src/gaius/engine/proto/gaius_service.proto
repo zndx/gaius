@@ -1343,6 +1343,9 @@ message GetIncidentDetailRequest {
 message GetIncidentDetailResponse {
   HealthIncident incident = 1;   // Incident details
   bool found = 2;                // Whether incident was found
+  string healing_events_json = 3; // JSON array of healing events
+  string acp_history_json = 4;   // JSON array of ACP escalation events
+  string github_issue_detail_json = 5; // JSON object with GitHub issue details
 }
 
 // Request to list incidents
@@ -1507,6 +1510,166 @@ message XBookmarksEmitTestEventResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HuggingFace Dataset Discovery Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to list recent datasets from HuggingFace Hub
+message ListHFDatasetsRequest {
+  int32 limit = 1;  // Max datasets to return (default: 20)
+}
+
+// Dataset info summary
+message HFDatasetInfo {
+  string id = 1;                   // e.g., "facebook/research-plan-gen"
+  string author = 2;
+  string description = 3;
+  int64 downloads = 4;
+  int32 likes = 5;
+  bool private = 6;
+  string created_at = 7;           // ISO8601 timestamp
+  string last_modified = 8;        // ISO8601 timestamp
+  repeated string tags = 9;
+}
+
+// Response with list of datasets
+message ListHFDatasetsResponse {
+  repeated HFDatasetInfo datasets = 1;
+  int32 count = 2;
+  string saved_to = 3;             // Path to zettelkasten note created
+  string error = 4;
+}
+
+// Request to add an external dataset to KB
+message AddExternalDatasetRequest {
+  string dataset_id = 1;           // HuggingFace dataset ID
+  string notes = 2;                // Optional notes to include
+}
+
+// Response after adding dataset
+message AddExternalDatasetResponse {
+  bool success = 1;
+  string dataset_id = 2;
+  string saved_to = 3;             // KB path: current/datasets/external/org/name.md
+  int64 downloads = 4;
+  int32 likes = 5;
+  string description = 6;
+  string error = 7;
+}
+
+// Request for detailed dataset info
+message GetHFDatasetInfoRequest {
+  string dataset_id = 1;
+}
+
+// Response with full dataset info
+message GetHFDatasetInfoResponse {
+  HFDatasetInfo info = 1;
+  string url = 2;                  // HuggingFace URL
+  string error = 3;
+}
+
+// Request to list KB datasets
+message ListKBDatasetsRequest {}
+
+// KB dataset entry
+message KBDatasetEntry {
+  string id = 1;                   // Dataset ID or name
+  string type = 2;                 // "internal" or "external"
+  string path = 3;                 // KB path
+}
+
+// Response with KB datasets
+message ListKBDatasetsResponse {
+  repeated KBDatasetEntry internal = 1;
+  repeated KBDatasetEntry external = 2;
+  int32 internal_count = 3;
+  int32 external_count = 4;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HuggingFace Model Discovery Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to list recent models from HuggingFace Hub
+message ListHFModelsRequest {
+  int32 limit = 1;                 // Max models to return (default: 20)
+  string filter = 2;               // Optional filter (e.g., "text-generation", "text2text-generation")
+}
+
+// Model info summary from HuggingFace
+message HFModelInfo {
+  string id = 1;                   // e.g., "meta-llama/Llama-3.1-8B-Instruct"
+  string author = 2;
+  string pipeline_tag = 3;         // e.g., "text-generation"
+  int64 downloads = 4;
+  int32 likes = 5;
+  bool private = 6;
+  string created_at = 7;           // ISO8601 timestamp
+  string last_modified = 8;        // ISO8601 timestamp
+  repeated string tags = 9;
+  bool gated = 10;                 // Requires accepting license
+  string library_name = 11;        // e.g., "transformers"
+}
+
+// Response with list of models
+message ListHFModelsResponse {
+  repeated HFModelInfo models = 1;
+  int32 count = 2;
+  string saved_to = 3;             // Path to zettelkasten note created
+  string error = 4;
+}
+
+// Request to add an external model reference to KB
+message AddExternalModelRequest {
+  string model_id = 1;             // HuggingFace model ID
+  string notes = 2;                // Optional notes to include
+}
+
+// Response after adding model reference
+message AddExternalModelResponse {
+  bool success = 1;
+  string model_id = 2;
+  string saved_to = 3;             // KB path: current/models/external/org/name.md
+  int64 downloads = 4;
+  int32 likes = 5;
+  string pipeline_tag = 6;
+  string error = 7;
+}
+
+// Request for detailed model info
+message GetHFModelInfoRequest {
+  string model_id = 1;
+}
+
+// Response with full model info
+message GetHFModelInfoResponse {
+  HFModelInfo info = 1;
+  string url = 2;                  // HuggingFace URL
+  string error = 3;
+}
+
+// Request to list KB models (internal = cached, external = references)
+message ListKBModelsRequest {}
+
+// KB model entry
+message KBModelEntry {
+  string id = 1;                   // Model ID or name
+  string type = 2;                 // "internal" (cached) or "external" (reference)
+  string path = 3;                 // KB path or cache path
+  int64 size_bytes = 4;            // Size on disk (for internal)
+  string pipeline_tag = 5;         // e.g., "text-generation"
+}
+
+// Response with KB models
+message ListKBModelsResponse {
+  repeated KBModelEntry internal = 1;   // Cached locally
+  repeated KBModelEntry external = 2;   // KB references
+  int32 internal_count = 3;
+  int32 external_count = 4;
+  int64 total_cache_bytes = 5;          // Total cache size
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Ambient Computing Workload Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1530,6 +1693,7 @@ enum AmbientPhase {
   // New phases for content fetch and summarization
   AMBIENT_PHASE_FETCH_CONTENT = 8;
   AMBIENT_PHASE_SUMMARIZATION = 9;
+  AMBIENT_PHASE_BUFFER_ANALYSIS = 10;  // Bytez analysis of new content
 }
 
 // Streaming event for ambient cycle progress
@@ -1786,6 +1950,22 @@ service GaiusService {
   rpc XBookmarksListFolders(XBookmarksListFoldersRequest) returns (XBookmarksListFoldersResponse);
   rpc XBookmarksQueueStatus(XBookmarksQueueStatusRequest) returns (XBookmarksQueueStatusResponse);
   rpc XBookmarksEmitTestEvent(XBookmarksEmitTestEventRequest) returns (XBookmarksEmitTestEventResponse);  // Debug: emit test event with OTel tracing
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HuggingFace Dataset Discovery
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ListHFDatasets(ListHFDatasetsRequest) returns (ListHFDatasetsResponse);
+  rpc AddExternalDataset(AddExternalDatasetRequest) returns (AddExternalDatasetResponse);
+  rpc GetHFDatasetInfo(GetHFDatasetInfoRequest) returns (GetHFDatasetInfoResponse);
+  rpc ListKBDatasets(ListKBDatasetsRequest) returns (ListKBDatasetsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HuggingFace Model Discovery
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ListHFModels(ListHFModelsRequest) returns (ListHFModelsResponse);
+  rpc AddExternalModel(AddExternalModelRequest) returns (AddExternalModelResponse);
+  rpc GetHFModelInfo(GetHFModelInfoRequest) returns (GetHFModelInfoResponse);
+  rpc ListKBModels(ListKBModelsRequest) returns (ListKBModelsResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Ambient Computing Workload

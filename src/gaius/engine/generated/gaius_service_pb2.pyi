@@ -39,6 +39,7 @@ class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AMBIENT_PHASE_ERROR: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_FETCH_CONTENT: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_SUMMARIZATION: _ClassVar[AmbientPhase]
+    AMBIENT_PHASE_BUFFER_ANALYSIS: _ClassVar[AmbientPhase]
 PROCESS_STATUS_UNSPECIFIED: ProcessStatus
 PROCESS_STATUS_STOPPED: ProcessStatus
 PROCESS_STATUS_STARTING: ProcessStatus
@@ -62,6 +63,7 @@ AMBIENT_PHASE_COMPLETE: AmbientPhase
 AMBIENT_PHASE_ERROR: AmbientPhase
 AMBIENT_PHASE_FETCH_CONTENT: AmbientPhase
 AMBIENT_PHASE_SUMMARIZATION: AmbientPhase
+AMBIENT_PHASE_BUFFER_ANALYSIS: AmbientPhase
 
 class OrchestratorStatusResponse(_message.Message):
     __slots__ = ("total_gpus", "available_gpus", "allocations", "endpoints")
@@ -2025,12 +2027,18 @@ class GetIncidentDetailRequest(_message.Message):
     def __init__(self, fingerprint: _Optional[str] = ...) -> None: ...
 
 class GetIncidentDetailResponse(_message.Message):
-    __slots__ = ("incident", "found")
+    __slots__ = ("incident", "found", "healing_events_json", "acp_history_json", "github_issue_detail_json")
     INCIDENT_FIELD_NUMBER: _ClassVar[int]
     FOUND_FIELD_NUMBER: _ClassVar[int]
+    HEALING_EVENTS_JSON_FIELD_NUMBER: _ClassVar[int]
+    ACP_HISTORY_JSON_FIELD_NUMBER: _ClassVar[int]
+    GITHUB_ISSUE_DETAIL_JSON_FIELD_NUMBER: _ClassVar[int]
     incident: HealthIncident
     found: bool
-    def __init__(self, incident: _Optional[_Union[HealthIncident, _Mapping]] = ..., found: bool = ...) -> None: ...
+    healing_events_json: str
+    acp_history_json: str
+    github_issue_detail_json: str
+    def __init__(self, incident: _Optional[_Union[HealthIncident, _Mapping]] = ..., found: bool = ..., healing_events_json: _Optional[str] = ..., acp_history_json: _Optional[str] = ..., github_issue_detail_json: _Optional[str] = ...) -> None: ...
 
 class ListIncidentsRequest(_message.Message):
     __slots__ = ("status",)
@@ -2261,6 +2269,234 @@ class XBookmarksEmitTestEventResponse(_message.Message):
     event_type: str
     message: str
     def __init__(self, success: bool = ..., event_type: _Optional[str] = ..., message: _Optional[str] = ...) -> None: ...
+
+class ListHFDatasetsRequest(_message.Message):
+    __slots__ = ("limit",)
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    def __init__(self, limit: _Optional[int] = ...) -> None: ...
+
+class HFDatasetInfo(_message.Message):
+    __slots__ = ("id", "author", "description", "downloads", "likes", "private", "created_at", "last_modified", "tags")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    AUTHOR_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    DOWNLOADS_FIELD_NUMBER: _ClassVar[int]
+    LIKES_FIELD_NUMBER: _ClassVar[int]
+    PRIVATE_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    LAST_MODIFIED_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    author: str
+    description: str
+    downloads: int
+    likes: int
+    private: bool
+    created_at: str
+    last_modified: str
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, id: _Optional[str] = ..., author: _Optional[str] = ..., description: _Optional[str] = ..., downloads: _Optional[int] = ..., likes: _Optional[int] = ..., private: bool = ..., created_at: _Optional[str] = ..., last_modified: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class ListHFDatasetsResponse(_message.Message):
+    __slots__ = ("datasets", "count", "saved_to", "error")
+    DATASETS_FIELD_NUMBER: _ClassVar[int]
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    SAVED_TO_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    datasets: _containers.RepeatedCompositeFieldContainer[HFDatasetInfo]
+    count: int
+    saved_to: str
+    error: str
+    def __init__(self, datasets: _Optional[_Iterable[_Union[HFDatasetInfo, _Mapping]]] = ..., count: _Optional[int] = ..., saved_to: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AddExternalDatasetRequest(_message.Message):
+    __slots__ = ("dataset_id", "notes")
+    DATASET_ID_FIELD_NUMBER: _ClassVar[int]
+    NOTES_FIELD_NUMBER: _ClassVar[int]
+    dataset_id: str
+    notes: str
+    def __init__(self, dataset_id: _Optional[str] = ..., notes: _Optional[str] = ...) -> None: ...
+
+class AddExternalDatasetResponse(_message.Message):
+    __slots__ = ("success", "dataset_id", "saved_to", "downloads", "likes", "description", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    DATASET_ID_FIELD_NUMBER: _ClassVar[int]
+    SAVED_TO_FIELD_NUMBER: _ClassVar[int]
+    DOWNLOADS_FIELD_NUMBER: _ClassVar[int]
+    LIKES_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    dataset_id: str
+    saved_to: str
+    downloads: int
+    likes: int
+    description: str
+    error: str
+    def __init__(self, success: bool = ..., dataset_id: _Optional[str] = ..., saved_to: _Optional[str] = ..., downloads: _Optional[int] = ..., likes: _Optional[int] = ..., description: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class GetHFDatasetInfoRequest(_message.Message):
+    __slots__ = ("dataset_id",)
+    DATASET_ID_FIELD_NUMBER: _ClassVar[int]
+    dataset_id: str
+    def __init__(self, dataset_id: _Optional[str] = ...) -> None: ...
+
+class GetHFDatasetInfoResponse(_message.Message):
+    __slots__ = ("info", "url", "error")
+    INFO_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    info: HFDatasetInfo
+    url: str
+    error: str
+    def __init__(self, info: _Optional[_Union[HFDatasetInfo, _Mapping]] = ..., url: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ListKBDatasetsRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class KBDatasetEntry(_message.Message):
+    __slots__ = ("id", "type", "path")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    type: str
+    path: str
+    def __init__(self, id: _Optional[str] = ..., type: _Optional[str] = ..., path: _Optional[str] = ...) -> None: ...
+
+class ListKBDatasetsResponse(_message.Message):
+    __slots__ = ("internal", "external", "internal_count", "external_count")
+    INTERNAL_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_FIELD_NUMBER: _ClassVar[int]
+    INTERNAL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    internal: _containers.RepeatedCompositeFieldContainer[KBDatasetEntry]
+    external: _containers.RepeatedCompositeFieldContainer[KBDatasetEntry]
+    internal_count: int
+    external_count: int
+    def __init__(self, internal: _Optional[_Iterable[_Union[KBDatasetEntry, _Mapping]]] = ..., external: _Optional[_Iterable[_Union[KBDatasetEntry, _Mapping]]] = ..., internal_count: _Optional[int] = ..., external_count: _Optional[int] = ...) -> None: ...
+
+class ListHFModelsRequest(_message.Message):
+    __slots__ = ("limit", "filter")
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    FILTER_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    filter: str
+    def __init__(self, limit: _Optional[int] = ..., filter: _Optional[str] = ...) -> None: ...
+
+class HFModelInfo(_message.Message):
+    __slots__ = ("id", "author", "pipeline_tag", "downloads", "likes", "private", "created_at", "last_modified", "tags", "gated", "library_name")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    AUTHOR_FIELD_NUMBER: _ClassVar[int]
+    PIPELINE_TAG_FIELD_NUMBER: _ClassVar[int]
+    DOWNLOADS_FIELD_NUMBER: _ClassVar[int]
+    LIKES_FIELD_NUMBER: _ClassVar[int]
+    PRIVATE_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    LAST_MODIFIED_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    GATED_FIELD_NUMBER: _ClassVar[int]
+    LIBRARY_NAME_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    author: str
+    pipeline_tag: str
+    downloads: int
+    likes: int
+    private: bool
+    created_at: str
+    last_modified: str
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    gated: bool
+    library_name: str
+    def __init__(self, id: _Optional[str] = ..., author: _Optional[str] = ..., pipeline_tag: _Optional[str] = ..., downloads: _Optional[int] = ..., likes: _Optional[int] = ..., private: bool = ..., created_at: _Optional[str] = ..., last_modified: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., gated: bool = ..., library_name: _Optional[str] = ...) -> None: ...
+
+class ListHFModelsResponse(_message.Message):
+    __slots__ = ("models", "count", "saved_to", "error")
+    MODELS_FIELD_NUMBER: _ClassVar[int]
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    SAVED_TO_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    models: _containers.RepeatedCompositeFieldContainer[HFModelInfo]
+    count: int
+    saved_to: str
+    error: str
+    def __init__(self, models: _Optional[_Iterable[_Union[HFModelInfo, _Mapping]]] = ..., count: _Optional[int] = ..., saved_to: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AddExternalModelRequest(_message.Message):
+    __slots__ = ("model_id", "notes")
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    NOTES_FIELD_NUMBER: _ClassVar[int]
+    model_id: str
+    notes: str
+    def __init__(self, model_id: _Optional[str] = ..., notes: _Optional[str] = ...) -> None: ...
+
+class AddExternalModelResponse(_message.Message):
+    __slots__ = ("success", "model_id", "saved_to", "downloads", "likes", "pipeline_tag", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    SAVED_TO_FIELD_NUMBER: _ClassVar[int]
+    DOWNLOADS_FIELD_NUMBER: _ClassVar[int]
+    LIKES_FIELD_NUMBER: _ClassVar[int]
+    PIPELINE_TAG_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    model_id: str
+    saved_to: str
+    downloads: int
+    likes: int
+    pipeline_tag: str
+    error: str
+    def __init__(self, success: bool = ..., model_id: _Optional[str] = ..., saved_to: _Optional[str] = ..., downloads: _Optional[int] = ..., likes: _Optional[int] = ..., pipeline_tag: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class GetHFModelInfoRequest(_message.Message):
+    __slots__ = ("model_id",)
+    MODEL_ID_FIELD_NUMBER: _ClassVar[int]
+    model_id: str
+    def __init__(self, model_id: _Optional[str] = ...) -> None: ...
+
+class GetHFModelInfoResponse(_message.Message):
+    __slots__ = ("info", "url", "error")
+    INFO_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    info: HFModelInfo
+    url: str
+    error: str
+    def __init__(self, info: _Optional[_Union[HFModelInfo, _Mapping]] = ..., url: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ListKBModelsRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class KBModelEntry(_message.Message):
+    __slots__ = ("id", "type", "path", "size_bytes", "pipeline_tag")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    SIZE_BYTES_FIELD_NUMBER: _ClassVar[int]
+    PIPELINE_TAG_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    type: str
+    path: str
+    size_bytes: int
+    pipeline_tag: str
+    def __init__(self, id: _Optional[str] = ..., type: _Optional[str] = ..., path: _Optional[str] = ..., size_bytes: _Optional[int] = ..., pipeline_tag: _Optional[str] = ...) -> None: ...
+
+class ListKBModelsResponse(_message.Message):
+    __slots__ = ("internal", "external", "internal_count", "external_count", "total_cache_bytes")
+    INTERNAL_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_FIELD_NUMBER: _ClassVar[int]
+    INTERNAL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    EXTERNAL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CACHE_BYTES_FIELD_NUMBER: _ClassVar[int]
+    internal: _containers.RepeatedCompositeFieldContainer[KBModelEntry]
+    external: _containers.RepeatedCompositeFieldContainer[KBModelEntry]
+    internal_count: int
+    external_count: int
+    total_cache_bytes: int
+    def __init__(self, internal: _Optional[_Iterable[_Union[KBModelEntry, _Mapping]]] = ..., external: _Optional[_Iterable[_Union[KBModelEntry, _Mapping]]] = ..., internal_count: _Optional[int] = ..., external_count: _Optional[int] = ..., total_cache_bytes: _Optional[int] = ...) -> None: ...
 
 class AmbientCycleRequest(_message.Message):
     __slots__ = ("skip_reasoning", "baseline_task_count", "reasoning_prompt")

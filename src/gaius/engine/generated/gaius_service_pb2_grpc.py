@@ -419,6 +419,46 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
                 _registered_method=True)
+        self.ListHFDatasets = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListHFDatasets',
+                request_serializer=gaius__service__pb2.ListHFDatasetsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListHFDatasetsResponse.FromString,
+                _registered_method=True)
+        self.AddExternalDataset = channel.unary_unary(
+                '/gaius.engine.GaiusService/AddExternalDataset',
+                request_serializer=gaius__service__pb2.AddExternalDatasetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AddExternalDatasetResponse.FromString,
+                _registered_method=True)
+        self.GetHFDatasetInfo = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetHFDatasetInfo',
+                request_serializer=gaius__service__pb2.GetHFDatasetInfoRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetHFDatasetInfoResponse.FromString,
+                _registered_method=True)
+        self.ListKBDatasets = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListKBDatasets',
+                request_serializer=gaius__service__pb2.ListKBDatasetsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListKBDatasetsResponse.FromString,
+                _registered_method=True)
+        self.ListHFModels = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListHFModels',
+                request_serializer=gaius__service__pb2.ListHFModelsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListHFModelsResponse.FromString,
+                _registered_method=True)
+        self.AddExternalModel = channel.unary_unary(
+                '/gaius.engine.GaiusService/AddExternalModel',
+                request_serializer=gaius__service__pb2.AddExternalModelRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AddExternalModelResponse.FromString,
+                _registered_method=True)
+        self.GetHFModelInfo = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetHFModelInfo',
+                request_serializer=gaius__service__pb2.GetHFModelInfoRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetHFModelInfoResponse.FromString,
+                _registered_method=True)
+        self.ListKBModels = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListKBModels',
+                request_serializer=gaius__service__pb2.ListKBModelsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListKBModelsResponse.FromString,
+                _registered_method=True)
         self.AmbientCycle = channel.unary_stream(
                 '/gaius.engine.GaiusService/AmbientCycle',
                 request_serializer=gaius__service__pb2.AmbientCycleRequest.SerializeToString,
@@ -986,6 +1026,60 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListHFDatasets(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        HuggingFace Dataset Discovery
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddExternalDataset(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHFDatasetInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListKBDatasets(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListHFModels(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        HuggingFace Model Discovery
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddExternalModel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHFModelInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListKBModels(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def AmbientCycle(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Ambient Computing Workload
@@ -1413,6 +1507,46 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.XBookmarksEmitTestEvent,
                     request_deserializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.FromString,
                     response_serializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.SerializeToString,
+            ),
+            'ListHFDatasets': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHFDatasets,
+                    request_deserializer=gaius__service__pb2.ListHFDatasetsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListHFDatasetsResponse.SerializeToString,
+            ),
+            'AddExternalDataset': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddExternalDataset,
+                    request_deserializer=gaius__service__pb2.AddExternalDatasetRequest.FromString,
+                    response_serializer=gaius__service__pb2.AddExternalDatasetResponse.SerializeToString,
+            ),
+            'GetHFDatasetInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHFDatasetInfo,
+                    request_deserializer=gaius__service__pb2.GetHFDatasetInfoRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetHFDatasetInfoResponse.SerializeToString,
+            ),
+            'ListKBDatasets': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListKBDatasets,
+                    request_deserializer=gaius__service__pb2.ListKBDatasetsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListKBDatasetsResponse.SerializeToString,
+            ),
+            'ListHFModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHFModels,
+                    request_deserializer=gaius__service__pb2.ListHFModelsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListHFModelsResponse.SerializeToString,
+            ),
+            'AddExternalModel': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddExternalModel,
+                    request_deserializer=gaius__service__pb2.AddExternalModelRequest.FromString,
+                    response_serializer=gaius__service__pb2.AddExternalModelResponse.SerializeToString,
+            ),
+            'GetHFModelInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHFModelInfo,
+                    request_deserializer=gaius__service__pb2.GetHFModelInfoRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetHFModelInfoResponse.SerializeToString,
+            ),
+            'ListKBModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListKBModels,
+                    request_deserializer=gaius__service__pb2.ListKBModelsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListKBModelsResponse.SerializeToString,
             ),
             'AmbientCycle': grpc.unary_stream_rpc_method_handler(
                     servicer.AmbientCycle,
@@ -3501,6 +3635,222 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/XBookmarksEmitTestEvent',
             gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
             gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHFDatasets(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListHFDatasets',
+            gaius__service__pb2.ListHFDatasetsRequest.SerializeToString,
+            gaius__service__pb2.ListHFDatasetsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddExternalDataset(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AddExternalDataset',
+            gaius__service__pb2.AddExternalDatasetRequest.SerializeToString,
+            gaius__service__pb2.AddExternalDatasetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHFDatasetInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetHFDatasetInfo',
+            gaius__service__pb2.GetHFDatasetInfoRequest.SerializeToString,
+            gaius__service__pb2.GetHFDatasetInfoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListKBDatasets(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListKBDatasets',
+            gaius__service__pb2.ListKBDatasetsRequest.SerializeToString,
+            gaius__service__pb2.ListKBDatasetsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHFModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListHFModels',
+            gaius__service__pb2.ListHFModelsRequest.SerializeToString,
+            gaius__service__pb2.ListHFModelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddExternalModel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AddExternalModel',
+            gaius__service__pb2.AddExternalModelRequest.SerializeToString,
+            gaius__service__pb2.AddExternalModelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHFModelInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetHFModelInfo',
+            gaius__service__pb2.GetHFModelInfoRequest.SerializeToString,
+            gaius__service__pb2.GetHFModelInfoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListKBModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListKBModels',
+            gaius__service__pb2.ListKBModelsRequest.SerializeToString,
+            gaius__service__pb2.ListKBModelsResponse.FromString,
             options,
             channel_credentials,
             insecure,

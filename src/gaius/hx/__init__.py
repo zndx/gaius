@@ -33,6 +33,20 @@ from gaius.hx.bookmarks_tables import (
     get_bookmarks_schema,
     write_x_bookmarks_to_iceberg,
 )
+from gaius.hx.hf_tables import (
+    create_hf_datasets_table,
+    get_hf_datasets_table,
+    get_hf_datasets_schema,
+    build_hf_datasets_arrow_table,
+    hf_dataset_to_record,
+    create_hf_models_table,
+    get_hf_models_table,
+    get_hf_models_schema,
+    build_hf_models_arrow_table,
+    hf_model_to_record,
+    HFCapture,
+    get_hf_capture,
+)
 
 __all__ = [
     # Config
@@ -63,4 +77,19 @@ __all__ = [
     "get_bookmarks_table",
     "get_bookmarks_schema",
     "write_x_bookmarks_to_iceberg",
+    # HuggingFace datasets
+    "create_hf_datasets_table",
+    "get_hf_datasets_table",
+    "get_hf_datasets_schema",
+    "build_hf_datasets_arrow_table",
+    "hf_dataset_to_record",
+    # HuggingFace models
+    "create_hf_models_table",
+    "get_hf_models_table",
+    "get_hf_models_schema",
+    "build_hf_models_arrow_table",
+    "hf_model_to_record",
+    # HuggingFace capture (two-phase fetch)
+    "HFCapture",
+    "get_hf_capture",
 ]

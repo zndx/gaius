@@ -556,6 +556,145 @@ def create_server() -> "FastMCP":
         result = await verify_sync(target, str(kb_root), db_url, sample_size)
         return json.dumps(result, indent=2)
 
+    # --- HuggingFace Dataset Discovery ---
+
+    @server.tool()
+    async def list_hf_datasets(limit: int = 20) -> str:
+        """List recent datasets from HuggingFace Hub.
+
+        Fetches the most recently created datasets for discovery and triage.
+        Creates a zettelkasten note with dataset summaries.
+
+        Args:
+            limit: Maximum number of datasets to return (default: 20)
+        """
+        from datetime import datetime
+
+        from .integrations import list_recent_datasets
+
+        try:
+            datasets = list_recent_datasets(limit=limit)
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        # Generate zettelkasten note content
+        today = datetime.now().strftime("%Y-%m-%d")
+        lines = [
+            f"# HuggingFace Dataset Discovery - {today}",
+            "",
+            f"Fetched {len(datasets)} recent datasets from HuggingFace Hub.",
+            "",
+            "## Recent Datasets",
+            "",
+        ]
+        for ds in datasets:
+            lines.append(ds.to_markdown())
+            lines.append("")
+
+        content = "\n".join(lines)
+
+        # Save to scratch directory
+        kb_root = get_kb_root()
+        scratch_dir = kb_root / "scratch" / today
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%H%M%S")
+        filename = f"{timestamp}_hf_datasets.md"
+        file_path = scratch_dir / filename
+        file_path.write_text(content)
+
+        return json.dumps({
+            "datasets_count": len(datasets),
+            "saved_to": str(file_path.relative_to(kb_root)),
+            "datasets": [
+                {
+                    "id": ds.id,
+                    "downloads": ds.downloads,
+                    "likes": ds.likes,
+                    "created_at": ds.created_at.isoformat() if ds.created_at else None,
+                    "tags": ds.tags[:5],
+                }
+                for ds in datasets
+            ],
+        }, indent=2)
+
+    @server.tool()
+    async def add_external_dataset(dataset_id: str, notes: str = "") -> str:
+        """Add an external HuggingFace dataset to the KB registry.
+
+        Fetches full metadata and creates a KB entry in current/datasets/external/.
+
+        Args:
+            dataset_id: HuggingFace dataset ID (e.g., "facebook/research-plan-gen")
+            notes: Optional notes to include in the KB entry
+        """
+        from .integrations import get_dataset_info
+
+        try:
+            info = get_dataset_info(dataset_id)
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        # Determine path: current/datasets/external/<org>/<name>.md
+        if "/" in dataset_id:
+            org, name = dataset_id.split("/", 1)
+        else:
+            org = "community"
+            name = dataset_id
+
+        kb_root = get_kb_root()
+        external_dir = kb_root / "current" / "datasets" / "external" / org
+        external_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = external_dir / f"{name}.md"
+
+        if file_path.exists():
+            return json.dumps({
+                "error": f"Dataset already exists in KB",
+                "path": str(file_path.relative_to(kb_root)),
+            }, indent=2)
+
+        # Generate KB entry
+        content = info.to_kb_entry(notes=notes)
+        file_path.write_text(content)
+
+        return json.dumps({
+            "dataset_id": dataset_id,
+            "saved_to": str(file_path.relative_to(kb_root)),
+            "downloads": info.downloads,
+            "likes": info.likes,
+            "description": info.description[:200] if info.description else "",
+        }, indent=2)
+
+    @server.tool()
+    async def get_hf_dataset_info(dataset_id: str) -> str:
+        """Get detailed information about a HuggingFace dataset.
+
+        Fetches full metadata including description, tags, and statistics.
+
+        Args:
+            dataset_id: HuggingFace dataset ID (e.g., "facebook/research-plan-gen")
+        """
+        from .integrations import get_dataset_info
+
+        try:
+            info = get_dataset_info(dataset_id)
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        return json.dumps({
+            "dataset_id": info.id,
+            "author": info.author,
+            "description": info.description,
+            "downloads": info.downloads,
+            "likes": info.likes,
+            "private": info.private,
+            "created_at": info.created_at.isoformat() if info.created_at else None,
+            "last_modified": info.last_modified.isoformat() if info.last_modified else None,
+            "tags": info.tags,
+            "url": f"https://huggingface.co/datasets/{info.id}",
+        }, indent=2)
+
     # --- Flow Operations (Metaflow pipelines) ---
 
     @server.tool()

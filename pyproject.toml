@@ -62,6 +62,8 @@ dependencies = [
     "datasets>=2.14.6",
     "agent-client-protocol>=0.7.0",
     "qrcode>=8.0", # Terminal QR codes for OAuth URLs on mobile devices
+    "google-api-python-client>=2.187.0",
+    "hf-mem>=0.1.1",
 ]
 
 [project.optional-dependencies]
