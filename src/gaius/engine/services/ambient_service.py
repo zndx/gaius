@@ -33,6 +33,7 @@ import asyncpg
 
 from ..backends import ProcessStatus
 from ..generated import gaius_service_pb2 as pb
+from ..metrics import record_exception_caught
 from .ambient_buffer import AmbientBuffer, BufferEntry, BufferRole
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ class AmbientPhase(Enum):
     BASELINE_HEALTH = "baseline_health"
     BASELINE_WORKLOAD = "baseline_workload"
     FETCH_CONTENT = "fetch_content"  # New: fetch external content
+    BUFFER_ANALYSIS = "buffer_analysis"  # New: Bytez analysis of new content
     SUMMARIZATION = "summarization"  # New: summarize fetched content
     REASONING_EVICTION = "reasoning_eviction"
     REASONING_WORKLOAD = "reasoning_workload"
@@ -605,6 +607,41 @@ class AmbientWorkloadService:
             )
             self._total_daemon_tasks += 1
 
+        # Phase 2.55: Buffer Analysis (Bytez - subscription, zero marginal cost)
+        yield self._make_event(
+            pb.AMBIENT_PHASE_BUFFER_ANALYSIS,
+            "Analyzing buffer with Bytez",
+            0.0,
+        )
+
+        analysis_result = await self._analyze_buffer_with_bytez()
+        if analysis_result.get("skipped"):
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BUFFER_ANALYSIS,
+                "Skipped: no new content",
+                1.0,
+            )
+        elif analysis_result.get("success"):
+            queries = analysis_result.get("queries_generated", 0)
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BUFFER_ANALYSIS,
+                f"Generated {queries} search queries",
+                1.0,
+                {
+                    "queries": str(queries),
+                    "latency_ms": str(analysis_result.get("latency_ms", 0)),
+                },
+            )
+            self._total_daemon_tasks += 1
+            self._successful_daemon_tasks += 1
+        else:
+            yield self._make_event(
+                pb.AMBIENT_PHASE_BUFFER_ANALYSIS,
+                f"Analysis failed: {analysis_result.get('error', 'unknown')}",
+                1.0,
+            )
+            self._total_daemon_tasks += 1
+
         # Phase 2.6: Summarization (ALWAYS - core ambient work)
         yield self._make_event(
             pb.AMBIENT_PHASE_SUMMARIZATION,
@@ -721,6 +758,7 @@ class AmbientWorkloadService:
                 pb.AMBIENT_PHASE_BASELINE_HEALTH: "baseline_health",
                 pb.AMBIENT_PHASE_BASELINE_WORKLOAD: "baseline_workload",
                 pb.AMBIENT_PHASE_FETCH_CONTENT: "fetch_content",
+                pb.AMBIENT_PHASE_BUFFER_ANALYSIS: "buffer_analysis",
                 pb.AMBIENT_PHASE_SUMMARIZATION: "summarization",
                 pb.AMBIENT_PHASE_REASONING_EVICTION: "reasoning_eviction",
                 pb.AMBIENT_PHASE_REASONING_WORKLOAD: "reasoning_workload",
@@ -1232,6 +1270,147 @@ class AmbientWorkloadService:
             }
         except Exception as e:
             logger.exception("Summarization failed")
+            return {
+                "success": False,
+                "error": str(e),
+                "latency_ms": int((time.time() - start_time) * 1000),
+            }
+
+    async def _analyze_buffer_with_bytez(self) -> dict[str, Any]:
+        """Analyze new HN comments via Bytez, generate Brave Search queries.
+
+        Uses Bytez (subscription-based, zero marginal cost) to analyze
+        newly fetched HN comments and generate 3 candidate Brave Search
+        queries for downstream research.
+
+        Skips if no new (unanalyzed) content exists in the buffer.
+
+        Returns:
+            Dict with success, queries_generated, skipped (if no new content)
+        """
+        from ..backends.external.bytez_backend import BytezBackend
+
+        start_time = time.time()
+
+        try:
+            # Get unanalyzed content entries
+            content_entries = await self._buffer.get_entries_by_role(
+                BufferRole.CONTENT
+            )
+            new_entries = [
+                e for e in content_entries
+                if not e.metadata.get("analyzed_at")
+            ]
+
+            if not new_entries:
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "No new content to analyze",
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+
+            # Build analysis prompt from recent unanalyzed entries
+            content_block = "\n".join([
+                f"- {e.metadata.get('story_title', 'Comment')}: {e.content_preview}"
+                for e in new_entries[:10]  # Limit to 10 most recent
+            ])
+
+            prompt = f"""Analyze these Hacker News comments and generate exactly 3 Brave Search queries
+that would help research the topics being discussed. Focus on technical terms,
+products, or concepts that warrant deeper investigation.
+
+Comments:
+{content_block}
+
+Output exactly 3 search queries, one per line, no numbering or bullets:"""
+
+            # Initialize Bytez backend
+            bytez = BytezBackend()
+            if not bytez.is_available:
+                return {
+                    "success": False,
+                    "error": "Bytez API not configured (BYTEZ_API_KEY)",
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+
+            # Call Bytez with timeout (60s for larger models like Mistral-7B)
+            response = await asyncio.wait_for(
+                bytez.complete(
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=256,
+                    temperature=0.7,
+                ),
+                timeout=60,
+            )
+
+            if not response.success:
+                return {
+                    "success": False,
+                    "error": response.error or "Bytez completion failed",
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+
+            # Parse queries (one per line, max 3)
+            queries = [
+                q.strip()
+                for q in response.content.strip().split("\n")
+                if q.strip()
+            ][:3]
+
+            # Add queries to buffer with SEARCH_QUERY role
+            for query in queries:
+                entry = BufferEntry.create(
+                    role=BufferRole.SEARCH_QUERY,
+                    content=query,
+                    metadata={
+                        "source": "bytez_analysis",
+                        "generated_at": datetime.now().isoformat(),
+                        "hn_ids": [
+                            e.metadata.get("hn_id")
+                            for e in new_entries[:10]
+                        ],
+                    },
+                )
+                await self._buffer.add_entry(entry)
+
+            # Mark analyzed entries so they're not reprocessed
+            now = datetime.now().isoformat()
+            for entry in new_entries:
+                entry.metadata["analyzed_at"] = now
+
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"Bytez analysis generated {len(queries)} search queries "
+                f"from {len(new_entries)} entries ({latency_ms}ms)"
+            )
+
+            return {
+                "success": True,
+                "queries_generated": len(queries),
+                "queries": queries,
+                "entries_analyzed": len(new_entries),
+                "latency_ms": latency_ms,
+            }
+
+        except asyncio.TimeoutError:
+            record_exception_caught(
+                component="ambient",
+                operation="bytez_analysis",
+                exception_type="TimeoutError",
+            )
+            return {
+                "success": False,
+                "error": "Bytez analysis timeout (60s)",
+                "latency_ms": int((time.time() - start_time) * 1000),
+            }
+        except Exception as e:
+            logger.exception("Bytez buffer analysis failed")
+            record_exception_caught(
+                component="ambient",
+                operation="bytez_analysis",
+                exception_type=type(e).__name__,
+            )
             return {
                 "success": False,
                 "error": str(e),

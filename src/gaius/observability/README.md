@@ -379,7 +379,8 @@ graph TB
 ## See Also
 
 - [Parent README](../README.md) — Module overview
-- [Core Telemetry](../core/telemetry.py) — OpenTelemetry emission
+- [Telemetry Strategy](../core/TELEMETRY.md) — OTel strategy, tracing roadmap, federated topology
+- [Core Telemetry](../core/telemetry.py) — OpenTelemetry emission implementation
 - [Health README](../health/README.md) — Health monitoring
 - [Engine README](../engine/README.md) — Metric emission
 - [Widgets README](../widgets/README.md) — ObservePanel widget

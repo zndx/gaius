@@ -63,6 +63,7 @@ services/
 ├── clt_service.py            # CLTService (sparse features)
 ├── topology_service.py       # TopologyService (semantic attractors)
 ├── ngrc.py                   # NGRCPredictor (reservoir computing)
+├── agenda_tracker.py         # AgendaTracker (makespan scheduling)
 └── x_bookmarks_service.py    # XBookmarksService (X API sync)
 ```
 
@@ -275,6 +276,68 @@ drift = await topo.compute_drift(
 print(f"Drift magnitude: {drift.magnitude:.3f}")
 ```
 
+## AgendaTracker
+
+Tracks scheduled endpoint transitions for makespan scheduling. This enables distinguishing between intentional state changes (part of a scheduled workload operation) and unexpected failures.
+
+```python
+from gaius.engine.services import get_agenda_tracker, set_agenda_tracker
+from gaius.engine.services.agenda_tracker import AgendaTracker, ControlMode
+
+# Get singleton (may be None if not initialized)
+tracker = get_agenda_tracker()
+
+# Check if endpoint is in scheduled transition
+if tracker and tracker.is_endpoint_in_scheduled_transition("reasoning"):
+    expected = tracker.get_scheduled_endpoint_state("reasoning")
+    print(f"Endpoint transitioning to: {expected}")  # e.g., "starting", "stopping"
+
+# Register a new workload operation
+from uuid import uuid4
+operation_id = uuid4()
+tracker.register_operation(
+    operation_id=operation_id,
+    workload_id=uuid4(),
+    control_mode=ControlMode.POSITIVE,
+    target_endpoints=["reasoning", "fast"],
+)
+```
+
+### ControlMode
+
+```python
+class ControlMode(Enum):
+    POSITIVE = "positive"      # Planned operation (start/stop)
+    FAILURE = "failure"        # Responding to failure
+    RESTART_RECOVERY = "restart_recovery"  # Restarting after failure
+```
+
+### Cross-Module Integration
+
+The AgendaTracker is consumed by the HealthObserver to avoid false-positive incidents during scheduled makespan operations. When an endpoint is part of a planned transition, the HealthObserver skips incident creation.
+
+### Makespan Tracing Strategy
+
+OR-Tools mediated makespans will become increasingly complex with federated engine topology (LambdaLabs, AWS, Home Lab). Each makespan should be traced as a parent span with child spans for each operation phase:
+
+```
+makespan.execute [parent span]
+├── allocate_gpus              # OR-Tools resource assignment
+├── evict_if_needed            # Preemption decisions
+├── start_endpoints            # vLLM process spawning
+│   ├── endpoint.start: reasoning
+│   │   ├── process_spawn
+│   │   ├── model_load         # ~240s for 70B
+│   │   └── health_check
+│   └── endpoint.start: coding
+├── execute_workload           # Actual inference (may include black box API calls)
+└── restore_baseline           # Return to set points
+```
+
+**Black box stages** (external API calls like Bytez, Anthropic) should be wrapped with spans to measure duration even though we can't instrument inside them. This enables tracing *around* transient failures.
+
+For detailed tracing patterns and federated topology considerations, see [core/TELEMETRY.md](../../core/TELEMETRY.md).
+
 ## NGRCPredictor
 
 Next-Generation Reservoir Computing for temporal prediction:
@@ -450,11 +513,13 @@ graph TB
 | `CLTService` | clt_worker | topology, swarm | `extract_features()` |
 | `TopologyService` | clt_service | mcp_server, grid | `detect_attractors()`, `compute_drift()` |
 | `NGRCPredictor` | topology | theta | `train()`, `predict()` |
+| `AgendaTracker` | - | health.observe.HealthObserver | `is_endpoint_in_scheduled_transition()`, `get_scheduled_endpoint_state()` |
 | `XBookmarksService` | httpx, asyncpg, auth.x_oauth | mcp_server | `trigger_sync()`, `get_auth_status()`, `list_folders()` |
 
 ## See Also
 
 - [Parent README](../README.md) — Engine overview
+- [Telemetry Strategy](../../core/TELEMETRY.md) — OTel tracing, makespan instrumentation, federated topology
 - [Backends README](../backends/README.md) — vLLM/embedding controllers
 - [gRPC README](../grpc/README.md) — Protocol implementation
 - [Health README](../../health/README.md) — FMEA integration
@@ -464,11 +529,11 @@ graph TB
 <!-- GAI:META
 module: gaius.engine.services
 layer: L3-engine
-key_types: [OrchestratorService, EndpointStatus, CleanupResult, SchedulerService, InferenceJob, JobPriority, XAIBudget, AgentMetrics, HealthService, GPUHealth, SystemHealth, EndpointHealth, EvolutionService, EvolutionConfig, EvolutionCycle, CycleStatus, EvolutionStrategy, CognitionService, CognitionConfig, DatasetService, DatasetJob, DatasetJobConfig, ProgressEvent, ProgressEventType, CLTService, AgentCLTState, SwarmCLTResult, TopologyService, SemanticAttractor, SwarmSnapshot, AgentPosition, DriftMetrics, NGRCPredictor, NGRCConfig, NGRCPrediction, NGRCState, XBookmarksService, XBookmarksConfig, XBookmark, XSyncRun, XBookmarksError]
-key_funcs: [ensure_endpoint, clean_start, submit, submit_async, get_gpu_health, get_system_health, run_cycle, trigger, start_job, stream_progress, extract_features, compute_swarm_features, detect_attractors, compute_drift, train, predict, trigger_sync, get_auth_status, list_folders, get_auth_url, complete_auth]
+key_types: [OrchestratorService, EndpointStatus, CleanupResult, SchedulerService, InferenceJob, JobPriority, XAIBudget, AgentMetrics, HealthService, GPUHealth, SystemHealth, EndpointHealth, EvolutionService, EvolutionConfig, EvolutionCycle, CycleStatus, EvolutionStrategy, CognitionService, CognitionConfig, DatasetService, DatasetJob, DatasetJobConfig, ProgressEvent, ProgressEventType, CLTService, AgentCLTState, SwarmCLTResult, TopologyService, SemanticAttractor, SwarmSnapshot, AgentPosition, DriftMetrics, NGRCPredictor, NGRCConfig, NGRCPrediction, NGRCState, AgendaTracker, ControlMode, OperationPhase, XBookmarksService, XBookmarksConfig, XBookmark, XSyncRun, XBookmarksError]
+key_funcs: [ensure_endpoint, clean_start, submit, submit_async, get_gpu_health, get_system_health, run_cycle, trigger, start_job, stream_progress, extract_features, compute_swarm_features, detect_attractors, compute_drift, train, predict, is_endpoint_in_scheduled_transition, get_scheduled_endpoint_state, get_agenda_tracker, set_agenda_tracker, trigger_sync, get_auth_status, list_folders, get_auth_url, complete_auth]
 submodules: []
 depends: [backends, pynvml, clt_worker, priority_queue, auth.x_oauth, httpx]
-dependents: [grpc.servicers, mcp_server, agents.evolution, agents.theta]
+dependents: [grpc.servicers, mcp_server, agents.evolution, agents.theta, health.observe]
 config_keys: [engine.max_concurrent_jobs, engine.xai_daily_limit, engine.gpu_memory_threshold, gaius.x.sync.poll_interval_s, gaius.x.sync.batch_size]
 env_vars: [XAI_API_KEY, CEREBRAS_API_KEY, X_CLIENT_ID, X_CLIENT_SECRET, X_REDIRECT_URI]
 grpc_services: [GaiusService]
@@ -479,6 +544,16 @@ call_paths:
   clt: mcp.clt_extract→CLTService.extract_features→clt_worker→circuit-tracer
   topology: mcp.topology_attractors→TopologyService.detect_attractors→clt_service→cluster
   x_bookmarks: mcp.x_bookmarks_sync→XBookmarksService.trigger_sync→_fetch_folders→X_API→_store_bookmarks→KB
+cross_module_calls:
+  - from: health.observe.HealthObserver._process_failures
+    to: agenda_tracker.AgendaTracker.is_endpoint_in_scheduled_transition
+    purpose: Skip incident creation for endpoints in scheduled makespan operations
+  - from: health.observe.HealthObserver._process_failures
+    to: agenda_tracker.AgendaTracker.get_scheduled_endpoint_state
+    purpose: Get expected state to log why incident was skipped
+  - from: health.observe.HealthObserver
+    to: agenda_tracker.get_agenda_tracker
+    purpose: Access singleton tracker instance from health module
 test_cmds:
   status: 'uv run gaius-cli --cmd "/orchestrator status"'
   health: 'uv run gaius-cli --cmd "/gpu health"'
