@@ -1436,13 +1436,17 @@ async def process_evolution_cycle(
             async with GaiusClient() as client:
                 for agent_id in agents:
                     try:
-                        response = await client.trigger_evolution(agent_id)
+                        # Use call() dispatch instead of direct method
+                        response = await client.call(
+                            "Evolution", "trigger", {"agent_id": agent_id}
+                        )
+                        success = response.get("success", True)
                         result.results.append({
                             "agent_id": agent_id,
-                            "success": response.success if hasattr(response, "success") else True,
-                            "improvement": getattr(response, "improvement_pct", 0.0),
+                            "success": success,
+                            "improvement": response.get("improvement_pct", 0.0),
                         })
-                        if response.success if hasattr(response, "success") else True:
+                        if success:
                             result.successful += 1
                     except Exception as e:
                         logger.warning(f"Evolution trigger failed for {agent_id}: {e}")

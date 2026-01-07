@@ -910,7 +910,7 @@ class CLTLatentSwarmManager(LatentSwarmManager):
 
         return overlap
 
-    def _update_positions(self, result: CLTSwarmRoundResult) -> None:
+    def _update_positions(self, result: SwarmRoundResult) -> None:
         """Update agent grid positions using CLT→ColNomic projection.
 
         Unlike the parent class which uses random positioning, this method:
@@ -920,7 +920,20 @@ class CLTLatentSwarmManager(LatentSwarmManager):
 
         This means agents appear WHERE their thoughts are semantically located
         relative to the knowledge base, not at random positions.
+
+        Args:
+            result: SwarmRoundResult (must be CLTSwarmRoundResult for CLT features)
+
+        Note:
+            Accepts parent type SwarmRoundResult per Liskov Substitution Principle,
+            then narrows to CLTSwarmRoundResult at runtime. This enables the override
+            to work polymorphically while the isinstance check provides type safety.
         """
+        # CLT positioning requires CLTSwarmRoundResult with agent_features
+        if not isinstance(result, CLTSwarmRoundResult):
+            super()._update_positions(result)
+            return
+
         from .latent.clt_projection import (
             get_clt_projection_bridge,
             get_trace_embedder,
@@ -957,7 +970,7 @@ class CLTLatentSwarmManager(LatentSwarmManager):
                 trace = trace_embedder.update(agent_key, embedding)
 
                 # Project to grid coordinates
-                if projector is not None and projector._fitted:
+                if projector is not None and projector._fitted and projector._projector is not None:
                     try:
                         coords_2d = projector._projector.transform([embedding])
                         grid_coords = projector._normalize_to_grid(coords_2d)
@@ -972,8 +985,8 @@ class CLTLatentSwarmManager(LatentSwarmManager):
                     except Exception as e:
                         logger.debug(f"Projection failed for {response.name}: {e}")
 
-            # Fallback: use parent's random positioning
-            super()._update_positions_single(response, role_def)
+            # Fallback: use random positioning
+            self._update_positions_single(response, role_def)
 
     def _update_positions_single(self, response, role_def) -> None:
         """Position a single agent (called from parent fallback)."""
@@ -1011,8 +1024,11 @@ class CLTLatentSwarmManager(LatentSwarmManager):
             grid_manager = get_grid_manager()
             projector = grid_manager.projector if grid_manager else None
 
-            if projector is None or not projector._fitted:
+            if projector is None or not projector._fitted or projector._projector is None:
                 return traces
+
+            # Type narrowing: projector._projector is guaranteed non-None here
+            umap_projector = projector._projector
 
             for role, trace in trace_embedder.get_all_traces().items():
                 role_name = role  # Could map to role_def.name
@@ -1020,14 +1036,14 @@ class CLTLatentSwarmManager(LatentSwarmManager):
                 positions = []
                 # Current position
                 if np.any(trace.current_embedding != 0):
-                    coords_2d = projector._projector.transform([trace.current_embedding])
+                    coords_2d = umap_projector.transform([trace.current_embedding])
                     grid_coords = projector._normalize_to_grid(coords_2d)
                     positions.append((int(grid_coords[0, 0]), int(grid_coords[0, 1])))
 
                 # Historical positions
                 for emb in trace.delayed_embeddings:
                     if np.any(emb != 0):
-                        coords_2d = projector._projector.transform([emb])
+                        coords_2d = umap_projector.transform([emb])
                         grid_coords = projector._normalize_to_grid(coords_2d)
                         positions.append((int(grid_coords[0, 0]), int(grid_coords[0, 1])))
 

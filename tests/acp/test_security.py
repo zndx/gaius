@@ -27,19 +27,22 @@ class TestRepoFormatValidation:
 
     def test_valid_format(self):
         """Valid owner/repo format should parse correctly."""
-        owner, name = validate_repo_format("zndx/gaius-acp")
+        host, owner, name = validate_repo_format("zndx/gaius-acp")
+        assert host is None  # No explicit host = github.com
         assert owner == "zndx"
         assert name == "gaius-acp"
 
     def test_valid_format_with_dots(self):
         """Repo names with dots should be valid."""
-        owner, name = validate_repo_format("owner/repo.name")
+        host, owner, name = validate_repo_format("owner/repo.name")
+        assert host is None
         assert owner == "owner"
         assert name == "repo.name"
 
     def test_valid_format_with_underscores(self):
         """Repo names with underscores should be valid."""
-        owner, name = validate_repo_format("owner/repo_name")
+        host, owner, name = validate_repo_format("owner/repo_name")
+        assert host is None
         assert owner == "owner"
         assert name == "repo_name"
 

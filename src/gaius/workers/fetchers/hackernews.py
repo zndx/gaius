@@ -363,9 +363,10 @@ class HNFetcher(BaseFetcher):
 
             # Parse published date
             published_at = None
-            if hasattr(entry, "published_parsed") and entry.published_parsed:
+            published_parsed = getattr(entry, "published_parsed", None)
+            if published_parsed:
                 try:
-                    published_at = datetime.fromtimestamp(mktime(entry.published_parsed))
+                    published_at = datetime.fromtimestamp(mktime(published_parsed))
                 except (ValueError, OverflowError):
                     pass
 

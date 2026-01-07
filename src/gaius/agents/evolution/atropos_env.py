@@ -184,6 +184,7 @@ class GaiusEvolutionEnv(BaseEnv):
             Dict with task details (prompt, id, metadata)
         """
         await self._ensure_engine()
+        assert self._engine is not None  # Guaranteed by _ensure_engine
 
         # Refill queue if empty
         if not self._item_queue:
@@ -219,6 +220,7 @@ class GaiusEvolutionEnv(BaseEnv):
             ScoredDataItem with score
         """
         await self._ensure_engine()
+        assert self._engine is not None  # Guaranteed by _ensure_engine
 
         from .engine import TaskItem
 
@@ -321,6 +323,7 @@ class GaiusEvolutionEnv(BaseEnv):
             Cycle result dict
         """
         await self._ensure_engine()
+        assert self._engine is not None  # Guaranteed by _ensure_engine
         result = await self._engine.run_evolution_cycle(self.agent_id)
         return result.to_dict()
 

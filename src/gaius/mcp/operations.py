@@ -8,8 +8,54 @@ Used by internal agents and components that need structured data.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+async def mcp_call(operation: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Call an MCP operation by name.
+
+    This is a generic dispatcher that routes to specific operation handlers.
+    Uses the gRPC client's call(service, action, params) pattern internally.
+
+    Args:
+        operation: Operation name in format "service_action" (e.g., "orchestrator_start")
+        params: Optional parameters for the operation
+
+    Returns:
+        Dict with operation result or error
+    """
+    params = params or {}
+
+    try:
+        from ..client.grpc_client import get_grpc_client
+
+        client = await get_grpc_client()
+
+        # Map underscore-separated operation names to service/action pairs
+        # e.g., "orchestrator_start" -> ("Orchestrator", "start")
+        if operation == "orchestrator_start":
+            return await client.call("Orchestrator", "start", params)
+
+        elif operation == "orchestrator_stop":
+            return await client.call("Orchestrator", "stop", params)
+
+        elif operation == "orchestrator_status":
+            return await client.call("Orchestrator", "status", params)
+
+        elif operation == "scheduler_status":
+            return await client.call("Scheduler", "status", params)
+
+        elif operation == "gpu_health":
+            return await client.call("GPU", "status", params)
+
+        else:
+            return {"error": f"Unknown operation: {operation}"}
+
+    except Exception as e:
+        logger.error(f"mcp_call({operation}) failed: {e}")
+        return {"error": str(e)}
 
 
 async def ask_reasoning(

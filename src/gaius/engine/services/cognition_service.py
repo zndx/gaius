@@ -1204,16 +1204,18 @@ class CognitionService(BaseDaemon):
             # Get evaluator for scoring
             evaluator = get_daily_evaluator()
 
-            # Run evaluation
+            # Run evaluation for this specific agent
             # Note: Full model loading requires orchestrator integration.
             # For now, we use the evaluator with the current agent config
             # and record that evaluation was attempted.
-            eval_result = await evaluator.evaluate_agent(
-                agent_id=agent_id,
+            eval_result = await evaluator.run_daily_evaluation(
+                agents=[agent_id],
                 sample_size=len(queries),
             )
 
-            merged_score = eval_result.avg_score if eval_result else 0.0
+            # Extract score from the summary for this agent
+            agent_summary = eval_result.agent_summaries.get(agent_id)
+            merged_score = agent_summary.held_out_score if agent_summary else 0.0
             improvement = (
                 (merged_score - baseline_score) / baseline_score * 100
                 if baseline_score > 0 else 0.0
@@ -1786,24 +1788,25 @@ Your summary note content"""
             Result dict with computation status
         """
         try:
-            from ...core.projection import GridProjection
+            from ...core.projection import GridProjector
 
             logger.info("Running TDA computation")
             self._notify_progress("Recomputing grid projections...")
 
-            projection = GridProjection()
-            # Check if recompute method exists
+            projection = GridProjector()
+            # Duck-type check for optional methods - GridProjector may be extended
+            # type: ignore[call-non-callable] - hasattr guards ensure method exists
             if hasattr(projection, 'recompute'):
-                await projection.recompute()
+                await projection.recompute()  # type: ignore[call-non-callable] - hasattr guard ensures method exists
                 return {"status": "completed"}
             elif hasattr(projection, 'project_all'):
-                await projection.project_all()
+                await projection.project_all()  # type: ignore[call-non-callable] - hasattr guard ensures method exists
                 return {"status": "completed"}
             else:
                 return {"status": "skipped", "reason": "no_recompute_method"}
 
         except ImportError:
-            logger.warning("GridProjection not available")
+            logger.warning("GridProjector not available")
             return {"error": "grid_projection_not_available"}
         except Exception as e:
             logger.error(f"TDA computation failed: {e}")
@@ -1822,14 +1825,18 @@ Your summary note content"""
             from ...agents.evolution import get_held_out_manager
 
             manager = get_held_out_manager()
-            sample_size = payload.get("sample_size", 100)
 
-            logger.info(f"Refreshing held-out pool (sample_size={sample_size})")
-            self._notify_progress("Refreshing held-out evaluation pool...")
+            logger.info("Getting held-out pool stats")
+            self._notify_progress("Getting held-out pool statistics...")
 
-            count = await manager.refresh_pool(sample_size=sample_size)
+            # Get current pool statistics
+            stats = await manager.get_stats()
 
-            return {"queries_refreshed": count}
+            return {
+                "total_queries": stats.get("total", 0),
+                "available_queries": stats.get("available", 0),
+                "domains": stats.get("domains", {}),
+            }
 
         except ImportError:
             logger.warning("Held-out manager not available")
@@ -2282,6 +2289,36 @@ Your summary note content"""
 
         except Exception as e:
             logger.error(f"Failed to get completed tasks: {e}")
+            return []
+
+    async def get_recent_thoughts(self, limit: int = 10) -> list[dict]:
+        """Get recent thoughts from the cognition_thoughts table.
+
+        Args:
+            limit: Maximum thoughts to return
+
+        Returns:
+            List of thought dicts with id, title, content, thought_type, etc.
+        """
+        if not self._db_pool:
+            return []
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, title, content, thought_type, salience,
+                           generation, note_path, created_at
+                    FROM cognition_thoughts
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+                return [dict(row) for row in rows]
+
+        except Exception as e:
+            logger.error(f"Failed to get recent thoughts: {e}")
             return []
 
     @property

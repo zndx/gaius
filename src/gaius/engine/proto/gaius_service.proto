@@ -1778,6 +1778,52 @@ message AmbientBufferExportResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Observability Dashboard Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request for observability dashboard data
+message ObserveStatusRequest {
+  bool include_sparklines = 1;    // Include time-series data for sparklines
+  int32 sparkline_points = 2;     // Number of historical points (default: 20)
+}
+
+// Snapshot of a single metric
+message MetricSnapshot {
+  string name = 1;                // Internal metric ID (e.g., "latency_p95")
+  string display_name = 2;        // Human-readable name (e.g., "Latency p95")
+  double current_value = 3;       // Current metric value
+  string unit = 4;                // Unit suffix (e.g., "ms", "%", "cycles")
+  repeated double sparkline_data = 5;  // Historical values for sparkline rendering
+  string status = 6;              // "ok", "warning", "critical"
+}
+
+// Snapshot of an endpoint's status
+message EndpointSnapshot {
+  string name = 1;                // Endpoint name (e.g., "orchestrator", "reasoning")
+  string status = 2;              // "healthy", "starting", "unhealthy", "stopped", "pending"
+  repeated int32 gpus = 3;        // Allocated GPU IDs
+  string model = 4;               // Model name
+}
+
+// Response with full observability dashboard data
+message ObserveStatusResponse {
+  string timestamp = 1;           // ISO8601 timestamp
+  bool prometheus_available = 2;  // Whether Prometheus is reachable
+
+  // Metrics matching ObservePanel's OBSERVE_METRICS
+  repeated MetricSnapshot metrics = 3;
+
+  // Endpoint status from orchestrator
+  repeated EndpointSnapshot endpoints = 4;
+
+  // Summary counts
+  int32 healthy_endpoints = 5;
+  int32 unhealthy_endpoints = 6;
+  int32 active_incidents = 7;
+  int32 evolution_cycles = 8;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1936,6 +1982,11 @@ service GaiusService {
   rpc HealthObserverForceCheck(ForceHealthCheckRequest) returns (ForceHealthCheckResponse);
   rpc HealthObserverListIncidents(ListIncidentsRequest) returns (ListIncidentsResponse);
   rpc HealthObserverGetIncident(GetIncidentDetailRequest) returns (GetIncidentDetailResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Observability Dashboard
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ObserveStatus(ObserveStatusRequest) returns (ObserveStatusResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // X Bookmarks

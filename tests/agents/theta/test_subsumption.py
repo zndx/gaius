@@ -137,7 +137,8 @@ class TestSubsumptionInferencer:
     def test_init_requires_ontology_path(self):
         """Test that ontology_path is required."""
         with pytest.raises(TypeError, match="ontology_path"):
-            SubsumptionInferencer()  # Missing required arg
+            # Intentionally calling without required arg to test runtime behavior
+            SubsumptionInferencer()  # type: ignore[missing-argument]
 
     def test_init_with_ontology_path(self):
         """Test initialization with ontology path."""
@@ -231,6 +232,9 @@ class TestDeepOntoIntegration:
         sufficient for BERTSubsIntraPipeline training data extraction.
         """
         import gaius
+        # gaius.__file__ can theoretically be None for namespace packages, but
+        # our package always has an __init__.py so this is safe
+        assert gaius.__file__ is not None
         gaius_root = Path(gaius.__file__).parent
         ontology_path = gaius_root / "data" / "ontologies" / "gaius_domain.owl"
 

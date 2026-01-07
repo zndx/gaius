@@ -309,13 +309,16 @@ class AgendaTracker:
         # Build phases from required capabilities
         phases = []
 
+        # Extract plan if available (narrow type once for multiple uses)
+        plan = schedule_result.plan if schedule_result else None
+
         # Phase 0: Baseline eviction (if needed)
-        if schedule_result and schedule_result.plan.evicted_endpoints:
+        if plan and plan.evicted_endpoints:
             phases.append(
                 AgendaPhase(
                     name="BASELINE_EVICTION",
                     required_capabilities=[],
-                    target_endpoints=schedule_result.plan.evicted_endpoints,
+                    target_endpoints=plan.evicted_endpoints,
                 )
             )
 
@@ -330,12 +333,12 @@ class AgendaTracker:
             )
 
         # Final phase: Baseline restoration
-        if schedule_result and schedule_result.plan.restore_plan:
+        if plan and plan.restore_plan:
             phases.append(
                 AgendaPhase(
                     name="BASELINE_RESTORATION",
                     required_capabilities=[],
-                    target_endpoints=schedule_result.plan.restore_plan,
+                    target_endpoints=plan.restore_plan,
                 )
             )
 
@@ -347,17 +350,18 @@ class AgendaTracker:
         )
 
         # Add scheduling info if available
-        if schedule_result and schedule_result.success:
+        if schedule_result and schedule_result.success and schedule_result.plan is not None:
+            plan = schedule_result.plan
             operation.scheduler_plan_id = (
-                str(schedule_result.plan.plan_id)
-                if hasattr(schedule_result.plan, "plan_id")
+                str(plan.plan_id)
+                if hasattr(plan, "plan_id")
                 else "unknown"
             )
-            operation.makespan_projection_ms = schedule_result.plan.total_makespan_ms
+            operation.makespan_projection_ms = plan.total_makespan_ms
 
             # Track planned transitions for control mode detection
             self._planned_transitions[request.workload_id] = self._extract_planned_transitions(
-                schedule_result.plan
+                plan
             )
 
         # Mark operation as started

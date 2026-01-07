@@ -60,6 +60,8 @@ class HealthThresholds:
         try:
             from ..core.config import get_config
             config = get_config()
+            if config._raw is None:
+                return cls()
             thresholds = config._raw.get("gaius", {}).get("inference", {}).get(
                 "orchestrator", {}
             ).get("thresholds", {})

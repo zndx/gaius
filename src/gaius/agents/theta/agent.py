@@ -22,7 +22,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+    from .effectiveness import EffectivenessResult
 
 from .horizons import Horizon, HorizonView
 from .schema import AttentionSchema, AttentionTarget
@@ -796,8 +800,9 @@ class ThetaAgent:
                     holdout_queries=holdout_queries,
                     slice_id=slice_id,
                 )
-                result.effectiveness = effectiveness
-                self.effectiveness_tracker.add_result(effectiveness)
+                if effectiveness is not None:
+                    result.effectiveness = effectiveness.to_dict()
+                    self.effectiveness_tracker.add_result(effectiveness)
 
             logger.info(
                 f"Consolidation complete: {result.documents_augmented} documents augmented, "
@@ -1030,7 +1035,7 @@ class ThetaAgent:
         self,
         holdout_queries: list[str],
         slice_id: str,
-    ) -> dict:
+    ) -> "EffectivenessResult | None":
         """Measure consolidation effectiveness on holdout queries.
 
         Args:
@@ -1038,10 +1043,8 @@ class ThetaAgent:
             slice_id: Temporal slice being evaluated.
 
         Returns:
-            Dict with effectiveness metrics.
+            EffectivenessResult or None if measurement failed.
         """
-        from .effectiveness import EffectivenessResult
-
         try:
             from ..mcp_client import call_mcp_tool
 
@@ -1066,11 +1069,11 @@ class ThetaAgent:
                 embedder=embedder,
             )
 
-            return result.to_dict()
+            return result
 
         except Exception as e:
             logger.warning(f"Failed to measure effectiveness: {e}")
-            return {"error": str(e)}
+            return None
 
     def get_consolidation_stats(self) -> dict:
         """Get consolidation statistics.

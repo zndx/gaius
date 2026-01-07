@@ -364,10 +364,11 @@ class InferenceClient:
 
         openai_messages = [{"role": m.role, "content": m.content} for m in messages]
 
-        if not self._primary_client:
+        primary_client, _ = self._get_primary_client()
+        if not primary_client:
             raise RuntimeError("No inference client available")
 
-        stream = await self._primary_client.chat.completions.create(
+        stream = await primary_client.chat.completions.create(
             model=model,
             messages=openai_messages,
             max_tokens=max_tokens,

@@ -532,7 +532,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     raw_projection_method = g.get("tda.projection_method", "umap")
     projection_method: Literal["umap", "pca"] = (
         raw_projection_method if raw_projection_method in ("umap", "pca") else "umap"
-    )  # type: ignore[assignment]
+    )  # type: ignore[assignment] - runtime check guarantees valid Literal value
     tda = TDAConfig(
         enabled=g.get("tda.enabled", True),
         compute_interval_minutes=int(g.get("tda.compute_interval_minutes", 60)),

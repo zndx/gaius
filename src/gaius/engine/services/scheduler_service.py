@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from collections import deque
 
 from ..backends import (
@@ -60,7 +60,7 @@ class InferenceJob:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     result: Optional[InferenceResponse] = None
-    callback: Optional[callable] = None
+    callback: Optional[Callable] = None
 
     @property
     def wait_time_ms(self) -> int:
@@ -330,7 +330,7 @@ class SchedulerService:
         self,
         request: InferenceRequest,
         priority: JobPriority = JobPriority.NORMAL,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable] = None,
     ) -> str:
         """Submit a job without waiting.
 
@@ -349,7 +349,7 @@ class SchedulerService:
         self,
         request: InferenceRequest,
         priority: JobPriority,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable] = None,
     ) -> InferenceJob:
         """Add job to queue."""
         async with self._queue_lock:

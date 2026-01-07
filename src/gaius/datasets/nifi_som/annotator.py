@@ -109,11 +109,11 @@ class SoMAnnotator:
 
     def _draw_marker(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         x: float,
         y: float,
         number: int,
-        font: ImageFont.FreeTypeFont,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ):
         """Draw a numbered marker at the specified position."""
         r = self.marker_radius
@@ -253,7 +253,7 @@ class TrajectoryAnnotator:
 
     def _draw_path_segment(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         start: tuple[float, float],
         end: tuple[float, float],
         segment_num: int,
@@ -269,7 +269,7 @@ class TrajectoryAnnotator:
 
     def _draw_arrow(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         start: tuple[float, float],
         end: tuple[float, float],
     ):
@@ -300,11 +300,11 @@ class TrajectoryAnnotator:
 
     def _draw_step_marker(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         x: float,
         y: float,
         step_num: int,
-        font: ImageFont.FreeTypeFont,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ):
         """Draw a numbered step marker (circled number)."""
         r = self.STEP_MARKER_RADIUS

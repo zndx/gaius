@@ -156,6 +156,7 @@ class HealthIncident:
     attempts: int = 0
     github_issue: int | None = None
     status: str = "active"
+    context: dict[str, Any] = field(default_factory=dict)  # Additional context
     # RCA phase results
     rca_classification: str | None = None
     rca_highest_order: int | None = None
@@ -179,6 +180,7 @@ class HealthIncident:
             "attempts": self.attempts,
             "github_issue": self.github_issue,
             "status": self.status,
+            "context": self.context,
             # RCA results
             "rca_classification": self.rca_classification,
             "rca_highest_order": self.rca_highest_order,
@@ -860,8 +862,8 @@ class HealthObserverService(BaseDaemon):
         try:
             from ...health.fmea.engine import FMEAEngine
 
-            engine = FMEAEngine(kb_root=self.config.kb_root)
-            rpn = engine.calculate_rpn(
+            engine = FMEAEngine(pool=self._db_pool)
+            rpn = await engine.calculate_rpn(
                 failure_mode_id=failure_mode_id,
                 context=context,
             )

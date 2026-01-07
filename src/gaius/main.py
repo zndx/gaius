@@ -5,7 +5,7 @@
 from __future__ import annotations
 from textual import on, work
 from textual.app import App, ComposeResult
-from textual.widgets import Static, Input, ListView, ListItem
+from textual.widgets import Header, Static, Input, ListView, ListItem
 from textual.containers import Container, Horizontal, Vertical
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -16,11 +16,12 @@ import random, time, json, hashlib, platform, asyncio
 from typing import Dict, Any, List
 
 # ────────────────────────────── LangChain DeepAgents + Embeddings ──────────────────────────────
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_core.tools import tool
-from langchain_core.prompts import PromptTemplate
-from deepagents import create_deep_agent  # LangChain's deepagents for sub-agent spawning + planning
-from agentlightning import APO, LightningStoreClient, emit_prompt, emit_tool_call, emit_reward  # Agent-Lightning for APO tuning
+# NOTE: This file is prototype code with experimental dependencies (not installed in main env)
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings  # type: ignore[import-not-found] - Optional dep
+from langchain_core.tools import tool  # type: ignore[import-not-found] - Optional dep
+from langchain_core.prompts import PromptTemplate  # type: ignore[import-not-found] - Optional dep
+from deepagents import create_deep_agent  # type: ignore[import-not-found] - Optional experimental dep
+from agentlightning import APO, LightningStoreClient, emit_prompt, emit_tool_call, emit_reward  # type: ignore[import-not-found] - Optional experimental dep
 
 # Setup (use your API keys)
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
@@ -56,8 +57,8 @@ def create_domain_swarm(domain_prompt: str) -> List[Dict[str, Any]]:
         # NOTE: This is experimental code with incorrect langchain tool usage
         agent = create_deep_agent(
             model=llm,
-            tools=[tool(lambda x: f"Planned step: {x}")("plan"),  # type: ignore[call-arg]
-                   tool(lambda: "Spawn sub-agent for detail")("spawn_sub")],  # type: ignore[call-arg]
+            tools=[tool(lambda x: f"Planned step: {x}")("plan"),  # type: ignore[call-arg] - Experimental langchain API
+                   tool(lambda: "Spawn sub-agent for detail")("spawn_sub")],  # type: ignore[call-arg] - Experimental langchain API
             system_prompt=role["role"],
             middleware=[apo.middleware]  # APO tunes prompts dynamically
         )
@@ -111,8 +112,8 @@ memory = DomainVectorMemory()
 
 # ────────────────────────────── TDA (unchanged, now on dynamic cloud) ──────────────────────────────
 try:
-    from gtda.homology import VietorisRipsPersistence
-    from gtda.diagrams import PersistenceEntropy
+    from gtda.homology import VietorisRipsPersistence  # type: ignore[import-not-found] - Optional TDA dep
+    from gtda.diagrams import PersistenceEntropy  # type: ignore[import-not-found] - Optional TDA dep
     TDA_AVAILABLE = True
     vr = VietorisRipsPersistence(homology_dimensions=[0, 1, 2])
     entropy = PersistenceEntropy()
@@ -143,7 +144,7 @@ class DomainModal(ModalScreen):
     def on_input_submitted(self, event: Input.Submitted):
         domain = event.input.value.strip()
         if domain:
-            self.app.adapt_domain(domain)
+            self.app.adapt_domain(domain)  # type: ignore[possibly-missing-attribute] - GoboardApp has adapt_domain method
         self.dismiss()
 
 class Board(Static):
@@ -219,12 +220,12 @@ class GoBoardSwarmApp(App):
     def adapt_domain(self, new_domain: str):
         self.domain = new_domain
         self.agents = create_domain_swarm(new_domain)
-        self.query_one("#status").update(f" Adapted to: {new_domain} | Swarm rewired ")
+        self.query_one("#status", Static).update(f" Adapted to: {new_domain} | Swarm rewired ")
         self.run_swarm_round()  # Auto-run one round
 
     def refresh_board(self):
         board = Board().render_board(self.cloud, self.tda_result, self.overlay_mode, self.agents)
-        self.query_one("#main-board").update(Static(board, id="grid"))
+        self.query_one("#main-board", Static).update(board)
 
     @work
     async def run_swarm_round(self):

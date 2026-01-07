@@ -16,7 +16,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import AsyncIterator, Callable, Optional
+from typing import AsyncIterator, Callable, Optional, cast
 
 from .generated.gaius_service_pb2 import InitCommand, InitEvent
 
@@ -235,7 +235,9 @@ class InitController:
     ) -> InitEvent:
         """Create an InitEvent with current timestamp."""
         return InitEvent(
-            type=event_type,
+            # Proto enum stubs expect InitEvent.Type but we use raw ints for
+            # convenience (e.g., InitEvent.Type.PROGRESS = 1). Cast is safe.
+            type=cast("InitEvent.Type", event_type),
             timestamp_ms=int(time.time() * 1000),
             phase=phase or self._state.phase.name.lower(),
             progress=progress or self._state.overall_progress,
@@ -522,7 +524,8 @@ class InitController:
         # Merge actual orchestrator status (for dynamically started endpoints)
         if self._orchestrator_service:
             try:
-                orch_status = self._orchestrator_service.get_status()
+                get_status_fn = getattr(self._orchestrator_service, "get_status", None)
+                orch_status = get_status_fn() if get_status_fn else {}
                 for ep_info in orch_status.get("endpoints", []):
                     ep_name = ep_info.get("name", "")
                     if ep_name and ep_name not in endpoints_data:

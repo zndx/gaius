@@ -248,9 +248,18 @@ class OptimizationResult:
     iteration: int = 0
     notes: str = ""
 
-    def best_for_objective(self, objective: OptimizationObjective) -> CandidateConfig | None:
-        """Get the Pareto-optimal config best for a specific objective."""
+    def best_for_objective(self, objective: OptimizationObjective) -> CandidateConfig:
+        """Get the Pareto-optimal config best for a specific objective.
+
+        Raises:
+            RuntimeError: If no config available for the objective
+        """
         if not self.pareto_front:
+            if self.best_config is None:
+                raise RuntimeError(
+                    f"No config available for objective {objective.name}\n"
+                    f"  Guru Meditation: #OPT.00000001.NOCONFIG"
+                )
             return self.best_config
 
         best = None
@@ -261,6 +270,11 @@ class OptimizationResult:
                 best_score = score
                 best = config
 
+        if best is None:
+            raise RuntimeError(
+                f"No config in pareto_front for objective {objective.name}\n"
+                f"  Guru Meditation: #OPT.00000002.NOPARETOCONFIG"
+            )
         return best
 
 

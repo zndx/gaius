@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterator
 
 import bm25s
-import Stemmer
+import Stemmer  # type: ignore[import-not-found] - PyStemmer optional dep for BM25 stemming
 
 
 @dataclass
@@ -139,6 +139,11 @@ class KBSearch:
         if not self.documents:
             return []
 
+        # Type guard: build_index ensures retriever is set
+        retriever = self.retriever
+        if retriever is None:
+            raise RuntimeError("Index build failed - retriever not initialized")
+
         # Tokenize query with same stemmer
         query_tokens = bm25s.tokenize(
             [query],
@@ -148,7 +153,7 @@ class KBSearch:
         )
 
         # Retrieve
-        results, scores = self.retriever.retrieve(
+        results, scores = retriever.retrieve(
             query_tokens,
             corpus=self.documents,
             k=min(top_k, len(self.documents)),

@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
 
 import grpc
@@ -178,6 +178,11 @@ from ...generated import (
     GetIncidentDetailResponse,
     ListIncidentsRequest,
     ListIncidentsResponse,
+    # Observability Dashboard
+    ObserveStatusRequest,
+    ObserveStatusResponse,
+    MetricSnapshot,
+    EndpointSnapshot,
     # X Bookmarks
     XBookmarksAuthRequest,
     XBookmarksAuthResponse,
@@ -451,9 +456,7 @@ class GaiusServicer(GaiusServiceServicer):
             status = await orchestrator.start_endpoint(endpoint_name)
             return EndpointResponse(
                 success=status.status in ("healthy", "starting", "optillm"),
-                message=f"Endpoint '{endpoint_name}' started (status: {status.status})",
-                endpoint_name=endpoint_name,
-                port=status.port or 0,
+                message=f"Endpoint '{endpoint_name}' started (status: {status.status}, port: {status.port or 0})",
             )
         except ValueError as e:
             return EndpointResponse(success=False, message=str(e))
@@ -481,7 +484,6 @@ class GaiusServicer(GaiusServiceServicer):
             return EndpointResponse(
                 success=success,
                 message=f"Endpoint '{endpoint_name}' stopped" if success else f"Failed to stop '{endpoint_name}'",
-                endpoint_name=endpoint_name,
             )
         except Exception as e:
             logger.error(f"Failed to stop endpoint {endpoint_name}: {e}")
@@ -506,9 +508,7 @@ class GaiusServicer(GaiusServiceServicer):
             status = await orchestrator.restart_endpoint(endpoint_name)
             return EndpointResponse(
                 success=status.status in ("healthy", "starting"),
-                message=f"Endpoint '{endpoint_name}' restarted (status: {status.status})",
-                endpoint_name=endpoint_name,
-                port=status.port or 0,
+                message=f"Endpoint '{endpoint_name}' restarted (status: {status.status}, port: {status.port or 0})",
             )
         except Exception as e:
             logger.error(f"Failed to restart endpoint {endpoint_name}: {e}")
@@ -1901,7 +1901,7 @@ class GaiusServicer(GaiusServiceServicer):
                     response.allocations.extend(flat)
                 else:
                     # allocations is flat list of ints when not nested
-                    response.allocations.extend([int(v) for v in allocations])  # type: ignore[arg-type]
+                    response.allocations.extend([int(v) for v in allocations])  # type: ignore[arg-type] - allocations contains ints at runtime
 
             # Add TDA features directly from cached dataclass
             tda_features = ProtoTDAFeatures(
@@ -2057,18 +2057,19 @@ class GaiusServicer(GaiusServiceServicer):
                     right_panel_visible=True,
                 )
 
+            # prefs is a StorageUIPreferences dataclass, access attributes directly
             return UIPreferences(
                 client_id=client_id,
-                cursor_x=prefs.get("cursor_x", 9),
-                cursor_y=prefs.get("cursor_y", 9),
-                view_mode=prefs.get("view_mode", "go"),
-                overlay_mode=prefs.get("overlay_mode", "none"),
-                iso_mode=prefs.get("iso_mode", "curvature"),
-                center_panel_mode=prefs.get("center_panel_mode", "graph"),
-                left_panel_visible=prefs.get("left_panel_visible", True),
-                right_panel_visible=prefs.get("right_panel_visible", True),
-                domain=prefs.get("domain", ""),
-                preferences_json=json.dumps(prefs.get("preferences_json", {})).encode(),
+                cursor_x=prefs.cursor_x,
+                cursor_y=prefs.cursor_y,
+                view_mode=prefs.view_mode,
+                overlay_mode=prefs.overlay_mode,
+                iso_mode=prefs.iso_mode,
+                center_panel_mode=prefs.center_panel_mode,
+                left_panel_visible=prefs.left_panel_visible,
+                right_panel_visible=prefs.right_panel_visible,
+                domain=prefs.domain or "",
+                preferences_json=json.dumps(prefs.preferences_json).encode(),
             )
 
         except Exception as e:
@@ -2084,9 +2085,10 @@ class GaiusServicer(GaiusServiceServicer):
         prefs = request.preferences
 
         try:
-            from ....storage.grid_state import save_ui_preferences
+            from ....storage.grid_state import save_ui_preferences, UIPreferences as StorageUIPreferences
 
-            await save_ui_preferences(
+            # Convert proto UIPreferences to storage UIPreferences
+            storage_prefs = StorageUIPreferences(
                 client_id=prefs.client_id,
                 cursor_x=prefs.cursor_x,
                 cursor_y=prefs.cursor_y,
@@ -2096,9 +2098,10 @@ class GaiusServicer(GaiusServiceServicer):
                 center_panel_mode=prefs.center_panel_mode,
                 left_panel_visible=prefs.left_panel_visible,
                 right_panel_visible=prefs.right_panel_visible,
-                domain=prefs.domain,
+                domain=prefs.domain if prefs.domain else None,
                 preferences_json=json.loads(prefs.preferences_json) if prefs.preferences_json else {},
             )
+            await save_ui_preferences(storage_prefs)
 
         except Exception as e:
             logger.error(f"SavePreferences failed: {e}")
@@ -2121,7 +2124,7 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             from ....storage.grid_state import prune_snapshots
 
-            result = await prune_snapshots(
+            deleted_count, deleted_ids = await prune_snapshots(
                 kb_root=kb_root,
                 keep_count=keep_count if keep_count > 0 else None,
                 older_than_days=older_than_days if older_than_days > 0 else None,
@@ -2129,8 +2132,8 @@ class GaiusServicer(GaiusServiceServicer):
             )
 
             return PruneSnapshotsResponse(
-                deleted_count=result.get("deleted_count", 0),
-                remaining_count=result.get("remaining_count", 0),
+                deleted_count=deleted_count,
+                remaining_count=0,  # Not tracked by prune_snapshots
                 dry_run=dry_run,
             )
 
@@ -3318,7 +3321,7 @@ class GaiusServicer(GaiusServiceServicer):
         embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
         projection_method: Literal["umap", "pca"] = "umap"
         if request.projection_method in ("umap", "pca"):
-            projection_method = request.projection_method  # type: ignore[assignment]
+            projection_method = request.projection_method  # type: ignore[assignment] - runtime check guarantees valid Literal value
 
         logger.info(f"Init: kb_root={kb_root} force={force} from {client_id}")
 
@@ -3447,7 +3450,7 @@ class GaiusServicer(GaiusServiceServicer):
         embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
         projection_method: Literal["umap", "pca"] = "umap"
         if request.projection_method in ("umap", "pca"):
-            projection_method = request.projection_method  # type: ignore[assignment]
+            projection_method = request.projection_method  # type: ignore[assignment] - runtime check guarantees valid Literal value
 
         logger.info(f"InitProgressStream: kb_root={kb_root} from {client_id}")
 
@@ -4387,6 +4390,149 @@ class GaiusServicer(GaiusServiceServicer):
             return GetIncidentDetailResponse(found=False)
 
     # =========================================================================
+    # Observability Dashboard Service Methods
+    # =========================================================================
+
+    async def ObserveStatus(
+        self,
+        request: ObserveStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ObserveStatusResponse:
+        """Get observability dashboard data.
+
+        Aggregates metrics from Prometheus and engine state into a single
+        response for the CLI /observe command, providing TUI/CLI parity
+        with ObservePanel.
+        """
+        from gaius.observability.metrics import OBSERVE_METRICS
+        from gaius.observability.sources.prometheus import PrometheusSource
+
+        try:
+            # Initialize Prometheus source
+            prometheus = PrometheusSource()
+            prometheus_ok = await prometheus.health_check()
+
+            # Query metrics
+            metrics = []
+            for metric_def in OBSERVE_METRICS:
+                current_value = 0.0
+                sparkline_data = []
+                status = "ok"
+
+                if metric_def.source == "prometheus" and prometheus_ok:
+                    # Query current value
+                    result = await prometheus.query_instant(metric_def.query)
+                    if result:
+                        current_value = result.value
+
+                    # Query sparkline data if requested
+                    if request.include_sparklines:
+                        points = request.sparkline_points or 20
+                        duration = points * 15  # 15s per point
+                        series = await prometheus.query_range(
+                            metric_def.query,
+                            duration_seconds=duration,
+                            step_seconds=15,
+                        )
+                        sparkline_data = [v.value for v in series.values]
+
+                elif metric_def.source == "engine":
+                    # Handle engine-sourced metrics
+                    if metric_def.query == "evolution_cycles":
+                        get_evo_status = self._services.get_evolution_status
+                        if get_evo_status:
+                            status_data = get_evo_status()
+                            # Handle both sync and async callbacks
+                            if hasattr(status_data, "__await__"):
+                                status_data = await status_data
+                            current_value = float(status_data.get("cycles_completed", 0))
+
+                # Determine status from thresholds
+                status = metric_def.get_color(current_value)
+
+                metrics.append(MetricSnapshot(
+                    name=metric_def.id,
+                    display_name=metric_def.name,
+                    current_value=current_value,
+                    unit=metric_def.unit,
+                    sparkline_data=sparkline_data,
+                    status=status,
+                ))
+
+            await prometheus.close()
+
+            # Get endpoint status by reusing OrchestratorStatus (already has all fallback logic)
+            from google.protobuf import empty_pb2 as empty_pb
+
+            orch_response = await self.OrchestratorStatus(empty_pb.Empty(), context)
+
+            endpoints = []
+            healthy_count = 0
+            unhealthy_count = 0
+
+            for ep_info in orch_response.endpoints:
+                # Convert ProcessStatus integer enum to status string
+                # Use protobuf's Name() method on the descriptor
+                from ...generated import ProcessStatus
+
+                status_str = ProcessStatus.Name(ep_info.status).replace("PROCESS_STATUS_", "").lower()
+                if ep_info.status == PROCESS_STATUS_HEALTHY:
+                    healthy_count += 1
+                elif ep_info.status in (PROCESS_STATUS_UNHEALTHY, PROCESS_STATUS_FAILED):
+                    unhealthy_count += 1
+
+                endpoints.append(EndpointSnapshot(
+                    name=ep_info.name,
+                    status=status_str,
+                    gpus=[],  # OrchestratorStatus doesn't provide gpu_ids in EndpointInfo
+                    model=ep_info.model,
+                ))
+
+            # Get active incidents count
+            active_incidents = 0
+            observer = self._services.health_observer_service
+            if observer:
+                obs_status = observer.get_status()
+                incidents = obs_status.get("incidents", [])
+                active_incidents = len([i for i in incidents if i.get("status") == "active"])
+
+            # Get evolution cycles
+            evolution_cycles = 0
+            get_evo_status = self._services.get_evolution_status
+            if get_evo_status:
+                evo_status = get_evo_status()
+                # Handle both sync and async callbacks
+                if hasattr(evo_status, "__await__"):
+                    evo_status = await evo_status
+                evolution_cycles = evo_status.get("cycles_completed", 0)
+
+            return ObserveStatusResponse(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                prometheus_available=prometheus_ok,
+                metrics=metrics,
+                endpoints=endpoints,
+                healthy_endpoints=healthy_count,
+                unhealthy_endpoints=unhealthy_count,
+                active_incidents=active_incidents,
+                evolution_cycles=evolution_cycles,
+            )
+
+        except Exception as e:
+            logger.exception(f"ObserveStatus failed: {e}")
+            import traceback
+            traceback.print_exc()  # Debug: print full traceback
+            record_exception_caught(
+                component="grpc",
+                operation="ObserveStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.OB.00001.STATUSFAIL",
+            )
+            return ObserveStatusResponse(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                prometheus_available=False,
+            )
+
+    # =========================================================================
     # X Bookmarks Service Methods
     # =========================================================================
 
@@ -5257,6 +5403,9 @@ class GaiusServicer(GaiusServiceServicer):
             hf_datasets = []
             for ds in rich_datasets:
                 readme = ds.get("readme_content", "")
+                # Extract dates with proper None handling
+                created_at = ds.get("created_at")
+                last_modified = ds.get("last_modified")
                 hf_datasets.append(HFDatasetInfo(
                     id=ds.get("dataset_id", ""),
                     author=ds.get("author", ""),
@@ -5264,8 +5413,8 @@ class GaiusServicer(GaiusServiceServicer):
                     downloads=ds.get("downloads", 0),
                     likes=ds.get("likes", 0),
                     private=ds.get("private", False),
-                    created_at=ds.get("created_at").isoformat() if ds.get("created_at") else "",
-                    last_modified=ds.get("last_modified").isoformat() if ds.get("last_modified") else "",
+                    created_at=created_at.isoformat() if created_at else "",
+                    last_modified=last_modified.isoformat() if last_modified else "",
                     tags=ds.get("tags", [])[:10],
                 ))
 
@@ -5515,6 +5664,9 @@ class GaiusServicer(GaiusServiceServicer):
             model_infos = []
             for m in rich_models:
                 readme = m.get("readme_content", "")
+                # Extract dates with proper None handling
+                created_at = m.get("created_at")
+                last_modified = m.get("last_modified")
                 model_infos.append(HFModelInfo(
                     id=m.get("model_id", ""),
                     author=m.get("author", ""),
@@ -5522,8 +5674,8 @@ class GaiusServicer(GaiusServiceServicer):
                     downloads=m.get("downloads", 0),
                     likes=m.get("likes", 0),
                     private=m.get("private", False),
-                    created_at=m.get("created_at").isoformat() if m.get("created_at") else "",
-                    last_modified=m.get("last_modified").isoformat() if m.get("last_modified") else "",
+                    created_at=created_at.isoformat() if created_at else "",
+                    last_modified=last_modified.isoformat() if last_modified else "",
                     tags=m.get("tags", [])[:10],
                     gated=m.get("gated", False),
                     library_name=m.get("library_name", ""),

@@ -30,7 +30,7 @@ from uuid import UUID, uuid4
 import time
 
 from .checker import HealthChecker, HealthReport, CheckResult, CheckStatus
-from .self_healing import SelfHealingCoordinator, HealthIssue, HealingResult
+from .self_healing import SelfHealingCoordinator, HealthIssue, HealingResult, HealingTierType
 from .healing_events import HealingEventRecorder, HealingEventType
 from .fmea.models import RPNScore, EscalationTier
 from ..acp.security import get_github_repo_from_remote
@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from asyncpg import Pool
     from ..acp import GaiusACPClient
     from ..acp.prompts import WorkflowMode, CadencePolicy
+    from ..engine.services.agenda_tracker import AgendaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -584,7 +585,8 @@ class HealthObserver:
         try:
             from .fmea.engine import FMEAEngine
 
-            engine = FMEAEngine(kb_root=self.config.kb_root)
+            pool = await self._get_pool()
+            engine = FMEAEngine(pool=pool)
             return await engine.calculate_rpn(
                 failure_mode_id=failure_mode_id,
                 context=check.details,
@@ -824,7 +826,7 @@ class HealthObserver:
             return HealingResult(
                 success=success,
                 action="acp_remediation",
-                tier=EscalationTier.TIER_2,
+                tier=HealingTierType.REMOTE_ESCALATION,
                 reason=response[:200] if not success else None,
                 remote_assessment=response,
             )

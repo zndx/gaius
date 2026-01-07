@@ -730,7 +730,7 @@ class ModelRegistry:
         task: TaskType,
         require_local: bool = False,
         exclude_providers: list[str] | None = None,
-    ) -> ModelSpec | None:
+    ) -> ModelSpec:
         """Get the best model for a task.
 
         Args:
@@ -739,7 +739,10 @@ class ModelRegistry:
             exclude_providers: Providers to exclude
 
         Returns:
-            Best matching ModelSpec or None
+            Best matching ModelSpec
+
+        Raises:
+            RuntimeError: If no model is registered for the task
         """
         exclude = set(exclude_providers or [])
         if require_local:
@@ -752,7 +755,11 @@ class ModelRegistry:
             if model.provider not in exclude:
                 return model
 
-        return None
+        raise RuntimeError(
+            f"No model registered for task: {task.name}\n"
+            f"  Register a model with task_scores[{task.name}] > 0\n"
+            f"  Guru Meditation: #MOD.00000001.NOTASK"
+        )
 
     def get_all_for_task(self, task: TaskType) -> list[ModelSpec]:
         """Get all models that support a task, sorted by score."""
@@ -791,7 +798,11 @@ def get_model_for_task(
     task: TaskType,
     require_local: bool = False,
     exclude_providers: list[str] | None = None,
-) -> ModelSpec | None:
-    """Convenience function to get best model for a task."""
+) -> ModelSpec:
+    """Convenience function to get best model for a task.
+
+    Raises:
+        RuntimeError: If no model is registered for the task
+    """
     registry = get_model_registry()
     return registry.get_for_task(task, require_local, exclude_providers)

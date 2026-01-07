@@ -32,7 +32,10 @@ import functools
 import os
 import socket
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gaius.core.config import TelemetryConfig
 
 # Lazy imports to avoid dependency issues if OTel not installed
 _tracer = None

@@ -59,7 +59,7 @@ import logging
 import json
 
 try:
-    from ortools.sat.python import cp_model
+    from ortools.sat.python import cp_model  # type: ignore[import-not-found] - Optional dep for advanced scheduling
     ORTOOLS_AVAILABLE = True
 except ImportError:
     ORTOOLS_AVAILABLE = False
@@ -184,6 +184,8 @@ class InferenceScheduler:
             from ..core.config import get_config
 
             config = get_config()
+            if config._raw is None:
+                return
             inference = config._raw.get("gaius", {}).get("inference", {})
             endpoints_raw = inference.get("endpoints", {})
 

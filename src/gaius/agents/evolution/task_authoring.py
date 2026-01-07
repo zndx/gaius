@@ -362,9 +362,10 @@ Requirements:
                     from ...models.versioning import get_version_manager
 
                     manager = get_version_manager()
-                    config = await manager.get_active_config("leader")
-                    if not config:
+                    version = await manager.get_active_version("leader")
+                    if not version:
                         continue
+                    config = version.config
 
                     trajectory = await engine.run_trajectory(config, item)
                     scores.append(trajectory.score)

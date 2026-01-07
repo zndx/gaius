@@ -53,6 +53,18 @@ class AugmentationResult:
     wikilinks_added: int = 0
     action_links_added: int = 0
 
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        return {
+            "document_path": str(self.document_path),
+            "augmentation_type": self.augmentation_type,
+            "content_added": self.content_added,
+            "slice_id": self.slice_id,
+            "cycle_id": self.cycle_id,
+            "wikilinks_added": self.wikilinks_added,
+            "action_links_added": self.action_links_added,
+        }
+
 
 def create_augmentation_block(
     wikilinks: list[str],

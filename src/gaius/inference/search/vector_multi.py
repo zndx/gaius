@@ -610,6 +610,29 @@ class VectorSearchMulti:
         arr = np.frombuffer(bytes_data, dtype=np.float32).reshape(shape)
         return arr
 
+    def is_duplicate_thought(
+        self, content: str, threshold: float = 0.95
+    ) -> tuple[bool, VectorSearchResult | None]:
+        """Check if content is semantically duplicate of existing KB entries.
+
+        Args:
+            content: Thought content to check (title + body)
+            threshold: Similarity threshold (0.0-1.0). Default 0.95 = very similar.
+
+        Returns:
+            Tuple of (is_duplicate, most_similar_result).
+            If no similar content found, returns (False, None).
+
+        Raises:
+            RuntimeError: If vector search fails (caller should handle gracefully)
+        """
+        # No try-except here - let errors propagate to caller
+        # Caller (cognition.py) has fallback to exact hash check
+        results = self.search(content, top_k=1, min_score=threshold)
+        if results:
+            return (True, results[0])
+        return (False, None)
+
     def get_collection_info(self) -> dict:
         """Get information about the Qdrant collection."""
         try:

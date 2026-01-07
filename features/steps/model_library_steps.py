@@ -130,7 +130,7 @@ async def step_engine_running(context):
     try:
         from gaius.client.engine_proxy import get_orchestrator_proxy
         proxy = await get_orchestrator_proxy()
-        status = await proxy.status()
+        status = await proxy._get_status_async()
 
         endpoints = status.get("endpoints", [])
         healthy = sum(1 for ep in endpoints if ep.get("status") == "healthy")
@@ -161,9 +161,9 @@ def step_kb_configured(context):
 @given("the Lambda Labs API is configured")
 def step_lambda_configured(context):
     """Verify Lambda Labs API is configured."""
-    from gaius.core.config import GaiusConfig
+    from gaius.core.config import load_config
 
-    config = GaiusConfig.load()
+    config = load_config()
 
     # Check if API key is set (may be empty for public endpoints)
     if hasattr(config, "providers") and hasattr(config.providers, "lambdalabs"):
@@ -176,9 +176,9 @@ def step_lambda_configured(context):
 @given("the Cerebras API is configured")
 def step_cerebras_configured(context):
     """Verify Cerebras API is configured."""
-    from gaius.core.config import GaiusConfig
+    from gaius.core.config import load_config
 
-    config = GaiusConfig.load()
+    config = load_config()
 
     if hasattr(config, "providers") and hasattr(config.providers, "cerebras"):
         context.cerebras_config = config.providers.cerebras

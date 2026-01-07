@@ -102,7 +102,7 @@ class DomainRegistry:
         return cls._domains.get(name)
 
     @classmethod
-    def list(cls) -> list[str]:
+    def list_names(cls) -> "list[str]":
         """List registered domain names."""
         return list(cls._domains.keys())
 

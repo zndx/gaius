@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from pyiceberg.catalog import Catalog
     from pyiceberg.table import Table
 

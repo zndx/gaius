@@ -741,7 +741,7 @@ def sync_product_smart(
                 success=result_dict.get("success", False),
                 pages_extracted=result_dict.get("pages_extracted", 0),
                 pages_skipped=result_dict.get("pages_skipped", 0),
-                archive_hash=result_dict.get("archive_hash"),
+                archive_hash=result_dict.get("archive_hash", ""),
                 kb_prefix=result_dict.get("kb_prefix", source.kb_prefix),
                 version=result_dict.get("version", source.version),
                 duration_seconds=result_dict.get("duration_seconds", 0),

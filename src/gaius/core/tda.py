@@ -190,7 +190,7 @@ class TDAComputer:
 
         try:
             # Subsample if too many points (TDA is expensive)
-            from ...core.config import get_config
+            from .config import get_config
             max_points = get_config().tda.max_points
 
             if n_points > max_points:

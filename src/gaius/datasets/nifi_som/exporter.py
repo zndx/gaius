@@ -257,11 +257,14 @@ def validate_magma_format(annotations_path: Path) -> dict:
     Returns:
         Validation result with any errors found
     """
-    result = {
+    stats: dict[str, int | float | list[int]] = {}
+    errors: list[str] = []
+    warnings: list[str] = []
+    result: dict = {
         "valid": True,
-        "errors": [],
-        "warnings": [],
-        "stats": {},
+        "errors": errors,
+        "warnings": warnings,
+        "stats": stats,
     }
 
     try:
@@ -277,7 +280,7 @@ def validate_magma_format(annotations_path: Path) -> dict:
         result["errors"].append("Annotations must be a list")
         return result
 
-    result["stats"]["total_examples"] = len(annotations)
+    stats["total_examples"] = len(annotations)
     images_dir = annotations_path.parent / "images"
 
     for i, ann in enumerate(annotations):
@@ -321,11 +324,14 @@ def validate_magma_format(annotations_path: Path) -> dict:
 
         # Count marks if metadata present
         if "_metadata" in ann and "som_marks" in ann["_metadata"]:
-            marks = ann["_metadata"]["som_marks"]
-            result["stats"].setdefault("marks_per_example", []).append(len(marks))
+            ann_marks = ann["_metadata"]["som_marks"]
+            marks_list = stats.setdefault("marks_per_example", [])
+            if isinstance(marks_list, list):
+                marks_list.append(len(ann_marks))
 
-    if "marks_per_example" in result["stats"]:
-        marks = result["stats"]["marks_per_example"]
-        result["stats"]["avg_marks"] = sum(marks) / len(marks) if marks else 0
+    if "marks_per_example" in stats:
+        marks_list = stats["marks_per_example"]
+        if isinstance(marks_list, list):
+            stats["avg_marks"] = sum(marks_list) / len(marks_list) if marks_list else 0
 
     return result

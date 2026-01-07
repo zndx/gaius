@@ -89,8 +89,8 @@ async def request_gpu_resources(
         # Try to connect to engine and request resources
         try:
             import grpc
-            from gaius.engine.proto import gaius_service_pb2 as pb
-            from gaius.engine.proto import gaius_service_pb2_grpc as grpc_stubs
+            from gaius.engine.generated import gaius_service_pb2 as pb
+            from gaius.engine.generated import gaius_service_pb2_grpc as grpc_stubs
 
             engine_addr = os.environ.get("GAIUS_ENGINE_ADDR", "localhost:50051")
             channel = grpc.aio.insecure_channel(engine_addr)
@@ -105,8 +105,10 @@ async def request_gpu_resources(
                 estimated_memory_mb=estimated_memory_mb,
             )
 
-            response = await stub.BeginWorkload(req)
-            await channel.close()
+            # type: ignore[invalid-await] - grpc.aio stubs are awaitable at runtime
+            # despite Union type hint in generated stubs
+            response = await stub.BeginWorkload(req)  # type: ignore[misc] - grpc.aio stubs are awaitable at runtime despite Union type hint
+            await channel.close(grace=None)
 
             if response.success:
                 evicted = list(response.evicted_endpoints)

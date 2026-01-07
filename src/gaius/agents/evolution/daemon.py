@@ -783,9 +783,11 @@ class EvolutionDaemon:
                 from .task_ideation import get_task_ideation_agent
                 self._ideation_agent = await get_task_ideation_agent()
 
+            ideation_agent = self._ideation_agent  # Bind for closure with narrowed type
+
             # Run ideation with preemption support
             async def run_ideation():
-                return await self._ideation_agent.run_ideation_cycle(
+                return await ideation_agent.run_ideation_cycle(
                     max_concepts=self.config.max_ideation_concepts,
                     novelty_threshold=self.config.min_novelty_threshold,
                     save_drafts=True,
@@ -872,11 +874,13 @@ class EvolutionDaemon:
                     )
                 )
 
+            merge_coordinator = self._merge_coordinator  # Bind for closure with narrowed type
+
             # Run merge cycle for each agent in rotation
             results = []
             for agent_id in self.config.agents:
-                async def run_merge():
-                    return await self._merge_coordinator.run_merge_cycle(agent_id)
+                async def run_merge(aid: str = agent_id):
+                    return await merge_coordinator.run_merge_cycle(aid)
 
                 try:
                     result = await self._preemption_manager.run_with_preemption(

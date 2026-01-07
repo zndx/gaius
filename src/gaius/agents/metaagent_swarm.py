@@ -289,7 +289,7 @@ class MetaAgentManager:
 
         # Run analysts in parallel with progress tracking
         analyst_tasks = {
-            role: asyncio.create_task(self._run_analyst_with_events(role, question))
+            role: asyncio.create_task(self._collect_analyst_events(role, question))
             for role in active_roles
         }
 
@@ -297,8 +297,9 @@ class MetaAgentManager:
         for role, task in analyst_tasks.items():
             role_def = get_role(role)
             try:
-                # Get events from analyst
-                async for event in await task:
+                # Get collected events from analyst
+                events = await task
+                for event in events:
                     yield event
                 # Get final insight (last event has the data)
             except Exception as e:
@@ -594,6 +595,20 @@ class MetaAgentManager:
                 duration_ms=int((time.time() - start_time) * 1000),
             )
 
+    async def _collect_analyst_events(
+        self,
+        role: AgentRole,
+        question: str,
+    ) -> list[MetaAgentEvent]:
+        """Run analyst and collect all events as a list.
+
+        This wrapper allows async generator to be used with asyncio.create_task.
+        """
+        events: list[MetaAgentEvent] = []
+        async for event in self._run_analyst_with_events(role, question):
+            events.append(event)
+        return events
+
     async def _run_analyst_with_events(
         self,
         role: AgentRole,
@@ -882,7 +897,7 @@ Error: {insight.error}
 
         # Default: use engine scheduler
         try:
-            from gaius.engine.client import get_engine_client
+            from gaius.client import get_engine_client
 
             client = await get_engine_client()
             response = await client.complete(

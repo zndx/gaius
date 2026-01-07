@@ -472,3 +472,44 @@ class CLTService:
 # Note: get_clt_service() is DEPRECATED for direct use.
 # CLT should be accessed via the orchestrator's workload system.
 # The orchestrator creates CLTService instances with allocated GPUs.
+
+
+# Singleton CLT service for backward compatibility
+_clt_service: CLTService | None = None
+
+
+def get_clt_service(
+    model_name: str = "qwen3-1.7b",
+    gpu_index: int | None = None,
+) -> CLTService:
+    """Get or create a CLT service instance.
+
+    DEPRECATED: CLT should be accessed via the orchestrator's workload system.
+    This function exists for backward compatibility with code that hasn't
+    been migrated to use the workload scheduler.
+
+    For new code, use:
+        /swarm clt <query>  (CLI)
+        orchestrator.schedule_clt_workload()  (Engine)
+
+    Args:
+        model_name: CLT model to use (default: qwen3-1.7b)
+        gpu_index: GPU to use. If None, uses GPU 4 (default CLT allocation).
+
+    Returns:
+        CLTService instance
+
+    Note:
+        Uses GPU 4 by default if not specified, matching the historical
+        GPU isolation pattern (GPUs 0-3 for vLLM, GPU 4 for CLT).
+    """
+    global _clt_service
+
+    # Default to GPU 4 for backward compatibility
+    if gpu_index is None:
+        gpu_index = 4
+
+    if _clt_service is None:
+        _clt_service = CLTService(model_name=model_name, gpu_index=gpu_index)
+
+    return _clt_service

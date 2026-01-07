@@ -136,7 +136,7 @@ async def submit_job(
         dataset_id = f"nifi-{mode}-v1"
 
     async with aio.insecure_channel(f"{host}:{port}") as channel:
-        stub = gaius_service_pb2_grpc.GaiusServiceStub(channel)
+        stub = gaius_service_pb2_grpc.GaiusServiceAsyncStub(channel)
 
         # Submit job
         request = DatasetGenerationRequest(
@@ -218,7 +218,7 @@ async def get_status(job_id: str, host: str = "localhost", port: int = 50051) ->
     )
 
     async with aio.insecure_channel(f"{host}:{port}") as channel:
-        stub = gaius_service_pb2_grpc.GaiusServiceStub(channel)
+        stub = gaius_service_pb2_grpc.GaiusServiceAsyncStub(channel)
 
         try:
             response = await stub.GetDatasetJobStatus(
@@ -249,7 +249,7 @@ async def cancel_job(job_id: str, host: str = "localhost", port: int = 50051) ->
     )
 
     async with aio.insecure_channel(f"{host}:{port}") as channel:
-        stub = gaius_service_pb2_grpc.GaiusServiceStub(channel)
+        stub = gaius_service_pb2_grpc.GaiusServiceAsyncStub(channel)
 
         try:
             response = await stub.CancelDatasetJob(
@@ -277,7 +277,7 @@ async def get_lineage(
     )
 
     async with aio.insecure_channel(f"{host}:{port}") as channel:
-        stub = gaius_service_pb2_grpc.GaiusServiceStub(channel)
+        stub = gaius_service_pb2_grpc.GaiusServiceAsyncStub(channel)
 
         try:
             response = await stub.GetDatasetLineage(

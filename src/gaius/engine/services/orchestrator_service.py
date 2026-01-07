@@ -28,7 +28,11 @@ from ..config import EngineConfig
 from ..resources import ResourceManager
 
 if TYPE_CHECKING:
-    from gaius.models.registry import TaskType
+    from gaius.models.registry import ModelSpec, TaskType
+    from ..backends.vllm_controller import VLLMProcess
+    from ..config import AgentConfig
+    from ..scheduling.types import SchedulingTask, TransitionPlan
+    from ..workloads import WorkloadRequest, WorkloadResult
     from .agenda_tracker import AgendaTracker
 
 logger = logging.getLogger(__name__)
@@ -77,15 +81,9 @@ class CleanupResult:
 
     processes_found: int = 0
     processes_killed: int = 0
-    pids_killed: list[int] = None
+    pids_killed: list[int] = field(default_factory=list)
     cuda_cache_cleared: bool = False
-    errors: list[str] = None
-
-    def __post_init__(self):
-        if self.pids_killed is None:
-            self.pids_killed = []
-        if self.errors is None:
-            self.errors = []
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -482,7 +480,7 @@ class OrchestratorService:
             )
 
             # Track the allocation
-            self.resource_manager.allocate(agent_alias, gpu_ids)
+            self.resource_manager.allocate(agent_alias, agent_config)
 
             return EndpointStatus(
                 agent_alias=agent_alias,
@@ -561,7 +559,7 @@ class OrchestratorService:
             )
 
             # Track the allocation
-            self.resource_manager.allocate(agent_alias, gpu_ids)
+            self.resource_manager.allocate(agent_alias, agent_config)
 
             return EndpointStatus(
                 agent_alias=agent_alias,
@@ -1539,14 +1537,18 @@ class OrchestratorService:
                     wait_time_ms=int((time.time() - start_time) * 1000),
                 )
 
+            # plan is guaranteed to exist when success=True
+            plan = schedule_result.plan
+            assert plan is not None, "plan should exist when success=True"
+
             logger.info(
-                f"Schedule found: makespan={schedule_result.plan.total_makespan_ms}ms, "
-                f"evicting={schedule_result.plan.evicted_endpoints}, "
-                f"assignments={schedule_result.plan.gpu_assignments}"
+                f"Schedule found: makespan={plan.total_makespan_ms}ms, "
+                f"evicting={plan.evicted_endpoints}, "
+                f"assignments={plan.gpu_assignments}"
             )
 
             # Execute the transition plan
-            success = await self._execute_transition_plan(schedule_result.plan)
+            success = await self._execute_transition_plan(plan)
 
             if not success:
                 return WorkloadResult(
@@ -1558,14 +1560,14 @@ class OrchestratorService:
                 )
 
             # Build allocated endpoints from the plan
-            evicted = schedule_result.plan.evicted_endpoints
-            restore_plan = schedule_result.plan.restore_plan
+            evicted = plan.evicted_endpoints
+            restore_plan = plan.restore_plan
 
             for task_type in request.required_capabilities:
                 capability_key = task_type.value
                 endpoint_name = f"cap_{capability_key}"
 
-                if endpoint_name in schedule_result.plan.gpu_assignments:
+                if endpoint_name in plan.gpu_assignments:
                     status = self.get_endpoint_status(endpoint_name)
                     if status:
                         allocated[task_type] = EndpointAllocation(
@@ -1736,41 +1738,38 @@ class OrchestratorService:
         """
         logger.info("Performing clean start...")
 
-        results = {
-            "cleanup": None,
-            "startup": {},
-            "success": False,
-        }
-
         # Step 1: Cleanup stale processes
-        results["cleanup"] = await self.cleanup_stale_processes()
+        cleanup_result = await self.cleanup_stale_processes()
 
         # Step 2: Start requested endpoints
         if endpoints is None:
             endpoints = ["reasoning"]  # Default for evolution
 
+        startup_results: dict[str, dict[str, Any]] = {}
         for alias in endpoints:
             if alias in self.config.agents:
                 try:
                     status = await self.start_endpoint(alias)
-                    results["startup"][alias] = {
+                    startup_results[alias] = {
                         "success": status.status == "healthy",
                         "port": status.port,
                         "gpu_ids": status.gpu_ids,
                     }
                 except Exception as e:
                     logger.error(f"Failed to start {alias}: {e}")
-                    results["startup"][alias] = {
+                    startup_results[alias] = {
                         "success": False,
                         "error": str(e),
                     }
 
         # Determine overall success
-        results["success"] = any(
-            r.get("success", False) for r in results["startup"].values()
-        )
+        success = any(r.get("success", False) for r in startup_results.values())
 
-        return results
+        return {
+            "cleanup": cleanup_result,
+            "startup": startup_results,
+            "success": success,
+        }
 
     async def cleanup_stale_processes(self) -> CleanupResult:
         """Kill stale vLLM processes to free GPU memory.
@@ -1981,11 +1980,14 @@ class OrchestratorService:
         Returns:
             Dict with reconciliation results
         """
-        results = {
+        # Explicitly typed to help type checker with heterogeneous dict
+        actions: list[dict[str, Any]] = []
+        errors: list[str] = []
+        results: dict[str, Any] = {
             "actual_state": {},
             "desired_state": {},
-            "actions": [],
-            "errors": [],
+            "actions": actions,
+            "errors": errors,
         }
 
         # Build desired state from config
@@ -2011,7 +2013,7 @@ class OrchestratorService:
                 if info.get("pid"):
                     try:
                         os.kill(info["pid"], 9)
-                        results["actions"].append({
+                        actions.append({
                             "action": "killed_orphan",
                             "port": port,
                             "pid": info["pid"],
@@ -2019,7 +2021,7 @@ class OrchestratorService:
                         })
                         logger.warning(f"Killed orphan vLLM on port {port}: {info.get('model')}")
                     except Exception as e:
-                        results["errors"].append(f"Failed to kill orphan on {port}: {e}")
+                        errors.append(f"Failed to kill orphan on {port}: {e}")
 
         # Find mismatches (wrong model on expected port)
         for port, desired_info in desired.items():
@@ -2038,7 +2040,7 @@ class OrchestratorService:
                     if actual_info.get("pid"):
                         try:
                             os.kill(actual_info["pid"], 9)
-                            results["actions"].append({
+                            actions.append({
                                 "action": "killed_mismatch",
                                 "port": port,
                                 "pid": actual_info["pid"],
@@ -2053,13 +2055,13 @@ class OrchestratorService:
                             await asyncio.sleep(3)
                             # Restart correct endpoint
                             await self.start_endpoint(desired_info["name"])
-                            results["actions"].append({
+                            actions.append({
                                 "action": "restarted",
                                 "port": port,
                                 "endpoint": desired_info["name"],
                             })
                         except Exception as e:
-                            results["errors"].append(f"Failed to fix mismatch on {port}: {e}")
+                            errors.append(f"Failed to fix mismatch on {port}: {e}")
 
         logger.info(
             f"Reconciliation complete: {len(results['actions'])} actions, "
@@ -2444,12 +2446,14 @@ class OrchestratorService:
         Returns:
             Dict with scaling results and previous state for restoration
         """
-        result = {
+        # Use typed variables for type checker narrowing
+        errors: list[str] = []
+        result: dict[str, Any] = {
             "success": True,
             "previous_workers": None,
             "current_workers": None,
             "optillm_scaled": False,
-            "errors": [],
+            "errors": errors,
         }
 
         if self._optillm:
@@ -2468,12 +2472,12 @@ class OrchestratorService:
                         f"for large model deployment on GPUs {target_gpus}"
                     )
                 else:
-                    result["errors"].append("Failed to scale optillm workers")
+                    errors.append("Failed to scale optillm workers")
                     result["success"] = False
 
             except Exception as e:
                 logger.error(f"Error scaling optillm for large model: {e}")
-                result["errors"].append(str(e))
+                errors.append(str(e))
                 result["success"] = False
 
         return result
@@ -2490,12 +2494,14 @@ class OrchestratorService:
         Returns:
             Dict with restoration results
         """
-        result = {
+        # Use typed variables for type checker narrowing
+        errors: list[str] = []
+        result: dict[str, Any] = {
             "success": True,
             "previous_workers": 1,
             "current_workers": previous_workers,
             "optillm_scaled": False,
-            "errors": [],
+            "errors": errors,
         }
 
         if self._optillm:
@@ -2510,12 +2516,12 @@ class OrchestratorService:
                 if success:
                     logger.info(f"Restored optillm workers to {previous_workers}")
                 else:
-                    result["errors"].append("Failed to restore optillm workers")
+                    errors.append("Failed to restore optillm workers")
                     result["success"] = False
 
             except Exception as e:
                 logger.error(f"Error restoring optillm workers: {e}")
-                result["errors"].append(str(e))
+                errors.append(str(e))
                 result["success"] = False
 
         return result
@@ -2641,3 +2647,46 @@ class OrchestratorService:
             ),
             "resources": self.resource_manager.get_summary(),
         }
+
+
+# =============================================================================
+# Module-level singleton factory
+# =============================================================================
+
+_orchestrator_service: OrchestratorService | None = None
+
+
+def get_orchestrator_service() -> OrchestratorService:
+    """Get the global OrchestratorService singleton.
+
+    The singleton must be set by the engine server via set_orchestrator_service()
+    during startup. This function is used by components that need orchestrator
+    access outside of the main engine server context (e.g., HealthObserver).
+
+    Returns:
+        OrchestratorService instance
+
+    Raises:
+        RuntimeError: If the service has not been registered
+    """
+    global _orchestrator_service
+    if _orchestrator_service is None:
+        raise RuntimeError(
+            "OrchestratorService not initialized.\n"
+            "  The engine server must call set_orchestrator_service() during startup.\n"
+            "  Guru Meditation: #ORCH.00000001.SVCNOTINIT\n"
+            "  Fix: Ensure the engine is running: devenv tasks run restart:clean"
+        )
+    return _orchestrator_service
+
+
+def set_orchestrator_service(service: OrchestratorService) -> None:
+    """Set the global OrchestratorService singleton.
+
+    Used by the engine server to register its orchestrator instance.
+
+    Args:
+        service: The OrchestratorService instance to use globally
+    """
+    global _orchestrator_service
+    _orchestrator_service = service

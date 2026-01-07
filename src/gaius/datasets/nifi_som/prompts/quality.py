@@ -123,8 +123,9 @@ def parse_quality_response(response: str) -> dict:
 
     # Compute weighted average if overall wasn't provided
     if result["overall"] == 0.0:
+        # weights only references float dimension keys (clarity, naturalness, etc.)
         result["overall"] = sum(
-            result[dim] * weight
+            float(result[dim]) * weight  # type: ignore[arg-type] - result[dim] is numeric str from LLM
             for dim, weight in weights.items()
         )
 

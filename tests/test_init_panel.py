@@ -10,9 +10,10 @@ pytest_plugins = ("pytest_asyncio",)
 
 def render_to_string(panel) -> str:
     """Render a Rich panel to a string for assertion testing."""
-    console = Console(file=StringIO(), force_terminal=True, width=60)
+    output = StringIO()
+    console = Console(file=output, force_terminal=True, width=60)
     console.print(panel)
-    return console.file.getvalue()
+    return output.getvalue()
 
 
 def test_init_panel_renders_connected():

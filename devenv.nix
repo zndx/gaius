@@ -81,6 +81,7 @@
     presenterm
     qdrant
     tilt          # K8s development environment for Metaflow
+    tlaps         # TLA+ proof checker
     wrangler
     zlib  # Required for numpy C extensions
 
@@ -252,26 +253,43 @@
       echo "Output:  $OUT_DIR/"
       echo ""
 
-      # Generate Python stubs
+      # Generate Python stubs with type hints
+      # --pyi_out: protobuf message type stubs
+      # --mypy_grpc_out: gRPC service type stubs (requires mypy-protobuf)
       python -m grpc_tools.protoc \
         -I="$PROTO_DIR" \
         --python_out="$OUT_DIR" \
         --pyi_out="$OUT_DIR" \
         --grpc_python_out="$OUT_DIR" \
+        --mypy_grpc_out="$OUT_DIR" \
         "$PROTO_DIR/gaius_service.proto"
 
-      echo "✓ Proto stubs generated"
+      echo "✓ Proto stubs generated (including gRPC type stubs)"
 
-      # Fix absolute import to relative import in grpc file
+      # Fix absolute import to relative import in grpc files
       # grpc_tools.protoc generates: import gaius_service_pb2 as gaius__service__pb2
       # We need:                     from . import gaius_service_pb2 as gaius__service__pb2
       sed -i 's/^import gaius_service_pb2/from . import gaius_service_pb2/' \
         "$OUT_DIR/gaius_service_pb2_grpc.py"
 
-      echo "✓ Fixed relative imports in gaius_service_pb2_grpc.py"
+      # Also fix the .pyi stub file
+      sed -i 's/^import gaius_service_pb2/from . import gaius_service_pb2/' \
+        "$OUT_DIR/gaius_service_pb2_grpc.pyi"
+
+      echo "✓ Fixed relative imports in gaius_service_pb2_grpc.py and .pyi"
+
+      # Add async stub alias for grpc.aio compatibility
+      # The .pyi declares GaiusServiceAsyncStub for type checking, but we need the runtime alias
+      # With grpc.aio, the same stub class works with async channels
+      echo "" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+      echo "# Async stub alias - same class works with grpc.aio.Channel" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+      echo "# Type hints in .pyi declare this as a subclass for type checking" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+      echo "GaiusServiceAsyncStub = GaiusServiceStub" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+
+      echo "✓ Added GaiusServiceAsyncStub alias for grpc.aio"
       echo ""
       echo "Done! Regenerated files:"
-      ls -la "$OUT_DIR"/gaius_service_pb2*.py
+      ls -la "$OUT_DIR"/gaius_service_pb2*.py "$OUT_DIR"/gaius_service_pb2*.pyi 2>/dev/null || ls -la "$OUT_DIR"/gaius_service_pb2*
     '';
 
     # MCP server tasks

@@ -97,7 +97,7 @@ async def load_cached_state_async(
         from ..storage.grid_state import load_current_grid_state
 
         grid_data, tda_features, metadata = await load_current_grid_state(kb_root)
-        if grid_data is not None and tda_features is not None:
+        if grid_data is not None and tda_features is not None and metadata is not None:
             logger.debug(f"Loaded grid state from Postgres: {metadata.get('snapshot_id', 'unknown')}")
             # IsoFeatures not yet stored in Postgres
             return grid_data, tda_features, metadata, None

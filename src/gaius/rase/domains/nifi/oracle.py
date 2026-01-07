@@ -25,7 +25,7 @@ from gaius.rase.core import (
     VerdictKind,
     ConstraintResult,
 )
-from gaius.rase.traceability import TraceableId
+from gaius.rase.traceability import TraceableId, IdScheme
 
 from .state import NiFiInstance, ProcessorGroup
 from .constraints import Constraint
@@ -148,7 +148,7 @@ class NiFiOracle(GenericOracle[NiFiInstance]):
             accuracy = 0.0
 
         return VerificationResult(
-            case_id=TraceableId.generate(scheme="rase", prefix="verify"),
+            case_id=TraceableId.generate(scheme=IdScheme.RASE, prefix="verify"),
             verdict=verdict,
             accuracy=accuracy,
             constraint_results=results,
@@ -197,7 +197,7 @@ class NiFiOracle(GenericOracle[NiFiInstance]):
             accuracy = 0.0
 
         return VerificationResult(
-            case_id=TraceableId.generate(scheme="rase", prefix="transition"),
+            case_id=TraceableId.generate(scheme=IdScheme.RASE, prefix="transition"),
             verdict=verdict,
             accuracy=accuracy,
             constraint_results=results,

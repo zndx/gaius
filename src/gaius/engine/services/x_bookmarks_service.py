@@ -1725,8 +1725,8 @@ class XBookmarksService:
                     # Get token
                     tokens = await ensure_valid_token(self._pool, row["user_id"])
 
-                    # Execute fetch
-                    result = await self._fetch_bookmarks(
+                    # Execute fetch (using legacy unfiled method)
+                    result = await self._fetch_bookmarks_unfiled(
                         row["user_id"], tokens.access_token
                     )
 

@@ -291,7 +291,9 @@ class ThetaDynamics:
         recent_slices = self.history[-self.k - 1:]
         reduced_centroids = [self._reduce_dim(s.centroid) for s in recent_slices]
         window = np.stack(reduced_centroids, axis=0)
-        features = self._nvar.run(window)
+        features_raw = self._nvar.run(window)
+        # NVAR.run returns a complex type; ensure we have a proper ndarray
+        features: np.ndarray = np.asarray(features_raw)
 
         # Store features and target for readout training (in reduced space)
         reduced_target = self._reduce_dim(centroid)

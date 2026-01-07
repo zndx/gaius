@@ -37,6 +37,7 @@ from ..engine.generated import (
     InferParameter,
     # Gaius stubs
     GaiusServiceStub,
+    GaiusServiceAsyncStub,
     CompleteRequest,
     SubmitJobRequest,
     GetJobResultRequest,
@@ -64,6 +65,8 @@ from ..engine.generated import (
     ForceHealthCheckRequest,
     ListIncidentsRequest,
     GetIncidentDetailRequest,
+    # Observability Dashboard
+    ObserveStatusRequest,
     # X Bookmarks
     XBookmarksAuthRequest,
     XBookmarksCompleteAuthRequest,
@@ -187,7 +190,7 @@ class GrpcEngineClient:
         # gRPC channel and stubs
         self._channel: Optional[aio.Channel] = None
         self._inference_stub: Optional[GRPCInferenceServiceStub] = None
-        self._gaius_stub: Optional[GaiusServiceStub] = None
+        self._gaius_stub: Optional[GaiusServiceAsyncStub] = None
 
         # Event subscribers
         self._event_callbacks: list[Callable] = []
@@ -200,6 +203,56 @@ class GrpcEngineClient:
         # State
         self._connected = False
         self._using_socket = False  # For compatibility with EngineClient
+
+    @property
+    def _stub(self) -> GaiusServiceAsyncStub:
+        """Get the Gaius service stub, raising if not connected.
+
+        This property provides type-safe access to the stub with fail-fast
+        behavior if the client is not connected.
+
+        Raises:
+            RuntimeError: If client is not connected.
+        """
+        if self._gaius_stub is None:
+            raise RuntimeError(
+                "gRPC client not connected.\n"
+                "  Guru Meditation: #GRPC.00000001.NOT_CONNECTED\n"
+                "  Call connect() before using the client."
+            )
+        return self._gaius_stub
+
+    @property
+    def _inference(self) -> GRPCInferenceServiceStub:
+        """Get the inference service stub, raising if not connected.
+
+        Raises:
+            RuntimeError: If client is not connected.
+        """
+        if self._inference_stub is None:
+            raise RuntimeError(
+                "gRPC client not connected.\n"
+                "  Guru Meditation: #GRPC.00000001.NOT_CONNECTED\n"
+                "  Call connect() before using the client."
+            )
+        return self._inference_stub
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Async Context Manager Support
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> "GrpcEngineClient":
+        """Async context manager entry - connects to the engine."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Async context manager exit - disconnects from the engine."""
+        await self.disconnect()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Connection Management
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def connect(self) -> bool:
         """Connect to the engine via gRPC.
@@ -230,7 +283,7 @@ class GrpcEngineClient:
 
             # Create stubs
             self._inference_stub = GRPCInferenceServiceStub(self._channel)
-            self._gaius_stub = GaiusServiceStub(self._channel)
+            self._gaius_stub = GaiusServiceAsyncStub(self._channel)
 
             self._connected = True
             logger.info(f"Connected to engine via gRPC at {target}")
@@ -266,9 +319,9 @@ class GrpcEngineClient:
             except asyncio.CancelledError:
                 pass
 
-        # Close channel
+        # Close channel (grace=None for immediate close)
         if self._channel:
-            await self._channel.close()
+            await self._channel.close(grace=None)
 
         self._connected = False
         self._channel = None
@@ -414,6 +467,8 @@ class GrpcEngineClient:
             return await self._call_clt(action, params, timeout)
         elif service == "HealthObserver":
             return await self._call_health_observer(action, params, timeout)
+        elif service == "Observe":
+            return await self._call_observe(action, params, timeout)
         elif service == "XBookmarks":
             return await self._call_x_bookmarks(action, params, timeout)
         elif service == "Ambient":
@@ -430,14 +485,14 @@ class GrpcEngineClient:
     ) -> dict:
         """Handle Orchestrator service calls."""
         if action == "status":
-            response = await self._gaius_stub.OrchestratorStatus(
+            response = await self._stub.OrchestratorStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "list_agents":
-            response = await self._gaius_stub.OrchestratorStatus(
+            response = await self._stub.OrchestratorStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -447,7 +502,7 @@ class GrpcEngineClient:
         elif action == "ensure":
             # Agent-first: ensure endpoint is available
             endpoint = params.get("endpoint", "")
-            response = await self._gaius_stub.EnsureEndpoint(
+            response = await self._stub.EnsureEndpoint(
                 StartEndpointRequest(endpoint_name=endpoint),  # Reuse StartEndpointRequest
                 timeout=timeout,
             )
@@ -455,7 +510,7 @@ class GrpcEngineClient:
 
         elif action == "start":
             endpoint = params.get("endpoint", "")
-            response = await self._gaius_stub.StartEndpoint(
+            response = await self._stub.StartEndpoint(
                 StartEndpointRequest(endpoint_name=endpoint),
                 timeout=timeout,
             )
@@ -464,7 +519,7 @@ class GrpcEngineClient:
         elif action == "stop":
             endpoint = params.get("endpoint", "")
             force = params.get("force", False)
-            response = await self._gaius_stub.StopEndpoint(
+            response = await self._stub.StopEndpoint(
                 StopEndpointRequest(endpoint_name=endpoint, force=force),
                 timeout=timeout,
             )
@@ -472,7 +527,7 @@ class GrpcEngineClient:
 
         elif action == "restart":
             endpoint = params.get("endpoint", "")
-            response = await self._gaius_stub.RestartEndpoint(
+            response = await self._stub.RestartEndpoint(
                 RestartEndpointRequest(endpoint_name=endpoint),
                 timeout=timeout,
             )
@@ -481,7 +536,7 @@ class GrpcEngineClient:
         elif action == "clean_start":
             from ..engine.generated import CleanStartRequest
             endpoints = params.get("endpoints", [])
-            response = await self._gaius_stub.CleanStart(
+            response = await self._stub.CleanStart(
                 CleanStartRequest(endpoints=endpoints),
                 timeout=timeout,
             )
@@ -493,7 +548,7 @@ class GrpcEngineClient:
     async def _call_scheduler(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Scheduler service calls."""
         if action == "status":
-            response = await self._gaius_stub.SchedulerStatus(
+            response = await self._stub.SchedulerStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -508,7 +563,7 @@ class GrpcEngineClient:
                 temperature=params.get("temperature", 0.7),
                 priority=params.get("priority", "normal"),
             )
-            response = await self._gaius_stub.Complete(request, timeout=timeout)
+            response = await self._stub.Complete(request, timeout=timeout)
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "submit":
@@ -520,12 +575,12 @@ class GrpcEngineClient:
                 temperature=params.get("temperature", 0.7),
                 priority=params.get("priority", "normal"),
             )
-            response = await self._gaius_stub.SubmitJob(request, timeout=timeout)
+            response = await self._stub.SubmitJob(request, timeout=timeout)
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "get_result":
             job_id = params.get("job_id", "")
-            response = await self._gaius_stub.GetJobResult(
+            response = await self._stub.GetJobResult(
                 GetJobResultRequest(job_id=job_id),
                 timeout=timeout,
             )
@@ -537,7 +592,7 @@ class GrpcEngineClient:
 
         elif action == "budget":
             # XAI budget status via gRPC
-            response = await self._gaius_stub.XAIBudget(
+            response = await self._stub.XAIBudget(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -549,7 +604,7 @@ class GrpcEngineClient:
     async def _call_evolution(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Evolution service calls."""
         if action == "status":
-            response = await self._gaius_stub.EvolutionStatus(
+            response = await self._stub.EvolutionStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -557,21 +612,21 @@ class GrpcEngineClient:
 
         elif action == "trigger":
             agent_id = params.get("agent_id", "")
-            response = await self._gaius_stub.TriggerEvolution(
+            response = await self._stub.TriggerEvolution(
                 TriggerEvolutionRequest(agent_id=agent_id),
                 timeout=timeout,
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "start":
-            response = await self._gaius_stub.StartEvolution(
+            response = await self._stub.StartEvolution(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "stop":
-            response = await self._gaius_stub.StopEvolution(
+            response = await self._stub.StopEvolution(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -589,7 +644,7 @@ class GrpcEngineClient:
             embedding_ids = params.get("embedding_ids", [])
             method = params.get("method", "umap")
             grid_size = params.get("grid_size", 19)
-            response = await self._gaius_stub.ProjectEmbeddings(
+            response = await self._stub.ProjectEmbeddings(
                 ProjectEmbeddingsRequest(
                     embedding_ids=embedding_ids,
                     method=method,
@@ -602,7 +657,7 @@ class GrpcEngineClient:
         elif action == "project_query":
             embedding = params.get("embedding", [])
             method = params.get("method", "umap")
-            response = await self._gaius_stub.ProjectQuery(
+            response = await self._stub.ProjectQuery(
                 ProjectQueryRequest(embedding=embedding, method=method),
                 timeout=timeout,
             )
@@ -620,7 +675,7 @@ class GrpcEngineClient:
             embedding_ids = params.get("embedding_ids", [])
             method = params.get("method", "persistent_homology")
             max_dimension = params.get("max_dimension", 2)
-            response = await self._gaius_stub.ComputeTDA(
+            response = await self._stub.ComputeTDA(
                 ComputeTDARequest(
                     embedding_ids=embedding_ids,
                     method=method,
@@ -666,7 +721,7 @@ class GrpcEngineClient:
                     "Ensure gaius-engine is running."
                 )
 
-        response = await self._gaius_stub.Explain(
+        response = await self._stub.Explain(
             ExplainRequest(
                 kb_root=kb_root,
                 x=x,
@@ -683,7 +738,7 @@ class GrpcEngineClient:
         """Handle Health service calls."""
         if action == "status" or action == "live":
             # Use OIP ServerLive
-            response = await self._inference_stub.ServerLive(
+            response = await self._inference.ServerLive(
                 ServerLiveRequest(),
                 timeout=timeout,
             )
@@ -691,7 +746,7 @@ class GrpcEngineClient:
 
         elif action == "check":
             # Comprehensive health check - get endpoint status from orchestrator
-            orch_response = await self._gaius_stub.OrchestratorStatus(
+            orch_response = await self._stub.OrchestratorStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -721,7 +776,7 @@ class GrpcEngineClient:
             return {"utilization": {}}
 
         elif action == "ready":
-            response = await self._inference_stub.ServerReady(
+            response = await self._inference.ServerReady(
                 ServerReadyRequest(),
                 timeout=timeout,
             )
@@ -729,7 +784,7 @@ class GrpcEngineClient:
 
         elif action == "model_ready":
             model_name = params.get("model", "")
-            response = await self._inference_stub.ModelReady(
+            response = await self._inference.ModelReady(
                 ModelReadyRequest(name=model_name),
                 timeout=timeout,
             )
@@ -745,11 +800,11 @@ class GrpcEngineClient:
 
         elif action == "gpu_detailed":
             # Get detailed GPU health via HealthStream (single snapshot)
-            from ..engine.proto import gaius_service_pb2
+            from ..engine.generated import gaius_service_pb2
             request = gaius_service_pb2.HealthStreamRequest(interval_ms=0)
             try:
                 # Stream returns first message immediately with interval_ms=0
-                async for metrics in self._gaius_stub.HealthStream(request, timeout=timeout):
+                async for metrics in self._stub.HealthStream(request, timeout=timeout):
                     # Convert protobuf to dict
                     gpus = []
                     for gpu in metrics.gpus:
@@ -777,7 +832,7 @@ class GrpcEngineClient:
         from datetime import datetime
 
         if action == "status":
-            response = await self._gaius_stub.CognitionStatus(
+            response = await self._stub.CognitionStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -797,7 +852,7 @@ class GrpcEngineClient:
             from ..engine.generated import GetRecentThoughtsRequest
 
             limit = params.get("limit", 10)
-            response = await self._gaius_stub.GetRecentThoughts(
+            response = await self._stub.GetRecentThoughts(
                 GetRecentThoughtsRequest(limit=limit),
                 timeout=timeout,
             )
@@ -821,7 +876,7 @@ class GrpcEngineClient:
             return {"thoughts": thoughts}
 
         elif action == "activity":
-            response = await self._gaius_stub.CognitionActivity(
+            response = await self._stub.CognitionActivity(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -839,7 +894,7 @@ class GrpcEngineClient:
 
             max_thoughts = params.get("max_thoughts", 5)
             trigger_reason = params.get("trigger_reason", "manual")
-            response = await self._gaius_stub.TriggerCognition(
+            response = await self._stub.TriggerCognition(
                 TriggerCognitionRequest(
                     max_thoughts=max_thoughts,
                     trigger_reason=trigger_reason,
@@ -862,7 +917,7 @@ class GrpcEngineClient:
             from ..engine.generated import SelfObservationRequest
 
             max_observations = params.get("max_observations", 5)
-            response = await self._gaius_stub.SelfObservation(
+            response = await self._stub.SelfObservation(
                 SelfObservationRequest(max_observations=max_observations),
                 timeout=timeout,
             )
@@ -878,7 +933,7 @@ class GrpcEngineClient:
             from ..engine.generated import EngineAuditRequest
 
             include_metrics = params.get("include_metrics", True)
-            response = await self._gaius_stub.EngineAudit(
+            response = await self._stub.EngineAudit(
                 EngineAuditRequest(include_metrics=include_metrics),
                 timeout=timeout,
             )
@@ -924,7 +979,7 @@ class GrpcEngineClient:
                 estimated_duration_s=params.get("estimated_duration_s", 60),
                 estimated_memory_mb=params.get("estimated_memory_mb", 0),
             )
-            response = await self._gaius_stub.BeginWorkload(request, timeout=timeout)
+            response = await self._stub.BeginWorkload(request, timeout=timeout)
             result = MessageToDict(response, preserving_proto_field_name=True)
             return result
 
@@ -932,11 +987,11 @@ class GrpcEngineClient:
             request = CompleteWorkloadRequest(
                 workload_id=params.get("workload_id", ""),
             )
-            await self._gaius_stub.CompleteWorkload(request, timeout=timeout)
+            await self._stub.CompleteWorkload(request, timeout=timeout)
             return {"success": True}
 
         elif action == "active":
-            response = await self._gaius_stub.GetActiveWorkloads(
+            response = await self._stub.GetActiveWorkloads(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -955,7 +1010,7 @@ class GrpcEngineClient:
             model = params.get("model", "")
 
             request = EmbedTextsRequest(texts=texts, model=model)
-            response = await self._gaius_stub.EmbedTexts(request, timeout=timeout)
+            response = await self._stub.EmbedTexts(request, timeout=timeout)
 
             # Convert embeddings to lists
             embeddings = [list(v.values) for v in response.embeddings]
@@ -985,7 +1040,7 @@ class GrpcEngineClient:
                 use_maxsim=params.get("use_maxsim", True),
                 content_type=params.get("content_type", ""),
             )
-            response = await self._gaius_stub.SemanticSearch(request, timeout=timeout)
+            response = await self._stub.SemanticSearch(request, timeout=timeout)
 
             return {
                 "results": [
@@ -1021,17 +1076,28 @@ class GrpcEngineClient:
             request = ThetaSitrepRequest(
                 horizon=params.get("horizon", "day"),
             )
-            response = await self._gaius_stub.ThetaSitrep(request, timeout=timeout)
+            response = await self._stub.ThetaSitrep(request, timeout=timeout)
+            # Parse report_json if available for detailed data
+            import json
+            report_data = {}
+            if response.report_json:
+                try:
+                    report_data = json.loads(response.report_json.decode())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
             return {
                 "success": response.success,
                 "horizon": response.horizon,
-                "active_slices": list(response.active_slices),
-                "consolidation_pending": response.consolidation_pending,
-                "last_consolidation": response.last_consolidation,
-                "drift_trend": response.drift_trend,
-                "research_threads_count": response.research_threads_count,
-                "kb_health": response.kb_health,
-                "summary": response.summary,
+                "healthy": response.healthy,
+                "status_text": response.status_text,
+                "gpu_count": response.gpu_count,
+                "endpoint_count": response.endpoint_count,
+                "priority_count": response.priority_count,
+                "thought_count": response.thought_count,
+                "objective_count": response.objective_count,
+                "project_count": response.project_count,
+                "ascii_format": response.ascii_format,
+                "report": report_data,
                 "error": response.error,
             }
 
@@ -1041,7 +1107,7 @@ class GrpcEngineClient:
                 max_candidates=params.get("max_candidates", 10),
                 research_mode=params.get("research_mode", True),
             )
-            response = await self._gaius_stub.ThetaConsolidate(request, timeout=timeout)
+            response = await self._stub.ThetaConsolidate(request, timeout=timeout)
             return {
                 "success": response.success,
                 "slice_id": response.slice_id,
@@ -1056,7 +1122,7 @@ class GrpcEngineClient:
 
         elif action == "ThetaConsolidationStats":
             request = ThetaConsolidationStatsRequest()
-            response = await self._gaius_stub.ThetaConsolidationStats(
+            response = await self._stub.ThetaConsolidationStats(
                 request, timeout=timeout
             )
             return {
@@ -1096,7 +1162,7 @@ class GrpcEngineClient:
                 include_markdown=params.get("include_markdown", True),
                 max_agents=params.get("max_agents", 5),
             )
-            response = await self._gaius_stub.MetaAgentQuery(request, timeout=timeout)
+            response = await self._stub.MetaAgentQuery(request, timeout=timeout)
 
             # Decode agent insights bytes
             agent_insights = {}
@@ -1144,7 +1210,7 @@ class GrpcEngineClient:
 
         if action == "status":
             request = CLTStatusRequest()
-            response = await self._gaius_stub.CLTStatus(request, timeout=timeout)
+            response = await self._stub.CLTStatus(request, timeout=timeout)
             return {
                 "available": response.available,
                 "models": list(response.models),
@@ -1162,7 +1228,7 @@ class GrpcEngineClient:
                 top_k=params.get("top_k", 115),
                 device=params.get("device", "cuda"),
             )
-            response = await self._gaius_stub.CLTExtract(request, timeout=timeout)
+            response = await self._stub.CLTExtract(request, timeout=timeout)
 
             # Convert proto features to dicts
             features = [
@@ -1193,7 +1259,7 @@ class GrpcEngineClient:
                 threshold=params.get("threshold", 0.01),
                 device=params.get("device", "cuda"),
             )
-            response = await self._gaius_stub.CLTAttribute(request, timeout=timeout)
+            response = await self._stub.CLTAttribute(request, timeout=timeout)
 
             # Convert proto edges to dicts
             edges = [
@@ -1237,7 +1303,7 @@ class GrpcEngineClient:
         """
         if action == "status":
             request = HealthObserverStatusRequest()
-            response = await self._gaius_stub.HealthObserverStatus(
+            response = await self._stub.HealthObserverStatus(
                 request, timeout=timeout
             )
             return {
@@ -1270,7 +1336,7 @@ class GrpcEngineClient:
             }
 
         elif action == "start":
-            response = await self._gaius_stub.HealthObserverStart(
+            response = await self._stub.HealthObserverStart(
                 empty_pb2.Empty(), timeout=timeout
             )
             return {
@@ -1280,18 +1346,18 @@ class GrpcEngineClient:
             }
 
         elif action == "stop":
-            response = await self._gaius_stub.HealthObserverStop(
+            response = await self._stub.HealthObserverStop(
                 empty_pb2.Empty(), timeout=timeout
             )
             return {
                 "status": "stopped",
-                "active_incidents": len(response.active_incidents),
+                "active_incidents": response.active_incidents,  # Already an int count
             }
 
         elif action == "incidents":
             status_filter = params.get("status", "active")
             request = ListIncidentsRequest(status=status_filter)
-            response = await self._gaius_stub.HealthObserverListIncidents(
+            response = await self._stub.HealthObserverListIncidents(
                 request, timeout=timeout
             )
             return {
@@ -1316,7 +1382,7 @@ class GrpcEngineClient:
 
         elif action == "check":
             request = ForceHealthCheckRequest()
-            response = await self._gaius_stub.HealthObserverForceCheck(
+            response = await self._stub.HealthObserverForceCheck(
                 request, timeout=timeout
             )
             return {
@@ -1331,7 +1397,7 @@ class GrpcEngineClient:
         elif action == "incident_detail":
             fingerprint = params.get("fingerprint", "")
             request = GetIncidentDetailRequest(fingerprint=fingerprint)
-            response = await self._gaius_stub.HealthObserverGetIncident(
+            response = await self._stub.HealthObserverGetIncident(
                 request, timeout=timeout
             )
             if not response.found:
@@ -1362,6 +1428,65 @@ class GrpcEngineClient:
         else:
             raise ValueError(f"Unknown HealthObserver action: {action}")
 
+    async def _call_observe(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle Observe service calls via gRPC.
+
+        Provides observability dashboard data, aggregating metrics from
+        Prometheus and engine state for CLI /observe command.
+
+        Args:
+            action: Action to perform (status)
+            params: Action parameters (include_sparklines, sparkline_points)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with metrics, endpoints, and health summary
+        """
+        if action == "status":
+            include_sparklines = params.get("include_sparklines", False)
+            sparkline_points = params.get("sparkline_points", 20)
+
+            request = ObserveStatusRequest(
+                include_sparklines=include_sparklines,
+                sparkline_points=sparkline_points,
+            )
+            response = await self._stub.ObserveStatus(
+                request, timeout=timeout
+            )
+            return {
+                "timestamp": response.timestamp,
+                "prometheus_available": response.prometheus_available,
+                "metrics": [
+                    {
+                        "name": m.name,
+                        "display_name": m.display_name,
+                        "current_value": m.current_value,
+                        "unit": m.unit,
+                        "sparkline_data": list(m.sparkline_data) if m.sparkline_data else [],
+                        "status": m.status,
+                    }
+                    for m in response.metrics
+                ],
+                "endpoints": [
+                    {
+                        "name": ep.name,
+                        "status": ep.status,
+                        "gpus": list(ep.gpus) if ep.gpus else [],
+                        "model": ep.model,
+                    }
+                    for ep in response.endpoints
+                ],
+                "healthy_endpoints": response.healthy_endpoints,
+                "unhealthy_endpoints": response.unhealthy_endpoints,
+                "active_incidents": response.active_incidents,
+                "evolution_cycles": response.evolution_cycles,
+            }
+
+        else:
+            raise ValueError(f"Unknown Observe action: {action}")
+
     async def _call_x_bookmarks(
         self, action: str, params: dict, timeout: float
     ) -> dict:
@@ -1380,7 +1505,7 @@ class GrpcEngineClient:
         """
         if action == "get_auth_url":
             request = XBookmarksAuthRequest()
-            response = await self._gaius_stub.XBookmarksGetAuthUrl(
+            response = await self._stub.XBookmarksGetAuthUrl(
                 request, timeout=timeout
             )
             return {
@@ -1393,7 +1518,7 @@ class GrpcEngineClient:
             code = params.get("code", "")
             verifier = params.get("verifier", "")
             request = XBookmarksCompleteAuthRequest(code=code, verifier=verifier)
-            response = await self._gaius_stub.XBookmarksCompleteAuth(
+            response = await self._stub.XBookmarksCompleteAuth(
                 request, timeout=timeout
             )
             return {
@@ -1403,7 +1528,7 @@ class GrpcEngineClient:
 
         elif action == "auth_status":
             request = XBookmarksAuthStatusRequest()
-            response = await self._gaius_stub.XBookmarksAuthStatus(
+            response = await self._stub.XBookmarksAuthStatus(
                 request, timeout=timeout
             )
             result = {
@@ -1426,7 +1551,7 @@ class GrpcEngineClient:
             full_sync = params.get("full_sync", False)
             folder_id = params.get("folder_id", "")
             request = XBookmarksSyncRequest(full_sync=full_sync, folder_id=folder_id)
-            response = await self._gaius_stub.XBookmarksTriggerSync(
+            response = await self._stub.XBookmarksTriggerSync(
                 request, timeout=timeout
             )
             result = {
@@ -1449,7 +1574,7 @@ class GrpcEngineClient:
         elif action == "sync_status":
             user_id = params.get("user_id", "")
             request = XBookmarksSyncStatusRequest(user_id=user_id)
-            response = await self._gaius_stub.XBookmarksSyncStatus(
+            response = await self._stub.XBookmarksSyncStatus(
                 request, timeout=timeout
             )
             result = {
@@ -1472,7 +1597,7 @@ class GrpcEngineClient:
 
         elif action == "service_status":
             request = XBookmarksServiceStatusRequest()
-            response = await self._gaius_stub.XBookmarksServiceStatus(
+            response = await self._stub.XBookmarksServiceStatus(
                 request, timeout=timeout
             )
             return {
@@ -1486,7 +1611,7 @@ class GrpcEngineClient:
         elif action == "list_folders":
             user_id = params.get("user_id", "")
             request = XBookmarksListFoldersRequest(user_id=user_id)
-            response = await self._gaius_stub.XBookmarksListFolders(
+            response = await self._stub.XBookmarksListFolders(
                 request, timeout=timeout
             )
             return {
@@ -1505,7 +1630,7 @@ class GrpcEngineClient:
 
         elif action == "queue_status":
             request = XBookmarksQueueStatusRequest()
-            response = await self._gaius_stub.XBookmarksQueueStatus(
+            response = await self._stub.XBookmarksQueueStatus(
                 request, timeout=timeout
             )
             return {
@@ -1518,7 +1643,7 @@ class GrpcEngineClient:
         elif action == "emit_test_event":
             event_type = params.get("event_type", "XB_AUTH_COMPLETED")
             request = XBookmarksEmitTestEventRequest(event_type=event_type)
-            response = await self._gaius_stub.XBookmarksEmitTestEvent(
+            response = await self._stub.XBookmarksEmitTestEvent(
                 request, timeout=timeout
             )
             return {
@@ -1545,7 +1670,7 @@ class GrpcEngineClient:
             Result dict with status or cycle results
         """
         if action == "status":
-            response = await self._gaius_stub.AmbientStatus(
+            response = await self._stub.AmbientStatus(
                 empty_pb2.Empty(), timeout=timeout
             )
             # Map the proto field name to a friendlier name for CLI
@@ -1583,7 +1708,7 @@ class GrpcEngineClient:
                 max_cycles=max_cycles,
             )
 
-            response = await self._gaius_stub.AmbientStart(request, timeout=timeout)
+            response = await self._stub.AmbientStart(request, timeout=timeout)
 
             return {
                 "success": response.success,
@@ -1594,7 +1719,7 @@ class GrpcEngineClient:
         elif action == "stop":
             # Stop ambient daemon
             request = AmbientStopRequest()
-            response = await self._gaius_stub.AmbientStop(request, timeout=timeout)
+            response = await self._stub.AmbientStop(request, timeout=timeout)
 
             return {
                 "success": response.success,
@@ -1618,7 +1743,7 @@ class GrpcEngineClient:
 
             events = []
             final_result = {}
-            async for event in self._gaius_stub.AmbientCycle(request, timeout=timeout):
+            async for event in self._stub.AmbientCycle(request, timeout=timeout):
                 # Get phase name from enum
                 try:
                     phase_name = AmbientPhase.Name(event.phase)
@@ -1657,7 +1782,7 @@ class GrpcEngineClient:
 
             kb_root = params.get("kb_root", "build/dev")
             request = AmbientBufferExportRequest(kb_root=kb_root)
-            response = await self._gaius_stub.AmbientBufferExport(request, timeout=timeout)
+            response = await self._stub.AmbientBufferExport(request, timeout=timeout)
 
             return {
                 "path": response.path,
@@ -1700,7 +1825,7 @@ class GrpcEngineClient:
         try:
             from ..engine.generated import AmbientPhase
 
-            async for event in self._gaius_stub.AmbientCycle(request):
+            async for event in self._stub.AmbientCycle(request):
                 # Get phase name from enum
                 try:
                     phase_name = AmbientPhase.Name(event.phase)
@@ -1752,7 +1877,7 @@ class GrpcEngineClient:
         try:
             from ..engine.generated import AmbientPhase
 
-            async for event in self._gaius_stub.AmbientSubscribe(request):
+            async for event in self._stub.AmbientSubscribe(request):
                 # Get phase name from enum
                 try:
                     phase_name = AmbientPhase.Name(event.phase)
@@ -1804,7 +1929,7 @@ class GrpcEngineClient:
         if action == "list":
             limit = params.get("limit", 20)
             request = ListHFDatasetsRequest(limit=limit)
-            response = await self._gaius_stub.ListHFDatasets(request, timeout=timeout)
+            response = await self._stub.ListHFDatasets(request, timeout=timeout)
 
             if response.error:
                 return {"error": response.error}
@@ -1832,7 +1957,7 @@ class GrpcEngineClient:
             dataset_id = params.get("dataset_id", "")
             notes = params.get("notes", "")
             request = AddExternalDatasetRequest(dataset_id=dataset_id, notes=notes)
-            response = await self._gaius_stub.AddExternalDataset(request, timeout=timeout)
+            response = await self._stub.AddExternalDataset(request, timeout=timeout)
 
             if response.error:
                 return {"error": response.error, "success": False}
@@ -1849,7 +1974,7 @@ class GrpcEngineClient:
         elif action == "info":
             dataset_id = params.get("dataset_id", "")
             request = GetHFDatasetInfoRequest(dataset_id=dataset_id)
-            response = await self._gaius_stub.GetHFDatasetInfo(request, timeout=timeout)
+            response = await self._stub.GetHFDatasetInfo(request, timeout=timeout)
 
             if response.error:
                 return {"error": response.error}
@@ -1870,7 +1995,7 @@ class GrpcEngineClient:
 
         elif action == "list_kb":
             request = ListKBDatasetsRequest()
-            response = await self._gaius_stub.ListKBDatasets(request, timeout=timeout)
+            response = await self._stub.ListKBDatasets(request, timeout=timeout)
 
             return {
                 "internal": [
@@ -1916,7 +2041,7 @@ class GrpcEngineClient:
             limit = params.get("limit", 20)
             filter_tag = params.get("filter", "")
             request = ListHFModelsRequest(limit=limit, filter=filter_tag)
-            response = await self._gaius_stub.ListHFModels(request, timeout=timeout)
+            response = await self._stub.ListHFModels(request, timeout=timeout)
 
             if response.error:
                 return {"error": response.error}
@@ -1946,7 +2071,7 @@ class GrpcEngineClient:
             model_id = params.get("model_id", "")
             notes = params.get("notes", "")
             request = AddExternalModelRequest(model_id=model_id, notes=notes)
-            response = await self._gaius_stub.AddExternalModel(request, timeout=timeout)
+            response = await self._stub.AddExternalModel(request, timeout=timeout)
 
             if response.error:
                 return {"error": response.error}
@@ -1963,7 +2088,7 @@ class GrpcEngineClient:
         elif action == "info":
             model_id = params.get("model_id", "")
             request = GetHFModelInfoRequest(model_id=model_id)
-            response = await self._gaius_stub.GetHFModelInfo(request, timeout=timeout)
+            response = await self._stub.GetHFModelInfo(request, timeout=timeout)
 
             if response.error:
                 return {"error": response.error}
@@ -1986,7 +2111,7 @@ class GrpcEngineClient:
 
         elif action == "list_kb":
             request = ListKBModelsRequest()
-            response = await self._gaius_stub.ListKBModels(request, timeout=timeout)
+            response = await self._stub.ListKBModels(request, timeout=timeout)
 
             return {
                 "internal": [
@@ -2051,7 +2176,7 @@ class GrpcEngineClient:
                 embedding_model=embedding_model,
                 projection_method=projection_method,
             )
-            response = await self._gaius_stub.Init(request, timeout=timeout)
+            response = await self._stub.Init(request, timeout=timeout)
             return {
                 "success": response.success,
                 "message": response.message,
@@ -2076,7 +2201,7 @@ class GrpcEngineClient:
                 force=force,
                 embedding_model=embedding_model,
             )
-            response = await self._gaius_stub.Reindex(request, timeout=timeout)
+            response = await self._stub.Reindex(request, timeout=timeout)
             return {
                 "success": response.success,
                 "message": response.message,
@@ -2134,7 +2259,7 @@ class GrpcEngineClient:
             InitProgress.Phase.ERROR: "error",
         }
 
-        async for progress in self._gaius_stub.InitProgressStream(request):
+        async for progress in self._stub.InitProgressStream(request):
             yield {
                 "phase": phase_names.get(progress.phase, "unknown"),
                 "progress": progress.progress,
@@ -2180,7 +2305,7 @@ class GrpcEngineClient:
             ReindexProgress.Phase.ERROR: "error",
         }
 
-        async for progress in self._gaius_stub.ReindexStream(request):
+        async for progress in self._stub.ReindexStream(request):
             yield {
                 "phase": phase_names.get(progress.phase, "unknown"),
                 "progress": progress.progress,
@@ -2251,7 +2376,7 @@ class GrpcEngineClient:
                         temperature=role_def.temperature,
                         priority="high",
                     )
-                    response = await self._gaius_stub.Complete(request, timeout=timeout)
+                    response = await self._stub.Complete(request, timeout=timeout)
                     result = MessageToDict(response, preserving_proto_field_name=True)
 
                     latency = int((time.perf_counter() - start) * 1000)
@@ -2289,7 +2414,7 @@ class GrpcEngineClient:
 
     async def server_live(self) -> bool:
         """Check if server is live (OIP ServerLive)."""
-        response = await self._inference_stub.ServerLive(
+        response = await self._inference.ServerLive(
             ServerLiveRequest(),
             timeout=self.config.timeout,
         )
@@ -2297,7 +2422,7 @@ class GrpcEngineClient:
 
     async def server_ready(self) -> bool:
         """Check if server is ready (OIP ServerReady)."""
-        response = await self._inference_stub.ServerReady(
+        response = await self._inference.ServerReady(
             ServerReadyRequest(),
             timeout=self.config.timeout,
         )
@@ -2305,7 +2430,7 @@ class GrpcEngineClient:
 
     async def model_ready(self, model_name: str) -> bool:
         """Check if a specific model is ready (OIP ModelReady)."""
-        response = await self._inference_stub.ModelReady(
+        response = await self._inference.ModelReady(
             ModelReadyRequest(name=model_name),
             timeout=self.config.timeout,
         )
@@ -2313,7 +2438,7 @@ class GrpcEngineClient:
 
     async def server_metadata(self) -> dict:
         """Get server metadata (OIP ServerMetadata)."""
-        response = await self._inference_stub.ServerMetadata(
+        response = await self._inference.ServerMetadata(
             ServerMetadataRequest(),
             timeout=self.config.timeout,
         )
@@ -2321,7 +2446,7 @@ class GrpcEngineClient:
 
     async def model_metadata(self, model_name: str) -> dict:
         """Get model metadata (OIP ModelMetadata)."""
-        response = await self._inference_stub.ModelMetadata(
+        response = await self._inference.ModelMetadata(
             ModelMetadataRequest(name=model_name),
             timeout=self.config.timeout,
         )
@@ -2369,7 +2494,7 @@ class GrpcEngineClient:
         """Background task to receive event stream."""
         try:
             request = EventStreamRequest()
-            async for event in self._gaius_stub.EventStream(request):
+            async for event in self._stub.EventStream(request):
                 event_dict = MessageToDict(event, preserving_proto_field_name=True)
                 for callback in self._event_callbacks:
                     try:
@@ -2386,7 +2511,7 @@ class GrpcEngineClient:
         """Background task to receive health stream."""
         try:
             request = HealthStreamRequest(interval_ms=1000)
-            async for metrics in self._gaius_stub.HealthStream(request):
+            async for metrics in self._stub.HealthStream(request):
                 metrics_dict = MessageToDict(metrics, preserving_proto_field_name=True)
                 for callback in self._health_callbacks:
                     try:
@@ -2411,7 +2536,7 @@ class GrpcEngineClient:
             Health metrics dicts
         """
         request = HealthStreamRequest(interval_ms=interval_ms)
-        async for metrics in self._gaius_stub.HealthStream(request):
+        async for metrics in self._stub.HealthStream(request):
             yield MessageToDict(metrics, preserving_proto_field_name=True)
 
     async def event_stream(
@@ -2426,7 +2551,7 @@ class GrpcEngineClient:
             Event dicts
         """
         request = EventStreamRequest(event_types=event_types or [])
-        async for event in self._gaius_stub.EventStream(request):
+        async for event in self._stub.EventStream(request):
             yield MessageToDict(event, preserving_proto_field_name=True)
 
     async def init_stream(self) -> AsyncIterator[dict]:
@@ -2455,7 +2580,7 @@ class GrpcEngineClient:
 
         try:
             # Bidirectional streaming - send commands, receive events
-            call = self._gaius_stub.InitStream(command_generator())
+            call = self._stub.InitStream(command_generator())
             async for event in call:
                 event_dict = {
                     "type": InitEvent.Type.Name(event.type),
@@ -2512,7 +2637,7 @@ class GrpcEngineClient:
 
         try:
             # Send command (don't wait for response stream)
-            call = self._gaius_stub.InitStream(single_command())
+            call = self._stub.InitStream(single_command())
             # Read one response to confirm receipt
             async for event in call:
                 logger.debug(f"Init command response: {event.type}")
@@ -2565,7 +2690,7 @@ class GrpcEngineClient:
         )
 
         try:
-            async for event in self._gaius_stub.SwarmStream(request):
+            async for event in self._stub.SwarmStream(request):
                 yield {
                     "type": SwarmEvent.Type.Name(event.type),
                     "timestamp_ms": event.timestamp_ms,
@@ -2624,17 +2749,17 @@ class GrpcEngineClient:
         )
 
         try:
-            async for event in self._gaius_stub.SubscribeCognition(request):
+            async for event in self._stub.SubscribeCognition(request):
                 yield {
                     "type": CognitionEvent.Type.Name(event.type),
                     "timestamp_ms": event.timestamp_ms,
                     "thought_id": event.thought_id,
                     "thought_type": event.thought_type,
                     "title": event.title,
-                    "content": event.content,
-                    "confidence": event.confidence,
+                    "summary": event.summary,
+                    "salience": event.salience,
+                    "generation": event.generation,
                     "cycle_id": event.cycle_id,
-                    "error_message": event.error_message,
                 }
         except grpc.RpcError as e:
             if e.code() != grpc.StatusCode.CANCELLED:
@@ -2645,10 +2770,10 @@ class GrpcEngineClient:
                     "thought_id": "",
                     "thought_type": "",
                     "title": "Stream error",
-                    "content": str(e.details()),
-                    "confidence": 0.0,
-                    "cycle_id": 0,
-                    "error_message": str(e.details()),
+                    "summary": str(e.details()) if hasattr(e, 'details') else str(e),
+                    "salience": 0.0,
+                    "generation": 0,
+                    "cycle_id": "",
                 }
 
     async def subscribe_evolution(
@@ -2684,17 +2809,18 @@ class GrpcEngineClient:
         )
 
         try:
-            async for event in self._gaius_stub.SubscribeEvolution(request):
+            async for event in self._stub.SubscribeEvolution(request):
                 yield {
                     "type": EvolutionEvent.Type.Name(event.type),
                     "timestamp_ms": event.timestamp_ms,
-                    "cycle_id": event.cycle_id,
+                    "cycle_number": event.cycle_number,
                     "agent_id": event.agent_id,
                     "version_id": event.version_id,
                     "score": event.score,
-                    "improvement": event.improvement,
-                    "message": event.message,
-                    "error_message": event.error_message,
+                    "improvement_pct": event.improvement_pct,
+                    "details": event.details,
+                    "merge_id": event.merge_id,
+                    "error": event.error,
                 }
         except grpc.RpcError as e:
             if e.code() != grpc.StatusCode.CANCELLED:
@@ -2702,20 +2828,20 @@ class GrpcEngineClient:
                 yield {
                     "type": "ERROR",
                     "timestamp_ms": int(time.time() * 1000),
-                    "cycle_id": 0,
+                    "cycle_number": 0,
                     "agent_id": "",
                     "version_id": "",
                     "score": 0.0,
-                    "improvement": 0.0,
-                    "message": "Stream error",
-                    "error_message": str(e.details()),
+                    "improvement_pct": 0.0,
+                    "details": "Stream error",
+                    "merge_id": "",
+                    "error": str(e.details()) if hasattr(e, 'details') else str(e),
                 }
 
     async def subscribe_activity(
         self,
         buffer_size: int = 100,
-        include_health: bool = True,
-        include_endpoints: bool = True,
+        domains: list[str] | None = None,
     ) -> AsyncIterator[dict]:
         """Subscribe to general engine activity events.
 
@@ -2724,8 +2850,7 @@ class GrpcEngineClient:
 
         Args:
             buffer_size: Server-side buffer size for events
-            include_health: Include health status events
-            include_endpoints: Include endpoint status events
+            domains: Filter by domain (empty/None = all)
 
         Yields:
             ActivityEvent dicts with:
@@ -2736,14 +2861,13 @@ class GrpcEngineClient:
         """
         request = ActivityStreamRequest(
             buffer_size=buffer_size,
-            include_health=include_health,
-            include_endpoints=include_endpoints,
+            domains=domains or [],
         )
 
         try:
-            async for event in self._gaius_stub.SubscribeActivity(request):
+            async for event in self._stub.SubscribeActivity(request):
                 yield {
-                    "type": ActivityEvent.Type.Name(event.type),
+                    "type": event.event_type,
                     "timestamp_ms": event.timestamp_ms,
                     "data": event.data.decode() if event.data else "",
                 }
@@ -2867,3 +2991,8 @@ async def call_grpc(
     """
     client = await get_grpc_client()
     return await client.call(service, action, params)
+
+
+# Alias for backward compatibility
+# Some code uses GaiusClient as the class name
+GaiusClient = GrpcEngineClient

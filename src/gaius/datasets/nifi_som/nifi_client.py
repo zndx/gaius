@@ -153,7 +153,7 @@ class NiFiClient:
         pg_id: str,
         source_id: str,
         destination_id: str,
-        relationships: list[str] = None,
+        relationships: list[str] | None = None,
     ) -> str:
         """Create a connection between processors."""
         if relationships is None:

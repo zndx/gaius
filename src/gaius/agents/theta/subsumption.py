@@ -217,8 +217,8 @@ def _patch_deeponto_random_sample() -> None:
             population = list(population)
         return _original_sample(population, k, **kwargs)
 
-    _safe_sample._gaius_patched = True
-    random.sample = _safe_sample
+    setattr(_safe_sample, "_gaius_patched", True)
+    random.sample = _safe_sample  # type: ignore[method-assign] - Python 3.11+ compat patch
     logger.debug("Applied global Python 3.11+ random.sample compatibility patch")
 
 
@@ -288,7 +288,7 @@ def _patch_deeponto_datasets_compat() -> None:
             dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
             return dataset
 
-        BERTSubsumptionClassifierTrainer.load_dataset = _patched_load_dataset
+        BERTSubsumptionClassifierTrainer.load_dataset = _patched_load_dataset  # type: ignore[method-assign] - datasets 4.x compat patch
         logger.debug("Applied datasets 4.x compatibility patch to DeepOnto BERTSubsumptionClassifierTrainer")
 
     except ImportError:
@@ -325,7 +325,7 @@ def _patch_transformers_training_args() -> None:
                     kwargs["eval_strategy"] = kwargs.pop("evaluation_strategy")
                 return _original_init(self, *args, **kwargs)
 
-            TrainingArguments.__init__ = _patched_init
+            TrainingArguments.__init__ = _patched_init  # type: ignore[method-assign] - monkey-patching for transformers 4.46+ compatibility
             logger.debug("Applied transformers 4.46+ TrainingArguments compatibility patch")
 
     except ImportError:
@@ -417,6 +417,11 @@ class SubsumptionInferencer:
                 deeponto_path = Path(__file__).parent.parent.parent.parent
                 # Find the installed deeponto package
                 import deeponto
+                if deeponto.__file__ is None:
+                    raise RuntimeError(
+                        "DeepOnto package __file__ is None - cannot locate config.\n"
+                        "  Guru Meditation: #THETA.00000003.DEEPONTO_FILE_NONE"
+                    )
                 deeponto_pkg_path = Path(deeponto.__file__).parent
                 default_config_path = (
                     deeponto_pkg_path / "complete" / "bertsubs" / "default_config_intra.yaml"
@@ -845,8 +850,8 @@ def generate_ontology_from_kb(
                 try:
                     # Create new class dynamically
                     new_class = type(class_name, (Thing,), {})
-                    # Add label annotation
-                    new_class.label = [concept]
+                    # Add label annotation (owlready2 Thing expects 'label' property)
+                    setattr(new_class, "label", [concept])
                     created_classes.append(class_name)
                 except Exception as e:
                     logger.warning(f"Failed to create class '{class_name}': {e}")

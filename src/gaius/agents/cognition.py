@@ -162,6 +162,7 @@ class CognitionContext:
     # Recent content
     recent_kb_entries: list[dict] = field(default_factory=list)
     recent_content_items: list[dict] = field(default_factory=list)
+    kb_entries_scanned: int = 0
 
     # Activity
     queries_today: list[str] = field(default_factory=list)

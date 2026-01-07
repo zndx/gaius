@@ -752,7 +752,7 @@ class HFCapture:
                 results = await asyncio.gather(*futures, return_exceptions=True)
 
             for result in results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     continue
                 ds_info, readme_content = result
                 record = hf_dataset_to_record(ds_info, readme_content)
@@ -899,7 +899,7 @@ class HFCapture:
                 results = await asyncio.gather(*futures, return_exceptions=True)
 
             for result in results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     continue
                 model_info, readme_content = result
                 record = hf_model_to_record(model_info, readme_content)

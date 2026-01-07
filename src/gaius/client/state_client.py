@@ -15,7 +15,10 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncIterator, Callable, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Optional
+
+if TYPE_CHECKING:
+    from ..engine.generated import GaiusServiceAsyncStub
 
 # Suppress gRPC fork warnings before importing grpc
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
@@ -192,7 +195,7 @@ class StateClient:
         self.request_timeout = request_timeout
 
         self._channel: Optional[aio.Channel] = None
-        self._stub = None
+        self._stub: Optional["GaiusServiceAsyncStub"] = None
         self._status = ConnectionStatus.PENDING
         self._status_callbacks: list[Callable[[ConnectionStatus], None]] = []
 
@@ -251,8 +254,8 @@ class StateClient:
             )
 
             # Import stub lazily to avoid import cycles
-            from ..engine.generated import GaiusServiceStub
-            self._stub = GaiusServiceStub(self._channel)
+            from ..engine.generated import GaiusServiceAsyncStub
+            self._stub = GaiusServiceAsyncStub(self._channel)
 
             self._set_status(ConnectionStatus.CONNECTED)
             logger.info(f"StateClient connected to {target}")
@@ -281,7 +284,7 @@ class StateClient:
                 pass
 
         if self._channel:
-            await self._channel.close()
+            await self._channel.close(grace=None)
 
         self._channel = None
         self._stub = None
@@ -350,6 +353,7 @@ class StateClient:
             include_geometry=include_geometry,
         )
 
+        assert self._stub is not None  # Guaranteed by is_connected check in caller
         response = await self._stub.GetCurrentState(
             request,
             timeout=self.request_timeout,
@@ -572,6 +576,7 @@ class StateClient:
                 client_id=client_id,
             )
 
+            assert self._stub is not None  # Guaranteed by is_connected check above
             async for update in self._stub.SubscribeState(request):
                 yield self._proto_to_state_update(update)
 
@@ -624,6 +629,7 @@ class StateClient:
                 from ..engine.generated import GetPreferencesRequest
 
                 request = GetPreferencesRequest(client_id=client_id)
+                assert self._stub is not None  # Guaranteed by is_connected check
                 response = await self._stub.GetPreferences(
                     request,
                     timeout=self.request_timeout,
@@ -683,9 +689,10 @@ class StateClient:
         # Try Engine first
         if self.is_connected:
             try:
-                from ..engine.generated import SavePreferencesRequest
+                from ..engine.generated import SavePreferencesRequest, UIPreferences as ProtoUIPreferences
 
-                request = SavePreferencesRequest(
+                # Wrap in UIPreferences proto message
+                ui_prefs = ProtoUIPreferences(
                     client_id=prefs.client_id,
                     cursor_x=prefs.cursor_x,
                     cursor_y=prefs.cursor_y,
@@ -695,8 +702,10 @@ class StateClient:
                     center_panel_mode=prefs.center_panel_mode,
                     left_panel_visible=prefs.left_panel_visible,
                     right_panel_visible=prefs.right_panel_visible,
-                    domain=prefs.domain,
+                    domain=prefs.domain or "",
                 )
+                request = SavePreferencesRequest(preferences=ui_prefs)
+                assert self._stub is not None  # Guaranteed by is_connected check
                 await self._stub.SavePreferences(
                     request,
                     timeout=self.request_timeout,
@@ -756,11 +765,13 @@ class StateClient:
                     older_than_days=older_than_days or 0,
                     dry_run=dry_run,
                 )
+                assert self._stub is not None  # Guaranteed by is_connected check
                 response = await self._stub.PruneSnapshots(
                     request,
                     timeout=self.request_timeout,
                 )
-                return response.deleted_count, list(response.deleted_ids)
+                # Note: gRPC response doesn't include deleted_ids, only count
+                return response.deleted_count, []
             except Exception as e:
                 logger.warning(f"Engine prune failed: {e}")
 

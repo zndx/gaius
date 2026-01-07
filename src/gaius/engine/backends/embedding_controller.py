@@ -177,6 +177,14 @@ class EmbeddingController:
             name = endpoint_name or alias or hf_id
             model_name = hf_id
 
+            # Fail-fast if we couldn't determine required fields
+            if name is None or model_name is None:
+                raise RuntimeError(
+                    f"Cannot determine endpoint name or model: name={name}, model_name={model_name}.\n"
+                    "  Guru Meditation: #EMBED.00000001.MISSING_MODEL_ID\n"
+                    "  Ensure model_spec has huggingface_id or model_id field."
+                )
+
             # Check if already loaded
             if name in self._endpoints and self._endpoints[name].status == EmbeddingStatus.READY:
                 logger.info(f"Embedding endpoint {name} already loaded")
@@ -302,19 +310,19 @@ class EmbeddingController:
         # Find or create endpoint
         endpoint = await self._get_or_create_endpoint(request.model)
         if endpoint is None or endpoint.model is None:
-            return EmbeddingResponse(
-                embeddings=[],
-                model_used=request.model or self.default_model,
-                latency_ms=int((time.time() - start_time) * 1000),
-                texts_processed=0,
-                error="No embedding model available",
+            raise RuntimeError(
+                f"Embedding model not available: {request.model or self.default_model}\n"
+                f"  Guru Meditation: #EMB.00000001.NOMODEL"
             )
+
+        # Bind model for closure (type narrowing)
+        model = endpoint.model
 
         # Generate embeddings in thread pool
         try:
             embeddings = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: endpoint.model.encode(
+                lambda: model.encode(
                     request.texts,
                     batch_size=request.batch_size,
                     show_progress_bar=False,
@@ -376,17 +384,18 @@ class EmbeddingController:
             # In production, this should go through orchestrator.ensure_capability()
             # For now, we create a CPU fallback endpoint
             try:
-                from ...models.registry import get_registry
+                from ...models.registry import get_model_registry
 
-                registry = get_registry()
-                model_spec = registry.get_model(target_model)
+                registry = get_model_registry()
+                model_spec = registry.get(target_model)
                 if model_spec is None:
                     # Create ad-hoc spec for unknown model
                     from ...models.registry import ModelSpec
 
                     model_spec = ModelSpec(
-                        huggingface_id=target_model,
-                        alias=target_model,
+                        model_id=target_model,
+                        name=target_model,
+                        provider="local",
                     )
 
                 # Load on CPU as fallback (engine orchestrator handles GPU allocation)

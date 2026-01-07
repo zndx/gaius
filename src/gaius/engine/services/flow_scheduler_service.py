@@ -286,7 +286,7 @@ class FlowSchedulerService:
 
             return items
 
-    async def _start_arxiv_flow(self, arxiv_id: str, content_id: str = None) -> bool:
+    async def _start_arxiv_flow(self, arxiv_id: str, content_id: str | None = None) -> bool:
         """Start ArxivDoclingFlow for a paper.
 
         Integrates with OrchestratorService for GPU resource management:
@@ -487,8 +487,9 @@ class FlowSchedulerService:
                     self._flows_failed += 1
                     # Read error output
                     try:
-                        output = run.process.stdout.read().decode("utf-8")[-2000:]
-                        run.error = output
+                        if run.process.stdout is not None:
+                            output = run.process.stdout.read().decode("utf-8")[-2000:]
+                            run.error = output
                         logger.warning(f"ArxivDoclingFlow failed for {arxiv_id}: exit code {retcode}")
                     except Exception:
                         pass

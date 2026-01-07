@@ -12,7 +12,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +80,19 @@ class ModelLineageTracker:
             db_url: Database URL (uses GAIUS_DATABASE_URL env var if not provided)
         """
         self.db_url = db_url
-        self._pool = None
+        self._pool: asyncpg.Pool | None = None
 
-    async def _ensure_pool(self):
-        """Ensure database connection pool is initialized."""
+    async def _ensure_pool(self) -> "asyncpg.Pool":
+        """Ensure database connection pool is initialized.
+
+        Returns:
+            The connection pool, guaranteed non-None.
+
+        Raises:
+            RuntimeError: If GAIUS_DATABASE_URL is not set and db_url was not provided.
+        """
         if self._pool is not None:
-            return
+            return self._pool
 
         import os
 
@@ -90,9 +100,14 @@ class ModelLineageTracker:
 
         db_url = self.db_url or os.environ.get("GAIUS_DATABASE_URL")
         if not db_url:
-            raise RuntimeError("GAIUS_DATABASE_URL not set")
+            raise RuntimeError(
+                "Database URL not configured.\n"
+                "  Guru Meditation: #LINEAGE.00000001.NO_DB_URL\n"
+                "  Set GAIUS_DATABASE_URL environment variable or pass db_url to constructor."
+            )
 
         self._pool = await asyncpg.create_pool(db_url, min_size=1, max_size=5)
+        return self._pool
 
     async def record_merge(
         self,
@@ -120,7 +135,7 @@ class ModelLineageTracker:
         Returns:
             Run ID for the lineage event
         """
-        await self._ensure_pool()
+        pool = await self._ensure_pool()
 
         run_id = uuid.uuid4()
 
@@ -147,7 +162,7 @@ class ModelLineageTracker:
             "eval_score": eval_score,
         }
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Record START event
             await conn.execute(
                 """
@@ -198,9 +213,9 @@ class ModelLineageTracker:
         Returns:
             List of lineage events from most recent to oldest
         """
-        await self._ensure_pool()
+        pool = await self._ensure_pool()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Find merge events that produced this model
             rows = await conn.fetch(
                 """
@@ -231,9 +246,9 @@ class ModelLineageTracker:
         Returns:
             List of descendant model IDs
         """
-        await self._ensure_pool()
+        pool = await self._ensure_pool()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT DISTINCT
@@ -265,9 +280,9 @@ class ModelLineageTracker:
             agent_id: Agent ID
             version_id: Version ID
         """
-        await self._ensure_pool()
+        pool = await self._ensure_pool()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Update agent version with model reference
             await conn.execute(
                 """
@@ -297,9 +312,9 @@ class ModelLineageTracker:
         Returns:
             List of version info dicts with model IDs
         """
-        await self._ensure_pool()
+        pool = await self._ensure_pool()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT
@@ -348,9 +363,9 @@ class ModelLineageTracker:
             queries_evaluated: Number of held-out queries used
             improvement_percent: Improvement over baseline
         """
-        await self._ensure_pool()
+        pool = await self._ensure_pool()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Find the most recent COMPLETE event for this merge
             row = await conn.fetchrow(
                 """

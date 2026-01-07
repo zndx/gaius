@@ -308,5 +308,7 @@ def install_test_fixtures():
     import gaius.core.session as session
 
     # Patch the singleton getters
-    versioning._manager = get_test_version_manager()
+    # InMemoryVersionManager is a test double that implements the same interface
+    # as VersionManager but isn't a formal subclass. This is intentional for test isolation.
+    versioning._manager = get_test_version_manager()  # type: ignore[invalid-assignment]
     # Note: The actual managers need to be patched at module level

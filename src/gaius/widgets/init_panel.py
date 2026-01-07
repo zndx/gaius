@@ -398,7 +398,7 @@ class InitPanel(Widget):
             # Subscribe to init stream - keep listening for XB events even after READY
             async for event in client.init_stream():
                 self._update_from_event(event)
-                self.init_progress = self.state.initialization_state.overall_progress
+                self.init_progress = self.state.initialization_state.overall_progress  # type: ignore[misc] - Reactive property assignment
                 self.refresh()
                 # Don't break on READY - we need to keep listening for XB events
                 # The stream stays open until panel is unmounted

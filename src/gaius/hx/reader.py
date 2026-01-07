@@ -274,7 +274,7 @@ class IcebergContentReader:
             # Use count aggregation if available, otherwise scan
             scan = self.table.scan(
                 row_filter=filter_expr,
-                selected_fields=["id"],  # Minimize data transfer
+                selected_fields=("id",),  # Minimize data transfer
             )
 
             # Count rows

@@ -84,6 +84,9 @@ class ServiceRegistry:
     # Ambient computing workload service
     ambient_service: Any = None
 
+    # Embedding service for semantic search
+    embedding_service: Any = None
+
     # Engine config
     config: Any = None
 

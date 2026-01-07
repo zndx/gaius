@@ -369,7 +369,7 @@ class InfrastructureManager:
             logger.error(f"Failed to start engine: {e}")
             return False
 
-    async def ensure_infrastructure(self, services: list[str] = None) -> dict:
+    async def ensure_infrastructure(self, services: list[str] | None = None) -> dict:
         """Ensure required infrastructure is running.
 
         Args:
@@ -715,7 +715,7 @@ class ServiceLifecycleManager:
             return True
         return False
 
-    async def clean_start(self, endpoints: list[str] = None) -> dict:
+    async def clean_start(self, endpoints: list[str] | None = None) -> dict:
         """Perform a clean start via orchestrator.
 
         Cleans stale processes and starts specified endpoints.
@@ -765,7 +765,9 @@ class ServiceLifecycleManager:
             Number of items processed
         """
         from gaius.workers.processor import process_content
-        return await process_content(limit=limit)
+        from gaius.workers.config import WorkerConfig
+        config = WorkerConfig()
+        return await process_content(config=config, limit=limit)
 
     async def stop_all(self) -> None:
         """Stop all started services in reverse order."""
@@ -834,7 +836,7 @@ class MinIOFixtureManager:
             logger.error(f"Failed to ensure test bucket: {e}")
             return False
 
-    def store_content(self, key: str, data: bytes, metadata: dict = None) -> str:
+    def store_content(self, key: str, data: bytes, metadata: dict | None = None) -> str:
         """Store content in the scenario's isolated prefix.
 
         Args:
@@ -1095,8 +1097,8 @@ class PipelineMetrics:
 async def pipeline_test_context(
     config: Optional[PipelineTestConfig] = None,
     start_services: bool = True,
-    endpoints: list[str] = None,
-    infrastructure: list[str] = None,
+    endpoints: list[str] | None = None,
+    infrastructure: list[str] | None = None,
 ) -> AsyncIterator[dict]:
     """Full test lifecycle management context manager.
 

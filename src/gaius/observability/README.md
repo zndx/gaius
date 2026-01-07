@@ -216,6 +216,75 @@ for metric_def in OBSERVE_METRICS:
     print(f"{metric_def.display.label}: {formatted}")
 ```
 
+## CLI `/observe` Command
+
+The CLI provides a command-line interface equivalent to the TUI ObservePanel:
+
+```bash
+# Full metrics dashboard
+uv run gaius-cli --cmd "/observe" --format json
+
+# Quick health check (key metrics only)
+uv run gaius-cli --cmd "/observe quick" --format json
+
+# Endpoint status details
+uv run gaius-cli --cmd "/observe endpoints" --format json
+
+# Include sparkline time-series data
+uv run gaius-cli --cmd "/observe sparklines" --format json
+```
+
+Example output:
+```json
+{
+  "timestamp": "2026-01-06T15:30:00+00:00",
+  "prometheus_available": true,
+  "metrics": [
+    {"name": "latency_p95", "display_name": "Latency p95", "current_value": 142.5, "unit": "ms", "status": "ok"},
+    {"name": "error_rate", "display_name": "Error Rate", "current_value": 0.02, "unit": "%", "status": "ok"}
+  ],
+  "endpoints": [
+    {"name": "reasoning", "status": "healthy", "gpus": [2, 3, 4, 5], "model": "QwQ-32B"}
+  ],
+  "healthy_endpoints": 1,
+  "unhealthy_endpoints": 0,
+  "active_incidents": 0,
+  "evolution_cycles": 847,
+  "view": "full"
+}
+```
+
+## gRPC `ObserveStatus` Method
+
+The CLI and TUI share a unified gRPC entry point for all observability data:
+
+```protobuf
+// In gaius_service.proto
+rpc ObserveStatus(ObserveStatusRequest) returns (ObserveStatusResponse);
+
+message ObserveStatusRequest {
+  bool include_sparklines = 1;  // Include time-series data
+  int32 sparkline_points = 2;   // Number of historical points (default: 20)
+}
+
+message ObserveStatusResponse {
+  string timestamp = 1;
+  bool prometheus_available = 2;
+  repeated MetricSnapshot metrics = 3;
+  repeated EndpointSnapshot endpoints = 4;
+  int32 healthy_endpoints = 5;
+  int32 unhealthy_endpoints = 6;
+  int32 active_incidents = 7;
+  int32 evolution_cycles = 8;
+}
+```
+
+The gRPC servicer aggregates data from multiple sources:
+- Prometheus for time-series metrics
+- Orchestrator for endpoint status
+- Health Observer for active incidents
+- Evolution service for cycle counts
+
 ## Configuration
 
 ```python
@@ -376,6 +445,10 @@ graph TB
 | `MetricValue` | — | sources, widgets | Value model |
 | `MetricSeries` | MetricValue | sources, mcp_server | Time series model |
 
+## Future Work
+
+**ObservePanel TUI Refactoring**: The TUI ObservePanel widget currently fetches from two sources directly (PrometheusSource and EngineSource). A future enhancement could refactor it to use the gRPC `ObserveStatus` method exclusively, ensuring full TUI/CLI parity and centralizing metric aggregation in the engine.
+
 ## See Also
 
 - [Parent README](../README.md) — Module overview
@@ -394,10 +467,10 @@ key_types: [MetricSource, PrometheusSource, MetricDefinition, MetricDisplay, Met
 key_funcs: [query, query_range]
 submodules: [sources]
 depends: [httpx]
-dependents: [widgets.observe_panel, mcp_server, health]
+dependents: [widgets.observe_panel, mcp_server, health, cli]
 config_keys: [observability.prometheus_url, observability.scrape_interval, observability.retention_hours]
 env_vars: [PROMETHEUS_URL]
-grpc_services: []
+grpc_services: [ObserveStatus]
 standard_metrics:
   gpu: [nvidia_gpu_memory_used_bytes, nvidia_gpu_utilization_ratio, nvidia_gpu_temperature]
   inference: [gaius_inference_duration_seconds, gaius_scheduler_queue_depth]
@@ -406,8 +479,11 @@ external_deps: [httpx]
 call_paths:
   query: ObservePanel.refresh→PrometheusSource.query→httpx.get→MetricValue
   range: mcp.get_metric_history→PrometheusSource.query_range→MetricSeries
+  cli_observe: CLI./observe→GrpcEngineClient._call_observe→GaiusServicer.ObserveStatus→PrometheusSource
 test_cmds:
   observe: 'uv run gaius-cli --cmd "/observe"'
+  observe_quick: 'uv run gaius-cli --cmd "/observe quick"'
+  observe_endpoints: 'uv run gaius-cli --cmd "/observe endpoints"'
 guru_codes: [OB.00001.PROMETHEUS_DOWN, OB.00002.QUERY_FAIL]
 fail_fast: true
 -->

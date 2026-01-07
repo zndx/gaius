@@ -454,10 +454,10 @@ class MinioStorage:
 
     def get_stats(self) -> dict:
         """Get storage statistics."""
-        stats = {
-            "total_documents": 0,
-            "total_size_bytes": 0,
-            "by_directory": {},
+        total_documents = 0
+        total_size_bytes = 0
+        by_directory: dict[str, dict[str, int]] = {}
+        stats: dict[str, object] = {
             "backend_type": "minio",
             "endpoint": self._config.endpoint,
             "bucket": self._bucket,
@@ -478,13 +478,16 @@ class MinioStorage:
                     dir_count += 1
                     dir_size += obj.size or 0
 
-            stats["by_directory"][dir_name] = {
+            by_directory[dir_name] = {
                 "documents": dir_count,
                 "size_bytes": dir_size,
             }
-            stats["total_documents"] += dir_count
-            stats["total_size_bytes"] += dir_size
+            total_documents += dir_count
+            total_size_bytes += dir_size
 
+        stats["total_documents"] = total_documents
+        stats["total_size_bytes"] = total_size_bytes
+        stats["by_directory"] = by_directory
         return stats
 
     def _extract_title(self, content: str, fallback: str) -> str:

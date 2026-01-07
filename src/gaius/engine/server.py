@@ -27,7 +27,7 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import EngineConfig, load_config
 from .daemon_registry import DaemonRegistry
@@ -71,7 +71,7 @@ class GaiusEngine:
         self._evolution_daemon = None
 
         # Service handlers (to be implemented in later phases)
-        self._handlers: dict[Service, callable] = {
+        self._handlers: dict[Service, Callable] = {
             Service.ORCHESTRATOR: self._handle_orchestrator,
             Service.SCHEDULER: self._handle_scheduler,
             Service.EVOLUTION: self._handle_evolution,
@@ -317,6 +317,12 @@ class GaiusEngine:
         """Initialize orchestrator service for endpoint management."""
         from .services.orchestrator_service import OrchestratorService
 
+        if self._backend_router is None:
+            raise RuntimeError(
+                "Backend router not initialized before orchestrator.\n"
+                "  Guru Meditation: #ENGINE.00000001.INIT_ORDER"
+            )
+
         self._orchestrator_service = OrchestratorService(
             config=self.config,
             resource_manager=self._resource_manager,
@@ -328,6 +334,8 @@ class GaiusEngine:
     async def _autonomous_clean_start(self) -> None:
         """Perform autonomous clean start: cleanup stale processes and preload endpoints."""
         logger.info("Performing autonomous clean start...")
+
+        assert self._orchestrator_service is not None  # Guaranteed by _init_orchestrator
 
         # Step 1: Cleanup stale vLLM processes
         cleanup_result = await self._orchestrator_service.cleanup_stale_processes()
@@ -363,8 +371,12 @@ class GaiusEngine:
 
         logger.info("Performing autonomous clean start with progress...")
 
+        assert self._orchestrator_service is not None  # Guaranteed by _init_orchestrator
+        # Capture narrowed type for nested function
+        orchestrator = self._orchestrator_service
+
         # Step 1: Cleanup stale vLLM processes
-        cleanup_result = await self._orchestrator_service.cleanup_stale_processes()
+        cleanup_result = await orchestrator.cleanup_stale_processes()
         if cleanup_result.processes_killed > 0:
             logger.info(
                 f"Cleaned up {cleanup_result.processes_killed} stale processes: {cleanup_result.pids_killed}"
@@ -389,7 +401,7 @@ class GaiusEngine:
 
             try:
                 # Start the endpoint
-                status = await self._orchestrator_service.start_endpoint(endpoint_alias)
+                status = await orchestrator.start_endpoint(endpoint_alias)
                 logger.info(
                     f"  {endpoint_alias}: {status.status} (port={status.port}, GPUs={status.gpu_ids})"
                 )
@@ -486,11 +498,7 @@ class GaiusEngine:
             )
 
             # Create and start daemon
-            self._evolution_daemon = EvolutionDaemon(
-                config=evo_config,
-                get_gpu_utilization=self._orchestrator_service.get_gpu_utilization,
-                is_gpu_idle=self._orchestrator_service.is_gpu_idle,
-            )
+            self._evolution_daemon = EvolutionDaemon(config=evo_config)
             await self._evolution_daemon.start()
             logger.info("Evolution daemon started")
 
@@ -1050,7 +1058,7 @@ class GaiusEngine:
 
             logger.info(
                 f"AgendaTracker started with "
-                f"{len(self._agenda_tracker.get_active_agendas())} active agendas"
+                f"{len(self._agenda_tracker.get_active_operations())} active operations"
             )
 
         except ImportError as e:
@@ -1415,7 +1423,7 @@ class GaiusEngine:
 
             elif action == "ensure":
                 # Agent-first: ensure endpoint is available, starting if needed
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1439,7 +1447,7 @@ class GaiusEngine:
                 )
 
             elif action == "start":
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1459,7 +1467,7 @@ class GaiusEngine:
                 )
 
             elif action == "stop":
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1473,7 +1481,7 @@ class GaiusEngine:
                 )
 
             elif action == "restart":
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1493,8 +1501,8 @@ class GaiusEngine:
                 )
 
             elif action == "logs":
-                endpoint = request.payload.get("endpoint", "")
-                lines = request.payload.get("lines", 50)
+                endpoint = request.params.get("endpoint", "")
+                lines = request.params.get("lines", 50)
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1508,7 +1516,7 @@ class GaiusEngine:
                 )
 
             elif action == "clean_start":
-                endpoints = request.payload.get("endpoints", ["reasoning"])
+                endpoints = request.params.get("endpoints", ["reasoning"])
                 result = await self._orchestrator_service.clean_start(endpoints)
                 return Response.success(request.id, result)
 
@@ -1557,7 +1565,7 @@ class GaiusEngine:
             elif action == "enable_remediation":
                 # Enable or disable automatic remediation
                 if self._reconciliation_service:
-                    enable = request.payload.get("enable", True)
+                    enable = request.params.get("enable", True)
                     self._reconciliation_service.enable_remediation(enable)
                     # Also set the orchestrator service for UNHEALTHY remediation
                     if enable and self._orchestrator_service:
@@ -1619,12 +1627,12 @@ class GaiusEngine:
                     request.id, code=503, message="Backend router not initialized"
                 )
 
-            prompt = request.payload.get("prompt", "")
-            agent = request.payload.get("agent", "fast")
-            system_prompt = request.payload.get("system_prompt")
-            temperature = request.payload.get("temperature", 0.7)
-            max_tokens = request.payload.get("max_tokens", 2048)
-            technique = request.payload.get("technique")
+            prompt = request.params.get("prompt", "")
+            agent = request.params.get("agent", "fast")
+            system_prompt = request.params.get("system_prompt")
+            temperature = request.params.get("temperature", 0.7)
+            max_tokens = request.params.get("max_tokens", 2048)
+            technique = request.params.get("technique")
 
             try:
                 response = await self._backend_router.complete(
@@ -1655,8 +1663,8 @@ class GaiusEngine:
                 )
         elif action == "submit":
             # Async job submission (queued)
-            prompt = request.payload.get("prompt", "")
-            model = request.payload.get("model", "")
+            prompt = request.params.get("prompt", "")
+            model = request.params.get("model", "")
             return Response.success(
                 request.id,
                 {
@@ -1666,7 +1674,7 @@ class GaiusEngine:
                 },
             )
         elif action == "get_result":
-            job_id = request.payload.get("job_id", "")
+            job_id = request.params.get("job_id", "")
             return Response.success(
                 request.id,
                 {
@@ -1713,7 +1721,7 @@ class GaiusEngine:
                 },
             )
         elif action == "trigger":
-            agent_id = request.payload.get("agent_id", "")
+            agent_id = request.params.get("agent_id", "")
             return Response.success(
                 request.id,
                 {
@@ -1747,7 +1755,7 @@ class GaiusEngine:
             )
         elif action == "project":
             # Project embeddings to grid
-            embeddings = request.payload.get("embeddings", [])
+            embeddings = request.params.get("embeddings", [])
             return Response.success(
                 request.id,
                 {
@@ -1776,7 +1784,7 @@ class GaiusEngine:
                 },
             )
         elif action == "compute":
-            embeddings = request.payload.get("embeddings", [])
+            embeddings = request.params.get("embeddings", [])
             return Response.success(
                 request.id,
                 {
@@ -1866,8 +1874,8 @@ class GaiusEngine:
                     request.id, code=503, message="Cognition service not initialized"
                 )
 
-            task_type = request.payload.get("task_type", "cognition_cycle")
-            payload = request.payload.get("payload", {})
+            task_type = request.params.get("task_type", "cognition_cycle")
+            payload = request.params.get("payload", {})
 
             try:
                 result = await self._cognition_service.trigger(task_type, payload)
@@ -1883,10 +1891,11 @@ class GaiusEngine:
 
             # Initialize cognition service if needed
             if not self._cognition_service:
+                # Get max_cycles_per_hour from config if available
+                cognition_cfg = getattr(self.config, "cognition", None)
+                max_cycles = getattr(cognition_cfg, "max_cycles_per_hour", 4) if cognition_cfg else 4
                 config = CognitionConfig(
-                    max_cycles_per_hour=self.config.cognition.max_cycles_per_hour
-                    if hasattr(self.config, "cognition")
-                    else 4,
+                    max_cycles_per_hour=max_cycles,
                     poll_interval_seconds=30.0,
                 )
                 self._cognition_service = CognitionService(
@@ -1909,7 +1918,7 @@ class GaiusEngine:
             if not self._cognition_service:
                 return Response.success(request.id, {"tasks": []})
 
-            limit = request.payload.get("limit", 10)
+            limit = request.params.get("limit", 10)
             tasks = await self._cognition_service.get_pending_tasks(limit)
             return Response.success(request.id, {"tasks": tasks})
 
@@ -1917,15 +1926,19 @@ class GaiusEngine:
             if not self._cognition_service:
                 return Response.success(request.id, {"tasks": []})
 
-            limit = request.payload.get("limit", 10)
+            limit = request.params.get("limit", 10)
             tasks = await self._cognition_service.get_recent_completed(limit)
             return Response.success(request.id, {"tasks": tasks})
 
         elif action == "recent_thoughts":
             # Get recent thoughts from the cognition service (engine-native)
-            limit = request.payload.get("limit", 10)
+            cognition = self._cognition_service
+            if not cognition:
+                return Response.success(request.id, {"thoughts": []})
+
+            limit = request.params.get("limit", 10)
             try:
-                thoughts = await self._cognition_service.get_recent_thoughts(limit=limit)
+                thoughts = await cognition.get_recent_thoughts(limit=limit)
                 return Response.success(request.id, {"thoughts": thoughts})
 
             except Exception as e:
@@ -1942,8 +1955,9 @@ class GaiusEngine:
                 "thoughts_today": 0,
             }
 
-            if self._cognition_service:
-                status = self._cognition_service.get_status()
+            cognition_svc = self._cognition_service
+            if cognition_svc:
+                status = cognition_svc.get_status()
                 activity["cognition_running"] = status.get("running", False)
                 activity["cycles_completed"] = status.get("cycles_completed", 0)
                 activity["last_cycle_at"] = status.get("last_cycle_at")
@@ -1953,12 +1967,12 @@ class GaiusEngine:
                     else None
                 )
 
-            # Try to get thought count for today (engine-native)
-            try:
-                thoughts = await self._cognition_service.get_recent_thoughts(limit=100)
-                activity["thoughts_today"] = len(thoughts)
-            except Exception:
-                pass
+                # Try to get thought count for today (engine-native)
+                try:
+                    thoughts = await cognition_svc.get_recent_thoughts(limit=100)
+                    activity["thoughts_today"] = len(thoughts)
+                except Exception:
+                    pass
 
             return Response.success(request.id, activity)
 

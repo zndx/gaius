@@ -115,7 +115,7 @@ class PaperScore:
 
 def load_rubric(
     name: str = "default",
-    config_dir: str | None = None,
+    config_dir: str | Path | None = None,
 ) -> ScoringRubric:
     """Load scoring rubric from YAML config.
 
@@ -129,9 +129,11 @@ def load_rubric(
     if config_dir is None:
         # Find config relative to project root
         project_root = Path(__file__).parent.parent.parent.parent.parent
-        config_dir = project_root / "config" / "scoring_rubrics"
+        resolved_dir = project_root / "config" / "scoring_rubrics"
+    else:
+        resolved_dir = Path(config_dir)
 
-    config_path = Path(config_dir) / f"{name}.yaml"
+    config_path = resolved_dir / f"{name}.yaml"
 
     if not config_path.exists():
         logger.warning(f"Rubric {name} not found, using defaults")

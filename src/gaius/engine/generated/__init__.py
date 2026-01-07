@@ -190,6 +190,11 @@ from .gaius_service_pb2 import (
     GetIncidentDetailResponse,
     ListIncidentsRequest,
     ListIncidentsResponse,
+    # Observability Dashboard
+    ObserveStatusRequest,
+    ObserveStatusResponse,
+    MetricSnapshot,
+    EndpointSnapshot,
     # Streaming (Cognition/Evolution/Activity)
     CognitionStreamRequest,
     CognitionEvent,
@@ -268,6 +273,7 @@ from .gaius_service_pb2 import (
 
 from .gaius_service_pb2_grpc import (
     GaiusServiceStub,
+    GaiusServiceAsyncStub,
     GaiusServiceServicer,
     add_GaiusServiceServicer_to_server,
 )
@@ -447,6 +453,11 @@ __all__ = [
     "GetIncidentDetailResponse",
     "ListIncidentsRequest",
     "ListIncidentsResponse",
+    # Observability Dashboard
+    "ObserveStatusRequest",
+    "ObserveStatusResponse",
+    "MetricSnapshot",
+    "EndpointSnapshot",
     # Streaming (Cognition/Evolution/Activity)
     "CognitionStreamRequest",
     "CognitionEvent",
@@ -523,6 +534,7 @@ __all__ = [
     "AmbientBufferExportResponse",
     # Stubs
     "GaiusServiceStub",
+    "GaiusServiceAsyncStub",
     "GaiusServiceServicer",
     "add_GaiusServiceServicer_to_server",
 ]

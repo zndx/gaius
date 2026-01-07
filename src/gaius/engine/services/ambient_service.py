@@ -747,7 +747,7 @@ class AmbientWorkloadService:
 
     def _emit_event(
         self,
-        phase: int,
+        phase: "pb.AmbientPhase",
         message: str,
         progress: float,
         metrics: Optional[dict[str, str]] = None,
@@ -1652,7 +1652,7 @@ Output exactly 3 search queries, one per line, no numbering or bullets:"""
 
     def _make_event(
         self,
-        phase: int,
+        phase: "pb.AmbientPhase",
         message: str,
         progress: float,
         metrics: Optional[dict[str, str]] = None,

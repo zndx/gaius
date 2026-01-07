@@ -26,7 +26,7 @@ import time
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Pattern, TypedDict
 
 
 class ObservationType(Enum):
@@ -42,6 +42,14 @@ class ObservationType(Enum):
     # OTel-specific types
     SPAN_EVENT = "span_event"
     SPAN_ATTRIBUTE = "span_attribute"
+
+
+class LogPattern(TypedDict, total=False):
+    """Type definition for log pattern dictionaries."""
+
+    pattern: Pattern[str]
+    type: ObservationType
+    action: str
 
 
 @dataclass
@@ -347,7 +355,7 @@ class WatchResult:
 # Standard patterns to watch for in log output
 # Note: Engine availability patterns removed - if engine is offline,
 # the watcher (which runs in the engine) won't be watching anyway.
-STANDARD_PATTERNS = [
+STANDARD_PATTERNS: list[LogPattern] = [
     # Stub implementations
     {
         "pattern": re.compile(r"\(stub\)|\bstub\b", re.IGNORECASE),
@@ -398,7 +406,7 @@ class CommandWatcher:
 
     def __init__(
         self,
-        patterns: list[dict] | None = None,
+        patterns: list[LogPattern] | None = None,
         span_patterns: list[FactPattern] | None = None,
     ):
         """Initialize watcher with patterns to watch for.
@@ -407,7 +415,7 @@ class CommandWatcher:
             patterns: Custom log patterns to match. If None, uses STANDARD_PATTERNS.
             span_patterns: Custom span fact patterns. If None, uses SPAN_FACT_PATTERNS.
         """
-        self.patterns = patterns or STANDARD_PATTERNS
+        self.patterns: list[LogPattern] = patterns or STANDARD_PATTERNS
         self.span_patterns = span_patterns or SPAN_FACT_PATTERNS
         self.observations: list[Observation] = []
         self.span_collector = SpanFactCollector()
@@ -429,13 +437,15 @@ class CommandWatcher:
             pattern = pattern_def["pattern"]
             match = pattern.search(line)
             if match:
+                obs_type: ObservationType = pattern_def["type"]
+                obs_action: str | None = pattern_def.get("action")
                 obs = Observation(
-                    type=pattern_def["type"],
+                    type=obs_type,
                     message=match.group(0),
                     source=source,
                     level=level,
                     line=line.strip(),
-                    action=pattern_def.get("action"),
+                    action=obs_action,
                 )
                 observations.append(obs)
                 self.observations.append(obs)

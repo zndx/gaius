@@ -915,11 +915,12 @@ Return empty array [] if no clear threads detected."""
                     ]
                     thread.query_count = len(thread.queries)
 
-                    await self.update_thread(
-                        thread.id,
-                        current_focus=thread.current_focus,
-                        next_steps=thread.next_steps,
-                    )
+                    if thread.id is not None:
+                        await self.update_thread(
+                            thread.id,
+                            current_focus=thread.current_focus,
+                            next_steps=thread.next_steps,
+                        )
 
                     new_threads.append(thread)
                     existing_topics.add(topic.lower())

@@ -247,8 +247,9 @@ def objective_to_verification_case(
             ontology_path = gate.params.get("ontology_path")
             if not ontology_path:
                 # Try to get from objective metadata
-                if hasattr(objective, 'metadata') and objective.metadata:
-                    ontology_path = objective.metadata.get("ontology")
+                objective_meta = getattr(objective, "metadata", None)
+                if isinstance(objective_meta, dict):
+                    ontology_path = objective_meta.get("ontology")
                 if not ontology_path:
                     # Default to current/ontology/{objective.name}.owl
                     ontology_path = f"current/ontology/{objective.name.replace('-', '_')}.owl"

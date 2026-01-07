@@ -144,7 +144,7 @@ class VectorSearch:
             logger.debug(f"Loading embedding model {self.model_name}")
             self._model = SentenceTransformer(
                 self.model_name,
-                **kwargs,  # type: ignore[arg-type]  # kwargs has mixed types, but SentenceTransformer accepts them
+                **kwargs,  # type: ignore[arg-type] - kwargs has mixed types, but SentenceTransformer accepts them
             )
         return self._model
 
@@ -400,9 +400,9 @@ def get_vector_search(kb_root: Path | str | None = None) -> VectorSearch:
             from ...core.config import get_config
             config = get_config()
             vs_config = config.vector_store
-            # ColBERT model is now in colbert_model field
-            if vs_config.colbert_model:
-                model_name = vs_config.colbert_model
+            # ColNomic model is in colnomic_model field
+            if vs_config.colnomic_model:
+                model_name = vs_config.colnomic_model
         except Exception:
             pass  # Use defaults if config not available
 

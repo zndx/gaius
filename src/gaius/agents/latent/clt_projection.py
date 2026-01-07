@@ -213,6 +213,10 @@ class CLTProjectionBridge:
 
         Uses pre-computed projection matrix.
         """
+        proj_matrix = self._projection_matrix
+        if proj_matrix is None:
+            raise ValueError("Projection matrix not initialized for matrix projection")
+
         # Convert sparse to dense (only at non-zero indices)
         dense = np.zeros(CLT_FEATURE_DIM)
         for idx, val in sparse_features.items():
@@ -220,7 +224,7 @@ class CLTProjectionBridge:
                 dense[idx] = val
 
         # Project
-        output = self._projection_matrix @ dense
+        output = proj_matrix @ dense
 
         # L2 normalize
         norm = np.linalg.norm(output)

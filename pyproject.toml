@@ -64,6 +64,7 @@ dependencies = [
     "qrcode>=8.0", # Terminal QR codes for OAuth URLs on mobile devices
     "google-api-python-client>=2.187.0",
     "hf-mem>=0.1.1",
+    "vulture>=2.14",
 ]
 
 [project.optional-dependencies]
@@ -218,9 +219,16 @@ packages = ["src/gaius"]
 
 [dependency-groups]
 dev = [
+    "grpc-stubs>=1.53.0.6",
+    "mypy-protobuf>=4.0.0",
+    "protobuf>=6.32.1",
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.8.0",
     "textual-dev>=1.8.0",
+    "types-protobuf>=6.32.1.20251210",
+    "types-aioboto3>=15.0.0",  # Type stubs for aioboto3
 ]
 
 # UV configuration
@@ -231,3 +239,26 @@ dev = [
 override-dependencies = [
     "peft>=0.18.0",
 ]
+
+# ty type checker configuration
+# Strategy: Zero errors, warnings acceptable for third-party libs without stubs
+[tool.ty.src]
+# Exclude generated code, BDD step files (dynamic imports), scripts
+exclude = [
+    "src/gaius/engine/generated/",  # Auto-generated protobuf/gRPC
+    "features/steps/",               # Behave step files with dynamic imports
+    "scripts/",                      # Experimental scripts
+    "*.py",                          # Root-level files
+]
+
+[tool.ty.environment]
+# Custom type stubs for third-party libraries (metaflow, behave)
+# Note: We only stub libraries where we can accurately model the API.
+# For complex libraries (ortools, gtda, langchain), unresolved-import
+# warnings are preferable to incorrect stubs that create false errors.
+extra-paths = ["typings"]
+
+# Downgrade unresolved-import to warning for third-party libs without stubs
+# This allows CI to gate on errors while tracking stub gaps as warnings
+[tool.ty.rules]
+unresolved-import = "warn"

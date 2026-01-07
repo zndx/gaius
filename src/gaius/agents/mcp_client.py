@@ -51,10 +51,8 @@ async def _get_recent_thoughts(params: dict) -> dict:
     """Get recent thoughts from cognition agent."""
     try:
         from ..agents.cognition import CognitionAgent
-        from ..storage.kb_ops import get_kb_root
 
-        kb_root = get_kb_root()
-        agent = CognitionAgent(kb_root=kb_root)
+        agent = CognitionAgent()
         thoughts = await agent.get_active_thoughts(limit=params.get("limit", 10))
 
         return {
@@ -76,29 +74,20 @@ async def _get_recent_thoughts(params: dict) -> dict:
 async def _gpu_health(params: dict) -> dict:
     """Get GPU health status."""
     try:
-        from ..health.gpu import get_gpu_health
+        from ..engine.resources.gpu_monitor import get_gpu_info
 
-        return await get_gpu_health()
-    except ImportError:
-        # Fallback - check nvidia-smi
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                gpus = []
-                for line in result.stdout.strip().split("\n"):
-                    if line:
-                        gpus.append({"info": line.strip()})
-                return {"gpus": gpus, "healthy": True}
-            return {"gpus": [], "healthy": False}
-        except Exception:
-            return {"gpus": [], "healthy": False}
+        gpu_info = await get_gpu_info()
+        # Transform to expected format
+        gpus = [
+            {
+                "id": gpu_id,
+                "memory_free_gb": info.get("memory_free_gb", 0),
+                "memory_total_gb": info.get("memory_total_gb", 0),
+                "utilization_pct": info.get("utilization_pct", 0),
+            }
+            for gpu_id, info in gpu_info.items()
+        ]
+        return {"gpus": gpus, "healthy": len(gpus) > 0}
     except Exception as e:
         return {"gpus": [], "healthy": False, "error": str(e)}
 
@@ -145,11 +134,10 @@ async def _evolution_status(params: dict) -> dict:
         daemon = get_evolution_daemon()
         if daemon:
             return {
-                "running": daemon.is_running,
+                "running": daemon.running,
                 "next_agent": daemon.next_agent or "",
-                "mode": daemon.mode or "",
-                "score_before": daemon.last_score_before,
-                "score_after": daemon.last_score_after,
+                "cycles_completed": daemon.cycles_completed,
+                "total_improvement": daemon.total_improvement,
             }
         return {"running": False}
     except Exception as e:
@@ -227,12 +215,13 @@ async def _search_kb(params: dict) -> dict:
 async def _web_search(params: dict) -> dict:
     """Search the web via Brave API."""
     try:
-        from ..web.brave import brave_search
+        from ..inference import get_search
 
         query = params.get("query", "")
         count = params.get("count", 5)
-        results = await brave_search(query, count=count)
-        return {"results": results}
+        search = get_search()
+        results = await search.search(query, count=count)
+        return {"results": [r.to_dict() for r in results]}
     except Exception as e:
         return {"results": [], "error": str(e)}
 
@@ -240,7 +229,7 @@ async def _web_search(params: dict) -> dict:
 async def _embed_text(params: dict) -> dict:
     """Generate text embedding."""
     try:
-        from ..embeddings.nomic import embed_text
+        from ..models.embeddings import embed_text
 
         text = params.get("text", "")
         embedding = await embed_text(text)
@@ -250,16 +239,19 @@ async def _embed_text(params: dict) -> dict:
 
 
 async def _research_topic(params: dict) -> dict:
-    """Research a topic and save to KB."""
-    try:
-        from ..agents.research import research_topic
+    """Research a topic and save to KB.
 
-        topic = params.get("topic", "")
-        save_to_kb = params.get("save_to_kb", True)
-        result = await research_topic(topic, save_to_kb=save_to_kb)
-        return result if isinstance(result, dict) else {"result": result}
-    except Exception as e:
-        return {"error": str(e)}
+    TODO: Migrate research_topic to engine services per engine-first architecture.
+    Currently implemented inline in mcp_server.py - needs gRPC migration.
+    See: https://github.com/zndx/gaius-acp/issues/4
+    """
+    # Research functionality not yet available in engine
+    # Return error with guidance
+    return {
+        "error": "research_topic not available via mcp_client.\n"
+        "  Use MCP tool 'research_topic' directly instead.\n"
+        "  Guru Meditation: #MCP.00000001.ENGMIGRATION"
+    }
 
 
 async def _verify_objective(params: dict) -> dict:

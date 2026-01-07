@@ -381,7 +381,7 @@ class GaiusACPClient:
                             name="gaius",
                             command="uv",
                             args=["run", "python", "-m", "gaius.mcp_server"],
-                            cwd=self.config.working_directory,
+                            cwd=self.config.working_directory,  # type: ignore[unknown-argument] - SDK stubs missing cwd kwarg
                             env=[],  # Empty list, not None
                         ))
                     else:
@@ -389,7 +389,7 @@ class GaiusACPClient:
                             name="gaius",
                             command=str(venv_python),
                             args=["-m", "gaius.mcp_server"],
-                            cwd=self.config.working_directory,
+                            cwd=self.config.working_directory,  # type: ignore[unknown-argument] - SDK stubs missing cwd kwarg
                             env=[],  # Empty list, not None
                         ))
                     logger.info("Gaius MCP server configured for ACP session")
@@ -401,7 +401,7 @@ class GaiusACPClient:
                             name=name,
                             command=cfg.get("command", ""),
                             args=cfg.get("args", []),
-                            cwd=cfg.get("cwd"),
+                            cwd=cfg.get("cwd"),  # type: ignore[unknown-argument] - SDK stubs missing cwd kwarg
                             env=cfg.get("env"),
                         ))
 
@@ -459,6 +459,9 @@ class GaiusACPClient:
                 "Not connected. Call connect() first.\n"
                 "Guru Meditation: #ACP.00000003.NOTCONN"
             )
+
+        # Connection is guaranteed to exist when _connected is True
+        assert self._connection is not None
 
         try:
             from acp import text_block

@@ -19,6 +19,7 @@ to model GPU-to-task assignments.
 
 import logging
 import time
+from typing import TYPE_CHECKING, Any
 
 from .types import (
     SchedulingTask,
@@ -32,12 +33,16 @@ logger = logging.getLogger(__name__)
 
 # Import OR-Tools with availability check - fail-fast if not available
 try:
-    from ortools.sat.python import cp_model
+    from ortools.sat.python import cp_model  # type: ignore[import-not-found] - ortools is optional dependency for scheduling
 
     ORTOOLS_AVAILABLE = True
 except ImportError:
     ORTOOLS_AVAILABLE = False
-    cp_model = None
+    cp_model = None  # type: ignore[assignment] - Module or None for optional dependency
+
+# Import types for static analysis when OR-Tools is available
+if TYPE_CHECKING:
+    from ortools.sat.python.cp_model import CpModel, CpSolver, IntVar  # type: ignore[import-not-found] - ortools is optional dependency for scheduling
 
 
 # Model load/unload time estimates (empirical, in milliseconds)
@@ -142,8 +147,10 @@ class MakespanScheduler:
                 "  Guru Meditation: #SCH.00000001.NOORDEPS"
             )
 
+        assert cp_model is not None  # Guaranteed by ORTOOLS_AVAILABLE check
+
         start_time = time.time()
-        model = cp_model.CpModel()
+        model = CpModel()
 
         # Determine what needs to change
         current_by_name = {t.endpoint_name: t for t in current_tasks}
@@ -196,7 +203,7 @@ class MakespanScheduler:
 
         # Build CP-SAT model
         # Decision variables: x[task_id, gpu] = 1 if task uses GPU
-        x: dict[tuple[str, int], "cp_model.IntVar"] = {}
+        x: dict[tuple[str, int], "IntVar"] = {}
         for task in to_start:
             for gpu in available_gpus:
                 x[task.task_id, gpu] = model.NewBoolVar(f"x_{task.task_id}_{gpu}")
@@ -220,7 +227,7 @@ class MakespanScheduler:
         HORIZON = 1_000_000  # 1000 seconds in ms
 
         # Stop end times (when GPU memory is freed)
-        stop_end: dict[str, "cp_model.IntVar"] = {}
+        stop_end: dict[str, "IntVar"] = {}
         for task in to_stop:
             duration = UNLOAD_TIME_MS.get(task.endpoint_name, 10_000)
             stop_end[task.task_id] = model.NewIntVar(
@@ -230,8 +237,8 @@ class MakespanScheduler:
             model.Add(stop_end[task.task_id] >= duration)
 
         # Start begin/end times
-        start_begin: dict[str, "cp_model.IntVar"] = {}
-        start_end: dict[str, "cp_model.IntVar"] = {}
+        start_begin: dict[str, "IntVar"] = {}
+        start_end: dict[str, "IntVar"] = {}
         for task in to_start:
             duration = LOAD_TIME_MS.get(task.endpoint_name, 60_000)
             start_begin[task.task_id] = model.NewIntVar(
@@ -260,7 +267,7 @@ class MakespanScheduler:
         model.Minimize(makespan)
 
         # Solve
-        solver = cp_model.CpSolver()
+        solver = CpSolver()
         solver.parameters.max_time_in_seconds = self.max_solve_time_s
         status = solver.Solve(model)
 
@@ -282,8 +289,8 @@ class MakespanScheduler:
 
     def _add_contiguity_constraint(
         self,
-        model: "cp_model.CpModel",
-        x: dict[tuple[str, int], "cp_model.IntVar"],
+        model: "CpModel",
+        x: dict[tuple[str, int], "IntVar"],
         task: SchedulingTask,
         available_gpus: list[int],
     ) -> None:
@@ -313,7 +320,7 @@ class MakespanScheduler:
             return  # Will be infeasible
 
         # Auxiliary variable: which contiguous block is selected
-        y: dict[int, "cp_model.IntVar"] = {
+        y: dict[int, "IntVar"] = {
             s: model.NewBoolVar(f"contig_{task.task_id}_{s}") for s in valid_starts
         }
         model.AddExactlyOne(y.values())
@@ -366,9 +373,9 @@ class MakespanScheduler:
 
     def _extract_solution(
         self,
-        solver: "cp_model.CpSolver",
+        solver: "CpSolver",
         status: int,
-        x: dict[tuple[str, int], "cp_model.IntVar"],
+        x: dict[tuple[str, int], "IntVar"],
         to_stop: list[SchedulingTask],
         to_start: list[SchedulingTask],
         to_keep: list[SchedulingTask],

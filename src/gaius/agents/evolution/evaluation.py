@@ -547,7 +547,7 @@ class DailyEvaluator:
 
         # Call inference
         try:
-            from ..inference.scheduler import get_scheduler_service, Job, JobPriority
+            from ...inference.scheduler import get_scheduler_service, Job, JobPriority
 
             scheduler = get_scheduler_service()
 
@@ -561,7 +561,7 @@ class DailyEvaluator:
             job = Job(
                 messages=messages,
                 model=config.get("model", ""),
-                max_tokens=config.get("max_tokens", 1024),
+                estimated_tokens=config.get("max_tokens", 1024),
                 priority=JobPriority.LOW,  # Don't preempt interactive work
             )
             result = await scheduler.submit(job)

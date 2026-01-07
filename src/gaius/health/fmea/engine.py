@@ -9,8 +9,9 @@ This module provides the core FMEAEngine class that:
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .models import (
     ActionPolicy,
@@ -25,6 +26,34 @@ if TYPE_CHECKING:
     from asyncpg import Connection, Pool
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _get_connection(
+    pool: "Pool | None", conn: "Connection | None"
+) -> AsyncIterator["Connection"]:
+    """Get a database connection from pool or use existing one.
+
+    Args:
+        pool: Connection pool (can be None if conn is provided)
+        conn: Existing connection to reuse
+
+    Yields:
+        Database connection
+    """
+    if conn is not None:
+        # Use existing connection, don't close it
+        yield conn
+    elif pool is not None:
+        # Acquire from pool
+        async with pool.acquire() as new_conn:
+            yield new_conn
+    else:
+        raise RuntimeError(
+            "No database connection available.\n"
+            "  Guru Meditation: #FMEA.00000001.NO_DB\n"
+            "  Ensure pool is initialized or connection is provided."
+        )
 
 
 class FMEAEngine:
@@ -247,7 +276,7 @@ class FMEAEngine:
             logger.warning("No database connection, skipping outcome recording")
             return
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             await c.execute(
                 """
                 INSERT INTO fmea_outcomes (
@@ -289,7 +318,7 @@ class FMEAEngine:
         if not self._pool and not conn:
             return None
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             failure_mode = await load_failure_mode(c, failure_mode_id)
             if failure_mode:
                 self._catalog_cache[failure_mode_id] = failure_mode
@@ -304,7 +333,7 @@ class FMEAEngine:
         if not self._pool and not conn:
             return {}
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             # Count occurrences in different time windows
             counts = await c.fetchrow(
                 """
@@ -355,7 +384,7 @@ class FMEAEngine:
 
         current_hour = datetime.now().hour
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             # Try to find specific adjustment for endpoint + hour
             row = await c.fetchrow(
                 """
@@ -509,7 +538,7 @@ class FMEAEngine:
         if not self._pool and not conn:
             return
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             await c.execute(
                 """
                 INSERT INTO fmea_occurrences (failure_mode_id, endpoint, context, occurred_at)
@@ -604,7 +633,7 @@ class FMEAEngine:
                     result[section.lower()] = content[start_idx:end_idx].strip()
 
             # Extract automation level from Observation section
-            observation = result.get("observation", "")
+            observation = str(result.get("observation", ""))
             if "Automation Level: A" in observation:
                 result["automation_level"] = "A"
                 result["automation_description"] = "Full Automation"

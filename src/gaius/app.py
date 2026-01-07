@@ -32,7 +32,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Static, Header, Footer, TextArea, Button
 
-from .core.state import AppState, ViewMode, OverlayMode, CenterPanelMode
+from .core.state import AppState, ViewMode, OverlayMode, CenterPanelMode, IsoMode
 from .core.config import get_config, GaiusConfig
 from .core.telemetry import init_from_config as init_telemetry
 from .core.projection import get_grid_manager, GridData
@@ -2728,7 +2728,7 @@ Press `e` to view the Evolution panel.
                         content.show_file("error.txt", "Daemon not running. Use `/evolve start` first.")
                         return
 
-                    agent_id = subargs if subargs else None
+                    agent_id = subargs[0] if subargs else None
                     content.show_file("evolve.md", f"# Evolution Daemon\n\nTriggering cycle for {agent_id or 'next agent'}...")
 
                     result = await daemon.force_evolution_cycle(agent_id)
@@ -4884,9 +4884,8 @@ Use `/models kb` to see all KB models.
             except ValueError:
                 content.show_file("error.txt", f"Unknown Iso mode: {subcmd}\n\nValid modes: curvature, persistence, complexity, boundary")
 
-    def _iso_mode_description(self, mode: "IsoMode") -> str:
+    def _iso_mode_description(self, mode: IsoMode) -> str:
         """Get human-readable description for an Iso mode."""
-        from .core.state import IsoMode
         descriptions = {
             IsoMode.CURVATURE: "Semantic boundaries via Ricci curvature",
             IsoMode.PERSISTENCE: "Topological complexity from H0+H1+H2",
@@ -6264,10 +6263,11 @@ The general-purpose agentic query interface.
                     task.completed_at = datetime.now()
 
             except Exception as e:
+                import logging
                 task.status = "failed"
                 task.error = str(e)
                 task.completed_at = datetime.now()
-                self.log.exception("Inference stack startup failed")
+                logging.getLogger(__name__).exception("Inference stack startup failed")
 
         asyncio.create_task(start_with_progress())
 

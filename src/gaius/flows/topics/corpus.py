@@ -246,7 +246,7 @@ def save_dictionary(
     dictionary: Any,
     bucket: str = "gaius-models",
     prefix: str = "corpora",
-    version_id: str = None,
+    version_id: str | None = None,
 ) -> str:
     """Save Gensim dictionary to MinIO.
 
@@ -308,7 +308,7 @@ def save_corpus(
     corpus: list[list[tuple[int, int]]],
     bucket: str = "gaius-models",
     prefix: str = "corpora",
-    version_id: str = None,
+    version_id: str | None = None,
 ) -> str:
     """Save corpus to MinIO in Market Matrix format.
 

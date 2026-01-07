@@ -43,10 +43,13 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from multiprocessing import Manager, Event as MPEvent
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from .progress import ProgressTracker, get_sync_progress, format_progress_human
 from .flow import SyncResult
+
+if TYPE_CHECKING:
+    from .sources import ProductSource
 
 logger = logging.getLogger(__name__)
 
@@ -553,6 +556,7 @@ class ParallelDocProcessor:
                 total = len(doc_items)
                 done = len(completed) + len(failed)
                 if done % 20 == 0 or done == total:
+                    assert self.start_time is not None  # Set in process()
                     elapsed = (datetime.now() - self.start_time).total_seconds()
                     rate = done / elapsed if elapsed > 0 else 0
                     eta = (total - done) / rate if rate > 0 else 0
@@ -565,6 +569,7 @@ class ParallelDocProcessor:
         if self.checkpoint_path.exists():
             self.checkpoint_path.unlink()
 
+        assert self.start_time is not None  # Set in process()
         duration = (datetime.now() - self.start_time).total_seconds()
 
         # Mark progress as complete
@@ -635,7 +640,7 @@ def sync_product_parallel(
     kb_root: Path,
     num_gpus: int = 6,
     force: bool = False,
-) -> dict[str, Any] | SyncResult:
+) -> dict[str, Any]:
     """Sync a product using parallel GPU processing.
 
     Drop-in replacement for sync_product() that uses parallel processing.
@@ -675,7 +680,19 @@ def sync_product_parallel(
     if pdf_count == 0:
         logger.info("No PDFs found, using sequential processing")
         from .flow import sync_product
-        return sync_product(source, kb_root, force)
+        result = sync_product(source, kb_root, force)
+        # Convert SyncResult to dict for consistent return type
+        return {
+            "product": result.product,
+            "success": result.success,
+            "pages_extracted": result.pages_extracted,
+            "pages_skipped": result.pages_skipped,
+            "archive_hash": result.archive_hash,
+            "kb_prefix": result.kb_prefix,
+            "version": result.version,
+            "duration_seconds": result.duration_seconds,
+            "error": result.error,
+        }
 
     logger.info(f"Found {pdf_count} PDFs, using parallel processing on {num_gpus} GPUs")
 

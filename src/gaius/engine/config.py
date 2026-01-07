@@ -8,7 +8,10 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyhocon import ConfigTree
 
 logger = logging.getLogger(__name__)
 
@@ -254,25 +257,27 @@ def load_config(config_path: Optional[str] = None) -> EngineConfig:
         return EngineConfig()
 
     # Determine config path
+    resolved_path: Path
     if config_path is None:
-        config_path = os.environ.get("GAIUS_CONFIG")
+        env_path = os.environ.get("GAIUS_CONFIG")
+        if env_path is not None:
+            resolved_path = Path(env_path)
+        else:
+            # Look for config relative to project root
+            # __file__ is src/gaius/engine/config.py, so parents[3] is project root
+            project_root = Path(__file__).parents[3]
+            resolved_path = project_root / "config" / "agents.conf"
+    else:
+        resolved_path = Path(config_path)
 
-    if config_path is None:
-        # Look for config relative to project root
-        # __file__ is src/gaius/engine/config.py, so parents[3] is project root
-        project_root = Path(__file__).parents[3]
-        config_path = project_root / "config" / "agents.conf"
-
-    config_path = Path(config_path)
-
-    if not config_path.exists():
-        logger.warning(f"Config file not found: {config_path}, using defaults")
+    if not resolved_path.exists():
+        logger.warning(f"Config file not found: {resolved_path}, using defaults")
         return EngineConfig()
 
-    logger.info(f"Loading config from {config_path}")
+    logger.info(f"Loading config from {resolved_path}")
 
     # Parse HOCON
-    conf = ConfigFactory.parse_file(str(config_path))
+    conf = ConfigFactory.parse_file(str(resolved_path))
 
     return _parse_config(conf)
 

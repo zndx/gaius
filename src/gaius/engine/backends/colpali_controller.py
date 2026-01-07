@@ -181,6 +181,14 @@ class ColPaliController:
             name = endpoint_name or alias or hf_id
             model_name = hf_id
 
+            # Fail-fast if we couldn't determine required fields
+            if name is None or model_name is None:
+                raise RuntimeError(
+                    f"Cannot determine endpoint name or model: name={name}, model_name={model_name}.\n"
+                    "  Guru Meditation: #COLPALI.00000001.MISSING_MODEL_ID\n"
+                    "  Ensure model_spec has huggingface_id or model_id field."
+                )
+
             # Check if already loaded
             if name in self._endpoints and self._endpoints[name].status == ColPaliStatus.READY:
                 logger.info(f"ColPali endpoint {name} already loaded")

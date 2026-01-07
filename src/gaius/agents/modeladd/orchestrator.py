@@ -565,10 +565,10 @@ class ModelAddOrchestrator:
             gpus = []
             for gpu in monitor.get_all_gpu_health():
                 gpus.append({
-                    "index": gpu.index,
+                    "index": gpu.gpu_id,
                     "utilization": gpu.gpu_utilization_percent,
-                    "memory_used_mb": gpu.memory_used_mb,
-                    "memory_total_mb": gpu.memory_total_mb,
+                    "memory_used_mb": int(gpu.vram_used_gb * 1024),
+                    "memory_total_mb": int(gpu.vram_total_gb * 1024),
                     "temperature": gpu.temperature_c,
                 })
             result = {"gpus": gpus, "count": len(gpus)}
@@ -599,12 +599,20 @@ class ModelAddOrchestrator:
                 result = {"error": str(e), "gpus": [], "count": 0}
 
         # Store hardware context for use during validation/critique
-        if result.get("gpus"):
+        # Extract gpus list with proper typing for type checker
+        gpus_list: list[dict[str, object]] = result.get("gpus", [])  # type: ignore[assignment] - Runtime dict has list of GPU dicts
+        if gpus_list:
+            # Sum memory safely - values could be None or missing
+            total_vram = 0
+            for g in gpus_list:
+                mem = g.get("memory_total_mb")
+                if isinstance(mem, int):
+                    total_vram += mem
             state.hardware_context = {
                 "gpu_count": result["count"],
-                "gpus": result["gpus"],
-                "total_vram_mb": sum(g.get("memory_total_mb", 0) for g in result["gpus"]),
-                "gpu_model": result["gpus"][0].get("name", "unknown") if result["gpus"] else "unknown",
+                "gpus": gpus_list,
+                "total_vram_mb": total_vram,
+                "gpu_model": str(gpus_list[0].get("name", "unknown")) if gpus_list else "unknown",
             }
 
         return result
@@ -935,7 +943,13 @@ model_id: {state.model_id}
             cerebras_client = CerebrasClient()
 
             # Get GPU cost for comparison (use best instance if found)
-            gpu_cost = best_instance_info.get("cost_per_hour") if best_instance_info else None
+            gpu_cost_raw = best_instance_info.get("cost_per_hour") if best_instance_info else None
+            gpu_cost: float | None = None
+            if gpu_cost_raw is not None and isinstance(gpu_cost_raw, (int, float, str)):
+                try:
+                    gpu_cost = float(gpu_cost_raw)
+                except (ValueError, TypeError):
+                    pass
 
             cerebras_section = cerebras_client.format_options_markdown(
                 state.model_id,
@@ -1127,7 +1141,7 @@ model_id: {state.model_id}
 
         # Get KB root from config
         try:
-            from ...config import get_config
+            from ...core.config import get_config
             config = get_config()
             pending_path = Path(config.kb.root) / ".pending_model_add.json"
         except Exception:

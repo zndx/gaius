@@ -150,6 +150,7 @@ class MergeCoordinator:
             List of version info dicts
         """
         await self._ensure_initialized()
+        assert self._lineage_tracker is not None  # Guaranteed by _ensure_initialized
 
         candidates = await self._lineage_tracker.get_best_models_for_merging(
             agent_id=agent_id,
@@ -289,6 +290,7 @@ class MergeCoordinator:
                 f"using {merge_method.value}"
             )
 
+            assert self._merger is not None  # Guaranteed by _ensure_initialized
             merge_result = await self._merger.merge(merge_config)
 
             if not merge_result.success:

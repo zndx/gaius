@@ -1503,7 +1503,7 @@ class HealthChecker:
 
                 if use_engine_proxy():
                     orch = await get_orchestrator_proxy()
-                    status = await orch.get_status()
+                    status = orch.get_status()  # synchronous method
                     managed_pids = set()
 
                     for ep_name, ep_info in status.get("endpoints", {}).items():

@@ -2635,3 +2635,59 @@ class AmbientBufferExportResponse(_message.Message):
     total_bytes: int
     error: str
     def __init__(self, path: _Optional[str] = ..., entry_count: _Optional[int] = ..., total_bytes: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ObserveStatusRequest(_message.Message):
+    __slots__ = ("include_sparklines", "sparkline_points")
+    INCLUDE_SPARKLINES_FIELD_NUMBER: _ClassVar[int]
+    SPARKLINE_POINTS_FIELD_NUMBER: _ClassVar[int]
+    include_sparklines: bool
+    sparkline_points: int
+    def __init__(self, include_sparklines: bool = ..., sparkline_points: _Optional[int] = ...) -> None: ...
+
+class MetricSnapshot(_message.Message):
+    __slots__ = ("name", "display_name", "current_value", "unit", "sparkline_data", "status")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DISPLAY_NAME_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    UNIT_FIELD_NUMBER: _ClassVar[int]
+    SPARKLINE_DATA_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    display_name: str
+    current_value: float
+    unit: str
+    sparkline_data: _containers.RepeatedScalarFieldContainer[float]
+    status: str
+    def __init__(self, name: _Optional[str] = ..., display_name: _Optional[str] = ..., current_value: _Optional[float] = ..., unit: _Optional[str] = ..., sparkline_data: _Optional[_Iterable[float]] = ..., status: _Optional[str] = ...) -> None: ...
+
+class EndpointSnapshot(_message.Message):
+    __slots__ = ("name", "status", "gpus", "model")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    GPUS_FIELD_NUMBER: _ClassVar[int]
+    MODEL_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    status: str
+    gpus: _containers.RepeatedScalarFieldContainer[int]
+    model: str
+    def __init__(self, name: _Optional[str] = ..., status: _Optional[str] = ..., gpus: _Optional[_Iterable[int]] = ..., model: _Optional[str] = ...) -> None: ...
+
+class ObserveStatusResponse(_message.Message):
+    __slots__ = ("timestamp", "prometheus_available", "metrics", "endpoints", "healthy_endpoints", "unhealthy_endpoints", "active_incidents", "evolution_cycles")
+    TIMESTAMP_FIELD_NUMBER: _ClassVar[int]
+    PROMETHEUS_AVAILABLE_FIELD_NUMBER: _ClassVar[int]
+    METRICS_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
+    HEALTHY_ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
+    UNHEALTHY_ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_INCIDENTS_FIELD_NUMBER: _ClassVar[int]
+    EVOLUTION_CYCLES_FIELD_NUMBER: _ClassVar[int]
+    timestamp: str
+    prometheus_available: bool
+    metrics: _containers.RepeatedCompositeFieldContainer[MetricSnapshot]
+    endpoints: _containers.RepeatedCompositeFieldContainer[EndpointSnapshot]
+    healthy_endpoints: int
+    unhealthy_endpoints: int
+    active_incidents: int
+    evolution_cycles: int
+    def __init__(self, timestamp: _Optional[str] = ..., prometheus_available: bool = ..., metrics: _Optional[_Iterable[_Union[MetricSnapshot, _Mapping]]] = ..., endpoints: _Optional[_Iterable[_Union[EndpointSnapshot, _Mapping]]] = ..., healthy_endpoints: _Optional[int] = ..., unhealthy_endpoints: _Optional[int] = ..., active_incidents: _Optional[int] = ..., evolution_cycles: _Optional[int] = ...) -> None: ...

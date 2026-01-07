@@ -49,7 +49,7 @@ class ContentProcessor:
         for item in items:
             try:
                 kb_path = await self._process_item(item)
-                if kb_path:
+                if kb_path and item.id is not None:
                     await self._mark_processed(item.id, kb_path)
                     processed += 1
             except Exception as e:

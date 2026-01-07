@@ -259,7 +259,7 @@ class ExternalInferenceRouter:
                         record = ExchangeRecord(
                             provider=provider,
                             request_messages=messages,
-                            request_model=model or backend._model,
+                            request_model=model or response.model or "unknown",
                             request_params={
                                 "temperature": temperature,
                                 "max_tokens": max_tokens,

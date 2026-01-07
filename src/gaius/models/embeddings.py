@@ -25,10 +25,13 @@ Usage:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 import asyncio
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 
 @dataclass

@@ -39,7 +39,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from .core.state import AppState, ViewMode, OverlayMode, IsoMode
 from .static import (
@@ -123,7 +123,7 @@ class GaiusCLI:
         self.state.white_stones = GRID_DATA["white"]
         self.state.allocations = GRID_DATA["alloc"]
         self.state.h1_cycles = DEATH_LOOPS
-        self.state.tda_entropy = TDA_METRICS["entropy"]
+        self.state.tda_entropy = cast(float, TDA_METRICS["entropy"])
 
         for agent in AGENT_DATA:
             self.state.agent_positions.append((
@@ -247,6 +247,9 @@ class GaiusCLI:
                 # AIOps - infrastructure health management with KB reports
                 elif command == "aiops":
                     result["data"] = self._run_async(self._cmd_aiops(args))
+                # Observe - observability dashboard (CLI mirror of TUI ObservePanel)
+                elif command == "observe" or command == "obs":
+                    result["data"] = self._run_async(self._cmd_observe(args))
                 # MLOps - model lifecycle management with KB reports
                 elif command == "mlops":
                     result["data"] = self._run_async(self._cmd_mlops(args))
@@ -797,17 +800,27 @@ class GaiusCLI:
         )
 
         # Check if grids have any non-zero values
-        def grid_has_data(grid: list) -> bool:  # type: ignore[type-arg]
+        from .core.minigrids import MiniGridData
+
+        def grid_has_data(grid_or_data: list | MiniGridData) -> bool:  # type: ignore[type-arg] - list is unparameterized for brevity, contains int values
+            # Extract grid if MiniGridData, otherwise use as-is
+            grid = grid_or_data.grid if isinstance(grid_or_data, MiniGridData) else grid_or_data
             return any(v > 0 for row in grid for v in row)
+
+        def extract_grid(grid_or_data: list | MiniGridData) -> list:  # type: ignore[type-arg] - list is unparameterized for brevity, returns list[list[int]]
+            return grid_or_data.grid if isinstance(grid_or_data, MiniGridData) else grid_or_data
+
+        embed_data = data.get("right", [])
+        iso_data = data.get("top", [])
 
         return {
             "position": self._coord_string(cx, cy),
             "x": cx,
             "y": cy,
-            "embed_grid": data.get("right", []),
-            "embed_has_data": grid_has_data(data.get("right", [])),
-            "iso_grid": data.get("top", []),
-            "iso_has_data": grid_has_data(data.get("top", [])),
+            "embed_grid": extract_grid(embed_data),
+            "embed_has_data": grid_has_data(embed_data),
+            "iso_grid": extract_grid(iso_data),
+            "iso_has_data": grid_has_data(iso_data),
             "grid_data_status": grid_data_status,
             "curvatures_available": curvatures is not None,
         }
@@ -1137,19 +1150,16 @@ class GaiusCLI:
                 gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
 
                 # Run geometry computation
+                coro = gc.compute_features(grid_data.raw_embeddings, grid_coords)
                 try:
                     loop = asyncio.get_running_loop()
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(
-                            asyncio.run,
-                            gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                        )
+                        # Wrap in lambda to satisfy type checker
+                        future = pool.submit(lambda: asyncio.run(coro))
                         geom_features = future.result(timeout=60)
                 except RuntimeError:
-                    geom_features = asyncio.run(
-                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                    )
+                    geom_features = asyncio.run(coro)
 
                 # Map curvatures to grid
                 if geom_features and geom_features.curvatures is not None:
@@ -1970,20 +1980,22 @@ Downloads: {api.get('downloads', 0):,}
         import subprocess
         from pathlib import Path
 
-        result = {
+        result: dict[str, bool | list[str] | str | None] = {
             "syntax": False,
             "imports": False,
             "serve_cmd": False,
             "warnings": [],
             "variable_name": None,
         }
+        warnings: list[str] = []  # Separate list for type narrowing
 
         # 1. Syntax check
         try:
             tree = ast.parse(code)
             result["syntax"] = True
         except SyntaxError as e:
-            result["warnings"].append(f"Syntax error at line {e.lineno}: {e.msg}")
+            warnings.append(f"Syntax error at line {e.lineno}: {e.msg}")
+            result["warnings"] = warnings
             return result
 
         # 2. Find variable name
@@ -1996,7 +2008,8 @@ Downloads: {api.get('downloads', 0):,}
                             result["variable_name"] = node.targets[0].id
 
         if not result["variable_name"]:
-            result["warnings"].append("No ModelSpec() assignment found")
+            warnings.append("No ModelSpec() assignment found")
+            result["warnings"] = warnings
             return result
 
         # 3. Import test in subprocess (isolated)
@@ -2036,18 +2049,19 @@ for name, obj in list(locals().items()):
             if proc.returncode != 0 and proc.stderr:
                 # Truncate long error messages
                 err = proc.stderr[:500]
-                result["warnings"].append(f"Import error: {err}")
+                warnings.append(f"Import error: {err}")
 
             if "SERVE_CMD_ERR" in proc.stdout:
                 err_match = proc.stdout.split("SERVE_CMD_ERR:")
                 if len(err_match) > 1:
-                    result["warnings"].append(f"serve_command error: {err_match[1].strip()}")
+                    warnings.append(f"serve_command error: {err_match[1].strip()}")
 
         except subprocess.TimeoutExpired:
-            result["warnings"].append("Validation timed out (15s)")
+            warnings.append("Validation timed out (15s)")
         except Exception as e:
-            result["warnings"].append(f"Validation failed: {e}")
+            warnings.append(f"Validation failed: {e}")
 
+        result["warnings"] = warnings
         return result
 
     async def _cmd_model_add_confirm(self) -> dict:
@@ -2392,7 +2406,8 @@ When discussing technical topics, be precise and cite sources when possible."""
 
         # Fallback to engine inference client
         try:
-            from .inference import get_engine_client, Message
+            from .client import get_engine_client
+            from .inference import Message
 
             client = await get_engine_client()
 
@@ -2446,8 +2461,8 @@ When discussing technical topics, be precise and cite sources when possible."""
         if not kb_results and not web_results:
             # Fall back to web search only
             try:
-                from .inference.search import get_web_search
-                web_search = get_web_search()
+                from .inference import get_search
+                web_search = get_search()
                 web_hits = await web_search.search(query, count=5)
                 web_results = [
                     {"title": r.title, "snippet": r.snippet, "url": r.url}
@@ -2496,7 +2511,8 @@ Answer:"""
 
         # Fallback to engine inference client
         try:
-            from .inference import get_engine_client, Message
+            from .client import get_engine_client
+            from .inference import Message
 
             client = await get_engine_client()
 
@@ -2630,7 +2646,7 @@ Answer:"""
             kb_status = {
                 "component": "kb_search",
                 "index_size": kb_search.index_size,
-                "kb_path": str(kb_search.kb_path),
+                "kb_path": str(kb_search.kb_root),
             }
             if kb_search.index_size == 0:
                 kb_status["status"] = "empty"
@@ -2693,8 +2709,8 @@ Answer:"""
 
         # Check web search
         try:
-            from .inference.search import get_web_search
-            web_search = get_web_search()
+            from .inference import get_search
+            web_search = get_search()
             has_api_key = bool(os.environ.get("BRAVE_API_KEY"))
             diagnostics.append({
                 "component": "web_search",
@@ -2759,7 +2775,8 @@ Respond with:
 
         # Fallback to engine inference client
         try:
-            from .inference import get_engine_client, Message
+            from .client import get_engine_client
+            from .inference import Message
 
             client = await get_engine_client()
 
@@ -3367,9 +3384,19 @@ Respond with:
             )
 
             # Format results (engine returns dicts, not JobResult objects)
-            output = {
+            agents_output: dict[str, dict[str, object]] = {}
+            for role_name, result in results.items():
+                content = result.get("content", "")
+                agents_output[role_name] = {
+                    "status": result.get("status", "unknown"),
+                    "preview": content[:200] + "..." if len(content) > 200 else content,
+                    "endpoint": result.get("endpoint", ""),
+                    "latency_ms": result.get("latency_ms", 0),
+                }
+
+            return {
                 "domain": domain,
-                "agents": {},
+                "agents": agents_output,
                 "summary": {
                     "total": len(results),
                     "completed": sum(1 for r in results.values() if r.get("status") == "completed"),
@@ -3382,17 +3409,6 @@ Respond with:
                 },
                 "saved_to": saved_path,
             }
-
-            for role_name, result in results.items():
-                content = result.get("content", "")
-                output["agents"][role_name] = {
-                    "status": result.get("status", "unknown"),
-                    "preview": content[:200] + "..." if len(content) > 200 else content,
-                    "endpoint": result.get("endpoint", ""),
-                    "latency_ms": result.get("latency_ms", 0),
-                }
-
-            return output
 
         except ImportError as e:
             raise RuntimeError(f"Engine proxy not available: {e}")
@@ -3438,7 +3454,7 @@ Respond with:
             clt_data = results.pop("_clt", {})
 
             # Format output
-            output = {
+            output: dict[str, object] = {
                 "mode": "clt",
                 "domain": domain,
                 "agents": {},
@@ -3455,20 +3471,22 @@ Respond with:
                 "saved_to": saved_path,
             }
 
-            # Per-agent results
+            # Per-agent results - use local variable for type safety
+            agents_dict: dict[str, dict[str, object]] = {}
             for role_name, result in results.items():
                 content = result.get("content", "")
                 agent_clt = clt_data.get("agent_features", {}).get(role_name, [])
                 # Engine returns {"idx": ..., "activation": ...}, not "feature_idx"
                 top_features = [f["idx"] for f in agent_clt[:5]] if agent_clt else []
 
-                output["agents"][role_name] = {
+                agents_dict[role_name] = {
                     "status": result.get("status", "unknown"),
                     "preview": content[:200] + "..." if len(content) > 200 else content,
                     "endpoint": result.get("endpoint", ""),
                     "latency_ms": result.get("latency_ms", 0),
                     "top_features": top_features,
                 }
+            output["agents"] = agents_dict
 
             # CLT-specific outputs from engine
             if clt_data:
@@ -3521,11 +3539,22 @@ Respond with:
             manager = get_latent_swarm_manager()
             result = await manager.run_round(domain=domain, context=context)
 
+            # Build agents dict first for type safety
+            agents_dict: dict[str, dict[str, object]] = {}
+            for response in result.responses:
+                agents_dict[response.role.value] = {
+                    "name": response.name,
+                    "succeeded": response.succeeded,
+                    "preview": response.content[:200] + "..." if len(response.content) > 200 else response.content,
+                    "tokens": response.tokens,
+                    "error": response.error,
+                }
+
             # Format output
-            output = {
+            output: dict[str, object] = {
                 "mode": "latent",
                 "domain": domain,
-                "agents": {},
+                "agents": agents_dict,
                 "summary": {
                     "total": len(result.responses),
                     "succeeded": sum(1 for r in result.responses if r.succeeded),
@@ -3536,15 +3565,6 @@ Respond with:
                 },
                 "consensus": result.consensus,
             }
-
-            for response in result.responses:
-                output["agents"][response.role.value] = {
-                    "name": response.name,
-                    "succeeded": response.succeeded,
-                    "preview": response.content[:200] + "..." if len(response.content) > 200 else response.content,
-                    "tokens": response.tokens,
-                    "error": response.error,
-                }
 
             return output
 
@@ -3749,14 +3769,20 @@ Respond with:
         import subprocess
         import os
 
-        result = {
+        processes_found = 0
+        processes_killed = 0
+        pids_killed: list[dict] = []
+        errors: list[str] = []
+        gpu_memory_before: list[str] = []
+        gpu_memory_after: list[str] = []
+        result: dict = {
             "action": "deep-cleanup",
-            "processes_found": 0,
-            "processes_killed": 0,
-            "pids_killed": [],
-            "errors": [],
-            "gpu_memory_before": [],
-            "gpu_memory_after": [],
+            "processes_found": processes_found,
+            "processes_killed": processes_killed,
+            "pids_killed": pids_killed,
+            "errors": errors,
+            "gpu_memory_before": gpu_memory_before,
+            "gpu_memory_after": gpu_memory_after,
         }
 
         # Get GPU memory before cleanup
@@ -3768,7 +3794,7 @@ Respond with:
                 timeout=10,
             )
             if nvidia_result.returncode == 0:
-                result["gpu_memory_before"] = nvidia_result.stdout.strip().split("\n")
+                gpu_memory_before.extend(nvidia_result.stdout.strip().split("\n"))
         except Exception:
             pass
 
@@ -3818,17 +3844,17 @@ Respond with:
                         try:
                             pid = int(parts[0])
                             proc_name = parts[1] if len(parts) > 1 else "unknown"
-                            result["processes_found"] += 1
+                            processes_found += 1
 
                             os.kill(pid, 9)  # SIGKILL
-                            result["processes_killed"] += 1
-                            result["pids_killed"].append({"pid": pid, "name": proc_name})
+                            processes_killed += 1
+                            pids_killed.append({"pid": pid, "name": proc_name})
                         except (ValueError, ProcessLookupError):
                             pass
                         except PermissionError:
-                            result["errors"].append(f"Permission denied: {pid}")
+                            errors.append(f"Permission denied: {pid}")
         except Exception as e:
-            result["errors"].append(f"nvidia-smi failed: {e}")
+            errors.append(f"nvidia-smi failed: {e}")
 
         # Wait for GPU memory to be freed
         import asyncio
@@ -3847,8 +3873,8 @@ Respond with:
                     try:
                         pid = int(pid_str.strip())
                         os.kill(pid, 9)
-                        result["processes_killed"] += 1
-                        result["pids_killed"].append({"pid": pid, "name": "second-pass"})
+                        processes_killed += 1
+                        pids_killed.append({"pid": pid, "name": "second-pass"})
                     except (ValueError, ProcessLookupError, PermissionError):
                         pass
         except Exception:
@@ -3865,7 +3891,7 @@ Respond with:
                 timeout=10,
             )
             if nvidia_result.returncode == 0:
-                result["gpu_memory_after"] = nvidia_result.stdout.strip().split("\n")
+                gpu_memory_after.extend(nvidia_result.stdout.strip().split("\n"))
         except Exception:
             pass
 
@@ -3882,6 +3908,10 @@ Respond with:
             result["remaining_processes"] = remaining
         except Exception:
             result["gpus_clear"] = None
+
+        # Update result with final counts
+        result["processes_found"] = processes_found
+        result["processes_killed"] = processes_killed
 
         return result
 
@@ -4687,8 +4717,9 @@ Respond with:
         root_logger = logging.getLogger()
         for handler in root_logger.handlers:
             if hasattr(handler, 'buffer'):
-                # Memory handler
-                for record in handler.buffer[-50:]:
+                # Memory handler - buffer is list[logging.LogRecord] but handler type is generic
+                buffer: list[logging.LogRecord] = handler.buffer  # type: ignore[attr-defined] - MemoryHandler.buffer exists but handler type is generic
+                for record in buffer[-50:]:
                     log_entry = {
                         "timestamp": record.created,
                         "level": record.levelname,
@@ -5484,10 +5515,20 @@ Respond with:
             parts = args_lower.split()
             thought_id = parts[1] if len(parts) > 1 else None
 
+            # Type guard: database access requires full GaiusConfig
+            if not hasattr(self.config, "database"):
+                return {"error": "Database config not available", "mode": "chain"}
+
+            # Extract database URL with type narrowing
+            db_url = getattr(self.config, "database", None)
+            if db_url is None or not hasattr(db_url, "url"):
+                return {"error": "Database URL not configured", "mode": "chain"}
+            database_url: str = db_url.url  # type: ignore[attr-defined] - hasattr guard above verifies url exists
+
             try:
                 import asyncpg
 
-                conn = await asyncpg.connect(self.config.database.url)
+                conn = await asyncpg.connect(database_url)
                 try:
                     if not thought_id:
                         thought_id = await conn.fetchval(
@@ -7119,8 +7160,8 @@ Generated: {now.isoformat()}
         endpoints = []
         try:
             # Try to get status from engine via gRPC
-            from .engine.client import get_engine_client
-            client = get_engine_client()
+            from .client import get_engine_client
+            client = await get_engine_client()
 
             if client and await client.ping():
                 status = await client.orchestrator_status()
@@ -7297,6 +7338,72 @@ Generated: {now.isoformat()}
             "events": events,
         }
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Observe - Observability Dashboard (CLI mirror of TUI ObservePanel)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _cmd_observe(self, args: str) -> dict:
+        """Observability dashboard - system metrics and status.
+
+        Fetches metrics from Prometheus and engine state via gRPC,
+        providing a CLI-equivalent view to the TUI ObservePanel.
+
+        Usage:
+            /observe              - Full metrics dashboard
+            /observe quick        - Key metrics only (latency, errors, compute)
+            /observe endpoints    - Endpoint status details
+            /observe sparklines   - Include time-series data
+
+        Examples:
+            /observe                    # Standard dashboard view
+            /observe quick              # Quick health check
+            /observe sparklines         # With historical data
+        """
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "full"
+
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: devenv tasks run restart:clean",
+            }
+
+        include_sparklines = "sparklines" in parts
+
+        try:
+            result = await client.call("Observe", "status", {
+                "include_sparklines": include_sparklines,
+                "sparkline_points": 20,
+            })
+        except Exception as e:
+            return {
+                "error": f"ObserveStatus RPC failed: {e}",
+                "suggestion": "Check engine health with /health engine",
+            }
+
+        if subcmd == "quick":
+            # Filter to key metrics only
+            key_metrics = {"latency_p95", "error_rate", "gpu_flops_utilization", "active_incidents"}
+            result["metrics"] = [
+                m for m in result.get("metrics", [])
+                if m.get("name") in key_metrics
+            ]
+            result["view"] = "quick"
+        elif subcmd == "endpoints":
+            # Focus on endpoint details only
+            return {
+                "view": "endpoints",
+                "endpoints": result.get("endpoints", []),
+                "healthy_endpoints": result.get("healthy_endpoints", 0),
+                "unhealthy_endpoints": result.get("unhealthy_endpoints", 0),
+            }
+        else:
+            result["view"] = "full"
+
+        return result
+
     async def _cmd_mlops(self, args: str) -> dict:
         """MLOps: Model lifecycle management with KB reports.
 
@@ -7466,8 +7573,8 @@ Generated: {now.isoformat()}
 
         try:
             # Try to get status from engine
-            from .engine.client import get_engine_client
-            client = get_engine_client()
+            from .client import get_engine_client
+            client = await get_engine_client()
 
             if client and await client.ping():
                 evo_status = await client.evolution_status()
@@ -8945,17 +9052,18 @@ Examples:
                         WHERE is_active = TRUE
                     """)
 
-            result = {
+            domains_list = [
+                {
+                    "name": row["domain"],
+                    "snapshots": row["count"],
+                    "first": row["first"].isoformat() if row["first"] else None,
+                    "last": row["last"].isoformat() if row["last"] else None,
+                }
+                for row in snapshots
+            ]
+            result: dict = {
                 "status": "healthy",
-                "domains": [
-                    {
-                        "name": row["domain"],
-                        "snapshots": row["count"],
-                        "first": row["first"].isoformat() if row["first"] else None,
-                        "last": row["last"].isoformat() if row["last"] else None,
-                    }
-                    for row in snapshots
-                ],
+                "domains": domains_list,
                 "drift_calculations": drift_count,
                 "active_attractors": attractor_count,
                 "active_ngrc_models": ngrc_count,
@@ -8971,7 +9079,7 @@ Examples:
                     "",
                     "Domains with Snapshots:",
                 ]
-                for d in result["domains"]:
+                for d in domains_list:
                     lines.append(f"  {d['name']}: {d['snapshots']} snapshots")
                     if d["last"]:
                         lines.append(f"    Last: {d['last']}")

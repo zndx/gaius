@@ -283,15 +283,21 @@ def _build_explanation_prompt(ctx: ExplanationContext) -> str:
 
     # Visual description of Embed view
     parts.append("### Embed View (semantic similarity)")
-    embed_desc = _describe_embed_view(ctx.embed_grid)
-    parts.append(embed_desc)
+    if ctx.embed_grid is not None:
+        embed_desc = _describe_embed_view(ctx.embed_grid)
+        parts.append(embed_desc)
+    else:
+        parts.append("_Not available_")
     parts.append("_Brightness indicates how semantically related nearby documents are._")
     parts.append("")
 
     # Visual description of Iso view
     parts.append("### Iso View (semantic terrain)")
-    iso_desc = _describe_iso_view(ctx.iso_grid)
-    parts.append(iso_desc)
+    if ctx.iso_grid is not None:
+        iso_desc = _describe_iso_view(ctx.iso_grid)
+        parts.append(iso_desc)
+    else:
+        parts.append("_Not available_")
     parts.append("_Elevation shows topic boundaries (high) vs cluster interiors (low)._")
     parts.append("")
 

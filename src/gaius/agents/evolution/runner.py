@@ -128,9 +128,21 @@ class AgentRunner:
                 error="Engine not available",
             )
 
+        # Type narrowing: _ensure_connected guarantees scheduler is set
+        scheduler = self._scheduler
+        if scheduler is None:
+            return AgentResult(
+                content="",
+                tokens_used=0,
+                model=config.model,
+                latency_ms=0,
+                success=False,
+                error="Scheduler unexpectedly None after connection",
+            )
+
         try:
             # Route through scheduler proxy
-            result = await self._scheduler.complete(
+            result = await scheduler.complete(
                 prompt=prompt,
                 agent="fast",  # Default agent, config provides the specifics
                 system_prompt=config.system_prompt,

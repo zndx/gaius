@@ -24,7 +24,7 @@ class VimTextArea(TextArea):
         """Sent when ESC is pressed in the TextArea."""
         pass
 
-    def _on_key(self, event: events.Key) -> None:
+    async def _on_key(self, event: events.Key) -> None:
         """Intercept ESC and vim scroll keys before TextArea handles them."""
         if event.key == "escape":
             self.post_message(self.EscapePressed())
@@ -43,7 +43,7 @@ class VimTextArea(TextArea):
             event.stop()
             return
         # Let TextArea handle other keys normally
-        super()._on_key(event)
+        await super()._on_key(event)
 
 
 class NoteEditor(Widget, can_focus=True):

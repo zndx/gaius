@@ -97,7 +97,8 @@ class JobPersistence:
         try:
             from ..core.config import get_config
             config = get_config()
-            self._db_url = config._raw.get("gaius", {}).get("database", {}).get("url")
+            if config._raw is not None:
+                self._db_url = config._raw.get("gaius", {}).get("database", {}).get("url")
         except Exception:
             import os
             self._db_url = os.getenv("DATABASE_URL")

@@ -574,7 +574,7 @@ Be specific and insightful, not generic."""
             return {
                 "synthesis": response.content.strip(),
                 "model": response.model,
-                "tokens": response.usage.get("total_tokens", 0) if hasattr(response, "usage") else 0,
+                "tokens": response.input_tokens + response.output_tokens,
             }
 
         except Exception as e:

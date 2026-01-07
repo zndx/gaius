@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-# OpenTelemetry is optional
+# OpenTelemetry is a required dependency (defensive import for robustness)
 try:
-    from opentelemetry import trace
+    from opentelemetry import trace as otel_trace
     OTEL_AVAILABLE = True
 except ImportError:
-    trace = None
+    otel_trace = None  # type: ignore[assignment] - defensive fallback if otel import fails
     OTEL_AVAILABLE = False
 
 from .protocol import (
@@ -75,7 +75,7 @@ class MessageRouter:
         }
 
         # Tracer for distributed tracing (optional)
-        self._tracer = trace.get_tracer("gaius-engine.router") if OTEL_AVAILABLE else None
+        self._tracer = otel_trace.get_tracer("gaius-engine.router") if OTEL_AVAILABLE and otel_trace else None
 
         logger.info("MessageRouter initialized")
 
@@ -127,7 +127,7 @@ class MessageRouter:
 
             # Route to handler (with optional tracing)
             if OTEL_AVAILABLE and self._tracer:
-                with start_span_from_request(request, self._tracer) as span:
+                with start_span_from_request(request) as span:
                     result = await self._dispatch(request)
                     latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                     span.set_attribute("response.success", True)
@@ -151,10 +151,10 @@ class MessageRouter:
             logger.error(f"Route error: {e}")
 
             # Build error response
-            response = Response(
-                id=request.id if request else "unknown",
-                error_code=-1,
-                error_message=str(e),
+            response = Response.failure(
+                request_id=request.id if request else "unknown",
+                code=-1,
+                message=str(e),
             )
 
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)

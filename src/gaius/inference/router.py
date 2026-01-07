@@ -354,6 +354,8 @@ class EndpointRouter:
             from ..core.config import get_config
 
             app_config = get_config()
+            if app_config._raw is None:
+                return EndpointRouterConfig()
             inference = app_config._raw.get("gaius", {}).get("inference", {})
 
             endpoints_raw = inference.get("endpoints", {})

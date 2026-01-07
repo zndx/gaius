@@ -369,6 +369,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.GetIncidentDetailResponse.FromString,
                 _registered_method=True)
+        self.ObserveStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ObserveStatus',
+                request_serializer=gaius__service__pb2.ObserveStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ObserveStatusResponse.FromString,
+                _registered_method=True)
         self.XBookmarksGetAuthUrl = channel.unary_unary(
                 '/gaius.engine.GaiusService/XBookmarksGetAuthUrl',
                 request_serializer=gaius__service__pb2.XBookmarksAuthRequest.SerializeToString,
@@ -961,6 +966,15 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ObserveStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Observability Dashboard
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def XBookmarksGetAuthUrl(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         X Bookmarks
@@ -1457,6 +1471,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.HealthObserverGetIncident,
                     request_deserializer=gaius__service__pb2.GetIncidentDetailRequest.FromString,
                     response_serializer=gaius__service__pb2.GetIncidentDetailResponse.SerializeToString,
+            ),
+            'ObserveStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ObserveStatus,
+                    request_deserializer=gaius__service__pb2.ObserveStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.ObserveStatusResponse.SerializeToString,
             ),
             'XBookmarksGetAuthUrl': grpc.unary_unary_rpc_method_handler(
                     servicer.XBookmarksGetAuthUrl,
@@ -3376,6 +3395,33 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def ObserveStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ObserveStatus',
+            gaius__service__pb2.ObserveStatusRequest.SerializeToString,
+            gaius__service__pb2.ObserveStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def XBookmarksGetAuthUrl(request,
             target,
             options=(),
@@ -4022,3 +4068,7 @@ class GaiusService(object):
             timeout,
             metadata,
             _registered_method=True)
+
+# Async stub alias - same class works with grpc.aio.Channel
+# Type hints in .pyi declare this as a subclass for type checking
+GaiusServiceAsyncStub = GaiusServiceStub

@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..core.projection import GridData, GridPoint
-    from ..core.tda import TDAFeatures, BoundingBox
+    from ..core.tda import TDAFeatures, BoundingBox, PersistenceInterval
     from ..core.geometry import GeometricFeatures
 
 # Lazy import asyncpg
@@ -968,7 +968,7 @@ def _dict_to_interval(d: dict) -> "PersistenceInterval":
         dimension=d["dimension"],
         birth=d["birth"],
         death=d["death"],
-        persistence=d.get("persistence", d["death"] - d["birth"]),
+        # persistence is a computed property, not a constructor parameter
     )
 
 

@@ -343,12 +343,14 @@ class CLTModel:
                 target_layer = layer_idx
 
                 # Get source feature activations
-                src_encoder = model.transcoders[source_layer].encoder
+                # circuit_tracer ReplacementModel.transcoders is subscriptable (nn.ModuleList)
+                # but the library lacks type stubs
+                src_encoder = model.transcoders[source_layer].encoder  # type: ignore[index] - circuit_tracer ReplacementModel.transcoders is nn.ModuleList, subscriptable
                 src_hidden = outputs.hidden_states[source_layer + 1]
                 src_acts = src_encoder(src_hidden)[0, target_pos]
 
                 # Get cross-layer decoder weights
-                decoder = model.transcoders[source_layer].decoder
+                decoder = model.transcoders[source_layer].decoder  # type: ignore[index] - circuit_tracer ReplacementModel.transcoders is nn.ModuleList, subscriptable
 
                 # Find active source features
                 active_indices = src_acts.nonzero().squeeze(-1)
@@ -467,8 +469,16 @@ class CLTModel:
 
         with torch.no_grad():
             # Get model hidden dimension
-            d_model = model.transcoders[0].decoder.weight.shape[2]
-            num_layers = len(model.transcoders)
+            # transcoders can be TranscoderSet (list-like) or single CrossLayerTranscoder
+            transcoders = model.transcoders
+            if hasattr(transcoders, "__len__") and hasattr(transcoders, "__getitem__"):
+                # TranscoderSet is list-like - use indexing
+                transcoder_list: list = [transcoders[i] for i in range(len(transcoders))]  # type: ignore
+            else:
+                # Single transcoder case - wrap in list
+                transcoder_list = [transcoders]
+            d_model = transcoder_list[0].decoder.weight.shape[2]
+            num_layers = len(transcoder_list)
 
             # Construct sparse activation tensor
             sparse_acts = torch.zeros(self.spec.features_per_layer, device=self.device)
@@ -483,7 +493,7 @@ class CLTModel:
 
             # Use decoder from middle layer as representative
             mid_layer = num_layers // 2
-            decoder = model.transcoders[mid_layer].decoder
+            decoder = transcoder_list[mid_layer].decoder
 
             # Reconstruct: sum over active features
             for feat_idx in sparse_features.keys():
@@ -509,18 +519,23 @@ class CLTModel:
             prompt = f"{context_text} [Internal state summary: {feature_summary}]"
             gen_inputs = model.tokenizer(prompt, return_tensors="pt").to(self.device)
 
+            # Transformers generate() accepts **kwargs that include pad_token_id,
+            # but the stubs don't type all valid kwargs. This is standard usage.
             outputs = model.generate(
                 gen_inputs.input_ids,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=temperature > 0,
-                pad_token_id=model.tokenizer.pad_token_id or model.tokenizer.eos_token_id,
+                pad_token_id=model.tokenizer.pad_token_id or model.tokenizer.eos_token_id,  # type: ignore[unknown-argument] - pad_token_id is valid kwarg for model.generate()
             )
 
             # Decode, removing the prompt
+            # Extract new tokens (after prompt) as list for type safety
+            # type: ignore[unknown-attribute] - PyTorch tensor slicing returns Tensor with .tolist()
+            new_token_ids = outputs[0][gen_inputs.input_ids.shape[1]:].tolist()  # type: ignore[possibly-missing-attribute] - PyTorch tensor slicing returns Tensor with .tolist()
             generated = model.tokenizer.decode(
-                outputs[0][gen_inputs.input_ids.shape[1]:],
+                new_token_ids,
                 skip_special_tokens=True,
             )
 
