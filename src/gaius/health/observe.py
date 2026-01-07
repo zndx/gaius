@@ -92,6 +92,10 @@ class ObserverConfig:
     observation_window: int = 180  # 3 minutes
     cooldown_after_failure: int = 900  # 15 minutes
 
+    # Stale incident detection - escalate to ACP when incidents are stuck
+    stale_incident_threshold: float = 3600.0  # 1 hour - incident stuck without resolution
+    stale_check_interval: float = 900.0  # 15 minutes - how often to check for stale incidents
+
 
 @dataclass
 class HealthIncident:
@@ -110,6 +114,7 @@ class HealthIncident:
         attempts: Number of remediation attempts
         github_issue: Linked GitHub issue number
         status: active, healing, recovering, resolved
+        recovery_started_at: When recovery verification started (persisted for restart)
     """
     incident_id: UUID
     fingerprint: str
@@ -123,6 +128,7 @@ class HealthIncident:
     attempts: int = 0
     github_issue: int | None = None
     status: str = "active"
+    recovery_started_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -139,6 +145,7 @@ class HealthIncident:
             "attempts": self.attempts,
             "github_issue": self.github_issue,
             "status": self.status,
+            "recovery_started_at": self.recovery_started_at.isoformat() if self.recovery_started_at else None,
         }
 
 
@@ -189,6 +196,8 @@ class HealthObserver:
         self._acp_escalations = 0
         self._last_poll_at: datetime | None = None
         self._last_report: HealthReport | None = None
+        self._last_stale_check: datetime | None = None
+        self._stale_escalations: set[str] = set()  # fingerprints already escalated as stale
 
         # Callbacks
         self._on_incident: list[Callable[[HealthIncident], Awaitable[None]]] = []
@@ -292,6 +301,11 @@ class HealthObserver:
                     if active_incidents_json:
                         for fingerprint, data in active_incidents_json.items():
                             try:
+                                # Parse recovery_started_at if present
+                                recovery_started_at = None
+                                if data.get("recovery_started_at"):
+                                    recovery_started_at = datetime.fromisoformat(data["recovery_started_at"])
+
                                 incident = HealthIncident(
                                     incident_id=UUID(data["incident_id"]),
                                     fingerprint=fingerprint,
@@ -311,8 +325,13 @@ class HealthObserver:
                                     attempts=data.get("attempts", 0),
                                     github_issue=data.get("github_issue"),
                                     status=data.get("status", "active"),
+                                    recovery_started_at=recovery_started_at,
                                 )
                                 self._active_incidents[fingerprint] = incident
+
+                                # Restore _recovery_start dict for backwards compatibility
+                                if incident.status == "recovering" and incident.recovery_started_at:
+                                    self._recovery_start[fingerprint] = incident.recovery_started_at
                             except Exception as e:
                                 logger.warning(f"Could not restore incident {fingerprint}: {e}")
 
@@ -421,6 +440,9 @@ class HealthObserver:
                 # Check for recoveries
                 await self._check_recoveries(report)
 
+                # Check for stale incidents (periodically)
+                await self._check_stale_incidents()
+
                 # Persist state to database
                 await self._save_state_to_db()
 
@@ -492,6 +514,7 @@ class HealthObserver:
                 incident = self._active_incidents[fingerprint]
                 incident.last_check_at = datetime.now()
                 incident.status = "active"  # Reset from recovering
+                incident.recovery_started_at = None
                 self._recovery_start.pop(fingerprint, None)
                 continue
 
@@ -646,7 +669,9 @@ class HealthObserver:
             # Handle result
             if result.success:
                 incident.status = "recovering"
-                self._recovery_start[incident.fingerprint] = datetime.now()
+                now = datetime.now()
+                incident.recovery_started_at = now
+                self._recovery_start[incident.fingerprint] = now
                 logger.info(f"Remediation succeeded for {incident.fingerprint}")
             elif result.escalate:
                 # Escalate to next tier
@@ -1045,7 +1070,9 @@ Begin your investigation now."""
             if incident.status == "active" and check_passed:
                 # Move to recovering status and start verification timer
                 incident.status = "recovering"
-                self._recovery_start[fingerprint] = datetime.now()
+                now = datetime.now()
+                incident.recovery_started_at = now
+                self._recovery_start[fingerprint] = now
                 logger.info(
                     f"Incident {fingerprint} spontaneously recovered, "
                     f"starting verification period"
@@ -1056,15 +1083,26 @@ Begin your investigation now."""
                 continue
 
             if check_passed:
-                # Check if recovery period elapsed
-                recovery_start = self._recovery_start.get(fingerprint)
+                # Check if recovery period elapsed - use incident field, fallback to dict
+                recovery_start = incident.recovery_started_at or self._recovery_start.get(fingerprint)
                 if recovery_start:
                     elapsed = (datetime.now() - recovery_start).total_seconds()
                     if elapsed >= self.config.recovery_verification_time:
                         resolved.append(fingerprint)
+                else:
+                    # No recovery timestamp - stale recovering incident from before fix
+                    # Start fresh recovery verification now
+                    now = datetime.now()
+                    incident.recovery_started_at = now
+                    self._recovery_start[fingerprint] = now
+                    logger.info(
+                        f"Incident {fingerprint} in recovering state without timestamp, "
+                        f"starting fresh verification period"
+                    )
             else:
                 # Health degraded again
                 incident.status = "active"
+                incident.recovery_started_at = None
                 self._recovery_start.pop(fingerprint, None)
 
         # Resolve completed recoveries
@@ -1092,12 +1130,294 @@ Begin your investigation now."""
                 except Exception as e:
                     logger.warning(f"Resolution callback error: {e}")
 
+    async def _check_stale_incidents(self) -> None:
+        """Check for stale incidents and escalate to ACP.
+
+        Detects incidents that have been stuck for too long without resolution.
+        This catches logic errors where incidents slip through normal remediation
+        and recovery flows - the kind of silent failures that can go unnoticed.
+
+        Escalates to ACP with a diagnostic prompt asking Claude Code to:
+        1. Analyze why the incident is stuck
+        2. Identify any bugs in the health observer logic
+        3. Propose fixes or manual remediation
+        """
+        now = datetime.now()
+
+        # Only check periodically (not every poll)
+        if self._last_stale_check is not None:
+            elapsed = (now - self._last_stale_check).total_seconds()
+            if elapsed < self.config.stale_check_interval:
+                return
+
+        self._last_stale_check = now
+
+        if not self._active_incidents:
+            return
+
+        stale_incidents = []
+        threshold = timedelta(seconds=self.config.stale_incident_threshold)
+
+        for fingerprint, incident in self._active_incidents.items():
+            # Skip if already escalated as stale
+            if fingerprint in self._stale_escalations:
+                continue
+
+            # Check how long incident has existed
+            age = now - incident.created_at
+            if age > threshold:
+                stale_incidents.append(incident)
+
+        if not stale_incidents:
+            return
+
+        logger.warning(
+            f"Found {len(stale_incidents)} stale incidents "
+            f"(older than {self.config.stale_incident_threshold}s)"
+        )
+
+        # Escalate each stale incident to ACP
+        for incident in stale_incidents:
+            await self._escalate_stale_incident(incident)
+            self._stale_escalations.add(incident.fingerprint)
+
+    async def _escalate_stale_incident(self, incident: HealthIncident) -> None:
+        """Escalate a stale incident to ACP for diagnosis and GitHub issue creation.
+
+        ACP investigates the stale incident and creates a GitHub issue with its
+        findings. This ensures issues have real diagnostic content and creates
+        a persistent, trackable record that requires a code fix.
+
+        Args:
+            incident: The stale incident to escalate
+        """
+        if not self.config.escalate_to_acp:
+            logger.info(
+                f"Would escalate stale incident {incident.fingerprint} to ACP, "
+                f"but escalation is disabled"
+            )
+            return
+
+        if not self.config.github_repo:
+            logger.warning(
+                f"Cannot escalate stale incident {incident.fingerprint}: "
+                f"no github_repo configured (set 'internal' git remote)"
+            )
+            return
+
+        age_hours = (datetime.now() - incident.created_at).total_seconds() / 3600
+
+        # Build diagnostic context
+        diagnostic_context = {
+            "incident_fingerprint": incident.fingerprint,
+            "incident_id": str(incident.incident_id),
+            "endpoint": incident.endpoint,
+            "failure_mode_id": incident.failure_mode_id,
+            "status": incident.status,
+            "current_tier": incident.current_tier,
+            "attempts": incident.attempts,
+            "created_at": incident.created_at.isoformat(),
+            "age_hours": round(age_hours, 2),
+            "recovery_started_at": incident.recovery_started_at.isoformat() if incident.recovery_started_at else None,
+            "rpn_score": incident.rpn.rpn if incident.rpn else None,
+            "github_issue": incident.github_issue,
+        }
+
+        # Prompt asks ACP to investigate AND create a GitHub issue
+        prompt = f"""# Stale Health Incident - Investigate and Create GitHub Issue
+
+A health incident has been active for {age_hours:.1f} hours without resolution.
+This indicates a bug in the HealthObserver logic that needs a code fix.
+
+## Incident Details
+- **Fingerprint**: `{incident.fingerprint}`
+- **Endpoint**: {incident.endpoint}
+- **Status**: {incident.status}
+- **Tier**: {incident.current_tier}
+- **Attempts**: {incident.attempts}
+- **Created**: {incident.created_at.isoformat()}
+
+## Your Task
+
+1. **Investigate** the stale incident:
+   - Run `/health` to check current system state
+   - Run `/health observer status` to see incident details
+   - Check if the endpoint is actually healthy
+   - Analyze `src/gaius/health/observe.py` for logic errors in:
+     - `_check_recoveries()` - recovery verification logic
+     - `_check_passed_for_incident()` - health check matching
+     - `_process_failures()` - incident lifecycle management
+
+2. **Create a GitHub issue** on the internal repo with your findings:
+   ```bash
+   gh issue create --repo {self.config.github_repo} \\
+     --title "[HEALTH-FIX] Stale incident: {incident.fingerprint}" \\
+     --body "$(cat <<'EOF'
+   ## Summary
+   [Your diagnosis of why this incident is stuck]
+
+   ## Root Cause
+   [Specific bug or logic error identified]
+
+   ## Affected Code
+   - File: src/gaius/health/observe.py
+   - Function: [specific function with bug]
+
+   ## Proposed Fix
+   [How to fix the logic error]
+
+   ## Incident Context
+   ```json
+   {json.dumps(diagnostic_context, indent=2)}
+   ```
+
+   ---
+   *Auto-generated by HealthObserver stale incident detection*
+   EOF
+   )"
+   ```
+
+3. **Report** the issue number you created
+
+## Context
+```json
+{json.dumps(diagnostic_context, indent=2)}
+```
+"""
+
+        logger.info(f"Escalating stale incident {incident.fingerprint} to ACP for investigation")
+
+        # Calculate incident age in seconds
+        incident_age_seconds = int((datetime.now() - incident.created_at).total_seconds())
+
+        try:
+            # Record escalation start
+            if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_acp_escalation_started(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    incident_fingerprint=incident.fingerprint,
+                    rpn_score=incident.rpn.rpn if incident.rpn else 0,
+                    failure_mode_id=incident.failure_mode_id,
+                    prior_attempts=incident.attempts,
+                    prior_tiers=list(range(incident.current_tier + 1)),
+                    escalation_reason=f"Stale incident: {age_hours:.1f}h - requires GitHub issue for code fix",
+                    incident_age_seconds=incident_age_seconds,
+                    context_summary=json.dumps(diagnostic_context)[:1000],
+                )
+
+            # Send to ACP
+            if self._acp_client is None:
+                from ..acp import GaiusACPClient
+                self._acp_client = GaiusACPClient()
+                await self._acp_client.connect()
+
+            response = await self._acp_client.prompt(
+                prompt,
+                timeout=self.config.acp_timeout,
+            )
+
+            self._acp_escalations += 1
+
+            # Try to extract issue number from response
+            issue_number = self._extract_issue_number(response)
+            if issue_number:
+                incident.github_issue = issue_number
+                logger.info(
+                    f"ACP created GitHub issue #{issue_number} for stale incident "
+                    f"{incident.fingerprint}"
+                )
+            else:
+                logger.warning(
+                    f"ACP escalation complete for {incident.fingerprint} but "
+                    f"could not extract issue number from response"
+                )
+
+            # Record escalation completion
+            if self._event_recorder and incident.sequence_id:
+                session_id = getattr(self._acp_client, 'session_id', 'stale-escalation')
+                actions = ["investigated_incident", "analyzed_code"]
+                if issue_number:
+                    actions.append(f"created_issue_{issue_number}")
+
+                await self._event_recorder.record_acp_escalation_completed(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    session_id=str(session_id),
+                    success=issue_number is not None,
+                    actions_taken=actions,
+                    full_response=response[:5000] if response else None,
+                    result_summary=f"Created issue #{issue_number}" if issue_number else "Investigation complete, no issue created",
+                )
+
+            # Record GitHub issue in healing events if created
+            if issue_number and self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_rca_github_issue_created(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    issue_number=issue_number,
+                    issue_url=f"https://github.com/{self.config.github_repo}/issues/{issue_number}",
+                    classification="architectural",  # Stale incidents are logic bugs
+                    fix_location="src/gaius/health/observe.py",
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to escalate stale incident {incident.fingerprint}: {e}")
+
+            if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.record_acp_escalation_failed(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    error=str(e),
+                    failure_stage="stale_escalation",
+                    retry_recommended=False,
+                    escalation_path="Manual investigation required - create issue manually",
+                )
+
+    def _extract_issue_number(self, response: str) -> int | None:
+        """Extract GitHub issue number from ACP response.
+
+        Looks for patterns like:
+        - "Created issue #123"
+        - "issue number: 123"
+        - "github.com/.../issues/123"
+
+        Args:
+            response: ACP response text
+
+        Returns:
+            Issue number if found, None otherwise
+        """
+        import re
+
+        # Pattern 1: "issue #123" or "issue number 123"
+        match = re.search(r"issue\s*#?(\d+)", response, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+        # Pattern 2: GitHub URL with issue number
+        match = re.search(r"github\.com/[^/]+/[^/]+/issues/(\d+)", response)
+        if match:
+            return int(match.group(1))
+
+        # Pattern 3: "Created #123"
+        match = re.search(r"created\s+#(\d+)", response, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+        return None
+
     def _check_passed_for_incident(
         self,
         report: HealthReport,
         incident: HealthIncident,
     ) -> bool:
         """Check if the health check for an incident is now passing.
+
+        Matching priority:
+        1. Exact heuristic_id match (most reliable)
+        2. Check details contain endpoint name
+        3. Check name contains endpoint as word boundary
 
         Args:
             report: Current health report
@@ -1106,15 +1426,33 @@ Begin your investigation now."""
         Returns:
             True if associated check is passing
         """
+        endpoint_lower = incident.endpoint.lower()
+
         for check in report.checks:
-            # Match by endpoint or fingerprint components
-            if incident.endpoint in check.name.lower().replace(" ", "_"):
-                return check.status == CheckStatus.PASS
-            if check.heuristic_id == incident.failure_mode_id:
+            # Priority 1: Exact heuristic_id match
+            if check.heuristic_id and check.heuristic_id == incident.failure_mode_id:
                 return check.status == CheckStatus.PASS
 
-        # If no matching check found, assume passed
-        return True
+            # Priority 2: Check details contain endpoint
+            check_endpoint = check.details.get("endpoint", "").lower()
+            if check_endpoint and check_endpoint == endpoint_lower:
+                return check.status == CheckStatus.PASS
+
+            # Priority 3: Endpoint appears in check name as whole word
+            # Use word boundary matching to avoid "fast" matching "broadcast"
+            check_name_lower = check.name.lower().replace(" ", "_")
+            # Split on non-alphanumeric to get words
+            check_words = set(check_name_lower.replace("_", " ").split())
+            if endpoint_lower in check_words:
+                return check.status == CheckStatus.PASS
+
+        # If no matching check found, log warning and assume NOT passed
+        # This is safer - keeps incident active until we can verify
+        logger.debug(
+            f"No matching health check found for incident {incident.fingerprint}, "
+            f"assuming not passed (incident stays active)"
+        )
+        return False
 
     def _generate_fingerprint(self, check: CheckResult) -> str:
         """Generate deduplication fingerprint for a check result.
