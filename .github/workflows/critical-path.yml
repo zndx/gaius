@@ -309,7 +309,7 @@ jobs:
             src/gaius/engine/scheduling/ \
             src/gaius/engine/resources/ \
             src/gaius/models/registry.py \
-            --output-format=text
+            --output-format=concise
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Summary job (required for branch protection)
