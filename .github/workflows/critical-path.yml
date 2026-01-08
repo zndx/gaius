@@ -60,7 +60,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --extra scheduler --extra test
+          uv sync --extra scheduler --group dev
 
       - name: Run algorithmic tests
         run: |
@@ -108,10 +108,10 @@ jobs:
         ports:
           - 6339:6333
         options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:6333/readiness || exit 1"
+          --health-cmd "curl -f http://localhost:6333/readiness || exit 1"
           --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-timeout 10s
+          --health-retries 10
 
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5438/zndx_gaius?sslmode=disable
@@ -141,7 +141,7 @@ jobs:
           sudo chmod +x /usr/local/bin/dbmate
 
       - name: Install dependencies
-        run: uv sync --extra scheduler --extra test
+        run: uv sync --extra scheduler --group dev
 
       - name: Run migrations
         run: dbmate up
@@ -188,7 +188,7 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --extra scheduler --extra test
+        run: uv sync --extra scheduler --group dev
 
       - name: Cache llama.cpp build
         uses: actions/cache@v4
@@ -293,7 +293,7 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --extra scheduler --extra test
+        run: uv sync --extra scheduler --group dev
 
       - name: Run type check on critical modules
         run: |
