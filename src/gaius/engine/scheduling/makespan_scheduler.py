@@ -150,7 +150,7 @@ class MakespanScheduler:
         assert cp_model is not None  # Guaranteed by ORTOOLS_AVAILABLE check
 
         start_time = time.time()
-        model = CpModel()
+        model = cp_model.CpModel()
 
         # Determine what needs to change
         current_by_name = {t.endpoint_name: t for t in current_tasks}
@@ -267,7 +267,7 @@ class MakespanScheduler:
         model.Minimize(makespan)
 
         # Solve
-        solver = CpSolver()
+        solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = self.max_solve_time_s
         status = solver.Solve(model)
 
