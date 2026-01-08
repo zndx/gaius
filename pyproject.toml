@@ -209,6 +209,11 @@ timeout = 60
 addopts = "--ignore=tests/test_optillm_vllm.py --ignore=tests/test_inference.py --ignore=tests/test_artifacts.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "engine: tests requiring gRPC engine running",
+    "inference: tests requiring LLM inference (llama.cpp or vLLM)",
+    "db: tests requiring PostgreSQL database",
+    "gpu: tests requiring GPU hardware (nvidia-smi, pynvml)",
+    "nifi: tests requiring Apache NiFi",
 ]
 
 [tool.hatch.metadata]
