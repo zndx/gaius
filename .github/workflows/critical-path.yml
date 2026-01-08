@@ -1,10 +1,17 @@
 # Critical Path Tests
 #
-# Runs pure algorithmic tests for the scheduling and orchestration modules.
-# These tests don't require GPU, database, or heavy dependencies.
+# Runs algorithmic and integration tests for the scheduling, orchestration,
+# and inference pipeline. Uses real services (PostgreSQL, Qdrant) and
+# llama.cpp with tiny GGUF models for CPU inference.
 #
-# NOTE: This workflow runs on a private repo with git+ssh dependencies.
-# The full test suite requires the devenv environment locally.
+# Required secrets:
+#   DEPLOY_KEY - SSH private key for accessing zndx/oss-colpali
+#
+# This workflow validates:
+# - Pure algorithmic logic (no services needed)
+# - Database integration (real PostgreSQL)
+# - Vector store integration (real Qdrant)
+# - LLM inference pipeline (llama.cpp on CPU)
 
 name: Critical Path Tests
 
@@ -14,16 +21,22 @@ on:
     paths:
       - 'src/gaius/engine/**'
       - 'src/gaius/models/**'
+      - 'src/gaius/inference/**'
+      - 'src/gaius/workers/**'
       - 'tests/engine/**'
       - 'tests/test_models.py'
+      - 'db/**'
       - '.github/workflows/critical-path.yml'
   pull_request:
     branches: [trunk, main]
     paths:
       - 'src/gaius/engine/**'
       - 'src/gaius/models/**'
+      - 'src/gaius/inference/**'
+      - 'src/gaius/workers/**'
       - 'tests/engine/**'
       - 'tests/test_models.py'
+      - 'db/**'
   workflow_dispatch:  # Manual trigger
 
 env:
@@ -51,25 +64,241 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
 
-      # Configure SSH for private git dependencies
       - name: Configure SSH for git dependencies
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - name: Install dependencies
-        run: |
-          uv sync --extra scheduler --group dev
+        run: uv sync --extra scheduler --group dev
 
       - name: Run algorithmic tests
         run: |
           uv run pytest tests/engine/ tests/test_models.py \
             -v --tb=short \
             -m "not engine and not inference and not db and not gpu" \
-            --ignore=tests/engine/test_scheduler_service.py || true
+            --ignore=tests/engine/test_scheduler_service.py \
+            --cov=gaius.engine.scheduling \
+            --cov=gaius.engine.resources \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage-algorithmic.xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-algorithmic.xml
+          flags: algorithmic
+          fail_ci_if_error: false
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Type checking (lighter weight, pure Python)
+  # Database integration tests
+  # ─────────────────────────────────────────────────────────────────────────────
+  database:
+    name: Database Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: zndx_gaius
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5438:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6339:6333
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5438/zndx_gaius?sslmode=disable
+      QDRANT_URL: http://localhost:6339
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Configure SSH for git dependencies
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install dbmate
+        run: |
+          curl -fsSL https://github.com/amacneil/dbmate/releases/download/v2.10.0/dbmate-linux-amd64 -o dbmate
+          chmod +x dbmate
+          sudo mv dbmate /usr/local/bin/
+
+      - name: Install dependencies
+        run: uv sync --extra scheduler --group dev
+
+      - name: Wait for Qdrant
+        run: |
+          echo "Waiting for Qdrant to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:6339/readiness > /dev/null 2>&1; then
+              echo "Qdrant is ready"
+              break
+            fi
+            echo "Waiting for Qdrant... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run migrations
+        run: dbmate up
+
+      - name: Run database tests
+        run: |
+          uv run pytest tests/ \
+            -v --tb=short \
+            -m "db and not engine and not inference and not gpu" \
+            --cov=gaius.workers.db \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage-database.xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-database.xml
+          flags: database
+          fail_ci_if_error: false
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Inference pipeline tests (llama.cpp on CPU)
+  # ─────────────────────────────────────────────────────────────────────────────
+  inference:
+    name: Inference Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      GAIUS_CI_MODE: "1"
+      HF_HUB_CACHE: /tmp/hf-cache
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Configure SSH for git dependencies
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: Install dependencies
+        run: uv sync --extra scheduler --group dev
+
+      - name: Cache llama.cpp build
+        uses: actions/cache@v4
+        id: llama-cache
+        with:
+          path: ~/llama.cpp
+          key: llama-cpp-${{ runner.os }}-b4239
+
+      - name: Build llama.cpp
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          git clone --depth 1 --branch b4239 https://github.com/ggml-org/llama.cpp.git
+          cd llama.cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target llama-server -j$(nproc)
+
+      - name: Add llama.cpp to PATH
+        run: echo "$HOME/llama.cpp/build/bin" >> $GITHUB_PATH
+
+      - name: Cache CI models
+        uses: actions/cache@v4
+        id: model-cache
+        with:
+          path: /tmp/ci-models
+          key: ci-models-qwen-0.5b-v1
+
+      - name: Download CI model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/ci-models
+          uv run python -c "
+          from gaius.models import CI_QWEN_TINY
+          import subprocess
+          cfg = CI_QWEN_TINY.llamacpp_config
+          cmd = cfg.download_command('/tmp/ci-models')
+          print(f'Downloading: {cmd}')
+          subprocess.run(cmd.split(), check=True)
+          "
+
+      - name: Verify llama-server works
+        run: llama-server --version
+
+      - name: Run inference tests
+        run: |
+          # Start llama-server in background
+          uv run python -c "
+          from gaius.models import CI_QWEN_TINY
+          cfg = CI_QWEN_TINY.llamacpp_config
+          print(cfg.serve_command('/tmp/ci-models'))
+          " | bash &
+
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+              echo "llama-server is ready"
+              break
+            fi
+            echo "Waiting for llama-server... ($i/30)"
+            sleep 2
+          done
+
+          # Run inference tests
+          uv run pytest tests/ \
+            -v --tb=short \
+            -m "inference and not gpu" \
+            --cov=gaius.inference \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage-inference.xml || true
+
+          # Kill llama-server
+          pkill -f llama-server || true
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-inference.xml
+          flags: inference
+          fail_ci_if_error: false
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Type checking
   # ─────────────────────────────────────────────────────────────────────────────
   typecheck:
     name: Type Check
@@ -89,7 +318,6 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
 
-      # Configure SSH for private git dependencies
       - name: Configure SSH for git dependencies
         uses: webfactory/ssh-agent@v0.9.1
         with:
@@ -104,7 +332,7 @@ jobs:
             src/gaius/engine/scheduling/ \
             src/gaius/engine/resources/ \
             src/gaius/models/registry.py \
-            --output-format=text || true
+            --output-format=text
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Summary job (required for branch protection)
@@ -112,19 +340,30 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [algorithmic, typecheck]
+    needs: [algorithmic, database, inference, typecheck]
     if: always()
 
     steps:
       - name: Check results
         run: |
           echo "Algorithmic: ${{ needs.algorithmic.result }}"
+          echo "Database: ${{ needs.database.result }}"
+          echo "Inference: ${{ needs.inference.result }}"
           echo "Type Check: ${{ needs.typecheck.result }}"
 
-          # Report status but don't fail during initial setup
-          # Database and inference tests require local devenv
+          # Fail if algorithmic tests failed (critical path)
           if [ "${{ needs.algorithmic.result }}" == "failure" ]; then
-            echo "::warning::Algorithmic tests failed"
+            echo "::error::Algorithmic tests failed"
+            exit 1
+          fi
+
+          # Warn on database/inference failures (may need debugging)
+          if [ "${{ needs.database.result }}" == "failure" ]; then
+            echo "::warning::Database tests failed"
+          fi
+
+          if [ "${{ needs.inference.result }}" == "failure" ]; then
+            echo "::warning::Inference tests failed"
           fi
 
           if [ "${{ needs.typecheck.result }}" == "failure" ]; then
