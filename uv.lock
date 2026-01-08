@@ -905,7 +905,7 @@ wheels = [
 [[package]]
 name = "colpali-engine"
 version = "0.1.dev255+g1913c4a86"
-source = { git = "ssh://git@github.com/zndx/oss-colpali.git#1913c4a8680977918c97eab7c9586294e0bf6000" }
+source = { git = "https://github.com/zndx/oss-colpali.git#1913c4a8680977918c97eab7c9586294e0bf6000" }
 dependencies = [
     { name = "numpy" },
     { name = "peft" },
@@ -2312,7 +2312,7 @@ requires-dist = [
     { name = "bm25s", marker = "extra == 'search'", specifier = ">=0.2.0" },
     { name = "bytez", specifier = ">=3.0.1" },
     { name = "circuit-tracer", git = "https://github.com/safety-research/circuit-tracer.git" },
-    { name = "colpali-engine", git = "ssh://git@github.com/zndx/oss-colpali.git" },
+    { name = "colpali-engine", git = "https://github.com/zndx/oss-colpali.git" },
     { name = "cuml-cu12", specifier = ">=25.6.0" },
     { name = "datasets", specifier = ">=2.14.6" },
     { name = "deepagents", specifier = ">=0.2.8" },

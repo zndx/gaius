@@ -4,9 +4,6 @@
 # and inference pipeline. Uses real services (PostgreSQL, Qdrant) and
 # llama.cpp with tiny GGUF models for CPU inference.
 #
-# Required secrets:
-#   DEPLOY_KEY - SSH private key for accessing zndx/oss-colpali
-#
 # This workflow validates:
 # - Pure algorithmic logic (no services needed)
 # - Database integration (real PostgreSQL)
@@ -63,11 +60,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Configure SSH for git dependencies
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - name: Install dependencies
         run: uv sync --extra scheduler --group dev
@@ -134,11 +126,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Configure SSH for git dependencies
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - name: Install system dependencies
         run: |
@@ -209,11 +196,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Configure SSH for git dependencies
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - name: Install dependencies
         run: uv sync --extra scheduler --group dev
@@ -317,11 +299,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Configure SSH for git dependencies
-        uses: webfactory/ssh-agent@v0.9.1
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
 
       - name: Install dependencies
         run: uv sync --extra scheduler --group dev

@@ -34,7 +34,7 @@ dependencies = [
     "stemming>=1.0.1",
     # ColPali multimodal embeddings for colnomic-embed-multimodal-7b
     # Using forked repo with fixes for ColNomic support
-    "colpali-engine @ git+ssh://git@github.com/zndx/oss-colpali.git",
+    "colpali-engine @ git+https://github.com/zndx/oss-colpali.git",
     "pyiceberg[pyiceberg-core,s3fs,sql-postgres]>=0.10.0",
     "pystemmer>=3.0.0",
     "qdrant-client>=1.12.1",
