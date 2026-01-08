@@ -125,6 +125,46 @@ class VLLMConfig:
 
 
 @dataclass
+class LlamaCppConfig:
+    """llama.cpp server configuration for CPU inference in CI.
+
+    These models are used in GitHub Actions where GPU hardware is unavailable.
+    They run on CPU with small context windows for fast, deterministic testing.
+
+    The goal is pipeline correctness, not output quality.
+    """
+
+    # Model file (GGUF format)
+    gguf_file: str  # e.g., "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+    # HuggingFace repo for download
+    hf_repo: str  # e.g., "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+
+    # Server configuration
+    context_size: int = 512  # Small context for fast CI tests
+    n_predict: int = 64  # Short completions for speed
+    threads: int = 4  # Match GitHub runner vCPUs
+    port: int = 8080
+
+    def download_command(self, local_dir: str = "./models") -> str:
+        """Generate huggingface-cli download command."""
+        return (
+            f"huggingface-cli download {self.hf_repo} {self.gguf_file} "
+            f"--local-dir {local_dir}"
+        )
+
+    def serve_command(self, model_path: str) -> str:
+        """Generate llama-server command."""
+        return (
+            f"llama-server -m {model_path}/{self.gguf_file} "
+            f"--port {self.port} "
+            f"-c {self.context_size} "
+            f"-n {self.n_predict} "
+            f"-t {self.threads}"
+        )
+
+
+@dataclass
 class ResourceRequirements:
     """Resource requirements for running a model.
 
@@ -168,6 +208,9 @@ class ModelSpec:
 
     # vLLM configuration (for local models)
     vllm_config: VLLMConfig | None = None
+
+    # llama.cpp configuration (for CI testing with tiny models)
+    llamacpp_config: LlamaCppConfig | None = None
 
     # Cost/performance
     tokens_per_second: float | None = None  # Estimated throughput
@@ -661,6 +704,183 @@ OLMO3_32B_THINK = ModelSpec(
     description="OLMo3-32B-Think - extended reasoning with thinking traces (64K context)",
     tags=["vllm", "thinking", "reasoning", "64k", "olmo"],
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI Test Models (llama.cpp on CPU)
+#
+# These tiny GGUF models enable real LLM inference in GitHub Actions without GPU.
+# They map to production model families to minimize message format differences.
+#
+# Selection criteria:
+# - Official models from original vendors (Qwen, AllenAI, THUDM)
+# - Same model family as production (Qwen2.5 for Qwen3, OLMo-2 for OLMo-3)
+# - Smallest available size for fast CI (~0.5B-1B parameters)
+# - Q4_K_M quantization for balance of speed and quality
+#
+# Reference: https://github.com/ggml-org/llama.cpp/tree/master/tools/server/tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# CI test model for Qwen family (QwQ-32B, Qwen3-8B, Qwen3-Coder)
+# Uses Qwen2.5-0.5B - official Qwen GGUF, same chat template
+CI_QWEN_TINY = ModelSpec(
+    model_id="ci-test/qwen-tiny",
+    name="CI-Qwen-Tiny",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.CODING,
+    ],
+    task_scores={
+        TaskType.REASONING: 0.10,  # Low scores - only used when CI mode enabled
+        TaskType.CODING: 0.10,
+        TaskType.CHAT: 0.10,
+    },
+    context_length=512,  # Small for fast tests
+    parameters_b=0.5,
+    memory_mb=400,  # Q4_K_M ~400MB
+    default_temperature=0.7,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        hf_repo="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    ),
+    description="Tiny Qwen for CI testing - maps to QwQ-32B, Qwen3-8B, Qwen3-Coder",
+    tags=["ci", "test", "qwen", "tiny", "llamacpp"],
+)
+
+# CI test model for OLMo family (OLMo3-32B-Think)
+# Uses OLMo-2-1B - official AllenAI GGUF
+CI_OLMO_TINY = ModelSpec(
+    model_id="ci-test/olmo-tiny",
+    name="CI-OLMo-Tiny",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.THINKING,
+    ],
+    task_scores={
+        TaskType.REASONING: 0.10,
+        TaskType.THINKING: 0.10,
+        TaskType.EVALUATION: 0.10,
+    },
+    context_length=512,
+    parameters_b=1.0,
+    memory_mb=600,  # Q2_K ~600MB
+    default_temperature=0.6,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="OLMo-2-0425-1B-Q4_K_M.gguf",
+        hf_repo="allenai/OLMo-2-0425-1B-GGUF",
+    ),
+    description="Tiny OLMo for CI testing - maps to OLMo3-32B-Think",
+    tags=["ci", "test", "olmo", "tiny", "llamacpp"],
+)
+
+# CI test model for GLM family (GLM-4.6V-Flash)
+# Uses glm-edge-4b - official THUDM GGUF, smallest available
+CI_GLM_SMALL = ModelSpec(
+    model_id="ci-test/glm-small",
+    name="CI-GLM-Small",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.FUNCTION_CALLING,
+    ],
+    task_scores={
+        TaskType.CHAT: 0.10,
+        TaskType.REASONING: 0.10,
+        TaskType.SWARM_AGENT: 0.10,
+    },
+    context_length=512,
+    parameters_b=4.0,
+    memory_mb=2500,  # Larger but still fits CI runner
+    default_temperature=0.7,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="glm-edge-4b-chat-q4_k_m.gguf",
+        hf_repo="THUDM/glm-edge-4b-chat-gguf",
+    ),
+    description="Small GLM for CI testing - maps to GLM-4.6V-Flash",
+    tags=["ci", "test", "glm", "small", "llamacpp"],
+)
+
+# CI test model for Mistral family (Mistral-7B)
+# Uses Mistral-7B Q2_K - smallest quantization of smallest Mistral
+CI_MISTRAL_TINY = ModelSpec(
+    model_id="ci-test/mistral-tiny",
+    name="CI-Mistral-Tiny",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.CODING,
+        ModelCapability.FUNCTION_CALLING,
+    ],
+    task_scores={
+        TaskType.CHAT: 0.10,
+        TaskType.CODING: 0.10,
+        TaskType.SWARM_AGENT: 0.10,
+    },
+    context_length=512,
+    parameters_b=7.0,
+    memory_mb=2500,  # Q2_K ~2.5GB
+    default_temperature=0.7,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="mistral-7b-instruct-v0.2.Q2_K.gguf",
+        hf_repo="TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+    ),
+    description="Tiny Mistral for CI testing - maps to Mistral-7B",
+    tags=["ci", "test", "mistral", "tiny", "llamacpp"],
+)
+
+
+# Mapping from production model IDs to CI test equivalents
+CI_MODEL_MAPPING: dict[str, str] = {
+    # Qwen family → CI_QWEN_TINY
+    "Qwen/QwQ-32B": "ci-test/qwen-tiny",
+    "Qwen/Qwen3-8B": "ci-test/qwen-tiny",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "ci-test/qwen-tiny",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B": "ci-test/qwen-tiny",
+    # OLMo family → CI_OLMO_TINY
+    "allenai/Olmo-3-32B-Think": "ci-test/olmo-tiny",
+    # GLM family → CI_GLM_SMALL
+    "zai-org/GLM-4.6V-Flash": "ci-test/glm-small",
+    # Mistral family → CI_MISTRAL_TINY
+    "mistralai/Mistral-7B-Instruct-v0.3": "ci-test/mistral-tiny",
+    "mistralai/Devstral-Small-2-24B-Instruct-2512": "ci-test/mistral-tiny",
+    # Orchestration → Use Qwen (closest to Llama-based NVIDIA model)
+    "nvidia/Orchestrator-8B": "ci-test/qwen-tiny",
+}
+
+
+def get_ci_model(production_model_id: str) -> ModelSpec | None:
+    """Get the CI test equivalent for a production model.
+
+    Args:
+        production_model_id: The production model's HuggingFace ID
+
+    Returns:
+        CI test ModelSpec if mapping exists, None otherwise
+
+    Usage:
+        # In test fixtures
+        if os.environ.get("GAIUS_CI_MODE"):
+            model = get_ci_model("Qwen/QwQ-32B") or CI_QWEN_TINY
+    """
+    ci_model_id = CI_MODEL_MAPPING.get(production_model_id)
+    if ci_model_id == "ci-test/qwen-tiny":
+        return CI_QWEN_TINY
+    elif ci_model_id == "ci-test/olmo-tiny":
+        return CI_OLMO_TINY
+    elif ci_model_id == "ci-test/glm-small":
+        return CI_GLM_SMALL
+    elif ci_model_id == "ci-test/mistral-tiny":
+        return CI_MISTRAL_TINY
+    return None
 
 
 class ModelRegistry:
