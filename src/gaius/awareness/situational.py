@@ -403,32 +403,32 @@ class SituationalAwareness:
         # Try LLM synthesis if available and we have data
         if report.emphasis and report.emphasis.notable_entries:
             try:
-                from ..inference import get_client, Message
+                from gaius.client import get_grpc_client
 
-                client = get_client()
+                client = await get_grpc_client()
 
                 # Build context from recent entries
                 entry_list = "\n".join(
                     f"- {e.title}" for e in report.emphasis.notable_entries[:5]
                 )
 
-                result = await client.complete(
-                    [
-                        Message(
-                            role="user",
-                            content=f"""Based on these recent KB entries, provide 2-3 brief insights (one sentence each):
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": f"""Based on these recent KB entries, provide 2-3 brief insights (one sentence each):
 
 {entry_list}
 
 Focus on patterns, connections, or areas needing attention.""",
-                        )
-                    ],
-                    max_tokens=200,
-                    temperature=0.5,
+                        "agent": "fast",
+                        "max_tokens": 200,
+                        "temperature": 0.5,
+                    },
                 )
 
                 # Parse response into insights
-                for line in result.content.split("\n"):
+                for line in result.get("content", "").split("\n"):
                     line = line.strip().lstrip("-•*").strip()
                     if line and len(line) > 10:
                         insights.append(line)

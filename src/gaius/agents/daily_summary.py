@@ -264,9 +264,9 @@ class DailySummaryAgent:
         entries: list[dict],
     ) -> dict[str, Any]:
         """Use LLM to synthesize daily summary."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
-        client = get_client()
+        client = await get_grpc_client()
 
         # Build context
         entry_list = "\n".join(
@@ -293,10 +293,15 @@ Provide:
 
 Format as JSON with keys: overview, insights (array), tomorrow_focus"""
 
-        result = await client.complete(
-            [Message(role="user", content=prompt)],
-            max_tokens=500,
-            temperature=0.6,
+        result = await client.call(
+            service="Scheduler",
+            action="complete",
+            params={
+                "prompt": prompt,
+                "agent": "fast",
+                "max_tokens": 500,
+                "temperature": 0.6,
+            },
         )
 
         # Parse response
@@ -304,23 +309,23 @@ Format as JSON with keys: overview, insights (array), tomorrow_focus"""
             import json
 
             # Try to extract JSON from response
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
 
             data = json.loads(content)
-            data["model"] = result.model
+            data["model"] = result.get("model", "")
             return data
 
         except Exception:
             # Fallback: parse as text
             return {
-                "overview": result.content[:300],
+                "overview": result.get("content", "")[:300],
                 "insights": [],
                 "tomorrow_focus": "",
-                "model": result.model,
+                "model": result.get("model", ""),
             }
 
     def _generate_simple_overview(self, note: DailySummaryNote) -> str:

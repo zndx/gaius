@@ -228,19 +228,24 @@ class SwarmManager:
             tokens = result.get("tokens", 0)
             model = result.get("model", "")
         else:
-            # Try to use inference client
+            # Try to use inference client via gRPC
             try:
-                from ..inference import get_client, Message
+                from gaius.client import get_grpc_client
 
-                client = get_client()
-                result = await client.complete(
-                    [Message(role="user", content=prompt)],
-                    temperature=role_def.temperature,
-                    max_tokens=role_def.max_tokens,
+                client = await get_grpc_client()
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": prompt,
+                        "agent": "fast",
+                        "max_tokens": role_def.max_tokens,
+                        "temperature": role_def.temperature,
+                    },
                 )
-                content = result.content
-                tokens = result.input_tokens + result.output_tokens
-                model = result.model or ""
+                content = result.get("content", "")
+                tokens = result.get("input_tokens", 0) + result.get("output_tokens", 0)
+                model = result.get("model", "")
             except ImportError:
                 # Inference client not available - return placeholder
                 content = f"[{role_def.name} analysis for {domain}]\n\n(Inference not available)"

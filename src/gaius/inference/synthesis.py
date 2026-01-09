@@ -203,7 +203,7 @@ class ZettelkastenSynthesizer:
         Returns:
             ZettelkastenNote ready to save
         """
-        from . import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Build context from results
         context_parts = []
@@ -230,24 +230,25 @@ class ZettelkastenSynthesizer:
         if domain:
             system += f"\n\nDomain context: {domain}"
 
-        # Generate synthesis
-        client = get_client()
-        result = await client.complete(
-            messages=[
-                Message(role="system", content=system),
-                Message(
-                    role="user",
-                    content=f"Query: {query}\n\n{context}\n\nSynthesize a Zettelkasten note.",
-                ),
-            ],
-            technique="cot_reflection",
+        # Generate synthesis via gRPC
+        client = await get_grpc_client()
+        result = await client.call(
+            service="Scheduler",
+            action="complete",
+            params={
+                "prompt": f"Query: {query}\n\n{context}\n\nSynthesize a Zettelkasten note.",
+                "system_prompt": system,
+                "agent": "fast",
+                "technique": "cot_reflection",
+            },
         )
+        result_content = result.get("content", "")
 
         # Extract and normalize wiki links from generated content
-        wiki_links = self._extract_wiki_links(result.content)
+        wiki_links = self._extract_wiki_links(result_content)
 
         # Normalize links in the content itself
-        normalized_content = self._normalize_content_links(result.content)
+        normalized_content = self._normalize_content_links(result_content)
 
         # Build citations
         citations = []
@@ -274,9 +275,9 @@ class ZettelkastenSynthesizer:
             citations=citations,
             wiki_links=wiki_links,
             metadata={
-                "model": result.model,
-                "technique": result.technique,
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "model": result.get("model", ""),
+                "technique": "cot_reflection",
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "domain": domain,
             },
         )

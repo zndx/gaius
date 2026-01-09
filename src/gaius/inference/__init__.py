@@ -71,7 +71,35 @@ _search = None  # Will be BraveSearch when implemented
 
 
 def get_client(config: InferenceConfig | None = None) -> InferenceClient:
-    """Get or create the inference client singleton."""
+    """Get or create the inference client singleton.
+
+    .. deprecated::
+        Use `gaius.client.get_grpc_client()` instead. This function will be
+        removed in a future version. See Issue #8.
+
+        Migration example::
+
+            # Before
+            from gaius.inference import get_client, Message
+            client = get_client()
+            result = await client.complete([Message(role="user", content="...")])
+
+            # After
+            from gaius.client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={"prompt": "...", "agent": "fast"},
+            )
+    """
+    import warnings
+    warnings.warn(
+        "get_client() is deprecated. Use gaius.client.get_grpc_client() instead. "
+        "See Issue #8 for migration guide.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     global _client
     if _client is None:
         _client = InferenceClient(config or InferenceConfig.from_env())

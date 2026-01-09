@@ -625,7 +625,7 @@ class CognitionAgent:
         if not context.recent_kb_entries:
             return []
 
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Build entry list
         entry_summaries = []
@@ -650,17 +650,22 @@ For each pattern, provide:
 Format as JSON array: [{{"title": "...", "summary": "...", "evidence": ["..."], "salience": 0.7}}]"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=500,
-                temperature=0.6,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 500,
+                    "temperature": 0.6,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -695,7 +700,7 @@ Format as JSON array: [{{"title": "...", "summary": "...", "evidence": ["..."], 
         if len(context.domains_active) < 2:
             return []
 
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Group entries by domain
         by_domain: dict[str, list[str]] = {}
@@ -725,17 +730,22 @@ Provide:
 Format as JSON: {{"title": "...", "explanation": "...", "significance": "...", "domains": ["...", "..."]}}"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400,
-                temperature=0.7,  # Higher for creative connections
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 400,
+                    "temperature": 0.7,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -763,7 +773,7 @@ Format as JSON: {{"title": "...", "explanation": "...", "significance": "...", "
 
     async def _generate_curiosities(self, context: CognitionContext) -> list[Thought]:
         """Generate curiosity-driven questions."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Combine recent activity
         topics = []
@@ -789,17 +799,22 @@ Generate questions that:
 Format as JSON array: [{{"question": "...", "context": "...", "significance": "..."}}]"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400,
-                temperature=0.7,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 400,
+                    "temperature": 0.7,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -876,7 +891,7 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
         if len(context.active_thoughts) < 3:
             return []
 
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Analyze thought patterns
         thought_types = {}
@@ -922,17 +937,22 @@ Be introspective and specific. Reference actual thoughts when relevant.
 Format as JSON array: [{{"title": "...", "observation": "...", "insight": "...", "salience": 0.7}}]"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=600,
-                temperature=0.7,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 600,
+                    "temperature": 0.7,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -1100,7 +1120,7 @@ Format as JSON array: [{{"title": "...", "observation": "...", "insight": "...",
         Avoids generic titles like "Pattern Detected" in favor of
         specific, intriguing titles that reference the actual content.
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         prompt = f"""Generate an interesting, specific title for this {thought_type.value} thought.
 
@@ -1122,13 +1142,18 @@ Examples of GOOD titles:
 Return ONLY the title, no quotes or explanation."""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=30,
-                temperature=0.7,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 30,
+                    "temperature": 0.7,
+                },
             )
-            return result.content.strip().strip('"').strip("'")
+            return result.get("content", "").strip().strip('"').strip("'")
 
         except Exception as e:
             logger.warning(f"Title generation failed: {e}")

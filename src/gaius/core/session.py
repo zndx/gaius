@@ -831,7 +831,7 @@ class SessionManager:
 
         # Try to detect new threads from queries
         try:
-            from ..inference import get_client, Message
+            from gaius.client import get_grpc_client
             import json
 
             # Get recent queries
@@ -861,7 +861,7 @@ class SessionManager:
                 return active
 
             # Use LLM to detect thread patterns
-            client = get_client()
+            client = await get_grpc_client()
 
             prompt = f"""Analyze these queries from a research session and identify any coherent research threads.
 
@@ -880,14 +880,19 @@ Existing threads (don't duplicate): {', '.join(t.topic for t in active)}
 Format as JSON array: [{{"topic": "...", "queries": [...], "current_focus": "...", "next_steps": "..."}}]
 Return empty array [] if no clear threads detected."""
 
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400,
-                temperature=0.4,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 400,
+                    "temperature": 0.4,
+                },
             )
 
             # Parse response
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -934,7 +939,7 @@ Return empty array [] if no clear threads detected."""
     async def _generate_handoff_summary(self, session: Session) -> str:
         """Generate LLM summary for session handoff."""
         try:
-            from ..inference import get_client, Message
+            from gaius.client import get_grpc_client
 
             # Build context
             topics = ", ".join(session.key_topics) if session.key_topics else "various topics"
@@ -967,14 +972,19 @@ Open threads:
 Write 2-3 sentences summarizing what was explored and what's unfinished.
 Be specific about the topics, not generic. Write in second person ("You were exploring...")."""
 
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=150,
-                temperature=0.5,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": 150,
+                    "temperature": 0.5,
+                },
             )
 
-            return result.content.strip()
+            return result.get("content", "").strip()
 
         except Exception as e:
             logger.warning(f"Handoff generation failed: {e}")

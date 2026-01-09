@@ -225,13 +225,34 @@ class ModelRouter:
         if "max_tokens" not in kwargs:
             kwargs["max_tokens"] = phase_config.max_tokens
 
-        # Get inference client and call
+        # Get inference client and call via gRPC
         try:
-            from . import get_client, Message
+            from gaius.client import get_grpc_client
 
-            client = get_client()
-            return await client.complete(
-                [Message(role="user", content=prompt)], **kwargs
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "max_tokens": kwargs.get("max_tokens", phase_config.max_tokens),
+                    "temperature": kwargs.get("temperature", 0.7),
+                },
+            )
+
+            # Return a response-like object for compatibility
+            from dataclasses import dataclass
+
+            @dataclass
+            class RouterResponse:
+                content: str
+                model: str
+                error: str = ""
+
+            return RouterResponse(
+                content=result.get("content", ""),
+                model=result.get("model", config.model),
             )
         except Exception as e:
             # Return error response
