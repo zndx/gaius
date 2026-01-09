@@ -87,7 +87,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   database:
     name: Database Tests
-    runs-on: ubuntu-latest-xlarge  # 8 vCPU, 32GB RAM, ~150GB disk
+    runs-on: ubuntu-larger  # Custom 8-core runner with ~150GB disk
     timeout-minutes: 30
 
     services:
@@ -177,7 +177,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   inference:
     name: Inference Tests
-    runs-on: ubuntu-latest-xlarge  # 8 vCPU, 32GB RAM, ~150GB disk
+    runs-on: ubuntu-larger  # Custom 8-core runner with ~150GB disk
     timeout-minutes: 45
 
     env:
