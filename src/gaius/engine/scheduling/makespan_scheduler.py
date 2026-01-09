@@ -42,7 +42,7 @@ except ImportError:
 
 # Import types for static analysis when OR-Tools is available
 if TYPE_CHECKING:
-    from ortools.sat.python.cp_model import CpModel, CpSolver, IntVar  # type: ignore[import-not-found] - ortools is optional dependency for scheduling
+    from ortools.sat.python.cp_model import CpModel, CpSolver, CpSolverStatus, IntVar  # type: ignore[import-not-found] - ortools is optional dependency for scheduling
 
 
 # Model load/unload time estimates (empirical, in milliseconds)
@@ -374,7 +374,7 @@ class MakespanScheduler:
     def _extract_solution(
         self,
         solver: "CpSolver",
-        status: int,
+        status: "CpSolverStatus",
         x: dict[tuple[str, int], "IntVar"],
         to_stop: list[SchedulingTask],
         to_start: list[SchedulingTask],
