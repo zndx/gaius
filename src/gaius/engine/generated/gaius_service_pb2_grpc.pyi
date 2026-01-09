@@ -242,6 +242,16 @@ class GaiusServiceStub:
     """Subscribe to ambient events (TUI)"""
     AmbientBufferExport: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AmbientBufferExportRequest, gaius_service_pb2.AmbientBufferExportResponse]
     """Export buffer to zettelkasten file"""
+    ProspectsStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ProspectsStatusRequest, gaius_service_pb2.ProspectsStatusResponse]
+    """─────────────────────────────────────────────────────────────────────────
+    Prospects/Stewardship (Capital Stewardship System)
+    ─────────────────────────────────────────────────────────────────────────
+    Lightweight status check
+    """
+    ProspectsCheck: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ProspectsCheckRequest, gaius_service_pb2.ProspectsCheckResponse]
+    """Daily check with local LLM"""
+    ProspectsUpdate: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ProspectsUpdateRequest, gaius_service_pb2.ProspectsUpdateEvent]
+    """Full billable analysis (streaming)"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -457,6 +467,16 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Subscribe to ambient events (TUI)"""
     AmbientBufferExport: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AmbientBufferExportRequest, gaius_service_pb2.AmbientBufferExportResponse]  # type: ignore[assignment]
     """Export buffer to zettelkasten file"""
+    ProspectsStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ProspectsStatusRequest, gaius_service_pb2.ProspectsStatusResponse]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Prospects/Stewardship (Capital Stewardship System)
+    ─────────────────────────────────────────────────────────────────────────
+    Lightweight status check
+    """
+    ProspectsCheck: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ProspectsCheckRequest, gaius_service_pb2.ProspectsCheckResponse]  # type: ignore[assignment]
+    """Daily check with local LLM"""
+    ProspectsUpdate: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ProspectsUpdateRequest, gaius_service_pb2.ProspectsUpdateEvent]  # type: ignore[assignment]
+    """Full billable analysis (streaming)"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     """═══════════════════════════════════════════════════════════════════════════
@@ -1215,5 +1235,33 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.AmbientBufferExportResponse, collections.abc.Awaitable[gaius_service_pb2.AmbientBufferExportResponse]]:
         """Export buffer to zettelkasten file"""
+
+    @abc.abstractmethod
+    def ProspectsStatus(
+        self,
+        request: gaius_service_pb2.ProspectsStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ProspectsStatusResponse, collections.abc.Awaitable[gaius_service_pb2.ProspectsStatusResponse]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Prospects/Stewardship (Capital Stewardship System)
+        ─────────────────────────────────────────────────────────────────────────
+        Lightweight status check
+        """
+
+    @abc.abstractmethod
+    def ProspectsCheck(
+        self,
+        request: gaius_service_pb2.ProspectsCheckRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ProspectsCheckResponse, collections.abc.Awaitable[gaius_service_pb2.ProspectsCheckResponse]]:
+        """Daily check with local LLM"""
+
+    @abc.abstractmethod
+    def ProspectsUpdate(
+        self,
+        request: gaius_service_pb2.ProspectsUpdateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ProspectsUpdateEvent], collections.abc.AsyncIterator[gaius_service_pb2.ProspectsUpdateEvent]]:
+        """Full billable analysis (streaming)"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

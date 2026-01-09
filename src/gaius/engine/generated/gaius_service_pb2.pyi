@@ -2691,3 +2691,159 @@ class ObserveStatusResponse(_message.Message):
     active_incidents: int
     evolution_cycles: int
     def __init__(self, timestamp: _Optional[str] = ..., prometheus_available: bool = ..., metrics: _Optional[_Iterable[_Union[MetricSnapshot, _Mapping]]] = ..., endpoints: _Optional[_Iterable[_Union[EndpointSnapshot, _Mapping]]] = ..., healthy_endpoints: _Optional[int] = ..., unhealthy_endpoints: _Optional[int] = ..., active_incidents: _Optional[int] = ..., evolution_cycles: _Optional[int] = ...) -> None: ...
+
+class CandidateSummary(_message.Message):
+    __slots__ = ("symbol", "company_name", "exchange", "cik", "last_filing_date", "last_filing_type", "pending_filings")
+    SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    COMPANY_NAME_FIELD_NUMBER: _ClassVar[int]
+    EXCHANGE_FIELD_NUMBER: _ClassVar[int]
+    CIK_FIELD_NUMBER: _ClassVar[int]
+    LAST_FILING_DATE_FIELD_NUMBER: _ClassVar[int]
+    LAST_FILING_TYPE_FIELD_NUMBER: _ClassVar[int]
+    PENDING_FILINGS_FIELD_NUMBER: _ClassVar[int]
+    symbol: str
+    company_name: str
+    exchange: str
+    cik: str
+    last_filing_date: str
+    last_filing_type: str
+    pending_filings: int
+    def __init__(self, symbol: _Optional[str] = ..., company_name: _Optional[str] = ..., exchange: _Optional[str] = ..., cik: _Optional[str] = ..., last_filing_date: _Optional[str] = ..., last_filing_type: _Optional[str] = ..., pending_filings: _Optional[int] = ...) -> None: ...
+
+class StrategySummary(_message.Message):
+    __slots__ = ("symbol", "category", "allocation_weight", "target_weight", "conviction", "last_analysis_at", "needs_update")
+    SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    CATEGORY_FIELD_NUMBER: _ClassVar[int]
+    ALLOCATION_WEIGHT_FIELD_NUMBER: _ClassVar[int]
+    TARGET_WEIGHT_FIELD_NUMBER: _ClassVar[int]
+    CONVICTION_FIELD_NUMBER: _ClassVar[int]
+    LAST_ANALYSIS_AT_FIELD_NUMBER: _ClassVar[int]
+    NEEDS_UPDATE_FIELD_NUMBER: _ClassVar[int]
+    symbol: str
+    category: str
+    allocation_weight: float
+    target_weight: float
+    conviction: float
+    last_analysis_at: str
+    needs_update: bool
+    def __init__(self, symbol: _Optional[str] = ..., category: _Optional[str] = ..., allocation_weight: _Optional[float] = ..., target_weight: _Optional[float] = ..., conviction: _Optional[float] = ..., last_analysis_at: _Optional[str] = ..., needs_update: bool = ...) -> None: ...
+
+class ProspectsStatusRequest(_message.Message):
+    __slots__ = ("profile", "domain", "symbols")
+    PROFILE_FIELD_NUMBER: _ClassVar[int]
+    DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    SYMBOLS_FIELD_NUMBER: _ClassVar[int]
+    profile: str
+    domain: str
+    symbols: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, profile: _Optional[str] = ..., domain: _Optional[str] = ..., symbols: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class ProspectsStatusResponse(_message.Message):
+    __slots__ = ("success", "profile", "domain", "candidates", "strategies", "pending_filings", "last_fmp_sync_at", "update_recommended", "update_reason", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    PROFILE_FIELD_NUMBER: _ClassVar[int]
+    DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATES_FIELD_NUMBER: _ClassVar[int]
+    STRATEGIES_FIELD_NUMBER: _ClassVar[int]
+    PENDING_FILINGS_FIELD_NUMBER: _ClassVar[int]
+    LAST_FMP_SYNC_AT_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_RECOMMENDED_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_REASON_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    profile: str
+    domain: str
+    candidates: _containers.RepeatedCompositeFieldContainer[CandidateSummary]
+    strategies: _containers.RepeatedCompositeFieldContainer[StrategySummary]
+    pending_filings: int
+    last_fmp_sync_at: str
+    update_recommended: bool
+    update_reason: str
+    error: str
+    def __init__(self, success: bool = ..., profile: _Optional[str] = ..., domain: _Optional[str] = ..., candidates: _Optional[_Iterable[_Union[CandidateSummary, _Mapping]]] = ..., strategies: _Optional[_Iterable[_Union[StrategySummary, _Mapping]]] = ..., pending_filings: _Optional[int] = ..., last_fmp_sync_at: _Optional[str] = ..., update_recommended: bool = ..., update_reason: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ProspectsCheckRequest(_message.Message):
+    __slots__ = ("profile", "domain", "force")
+    PROFILE_FIELD_NUMBER: _ClassVar[int]
+    DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    FORCE_FIELD_NUMBER: _ClassVar[int]
+    profile: str
+    domain: str
+    force: bool
+    def __init__(self, profile: _Optional[str] = ..., domain: _Optional[str] = ..., force: bool = ...) -> None: ...
+
+class ProspectsCheckResponse(_message.Message):
+    __slots__ = ("success", "update_recommended", "reason", "new_filings_count", "symbols_with_new_filings", "checked_at", "duration_ms", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    UPDATE_RECOMMENDED_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    NEW_FILINGS_COUNT_FIELD_NUMBER: _ClassVar[int]
+    SYMBOLS_WITH_NEW_FILINGS_FIELD_NUMBER: _ClassVar[int]
+    CHECKED_AT_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    update_recommended: bool
+    reason: str
+    new_filings_count: int
+    symbols_with_new_filings: _containers.RepeatedScalarFieldContainer[str]
+    checked_at: str
+    duration_ms: int
+    error: str
+    def __init__(self, success: bool = ..., update_recommended: bool = ..., reason: _Optional[str] = ..., new_filings_count: _Optional[int] = ..., symbols_with_new_filings: _Optional[_Iterable[str]] = ..., checked_at: _Optional[str] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ProspectsUpdateRequest(_message.Message):
+    __slots__ = ("profile", "domain", "symbols", "force", "filings_per_symbol")
+    PROFILE_FIELD_NUMBER: _ClassVar[int]
+    DOMAIN_FIELD_NUMBER: _ClassVar[int]
+    SYMBOLS_FIELD_NUMBER: _ClassVar[int]
+    FORCE_FIELD_NUMBER: _ClassVar[int]
+    FILINGS_PER_SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    profile: str
+    domain: str
+    symbols: _containers.RepeatedScalarFieldContainer[str]
+    force: bool
+    filings_per_symbol: int
+    def __init__(self, profile: _Optional[str] = ..., domain: _Optional[str] = ..., symbols: _Optional[_Iterable[str]] = ..., force: bool = ..., filings_per_symbol: _Optional[int] = ...) -> None: ...
+
+class ProspectsUpdateEvent(_message.Message):
+    __slots__ = ("type", "timestamp_ms", "progress", "message", "symbol", "filing_type", "data")
+    class Type(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        QUEUED: _ClassVar[ProspectsUpdateEvent.Type]
+        FMP_SYNC_STARTED: _ClassVar[ProspectsUpdateEvent.Type]
+        FMP_SYNC_COMPLETED: _ClassVar[ProspectsUpdateEvent.Type]
+        ANALYSIS_STARTED: _ClassVar[ProspectsUpdateEvent.Type]
+        FILING_ANALYZED: _ClassVar[ProspectsUpdateEvent.Type]
+        SYNTHESIS_STARTED: _ClassVar[ProspectsUpdateEvent.Type]
+        SYNTHESIS_COMPLETED: _ClassVar[ProspectsUpdateEvent.Type]
+        KB_WRITE_STARTED: _ClassVar[ProspectsUpdateEvent.Type]
+        KB_WRITE_COMPLETED: _ClassVar[ProspectsUpdateEvent.Type]
+        COMPLETED: _ClassVar[ProspectsUpdateEvent.Type]
+        FAILED: _ClassVar[ProspectsUpdateEvent.Type]
+    QUEUED: ProspectsUpdateEvent.Type
+    FMP_SYNC_STARTED: ProspectsUpdateEvent.Type
+    FMP_SYNC_COMPLETED: ProspectsUpdateEvent.Type
+    ANALYSIS_STARTED: ProspectsUpdateEvent.Type
+    FILING_ANALYZED: ProspectsUpdateEvent.Type
+    SYNTHESIS_STARTED: ProspectsUpdateEvent.Type
+    SYNTHESIS_COMPLETED: ProspectsUpdateEvent.Type
+    KB_WRITE_STARTED: ProspectsUpdateEvent.Type
+    KB_WRITE_COMPLETED: ProspectsUpdateEvent.Type
+    COMPLETED: ProspectsUpdateEvent.Type
+    FAILED: ProspectsUpdateEvent.Type
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    FILING_TYPE_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    type: ProspectsUpdateEvent.Type
+    timestamp_ms: int
+    progress: float
+    message: str
+    symbol: str
+    filing_type: str
+    data: bytes
+    def __init__(self, type: _Optional[_Union[ProspectsUpdateEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., symbol: _Optional[str] = ..., filing_type: _Optional[str] = ..., data: _Optional[bytes] = ...) -> None: ...

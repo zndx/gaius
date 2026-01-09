@@ -269,6 +269,15 @@ from .gaius_service_pb2 import (
     AmbientSubscribeRequest,
     AmbientBufferExportRequest,
     AmbientBufferExportResponse,
+    # Prospects/Stewardship
+    CandidateSummary,
+    StrategySummary,
+    ProspectsStatusRequest,
+    ProspectsStatusResponse,
+    ProspectsCheckRequest,
+    ProspectsCheckResponse,
+    ProspectsUpdateRequest,
+    ProspectsUpdateEvent,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -532,6 +541,15 @@ __all__ = [
     "AmbientSubscribeRequest",
     "AmbientBufferExportRequest",
     "AmbientBufferExportResponse",
+    # Prospects/Stewardship
+    "CandidateSummary",
+    "StrategySummary",
+    "ProspectsStatusRequest",
+    "ProspectsStatusResponse",
+    "ProspectsCheckRequest",
+    "ProspectsCheckResponse",
+    "ProspectsUpdateRequest",
+    "ProspectsUpdateEvent",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceAsyncStub",

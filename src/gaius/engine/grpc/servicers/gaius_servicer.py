@@ -246,6 +246,15 @@ from ...generated import (
     AMBIENT_PHASE_BASELINE_RESTORATION,
     AMBIENT_PHASE_COMPLETE,
     AMBIENT_PHASE_ERROR,
+    # Prospects/Stewardship
+    CandidateSummary,
+    StrategySummary,
+    ProspectsStatusRequest,
+    ProspectsStatusResponse,
+    ProspectsCheckRequest,
+    ProspectsCheckResponse,
+    ProspectsUpdateRequest,
+    ProspectsUpdateEvent,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -5853,3 +5862,198 @@ class GaiusServicer(GaiusServiceServicer):
             external_count=len(external),
             total_cache_bytes=total_cache_bytes,
         )
+
+    # =========================================================================
+    # Prospects / Stewardship
+    # =========================================================================
+
+    async def ProspectsStatus(
+        self,
+        request: ProspectsStatusRequest,
+        context: aio.ServicerContext,
+    ) -> ProspectsStatusResponse:
+        """Get lightweight prospects status (no LLM calls, cached data)."""
+        try:
+            service = self._services.prospects_service
+            if not service:
+                # Service not yet initialized - return empty but valid response
+                return ProspectsStatusResponse(
+                    success=True,
+                    profile=request.profile or "zndx",
+                    domain=request.domain or "prospecting",
+                    update_recommended=False,
+                    update_reason="Prospects service initializing",
+                )
+
+            status = await service.get_status(
+                profile=request.profile,
+                domain=request.domain,
+                symbols=list(request.symbols) if request.symbols else None,
+            )
+
+            # Convert to proto candidates
+            candidates = []
+            for c in status.get("candidates", []):
+                candidates.append(CandidateSummary(
+                    symbol=c.get("symbol", ""),
+                    company_name=c.get("company_name", ""),
+                    exchange=c.get("exchange", ""),
+                    cik=c.get("cik", ""),
+                    last_filing_date=c.get("last_filing_date", ""),
+                    last_filing_type=c.get("last_filing_type", ""),
+                    pending_filings=c.get("pending_filings", 0),
+                ))
+
+            # Convert to proto strategies
+            strategies = []
+            for s in status.get("strategies", []):
+                strategies.append(StrategySummary(
+                    symbol=s.get("symbol", ""),
+                    category=s.get("category", ""),
+                    allocation_weight=s.get("allocation_weight", 0.0),
+                    target_weight=s.get("target_weight", 0.0),
+                    conviction=s.get("conviction", 0.0),
+                    last_analysis_at=s.get("last_analysis_at", ""),
+                    needs_update=s.get("needs_update", False),
+                ))
+
+            return ProspectsStatusResponse(
+                success=True,
+                profile=status.get("profile", request.profile or "zndx"),
+                domain=status.get("domain", request.domain or "prospecting"),
+                candidates=candidates,
+                strategies=strategies,
+                pending_filings=status.get("pending_filings", 0),
+                last_fmp_sync_at=status.get("last_fmp_sync_at", ""),
+                update_recommended=status.get("update_recommended", False),
+                update_reason=status.get("update_reason", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"ProspectsStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ProspectsStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.PS.00001.STATUSFAIL",
+            )
+            return ProspectsStatusResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def ProspectsCheck(
+        self,
+        request: ProspectsCheckRequest,
+        context: aio.ServicerContext,
+    ) -> ProspectsCheckResponse:
+        """Run daily check for new SEC filings (local LLM only, $0 cost)."""
+        try:
+            service = self._services.prospects_service
+            if not service:
+                return ProspectsCheckResponse(
+                    success=False,
+                    error="Prospects service not initialized",
+                )
+
+            start_time = time.time()
+
+            result = await service.run_check(
+                profile=request.profile,
+                domain=request.domain,
+                force=request.force,
+            )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return ProspectsCheckResponse(
+                success=True,
+                update_recommended=result.get("update_recommended", False),
+                reason=result.get("reason", ""),
+                new_filings_count=result.get("new_filings_count", 0),
+                symbols_with_new_filings=result.get("symbols_with_new_filings", []),
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            logger.exception(f"ProspectsCheck failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ProspectsCheck",
+                exception_type=type(e).__name__,
+                guru_code="#GR.PS.00002.CHECKFAIL",
+            )
+            return ProspectsCheckResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def ProspectsUpdate(
+        self,
+        request: ProspectsUpdateRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[ProspectsUpdateEvent]:
+        """Run full billable analysis (streaming progress events).
+
+        Cost model:
+        - ~$0.06/filing (Cerebras GLM 4.7 analysis)
+        - ~$0.50/synthesis (XAI Grok)
+        """
+        try:
+            # Emit queued event
+            yield ProspectsUpdateEvent(
+                type=ProspectsUpdateEvent.QUEUED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message="Update queued",
+            )
+
+            service = self._services.prospects_service
+            if not service:
+                yield ProspectsUpdateEvent(
+                    type=ProspectsUpdateEvent.FAILED,
+                    timestamp_ms=int(time.time() * 1000),
+                    progress=0.0,
+                    message="Prospects service not initialized",
+                )
+                return
+
+            # Stream progress events from service
+            async for event in service.run_update(
+                profile=request.profile,
+                domain=request.domain,
+                symbols=list(request.symbols) if request.symbols else None,
+                force=request.force,
+                filings_per_symbol=request.filings_per_symbol if request.filings_per_symbol > 0 else None,
+            ):
+                yield ProspectsUpdateEvent(
+                    type=event.get("type", ProspectsUpdateEvent.QUEUED),
+                    timestamp_ms=int(time.time() * 1000),
+                    progress=event.get("progress", 0.0),
+                    message=event.get("message", ""),
+                    symbol=event.get("symbol", ""),
+                    filing_type=event.get("filing_type", ""),
+                )
+
+            yield ProspectsUpdateEvent(
+                type=ProspectsUpdateEvent.COMPLETED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=1.0,
+                message="Update completed",
+            )
+
+        except Exception as e:
+            logger.exception(f"ProspectsUpdate failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ProspectsUpdate",
+                exception_type=type(e).__name__,
+                guru_code="#GR.PS.00003.UPDATEFAIL",
+            )
+            yield ProspectsUpdateEvent(
+                type=ProspectsUpdateEvent.FAILED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message=str(e),
+            )

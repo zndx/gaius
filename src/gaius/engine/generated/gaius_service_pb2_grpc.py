@@ -494,6 +494,21 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.AmbientBufferExportRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.AmbientBufferExportResponse.FromString,
                 _registered_method=True)
+        self.ProspectsStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ProspectsStatus',
+                request_serializer=gaius__service__pb2.ProspectsStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ProspectsStatusResponse.FromString,
+                _registered_method=True)
+        self.ProspectsCheck = channel.unary_unary(
+                '/gaius.engine.GaiusService/ProspectsCheck',
+                request_serializer=gaius__service__pb2.ProspectsCheckRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ProspectsCheckResponse.FromString,
+                _registered_method=True)
+        self.ProspectsUpdate = channel.unary_stream(
+                '/gaius.engine.GaiusService/ProspectsUpdate',
+                request_serializer=gaius__service__pb2.ProspectsUpdateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ProspectsUpdateEvent.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1139,6 +1154,30 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ProspectsStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Prospects/Stewardship (Capital Stewardship System)
+        ─────────────────────────────────────────────────────────────────────────
+        Lightweight status check
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ProspectsCheck(self, request, context):
+        """Daily check with local LLM
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ProspectsUpdate(self, request, context):
+        """Full billable analysis (streaming)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1596,6 +1635,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.AmbientBufferExport,
                     request_deserializer=gaius__service__pb2.AmbientBufferExportRequest.FromString,
                     response_serializer=gaius__service__pb2.AmbientBufferExportResponse.SerializeToString,
+            ),
+            'ProspectsStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ProspectsStatus,
+                    request_deserializer=gaius__service__pb2.ProspectsStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.ProspectsStatusResponse.SerializeToString,
+            ),
+            'ProspectsCheck': grpc.unary_unary_rpc_method_handler(
+                    servicer.ProspectsCheck,
+                    request_deserializer=gaius__service__pb2.ProspectsCheckRequest.FromString,
+                    response_serializer=gaius__service__pb2.ProspectsCheckResponse.SerializeToString,
+            ),
+            'ProspectsUpdate': grpc.unary_stream_rpc_method_handler(
+                    servicer.ProspectsUpdate,
+                    request_deserializer=gaius__service__pb2.ProspectsUpdateRequest.FromString,
+                    response_serializer=gaius__service__pb2.ProspectsUpdateEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -4059,6 +4113,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/AmbientBufferExport',
             gaius__service__pb2.AmbientBufferExportRequest.SerializeToString,
             gaius__service__pb2.AmbientBufferExportResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProspectsStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ProspectsStatus',
+            gaius__service__pb2.ProspectsStatusRequest.SerializeToString,
+            gaius__service__pb2.ProspectsStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProspectsCheck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ProspectsCheck',
+            gaius__service__pb2.ProspectsCheckRequest.SerializeToString,
+            gaius__service__pb2.ProspectsCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProspectsUpdate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ProspectsUpdate',
+            gaius__service__pb2.ProspectsUpdateRequest.SerializeToString,
+            gaius__service__pb2.ProspectsUpdateEvent.FromString,
             options,
             channel_credentials,
             insecure,

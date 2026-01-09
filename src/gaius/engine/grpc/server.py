@@ -81,6 +81,9 @@ class ServiceRegistry:
     # X Bookmarks service for syncing X/Twitter bookmarks to KB
     x_bookmarks_service: Any = None
 
+    # Prospects/Stewardship service for FMP-based intelligence
+    prospects_service: Any = None
+
     # Ambient computing workload service
     ambient_service: Any = None
 

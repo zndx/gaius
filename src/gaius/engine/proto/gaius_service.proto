@@ -1824,6 +1824,104 @@ message ObserveStatusResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Prospects/Stewardship Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Candidate summary for status response
+message CandidateSummary {
+  string symbol = 1;
+  string company_name = 2;
+  string exchange = 3;
+  string cik = 4;
+  string last_filing_date = 5;    // ISO date of most recent SEC filing
+  string last_filing_type = 6;    // 10-K, 10-Q, 8-K
+  int32 pending_filings = 7;      // Filings awaiting analysis
+}
+
+// Strategy summary for status response
+message StrategySummary {
+  string symbol = 1;
+  string category = 2;            // Free text: "growth", "income", "strategic"
+  float allocation_weight = 3;    // Current weight 0.0-1.0
+  float target_weight = 4;        // Target weight
+  float conviction = 5;           // 0.0-1.0
+  string last_analysis_at = 6;    // ISO timestamp
+  bool needs_update = 7;          // Local LLM flagged for attention
+}
+
+// Status request - lightweight check of prospect state
+message ProspectsStatusRequest {
+  string profile = 1;             // Profile context (e.g., "zndx", "home")
+  string domain = 2;              // Domain context (e.g., "prospecting", "retirement")
+  repeated string symbols = 3;    // Filter to specific symbols (empty = all)
+}
+
+// Full status response
+message ProspectsStatusResponse {
+  bool success = 1;
+  string profile = 2;
+  string domain = 3;
+  repeated CandidateSummary candidates = 4;
+  repeated StrategySummary strategies = 5;
+  int32 pending_filings = 6;      // Total filings awaiting analysis
+  string last_fmp_sync_at = 7;    // ISO timestamp
+  bool update_recommended = 8;    // Local LLM recommends full update
+  string update_reason = 9;       // Why update is recommended
+  string error = 10;
+}
+
+// Check request - lightweight daily check (local LLM only)
+message ProspectsCheckRequest {
+  string profile = 1;
+  string domain = 2;
+  bool force = 3;                 // Force check even if recently checked
+}
+
+message ProspectsCheckResponse {
+  bool success = 1;
+  bool update_recommended = 2;    // Should user run /prospects update?
+  string reason = 3;              // Why update recommended/not recommended
+  int32 new_filings_count = 4;    // New SEC filings found
+  repeated string symbols_with_new_filings = 5;
+  string checked_at = 6;          // ISO timestamp
+  int32 duration_ms = 7;
+  string error = 8;
+}
+
+// Update request - full billable analysis (Cerebras + Grok)
+message ProspectsUpdateRequest {
+  string profile = 1;
+  string domain = 2;
+  repeated string symbols = 3;    // Filter to specific symbols (empty = all)
+  bool force = 4;                 // Force update even if no new filings
+  int32 filings_per_symbol = 5;   // Max filings per symbol (0 = default 20, for stepwise testing)
+}
+
+// Streaming progress event during update
+message ProspectsUpdateEvent {
+  enum Type {
+    QUEUED = 0;                   // Request queued
+    FMP_SYNC_STARTED = 1;         // Syncing with FMP API
+    FMP_SYNC_COMPLETED = 2;       // FMP sync done
+    ANALYSIS_STARTED = 3;         // Starting Cerebras analysis
+    FILING_ANALYZED = 4;          // Individual filing analyzed
+    SYNTHESIS_STARTED = 5;        // XAI Grok synthesis
+    SYNTHESIS_COMPLETED = 6;      // Synthesis done
+    KB_WRITE_STARTED = 7;         // Writing KB documents
+    KB_WRITE_COMPLETED = 8;       // KB docs written
+    COMPLETED = 9;                // Full update complete
+    FAILED = 10;                  // Update failed
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  float progress = 3;             // 0.0-1.0
+  string message = 4;             // Human-readable status
+  string symbol = 5;              // For FILING_ANALYZED events
+  string filing_type = 6;         // For FILING_ANALYZED events
+  bytes data = 7;                 // JSON payload for rich events
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2027,4 +2125,11 @@ service GaiusService {
   rpc AmbientStop(AmbientStopRequest) returns (AmbientStopResponse);         // Stop ambient daemon gracefully
   rpc AmbientSubscribe(AmbientSubscribeRequest) returns (stream AmbientPhaseEvent);  // Subscribe to ambient events (TUI)
   rpc AmbientBufferExport(AmbientBufferExportRequest) returns (AmbientBufferExportResponse);  // Export buffer to zettelkasten file
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Prospects/Stewardship (Capital Stewardship System)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ProspectsStatus(ProspectsStatusRequest) returns (ProspectsStatusResponse);      // Lightweight status check
+  rpc ProspectsCheck(ProspectsCheckRequest) returns (ProspectsCheckResponse);         // Daily check with local LLM
+  rpc ProspectsUpdate(ProspectsUpdateRequest) returns (stream ProspectsUpdateEvent);  // Full billable analysis (streaming)
 }
