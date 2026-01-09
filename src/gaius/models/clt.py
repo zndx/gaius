@@ -470,13 +470,16 @@ class CLTModel:
         with torch.no_grad():
             # Get model hidden dimension
             # transcoders can be TranscoderSet (list-like) or single CrossLayerTranscoder
-            transcoders = model.transcoders
-            if hasattr(transcoders, "__len__") and hasattr(transcoders, "__getitem__"):
-                # TranscoderSet is list-like - use indexing
-                transcoder_list: list = [transcoders[i] for i in range(len(transcoders))]  # type: ignore
+            raw_transcoders = model.transcoders
+            if hasattr(raw_transcoders, "__len__") and hasattr(raw_transcoders, "__getitem__"):
+                # TranscoderSet is list-like - cast to Sequence for type safety
+                # (circuit-tracer stubs don't expose Sequence protocol despite runtime support)
+                from typing import Any, Sequence, cast
+                transcoders_seq = cast(Sequence[Any], raw_transcoders)
+                transcoder_list: list = list(transcoders_seq)
             else:
                 # Single transcoder case - wrap in list
-                transcoder_list = [transcoders]
+                transcoder_list = [raw_transcoders]
             d_model = transcoder_list[0].decoder.weight.shape[2]
             num_layers = len(transcoder_list)
 

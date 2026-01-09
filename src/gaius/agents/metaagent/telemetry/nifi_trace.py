@@ -18,7 +18,7 @@ Metrics:
 import functools
 import inspect
 import time
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 from gaius.core.telemetry import get_meter, get_tracer
 
@@ -89,7 +89,9 @@ def trace_nifi_operation(operation_type: str) -> Callable[[F], F]:
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 return await _trace_operation(func, operation_type, args, kwargs, True)
 
-            return async_wrapper  # type: ignore
+            # Cast is safe: async_wrapper preserves func's signature via @wraps;
+            # type checker can't verify decorators preserve signatures
+            return cast(F, async_wrapper)
         else:
 
             @functools.wraps(func)
@@ -101,7 +103,9 @@ def trace_nifi_operation(operation_type: str) -> Callable[[F], F]:
                     _trace_operation(func, operation_type, args, kwargs, False)
                 )
 
-            return sync_wrapper  # type: ignore
+            # Cast is safe: sync_wrapper preserves func's signature via @wraps;
+            # type checker can't verify decorators preserve signatures
+            return cast(F, sync_wrapper)
 
     return decorator
 
