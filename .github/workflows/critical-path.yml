@@ -88,7 +88,6 @@ jobs:
   database:
     name: Database Tests
     runs-on:
-      group: default-larger-runners
       labels: ubuntu-larger
     timeout-minutes: 30
 
@@ -180,7 +179,6 @@ jobs:
   inference:
     name: Inference Tests
     runs-on:
-      group: default-larger-runners
       labels: ubuntu-larger
     timeout-minutes: 45
 
