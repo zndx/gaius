@@ -87,7 +87,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   database:
     name: Database Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large  # Larger runner for disk space (GPU deps are ~2.5GB)
     timeout-minutes: 30
 
     services:
@@ -177,7 +177,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   inference:
     name: Inference Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-large  # Larger runner for disk space (GPU deps are ~2.5GB)
     timeout-minutes: 45
 
     env:
