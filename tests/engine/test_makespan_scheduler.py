@@ -76,6 +76,7 @@ class TestBasicOperations:
         result = scheduler.plan_transition([], [])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert len(result.plan.steps) == 0
 
     def test_keep_same_endpoint(self):
@@ -93,6 +94,7 @@ class TestBasicOperations:
         result = scheduler.plan_transition([task], [task])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert len(result.plan.steps) == 0
         # No new GPU assignments needed - existing allocation is unchanged
         # The scheduler doesn't re-report unchanged allocations
@@ -112,6 +114,7 @@ class TestBasicOperations:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert len(result.plan.steps) == 1
         assert result.plan.steps[0].transition_type == TransitionType.START_ENDPOINT
         assert result.plan.steps[0].endpoint_name == "fast"
@@ -132,6 +135,7 @@ class TestBasicOperations:
         result = scheduler.plan_transition([current], [])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert len(result.plan.steps) == 1
         assert result.plan.steps[0].transition_type == TransitionType.STOP_ENDPOINT
         assert "fast" in result.plan.evicted_endpoints
@@ -150,6 +154,7 @@ class TestBasicOperations:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert len(result.plan.gpu_assignments["reasoning"]) == 4
 
 
@@ -175,6 +180,7 @@ class TestGPUConstraints:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assigned_gpus = result.plan.gpu_assignments["fast"]
         assert 0 not in assigned_gpus
         assert 1 not in assigned_gpus
@@ -196,6 +202,7 @@ class TestGPUConstraints:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         gpus = result.plan.gpu_assignments["reasoning"]
         assert len(gpus) == 4
         # Verify contiguity: GPUs should be consecutive
@@ -223,6 +230,7 @@ class TestGPUConstraints:
         result = scheduler.plan_transition(current, current + [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         # Coding should get GPUs 1, 3, 4, or 5 (not 0 or 2)
         coding_gpus = result.plan.gpu_assignments["coding"]
         assert len(coding_gpus) == 2
@@ -243,6 +251,7 @@ class TestGPUConstraints:
         result = scheduler.plan_transition([], [target])
 
         assert not result.success
+        assert result.error is not None  # Type narrowing
         assert "SCH.00000002" in result.error  # NOFEASIBLE
 
     def test_insufficient_after_reservations(self):
@@ -293,6 +302,7 @@ class TestTransitionPlanning:
         result = scheduler.plan_transition([current], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
 
         # Should have stop step before start step
         stop_steps = [s for s in result.plan.steps if s.transition_type == TransitionType.STOP_ENDPOINT]
@@ -327,6 +337,7 @@ class TestTransitionPlanning:
         result = scheduler.plan_transition([current], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
 
         stop_step = next(s for s in result.plan.steps if s.transition_type == TransitionType.STOP_ENDPOINT)
         start_step = next(s for s in result.plan.steps if s.transition_type == TransitionType.START_ENDPOINT)
@@ -346,6 +357,7 @@ class TestTransitionPlanning:
         result = scheduler.plan_transition(current, [])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         # Both stops should have no dependencies (can run in parallel)
         for step in result.plan.steps:
             assert step.depends_on == []
@@ -364,6 +376,7 @@ class TestTransitionPlanning:
         )
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         # No stop steps (nothing evicted)
         stop_steps = [s for s in result.plan.steps if s.transition_type == TransitionType.STOP_ENDPOINT]
         assert len(stop_steps) == 0
@@ -392,6 +405,7 @@ class TestMakespanCalculation:
         result = scheduler.plan_transition(current, [])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         # Makespan should be max of the two stop durations
         # fast: 5000ms, reasoning: 15000ms
         # Since they run in parallel, makespan = max = 15000
@@ -410,6 +424,7 @@ class TestMakespanCalculation:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         start_step = result.plan.steps[0]
         assert start_step.estimated_duration_ms == LOAD_TIME_MS["reasoning"]
 
@@ -421,6 +436,7 @@ class TestMakespanCalculation:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert result.solve_time_ms >= 0
 
 
@@ -440,6 +456,7 @@ class TestSolverStatus:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         # Could be OPTIMAL or FEASIBLE depending on solver
         assert result.solver_status in ("OPTIMAL", "FEASIBLE")
 
@@ -461,6 +478,7 @@ class TestSolverStatus:
         result = scheduler.plan_transition([current], [])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert result.solver_status == "STOPS_ONLY"
 
 
@@ -489,6 +507,7 @@ class TestEdgeCases:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert result.plan.gpu_assignments["fast"] == [0]
 
     def test_swap_endpoints(self):
@@ -501,6 +520,7 @@ class TestEdgeCases:
         result = scheduler.plan_transition([current], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         assert "fast" in result.plan.evicted_endpoints
         assert "coding" in result.plan.target_endpoints
 
@@ -513,6 +533,7 @@ class TestEdgeCases:
         result = scheduler.plan_transition([], [target])
 
         assert result.success
+        assert result.plan is not None  # Type narrowing
         # Default load time is 60000ms
         assert result.plan.steps[0].estimated_duration_ms == 60000
 

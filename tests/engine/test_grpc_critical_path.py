@@ -24,8 +24,11 @@ Usage:
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast, TYPE_CHECKING
 from google.protobuf import empty_pb2
+
+if TYPE_CHECKING:
+    from gaius.engine.grpc.server import ServiceRegistry
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Protobuf Imports - The Contract
@@ -66,6 +69,7 @@ from gaius.engine.generated import (
     TriggerEvolutionRequest,
     EvolutionCycleResponse,
     # Health Observer Messages
+    HealthObserverStatusRequest,
     HealthObserverStatusResponse,
     ForceHealthCheckResponse,
     ListIncidentsResponse,
@@ -174,6 +178,12 @@ class MockServiceRegistry:
         # Init Controller (optional)
         self.init_controller = None
 
+    def as_registry(self) -> "ServiceRegistry":
+        """Return self cast to ServiceRegistry for type-safe servicer init."""
+        # MockServiceRegistry implements the ServiceRegistry protocol;
+        # cast is safe because we provide all required attributes
+        return cast("ServiceRegistry", self)
+
 
 @pytest.fixture
 def mock_services():
@@ -184,7 +194,7 @@ def mock_services():
 @pytest.fixture
 def servicer(mock_services):
     """Create GaiusServicer with mocked services."""
-    return GaiusServicer(mock_services)
+    return GaiusServicer(mock_services.as_registry())
 
 
 @pytest.fixture
@@ -281,7 +291,7 @@ class TestStartEndpoint:
     async def test_failure_response(self, grpc_context):
         """Missing orchestrator returns EndpointResponse with success=False."""
         services = MockServiceRegistry(has_orchestrator=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = StartEndpointRequest(endpoint_name="reasoning")
         response = await servicer.StartEndpoint(request, grpc_context)
@@ -343,7 +353,7 @@ class TestRestartEndpoint:
     async def test_restart_no_orchestrator(self, grpc_context):
         """Missing orchestrator returns failure."""
         services = MockServiceRegistry(has_orchestrator=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = RestartEndpointRequest(endpoint_name="reasoning")
         response = await servicer.RestartEndpoint(request, grpc_context)
@@ -575,7 +585,7 @@ class TestCompleteEdgeCases:
     async def test_complete_no_backend_router(self, grpc_context):
         """Missing backend router returns error response."""
         services = MockServiceRegistry(has_router=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = CompleteRequest(prompt="Hello", agent_alias="fast")
         response = await servicer.Complete(request, grpc_context)
@@ -742,7 +752,7 @@ class TestHealthObserverStatus:
     @pytest.mark.asyncio
     async def test_response_includes_running_state(self, servicer, grpc_context):
         """Response includes running field indicating daemon state."""
-        response = await servicer.HealthObserverStatus(empty_pb2.Empty(), grpc_context)
+        response = await servicer.HealthObserverStatus(HealthObserverStatusRequest(), grpc_context)
 
         assert isinstance(response, HealthObserverStatusResponse)
         assert hasattr(response, "running")
@@ -750,7 +760,7 @@ class TestHealthObserverStatus:
     @pytest.mark.asyncio
     async def test_response_includes_active_incidents(self, servicer, grpc_context):
         """Response includes active_incidents count."""
-        response = await servicer.HealthObserverStatus(empty_pb2.Empty(), grpc_context)
+        response = await servicer.HealthObserverStatus(HealthObserverStatusRequest(), grpc_context)
 
         assert hasattr(response, "active_incidents")
         assert response.active_incidents >= 0
@@ -758,7 +768,7 @@ class TestHealthObserverStatus:
     @pytest.mark.asyncio
     async def test_response_includes_config(self, servicer, grpc_context):
         """Response includes config with poll_interval."""
-        response = await servicer.HealthObserverStatus(empty_pb2.Empty(), grpc_context)
+        response = await servicer.HealthObserverStatus(HealthObserverStatusRequest(), grpc_context)
 
         # Config is a nested message with poll_interval
         assert hasattr(response, "config")
@@ -768,9 +778,9 @@ class TestHealthObserverStatus:
     async def test_no_health_observer_service(self, grpc_context):
         """Missing health observer returns default response."""
         services = MockServiceRegistry(has_health_observer=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
-        response = await servicer.HealthObserverStatus(empty_pb2.Empty(), grpc_context)
+        response = await servicer.HealthObserverStatus(HealthObserverStatusRequest(), grpc_context)
 
         # Should return a response (possibly with running=False)
         assert isinstance(response, HealthObserverStatusResponse)

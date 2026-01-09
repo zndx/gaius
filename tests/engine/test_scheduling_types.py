@@ -290,6 +290,7 @@ class TestSchedulingResult:
 
         assert result.success is False
         assert result.plan is None
+        assert result.error is not None  # Type narrowing
         assert "NOFEASIBLE" in result.error
         assert result.solver_status == "INFEASIBLE_RESOURCES"
 

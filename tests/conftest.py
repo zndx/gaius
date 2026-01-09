@@ -57,6 +57,10 @@ def ci_qwen_model(ci_model_dir):
     from gaius.models import CI_QWEN_TINY
 
     cfg = CI_QWEN_TINY.llamacpp_config
+    if cfg is None:
+        pytest.skip("CI_QWEN_TINY has no llamacpp_config")
+        return None  # Unreachable, but helps type narrowing
+
     model_path = ci_model_dir / cfg.gguf_file
 
     if not model_path.exists():
@@ -90,6 +94,9 @@ def llama_server(ci_qwen_model, ci_model_dir):
     from gaius.models import CI_QWEN_TINY
 
     cfg = CI_QWEN_TINY.llamacpp_config
+    if cfg is None:
+        pytest.skip("CI_QWEN_TINY has no llamacpp_config")
+        return  # Unreachable, but helps type narrowing
 
     # Check if llama-server is available
     try:

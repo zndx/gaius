@@ -14,8 +14,11 @@ Critical Path Coverage:
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast, TYPE_CHECKING
 from google.protobuf import empty_pb2
+
+if TYPE_CHECKING:
+    from gaius.engine.grpc.server import ServiceRegistry
 
 # Generated protobuf messages
 from gaius.engine.generated import (
@@ -120,7 +123,11 @@ class MockCompletionResult:
 
 
 class MockServiceRegistry:
-    """Mock ServiceRegistry for testing."""
+    """Mock ServiceRegistry for testing.
+
+    Provides the same interface as ServiceRegistry but with MagicMock services.
+    Use as_registry() to get a properly typed reference for the servicer.
+    """
 
     def __init__(
         self,
@@ -139,6 +146,12 @@ class MockServiceRegistry:
         else:
             self.config = None
 
+    def as_registry(self) -> "ServiceRegistry":
+        """Return self cast to ServiceRegistry for type-safe servicer init."""
+        # MockServiceRegistry implements the ServiceRegistry protocol;
+        # cast is safe because we provide all required attributes
+        return cast("ServiceRegistry", self)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Orchestrator Tests
@@ -156,7 +169,7 @@ class TestOrchestratorStatus:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -206,7 +219,7 @@ class TestOrchestratorStatus:
     async def test_orchestrator_status_no_orchestrator(self, context):
         """OrchestratorStatus works without orchestrator service."""
         services = MockServiceRegistry(has_orchestrator=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         response = await servicer.OrchestratorStatus(empty_pb2.Empty(), context)
 
@@ -225,7 +238,7 @@ class TestStartEndpoint:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -249,7 +262,7 @@ class TestStartEndpoint:
     async def test_start_endpoint_no_orchestrator(self, context):
         """StartEndpoint fails without orchestrator service."""
         services = MockServiceRegistry(has_orchestrator=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = StartEndpointRequest(endpoint_name="reasoning")
         response = await servicer.StartEndpoint(request, context)
@@ -282,7 +295,7 @@ class TestStopEndpoint:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -304,7 +317,7 @@ class TestStopEndpoint:
     async def test_stop_endpoint_no_orchestrator(self, context):
         """StopEndpoint fails without orchestrator service."""
         services = MockServiceRegistry(has_orchestrator=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = StopEndpointRequest(endpoint_name="reasoning")
         response = await servicer.StopEndpoint(request, context)
@@ -324,7 +337,7 @@ class TestRestartEndpoint:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -356,7 +369,7 @@ class TestCleanStart:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -384,7 +397,7 @@ class TestCleanStart:
     async def test_clean_start_no_orchestrator(self, context):
         """CleanStart fails without orchestrator service."""
         services = MockServiceRegistry(has_orchestrator=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = CleanStartRequest()
         response = await servicer.CleanStart(request, context)
@@ -409,7 +422,7 @@ class TestSchedulerStatus:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -435,7 +448,7 @@ class TestSchedulerStatus:
     async def test_scheduler_status_no_router(self, context):
         """SchedulerStatus returns zeros without router."""
         services = MockServiceRegistry(has_router=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         response = await servicer.SchedulerStatus(empty_pb2.Empty(), context)
 
@@ -454,7 +467,7 @@ class TestComplete:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -506,7 +519,7 @@ class TestComplete:
     async def test_complete_no_router(self, context):
         """Complete fails without backend router."""
         services = MockServiceRegistry(has_router=False)
-        servicer = GaiusServicer(services)
+        servicer = GaiusServicer(services.as_registry())
 
         request = CompleteRequest(prompt="Hello")
         response = await servicer.Complete(request, context)
@@ -546,7 +559,7 @@ class TestGetFreeGPU:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     def test_get_free_gpu_from_resource_manager(self, servicer, services):
         """Free GPU is selected from ResourceManager."""
@@ -594,7 +607,7 @@ class TestXAIBudget:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
@@ -630,7 +643,7 @@ class TestJobManagement:
     @pytest.fixture
     def servicer(self, services):
         """Create servicer with mock services."""
-        return GaiusServicer(services)
+        return GaiusServicer(services.as_registry())
 
     @pytest.fixture
     def context(self):
