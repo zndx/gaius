@@ -163,7 +163,7 @@ Feature: Model Library KB Upkeep
       | Model requires ~259GB VRAM but only 144GB|
     And the Cerebras section should show GLM-4.6 as available option
       | field   | value         |
-      | Model   | glm-4.6       |
+      | Model   | glm-4.7       |
       | Speed   | ~1,000 tok/s  |
 
   # ==========================================================================

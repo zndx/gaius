@@ -69,6 +69,7 @@
     grpcurl
     imagemagick
     jq
+    llama-cpp
     metabase
     mdbook
     mdbook-d2

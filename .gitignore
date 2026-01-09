@@ -104,3 +104,7 @@ gaius-ui/.turbo/
 gaius-ui/.wrangler/
 gaius-ui/dist/
 gaius-ui/**/dist/
+scripts/output/
+
+# Private configuration (prospects, API keys, etc.)
+config/
