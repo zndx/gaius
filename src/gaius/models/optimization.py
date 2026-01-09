@@ -609,10 +609,10 @@ class AgentOptimizer:
 
         Uses local reasoning model to propose prompt improvements.
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         candidates = []
-        client = get_client()
+        client = await get_grpc_client()
 
         # Generate prompt variations
         for i in range(num_candidates):
@@ -640,13 +640,18 @@ Requirements:
 
 Output ONLY the new system prompt, nothing else."""
 
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                temperature=0.8,  # Higher for diversity
-                max_tokens=2048,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "temperature": 0.8,  # Higher for diversity
+                    "max_tokens": 2048,
+                },
             )
 
-            new_prompt = result.content.strip()
+            new_prompt = result.get("content", "").strip()
             if new_prompt.startswith("```"):
                 new_prompt = new_prompt.split("```")[1].strip()
 
@@ -674,10 +679,10 @@ Output ONLY the new system prompt, nothing else."""
 
         Learns from examples to construct better prompts.
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         candidates = []
-        client = get_client()
+        client = await get_grpc_client()
 
         # Bootstrap: analyze successful patterns from examples
         example_analysis = []
@@ -737,13 +742,18 @@ Current system prompt:
 Add explicit criteria/guidelines to the system prompt based on patterns in the examples.
 Output ONLY the new system prompt."""
 
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                temperature=0.7,
-                max_tokens=2048,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "temperature": 0.7,
+                    "max_tokens": 2048,
+                },
             )
 
-            new_prompt = result.content.strip()
+            new_prompt = result.get("content", "").strip()
             if new_prompt.startswith("```"):
                 new_prompt = new_prompt.split("```")[1].strip()
 
@@ -1063,24 +1073,27 @@ Output ONLY the new system prompt."""
             # No xAI API key, skip
             return config.avg_score
 
-        from ..inference import get_client, Message
-        client = get_client()
+        from gaius.client import get_grpc_client
+        client = await get_grpc_client()
 
         scores = []
         for example in examples[:3]:  # Limit frontier calls
             # Generate output
-            result = await client.complete(
-                [
-                    Message(role="system", content=config.system_prompt),
-                    Message(role="user", content=example.input_prompt),
-                ],
-                temperature=config.temperature,
-                max_tokens=1024,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": example.input_prompt,
+                    "system_prompt": config.system_prompt,
+                    "agent": "fast",
+                    "temperature": config.temperature,
+                    "max_tokens": 1024,
+                },
             )
 
             # Evaluate with frontier
             eval_result = await evaluator.evaluate(
-                agent_output=result.content,
+                agent_output=result.get("content", ""),
                 task_prompt=example.input_prompt,
                 context=example.context,
                 dimensions=[
