@@ -5070,7 +5070,8 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
         async def research():
             start_time = datetime.now()
             try:
-                from .inference import get_client, get_search, Message
+                from .client import get_grpc_client
+                from .inference import get_search
 
                 # Search for information
                 think.stream_reasoning("Searching web sources...")
@@ -5091,8 +5092,8 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
                     f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
                 )
 
-                # Synthesize with LLM
-                client = get_client()
+                # Synthesize with LLM via gRPC
+                client = await get_grpc_client()
                 synthesis_prompt = f"""Topic: {topic}
 Domain: {domain}
 
@@ -5106,17 +5107,18 @@ Create a structured markdown note with:
 
 Be concise but thorough."""
 
-                synthesis = await client.complete(
-                    messages=[
-                        Message(
-                            role="system",
-                            content=f"You are a research assistant specializing in {domain}.",
-                        ),
-                        Message(role="user", content=synthesis_prompt),
-                    ],
-                    technique="cot_reflection",
-                    max_tokens=2048,
+                synthesis = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": synthesis_prompt,
+                        "system_prompt": f"You are a research assistant specializing in {domain}.",
+                        "agent": "fast",
+                        "technique": "cot_reflection",
+                        "max_tokens": 2048,
+                    },
                 )
+                synthesis_content = synthesis.get("content", "")
 
                 # Save to KB
                 today = datetime.now().strftime("%Y-%m-%d")
@@ -5131,7 +5133,7 @@ Domain: {domain}
 
 ---
 
-{synthesis.content}
+{synthesis_content}
 
 ---
 
@@ -5154,7 +5156,7 @@ Domain: {domain}
 
 ---
 
-{synthesis.content}
+{synthesis_content}
 
 ---
 
@@ -5169,7 +5171,7 @@ Domain: {domain}
                     operation="research",
                     query=topic,
                     summary=f"Synthesized {len(results)} sources → {kb_path}",
-                    tokens=synthesis.input_tokens + synthesis.output_tokens,
+                    tokens=synthesis.get("input_tokens", 0) + synthesis.get("output_tokens", 0),
                     sources=len(results),
                     duration_ms=duration_ms,
                 )

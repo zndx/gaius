@@ -1245,22 +1245,27 @@ def create_server() -> "FastMCP":
             max_tokens: Maximum tokens to generate
         """
         try:
-            from .inference import get_client, Message
+            from .client import get_grpc_client
 
-            client = get_client()
-            result = await client.complete(
-                messages=[Message(role="user", content=question)],
-                technique=technique or None,
-                max_tokens=max_tokens,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": question,
+                    "agent": "fast",
+                    "technique": technique or "",
+                    "max_tokens": max_tokens,
+                },
             )
 
             return json.dumps(
                 {
-                    "response": result.content,
-                    "model": result.model,
-                    "technique": result.technique,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
+                    "response": result.get("content", ""),
+                    "model": result.get("model", ""),
+                    "technique": technique or "",
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
                 },
                 indent=2,
             )
@@ -1315,7 +1320,8 @@ def create_server() -> "FastMCP":
             save_to_kb: Whether to save the result to the KB
         """
         try:
-            from .inference import get_client, get_search, Message
+            from .client import get_grpc_client
+            from .inference import get_search
 
             # Search for information
             search = get_search()
@@ -1329,8 +1335,8 @@ def create_server() -> "FastMCP":
                 f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
             )
 
-            # Synthesize with local LLM
-            client = get_client()
+            # Synthesize with local LLM via gRPC
+            client = await get_grpc_client()
             synthesis_prompt = f"""Topic: {topic}
 Domain: {domain or 'general'}
 
@@ -1344,17 +1350,20 @@ Create a structured markdown note with:
 
 Be concise but thorough."""
 
-            synthesis = await client.complete(
-                messages=[
-                    Message(
-                        role="system",
-                        content=f"You are a research assistant specializing in {domain or 'general topics'}.",
-                    ),
-                    Message(role="user", content=synthesis_prompt),
-                ],
-                technique="cot_reflection",  # Use reflection for better synthesis
-                max_tokens=2048,
+            synthesis = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": synthesis_prompt,
+                    "system_prompt": f"You are a research assistant specializing in {domain or 'general topics'}.",
+                    "agent": "fast",
+                    "technique": "cot_reflection",
+                    "max_tokens": 2048,
+                },
             )
+
+            # Extract content from gRPC response
+            synthesis_content = synthesis.get("content", "")
 
             # Create KB entry if requested
             kb_path = None
@@ -1371,7 +1380,7 @@ Domain: {domain or 'general'}
 
 ---
 
-{synthesis.content}
+{synthesis_content}
 
 ---
 
@@ -1387,7 +1396,7 @@ Domain: {domain or 'general'}
                 {
                     "topic": topic,
                     "domain": domain,
-                    "synthesis": synthesis.content,
+                    "synthesis": synthesis_content,
                     "sources": results,
                     "kb_path": kb_path,
                 },
@@ -1827,40 +1836,46 @@ Domain: {domain or 'general'}
             max_tokens: Maximum tokens to generate
         """
         try:
-            from .inference import get_client, Message
+            from .client import get_grpc_client
             from .models import get_model_for_task, TaskType
 
             # Get preferred reasoning model (may not be deployed)
             model_spec = get_model_for_task(TaskType.REASONING)
-            client = get_client()
-
-            messages = []
-            if system_prompt:
-                messages.append(Message(role="system", content=system_prompt))
-            messages.append(Message(role="user", content=question))
+            client = await get_grpc_client()
 
             # Try with preferred model, fallback to default on error
             try:
-                result = await client.complete(
-                    messages=messages,
-                    model=model_spec.model_id if model_spec else None,
-                    temperature=model_spec.default_temperature if model_spec else 0.6,
-                    max_tokens=max_tokens,
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": question,
+                        "system_prompt": system_prompt or "",
+                        "agent": "reasoning",
+                        "temperature": model_spec.default_temperature if model_spec else 0.6,
+                        "max_tokens": max_tokens,
+                    },
                 )
             except Exception:
                 # Fallback: use default model (no override)
-                result = await client.complete(
-                    messages=messages,
-                    temperature=0.6,
-                    max_tokens=max_tokens,
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": question,
+                        "system_prompt": system_prompt or "",
+                        "agent": "fast",
+                        "temperature": 0.6,
+                        "max_tokens": max_tokens,
+                    },
                 )
 
             return json.dumps(
                 {
-                    "response": result.content,
-                    "model": result.model,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
+                    "response": result.get("content", ""),
+                    "model": result.get("model", ""),
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
                 },
                 indent=2,
             )

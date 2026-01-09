@@ -127,8 +127,13 @@ class GPUHealth:
 
     @property
     def is_healthy(self) -> bool:
-        """Check if GPU is in healthy state."""
-        return self.temperature_c < 85 and self.memory_used_pct < 98
+        """Check if GPU is in healthy state.
+
+        Thresholds:
+        - Temperature: < 85°C (thermal throttling typically starts at 83-85°C)
+        - Memory: < 95% (leaves headroom for allocation spikes)
+        """
+        return self.temperature_c < 85 and self.memory_used_pct < 95
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization."""

@@ -77,39 +77,45 @@ async def ask_reasoning(
         Dict with keys: content, model, input_tokens, output_tokens
     """
     try:
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
         from ..models import get_model_for_task, TaskType
 
         # Get preferred reasoning model (may not be deployed)
         model_spec = get_model_for_task(TaskType.REASONING)
-        client = get_client()
-
-        messages = []
-        if system_prompt:
-            messages.append(Message(role="system", content=system_prompt))
-        messages.append(Message(role="user", content=question))
+        client = await get_grpc_client()
 
         # Try with preferred model, fallback to default on error
         try:
-            result = await client.complete(
-                messages=messages,
-                model=model_spec.model_id if model_spec else None,
-                temperature=model_spec.default_temperature if model_spec else 0.6,
-                max_tokens=max_tokens,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": question,
+                    "system_prompt": system_prompt or "",
+                    "agent": "reasoning" if model_spec else "fast",
+                    "temperature": model_spec.default_temperature if model_spec else 0.6,
+                    "max_tokens": max_tokens,
+                },
             )
         except Exception:
             # Fallback: use default model (no override)
-            result = await client.complete(
-                messages=messages,
-                temperature=0.6,
-                max_tokens=max_tokens,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": question,
+                    "system_prompt": system_prompt or "",
+                    "agent": "fast",
+                    "temperature": 0.6,
+                    "max_tokens": max_tokens,
+                },
             )
 
         return {
-            "content": result.content,
-            "model": result.model,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
+            "content": result.get("content", ""),
+            "model": result.get("model", ""),
+            "input_tokens": result.get("input_tokens", 0),
+            "output_tokens": result.get("output_tokens", 0),
         }
     except Exception as e:
         logger.warning(f"ask_reasoning failed: {e}")

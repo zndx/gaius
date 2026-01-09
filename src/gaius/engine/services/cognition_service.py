@@ -1564,7 +1564,8 @@ class CognitionService(BaseDaemon):
 
         # Import inference components
         try:
-            from ...inference import get_client, get_search, Message
+            from gaius.client import get_grpc_client
+            from ...inference import get_search
         except ImportError:
             # Fallback for minimal functionality
             logger.warning("Inference module not available, skipping synthesis")
@@ -1622,7 +1623,7 @@ class CognitionService(BaseDaemon):
             )
 
         # Synthesize with LLM
-        client = get_client()
+        client = await get_grpc_client()
         synthesis_prompt = f"""Research Thread: {topic}
 Domain: {domain}
 Current Focus: {thread_data.get('current_focus', next_steps)}
@@ -1649,18 +1650,18 @@ SUMMARY:
 Your summary note content"""
 
         try:
-            synthesis = await client.complete(
-                messages=[
-                    Message(
-                        role="system",
-                        content=f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
-                    ),
-                    Message(role="user", content=synthesis_prompt),
-                ],
-                technique="cot_reflection",
-                max_tokens=2048,
+            synthesis = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": synthesis_prompt,
+                    "system_prompt": f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
+                    "agent": "fast",
+                    "technique": "cot_reflection",
+                    "max_tokens": 2048,
+                },
             )
-            synthesis_content = synthesis.content
+            synthesis_content = synthesis.get("content", "")
         except Exception as e:
             logger.warning(f"Synthesis failed for thread {thread_id}: {e}")
             synthesis_content = f"Sources found but synthesis failed: {e}\n\nSources:\n{sources_text}"

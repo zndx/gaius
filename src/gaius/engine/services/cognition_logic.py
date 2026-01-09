@@ -214,9 +214,9 @@ async def process_cognition_cycle(
         # Get inference client
         if inference_client is None:
             try:
-                from ...inference import get_client
+                from gaius.client import get_grpc_client
 
-                inference_client = get_client()
+                inference_client = await get_grpc_client()
                 logger.info(f"Inference client obtained: {type(inference_client).__name__}")
             except ImportError as e:
                 logger.error(f"Failed to import inference client: {e}")
@@ -445,28 +445,29 @@ Trigger reason: {trigger_reason}"""
         logger.info(f"Generating thoughts with prompt length: {len(prompt)}")
         logger.debug(f"Cognition prompt:\n{prompt[:500]}...")
 
-        response = await inference_client.complete(
-            messages=[
-                Message(
-                    role="system",
-                    content="You are a knowledge analyst examining a personal knowledge base. "
+        response = await inference_client.call(
+            service="Scheduler",
+            action="complete",
+            params={
+                "prompt": prompt,
+                "system_prompt": "You are a knowledge analyst examining a personal knowledge base. "
                     "Find patterns, connections, and generate curiosity about the content.",
-                ),
-                Message(role="user", content=prompt),
-            ],
-            max_tokens=2048,
+                "agent": "fast",
+                "max_tokens": 2048,
+            },
         )
 
-        tokens_out = getattr(response, 'output_tokens', 0)
-        logger.info(f"LLM response length: {len(response.content) if response.content else 0}, tokens_out: {tokens_out}")
-        if response.content:
+        tokens_out = response.get("output_tokens", 0)
+        response_content = response.get("content", "")
+        logger.info(f"LLM response length: {len(response_content)}, tokens_out: {tokens_out}")
+        if response_content:
             # Log first 500 chars to help debug parsing issues
-            logger.info(f"LLM response preview:\n{response.content[:500]}...")
+            logger.info(f"LLM response preview:\n{response_content[:500]}...")
         else:
             logger.warning("LLM returned empty response!")
 
         # Parse response into thought dicts
-        thoughts = _parse_thoughts(response.content)
+        thoughts = _parse_thoughts(response_content)
         logger.info(f"Parsed {len(thoughts)} thoughts from response")
 
         return thoughts, tokens_out
@@ -1118,9 +1119,9 @@ async def process_self_observation(
     try:
         if inference_client is None:
             try:
-                from ...inference import get_client
+                from gaius.client import get_grpc_client
 
-                inference_client = get_client()
+                inference_client = await get_grpc_client()
             except ImportError:
                 result.error = "Inference client not available"
                 return result
@@ -1147,7 +1148,6 @@ async def process_self_observation(
             return result
 
         # Analyze thought patterns
-        from ...inference import Message
 
         thoughts_text = "\n".join(
             f"- [{row['thought_type']}] {row['title']}: {row['summary'][:100]}"
@@ -1170,20 +1170,20 @@ TITLE: Brief observation title
 SUMMARY: Detailed explanation
 SALIENCE: 0.0-1.0"""
 
-        response = await inference_client.complete(
-            messages=[
-                Message(
-                    role="system",
-                    content="You are analyzing an AI system's thought patterns "
+        response = await inference_client.call(
+            service="Scheduler",
+            action="complete",
+            params={
+                "prompt": prompt,
+                "system_prompt": "You are analyzing an AI system's thought patterns "
                     "to identify blind spots and improvement areas.",
-                ),
-                Message(role="user", content=prompt),
-            ],
-            max_tokens=1024,
+                "agent": "fast",
+                "max_tokens": 1024,
+            },
         )
 
         # Parse and save observations
-        observations = _parse_thoughts(response.content)
+        observations = _parse_thoughts(response.get("content", ""))
         for obs in observations:
             obs["type"] = "self_observation"
 
@@ -1520,9 +1520,9 @@ async def process_task_ideation(
 
         if inference_client is None:
             try:
-                from ...inference import get_client
+                from gaius.client import get_grpc_client
 
-                inference_client = get_client()
+                inference_client = await get_grpc_client()
             except ImportError:
                 result.error = "Inference client not available"
                 return result
@@ -1543,7 +1543,6 @@ async def process_task_ideation(
                 existing_tasks = [row["task_type"] for row in rows]
 
         # Generate task ideas via inference
-        from ...inference import Message
 
         prompt = f"""Analyze gaps in this task coverage and propose new task types.
 
@@ -1562,21 +1561,21 @@ CAPABILITY: What skill does this test?
 DESCRIPTION: One paragraph description
 EVALUATION: How to measure success"""
 
-        response = await inference_client.complete(
-            messages=[
-                Message(
-                    role="system",
-                    content="You are designing reasoning tasks for AI capability development. "
+        response = await inference_client.call(
+            service="Scheduler",
+            action="complete",
+            params={
+                "prompt": prompt,
+                "system_prompt": "You are designing reasoning tasks for AI capability development. "
                     "Focus on novel, challenging tasks that test different skills.",
-                ),
-                Message(role="user", content=prompt),
-            ],
-            max_tokens=2048,
+                "agent": "fast",
+                "max_tokens": 2048,
+            },
         )
 
         # Parse task concepts
         task_names = []
-        for line in response.content.split("\n"):
+        for line in response.get("content", "").split("\n"):
             if line.strip().upper().startswith("NAME:"):
                 name = line.split(":", 1)[1].strip()
                 if name:
@@ -1752,9 +1751,9 @@ async def process_daily_summary(
         # Generate summary text
         if use_llm and inference_client is None:
             try:
-                from ...inference import get_client
+                from gaius.client import get_grpc_client
 
-                inference_client = get_client()
+                inference_client = await get_grpc_client()
             except ImportError:
                 use_llm = False
 
@@ -1770,23 +1769,18 @@ Generated: {datetime.now().isoformat()}
 
         if use_llm and inference_client:
             try:
-                from ...inference import Message
-
-                response = await inference_client.complete(
-                    messages=[
-                        Message(
-                            role="system",
-                            content="You are generating a brief activity summary.",
-                        ),
-                        Message(
-                            role="user",
-                            content=f"Summarize this activity period:\n{summary_text}\n\n"
+                response = await inference_client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": f"Summarize this activity period:\n{summary_text}\n\n"
                             "Add brief insights about the activity level.",
-                        ),
-                    ],
-                    max_tokens=512,
+                        "system_prompt": "You are generating a brief activity summary.",
+                        "agent": "fast",
+                        "max_tokens": 512,
+                    },
                 )
-                summary_text += f"\n## Insights\n\n{response.content}\n"
+                summary_text += f"\n## Insights\n\n{response.get('content', '')}\n"
             except Exception as e:
                 logger.warning(f"LLM summary failed: {e}")
 
