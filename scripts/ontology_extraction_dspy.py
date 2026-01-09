@@ -50,7 +50,7 @@ def get_dspy_lm(provider: str) -> dspy.LM:
     """Get DSPy language model for provider."""
     if provider == "cerebras":
         return dspy.LM(
-            model="cerebras/zai-glm-4.6",
+            model="cerebras/zai-glm-4.7",
             api_key=CEREBRAS_API_KEY,
             max_tokens=4096,
             temperature=0.3,

@@ -718,7 +718,7 @@ def get_dspy_lm(provider: str, technique: str = "") -> dspy.LM:
     """
     if provider == "cerebras":
         return dspy.LM(
-            model="cerebras/zai-glm-4.6",
+            model="cerebras/zai-glm-4.7",
             api_key=CEREBRAS_API_KEY,
             max_tokens=4096,
             temperature=0.3,
@@ -749,7 +749,7 @@ def get_dspy_lm(provider: str, technique: str = "") -> dspy.LM:
 def get_model_name(provider: str, technique: str = "") -> str:
     """Get model name for provider."""
     if provider == "cerebras":
-        return "zai-glm-4.6"
+        return "zai-glm-4.7"
     elif provider == "xai":
         return "grok-4-1-fast-non-reasoning"
     elif provider == "local":

@@ -50,7 +50,7 @@ XAI_URL = "https://api.x.ai/v1"
 DEFAULT_LOCAL_MODEL = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 
 # Cerebras GLM model - blazing fast inference at 1000+ tokens/sec
-CEREBRAS_MODEL = "zai-glm-4.6"
+CEREBRAS_MODEL = "zai-glm-4.7"
 
 # xAI Grok model - fast mode with 2M context
 GROK_MODEL = "grok-4-1-fast-non-reasoning"
