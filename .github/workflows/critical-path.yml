@@ -87,7 +87,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   database:
     name: Database Tests
-    runs-on: ubuntu-larger  # Custom 8-core runner with ~150GB disk
+    runs-on:
+      group: default-larger-runners
+      labels: ubuntu-larger
     timeout-minutes: 30
 
     services:
@@ -177,7 +179,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   inference:
     name: Inference Tests
-    runs-on: ubuntu-larger  # Custom 8-core runner with ~150GB disk
+    runs-on:
+      group: default-larger-runners
+      labels: ubuntu-larger
     timeout-minutes: 45
 
     env:
