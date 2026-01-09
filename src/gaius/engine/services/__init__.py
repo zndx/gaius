@@ -69,6 +69,27 @@ from .x_bookmarks_service import (
     XBookmarksService,
     XSyncRun,
 )
+from .prospects_service import (
+    CandidateInfo,
+    ProspectsConfig,
+    ProspectsError,
+    ProspectsService,
+    StrategyInfo,
+)
+from .fmp_client import (
+    CompanyProfile,
+    FMPClient,
+    FMPClientConfig,
+    FMPClientError,
+    InstitutionalHolder,
+    SECFiling,
+)
+from .prospects_analysis import (
+    AnalysisError,
+    FilingAnalysis,
+    PositionSynthesis,
+    ProspectsAnalyzer,
+)
 
 __all__ = [
     # Orchestrator
@@ -132,6 +153,24 @@ __all__ = [
     "XBookmarksConfig",
     "XBookmarksService",
     "XSyncRun",
+    # Prospects/Stewardship
+    "CandidateInfo",
+    "ProspectsConfig",
+    "ProspectsError",
+    "ProspectsService",
+    "StrategyInfo",
+    # FMP Client
+    "CompanyProfile",
+    "FMPClient",
+    "FMPClientConfig",
+    "FMPClientError",
+    "InstitutionalHolder",
+    "SECFiling",
+    # Prospects Analysis
+    "AnalysisError",
+    "FilingAnalysis",
+    "PositionSynthesis",
+    "ProspectsAnalyzer",
     # CLT (lazy-loaded)
     "AgentCLTState",
     "CLTProjectionBridge",

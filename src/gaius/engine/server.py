@@ -102,6 +102,9 @@ class GaiusEngine:
         # X Bookmarks service (sync X/Twitter bookmarks to KB)
         self._x_bookmarks_service = None
 
+        # Prospects/Stewardship service (FMP-based financial intelligence)
+        self._prospects_service = None
+
         # Ambient computing workload service
         self._ambient_service = None
 
@@ -229,6 +232,9 @@ class GaiusEngine:
         # 2.5 Start X Bookmarks service EARLY (no GPU deps, needed for InitPanel status)
         #     This runs before the ~240s vLLM preload so XB status is available immediately
         await self._init_x_bookmarks_service()
+
+        # 2.6 Start Prospects/Stewardship service EARLY (no GPU deps, lightweight status)
+        await self._init_prospects_service()
 
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
         await self._init_telemetry()
@@ -743,6 +749,61 @@ class GaiusEngine:
             logger.warning(f"X Bookmarks service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize X Bookmarks service: {e}")
+
+    async def _init_prospects_service(self) -> None:
+        """Initialize Prospects/Stewardship service.
+
+        The ProspectsService manages FMP-based financial intelligence:
+        - Daily SEC filing checks ($0 cost via pg_cron)
+        - Status queries (cached data, no LLM)
+        - Full billable analysis (Cerebras + Grok)
+        - KB artifact generation (Obsidian .base files)
+
+        Runs via Metaflow flows triggered by gRPC RPCs.
+        """
+        try:
+            from .services.prospects_service import ProspectsService, ProspectsConfig
+            import asyncpg
+
+            logger.info("Initializing Prospects/Stewardship service...")
+
+            # Get database pool from config
+            db_url = os.environ.get(
+                "DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            # Create database pool
+            pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
+
+            # Create service config
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = ProspectsConfig(
+                kb_root=kb_root,
+                default_profile="zndx",
+                default_domain="prospecting",
+            )
+
+            # Create and start service
+            self._prospects_service = ProspectsService(
+                pool=pool,
+                config=config,
+            )
+
+            await self._prospects_service.start()
+            logger.info("Prospects/Stewardship service started")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "prospects_service", self._prospects_service
+                )
+                logger.info("Prospects/Stewardship service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"Prospects/Stewardship service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Prospects/Stewardship service: {e}")
 
     async def _init_ambient_service(self) -> None:
         """Initialize the Ambient Computing Workload service.
