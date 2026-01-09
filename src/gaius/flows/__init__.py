@@ -31,6 +31,11 @@ def _register_builtin_flows():
     except ImportError:
         pass  # docling may not be installed
 
+    try:
+        from gaius.flows.prospects import ProspectsCheckFlow, ProspectsUpdateFlow  # noqa: F401
+    except ImportError:
+        pass  # prospects dependencies may not be installed
+
 
 _register_builtin_flows()
 
