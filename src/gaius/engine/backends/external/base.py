@@ -17,13 +17,14 @@ class ExternalResponse:
     """Response from an external inference API.
 
     Attributes:
-        content: Generated text content
+        content: Generated text content (for reasoning models, parsed JSON)
         model: Model that generated response
         provider: Provider name (xai, cerebras, bytez)
         input_tokens: Number of input tokens
         output_tokens: Number of output tokens
         latency_ms: Request latency in milliseconds
         error: Error message if request failed
+        reasoning: Chain-of-thought from reasoning models (for distillation)
     """
 
     content: str
@@ -33,6 +34,7 @@ class ExternalResponse:
     output_tokens: int = 0
     latency_ms: int = 0
     error: Optional[str] = None
+    reasoning: Optional[str] = None
 
     @property
     def success(self) -> bool:

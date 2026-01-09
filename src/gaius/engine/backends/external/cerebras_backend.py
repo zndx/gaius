@@ -5,11 +5,21 @@ Per-token pricing model with separate budget tracking.
 
 Cerebras models:
 - llama-3.3-70b: Standard chat model
-- zai-glm-4.6: Reasoning model (outputs chain-of-thought in 'reasoning' field)
+- zai-glm-4.7: Reasoning model (outputs chain-of-thought in 'reasoning' field)
 - qwen-3-32b: Efficient mid-size model
 
-Reasoning models (like GLM) need sufficient max_tokens to complete their
-chain-of-thought before producing the final answer in 'content'.
+GLM 4.7 notes:
+- Reasoning is enabled by default (chain-of-thought in 'reasoning' field)
+- Supports structured outputs and tool calling with strict: true
+- Use clear_thinking=false for agentic workflows where past reasoning informs
+  future tool calls (defaults to true, which excludes previous thinking)
+
+GLM 4.7 quirks (from migration guide):
+- REQUIRES a non-trivial system message for structured outputs to populate 'content'
+- Without system message, 'content' is None and only 'reasoning' is populated
+- Set disable_reasoning=true for simple tasks to reduce latency
+- May switch languages - always specify "Respond in English" in system prompt
+- Adjust either temperature OR top_p, not both simultaneously
 """
 
 import asyncio
@@ -36,8 +46,8 @@ class CerebrasBackend(ExternalBackend):
     """
 
     # Cerebras model IDs use their own format (no slash like HuggingFace)
-    # Examples: llama-3.3-70b, zai-glm-4.6, qwen-3-32b
-    DEFAULT_MODEL = "zai-glm-4.6"
+    # Examples: llama-3.3-70b, zai-glm-4.7, qwen-3-32b
+    DEFAULT_MODEL = "zai-glm-4.7"
 
     # Recommended max_tokens for reasoning models to complete their chain-of-thought
     # GLM uses ~300-500 tokens for reasoning before producing final answer
@@ -82,15 +92,26 @@ class CerebrasBackend(ExternalBackend):
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict[str, Any]] = None,
+        disable_reasoning: bool = False,
+        clear_thinking: bool = True,
         **kwargs: Any,
     ) -> ExternalResponse:
         """Execute completion via Cerebras Cloud.
 
         Args:
             messages: Chat messages in OpenAI format
-            model: Model to use (default: zai-glm-4.6)
+            model: Model to use (default: zai-glm-4.7)
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate (default: 2048 for reasoning models)
+            response_format: Optional structured output format. Use:
+                {"type": "json_schema", "json_schema": {"name": "schema_name", "strict": True, "schema": {...}}}
+                to enforce JSON schema compliance.
+            disable_reasoning: GLM 4.7 only - disable chain-of-thought reasoning for faster
+                simple responses. Default False (reasoning enabled).
+            clear_thinking: GLM 4.7 only - whether to exclude thinking from previous turns.
+                Default True. Set to False for agentic/coding workflows where reasoning
+                should persist across turns (improves prompt cache hit rate).
 
         Returns:
             ExternalResponse with completion result
@@ -119,28 +140,46 @@ class CerebrasBackend(ExternalBackend):
         start_time = time.time()
 
         try:
+            # Build API parameters
+            api_params: dict[str, Any] = {
+                "messages": messages,
+                "model": use_model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            # Add structured output format if provided
+            if response_format is not None:
+                api_params["response_format"] = response_format
+            # GLM 4.7 reasoning controls
+            if "glm" in use_model.lower():
+                if disable_reasoning:
+                    api_params["disable_reasoning"] = True
+                if not clear_thinking:
+                    api_params["clear_thinking"] = False
+
             # Run sync client in thread pool
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: client.chat.completions.create(
-                    messages=messages,
-                    model=use_model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                ),
+                lambda: client.chat.completions.create(**api_params),
             )
 
             latency_ms = int((time.time() - start_time) * 1000)
 
             # Extract response - handle both standard content and reasoning models
             content = ""
+            reasoning = None
             if response.choices:
                 message = response.choices[0].message
-                # Standard models use 'content', reasoning models (like GLM) use 'reasoning'
+                # Standard models use 'content', reasoning models (like GLM) also
+                # populate 'content' when structured outputs are used
                 content = message.content or ""
-                if not content and hasattr(message, "reasoning") and message.reasoning:
-                    content = message.reasoning
+                # Capture reasoning for distillation (GLM chain-of-thought)
+                if hasattr(message, "reasoning") and message.reasoning:
+                    reasoning = message.reasoning
+                    # Fallback: if no content but has reasoning (no structured output)
+                    if not content:
+                        content = reasoning
             usage = response.usage if hasattr(response, "usage") else None
 
             return ExternalResponse(
@@ -150,6 +189,7 @@ class CerebrasBackend(ExternalBackend):
                 input_tokens=usage.prompt_tokens if usage else 0,
                 output_tokens=usage.completion_tokens if usage else 0,
                 latency_ms=latency_ms,
+                reasoning=reasoning,
             )
 
         except Exception as e:

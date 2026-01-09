@@ -83,7 +83,7 @@ class CerebrasModel:
         return False
 
 
-# Static model catalog (from Cerebras pricing page, Dec 2025)
+# Static model catalog (from Cerebras pricing page, Jan 2026)
 # These are the models available via Cerebras Inference API
 CEREBRAS_MODELS: list[CerebrasModel] = [
     CerebrasModel(
@@ -138,15 +138,14 @@ CEREBRAS_MODELS: list[CerebrasModel] = [
         family="gpt-oss",
     ),
     CerebrasModel(
-        model_id="glm-4.6",
-        name="GLM 4.6",
-        params_b=9,  # Approximate
-        context_length=128000,
-        input_price_per_m=2.25,
-        output_price_per_m=2.75,
+        model_id="glm-4.7",
+        name="GLM 4.7",
+        params_b=358,  # MoE architecture
+        context_length=200000,
+        input_price_per_m=0.60,
+        output_price_per_m=2.20,
         speed_tokens_per_sec=1000,
         family="glm",
-        is_preview=True,
     ),
 ]
 
