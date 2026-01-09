@@ -291,6 +291,9 @@ class GaiusCLI:
                 # Models - HuggingFace model discovery and KB management
                 elif command == "models" or command == "m":
                     result["data"] = self._run_async(self._cmd_models(args))
+                # Prospects - FMP-based prospect intelligence
+                elif command == "prospects" or command == "pro":
+                    result["data"] = self._run_async(self._cmd_prospects(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -2404,33 +2407,35 @@ When discussing technical topics, be precise and cite sources when possible."""
 
             return response_data
 
-        # Fallback to engine inference client
+        # Fallback to engine inference client via gRPC
         try:
-            from .client import get_engine_client
-            from .inference import Message
+            from .client import get_grpc_client
 
-            client = await get_engine_client()
+            client = await get_grpc_client()
 
-            result = await client.complete(
-                messages=[
-                    Message(role="system", content=system),
-                    Message(role="user", content=query),
-                ],
-                technique="cot_reflection",
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": query,
+                    "system_prompt": system,
+                    "agent": "fast",
+                    "technique": "cot_reflection",
+                },
             )
 
             response_data = {
                 "mode": "reasoning",
                 "query": query,
-                "response": result.content,
-                "model": result.model,
-                "technique": result.technique or "cot_reflection",
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "response": result.get("content", ""),
+                "model": result.get("model", ""),
+                "technique": "cot_reflection",
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "backend": "engine",
             }
 
             if save_to_kb:
-                saved_path = await self._save_to_kb(query, result.content, "reasoning")
+                saved_path = await self._save_to_kb(query, result.get("content", ""), "reasoning")
                 response_data["saved_to"] = str(saved_path)
 
             return response_data
@@ -2509,25 +2514,29 @@ Answer:"""
                 "backend": engine_result.get("backend", "engine"),
             }
 
-        # Fallback to engine inference client
+        # Fallback to engine inference client via gRPC
         try:
-            from .client import get_engine_client
-            from .inference import Message
+            from .client import get_grpc_client
 
-            client = await get_engine_client()
+            client = await get_grpc_client()
 
-            result = await client.complete(
-                messages=[Message(role="user", content=prompt)],
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                },
             )
 
             return {
                 "mode": "search",
                 "query": query,
-                "response": result.content,
-                "model": result.model,
+                "response": result.get("content", ""),
+                "model": result.get("model", ""),
                 "kb_sources": len(kb_results),
                 "web_sources": len(web_results),
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "backend": "engine",
             }
 
@@ -2773,32 +2782,36 @@ Respond with:
 
             return response_data
 
-        # Fallback to engine inference client
+        # Fallback to engine inference client via gRPC
         try:
-            from .client import get_engine_client
-            from .inference import Message
+            from .client import get_grpc_client
 
-            client = await get_engine_client()
+            client = await get_grpc_client()
 
-            result = await client.complete(
-                messages=[Message(role="user", content=prompt)],
-                technique="cot_reflection",
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "fast",
+                    "technique": "cot_reflection",
+                },
             )
 
             response_data = {
                 "mode": "platform",
                 "query": query,
                 "diagnostics": diagnostics,
-                "response": result.content,
-                "model": result.model,
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "response": result.get("content", ""),
+                "model": result.get("model", ""),
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "backend": "engine",
             }
 
             if save_to_kb:
                 saved_path = await self._save_to_kb(
                     f"Platform: {query[:50]}",
-                    f"## Diagnostics\n```json\n{diag_text}\n```\n\n## Remediation\n{result.content}",
+                    f"## Diagnostics\n```json\n{diag_text}\n```\n\n## Remediation\n{result.get('content', '')}",
                     "platform_heuristic"
                 )
                 response_data["saved_to"] = str(saved_path)
@@ -7160,19 +7173,18 @@ Generated: {now.isoformat()}
         endpoints = []
         try:
             # Try to get status from engine via gRPC
-            from .client import get_engine_client
-            client = await get_engine_client()
+            from .client import get_grpc_client
+            client = await get_grpc_client()
 
-            if client and await client.ping():
-                status = await client.orchestrator_status()
-                for ep in status.get("endpoints", []):
-                    endpoints.append({
-                        "name": ep.get("agent_alias", ep.get("name", "?")),
-                        "status": ep.get("status", "UNKNOWN"),
-                        "pid": ep.get("pid"),
-                        "uptime": ep.get("uptime_seconds", "N/A"),
-                        "gpu_ids": ep.get("gpu_ids", []),
-                    })
+            status = await client.call("Orchestrator", "status", {})
+            for ep in status.get("endpoints", []):
+                endpoints.append({
+                    "name": ep.get("agent_alias", ep.get("name", "?")),
+                    "status": ep.get("status", "UNKNOWN"),
+                    "pid": ep.get("pid"),
+                    "uptime": ep.get("uptime_seconds", "N/A"),
+                    "gpu_ids": ep.get("gpu_ids", []),
+                })
         except Exception as e:
             # Fallback: check vLLM processes directly
             try:
@@ -7572,19 +7584,18 @@ Generated: {now.isoformat()}
         }
 
         try:
-            # Try to get status from engine
-            from .client import get_engine_client
-            client = await get_engine_client()
+            # Try to get status from engine via gRPC
+            from .client import get_grpc_client
+            client = await get_grpc_client()
 
-            if client and await client.ping():
-                evo_status = await client.evolution_status()
-                status.update({
-                    "daemon_running": "running" if evo_status.get("daemon_running") else "stopped",
-                    "total_cycles": evo_status.get("cycles_completed", 0),
-                    "last_cycle": evo_status.get("last_cycle_time", "N/A"),
-                    "next_agent": evo_status.get("next_agent", "N/A"),
-                    "gpu_idle": "yes" if evo_status.get("gpu_idle") else "no",
-                })
+            evo_status = await client.call("Evolution", "status", {})
+            status.update({
+                "daemon_running": "running" if evo_status.get("daemon_running") else "stopped",
+                "total_cycles": evo_status.get("cycles_completed", 0),
+                "last_cycle": evo_status.get("last_cycle_time", "N/A"),
+                "next_agent": evo_status.get("next_agent", "N/A"),
+                "gpu_idle": "yes" if evo_status.get("gpu_idle") else "no",
+            })
         except Exception:
             pass
 
@@ -10714,6 +10725,120 @@ Examples:
         return {
             "error": f"Unknown models subcommand: {subcmd}",
             "usage": "/models [kb|list|add|info] ...",
+        }
+
+    async def _cmd_prospects(self, args: str) -> dict:
+        """Prospects/Stewardship - FMP-based prospect intelligence via Engine gRPC.
+
+        All operations go through the Gaius Engine. No local fallbacks.
+
+        Usage:
+            /prospects                   - Show current status (cached, $0)
+            /prospects status            - Same as above
+            /prospects check [--force]   - Check for new SEC filings (~$0)
+            /prospects update [symbol] [--limit N]  - Run full LLM analysis
+            /prospects help              - Show help
+
+        Options:
+            --force, -f      Force operation even if recent
+            --limit N, -l N  Max filings per symbol (for stepwise testing)
+
+        Cost Tiers:
+            - Status: $0 (cached data)
+            - Check: ~$0 (FMP API, local decision)
+            - Update: ~$0.60/prospect (Cerebras + Grok LLM analysis)
+
+        Examples:
+            /prospects                     # Show status
+            /prospects check               # Check for new filings
+            /prospects check --force       # Force check even if recent
+            /prospects update              # Analyze all pending (20/symbol)
+            /prospects update AAPL         # Analyze single symbol
+            /prospects update --limit 2    # Stepwise: 2 filings/symbol
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        client = await get_grpc_client()
+
+        # Default / status: show current status
+        if subcmd in ("", "status"):
+            result = await client.call("Prospects", "status", {})
+            return {
+                "command": "prospects",
+                "action": "status",
+                **result,
+            }
+
+        # Check: daily check for new filings
+        if subcmd == "check":
+            force = "--force" in parts or "-f" in parts
+            result = await client.call("Prospects", "check", {"force": force})
+            return {
+                "command": "prospects",
+                "action": "check",
+                **result,
+            }
+
+        # Update: full LLM analysis (streaming)
+        if subcmd == "update":
+            symbols = []
+            force = False
+            filings_per_symbol = 0  # 0 = default (20)
+            i = 1
+            while i < len(parts):
+                part = parts[i]
+                if part in ("--force", "-f"):
+                    force = True
+                elif part in ("--limit", "-l") and i + 1 < len(parts):
+                    try:
+                        filings_per_symbol = int(parts[i + 1])
+                        i += 1
+                    except ValueError:
+                        pass
+                else:
+                    symbols.append(part.upper())
+                i += 1
+
+            # For streaming, collect events and return final result
+            events = []
+            async for event in client.stream(
+                "Prospects", "update",
+                {"symbols": symbols, "force": force, "filings_per_symbol": filings_per_symbol}
+            ):
+                events.append(event)
+                # Log progress to stderr for visibility
+                if event.get("progress"):
+                    sys.stderr.write(
+                        f"\r  {event.get('message', '')} ({event.get('progress', 0)*100:.0f}%)"
+                    )
+                    sys.stderr.flush()
+
+            sys.stderr.write("\n")
+
+            # Extract final results from events
+            final_event = events[-1] if events else {}
+            return {
+                "command": "prospects",
+                "action": "update",
+                "symbols": symbols,
+                "events_count": len(events),
+                **final_event,
+            }
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "prospects",
+                "help": self._cmd_prospects.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown prospects subcommand: {subcmd}",
+            "usage": "/prospects [status|check|update|help] ...",
         }
 
 

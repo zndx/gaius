@@ -92,6 +92,13 @@ from ..engine.generated import (
     AmbientStopRequest,
     AmbientStopResponse,
     AmbientSubscribeRequest,
+    # Prospects/Stewardship
+    ProspectsStatusRequest,
+    ProspectsStatusResponse,
+    ProspectsCheckRequest,
+    ProspectsCheckResponse,
+    ProspectsUpdateRequest,
+    ProspectsUpdateEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -435,6 +442,96 @@ class GrpcEngineClient:
                 else:
                     raise RuntimeError(f"gRPC error ({code.name}): {details}")
 
+    async def stream(
+        self,
+        service: str,
+        action: str,
+        params: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream events from a server-streaming RPC.
+
+        Currently supports:
+            - Prospects.update: Stream progress events during full analysis
+
+        Args:
+            service: Service name (e.g., "Prospects")
+            action: Action to perform (e.g., "update")
+            params: Action parameters
+            timeout: Request timeout (default 300s for streaming ops)
+
+        Yields:
+            Event dicts from the streaming response
+
+        Raises:
+            TimeoutError: If request times out
+            ConnectionError: If not connected
+            RuntimeError: If request fails
+        """
+        timeout = timeout or 300.0  # 5 minutes default for streaming
+        params = params or {}
+
+        # Ensure connected
+        if not self._connected:
+            connected = await self.connect()
+            if not connected:
+                raise ConnectionError(
+                    "#GR.00000001.CONNFAIL: gRPC not connected for streaming call"
+                )
+
+        # Dispatch to appropriate streaming method
+        if service == "Prospects" and action == "update":
+            async for event in self._stream_prospects_update(params, timeout):
+                yield event
+        else:
+            raise ValueError(
+                f"Streaming not supported for {service}.{action}. "
+                f"Use call() for non-streaming operations."
+            )
+
+    async def _stream_prospects_update(
+        self,
+        params: dict,
+        timeout: float,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream ProspectsUpdate events.
+
+        Args:
+            params: Update parameters (profile, domain, symbols, force)
+            timeout: Request timeout
+
+        Yields:
+            Event dicts with type, progress, message, etc.
+        """
+        profile = params.get("profile", "zndx")
+        domain = params.get("domain", "prospecting")
+        symbols = params.get("symbols", [])
+        force = params.get("force", False)
+        filings_per_symbol = params.get("filings_per_symbol", 0)
+
+        request = ProspectsUpdateRequest(
+            profile=profile,
+            domain=domain,
+            symbols=symbols,
+            force=force,
+            filings_per_symbol=filings_per_symbol,
+        )
+
+        try:
+            async for event in self._stub.ProspectsUpdate(request, timeout=timeout):
+                yield MessageToDict(event, preserving_proto_field_name=True)
+        except grpc.RpcError as e:
+            code = e.code()
+            details = e.details()
+
+            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                raise TimeoutError(f"ProspectsUpdate stream timed out after {timeout}s")
+            elif code == grpc.StatusCode.UNAVAILABLE:
+                self._connected = False
+                raise ConnectionError(f"Service unavailable during streaming: {details}")
+            else:
+                raise RuntimeError(f"ProspectsUpdate stream error ({code.name}): {details}")
+
     async def _dispatch_call(
         self, service: str, action: str, params: dict, timeout: float
     ) -> dict[str, Any]:
@@ -477,6 +574,8 @@ class GrpcEngineClient:
             return await self._call_datasets(action, params, timeout)
         elif service == "Models":
             return await self._call_models(action, params, timeout)
+        elif service == "Prospects":
+            return await self._call_prospects(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
 
@@ -2141,6 +2240,44 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Models action: {action}")
+
+    async def _call_prospects(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Prospects/Stewardship service calls via gRPC.
+
+        Actions:
+            status: Get current prospects status (cached, $0)
+            check: Check for new SEC filings (~$0)
+            update: Run full LLM analysis (~$0.60/prospect) - NOT IMPLEMENTED via call()
+
+        Note: For streaming update operations, use the stream() method instead.
+
+        Args:
+            action: Action to perform
+            params: Action parameters (profile, domain, force, symbols)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with prospects status or check results
+        """
+        profile = params.get("profile", "zndx")
+        domain = params.get("domain", "prospecting")
+
+        if action == "status":
+            request = ProspectsStatusRequest(profile=profile, domain=domain)
+            response = await self._stub.ProspectsStatus(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "check":
+            force = params.get("force", False)
+            request = ProspectsCheckRequest(profile=profile, domain=domain, force=force)
+            response = await self._stub.ProspectsCheck(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(
+                f"Unknown Prospects action: {action}. "
+                f"For 'update', use stream() method instead of call()."
+            )
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.
