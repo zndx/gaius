@@ -1,4 +1,4 @@
-\restrict ZVDvknLxNc0KXFnePpFCCcuujXgZD3nzwwoNawfzWI4zyyrou82ret1UwL3Jabh
+\restrict cKxwta3yUPfNrQOWviGe2yEakXVxB8rhtf0XaDDXezIkp0mP89YsJcaRtzGdmds
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -215,6 +215,29 @@ CREATE TYPE public.source_type AS ENUM (
 
 
 --
+-- Name: complete_fmp_sync_run(integer, character varying, integer, integer, integer, real, real, integer, text); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.complete_fmp_sync_run(p_run_id integer, p_status character varying, p_symbols_processed integer DEFAULT 0, p_filings_fetched integer DEFAULT 0, p_filings_new integer DEFAULT 0, p_analysis_cost real DEFAULT 0.0, p_synthesis_cost real DEFAULT 0.0, p_kb_artifacts integer DEFAULT 0, p_error_message text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE meta.fmp_sync_runs SET
+        status = p_status,
+        symbols_processed = p_symbols_processed,
+        filings_fetched = p_filings_fetched,
+        filings_new = p_filings_new,
+        analysis_cost_usd = p_analysis_cost,
+        synthesis_cost_usd = p_synthesis_cost,
+        kb_artifacts_created = p_kb_artifacts,
+        completed_at = NOW(),
+        error_message = p_error_message
+    WHERE id = p_run_id;
+END;
+$$;
+
+
+--
 -- Name: cron_job_status(); Type: FUNCTION; Schema: meta; Owner: -
 --
 
@@ -246,6 +269,105 @@ $$;
 --
 
 COMMENT ON FUNCTION meta.cron_job_status() IS 'Check status of meta observability cron jobs';
+
+
+--
+-- Name: prospect_needs_update(character varying); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.prospect_needs_update(p_symbol character varying) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_last_analysis TIMESTAMPTZ;
+    v_latest_filing DATE;
+BEGIN
+    -- Get last analysis time
+    SELECT last_analysis_at INTO v_last_analysis
+    FROM meta.prospect_strategies
+    WHERE symbol = p_symbol
+    LIMIT 1;
+
+    -- Get latest filing date
+    SELECT MAX(filing_date) INTO v_latest_filing
+    FROM meta.sec_filings_cache
+    WHERE symbol = p_symbol;
+
+    -- No filings = no update needed
+    IF v_latest_filing IS NULL THEN
+        RETURN FALSE;
+    END IF;
+
+    -- No analysis yet = update needed
+    IF v_last_analysis IS NULL THEN
+        RETURN TRUE;
+    END IF;
+
+    -- New filings since last analysis = update needed
+    RETURN v_latest_filing > v_last_analysis::DATE;
+END;
+$$;
+
+
+--
+-- Name: prospects_daily_check(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.prospects_daily_check() RETURNS TABLE(symbol character varying, needs_update boolean, pending_filings integer)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        c.symbol,
+        meta.prospect_needs_update(c.symbol) AS needs_update,
+        c.pending_filings
+    FROM meta.prospect_candidates c
+    WHERE c.priority <= 2;  -- Only check high/medium priority
+END;
+$$;
+
+
+--
+-- Name: start_fmp_sync_run(character varying, character varying, character varying); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.start_fmp_sync_run(p_profile character varying, p_domain character varying, p_run_type character varying) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_run_id INTEGER;
+BEGIN
+    INSERT INTO meta.fmp_sync_runs (profile, domain, run_type, status)
+    VALUES (p_profile, p_domain, p_run_type, 'running')
+    RETURNING id INTO v_run_id;
+
+    RETURN v_run_id;
+END;
+$$;
+
+
+--
+-- Name: update_pending_filings(character varying); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.update_pending_filings(p_symbol character varying) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_count
+    FROM meta.sec_filings_cache
+    WHERE symbol = p_symbol AND analyzed_at IS NULL;
+
+    UPDATE meta.prospect_candidates
+    SET pending_filings = v_count, updated_at = NOW()
+    WHERE symbol = p_symbol;
+
+    RETURN v_count;
+END;
+$$;
 
 
 --
@@ -2704,6 +2826,71 @@ COMMENT ON TABLE meta.fmea_rpn_timeseries IS 'Hourly RPN aggregates for FMEA tre
 
 
 --
+-- Name: fmp_sync_runs; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.fmp_sync_runs (
+    id integer NOT NULL,
+    profile character varying(64) DEFAULT 'zndx'::character varying NOT NULL,
+    domain character varying(64) DEFAULT 'prospecting'::character varying NOT NULL,
+    run_type character varying(32) NOT NULL,
+    status character varying(32) NOT NULL,
+    symbols_processed integer DEFAULT 0,
+    filings_fetched integer DEFAULT 0,
+    filings_new integer DEFAULT 0,
+    holders_fetched integer DEFAULT 0,
+    analysis_cost_usd real DEFAULT 0.0,
+    synthesis_cost_usd real DEFAULT 0.0,
+    kb_artifacts_created integer DEFAULT 0,
+    started_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone,
+    error_message text,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE fmp_sync_runs; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.fmp_sync_runs IS 'FMP sync operation history with cost tracking';
+
+
+--
+-- Name: COLUMN fmp_sync_runs.analysis_cost_usd; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.fmp_sync_runs.analysis_cost_usd IS 'Cerebras GLM 4.7 analysis cost';
+
+
+--
+-- Name: COLUMN fmp_sync_runs.synthesis_cost_usd; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.fmp_sync_runs.synthesis_cost_usd IS 'XAI Grok synthesis cost';
+
+
+--
+-- Name: fmp_sync_runs_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.fmp_sync_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: fmp_sync_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.fmp_sync_runs_id_seq OWNED BY meta.fmp_sync_runs.id;
+
+
+--
 -- Name: gpu_hourly_stats; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -2838,6 +3025,52 @@ CREATE TABLE meta.inference_throughput (
     avg_latency_ms double precision,
     p95_latency_ms double precision
 );
+
+
+--
+-- Name: institutional_holders_cache; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.institutional_holders_cache (
+    id integer NOT NULL,
+    symbol character varying(16) NOT NULL,
+    holder_name character varying(255) NOT NULL,
+    holder_cik character varying(32),
+    shares bigint,
+    shares_change bigint,
+    shares_change_pct real,
+    value_usd bigint,
+    filing_date date,
+    fetched_at timestamp with time zone DEFAULT now(),
+    iceberg_exchange_id uuid
+);
+
+
+--
+-- Name: TABLE institutional_holders_cache; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.institutional_holders_cache IS 'Cached institutional holders from FMP 13F data';
+
+
+--
+-- Name: institutional_holders_cache_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.institutional_holders_cache_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: institutional_holders_cache_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.institutional_holders_cache_id_seq OWNED BY meta.institutional_holders_cache.id;
 
 
 --
@@ -3022,6 +3255,133 @@ ALTER SEQUENCE meta.nifi_flows_id_seq OWNED BY meta.nifi_flows.id;
 
 
 --
+-- Name: prospect_candidates; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.prospect_candidates (
+    id integer NOT NULL,
+    symbol character varying(16) NOT NULL,
+    company_name character varying(255),
+    exchange character varying(32),
+    cik character varying(32),
+    sector character varying(64),
+    industry character varying(128),
+    last_filing_date date,
+    last_filing_type character varying(16),
+    pending_filings integer DEFAULT 0,
+    priority integer DEFAULT 2,
+    notes text,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE prospect_candidates; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.prospect_candidates IS 'Prospect watchlist candidates from config/prospects/watchlist.conf';
+
+
+--
+-- Name: COLUMN prospect_candidates.cik; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.prospect_candidates.cik IS 'SEC Central Index Key for EDGAR filings';
+
+
+--
+-- Name: COLUMN prospect_candidates.pending_filings; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.prospect_candidates.pending_filings IS 'Count of new filings awaiting analysis';
+
+
+--
+-- Name: prospect_candidates_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.prospect_candidates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: prospect_candidates_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.prospect_candidates_id_seq OWNED BY meta.prospect_candidates.id;
+
+
+--
+-- Name: prospect_strategies; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.prospect_strategies (
+    id integer NOT NULL,
+    symbol character varying(16) NOT NULL,
+    profile character varying(64) DEFAULT 'zndx'::character varying NOT NULL,
+    domain character varying(64) DEFAULT 'prospecting'::character varying NOT NULL,
+    category character varying(32) DEFAULT 'watch'::character varying,
+    allocation_weight real DEFAULT 0.0,
+    target_weight real DEFAULT 0.0,
+    conviction real DEFAULT 0.0,
+    last_analysis_at timestamp with time zone,
+    needs_update boolean DEFAULT false,
+    thesis text,
+    risk_notes text,
+    kb_artifact_path character varying(512),
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE prospect_strategies; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.prospect_strategies IS 'Investment strategy state per candidate per profile/domain';
+
+
+--
+-- Name: COLUMN prospect_strategies.category; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.prospect_strategies.category IS 'Position lifecycle: watch → research → position → exit';
+
+
+--
+-- Name: COLUMN prospect_strategies.conviction; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.prospect_strategies.conviction IS 'LLM-derived conviction score (0-1)';
+
+
+--
+-- Name: prospect_strategies_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.prospect_strategies_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: prospect_strategies_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.prospect_strategies_id_seq OWNED BY meta.prospect_strategies.id;
+
+
+--
 -- Name: recent_agendas_summary; Type: VIEW; Schema: meta; Owner: -
 --
 
@@ -3051,6 +3411,62 @@ CREATE VIEW meta.recent_agendas_summary AS
 --
 
 COMMENT ON VIEW meta.recent_agendas_summary IS 'Last 24 hours of operations for Metabase real-time dashboard';
+
+
+--
+-- Name: sec_filings_cache; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.sec_filings_cache (
+    id integer NOT NULL,
+    symbol character varying(16) NOT NULL,
+    filing_type character varying(16) NOT NULL,
+    filing_date date NOT NULL,
+    accepted_date timestamp with time zone,
+    cik character varying(32),
+    accession_number character varying(32),
+    final_link text,
+    filing_hash character varying(64),
+    analyzed_at timestamp with time zone,
+    analysis_model character varying(64),
+    analysis_result jsonb,
+    iceberg_exchange_id uuid,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE sec_filings_cache; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.sec_filings_cache IS 'Cached SEC filings from FMP with analysis status';
+
+
+--
+-- Name: COLUMN sec_filings_cache.iceberg_exchange_id; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.sec_filings_cache.iceberg_exchange_id IS 'Reference to raw.fmp_exchange Iceberg record';
+
+
+--
+-- Name: sec_filings_cache_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.sec_filings_cache_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sec_filings_cache_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.sec_filings_cache_id_seq OWNED BY meta.sec_filings_cache.id;
 
 
 --
@@ -3895,6 +4311,45 @@ CREATE VIEW meta.v_pipeline_health AS
 --
 
 COMMENT ON VIEW meta.v_pipeline_health IS 'Pipeline health status with severity levels for Metabase';
+
+
+--
+-- Name: v_prospects_status; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_prospects_status AS
+ SELECT c.symbol,
+    c.company_name,
+    c.exchange,
+    c.priority,
+    c.pending_filings,
+    c.last_filing_date,
+    c.last_filing_type,
+    s.category,
+    s.conviction,
+    s.allocation_weight,
+    s.target_weight,
+    s.last_analysis_at,
+    s.needs_update,
+    s.profile,
+    s.domain,
+    ( SELECT count(*) AS count
+           FROM meta.sec_filings_cache f
+          WHERE ((f.symbol)::text = (c.symbol)::text)) AS total_filings,
+    ( SELECT count(*) AS count
+           FROM meta.institutional_holders_cache h
+          WHERE ((h.symbol)::text = (c.symbol)::text)) AS holder_count,
+    meta.prospect_needs_update(c.symbol) AS update_recommended
+   FROM (meta.prospect_candidates c
+     LEFT JOIN meta.prospect_strategies s ON (((s.symbol)::text = (c.symbol)::text)))
+  ORDER BY c.priority, c.symbol;
+
+
+--
+-- Name: VIEW v_prospects_status; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_prospects_status IS 'Consolidated prospects status with update recommendations';
 
 
 --
@@ -11316,10 +11771,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__5gnfmzucyyw0fuje_nyjv; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__5gnfmzucyyw0fuje_nyjv (
+CREATE TABLE public.search_index_____ppcrwsm3bwjzekq0tu (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11352,11 +11807,11 @@ CREATE TABLE public.search_index__5gnfmzucyyw0fuje_nyjv (
 
 
 --
--- Name: search_index__5gnfmzucyyw0fuje_nyjv_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__5gnfmzucyyw0fuje_nyjv ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__5gnfmzucyyw0fuje_nyjv_id_seq
+ALTER TABLE public.search_index_____ppcrwsm3bwjzekq0tu ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index_____ppcrwsm3bwjzekq0tu_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -11366,10 +11821,10 @@ ALTER TABLE public.search_index__5gnfmzucyyw0fuje_nyjv ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__oa_t4n8digk_h8zdjmsjx; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__jty0pcd9yesno_ai8mtu_; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__oa_t4n8digk_h8zdjmsjx (
+CREATE TABLE public.search_index__jty0pcd9yesno_ai8mtu_ (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11402,11 +11857,11 @@ CREATE TABLE public.search_index__oa_t4n8digk_h8zdjmsjx (
 
 
 --
--- Name: search_index__oa_t4n8digk_h8zdjmsjx_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__jty0pcd9yesno_ai8mtu__id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__oa_t4n8digk_h8zdjmsjx ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__oa_t4n8digk_h8zdjmsjx_id_seq
+ALTER TABLE public.search_index__jty0pcd9yesno_ai8mtu_ ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__jty0pcd9yesno_ai8mtu__id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -13299,6 +13754,20 @@ ALTER TABLE ONLY meta.document_clusters ALTER COLUMN id SET DEFAULT nextval('met
 
 
 --
+-- Name: fmp_sync_runs id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.fmp_sync_runs ALTER COLUMN id SET DEFAULT nextval('meta.fmp_sync_runs_id_seq'::regclass);
+
+
+--
+-- Name: institutional_holders_cache id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.institutional_holders_cache ALTER COLUMN id SET DEFAULT nextval('meta.institutional_holders_cache_id_seq'::regclass);
+
+
+--
 -- Name: ngrc_models id; Type: DEFAULT; Schema: meta; Owner: -
 --
 
@@ -13310,6 +13779,27 @@ ALTER TABLE ONLY meta.ngrc_models ALTER COLUMN id SET DEFAULT nextval('meta.ngrc
 --
 
 ALTER TABLE ONLY meta.nifi_flows ALTER COLUMN id SET DEFAULT nextval('meta.nifi_flows_id_seq'::regclass);
+
+
+--
+-- Name: prospect_candidates id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_candidates ALTER COLUMN id SET DEFAULT nextval('meta.prospect_candidates_id_seq'::regclass);
+
+
+--
+-- Name: prospect_strategies id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_strategies ALTER COLUMN id SET DEFAULT nextval('meta.prospect_strategies_id_seq'::regclass);
+
+
+--
+-- Name: sec_filings_cache id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.sec_filings_cache ALTER COLUMN id SET DEFAULT nextval('meta.sec_filings_cache_id_seq'::regclass);
 
 
 --
@@ -13827,6 +14317,14 @@ ALTER TABLE ONLY meta.fmea_rpn_timeseries
 
 
 --
+-- Name: fmp_sync_runs fmp_sync_runs_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.fmp_sync_runs
+    ADD CONSTRAINT fmp_sync_runs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: gpu_hourly_stats gpu_hourly_stats_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -13864,6 +14362,22 @@ ALTER TABLE ONLY meta.inference_hourly
 
 ALTER TABLE ONLY meta.inference_throughput
     ADD CONSTRAINT inference_throughput_pkey PRIMARY KEY (hour, model);
+
+
+--
+-- Name: institutional_holders_cache institutional_holders_cache_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.institutional_holders_cache
+    ADD CONSTRAINT institutional_holders_cache_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: institutional_holders_cache institutional_holders_cache_symbol_holder_name_filing_date_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.institutional_holders_cache
+    ADD CONSTRAINT institutional_holders_cache_symbol_holder_name_filing_date_key UNIQUE (symbol, holder_name, filing_date);
 
 
 --
@@ -13920,6 +14434,54 @@ ALTER TABLE ONLY meta.nifi_flows
 
 ALTER TABLE ONLY meta.nifi_flows
     ADD CONSTRAINT nifi_flows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prospect_candidates prospect_candidates_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_candidates
+    ADD CONSTRAINT prospect_candidates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prospect_candidates prospect_candidates_symbol_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_candidates
+    ADD CONSTRAINT prospect_candidates_symbol_key UNIQUE (symbol);
+
+
+--
+-- Name: prospect_strategies prospect_strategies_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_strategies
+    ADD CONSTRAINT prospect_strategies_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prospect_strategies prospect_strategies_symbol_profile_domain_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_strategies
+    ADD CONSTRAINT prospect_strategies_symbol_profile_domain_key UNIQUE (symbol, profile, domain);
+
+
+--
+-- Name: sec_filings_cache sec_filings_cache_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.sec_filings_cache
+    ADD CONSTRAINT sec_filings_cache_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sec_filings_cache sec_filings_cache_symbol_filing_type_filing_date_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.sec_filings_cache
+    ADD CONSTRAINT sec_filings_cache_symbol_filing_type_filing_date_key UNIQUE (symbol, filing_type, filing_date);
 
 
 --
@@ -15715,19 +16277,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__5gnfmzucyyw0fuje_nyjv search_index__5gnfmzucyyw0fuje_nyjv_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu search_index_____ppcrwsm3bwjzekq0tu_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__5gnfmzucyyw0fuje_nyjv
-    ADD CONSTRAINT search_index__5gnfmzucyyw0fuje_nyjv_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index_____ppcrwsm3bwjzekq0tu
+    ADD CONSTRAINT search_index_____ppcrwsm3bwjzekq0tu_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__oa_t4n8digk_h8zdjmsjx search_index__oa_t4n8digk_h8zdjmsjx_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__jty0pcd9yesno_ai8mtu_ search_index__jty0pcd9yesno_ai8mtu__pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__oa_t4n8digk_h8zdjmsjx
-    ADD CONSTRAINT search_index__oa_t4n8digk_h8zdjmsjx_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__jty0pcd9yesno_ai8mtu_
+    ADD CONSTRAINT search_index__jty0pcd9yesno_ai8mtu__pkey PRIMARY KEY (id);
 
 
 --
@@ -16142,6 +16704,20 @@ CREATE INDEX idx_fmea_rpn_ts_hour ON meta.fmea_rpn_timeseries USING btree (hour 
 
 
 --
+-- Name: idx_fmp_sync_runs_profile; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_fmp_sync_runs_profile ON meta.fmp_sync_runs USING btree (profile, domain, started_at DESC);
+
+
+--
+-- Name: idx_fmp_sync_runs_status; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_fmp_sync_runs_status ON meta.fmp_sync_runs USING btree (status) WHERE ((status)::text = 'running'::text);
+
+
+--
 -- Name: idx_gpu_hourly_time; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -16153,6 +16729,20 @@ CREATE INDEX idx_gpu_hourly_time ON meta.gpu_hourly_stats USING btree (hour DESC
 --
 
 CREATE INDEX idx_gpu_minute_time ON meta.gpu_minute_stats USING btree (minute DESC);
+
+
+--
+-- Name: idx_holders_filing_date; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_holders_filing_date ON meta.institutional_holders_cache USING btree (filing_date DESC);
+
+
+--
+-- Name: idx_holders_symbol; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_holders_symbol ON meta.institutional_holders_cache USING btree (symbol);
 
 
 --
@@ -16261,10 +16851,66 @@ CREATE INDEX idx_ngrc_models_domain ON meta.ngrc_models USING btree (domain);
 
 
 --
+-- Name: idx_prospect_candidates_pending; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_candidates_pending ON meta.prospect_candidates USING btree (pending_filings) WHERE (pending_filings > 0);
+
+
+--
+-- Name: idx_prospect_candidates_priority; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_candidates_priority ON meta.prospect_candidates USING btree (priority);
+
+
+--
+-- Name: idx_prospect_candidates_symbol; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_candidates_symbol ON meta.prospect_candidates USING btree (symbol);
+
+
+--
+-- Name: idx_prospect_strategies_needs_update; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_strategies_needs_update ON meta.prospect_strategies USING btree (needs_update) WHERE (needs_update = true);
+
+
+--
+-- Name: idx_prospect_strategies_profile; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_strategies_profile ON meta.prospect_strategies USING btree (profile, domain);
+
+
+--
+-- Name: idx_prospect_strategies_symbol; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_strategies_symbol ON meta.prospect_strategies USING btree (symbol);
+
+
+--
 -- Name: idx_sankey_window; Type: INDEX; Schema: meta; Owner: -
 --
 
 CREATE INDEX idx_sankey_window ON meta.lineage_sankey_agg USING btree (time_window, window_start DESC);
+
+
+--
+-- Name: idx_sec_filings_pending; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_sec_filings_pending ON meta.sec_filings_cache USING btree (analyzed_at) WHERE (analyzed_at IS NULL);
+
+
+--
+-- Name: idx_sec_filings_symbol; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_sec_filings_symbol ON meta.sec_filings_cache USING btree (symbol, filing_date DESC);
 
 
 --
@@ -18982,73 +19628,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__5gnfmzucyyw0fuje_nyjv_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_archived_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING btree (archived);
-
-
---
--- Name: search_index__5gnfmzucyyw0fuje_nyjv_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__5gnfmzucyyw0fuje_nyjv_identity_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING btree (model, model_id);
+CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_archived_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING btree (archived);
 
 
 --
--- Name: search_index__5gnfmzucyyw0fuje_nyjv_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_model_archived_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING btree (model, archived);
-
-
---
--- Name: search_index__5gnfmzucyyw0fuje_nyjv_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_native_tsvector_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index_____ppcrwsm3bwjzekq0tu_identity_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING btree (model, model_id);
 
 
 --
--- Name: search_index__5gnfmzucyyw0fuje_nyjv_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__5gnfmzucyyw0fuje_nyjv_tsvector_idx ON public.search_index__5gnfmzucyyw0fuje_nyjv USING gin (search_vector);
-
-
---
--- Name: search_index__oa_t4n8digk_h8zdjmsjx_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_archived_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING btree (archived);
+CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_model_archived_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING btree (model, archived);
 
 
 --
--- Name: search_index__oa_t4n8digk_h8zdjmsjx_identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__oa_t4n8digk_h8zdjmsjx_identity_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING btree (model, model_id);
-
-
---
--- Name: search_index__oa_t4n8digk_h8zdjmsjx_model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_model_archived_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING btree (model, archived);
+CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_native_tsvector_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING gin (with_native_query_vector);
 
 
 --
--- Name: search_index__oa_t4n8digk_h8zdjmsjx_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index_____ppcrwsm3bwjzekq0tu_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_native_tsvector_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING gin (with_native_query_vector);
+CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_tsvector_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING gin (search_vector);
 
 
 --
--- Name: search_index__oa_t4n8digk_h8zdjmsjx_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__jty0pcd9yesno_ai8mtu__archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__oa_t4n8digk_h8zdjmsjx_tsvector_idx ON public.search_index__oa_t4n8digk_h8zdjmsjx USING gin (search_vector);
+CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__archived_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING btree (archived);
+
+
+--
+-- Name: search_index__jty0pcd9yesno_ai8mtu__identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__jty0pcd9yesno_ai8mtu__identity_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING btree (model, model_id);
+
+
+--
+-- Name: search_index__jty0pcd9yesno_ai8mtu__model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__model_archived_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING btree (model, archived);
+
+
+--
+-- Name: search_index__jty0pcd9yesno_ai8mtu__native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__native_tsvector_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__jty0pcd9yesno_ai8mtu__tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__tsvector_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING gin (search_vector);
 
 
 --
@@ -19142,6 +19788,14 @@ ALTER TABLE ONLY meta.document_clusters
 
 ALTER TABLE ONLY meta.fmea_rpn_timeseries
     ADD CONSTRAINT fmea_rpn_timeseries_failure_mode_id_fkey FOREIGN KEY (failure_mode_id) REFERENCES public.fmea_catalog(failure_mode_id);
+
+
+--
+-- Name: prospect_strategies prospect_strategies_symbol_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.prospect_strategies
+    ADD CONSTRAINT prospect_strategies_symbol_fkey FOREIGN KEY (symbol) REFERENCES meta.prospect_candidates(symbol) ON DELETE CASCADE;
 
 
 --
@@ -20620,7 +21274,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ZVDvknLxNc0KXFnePpFCCcuujXgZD3nzwwoNawfzWI4zyyrou82ret1UwL3Jabh
+\unrestrict cKxwta3yUPfNrQOWviGe2yEakXVxB8rhtf0XaDDXezIkp0mP89YsJcaRtzGdmds
 
 
 --
@@ -20668,4 +21322,5 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20251229000002'),
     ('20260102000002'),
     ('20260102000003'),
-    ('20260103000001');
+    ('20260103000001'),
+    ('20260109000001');
