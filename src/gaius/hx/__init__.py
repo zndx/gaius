@@ -47,6 +47,38 @@ from gaius.hx.hf_tables import (
     HFCapture,
     get_hf_capture,
 )
+from gaius.hx.fmp import (
+    FMPExchangeCapture,
+    FMPExchangeRecord,
+    FMPEndpoint,
+    get_fmp_capture,
+)
+from gaius.hx.fmp_tables import (
+    create_fmp_exchange_table,
+    get_fmp_exchange_table,
+    get_fmp_exchange_schema,
+)
+from gaius.hx.edgar import (
+    EdgarFiling,
+    EdgarFilingSync,
+    SyncResult,
+    get_edgar_sync,
+    compute_content_hash,
+    normalize_accession_number,
+    # Legacy aliases
+    EdgarExchangeCapture,
+    EdgarExchangeRecord,
+    get_edgar_capture,
+)
+from gaius.hx.edgar_tables import (
+    create_edgar_filings_table,
+    get_edgar_filings_table,
+    get_edgar_filings_schema,
+    # Legacy aliases
+    create_edgar_exchange_table,
+    get_edgar_exchange_table,
+    get_edgar_exchange_schema,
+)
 
 __all__ = [
     # Config
@@ -92,4 +124,29 @@ __all__ = [
     # HuggingFace capture (two-phase fetch)
     "HFCapture",
     "get_hf_capture",
+    # FMP (Financial Modeling Prep) exchange capture
+    "FMPExchangeCapture",
+    "FMPExchangeRecord",
+    "FMPEndpoint",
+    "get_fmp_capture",
+    "create_fmp_exchange_table",
+    "get_fmp_exchange_table",
+    "get_fmp_exchange_schema",
+    # SEC EDGAR filing sync
+    "EdgarFiling",
+    "EdgarFilingSync",
+    "SyncResult",
+    "get_edgar_sync",
+    "compute_content_hash",
+    "normalize_accession_number",
+    "create_edgar_filings_table",
+    "get_edgar_filings_table",
+    "get_edgar_filings_schema",
+    # Legacy aliases
+    "EdgarExchangeCapture",
+    "EdgarExchangeRecord",
+    "get_edgar_capture",
+    "create_edgar_exchange_table",
+    "get_edgar_exchange_table",
+    "get_edgar_exchange_schema",
 ]

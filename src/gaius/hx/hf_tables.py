@@ -693,7 +693,7 @@ class HFCapture:
             import pyarrow.compute as pc
             # Get dataset_ids from cache
             try:
-                scan = table.scan(selected_fields=["dataset_id", "has_readme", "readme_length"])
+                scan = table.scan(selected_fields=("dataset_id", "has_readme", "readme_length"))
                 df = scan.to_arrow()
                 if len(df) > 0:
                     return {row["dataset_id"].as_py(): {
@@ -842,7 +842,7 @@ class HFCapture:
 
         def get_cached_ids():
             try:
-                scan = table.scan(selected_fields=["model_id", "has_readme", "readme_length"])
+                scan = table.scan(selected_fields=("model_id", "has_readme", "readme_length"))
                 df = scan.to_arrow()
                 if len(df) > 0:
                     return {row["model_id"].as_py(): {
