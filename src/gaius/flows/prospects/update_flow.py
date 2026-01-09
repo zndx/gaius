@@ -870,6 +870,10 @@ _Add research notes and observations here._
 **Related:**
 - [[synthesis|Investment Thesis]]
 - [[filings/|SEC Filings]]
+
+**Metadata:**
+- Derived from: XAI Grok synthesis
+- Last updated: {now.strftime("%Y-%m-%d %H:%M:%S")}
 """
 
     def _create_filing_content(

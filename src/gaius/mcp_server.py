@@ -5341,6 +5341,104 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- Prospects/Stewardship Tools ---
+    # Capital stewardship: SEC filings analysis via FMP + Cerebras GLM + XAI Grok
+
+    @server.tool()
+    async def prospects_status(profile: str = "zndx", domain: str = "prospecting") -> str:
+        """Get current prospects status (cached, $0).
+
+        Shows prospect candidates, strategy positions, and pending filings.
+
+        Args:
+            profile: Profile context (e.g., "zndx", "home")
+            domain: Domain context (e.g., "prospecting", "retirement")
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "Prospects", "status", {"profile": profile, "domain": domain}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prospects_check(profile: str = "zndx", domain: str = "prospecting", force: bool = False) -> str:
+        """Check for new SEC filings (~$0).
+
+        Daily triage to determine if a full update is recommended.
+        Uses FMP API to check for new filings since last analysis.
+
+        Args:
+            profile: Profile context
+            domain: Domain context
+            force: Force check even if recently checked
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "Prospects", "check", {"profile": profile, "domain": domain, "force": force}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prospects_update(
+        profile: str = "zndx",
+        domain: str = "prospecting",
+        symbols: str = "",
+        force: bool = False,
+        filings_per_symbol: int = 0,
+    ) -> str:
+        """Run full LLM analysis (~$0.60/prospect).
+
+        Analyzes SEC filings with Cerebras GLM 4.7, then synthesizes
+        investment thesis with XAI Grok. Creates KB artifacts:
+        - current/prospects/<symbol>/synthesis.md
+        - current/prospects/<symbol>/agenda.md
+        - current/prospects/<symbol>/filings/*.md
+
+        Args:
+            profile: Profile context
+            domain: Domain context
+            symbols: Comma-separated symbols to analyze (empty = all pending)
+            force: Force update even if no new filings
+            filings_per_symbol: Max filings per symbol (0 = default 20)
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+
+            # Parse symbols
+            symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else []
+
+            # Collect streaming events
+            events = []
+            async for event in client.stream(
+                "Prospects", "update",
+                {
+                    "profile": profile,
+                    "domain": domain,
+                    "symbols": symbol_list,
+                    "force": force,
+                    "filings_per_symbol": filings_per_symbol,
+                }
+            ):
+                events.append(event)
+
+            # Return final event with event count
+            final_event = events[-1] if events else {}
+            return json.dumps({
+                "events_count": len(events),
+                **final_event,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- X Bookmarks Tools ---
     # Sync X (Twitter) bookmarks to Gaius KB via the engine
 
