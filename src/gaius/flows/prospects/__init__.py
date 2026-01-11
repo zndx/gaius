@@ -15,9 +15,21 @@ Cost Model:
 - Update: ~$0.06/filing (Cerebras GLM 4.7) + ~$0.50/synthesis (XAI Grok)
 
 All FMP exchanges and SEC filings are captured to Iceberg for full provenance.
+
+Note: Flows are imported lazily to avoid circular imports with engine services.
+Use direct imports: from gaius.flows.prospects.flow import ProspectsCheckFlow
 """
 
-from gaius.flows.prospects.flow import ProspectsCheckFlow
-from gaius.flows.prospects.update_flow import ProspectsUpdateFlow
+
+def __getattr__(name: str):
+    """Lazy import to avoid circular dependencies with engine services."""
+    if name == "ProspectsCheckFlow":
+        from gaius.flows.prospects.flow import ProspectsCheckFlow
+        return ProspectsCheckFlow
+    elif name == "ProspectsUpdateFlow":
+        from gaius.flows.prospects.update_flow import ProspectsUpdateFlow
+        return ProspectsUpdateFlow
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = ["ProspectsCheckFlow", "ProspectsUpdateFlow"]

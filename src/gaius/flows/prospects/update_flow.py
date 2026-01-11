@@ -56,6 +56,45 @@ from gaius.flows.prospects.flow import load_watchlist
 logger = logging.getLogger(__name__)
 
 
+def load_synthesis_from_kb(kb_root: Path, symbol: str) -> PositionSynthesis | None:
+    """Load an existing synthesis from KB for sitrep generation.
+
+    Args:
+        kb_root: Path to KB root (e.g., build/dev)
+        symbol: Stock symbol (e.g., MTN)
+
+    Returns:
+        PositionSynthesis if found and valid, None otherwise
+    """
+    import yaml
+
+    safe_symbol = safe_filename(symbol).lower()
+    synthesis_path = kb_root / f"current/prospects/{safe_symbol}/synthesis.md"
+
+    if not synthesis_path.exists():
+        return None
+
+    try:
+        content = synthesis_path.read_text()
+        # Parse YAML frontmatter
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                frontmatter = yaml.safe_load(parts[1])
+                return PositionSynthesis(
+                    symbol=frontmatter.get("symbol", symbol),
+                    company_name=frontmatter.get("title", symbol).replace(" - Investment Synthesis", ""),
+                    recommendation=frontmatter.get("recommendation", "hold"),
+                    conviction_score=float(frontmatter.get("conviction_score", 0.5)),
+                    risk_level=frontmatter.get("risk_level", "medium"),
+                    cost_usd=0.0,  # Already paid
+                )
+    except Exception as e:
+        logger.warning(f"Failed to load synthesis for {symbol}: {e}")
+
+    return None
+
+
 @register_flow("prospects-update")
 class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
     """Full billable analysis with LLM synthesis.
@@ -93,7 +132,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
 
     force = Parameter(
         "force",
-        help="Force update even if no new filings",
+        help="Force re-analysis and re-synthesis even if cached (use when preprocessing improves)",
         default=False,
         type=bool,
     )
@@ -424,54 +463,70 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
                 profile = data.get("profile")
                 company_name = profile.company_name if profile else symbol
 
-                # Query HX for unanalyzed filings for this symbol
-                unanalyzed = await edgar_sync.get_unanalyzed(symbol=symbol, limit=5)
-
-                # Also load any previously analyzed filings to include in analyses
+                # Get all extracted filings for this symbol
                 all_filings = await edgar_sync.get_filings_by_symbol(symbol, limit=20)
+
+                # Separate into already analyzed and unanalyzed
                 already_analyzed = [
                     f for f in all_filings
                     if f.analyzed_at and f.analysis_json
                 ]
+                unanalyzed = [
+                    f for f in all_filings
+                    if f.extracted_text and not f.analyzed_at
+                ]
 
-                # Deserialize previously analyzed results
-                for f in already_analyzed:
-                    if not f.analysis_json:
+                # With --force, re-analyze all filings (including previously analyzed)
+                # This allows leveraging improved preprocessing/buffer content
+                if self.force:
+                    # Include already_analyzed filings in the list to re-analyze
+                    filings_to_analyze = [f for f in all_filings if f.extracted_text]
+                    print(f"  {symbol}: FORCED re-analysis of {len(filings_to_analyze)} filings ({len(already_analyzed)} were cached)")
+                else:
+                    # Normal mode: only analyze new filings, load cached results
+                    filings_to_analyze = unanalyzed
+
+                    # Deserialize previously analyzed results
+                    for f in already_analyzed:
+                        if not f.analysis_json:
+                            continue
+                        try:
+                            analysis_data = json_module.loads(f.analysis_json)
+                            # Reconstruct FilingAnalysis from stored JSON
+                            analysis = FilingAnalysis(
+                                symbol=analysis_data.get("symbol", symbol),
+                                filing_type=analysis_data.get("filing_type", f.filing_type),
+                                filing_date=analysis_data.get("filing_date", f.filing_date),
+                                revenue_yoy_change=analysis_data.get("metrics", {}).get("revenue_yoy_change"),
+                                gross_margin=analysis_data.get("metrics", {}).get("gross_margin"),
+                                net_income_yoy_change=analysis_data.get("metrics", {}).get("net_income_yoy_change"),
+                                free_cash_flow=analysis_data.get("metrics", {}).get("free_cash_flow"),
+                                key_highlights=analysis_data.get("insights", {}).get("key_highlights", []),
+                                risk_factors=analysis_data.get("insights", {}).get("risk_factors", []),
+                                guidance_changes=analysis_data.get("insights", {}).get("guidance_changes", []),
+                                management_commentary=analysis_data.get("insights", {}).get("management_commentary", ""),
+                                model_used=analysis_data.get("model_metadata", {}).get("model_used", f.analysis_model or ""),
+                                analysis_at=analysis_data.get("model_metadata", {}).get("analysis_at", ""),
+                                cost_usd=0.0,  # Already paid, don't count again
+                            )
+                            self.analyses[symbol].append(analysis)
+                            self.filings_skipped_already_analyzed += 1
+                        except (json_module.JSONDecodeError, KeyError) as e:
+                            logger.warning(f"Failed to deserialize analysis for {f.accession_number}: {e}")
+
+                    if not filings_to_analyze:
+                        if already_analyzed:
+                            print(f"  {symbol}: {len(already_analyzed)} filings already analyzed (skipped)")
+                        else:
+                            print(f"  {symbol}: No filings available for analysis")
                         continue
-                    try:
-                        analysis_data = json_module.loads(f.analysis_json)
-                        # Reconstruct FilingAnalysis from stored JSON
-                        analysis = FilingAnalysis(
-                            symbol=analysis_data.get("symbol", symbol),
-                            filing_type=analysis_data.get("filing_type", f.filing_type),
-                            filing_date=analysis_data.get("filing_date", f.filing_date),
-                            revenue_yoy_change=analysis_data.get("metrics", {}).get("revenue_yoy_change"),
-                            gross_margin=analysis_data.get("metrics", {}).get("gross_margin"),
-                            net_income_yoy_change=analysis_data.get("metrics", {}).get("net_income_yoy_change"),
-                            free_cash_flow=analysis_data.get("metrics", {}).get("free_cash_flow"),
-                            key_highlights=analysis_data.get("insights", {}).get("key_highlights", []),
-                            risk_factors=analysis_data.get("insights", {}).get("risk_factors", []),
-                            guidance_changes=analysis_data.get("insights", {}).get("guidance_changes", []),
-                            management_commentary=analysis_data.get("insights", {}).get("management_commentary", ""),
-                            model_used=analysis_data.get("model_metadata", {}).get("model_used", f.analysis_model or ""),
-                            analysis_at=analysis_data.get("model_metadata", {}).get("analysis_at", ""),
-                            cost_usd=0.0,  # Already paid, don't count again
-                        )
-                        self.analyses[symbol].append(analysis)
-                        self.filings_skipped_already_analyzed += 1
-                    except (json_module.JSONDecodeError, KeyError) as e:
-                        logger.warning(f"Failed to deserialize analysis for {f.accession_number}: {e}")
 
-                if not unanalyzed:
-                    if already_analyzed:
-                        print(f"  {symbol}: {len(already_analyzed)} filings already analyzed (skipped)")
-                    else:
-                        print(f"  {symbol}: No filings available for analysis")
+                    print(f"  {symbol}: Analyzing {len(filings_to_analyze)} NEW filings ({len(already_analyzed)} already done)...")
+
+                if not filings_to_analyze:
                     continue
 
-                print(f"  {symbol}: Analyzing {len(unanalyzed)} NEW filings ({len(already_analyzed)} already done)...")
-
-                for filing in unanalyzed:
+                for filing in filings_to_analyze:
                     try:
                         analysis = await analyzer.analyze_filing(
                             symbol=symbol,
@@ -539,33 +594,69 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         Uses ProspectsAnalyzer to combine multiple filing analyses into
         an investment thesis with conviction score and recommendations.
 
-        Guard against reprocessing:
-        - Only runs synthesis if at least one new filing was analyzed this run
-        - If all filings were already analyzed (loaded from cache), synthesis is skipped
-        - This prevents duplicate XAI Grok calls when re-running the flow
+        Idempotent sync semantics:
+        - Runs synthesis for symbols that have analyses but no KB synthesis.md
+        - Skips symbols that already have synthesis.md (unless --force)
+        - With --force, re-synthesizes everything regardless of KB state
         """
         self.syntheses: dict[str, PositionSynthesis] = {}
         self.synthesis_errors: list[str] = []
-        self.synthesis_skipped_no_new_analyses = 0
+        self.synthesis_skipped_already_exists = 0
 
-        # Check if we have any new analyses to synthesize
-        new_filings_analyzed = sum(len(a) for a in self.analyses.values()) - self.filings_skipped_already_analyzed
+        # Check which symbols need synthesis (analyses exist, KB does not)
+        symbols_needing_synthesis = []
+        symbols_skipped_exists = []
 
-        if new_filings_analyzed == 0 and self.filings_skipped_already_analyzed > 0 and not self.force:
-            print("Synthesis: SKIPPED - all filings were already analyzed (no new data)")
+        for symbol in self.analyses.keys():
+            safe_symbol = safe_filename(symbol).lower()
+            synthesis_path = self.kb_root / f"current/prospects/{safe_symbol}/synthesis.md"
+
+            if synthesis_path.exists() and not self.force:
+                symbols_skipped_exists.append(symbol)
+                self.synthesis_skipped_already_exists += 1
+            else:
+                symbols_needing_synthesis.append(symbol)
+
+        # Load existing syntheses for skipped symbols (for sitrep accuracy)
+        for symbol in symbols_skipped_exists:
+            existing = load_synthesis_from_kb(self.kb_root, symbol)
+            if existing:
+                self.syntheses[symbol] = existing
+
+        if not symbols_needing_synthesis and not self.force:
+            print(f"Synthesis: SKIPPED - KB already has synthesis.md for all {len(symbols_skipped_exists)} symbols")
             print("  Use --force to re-synthesize with existing analyses")
+            if symbols_skipped_exists:
+                for s in symbols_skipped_exists:
+                    print(f"    [OK] {s}")
 
             self.emit_event("prospects.synthesis.skipped", {
                 "profile": self.profile,
-                "reason": "no_new_analyses",
-                "filings_cached": self.filings_skipped_already_analyzed,
+                "reason": "kb_already_exists",
+                "symbols_skipped": symbols_skipped_exists,
             })
 
             self.next(self.create_kb_artifacts)
             return
 
-        if self.force and new_filings_analyzed == 0:
-            print("Synthesis: FORCED - re-synthesizing with cached analyses")
+        if symbols_skipped_exists:
+            print(f"Synthesis: Skipping {len(symbols_skipped_exists)} symbols (KB exists)")
+            for s in symbols_skipped_exists:
+                print(f"    [OK] {s}")
+
+        if symbols_needing_synthesis:
+            print(f"Synthesis: Processing {len(symbols_needing_synthesis)} symbols")
+            for s in symbols_needing_synthesis:
+                print(f"    [..] {s}")
+
+        if self.force:
+            print("Synthesis: FORCED - re-synthesizing all symbols")
+
+        # Determine which symbols to process
+        symbols_to_process = (
+            list(self.analyses.keys()) if self.force
+            else symbols_needing_synthesis
+        )
 
         async def do_synthesis():
             analyzer = ProspectsAnalyzer()
@@ -577,7 +668,8 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
                 print("  Set XAI_API_KEY to enable position synthesis")
                 return
 
-            for symbol, analyses in self.analyses.items():
+            for symbol in symbols_to_process:
+                analyses = self.analyses.get(symbol, [])
                 if not analyses:
                     print(f"  {symbol}: No analyses to synthesize")
                     continue
@@ -724,6 +816,39 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             scratch_full_path.parent.mkdir(parents=True, exist_ok=True)
             scratch_full_path.write_text(scratch_content)
             self.kb_paths.append(scratch_path)
+
+        self.next(self.create_sitrep)
+
+    @traced_step
+    @step
+    def create_sitrep(self):
+        """Create final sitrep zettelkasten note with lineage and metrics.
+
+        This document summarizes:
+        - Files fetched from FMP/EDGAR
+        - KB artifacts created
+        - OpenLineage data (correlation_id, job, run IDs)
+        - Quantitative metrics (costs, token counts, latencies)
+        """
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+
+        # Collect metrics from flow state
+        metrics = self._collect_pipeline_metrics()
+
+        # Build sitrep content
+        sitrep_content = self._create_sitrep_content(metrics, now)
+
+        # Write to scratch directory
+        self.sitrep_filename = f"{time_str}_prospects_sitrep.md"
+        self.sitrep_path = f"scratch/{date_str}/{self.sitrep_filename}"
+        full_path = self.kb_root / self.sitrep_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(sitrep_content)
+
+        self.kb_paths.append(self.sitrep_path)
+        print(f"Created sitrep: {self.sitrep_path}")
 
         self.next(self.end)
 
@@ -964,8 +1089,189 @@ symbol: "{symbol}"
 _This is a daily log entry. See the curated content above for the full analysis._
 """
 
+    def _collect_pipeline_metrics(self) -> dict:
+        """Collect all metrics from flow execution."""
+        # Calculate costs
+        total_analysis_cost = sum(
+            sum(a.cost_usd for a in analyses)
+            for analyses in self.analyses.values()
+        )
+        total_synthesis_cost = sum(
+            s.cost_usd for s in self.syntheses.values()
+        )
+
+        # Count various artifacts
+        filings_analyzed = sum(len(a) for a in self.analyses.values())
+
+        # Calculate skipped vs completed breakdown
+        analysis_skipped = self.filings_skipped_already_analyzed
+        analysis_completed = filings_analyzed - analysis_skipped
+        synthesis_skipped = getattr(self, 'synthesis_skipped_already_exists', 0)
+        synthesis_completed = len(self.syntheses)
+
+        # Collect preprocessing statistics from analyses
+        total_original_chars = 0
+        total_buffer_chars = 0
+        total_table_rows = 0
+        filings_preprocessed = 0
+        for analyses in self.analyses.values():
+            for a in analyses:
+                if a.preprocess_original_chars > 0:
+                    total_original_chars += a.preprocess_original_chars
+                    total_buffer_chars += a.preprocess_buffer_chars
+                    total_table_rows += a.preprocess_table_rows
+                    filings_preprocessed += 1
+
+        return {
+            "correlation_id": self.get_correlation_id(),
+            "run_id": str(current.run_id) if current.run_id else "unknown",
+            "profile": self.profile,
+            "domain": self.domain,
+            "symbols_processed": len(self.syntheses),
+            "symbols_total": len(self.analyses),
+            "filings_analyzed": filings_analyzed,
+            "filings_skipped": analysis_skipped,
+            "analysis_completed": analysis_completed,
+            "analysis_skipped": analysis_skipped,
+            "synthesis_completed": synthesis_completed,
+            "synthesis_skipped": synthesis_skipped,
+            "kb_artifacts_created": len(self.kb_paths),
+            "analysis_cost_usd": total_analysis_cost,
+            "synthesis_cost_usd": total_synthesis_cost,
+            "total_cost_usd": total_analysis_cost + total_synthesis_cost,
+            "fmp_filings_fetched": len(self.filings_metadata),
+            "edgar_filings_synced": self.sync_result.filings_fetched if self.sync_result else 0,
+            "extraction_count": self.extraction_count,
+            "analysis_errors": len(self.analysis_errors),
+            "synthesis_errors": len(self.synthesis_errors),
+            # Preprocessing statistics
+            "preprocess_filings": filings_preprocessed,
+            "preprocess_original_chars": total_original_chars,
+            "preprocess_buffer_chars": total_buffer_chars,
+            "preprocess_table_rows": total_table_rows,
+            "preprocess_compression_ratio": (
+                total_buffer_chars / total_original_chars
+                if total_original_chars > 0 else 0
+            ),
+        }
+
+    def _create_sitrep_content(self, metrics: dict, now: datetime) -> str:
+        """Create comprehensive sitrep markdown document."""
+        # Build symbol summary table
+        symbol_rows = []
+        for symbol, synthesis in self.syntheses.items():
+            analyses = self.analyses.get(symbol, [])
+            symbol_rows.append(
+                f"| {symbol} | {synthesis.recommendation.upper()} | "
+                f"{synthesis.conviction_score:.0%} | {synthesis.risk_level} | "
+                f"{len(analyses)} |"
+            )
+        symbol_table = "\n".join(symbol_rows) if symbol_rows else "| (none) | - | - | - | - |"
+
+        # Build KB artifacts list (excluding sitrep itself)
+        kb_links = []
+        for path in self.kb_paths:
+            if not path.endswith("_prospects_sitrep.md"):
+                kb_links.append(f"- [[{path}]]")
+        kb_links_text = "\n".join(kb_links) if kb_links else "- (none)"
+
+        # Build error summary
+        errors_text = ""
+        if self.analysis_errors or self.synthesis_errors:
+            errors_text = "\n## Errors\n\n"
+            if self.analysis_errors:
+                errors_text += "**Analysis Errors:**\n"
+                for err in self.analysis_errors[:5]:
+                    errors_text += f"- {err}\n"
+            if self.synthesis_errors:
+                errors_text += "\n**Synthesis Errors:**\n"
+                for err in self.synthesis_errors[:5]:
+                    errors_text += f"- {err}\n"
+
+        return f"""---
+title: "Prospects Update Sitrep"
+created: {now.isoformat()}
+type: prospects-sitrep
+profile: "{metrics['profile']}"
+domain: "{metrics['domain']}"
+correlation_id: "{metrics['correlation_id']}"
+run_id: "{metrics['run_id']}"
+---
+
+# Prospects Update Sitrep
+
+*Generated: {now.strftime("%Y-%m-%d %H:%M:%S")}*
+*Correlation ID: `{metrics['correlation_id']}`*
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Symbols (total) | {metrics['symbols_total']} |
+| Symbols Synthesized | {metrics['symbols_processed']} |
+| KB Artifacts Created | {metrics['kb_artifacts_created']} |
+| Analysis Errors | {metrics['analysis_errors']} |
+| Synthesis Errors | {metrics['synthesis_errors']} |
+
+## Work Breakdown
+
+| Step | Completed | Skipped |
+|------|-----------|---------|
+| Analysis (Cerebras) | {metrics['analysis_completed']} filings | {metrics['analysis_skipped']} cached |
+| Synthesis (XAI) | {metrics['synthesis_completed']} symbols | {metrics['synthesis_skipped']} KB exists |
+| Extraction (docling) | {metrics['extraction_count']} filings | - |
+
+## Cost Breakdown
+
+| Component | Cost |
+|-----------|------|
+| Cerebras GLM 4.7 (Analysis) | ${metrics['analysis_cost_usd']:.4f} |
+| XAI Grok (Synthesis) | ${metrics['synthesis_cost_usd']:.4f} |
+| **Total** | **${metrics['total_cost_usd']:.4f}** |
+
+## Data Sources
+
+| Source | Count |
+|--------|-------|
+| FMP SEC Filings | {metrics['fmp_filings_fetched']} |
+| EDGAR Documents Synced | {metrics['edgar_filings_synced']} |
+
+## Preprocessing (Content Extraction)
+
+| Metric | Value |
+|--------|-------|
+| Filings Preprocessed | {metrics['preprocess_filings']} |
+| Original Content | {metrics['preprocess_original_chars']:,} chars |
+| Extracted Buffer | {metrics['preprocess_buffer_chars']:,} chars |
+| Compression Ratio | {metrics['preprocess_compression_ratio']:.1%} |
+| Table Rows Preserved | {metrics['preprocess_table_rows']} |
+
+## Symbols Analyzed
+
+| Symbol | Recommendation | Conviction | Risk | Filings |
+|--------|----------------|------------|------|---------|
+{symbol_table}
+
+## Lineage
+
+- **Job:** `prospects_update`
+- **Run ID:** `{metrics['run_id']}`
+- **Correlation ID:** `{metrics['correlation_id']}`
+
+## KB Artifacts Created
+
+{kb_links_text}
+{errors_text}
+---
+
+**Related:**
+- [[current/prospects/|All Prospects]]
+"""
+
     @traced_step
-    @card(type="blank")  # type: ignore[unknown-argument]
+    # type: ignore[unknown-argument] - Metaflow @card decorator accepts type= kwarg
+    # but stubs don't declare it; runtime behavior is correct per Metaflow docs
+    @card(type="blank")
     @step
     def end(self):
         """Emit lineage and report results."""

@@ -54,6 +54,8 @@ class EngineMetrics:
         self._inference_latency: Any = None
         self._inference_errors: Any = None
         self._inference_tokens: Any = None
+        self._inference_tokens_in: Any = None  # Input tokens (prompt)
+        self._inference_tokens_out: Any = None  # Output tokens (completion)
 
         # GPU metrics (gauges via observable callbacks)
         self._gpu_memory_used: Any = None
@@ -169,6 +171,16 @@ class EngineMetrics:
         self._inference_tokens = self._meter.create_counter(
             "gaius.inference.tokens",
             description="Total tokens processed",
+            unit="1",
+        )
+        self._inference_tokens_in = self._meter.create_counter(
+            "gaius.inference.tokens_in",
+            description="Input tokens (prompts)",
+            unit="1",
+        )
+        self._inference_tokens_out = self._meter.create_counter(
+            "gaius.inference.tokens_out",
+            description="Output tokens (completions)",
             unit="1",
         )
 
@@ -360,17 +372,23 @@ class EngineMetrics:
         model: str,
         latency_ms: float,
         tokens: int = 0,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
         success: bool = True,
         technique: str = "",
+        provider: str = "",
     ) -> None:
         """Record an inference request.
 
         Args:
             model: Model/endpoint name
             latency_ms: Request latency in ms
-            tokens: Tokens processed (input + output)
+            tokens: Tokens processed (input + output) - legacy, use tokens_in/out
+            tokens_in: Input tokens (prompt)
+            tokens_out: Output tokens (completion)
             success: Whether request succeeded
             technique: optillm technique if used
+            provider: Provider name (cerebras, xai, local) for filtering
         """
         if not self._inference_count:
             logger.warning(
@@ -382,12 +400,26 @@ class EngineMetrics:
         attrs = {"model": model}
         if technique:
             attrs["technique"] = technique
+        if provider:
+            attrs["provider"] = provider
 
-        logger.info(f"Recording inference metric: model={model}, latency={latency_ms}ms, tokens={tokens}")
+        # Calculate total if only separate counts provided
+        total_tokens = tokens if tokens > 0 else (tokens_in + tokens_out)
+
+        logger.info(
+            f"Recording inference metric: provider={provider}, model={model}, "
+            f"latency={latency_ms}ms, tokens_in={tokens_in}, tokens_out={tokens_out}"
+        )
         self._inference_count.add(1, attrs)
         self._inference_latency.record(latency_ms, attrs)
-        if tokens > 0:
-            self._inference_tokens.add(tokens, attrs)
+
+        # Record both total and separate token counts
+        if total_tokens > 0:
+            self._inference_tokens.add(total_tokens, attrs)
+        if tokens_in > 0 and self._inference_tokens_in:
+            self._inference_tokens_in.add(tokens_in, attrs)
+        if tokens_out > 0 and self._inference_tokens_out:
+            self._inference_tokens_out.add(tokens_out, attrs)
 
         self._request_total.add(1, {"type": "inference"})
 
@@ -676,12 +708,15 @@ def record_inference(
     model: str,
     latency_ms: float,
     tokens: int = 0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
     success: bool = True,
     technique: str = "",
+    provider: str = "",
 ) -> None:
     """Record an inference request."""
     EngineMetrics.get_instance().record_inference(
-        model, latency_ms, tokens, success, technique
+        model, latency_ms, tokens, tokens_in, tokens_out, success, technique, provider
     )
 
 

@@ -215,6 +215,31 @@ This principle ensures:
 - Manual interventions are documented as capability gaps
 - Gaius becomes more autonomous over time
 
+### Fail Open for Observability
+
+**Fail Open is the counterpart to Fail Fast for observability code.** When filtering or displaying health state:
+
+1. **Filter OUT, not IN**: When showing active incidents, filter OUT known terminal states (`resolved`) rather than filtering IN known active states. Unknown states are surfaced for investigation.
+
+2. **Unknown States are Visible**: Any state not in the "terminal" list is displayed. This ensures new or unexpected states don't silently disappear.
+
+3. **Bridle Assumptions**: Matching against an exhaustive list of "good" values is fragile. Only match against the small set of terminal states.
+
+**Example - Fail Open for Incidents**:
+```python
+# BAD: Filtering IN known active states (brittle)
+active = [i for i in incidents if i.status in ("active", "healing", "recovering")]
+
+# GOOD: Filtering OUT known terminal states (Fail Open)
+active = [i for i in incidents if i.status != "resolved"]
+```
+
+This principle aligns with the OODA loop interaction pattern:
+- Observe: Surface all relevant state
+- Orient: Let the user interpret unusual states
+- Decide: User determines if intervention needed
+- Act: User takes action with full visibility
+
 ### Testing for Fail-Fast Compliance
 
 Before committing, verify:

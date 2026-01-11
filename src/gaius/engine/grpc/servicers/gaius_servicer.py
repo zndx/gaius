@@ -174,6 +174,7 @@ from ...generated import (
     HealthObserverConfig as ProtoHealthObserverConfig,
     ForceHealthCheckRequest,
     ForceHealthCheckResponse,
+    HealthCheckResult,
     GetIncidentDetailRequest,
     GetIncidentDetailResponse,
     ListIncidentsRequest,
@@ -4247,6 +4248,8 @@ class GaiusServicer(GaiusServiceServicer):
         context: grpc.aio.ServicerContext,
     ) -> ForceHealthCheckResponse:
         """Force an immediate health check."""
+        import json
+
         try:
             observer = self._services.health_observer_service
             if not observer:
@@ -4265,11 +4268,25 @@ class GaiusServicer(GaiusServiceServicer):
             incidents_after = len(observer.active_incidents)
             new_incidents = max(0, incidents_after - incidents_before)
 
-            # Count check statuses
+            # Count check statuses and build check result messages
             checks = report.get("checks", [])
             passed = sum(1 for c in checks if c.get("status") != "FAIL")
             warnings = sum(1 for c in checks if c.get("status") == "WARN")
             failures = sum(1 for c in checks if c.get("status") == "FAIL")
+
+            # Convert check dicts to proto messages
+            check_results = []
+            for check in checks:
+                details = check.get("details", {})
+                check_results.append(
+                    HealthCheckResult(
+                        name=check.get("name", "unknown"),
+                        status=check.get("status", "FAIL"),
+                        message=check.get("message", ""),
+                        heuristic_id=check.get("heuristic_id", ""),
+                        details_json=json.dumps(details) if details else "",
+                    )
+                )
 
             return ForceHealthCheckResponse(
                 healthy=report.get("healthy", True),
@@ -4278,6 +4295,7 @@ class GaiusServicer(GaiusServiceServicer):
                 warnings=warnings,
                 failures=failures,
                 new_incidents=new_incidents,
+                checks=check_results,
             )
 
         except Exception as e:
@@ -6020,6 +6038,7 @@ class GaiusServicer(GaiusServiceServicer):
                 return
 
             # Stream progress events from service
+            sitrep_path = ""
             async for event in service.run_update(
                 profile=request.profile,
                 domain=request.domain,
@@ -6027,6 +6046,10 @@ class GaiusServicer(GaiusServiceServicer):
                 force=request.force,
                 filings_per_symbol=request.filings_per_symbol if request.filings_per_symbol > 0 else None,
             ):
+                # Track sitrep_path from events
+                if "sitrep_path" in event and event["sitrep_path"]:
+                    sitrep_path = event["sitrep_path"]
+
                 yield ProspectsUpdateEvent(
                     type=event.get("type", ProspectsUpdateEvent.QUEUED),
                     timestamp_ms=int(time.time() * 1000),
@@ -6034,6 +6057,7 @@ class GaiusServicer(GaiusServiceServicer):
                     message=event.get("message", ""),
                     symbol=event.get("symbol", ""),
                     filing_type=event.get("filing_type", ""),
+                    sitrep_path=event.get("sitrep_path", ""),
                 )
 
             yield ProspectsUpdateEvent(
@@ -6041,6 +6065,7 @@ class GaiusServicer(GaiusServiceServicer):
                 timestamp_ms=int(time.time() * 1000),
                 progress=1.0,
                 message="Update completed",
+                sitrep_path=sitrep_path,
             )
 
         except Exception as e:

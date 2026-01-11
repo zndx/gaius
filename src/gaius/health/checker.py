@@ -6,6 +6,10 @@ Provides comprehensive health diagnostics including:
 - Database connectivity
 - Cognition daemon status
 - Resource utilization
+
+The CheckStatus enum is the local Python representation used throughout
+the health checker. It maps to proto enums defined in gaius_service.proto
+for wire format compatibility.
 """
 
 import asyncio
@@ -20,6 +24,16 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .heuristics import Heuristic, HeuristicLoader
 
+# Import proto enum type for type-safe conversion
+from ..engine.generated import (
+    CheckStatus as ProtoCheckStatus,
+    CHECK_STATUS_FAIL,
+    CHECK_STATUS_PASS,
+    CHECK_STATUS_SKIP,
+    CHECK_STATUS_WARN,
+    CHECK_STATUS_UNSPECIFIED,
+)
+
 if TYPE_CHECKING:
     from .self_healing import SelfHealingCoordinator
 
@@ -27,12 +41,52 @@ logger = logging.getLogger(__name__)
 
 
 class CheckStatus(Enum):
-    """Status of a health check."""
+    """Status of a health check.
+
+    This is the internal Python representation. Maps to proto CheckStatus enum:
+    - PASS -> CHECK_STATUS_PASS (1)
+    - WARN -> CHECK_STATUS_WARN (2)
+    - FAIL -> CHECK_STATUS_FAIL (3)
+    - SKIP -> CHECK_STATUS_SKIP (4)
+
+    Use to_proto() and from_proto() for type-safe conversion.
+    """
 
     PASS = "pass"
     WARN = "warn"
     FAIL = "fail"
     SKIP = "skip"
+
+    def to_proto(self) -> "ProtoCheckStatus.ValueType":
+        """Convert to proto enum value (type-safe).
+
+        Returns the proto enum value, not just an int.
+        """
+        return _STATUS_TO_PROTO.get(self, CHECK_STATUS_UNSPECIFIED)
+
+    @classmethod
+    def from_proto(cls, proto_value: "ProtoCheckStatus.ValueType") -> "CheckStatus":
+        """Convert from proto enum value (type-safe).
+
+        Args:
+            proto_value: Proto CheckStatus enum value (e.g., CHECK_STATUS_PASS)
+
+        Returns:
+            Corresponding local CheckStatus enum member
+        """
+        return _PROTO_TO_STATUS.get(proto_value, cls.SKIP)
+
+
+# Mapping between local enum and proto enum values
+# Uses proto enum constants for type safety
+_STATUS_TO_PROTO: dict["CheckStatus", int] = {
+    CheckStatus.PASS: CHECK_STATUS_PASS,
+    CheckStatus.WARN: CHECK_STATUS_WARN,
+    CheckStatus.FAIL: CHECK_STATUS_FAIL,
+    CheckStatus.SKIP: CHECK_STATUS_SKIP,
+}
+
+_PROTO_TO_STATUS: dict[int, "CheckStatus"] = {v: k for k, v in _STATUS_TO_PROTO.items()}
 
 
 @dataclass

@@ -26,6 +26,69 @@ enum ProcessStatus {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Health FSM - Authoritative State Definitions
+// All health-related code MUST use these enums, not string literals
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Check result status (point-in-time health observation)
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  CHECK_STATUS_PASS = 1;        // Check passed, no issue
+  CHECK_STATUS_WARN = 2;        // Warning level, non-blocking
+  CHECK_STATUS_FAIL = 3;        // Failure, triggers incident
+  CHECK_STATUS_SKIP = 4;        // Skipped (e.g., upstream dependency failed)
+}
+
+// Incident lifecycle status (FSM states)
+enum IncidentStatus {
+  INCIDENT_STATUS_UNSPECIFIED = 0;
+  INCIDENT_STATUS_ACTIVE = 1;          // Detected, awaiting remediation
+  INCIDENT_STATUS_HEALING = 2;         // Remediation in progress
+  INCIDENT_STATUS_RECOVERING = 3;      // Remediation succeeded, verifying stability
+  INCIDENT_STATUS_RESOLVED = 4;        // Incident closed successfully
+  INCIDENT_STATUS_MANUAL_REQUIRED = 5; // Escalated, requires human intervention
+}
+
+// Remediation tier (FMEA-driven escalation ladder)
+enum RemediationTier {
+  REMEDIATION_TIER_UNSPECIFIED = 0;
+  REMEDIATION_TIER_0 = 1;  // Automatic, no approval needed
+  REMEDIATION_TIER_1 = 2;  // Automatic with validation
+  REMEDIATION_TIER_2 = 3;  // Requires user approval
+  REMEDIATION_TIER_3 = 4;  // Manual intervention (ACP/GitHub escalation)
+}
+
+// Valid FSM transitions - codifies the state machine
+// Use for OTel tracing and audit logs
+enum IncidentTransition {
+  INCIDENT_TRANSITION_UNSPECIFIED = 0;
+
+  // Forward transitions
+  INCIDENT_TRANSITION_ACTIVE_TO_HEALING = 1;      // Remediation started
+  INCIDENT_TRANSITION_ACTIVE_TO_RECOVERING = 2;   // Spontaneous recovery
+  INCIDENT_TRANSITION_HEALING_TO_RECOVERING = 3;  // Remediation succeeded
+  INCIDENT_TRANSITION_HEALING_TO_MANUAL = 4;      // Escalated to tier 3
+  INCIDENT_TRANSITION_RECOVERING_TO_RESOLVED = 5; // Verification passed
+
+  // Regression (Fail Open - this is expected)
+  INCIDENT_TRANSITION_RECOVERING_TO_ACTIVE = 6;   // Verification failed, health regressed
+}
+
+// Maps FMEA failure mode IDs to KB heuristic paths
+// This fixes the matching gap that causes stuck incidents
+message FailureModeMapping {
+  string fmea_id = 1;           // e.g., "GPU_001"
+  string heuristic_path = 2;    // e.g., "inference/gpu_memory_exhausted"
+  string check_name_pattern = 3; // Regex for fallback matching
+  string endpoint_pattern = 4;   // Regex for endpoint matching
+}
+
+// Registry loaded from KB on startup
+message FailureModeRegistry {
+  repeated FailureModeMapping mappings = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Orchestrator Service Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1332,6 +1395,16 @@ message ForceHealthCheckResponse {
   int32 warnings = 4;            // Number of warnings
   int32 failures = 5;            // Number of failures
   int32 new_incidents = 6;       // Incidents created from this check
+  repeated HealthCheckResult checks = 7;  // Individual check results
+}
+
+// Individual health check result
+message HealthCheckResult {
+  string name = 1;               // Check name (e.g., "gpu_0_health", "endpoint_fast")
+  string status = 2;             // PASS, WARN, or FAIL
+  string message = 3;            // Human-readable description
+  string heuristic_id = 4;       // FMEA heuristic (e.g., "GPU_001")
+  string details_json = 5;       // JSON-encoded details
 }
 
 // Request for incident details
@@ -1919,6 +1992,7 @@ message ProspectsUpdateEvent {
   string symbol = 5;              // For FILING_ANALYZED events
   string filing_type = 6;         // For FILING_ANALYZED events
   bytes data = 7;                 // JSON payload for rich events
+  string sitrep_path = 8;         // Path to sitrep.md (only on COMPLETED)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

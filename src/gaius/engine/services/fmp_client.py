@@ -454,6 +454,10 @@ class FMPClient:
         source_context: dict,
     ) -> None:
         """Capture exchange to Iceberg (fire-and-forget)."""
+        # Type narrowing: caller checks self._capture before calling this method
+        if self._capture is None:
+            return
+
         try:
             record = FMPExchangeRecord(
                 endpoint=endpoint,

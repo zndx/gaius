@@ -3259,10 +3259,14 @@ Use `/evolve stop` to stop orchestrated evolution.
 
                     if use_engine_proxy():
                         client = await get_grpc_client()
+                        # Use "all" to get active, healing, recovering, and manual_required
+                        # Only "resolved" incidents should be excluded from the health report
                         incidents_result = await client.call(
-                            "HealthObserver", "incidents", {"status": "active"}, timeout=5.0
+                            "HealthObserver", "incidents", {"status": "all"}, timeout=5.0
                         )
-                        incidents = incidents_result.get("incidents", [])
+                        # Filter out resolved incidents client-side
+                        all_incidents = incidents_result.get("incidents", [])
+                        incidents = [i for i in all_incidents if i.get("status") != "resolved"]
 
                         if incidents:
                             # Get GitHub repo for issue links
@@ -4825,6 +4829,303 @@ Use `/models kb` to see all KB models.
                 content.show_file("models.md", f"# Error\n\n{e}")
 
         asyncio.create_task(do_list_kb())
+
+    def _handle_prospects_command(self, args: str) -> None:
+        """Handle /prospects command for capital stewardship/prospect analysis.
+
+        Usage:
+            /prospects            - Show cached status ($0)
+            /prospects status     - Show cached status ($0)
+            /prospects check      - Check for new SEC filings ($0)
+            /prospects update     - Run full analysis (~$0.60/prospect)
+            /prospects update -f  - Force update even if no new filings
+        """
+        import asyncio
+        import time
+        from pathlib import Path
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        # Status: Show cached state
+        if subcmd in ("", "status"):
+            self._prospects_status(content)
+            return
+
+        # Check: Daily triage
+        if subcmd == "check":
+            force = "--force" in parts or "-f" in parts
+            self._prospects_check(content, force)
+            return
+
+        # Update: Full analysis with streaming
+        if subcmd == "update":
+            self._prospects_update(content, parts[1:])
+            return
+
+        # Help
+        content.show_file("prospects.md", """# Prospects Command
+
+**Usage:**
+- `/prospects` - Show cached status ($0)
+- `/prospects status` - Show cached status ($0)
+- `/prospects check` - Check for new SEC filings ($0)
+- `/prospects update` - Run full analysis (~$0.60/prospect)
+- `/prospects update -f` - Force update even if no new filings
+
+**Cost Model:**
+- Status/Check: Free (cached data)
+- Update: ~$0.06/filing (Cerebras GLM 4.7) + ~$0.50/synthesis (XAI Grok)
+""")
+
+    def _prospects_status(self, content: "InfoPanel") -> None:
+        """Show cached prospects status via gRPC."""
+        import asyncio
+
+        content.show_file("prospects.md", "# Prospects Status\n\n*Loading...*")
+
+        async def do_status():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Prospects", "status", {"profile": "zndx", "domain": "prospecting"})
+
+                if not result.get("success"):
+                    error = result.get("error", "Unknown error")
+                    content.show_file("prospects.md", f"# Prospects Status\n\n**Error:** {error}")
+                    return
+
+                candidates = result.get("candidates", [])
+                pending = result.get("pending_filings", 0)
+                update_rec = result.get("update_recommended", False)
+                update_reason = result.get("update_reason", "")
+
+                # Build compact status display
+                lines = [
+                    "# Prospects Status",
+                    "",
+                    f"**Candidates:** {len(candidates)}",
+                    f"**Pending Filings:** {pending}",
+                    "",
+                ]
+
+                if update_rec:
+                    lines.append(f"[!] **Update Recommended:** {update_reason}")
+                    lines.append("")
+
+                if candidates:
+                    lines.append("**Watchlist:**")
+                    for c in candidates[:8]:  # Show top 8 for narrow panel
+                        symbol = c.get("symbol", "?")
+                        rec = c.get("recommendation", "")
+                        conviction = c.get("conviction_score", 0)
+                        pending_filings = c.get("pending_filings", 0)
+                        # Compact single-line format
+                        if rec and conviction:
+                            status = f"{rec[:4].upper()} {conviction:.0%}"
+                        elif rec:
+                            status = rec[:6].upper()
+                        else:
+                            status = "new"
+                        pending_str = f" (+{pending_filings})" if pending_filings else ""
+                        lines.append(f"  {symbol}: {status}{pending_str}")
+
+                lines.append("")
+                lines.append("---")
+                lines.append("`/prospects check` to check for new filings")
+                lines.append("`/prospects update` to run analysis")
+
+                content.show_file("prospects.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("prospects.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_status())
+
+    def _prospects_check(self, content: "InfoPanel", force: bool) -> None:
+        """Check for new SEC filings via gRPC."""
+        import asyncio
+
+        content.show_file("prospects.md", "# Checking SEC Filings\n\n*Querying FMP API...*")
+
+        async def do_check():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call("Prospects", "check", {
+                    "profile": "zndx",
+                    "domain": "prospecting",
+                    "force": force,
+                })
+
+                if not result.get("success"):
+                    error = result.get("error", "Unknown error")
+                    content.show_file("prospects.md", f"# Check Failed\n\n{error}")
+                    return
+
+                update_rec = result.get("update_recommended", False)
+                reason = result.get("reason", "")
+                new_count = result.get("new_filings_count", 0)
+                symbols = result.get("symbols_with_new_filings", [])
+                pending_analysis = result.get("pending_analysis_count", 0)
+                pending_analysis_by_sym = result.get("pending_analysis_by_symbol", {})
+                pending_synthesis = result.get("pending_synthesis_count", 0)
+                pending_synthesis_syms = result.get("pending_synthesis_symbols", [])
+
+                lines = ["# SEC Filing Check", ""]
+
+                if update_rec:
+                    # Show status for each type of pending work
+                    if new_count > 0:
+                        lines.append(f"[!] **{new_count} new FMP filings**")
+                        if symbols:
+                            for s in symbols:
+                                lines.append(f"    {s}")
+                        lines.append("")
+
+                    if pending_analysis > 0:
+                        lines.append(f"[!] **{pending_analysis} pending analysis**")
+                        for sym, count in pending_analysis_by_sym.items():
+                            lines.append(f"    {sym}: {count} filings")
+                        lines.append("")
+
+                    if pending_synthesis > 0:
+                        lines.append(f"[!] **{pending_synthesis} pending synthesis**")
+                        for sym in pending_synthesis_syms:
+                            lines.append(f"    {sym}")
+                        lines.append("")
+
+                    lines.append(f"*{reason}*")
+                    lines.append("")
+                    lines.append("---")
+                    lines.append("`/prospects update` to sync")
+                else:
+                    lines.append("[OK] **System converged**")
+                    lines.append("")
+                    lines.append(f"*{reason}*")
+                    lines.append("")
+                    lines.append("---")
+                    lines.append("`/prospects update -f` to force re-analysis")
+
+                content.show_file("prospects.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("prospects.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(do_check())
+
+    def _prospects_update(self, content: "InfoPanel", args: list[str]) -> None:
+        """Run prospects update with streaming progress in InfoPanel."""
+        import asyncio
+        import time
+        from pathlib import Path
+
+        # Parse args
+        symbols = [a.upper() for a in args if not a.startswith("-")]
+        force = "--force" in args or "-f" in args
+        limit = 0
+        for i, a in enumerate(args):
+            if a == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        # Initial display
+        content.show_file("prospects.md", "# Prospects Update\n\n*Starting...*")
+
+        UPDATE_INTERVAL = 0.2  # 200ms debounce
+        last_update = 0.0
+        lines: list[str] = ["# Prospects Update", ""]
+        sitrep_path: str | None = None
+
+        async def run_update():
+            nonlocal last_update, lines, sitrep_path
+
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+
+                # Build request params
+                params = {
+                    "profile": "zndx",
+                    "domain": "prospecting",
+                    "force": force,
+                }
+                if symbols:
+                    params["symbols"] = symbols
+                if limit > 0:
+                    params["filings_per_symbol"] = limit
+
+                # Status icons
+                icons = {
+                    0: "[..]",  # QUEUED
+                    1: "[..]",  # FMP_SYNC_STARTED
+                    2: "[OK]",  # FMP_SYNC_COMPLETED
+                    3: "[..]",  # ANALYSIS_STARTED
+                    4: "[OK]",  # FILING_ANALYZED
+                    5: "[..]",  # SYNTHESIS_STARTED
+                    6: "[OK]",  # SYNTHESIS_COMPLETED
+                    7: "[..]",  # KB_WRITE_STARTED
+                    8: "[OK]",  # KB_WRITE_COMPLETED
+                    9: "✓",     # COMPLETED
+                    10: "[X]",  # FAILED
+                }
+
+                async for event in client.stream("Prospects", "update", params):
+                    event_type = event.get("type", 0)
+                    message = event.get("message", "")
+                    progress = event.get("progress", 0.0)
+                    symbol = event.get("symbol", "")
+                    evt_sitrep = event.get("sitrep_path", "")
+
+                    # Capture sitrep_path when it appears
+                    if evt_sitrep:
+                        sitrep_path = evt_sitrep
+
+                    # Build progress line
+                    icon = icons.get(event_type, "[?]")
+                    if event_type == 9:  # COMPLETED
+                        lines.append("")
+                        lines.append(f"**{icon} Complete!** {message}")
+                    elif event_type == 10:  # FAILED
+                        lines.append(f"{icon} {message}")
+                    elif symbol:
+                        lines.append(f"{icon} {symbol}: {message}")
+                    else:
+                        lines.append(f"{icon} {message}")
+
+                    # Debounced UI update
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        display_lines = lines[-15:]  # Keep last 15
+                        if progress > 0 and progress < 1.0:
+                            display_lines.append(f"\n*Progress: {progress:.0%}*")
+                        content.show_file("prospects.md", "\n".join(display_lines))
+                        last_update = now
+                        await asyncio.sleep(0)  # Yield to TUI
+
+                # Final update
+                content.show_file("prospects.md", "\n".join(lines[-20:]))
+
+                # Open sitrep in editor if available
+                if sitrep_path:
+                    kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
+                    full_path = kb_root / sitrep_path
+                    if full_path.exists():
+                        editor = self.query_one("#note-editor", NoteEditor)
+                        editor.remove_class("hidden")
+                        editor.open_note(str(full_path))
+
+            except Exception as e:
+                content.show_file("prospects.md", f"# Error\n\n{e}")
+
+        asyncio.create_task(run_update())
 
     def _handle_iso_command(self, args: str, content: "InfoPanel") -> None:
         """Handle /iso command for Iso view mode control.
@@ -6881,6 +7182,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command in ("models", "m"):
             # HuggingFace model discovery
             self._handle_models_command(args)
+        elif command == "prospects":
+            # Capital stewardship / prospects analysis
+            self._handle_prospects_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:

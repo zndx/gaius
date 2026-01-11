@@ -141,6 +141,7 @@ class EdgarFiling:
     analyzed_at: datetime | None = None
     analysis_model: str | None = None
     analysis_json: str | None = None  # Serialized FilingAnalysis
+    analysis_reasoning: str | None = None  # Chain-of-thought for distillation
 
     # Source tracking
     source_context: dict = field(default_factory=dict)
@@ -1076,6 +1077,7 @@ class EdgarFilingSync(ExchangeCapture):
                     pa.field("analyzed_at", pa.timestamp("us", tz="UTC"), nullable=True),
                     pa.field("analysis_model", pa.string(), nullable=True),
                     pa.field("analysis_json", pa.string(), nullable=True),
+                    pa.field("analysis_reasoning", pa.string(), nullable=True),
                 ])
 
                 # Convert to columnar format, handling NaT values
@@ -1125,6 +1127,7 @@ class EdgarFilingSync(ExchangeCapture):
             pa.field("analyzed_at", pa.timestamp("us", tz="UTC"), nullable=True),
             pa.field("analysis_model", pa.string(), nullable=True),
             pa.field("analysis_json", pa.string(), nullable=True),
+            pa.field("analysis_reasoning", pa.string(), nullable=True),
         ])
 
         data = {
@@ -1147,6 +1150,7 @@ class EdgarFilingSync(ExchangeCapture):
             "analyzed_at": [filing.analyzed_at],
             "analysis_model": [filing.analysis_model],
             "analysis_json": [filing.analysis_json],
+            "analysis_reasoning": [filing.analysis_reasoning],
         }
 
         return pa.table(data).cast(schema)

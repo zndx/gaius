@@ -59,12 +59,6 @@ from gaius.hx.fmp import FMPEndpoint, FMPExchangeRecord, get_fmp_capture
 from gaius.hx.lineage.events import Dataset, Job
 from gaius.engine.services.edgar_client import EdgarClient
 from gaius.engine.services.fmp_client import FMPClient
-from gaius.engine.services.prospects_analysis import (
-    ProspectsAnalyzer,
-    FilingAnalysis,
-    PositionSynthesis,
-    AnalysisError,
-)
 from gaius.hx.edgar import EdgarFiling, SyncResult, get_edgar_sync
 
 logger = logging.getLogger(__name__)

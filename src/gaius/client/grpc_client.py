@@ -449,7 +449,11 @@ class GrpcEngineClient:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream events from a server-streaming RPC.
+        """Stream events from a server-streaming RPC with idle timeout.
+
+        Uses an idle timeout that resets each time an event is received.
+        This allows long-running operations to proceed indefinitely as long
+        as they're making progress, while detecting stuck operations.
 
         Currently supports:
             - Prospects.update: Stream progress events during full analysis
@@ -458,17 +462,18 @@ class GrpcEngineClient:
             service: Service name (e.g., "Prospects")
             action: Action to perform (e.g., "update")
             params: Action parameters
-            timeout: Request timeout (default 300s for streaming ops)
+            timeout: Idle timeout in seconds (default 300s = 5 minutes).
+                     Only triggers if no events received for this duration.
 
         Yields:
             Event dicts from the streaming response
 
         Raises:
-            TimeoutError: If request times out
+            TimeoutError: If no events received within idle timeout
             ConnectionError: If not connected
             RuntimeError: If request fails
         """
-        timeout = timeout or 300.0  # 5 minutes default for streaming
+        timeout = timeout or 300.0  # 5 minute idle timeout (resets on each event received)
         params = params or {}
 
         # Ensure connected
@@ -492,13 +497,18 @@ class GrpcEngineClient:
     async def _stream_prospects_update(
         self,
         params: dict,
-        timeout: float,
+        idle_timeout: float,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream ProspectsUpdate events.
+        """Stream ProspectsUpdate events with idle timeout.
+
+        Uses an idle timeout that resets on each received event, rather than
+        an absolute deadline. This allows long-running operations to proceed
+        as long as they're making progress.
 
         Args:
             params: Update parameters (profile, domain, symbols, force)
-            timeout: Request timeout
+            idle_timeout: Idle timeout in seconds (default 300s = 5 minutes).
+                          Only triggers if no events received for this duration.
 
         Yields:
             Event dicts with type, progress, message, etc.
@@ -518,15 +528,33 @@ class GrpcEngineClient:
         )
 
         try:
-            async for event in self._stub.ProspectsUpdate(request, timeout=timeout):
-                yield MessageToDict(event, preserving_proto_field_name=True)
+            # Use no gRPC timeout - we manage idle timeout ourselves
+            stream = self._stub.ProspectsUpdate(request)
+            async_iter = stream.__aiter__()
+
+            while True:
+                try:
+                    # Wait for next event with idle timeout
+                    event = await asyncio.wait_for(
+                        async_iter.__anext__(),
+                        timeout=idle_timeout,
+                    )
+                    yield MessageToDict(event, preserving_proto_field_name=True)
+                except StopAsyncIteration:
+                    # Stream completed normally
+                    break
+                except asyncio.TimeoutError:
+                    # No event received within idle timeout
+                    raise TimeoutError(
+                        f"ProspectsUpdate stream idle for {idle_timeout}s with no events. "
+                        f"The operation may be stuck. Check /prospects status for details."
+                    )
+
         except grpc.RpcError as e:
             code = e.code()
             details = e.details()
 
-            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
-                raise TimeoutError(f"ProspectsUpdate stream timed out after {timeout}s")
-            elif code == grpc.StatusCode.UNAVAILABLE:
+            if code == grpc.StatusCode.UNAVAILABLE:
                 self._connected = False
                 raise ConnectionError(f"Service unavailable during streaming: {details}")
             else:
@@ -1480,10 +1508,22 @@ class GrpcEngineClient:
             }
 
         elif action == "check":
+            import json
+
             request = ForceHealthCheckRequest()
             response = await self._stub.HealthObserverForceCheck(
                 request, timeout=timeout
             )
+            # Parse check details from proto messages
+            checks = []
+            for check in response.checks:
+                checks.append({
+                    "name": check.name,
+                    "status": check.status,
+                    "message": check.message,
+                    "heuristic_id": check.heuristic_id,
+                    "details": json.loads(check.details_json) if check.details_json else {},
+                })
             return {
                 "healthy": response.healthy,
                 "summary": response.summary,
@@ -1491,6 +1531,7 @@ class GrpcEngineClient:
                 "warnings": response.warnings,
                 "failures": response.failures,
                 "new_incidents": response.new_incidents,
+                "checks": checks,
             }
 
         elif action == "incident_detail":

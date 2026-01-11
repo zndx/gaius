@@ -1610,10 +1610,14 @@ Begin your investigation now."""
             )
             return
 
-        # Check for existing open issue (update recurrence count instead)
+        # Check for existing open issue - skip creating duplicate
         existing_issue = await self._find_existing_issue(incident.fingerprint)
         if existing_issue:
-            await self._update_issue_recurrence(existing_issue, incident)
+            # Link incident to existing issue, don't spam with recurrence comments
+            incident.github_issue = existing_issue
+            logger.debug(
+                f"Incident {incident.fingerprint} linked to existing issue #{existing_issue}"
+            )
             return
 
         try:
@@ -1858,52 +1862,6 @@ Begin your investigation now."""
             logger.debug(f"Error checking GitHub issue #{issue_number}: {e}")
 
         return False
-
-    async def _update_issue_recurrence(self, issue_number: int, incident: HealthIncident) -> None:
-        """Add recurrence comment to existing issue.
-
-        Args:
-            issue_number: GitHub issue number
-            incident: Current incident occurrence
-        """
-        import asyncio
-        import subprocess
-
-        try:
-            from ...acp.security import sanitize_issue_content
-
-            comment = f"""## Recurrence Detected
-
-**Time:** {incident.last_check_at.isoformat()}
-**RPN Score:** {incident.rpn_score}
-**Attempts:** {incident.attempts}
-
-This incident has recurred. Previous remediation may not have addressed root cause.
-
----
-*Auto-comment by HealthObserver*
-"""
-            comment = sanitize_issue_content(comment)
-
-            cmd = [
-                "gh", "issue", "comment",
-                str(issue_number),
-                "--repo", self.config.github_repo,
-                "--body", comment,
-            ]
-
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-            )
-
-            if result.returncode == 0:
-                logger.info(f"Updated issue #{issue_number} with recurrence info")
-            else:
-                logger.warning(f"Failed to update issue #{issue_number}: {result.stderr}")
-
-        except Exception as e:
-            logger.warning(f"Error updating issue #{issue_number}: {e}")
 
     async def _check_recoveries(self, report: dict[str, Any]) -> None:
         """Check if recovering incidents have stabilized.

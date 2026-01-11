@@ -1,16 +1,16 @@
-"""ACP Client for connecting Gaius to Claude Code.
+"""ACP Client for connecting Gaius to Mistral Vibe.
 
 This module provides the ACP (Agent Client Protocol) client that enables
-Gaius to delegate complex reasoning tasks to Claude Code for autonomous
+Gaius to delegate complex reasoning tasks to Mistral Vibe for autonomous
 health maintenance, diagnosis, and remediation.
 
 The client wraps the agent-client-protocol Python SDK to manage:
 - Connection lifecycle (spawn, initialize, session management)
 - Permission handling for filesystem and terminal operations
-- Prompt/response communication with Claude Code
+- Prompt/response communication with Vibe
 
 Architecture:
-    Gaius (this client) → Claude Code (via ACP) → Anthropic API
+    Gaius (this client) → Mistral Vibe (via ACP) → Mistral API
                                     ↓
                             Gaius MCP Server (tools)
 
@@ -52,47 +52,42 @@ class ACPConnectionError(Exception):
 
 
 def _find_acp_adapter() -> str:
-    """Find the claude-code-acp adapter command.
+    """Find the vibe-acp adapter command.
 
     Looks for:
-    1. Local node_modules/.bin/claude-code-acp (installed via npm install)
-    2. Global claude-code-acp (installed via npm install -g)
-    3. npx claude-code-acp as fallback
+    1. vibe-acp in PATH (installed via uv tool install mistral-vibe)
+    2. uvx fallback
 
     Returns:
         Path to the adapter command
     """
-    # Check local node_modules first (relative to project root)
-    local_adapter = Path(__file__).parent.parent.parent.parent.parent / "node_modules/.bin/claude-code-acp"
-    if local_adapter.exists():
-        return str(local_adapter.resolve())  # Return absolute path
-
-    # Check if globally available
     import shutil
-    global_adapter = shutil.which("claude-code-acp")
-    if global_adapter:
-        return global_adapter
 
-    # Fall back to npx (will download if needed)
-    return "npx"
+    # Check if vibe-acp is available (installed via uv tool install mistral-vibe)
+    vibe_acp = shutil.which("vibe-acp")
+    if vibe_acp:
+        return vibe_acp
+
+    # Fall back to uvx (will run from cache)
+    return "uvx"
 
 
 @dataclass
 class ACPConfig:
     """Configuration for ACP client.
 
-    Requires the claude-code-acp adapter:
-        npm install @zed-industries/claude-code-acp
+    Requires the mistral-vibe package:
+        uv tool install mistral-vibe
 
     Attributes:
-        agent_command: Command to spawn the ACP adapter (claude-code-acp)
+        agent_command: Command to spawn the ACP adapter (vibe-acp)
         agent_args: Arguments for the adapter
-        working_directory: Directory for Claude Code operations
+        working_directory: Directory for Vibe operations
         connection_timeout: Seconds to wait for connection
         prompt_timeout: Seconds to wait for prompt response
         auto_approve_fs: Auto-approve filesystem operations
         auto_approve_terminal: Auto-approve terminal operations
-        mcp_config: MCP server configuration for Claude Code to use
+        mcp_config: MCP server configuration for Vibe to use
         include_gaius_mcp: Automatically include Gaius MCP server
         github_repo: GitHub repository for issue tracking (MUST be in allowlist)
         stream_callback: Optional async callback for streaming responses to TUI
@@ -104,14 +99,14 @@ class ACPConfig:
         The github_repo must be in the allowlist at ~/.config/gaius/acp.conf
         and must have private visibility.
     """
-    # claude-code-acp is the required adapter from Zed
-    # See: https://github.com/zed-industries/claude-code-acp
+    # vibe-acp is the ACP adapter from Mistral
+    # See: https://github.com/mistralai/mistral-vibe
     agent_command: str = field(default_factory=_find_acp_adapter)
-    agent_args: list[str] = field(default_factory=lambda: ["@zed-industries/claude-code-acp"] if _find_acp_adapter() == "npx" else [])
+    agent_args: list[str] = field(default_factory=lambda: ["--from", "mistral-vibe", "vibe-acp"] if _find_acp_adapter() == "uvx" else [])
     working_directory: str = field(default_factory=lambda: os.getcwd())
     connection_timeout: float = 30.0
-    prompt_timeout: float | None = None  # None = no timeout, let Claude Code run to completion
-    auto_approve_fs: bool = True  # Trust Claude Code with KB files
+    prompt_timeout: float | None = None  # None = no timeout, let Vibe run to completion
+    auto_approve_fs: bool = True  # Trust Vibe with KB files
     auto_approve_terminal: bool = True  # Allow gh CLI for issue management
     mcp_config: dict[str, Any] | None = None  # Additional MCP servers
     include_gaius_mcp: bool = True  # Include Gaius MCP server in session
@@ -123,10 +118,10 @@ class ACPConfig:
 
 
 class GaiusACPClient:
-    """ACP client for connecting to Claude Code.
+    """ACP client for connecting to Mistral Vibe.
 
     This client implements the Agent Client Protocol to communicate with
-    Claude Code, enabling Gaius to delegate complex tasks like:
+    Mistral Vibe, enabling Gaius to delegate complex tasks like:
     - Health report analysis and root cause diagnosis
     - Remediation planning and execution
     - GitHub issue creation and management
@@ -172,9 +167,9 @@ class GaiusACPClient:
         return self._session_id
 
     async def connect(self) -> None:
-        """Connect to Claude Code via ACP.
+        """Connect to Mistral Vibe via ACP.
 
-        Spawns Claude Code subprocess and establishes an ACP session.
+        Spawns Vibe subprocess and establishes an ACP session.
         Verifies GitHub repository security before connecting.
 
         Raises:
@@ -336,19 +331,17 @@ class GaiusACPClient:
             # Build environment with MCP config if provided
             env = dict(os.environ)
 
-            # IMPORTANT: Remove ANTHROPIC_API_KEY so Claude Code uses subscription auth
-            # instead of trying to use API credits (which may have low balance)
-            env.pop("ANTHROPIC_API_KEY", None)
-            env.pop("CLAUDE_API_KEY", None)
+            # Mistral Vibe uses MISTRAL_API_KEY from environment
+            # No need to remove keys - Vibe uses Mistral API
 
             if self.config.mcp_config:
-                # Configure Gaius MCP server for Claude Code
-                env["CLAUDE_CODE_MCP_CONFIG"] = json.dumps(self.config.mcp_config)
+                # Configure Gaius MCP server for Vibe
+                env["VIBE_MCP_CONFIG"] = json.dumps(self.config.mcp_config)
 
             # Spawn agent process with timeout and increased buffer limit
             async with asyncio.timeout(self.config.connection_timeout):
                 # spawn_agent_process returns an async context manager
-                # Pass buffer limit via transport_kwargs to handle large Claude Code responses
+                # Pass buffer limit via transport_kwargs to handle large Vibe responses
                 self._context_manager = spawn_agent_process(
                     gaius_client,
                     self.config.agent_command,
@@ -426,11 +419,11 @@ class GaiusACPClient:
             raise ACPConnectionError(
                 f"Connection timed out after {self.config.connection_timeout}s.\n"
                 f"Guru Meditation: #ACP.00000002.TIMEOUT\n"
-                f"Ensure Claude Code is installed: npm install -g @anthropic-ai/claude-code"
+                f"Ensure Mistral Vibe is installed: uv tool install mistral-vibe"
             )
         except Exception as e:
             raise ACPConnectionError(
-                f"Failed to connect to Claude Code.\n"
+                f"Failed to connect to Mistral Vibe.\n"
                 f"Guru Meditation: #ACP.00000001.CONNFAIL\n"
                 f"Error: {e}"
             )
@@ -441,7 +434,7 @@ class GaiusACPClient:
         context: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Send a prompt to Claude Code and get response.
+        """Send a prompt to Mistral Vibe and get response.
 
         Args:
             message: The prompt message
@@ -449,7 +442,7 @@ class GaiusACPClient:
             timeout: Override default prompt timeout
 
         Returns:
-            Response text from Claude Code
+            Response text from Vibe
 
         Raises:
             ACPConnectionError: If not connected or prompt fails

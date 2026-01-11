@@ -507,18 +507,47 @@ class ProspectsService:
         Returns:
             Dict with update_recommended flag and details.
         """
-        # Check if we need to run
+        # Check if FMP check is throttled (but always query HX for pending work)
+        fmp_throttled = False
         if not force and self._last_check_at:
             hours_since = (
                 datetime.now(timezone.utc) - self._last_check_at
             ).total_seconds() / 3600
             if hours_since < self._config.check_interval_hours:
-                return {
-                    "update_recommended": False,
-                    "reason": f"Last check was {hours_since:.1f} hours ago",
-                    "new_filings_count": 0,
-                    "symbols_with_new_filings": [],
-                }
+                fmp_throttled = True
+
+        # Always query HX for pending analysis/synthesis (cheap, local queries)
+        pending_analysis = await self._count_pending_analysis()
+        pending_synthesis = await self._count_pending_synthesis()
+        pending_analysis_count = sum(pending_analysis.values())
+        pending_synthesis_count = len(pending_synthesis)
+
+        # If FMP is throttled but there's pending HX work, still report it
+        if fmp_throttled:
+            has_pending = pending_analysis_count > 0 or pending_synthesis_count > 0
+
+            reasons = []
+            if pending_analysis_count > 0:
+                reasons.append(f"{pending_analysis_count} pending analysis")
+            if pending_synthesis_count > 0:
+                reasons.append(f"{pending_synthesis_count} pending synthesis")
+
+            if has_pending:
+                reason = ", ".join(reasons)
+            else:
+                reason = "System converged - no pending work"
+
+            return {
+                "update_recommended": has_pending,
+                "reason": reason,
+                "new_filings_count": 0,
+                "symbols_with_new_filings": [],
+                "pending_analysis_count": pending_analysis_count,
+                "pending_analysis_by_symbol": pending_analysis,
+                "pending_synthesis_count": pending_synthesis_count,
+                "pending_synthesis_symbols": list(pending_synthesis.keys()),
+                "fmp_throttled": True,
+            }
 
         # Get FMP API key
         api_key = os.environ.get("FMP_API_KEY")
@@ -562,17 +591,34 @@ class ProspectsService:
 
         self._last_check_at = datetime.now(timezone.utc)
 
-        update_recommended = new_filings_count > 0
+        # HX state was queried at top of function - reuse those values
+        # Update is recommended if there's any work to do
+        has_new_filings = new_filings_count > 0
+        has_pending_analysis = pending_analysis_count > 0
+        has_pending_synthesis = pending_synthesis_count > 0
+
+        update_recommended = has_new_filings or has_pending_analysis or has_pending_synthesis
+
+        # Build reason with all pending work
+        reasons = []
+        if has_new_filings:
+            reasons.append(f"{new_filings_count} new FMP filings")
+        if has_pending_analysis:
+            reasons.append(f"{pending_analysis_count} pending analysis")
+        if has_pending_synthesis:
+            reasons.append(f"{pending_synthesis_count} pending synthesis")
+
+        reason = ", ".join(reasons) if reasons else "System converged - no pending work"
 
         return {
             "update_recommended": update_recommended,
-            "reason": (
-                f"{new_filings_count} new filings for {len(symbols_with_new)} symbols"
-                if update_recommended
-                else "No new filings detected"
-            ),
+            "reason": reason,
             "new_filings_count": new_filings_count,
             "symbols_with_new_filings": symbols_with_new,
+            "pending_analysis_count": pending_analysis_count,
+            "pending_analysis_by_symbol": pending_analysis,
+            "pending_synthesis_count": pending_synthesis_count,
+            "pending_synthesis_symbols": list(pending_synthesis.keys()),
         }
 
     async def run_update(
@@ -647,7 +693,7 @@ class ProspectsService:
                     "profile": profile,
                     "domain": domain,
                     "symbols": symbols_arg,
-                    "force": str(force),
+                    "force": force,  # Boolean - Metaflow handles type conversion
                 }
                 if filings_per_symbol is not None:
                     flow_params["filings_per_symbol"] = filings_per_symbol
@@ -663,6 +709,7 @@ class ProspectsService:
 
                 # Stream logs and parse progress
                 progress = 0.05
+                sitrep_path: str | None = None
                 async for _, line in executing.stream_log("stdout"):
                     line = line.strip()
                     if not line:
@@ -672,6 +719,9 @@ class ProspectsService:
                     event = self._parse_flow_output(line, progress)
                     if event:
                         progress = event.get("progress", progress)
+                        # Capture sitrep_path if present in event
+                        if "sitrep_path" in event:
+                            sitrep_path = event["sitrep_path"]
                         yield event
 
                 # Wait for completion
@@ -685,6 +735,7 @@ class ProspectsService:
                         "type": 9,  # COMPLETED
                         "progress": 1.0,
                         "message": "Update completed",
+                        "sitrep_path": sitrep_path or "",
                     }
                 else:
                     yield {
@@ -773,6 +824,15 @@ class ProspectsService:
                 "progress": 0.95,
                 "message": line,
             }
+        elif "Created sitrep:" in line:
+            # Parse sitrep path: "Created sitrep: scratch/2026-01-09/164500_prospects_sitrep.md"
+            sitrep_path = line.split("Created sitrep:")[-1].strip()
+            return {
+                "type": 8,  # KB_WRITE_COMPLETED
+                "progress": 0.98,
+                "message": f"Sitrep created: {sitrep_path}",
+                "sitrep_path": sitrep_path,
+            }
         elif "Prospects Update Complete" in line:
             return {
                 "type": 9,  # COMPLETED
@@ -821,6 +881,78 @@ class ProspectsService:
 
         except Exception as e:
             logger.warning(f"Failed to reload state from HX: {e}")
+
+    async def _count_pending_analysis(self) -> dict[str, int]:
+        """Count filings in HX without analysis (analyzed_at IS NULL).
+
+        Queries the Iceberg table to find filings that have been fetched
+        and extracted but not yet analyzed by Cerebras GLM.
+
+        Returns:
+            Dict mapping symbol -> count of filings pending analysis.
+        """
+        try:
+            from gaius.hx.edgar import get_edgar_sync
+
+            edgar_sync = get_edgar_sync()
+            if not edgar_sync._enabled:
+                return {}
+
+            # Get watchlist symbols
+            symbols = list(self._cached_candidates.keys())
+            if not symbols:
+                return {}
+
+            counts: dict[str, int] = {}
+            for symbol in symbols:
+                # get_unanalyzed returns filings with extracted_text but no analyzed_at
+                unanalyzed = await edgar_sync.get_unanalyzed(symbol=symbol, limit=100)
+                if unanalyzed:
+                    counts[symbol] = len(unanalyzed)
+
+            return counts
+
+        except Exception as e:
+            logger.warning(f"Failed to count pending analysis from HX: {e}")
+            return {}
+
+    async def _count_pending_synthesis(self, kb_root: str = "build/dev") -> dict[str, bool]:
+        """Check which symbols have analyses but no KB synthesis.
+
+        Compares HX analysis state against KB current/prospects/<symbol>/synthesis.md.
+
+        Args:
+            kb_root: KB root directory.
+
+        Returns:
+            Dict mapping symbol -> True if synthesis is pending (has analysis, no KB).
+        """
+        try:
+            from gaius.hx.edgar import get_edgar_sync
+
+            edgar_sync = get_edgar_sync()
+            kb_path = Path(kb_root)
+
+            pending: dict[str, bool] = {}
+
+            for symbol in self._cached_candidates.keys():
+                # Check if symbol has any analyzed filings in HX
+                filings = await edgar_sync.get_filings_by_symbol(symbol, limit=1)
+                has_analysis = any(f.analyzed_at is not None for f in filings)
+
+                # Check if synthesis.md exists in KB
+                synthesis_path = kb_path / "current" / "prospects" / symbol.lower() / "synthesis.md"
+                has_synthesis = synthesis_path.exists()
+
+                # Pending if has analysis but no synthesis
+                if has_analysis and not has_synthesis:
+                    pending[symbol] = True
+
+            return pending
+
+        except Exception as e:
+            logger.warning(f"Failed to check pending synthesis: {e}")
+            return {}
 
     async def _fetch_sec_filings(
         self,

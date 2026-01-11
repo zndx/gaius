@@ -19,6 +19,41 @@ class ProcessStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PROCESS_STATUS_FAILED: _ClassVar[ProcessStatus]
     PROCESS_STATUS_PENDING: _ClassVar[ProcessStatus]
 
+class CheckStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    CHECK_STATUS_UNSPECIFIED: _ClassVar[CheckStatus]
+    CHECK_STATUS_PASS: _ClassVar[CheckStatus]
+    CHECK_STATUS_WARN: _ClassVar[CheckStatus]
+    CHECK_STATUS_FAIL: _ClassVar[CheckStatus]
+    CHECK_STATUS_SKIP: _ClassVar[CheckStatus]
+
+class IncidentStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    INCIDENT_STATUS_UNSPECIFIED: _ClassVar[IncidentStatus]
+    INCIDENT_STATUS_ACTIVE: _ClassVar[IncidentStatus]
+    INCIDENT_STATUS_HEALING: _ClassVar[IncidentStatus]
+    INCIDENT_STATUS_RECOVERING: _ClassVar[IncidentStatus]
+    INCIDENT_STATUS_RESOLVED: _ClassVar[IncidentStatus]
+    INCIDENT_STATUS_MANUAL_REQUIRED: _ClassVar[IncidentStatus]
+
+class RemediationTier(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    REMEDIATION_TIER_UNSPECIFIED: _ClassVar[RemediationTier]
+    REMEDIATION_TIER_0: _ClassVar[RemediationTier]
+    REMEDIATION_TIER_1: _ClassVar[RemediationTier]
+    REMEDIATION_TIER_2: _ClassVar[RemediationTier]
+    REMEDIATION_TIER_3: _ClassVar[RemediationTier]
+
+class IncidentTransition(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    INCIDENT_TRANSITION_UNSPECIFIED: _ClassVar[IncidentTransition]
+    INCIDENT_TRANSITION_ACTIVE_TO_HEALING: _ClassVar[IncidentTransition]
+    INCIDENT_TRANSITION_ACTIVE_TO_RECOVERING: _ClassVar[IncidentTransition]
+    INCIDENT_TRANSITION_HEALING_TO_RECOVERING: _ClassVar[IncidentTransition]
+    INCIDENT_TRANSITION_HEALING_TO_MANUAL: _ClassVar[IncidentTransition]
+    INCIDENT_TRANSITION_RECOVERING_TO_RESOLVED: _ClassVar[IncidentTransition]
+    INCIDENT_TRANSITION_RECOVERING_TO_ACTIVE: _ClassVar[IncidentTransition]
+
 class WorkloadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     WORKLOAD_INIT: _ClassVar[WorkloadType]
@@ -48,6 +83,29 @@ PROCESS_STATUS_UNHEALTHY: ProcessStatus
 PROCESS_STATUS_STOPPING: ProcessStatus
 PROCESS_STATUS_FAILED: ProcessStatus
 PROCESS_STATUS_PENDING: ProcessStatus
+CHECK_STATUS_UNSPECIFIED: CheckStatus
+CHECK_STATUS_PASS: CheckStatus
+CHECK_STATUS_WARN: CheckStatus
+CHECK_STATUS_FAIL: CheckStatus
+CHECK_STATUS_SKIP: CheckStatus
+INCIDENT_STATUS_UNSPECIFIED: IncidentStatus
+INCIDENT_STATUS_ACTIVE: IncidentStatus
+INCIDENT_STATUS_HEALING: IncidentStatus
+INCIDENT_STATUS_RECOVERING: IncidentStatus
+INCIDENT_STATUS_RESOLVED: IncidentStatus
+INCIDENT_STATUS_MANUAL_REQUIRED: IncidentStatus
+REMEDIATION_TIER_UNSPECIFIED: RemediationTier
+REMEDIATION_TIER_0: RemediationTier
+REMEDIATION_TIER_1: RemediationTier
+REMEDIATION_TIER_2: RemediationTier
+REMEDIATION_TIER_3: RemediationTier
+INCIDENT_TRANSITION_UNSPECIFIED: IncidentTransition
+INCIDENT_TRANSITION_ACTIVE_TO_HEALING: IncidentTransition
+INCIDENT_TRANSITION_ACTIVE_TO_RECOVERING: IncidentTransition
+INCIDENT_TRANSITION_HEALING_TO_RECOVERING: IncidentTransition
+INCIDENT_TRANSITION_HEALING_TO_MANUAL: IncidentTransition
+INCIDENT_TRANSITION_RECOVERING_TO_RESOLVED: IncidentTransition
+INCIDENT_TRANSITION_RECOVERING_TO_ACTIVE: IncidentTransition
 WORKLOAD_INIT: WorkloadType
 WORKLOAD_SWARM: WorkloadType
 WORKLOAD_INFERENCE: WorkloadType
@@ -64,6 +122,24 @@ AMBIENT_PHASE_ERROR: AmbientPhase
 AMBIENT_PHASE_FETCH_CONTENT: AmbientPhase
 AMBIENT_PHASE_SUMMARIZATION: AmbientPhase
 AMBIENT_PHASE_BUFFER_ANALYSIS: AmbientPhase
+
+class FailureModeMapping(_message.Message):
+    __slots__ = ("fmea_id", "heuristic_path", "check_name_pattern", "endpoint_pattern")
+    FMEA_ID_FIELD_NUMBER: _ClassVar[int]
+    HEURISTIC_PATH_FIELD_NUMBER: _ClassVar[int]
+    CHECK_NAME_PATTERN_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINT_PATTERN_FIELD_NUMBER: _ClassVar[int]
+    fmea_id: str
+    heuristic_path: str
+    check_name_pattern: str
+    endpoint_pattern: str
+    def __init__(self, fmea_id: _Optional[str] = ..., heuristic_path: _Optional[str] = ..., check_name_pattern: _Optional[str] = ..., endpoint_pattern: _Optional[str] = ...) -> None: ...
+
+class FailureModeRegistry(_message.Message):
+    __slots__ = ("mappings",)
+    MAPPINGS_FIELD_NUMBER: _ClassVar[int]
+    mappings: _containers.RepeatedCompositeFieldContainer[FailureModeMapping]
+    def __init__(self, mappings: _Optional[_Iterable[_Union[FailureModeMapping, _Mapping]]] = ...) -> None: ...
 
 class OrchestratorStatusResponse(_message.Message):
     __slots__ = ("total_gpus", "available_gpus", "allocations", "endpoints")
@@ -2005,20 +2081,36 @@ class ForceHealthCheckRequest(_message.Message):
     def __init__(self) -> None: ...
 
 class ForceHealthCheckResponse(_message.Message):
-    __slots__ = ("healthy", "summary", "passed", "warnings", "failures", "new_incidents")
+    __slots__ = ("healthy", "summary", "passed", "warnings", "failures", "new_incidents", "checks")
     HEALTHY_FIELD_NUMBER: _ClassVar[int]
     SUMMARY_FIELD_NUMBER: _ClassVar[int]
     PASSED_FIELD_NUMBER: _ClassVar[int]
     WARNINGS_FIELD_NUMBER: _ClassVar[int]
     FAILURES_FIELD_NUMBER: _ClassVar[int]
     NEW_INCIDENTS_FIELD_NUMBER: _ClassVar[int]
+    CHECKS_FIELD_NUMBER: _ClassVar[int]
     healthy: bool
     summary: str
     passed: int
     warnings: int
     failures: int
     new_incidents: int
-    def __init__(self, healthy: bool = ..., summary: _Optional[str] = ..., passed: _Optional[int] = ..., warnings: _Optional[int] = ..., failures: _Optional[int] = ..., new_incidents: _Optional[int] = ...) -> None: ...
+    checks: _containers.RepeatedCompositeFieldContainer[HealthCheckResult]
+    def __init__(self, healthy: bool = ..., summary: _Optional[str] = ..., passed: _Optional[int] = ..., warnings: _Optional[int] = ..., failures: _Optional[int] = ..., new_incidents: _Optional[int] = ..., checks: _Optional[_Iterable[_Union[HealthCheckResult, _Mapping]]] = ...) -> None: ...
+
+class HealthCheckResult(_message.Message):
+    __slots__ = ("name", "status", "message", "heuristic_id", "details_json")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    HEURISTIC_ID_FIELD_NUMBER: _ClassVar[int]
+    DETAILS_JSON_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    status: str
+    message: str
+    heuristic_id: str
+    details_json: str
+    def __init__(self, name: _Optional[str] = ..., status: _Optional[str] = ..., message: _Optional[str] = ..., heuristic_id: _Optional[str] = ..., details_json: _Optional[str] = ...) -> None: ...
 
 class GetIncidentDetailRequest(_message.Message):
     __slots__ = ("fingerprint",)
@@ -2807,7 +2899,7 @@ class ProspectsUpdateRequest(_message.Message):
     def __init__(self, profile: _Optional[str] = ..., domain: _Optional[str] = ..., symbols: _Optional[_Iterable[str]] = ..., force: bool = ..., filings_per_symbol: _Optional[int] = ...) -> None: ...
 
 class ProspectsUpdateEvent(_message.Message):
-    __slots__ = ("type", "timestamp_ms", "progress", "message", "symbol", "filing_type", "data")
+    __slots__ = ("type", "timestamp_ms", "progress", "message", "symbol", "filing_type", "data", "sitrep_path")
     class Type(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         QUEUED: _ClassVar[ProspectsUpdateEvent.Type]
@@ -2839,6 +2931,7 @@ class ProspectsUpdateEvent(_message.Message):
     SYMBOL_FIELD_NUMBER: _ClassVar[int]
     FILING_TYPE_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
+    SITREP_PATH_FIELD_NUMBER: _ClassVar[int]
     type: ProspectsUpdateEvent.Type
     timestamp_ms: int
     progress: float
@@ -2846,4 +2939,5 @@ class ProspectsUpdateEvent(_message.Message):
     symbol: str
     filing_type: str
     data: bytes
-    def __init__(self, type: _Optional[_Union[ProspectsUpdateEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., symbol: _Optional[str] = ..., filing_type: _Optional[str] = ..., data: _Optional[bytes] = ...) -> None: ...
+    sitrep_path: str
+    def __init__(self, type: _Optional[_Union[ProspectsUpdateEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., symbol: _Optional[str] = ..., filing_type: _Optional[str] = ..., data: _Optional[bytes] = ..., sitrep_path: _Optional[str] = ...) -> None: ...
