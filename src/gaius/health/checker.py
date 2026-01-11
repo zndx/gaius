@@ -57,15 +57,15 @@ class CheckStatus(Enum):
     FAIL = "fail"
     SKIP = "skip"
 
-    def to_proto(self) -> "ProtoCheckStatus.ValueType":
+    def to_proto(self) -> "ProtoCheckStatus":
         """Convert to proto enum value (type-safe).
 
-        Returns the proto enum value, not just an int.
+        Returns the proto CheckStatus enum value (CHECK_STATUS_PASS, etc.).
         """
         return _STATUS_TO_PROTO.get(self, CHECK_STATUS_UNSPECIFIED)
 
     @classmethod
-    def from_proto(cls, proto_value: "ProtoCheckStatus.ValueType") -> "CheckStatus":
+    def from_proto(cls, proto_value: "ProtoCheckStatus") -> "CheckStatus":
         """Convert from proto enum value (type-safe).
 
         Args:
@@ -79,14 +79,14 @@ class CheckStatus(Enum):
 
 # Mapping between local enum and proto enum values
 # Uses proto enum constants for type safety
-_STATUS_TO_PROTO: dict["CheckStatus", int] = {
+_STATUS_TO_PROTO: dict["CheckStatus", "ProtoCheckStatus"] = {
     CheckStatus.PASS: CHECK_STATUS_PASS,
     CheckStatus.WARN: CHECK_STATUS_WARN,
     CheckStatus.FAIL: CHECK_STATUS_FAIL,
     CheckStatus.SKIP: CHECK_STATUS_SKIP,
 }
 
-_PROTO_TO_STATUS: dict[int, "CheckStatus"] = {v: k for k, v in _STATUS_TO_PROTO.items()}
+_PROTO_TO_STATUS: dict["ProtoCheckStatus", "CheckStatus"] = {v: k for k, v in _STATUS_TO_PROTO.items()}
 
 
 @dataclass

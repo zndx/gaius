@@ -211,9 +211,8 @@ def transition_with_otel(
                     "transition.error": result.error or "Unknown error",
                 },
             )
-            span.set_status(
-                status=span.get_status(),  # Keep existing status
-            )
+            # Don't modify span status - Fail Open principle.
+            # Invalid transitions are logged as events but don't mark the span as error.
 
     return result
 
