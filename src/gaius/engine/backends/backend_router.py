@@ -1,7 +1,15 @@
 """Backend router for inference request routing.
 
-Routes inference requests to the appropriate backend (vLLM or optillm)
-based on agent configuration.
+Routes inference requests to the appropriate backend:
+- vLLM: Local GPU inference via vLLM processes
+- optillm: Prompt optimization proxy (local)
+- external: Remote LLM APIs (Cerebras, XAI, Bytez) via ExternalInferenceRouter
+
+Engine-First Architecture:
+All inference flows through this router, ensuring centralized:
+- Budget tracking (XAI/Cerebras per-token limits)
+- Metrics collection
+- Request routing based on agent configuration
 """
 
 import logging
@@ -13,6 +21,7 @@ from ..metrics import EngineMetrics
 from ..resources import ResourceManager
 from .optillm_controller import OptillmController, OptillmRequest, OptillmResponse, OptillmTechnique
 from .vllm_controller import VLLMController, VLLMProcess, VLLMRequest, VLLMResponse
+from .external.router import ExternalInferenceRouter, get_external_router
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +88,7 @@ class BackendRouter:
         resource_manager: ResourceManager,
         vllm_controller: Optional[VLLMController] = None,
         optillm_controller: Optional[OptillmController] = None,
+        external_router: Optional[ExternalInferenceRouter] = None,
     ):
         """Initialize backend router.
 
@@ -87,6 +97,7 @@ class BackendRouter:
             resource_manager: Resource manager for GPU allocation
             vllm_controller: Optional pre-created vLLM controller
             optillm_controller: Optional pre-created optillm controller
+            external_router: Optional pre-created external router for Cerebras/XAI/Bytez
         """
         self.config = config
         self.resource_manager = resource_manager
@@ -95,7 +106,17 @@ class BackendRouter:
         self.vllm = vllm_controller or VLLMController(config, resource_manager)
         self.optillm = optillm_controller or OptillmController(config)
 
+        # External router for Cerebras/XAI/Bytez (lazy initialization via singleton)
+        self._external = external_router
+
         logger.info("BackendRouter initialized")
+
+    @property
+    def external(self) -> ExternalInferenceRouter:
+        """Get or create external router (lazy initialization via singleton)."""
+        if self._external is None:
+            self._external = get_external_router()
+        return self._external
 
     async def start(self) -> None:
         """Start the router and all backend controllers."""
@@ -107,6 +128,9 @@ class BackendRouter:
         """Stop the router and all backend controllers."""
         await self.vllm.stop()
         await self.optillm.stop()
+        # Close external router if initialized
+        if self._external:
+            await self._external.close()
         logger.info("BackendRouter stopped")
 
     def get_agent_config(self, agent_alias: str) -> Optional[AgentConfig]:
@@ -155,6 +179,8 @@ class BackendRouter:
                 response = await self._route_to_optillm(request, agent_config)
             elif backend == "vllm":
                 response = await self._route_to_vllm(request, agent_config)
+            elif backend in ("external", "cerebras", "xai", "bytez"):
+                response = await self._route_to_external(request, agent_config, backend)
             else:
                 response = InferenceResponse(
                     content="",
@@ -217,6 +243,67 @@ class BackendRouter:
             technique=response.technique,
             error=response.error,
         )
+
+    async def _route_to_external(
+        self, request: InferenceRequest, agent_config: AgentConfig, backend: str
+    ) -> InferenceResponse:
+        """Route request to external backend (Cerebras, XAI, Bytez).
+
+        Engine-First Architecture: All external API calls go through the
+        ExternalInferenceRouter which handles:
+        - Budget tracking (per-token limits)
+        - Provider selection
+        - Exchange capture to Iceberg (training data)
+
+        Args:
+            request: The inference request
+            agent_config: Agent configuration
+            backend: Specific backend ("cerebras", "xai", "bytez") or "external" for auto
+
+        Returns:
+            InferenceResponse from external provider
+        """
+        import time
+
+        start_time = time.time()
+
+        # Determine provider from backend or agent config
+        # "external" = auto-route, otherwise use specific provider
+        provider = None if backend == "external" else backend
+
+        # Determine model from agent config or request
+        model = agent_config.model if agent_config else None
+
+        try:
+            response = await self.external.complete(
+                messages=request.messages,
+                provider=provider,
+                model=model,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+            )
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            return InferenceResponse(
+                content=response.content,
+                model=response.model,
+                backend=f"external:{response.provider}",
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                latency_ms=latency_ms,
+                error=response.error,
+            )
+
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            return InferenceResponse(
+                content="",
+                model=model or "",
+                backend=f"external:{backend}",
+                latency_ms=latency_ms,
+                error=str(e),
+            )
 
     async def _route_to_vllm(
         self, request: InferenceRequest, agent_config: AgentConfig
@@ -391,12 +478,22 @@ class BackendRouter:
         """
         optillm_healthy = await self.optillm.health_check()
 
+        # Get external backends status (lazy initialization)
+        external_status = {}
+        if self._external:
+            external_status = {
+                "available": self._external.available_backends,
+                "token_tier": self._external.token_tier_backends,
+                "subscription_tier": self._external.subscription_tier_backends,
+            }
+
         return {
             "optillm": {
                 "healthy": optillm_healthy,
                 "enabled": self.optillm.is_enabled,
             },
             "vllm": self.vllm.get_status(),
+            "external": external_status,
         }
 
     def get_status(self) -> dict[str, Any]:
@@ -405,9 +502,18 @@ class BackendRouter:
         Returns:
             Status dict with backend information
         """
+        # Get external backends info (lazy initialization)
+        external_info = {}
+        if self._external:
+            external_info = {
+                "available": self._external.available_backends,
+                "budget": self._external.budget.to_dict() if self._external.budget else {},
+            }
+
         return {
             "optillm": self.optillm.get_status(),
             "vllm": self.vllm.get_status(),
+            "external": external_info,
             "agents": {
                 alias: {
                     "model": config.model,
