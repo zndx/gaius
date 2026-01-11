@@ -419,6 +419,16 @@ class HealthObserverService(BaseDaemon):
                             else:
                                 timer_start = row["timer_event_at"]
 
+                        # Check if there's an associated GitHub issue for this fingerprint
+                        github_issue = await conn.fetchval(
+                            """
+                            SELECT issue_number FROM github_issues
+                            WHERE fingerprint = $1 AND status = 'open'
+                            ORDER BY created_at DESC LIMIT 1
+                            """,
+                            fingerprint,
+                        )
+
                         # Reconstruct the incident
                         incident = HealthIncident(
                             incident_id=uuid4(),  # New ID for this session
@@ -432,6 +442,7 @@ class HealthObserverService(BaseDaemon):
                             last_check_at=datetime.now(),
                             attempts=row["attempts"],
                             status=status,
+                            github_issue=github_issue,  # Re-link to open GitHub issue
                         )
 
                         self._active_incidents[fingerprint] = incident
@@ -445,10 +456,11 @@ class HealthObserverService(BaseDaemon):
 
                         restored += 1
 
+                        github_str = f", github_issue=#{github_issue}" if github_issue else ""
                         logger.info(
                             f"Restored incident {fingerprint} from DB "
                             f"(status={status}, tier={row['current_tier']}, "
-                            f"attempts={row['attempts']}, created={row['created_at'].isoformat()})"
+                            f"attempts={row['attempts']}, created={row['created_at'].isoformat()}{github_str})"
                         )
 
                     except Exception as e:
@@ -2365,3 +2377,135 @@ Begin your investigation now."""
         """
         self._daemon_registry = registry
         logger.debug("DaemonRegistry reference set in HealthObserverService")
+
+    async def resolve_incident(self, fingerprint: str) -> dict[str, Any]:
+        """Explicitly resolve an incident by fingerprint.
+
+        Called by /health fix --close after successful ACP investigation.
+        Removes from active tracking and updates database.
+
+        Args:
+            fingerprint: Incident fingerprint (e.g., "GPU_001:reasoning")
+
+        Returns:
+            Dict with resolution status
+        """
+        incident = self._active_incidents.pop(fingerprint, None)
+
+        if incident:
+            self._recovery_start.pop(fingerprint, None)
+            self._incidents_resolved += 1
+
+            # Record resolution for Observe panel
+            record_incident_change(delta=-1, status="resolved")
+
+            # Complete the healing sequence in event recorder
+            if self._event_recorder and incident.sequence_id:
+                await self._event_recorder.complete_sequence(
+                    sequence_id=incident.sequence_id,
+                    endpoint=incident.endpoint,
+                    outcome="success",
+                    total_attempts=incident.attempts,
+                    final_tier=incident.current_tier,
+                )
+
+            # Notify resolution callbacks
+            for callback in self._on_resolution:
+                try:
+                    await callback(incident)
+                except Exception as e:
+                    logger.warning(f"Resolution callback failed: {e}")
+
+            logger.info(f"Incident {fingerprint} explicitly resolved via /health fix --close")
+
+        # Update github_issues table
+        await self._update_github_issue_status(fingerprint, "closed")
+
+        return {
+            "resolved": True,
+            "fingerprint": fingerprint,
+            "was_active": incident is not None,
+            "note": None if incident else "Incident was already resolved",
+        }
+
+    async def _update_github_issue_status(self, fingerprint: str, status: str) -> None:
+        """Update github_issues table status.
+
+        Args:
+            fingerprint: Incident fingerprint
+            status: New status (e.g., "closed")
+        """
+        if not self._db_pool:
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE github_issues
+                    SET status = $1, closed_at = NOW(), last_updated_at = NOW()
+                    WHERE fingerprint = $2
+                    """,
+                    status,
+                    fingerprint,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to update github_issues status: {e}")
+
+    async def get_orphaned_github_issues(self) -> list[dict[str, Any]]:
+        """Find GitHub issues with status='open' but no active incident.
+
+        These are orphaned issues from race conditions where the incident
+        was resolved but the GitHub issue wasn't closed.
+
+        Returns:
+            List of orphaned issue records
+        """
+        if not self._db_pool:
+            return []
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT issue_number, repo, fingerprint, created_at, issue_url
+                    FROM github_issues
+                    WHERE status = 'open'
+                    ORDER BY created_at ASC
+                    """
+                )
+
+                orphans = []
+                for row in rows:
+                    fingerprint = row["fingerprint"]
+                    issue_number = row["issue_number"]
+
+                    # Check if this fingerprint has an active incident
+                    active_incident = self._active_incidents.get(fingerprint)
+
+                    if active_incident is None:
+                        # No active incident - this is an orphaned issue
+                        orphans.append({
+                            "issue_number": issue_number,
+                            "repo": row["repo"],
+                            "fingerprint": fingerprint,
+                            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                            "issue_url": row["issue_url"],
+                        })
+                    elif active_incident.github_issue != issue_number:
+                        # Active incident exists but has different github_issue
+                        # This means the DB record is stale (issue was replaced)
+                        orphans.append({
+                            "issue_number": issue_number,
+                            "repo": row["repo"],
+                            "fingerprint": fingerprint,
+                            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                            "issue_url": row["issue_url"],
+                            "stale_reason": f"Replaced by #{active_incident.github_issue}",
+                        })
+
+                return orphans
+
+        except Exception as e:
+            logger.warning(f"Failed to get orphaned GitHub issues: {e}")
+            return []
