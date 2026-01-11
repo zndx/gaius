@@ -108,3 +108,4 @@ scripts/output/
 
 # Private configuration (prospects, API keys, etc.)
 config/
+.coverage
