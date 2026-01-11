@@ -1,4 +1,4 @@
-\restrict cKxwta3yUPfNrQOWviGe2yEakXVxB8rhtf0XaDDXezIkp0mP89YsJcaRtzGdmds
+\restrict 5XFwpqwq1F12g5zjfo9yrPPhrlMXxlhJGlswfuk5NeZxm7GIpRZzjuRHob24Cdk
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -345,6 +345,48 @@ BEGIN
     RETURN v_run_id;
 END;
 $$;
+
+
+--
+-- Name: sync_prospect_watchlist(character varying[], character varying); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.sync_prospect_watchlist(p_symbols character varying[], p_profile character varying DEFAULT 'zndx'::character varying) RETURNS TABLE(activated integer, archived integer, unchanged integer)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_activated INTEGER := 0;
+    v_archived INTEGER := 0;
+    v_unchanged INTEGER := 0;
+BEGIN
+    -- Activate symbols that are in config but inactive
+    UPDATE meta.prospect_candidates
+    SET active = TRUE, archived_at = NULL, updated_at = NOW()
+    WHERE symbol = ANY(p_symbols) AND active = FALSE;
+    GET DIAGNOSTICS v_activated = ROW_COUNT;
+
+    -- Archive symbols that are active but not in config
+    UPDATE meta.prospect_candidates
+    SET active = FALSE, archived_at = NOW(), updated_at = NOW()
+    WHERE symbol NOT IN (SELECT unnest(p_symbols)) AND active = TRUE;
+    GET DIAGNOSTICS v_archived = ROW_COUNT;
+
+    -- Count unchanged
+    SELECT COUNT(*) INTO v_unchanged
+    FROM meta.prospect_candidates
+    WHERE symbol = ANY(p_symbols) AND active = TRUE;
+    v_unchanged := v_unchanged - v_activated;
+
+    RETURN QUERY SELECT v_activated, v_archived, v_unchanged;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION sync_prospect_watchlist(p_symbols character varying[], p_profile character varying); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.sync_prospect_watchlist(p_symbols character varying[], p_profile character varying) IS 'Sync watchlist config to DB: activate configured symbols, archive removed ones';
 
 
 --
@@ -902,6 +944,59 @@ $$;
 
 
 --
+-- Name: get_default_profile(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_default_profile() RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_profile_name TEXT;
+BEGIN
+    -- Get the profile marked as default
+    SELECT name INTO v_profile_name
+    FROM profiles
+    WHERE is_default = TRUE AND active = TRUE;
+
+    -- Fall back to first active profile if no default set
+    IF v_profile_name IS NULL THEN
+        SELECT name INTO v_profile_name
+        FROM profiles
+        WHERE active = TRUE
+        ORDER BY name
+        LIMIT 1;
+    END IF;
+
+    RETURN v_profile_name;
+END;
+$$;
+
+
+--
+-- Name: get_default_profile_and_domain(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_default_profile_and_domain() RETURNS TABLE(profile_name text, domain_name text)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_profile TEXT;
+    v_domain TEXT;
+BEGIN
+    -- Get default profile
+    v_profile := get_default_profile();
+
+    IF v_profile IS NOT NULL THEN
+        -- Get active domain for that profile
+        v_domain := get_active_domain(v_profile);
+    END IF;
+
+    RETURN QUERY SELECT v_profile, v_domain;
+END;
+$$;
+
+
+--
 -- Name: get_doc_sync_summary(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1428,6 +1523,26 @@ BEGIN
     DO UPDATE SET is_active = TRUE, updated_at = NOW();
 
     RETURN TRUE;
+END;
+$$;
+
+
+--
+-- Name: set_default_profile(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.set_default_profile(p_profile_name text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Clear any existing default
+    UPDATE profiles SET is_default = FALSE WHERE is_default = TRUE;
+
+    -- Set the new default
+    UPDATE profiles SET is_default = TRUE WHERE name = p_profile_name AND active = TRUE;
+
+    -- Return whether the update succeeded
+    RETURN FOUND;
 END;
 $$;
 
@@ -3272,7 +3387,9 @@ CREATE TABLE meta.prospect_candidates (
     priority integer DEFAULT 2,
     notes text,
     created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
+    updated_at timestamp with time zone DEFAULT now(),
+    active boolean DEFAULT true,
+    archived_at timestamp with time zone
 );
 
 
@@ -3295,6 +3412,20 @@ COMMENT ON COLUMN meta.prospect_candidates.cik IS 'SEC Central Index Key for EDG
 --
 
 COMMENT ON COLUMN meta.prospect_candidates.pending_filings IS 'Count of new filings awaiting analysis';
+
+
+--
+-- Name: COLUMN prospect_candidates.active; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.prospect_candidates.active IS 'Whether symbol is in active watchlist config';
+
+
+--
+-- Name: COLUMN prospect_candidates.archived_at; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.prospect_candidates.archived_at IS 'When symbol was removed from config (soft archive)';
 
 
 --
@@ -4325,6 +4456,8 @@ CREATE VIEW meta.v_prospects_status AS
     c.pending_filings,
     c.last_filing_date,
     c.last_filing_type,
+    c.active,
+    c.archived_at,
     s.category,
     s.conviction,
     s.allocation_weight,
@@ -4342,6 +4475,7 @@ CREATE VIEW meta.v_prospects_status AS
     meta.prospect_needs_update(c.symbol) AS update_recommended
    FROM (meta.prospect_candidates c
      LEFT JOIN meta.prospect_strategies s ON (((s.symbol)::text = (c.symbol)::text)))
+  WHERE (c.active = true)
   ORDER BY c.priority, c.symbol;
 
 
@@ -4349,7 +4483,7 @@ CREATE VIEW meta.v_prospects_status AS
 -- Name: VIEW v_prospects_status; Type: COMMENT; Schema: meta; Owner: -
 --
 
-COMMENT ON VIEW meta.v_prospects_status IS 'Consolidated prospects status with update recommendations';
+COMMENT ON VIEW meta.v_prospects_status IS 'Consolidated prospects status for active candidates only';
 
 
 --
@@ -10360,7 +10494,8 @@ CREATE TABLE public.profiles (
     updated_at timestamp with time zone DEFAULT now(),
     profile_text text,
     kb_path_prefixes text[] DEFAULT '{}'::text[],
-    search_boost double precision DEFAULT 1.0
+    search_boost double precision DEFAULT 1.0,
+    is_default boolean DEFAULT false
 );
 
 
@@ -10383,6 +10518,13 @@ COMMENT ON COLUMN public.profiles.kb_path_prefixes IS 'KB path prefixes associat
 --
 
 COMMENT ON COLUMN public.profiles.search_boost IS 'Default search result boost multiplier for content matching profile paths (1.0 = neutral).';
+
+
+--
+-- Name: COLUMN profiles.is_default; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profiles.is_default IS 'Only one profile can be the default. Used when no profile is specified on CLI.';
 
 
 --
@@ -11771,10 +11913,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index_____ppcrwsm3bwjzekq0tu; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index_____ppcrwsm3bwjzekq0tu (
+CREATE TABLE public.search_index__2s7m9j0u09l_2z__qjxsa (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11807,11 +11949,11 @@ CREATE TABLE public.search_index_____ppcrwsm3bwjzekq0tu (
 
 
 --
--- Name: search_index_____ppcrwsm3bwjzekq0tu_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index_____ppcrwsm3bwjzekq0tu ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index_____ppcrwsm3bwjzekq0tu_id_seq
+ALTER TABLE public.search_index__2s7m9j0u09l_2z__qjxsa ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__2s7m9j0u09l_2z__qjxsa_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -11821,10 +11963,10 @@ ALTER TABLE public.search_index_____ppcrwsm3bwjzekq0tu ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__jty0pcd9yesno_ai8mtu_; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__jty0pcd9yesno_ai8mtu_ (
+CREATE TABLE public.search_index__jxkxi7eiec25gkkkxnsrq (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11857,11 +11999,11 @@ CREATE TABLE public.search_index__jty0pcd9yesno_ai8mtu_ (
 
 
 --
--- Name: search_index__jty0pcd9yesno_ai8mtu__id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__jty0pcd9yesno_ai8mtu_ ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__jty0pcd9yesno_ai8mtu__id_seq
+ALTER TABLE public.search_index__jxkxi7eiec25gkkkxnsrq ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__jxkxi7eiec25gkkkxnsrq_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -16277,19 +16419,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index_____ppcrwsm3bwjzekq0tu search_index_____ppcrwsm3bwjzekq0tu_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa search_index__2s7m9j0u09l_2z__qjxsa_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index_____ppcrwsm3bwjzekq0tu
-    ADD CONSTRAINT search_index_____ppcrwsm3bwjzekq0tu_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__2s7m9j0u09l_2z__qjxsa
+    ADD CONSTRAINT search_index__2s7m9j0u09l_2z__qjxsa_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__jty0pcd9yesno_ai8mtu_ search_index__jty0pcd9yesno_ai8mtu__pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq search_index__jxkxi7eiec25gkkkxnsrq_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__jty0pcd9yesno_ai8mtu_
-    ADD CONSTRAINT search_index__jty0pcd9yesno_ai8mtu__pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__jxkxi7eiec25gkkkxnsrq
+    ADD CONSTRAINT search_index__jxkxi7eiec25gkkkxnsrq_pkey PRIMARY KEY (id);
 
 
 --
@@ -16848,6 +16990,13 @@ CREATE UNIQUE INDEX idx_ngrc_models_active_domain ON meta.ngrc_models USING btre
 --
 
 CREATE INDEX idx_ngrc_models_domain ON meta.ngrc_models USING btree (domain);
+
+
+--
+-- Name: idx_prospect_candidates_active; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_prospect_candidates_active ON meta.prospect_candidates USING btree (active) WHERE (active = true);
 
 
 --
@@ -18564,6 +18713,13 @@ CREATE INDEX idx_profile_domains_profile ON public.profile_domains USING btree (
 
 
 --
+-- Name: idx_profiles_default; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_profiles_default ON public.profiles USING btree ((1)) WHERE (is_default = true);
+
+
+--
 -- Name: idx_profiles_name; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -19628,73 +19784,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index_____ppcrwsm3bwjzekq0tu_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_archived_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING btree (archived);
-
-
---
--- Name: search_index_____ppcrwsm3bwjzekq0tu_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index_____ppcrwsm3bwjzekq0tu_identity_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING btree (model, model_id);
+CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_archived_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING btree (archived);
 
 
 --
--- Name: search_index_____ppcrwsm3bwjzekq0tu_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_model_archived_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING btree (model, archived);
-
-
---
--- Name: search_index_____ppcrwsm3bwjzekq0tu_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_native_tsvector_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index__2s7m9j0u09l_2z__qjxsa_identity_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING btree (model, model_id);
 
 
 --
--- Name: search_index_____ppcrwsm3bwjzekq0tu_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index_____ppcrwsm3bwjzekq0tu_tsvector_idx ON public.search_index_____ppcrwsm3bwjzekq0tu USING gin (search_vector);
-
-
---
--- Name: search_index__jty0pcd9yesno_ai8mtu__archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__archived_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING btree (archived);
+CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_model_archived_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING btree (model, archived);
 
 
 --
--- Name: search_index__jty0pcd9yesno_ai8mtu__identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__jty0pcd9yesno_ai8mtu__identity_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING btree (model, model_id);
-
-
---
--- Name: search_index__jty0pcd9yesno_ai8mtu__model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__model_archived_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING btree (model, archived);
+CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_native_tsvector_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING gin (with_native_query_vector);
 
 
 --
--- Name: search_index__jty0pcd9yesno_ai8mtu__native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__2s7m9j0u09l_2z__qjxsa_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__native_tsvector_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING gin (with_native_query_vector);
+CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_tsvector_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING gin (search_vector);
 
 
 --
--- Name: search_index__jty0pcd9yesno_ai8mtu__tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__jty0pcd9yesno_ai8mtu__tsvector_idx ON public.search_index__jty0pcd9yesno_ai8mtu_ USING gin (search_vector);
+CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_archived_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING btree (archived);
+
+
+--
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__jxkxi7eiec25gkkkxnsrq_identity_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING btree (model, model_id);
+
+
+--
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_model_archived_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING btree (model, archived);
+
+
+--
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_native_tsvector_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__jxkxi7eiec25gkkkxnsrq_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_tsvector_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING gin (search_vector);
 
 
 --
@@ -21274,7 +21430,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict cKxwta3yUPfNrQOWviGe2yEakXVxB8rhtf0XaDDXezIkp0mP89YsJcaRtzGdmds
+\unrestrict 5XFwpqwq1F12g5zjfo9yrPPhrlMXxlhJGlswfuk5NeZxm7GIpRZzjuRHob24Cdk
 
 
 --
@@ -21323,4 +21479,7 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260102000002'),
     ('20260102000003'),
     ('20260103000001'),
-    ('20260109000001');
+    ('20260109000001'),
+    ('20260109120000'),
+    ('20260111000001'),
+    ('20260111000002');

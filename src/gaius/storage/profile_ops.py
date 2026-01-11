@@ -29,10 +29,14 @@ def _get_asyncpg():
 
 
 def get_database_url() -> str:
-    """Get database URL from environment."""
+    """Get database URL from environment.
+
+    Checks GAIUS_DATABASE_URL first (preferred), then falls back to DATABASE_URL.
+    Default is the zndx_gaius database at localhost:5438.
+    """
     return os.getenv(
-        "DATABASE_URL",
-        "postgresql://gaius:gaius@localhost:5432/gaius"
+        "GAIUS_DATABASE_URL",
+        os.getenv("DATABASE_URL", "postgres://gaius:gaius@localhost:5438/zndx_gaius")
     )
 
 
@@ -242,6 +246,59 @@ async def get_active_domain(profile: str) -> str | None:
         return None
 
 
+async def get_default_profile() -> str | None:
+    """Get the default profile to use when none is specified.
+
+    Uses the database function get_default_profile() which returns
+    the profile with is_default=TRUE, or falls back to the first
+    active profile if no default is set.
+
+    Returns:
+        Profile name or None if no profiles are configured.
+    """
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url)
+        try:
+            row = await conn.fetchrow("""
+                SELECT get_default_profile() as profile
+            """)
+            return row["profile"] if row else None
+        finally:
+            await conn.close()
+    except Exception:
+        return None
+
+
+async def get_default_profile_and_domain() -> tuple[str | None, str | None]:
+    """Get the default profile and its active domain.
+
+    Uses the database function get_default_profile_and_domain() which
+    returns the default profile and its active domain in a single query.
+
+    Returns:
+        Tuple of (profile_name, domain_name) - either may be None.
+    """
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url)
+        try:
+            row = await conn.fetchrow("""
+                SELECT * FROM get_default_profile_and_domain()
+            """)
+            if row:
+                return row["profile_name"], row["domain_name"]
+            return None, None
+        finally:
+            await conn.close()
+    except Exception:
+        return None, None
+
+
 async def set_active_domain(profile: str, domain: str | None) -> bool:
     """Set the active domain for a profile.
 
@@ -367,6 +424,18 @@ def get_profile_context_sync(profile: str, domain: str | None = None) -> Profile
     """Sync wrapper for get_profile_context."""
     import asyncio
     return asyncio.get_event_loop().run_until_complete(get_profile_context(profile, domain))
+
+
+def get_default_profile_sync() -> str | None:
+    """Sync wrapper for get_default_profile."""
+    import asyncio
+    return asyncio.get_event_loop().run_until_complete(get_default_profile())
+
+
+def get_default_profile_and_domain_sync() -> tuple[str | None, str | None]:
+    """Sync wrapper for get_default_profile_and_domain."""
+    import asyncio
+    return asyncio.get_event_loop().run_until_complete(get_default_profile_and_domain())
 
 
 # =============================================================================

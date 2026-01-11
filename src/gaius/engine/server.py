@@ -776,12 +776,13 @@ class GaiusEngine:
             # Create database pool
             pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
 
-            # Create service config
+            # Create service config - profile/domain resolved from database at runtime
             kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
             config = ProspectsConfig(
                 kb_root=kb_root,
-                default_profile="zndx",
-                default_domain="prospecting",
+                # Empty strings = resolve from database at runtime
+                default_profile="",
+                default_domain="",
             )
 
             # Create and start service

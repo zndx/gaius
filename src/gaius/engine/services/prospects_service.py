@@ -113,14 +113,19 @@ class StrategyInfo:
 
 @dataclass
 class ProspectsConfig:
-    """Configuration for Prospects service."""
+    """Configuration for Prospects service.
+
+    Profile/domain defaults are resolved from the database at runtime when
+    empty strings are provided. This allows the application-level profile/domain
+    state to drive flow execution.
+    """
 
     # KB root path for artifacts
     kb_root: str = "build/dev"
 
-    # Default profile/domain context
-    default_profile: str = "zndx"
-    default_domain: str = "prospecting"
+    # Default profile/domain context (empty = resolve from database)
+    default_profile: str = ""
+    default_domain: str = ""
 
     # Watchlist config path
     watchlist_path: Path = field(

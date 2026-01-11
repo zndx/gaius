@@ -114,14 +114,14 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
 
     profile = Parameter(
         "profile",
-        help="Profile name (e.g., zndx)",
-        default="zndx",
+        help="Profile name (empty = use active profile from database)",
+        default="",
     )
 
     domain = Parameter(
         "domain",
-        help="Domain context (e.g., prospecting)",
-        default="prospecting",
+        help="Domain context (empty = use active domain from database)",
+        default="",
     )
 
     symbols = Parameter(
@@ -148,6 +148,25 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
     @step
     def start(self):
         """Initialize update and load watchlist."""
+        # Resolve profile/domain from database if not specified
+        # Database provides: common profile with 'open' domain (Open World Assumption)
+        # Fallbacks only apply if database unavailable
+        if not self.profile or not self.domain:
+            from gaius.storage.profile_ops import get_default_profile_and_domain_sync
+            db_profile, db_domain = get_default_profile_and_domain_sync()
+
+            if not self.profile:
+                # Use database default (is_default=TRUE), fallback to "common"
+                self.profile = db_profile or "common"
+                print(f"Using database default profile: {self.profile}")
+
+            if not self.domain:
+                # Use database active domain for profile
+                # 'open' = explicit Open World Assumption (extensible ontology)
+                # NULL would mean absence of constraint (different semantics)
+                self.domain = db_domain or "open"
+                print(f"Using database active domain: {self.domain}")
+
         self.emit_event("prospects.update.started", {
             "profile": self.profile,
             "domain": self.domain,
@@ -817,6 +836,108 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             scratch_full_path.write_text(scratch_content)
             self.kb_paths.append(scratch_path)
 
+        self.next(self.generate_base_files)
+
+    @traced_step
+    @step
+    def generate_base_files(self):
+        """Generate Obsidian .base files for structured prospect views.
+
+        Uses orchestrator-coordinated LLM generation:
+        1. Orchestrator-8B (local) decides which tool to call
+        2. GLM-4.7 (Cerebras) generates YAML (open weights preferred)
+        3. Grok-4.1 fast (XAI) diagnoses validation errors
+        4. Fallback template as last resort
+
+        Creates:
+        - current/prospects/<symbol>/prospect.base - Per-prospect views
+        - current/prospects/prospects.base - Root portfolio view
+        """
+        from gaius.flows.prospects.base_generator import (
+            generate_prospect_base,
+            generate_root_prospects_base,
+        )
+        from gaius.kb.base_validator import validate_base
+
+        self.base_files_generated = 0
+        self.base_files_fallback = 0
+        self.base_generation_cost_usd = 0.0
+        self.base_diagnosis_used = 0
+        kb_root = self.kb_root
+
+        async def do_generate():
+            for symbol, synthesis in self.syntheses.items():
+                safe_symbol = safe_filename(symbol).lower()
+                prospect_dir = f"current/prospects/{safe_symbol}"
+                analyses = self.analyses.get(symbol, [])
+
+                # Get company name
+                data = self.data_by_symbol.get(symbol, {})
+                profile = data.get("profile")
+                company_name = synthesis.company_name or (
+                    profile.company_name if profile else symbol
+                )
+
+                print(f"  Generating .base for {symbol}...")
+
+                # Generate using orchestrator-coordinated LLM
+                result = await generate_prospect_base(
+                    symbol=symbol,
+                    company_name=company_name,
+                    analyses=analyses,
+                    synthesis=synthesis,
+                )
+
+                if result.success:
+                    # Write the .base file
+                    base_path = f"{prospect_dir}/prospect.base"
+                    full_path = kb_root / base_path
+                    full_path.write_text(result.content)
+                    self.kb_paths.append(base_path)
+                    self.base_files_generated += 1
+
+                    if result.fallback_used:
+                        self.base_files_fallback += 1
+                        print(f"    Created: {base_path} (fallback template)")
+                    else:
+                        print(f"    Created: {base_path} (LLM generated, {result.attempts} attempt(s))")
+                else:
+                    logger.warning(f"Failed to generate .base for {symbol}: {result.validation.errors}")
+
+            # Generate root prospects.base
+            if self.syntheses:
+                root_content = generate_root_prospects_base(
+                    prospect_symbols=list(self.syntheses.keys()),
+                    kb_path="current/prospects/",
+                )
+                root_validation = validate_base(root_content)
+                if root_validation.valid:
+                    root_path = "current/prospects/prospects.base"
+                    (kb_root / root_path).write_text(root_content)
+                    self.kb_paths.append(root_path)
+                    print(f"  Created: {root_path} (root portfolio view)")
+                else:
+                    logger.warning(f"Root prospects.base validation failed: {root_validation.errors}")
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(do_generate())
+        finally:
+            loop.close()
+
+        self.emit_event("prospects.base_generation.completed", {
+            "profile": self.profile,
+            "base_files_generated": self.base_files_generated,
+            "base_files_fallback": self.base_files_fallback,
+            "base_generation_cost_usd": getattr(self, 'base_generation_cost_usd', 0.0),
+            "base_diagnosis_used": getattr(self, 'base_diagnosis_used', 0),
+        })
+
+        print(f"Base generation: {self.base_files_generated} .base files created")
+        if self.base_files_fallback > 0:
+            print(f"  ({self.base_files_fallback} used fallback template)")
+
         self.next(self.create_sitrep)
 
     @traced_step
@@ -1153,6 +1274,9 @@ _This is a daily log entry. See the curated content above for the full analysis.
                 total_buffer_chars / total_original_chars
                 if total_original_chars > 0 else 0
             ),
+            # .base generation statistics
+            "base_files_generated": getattr(self, 'base_files_generated', 0),
+            "base_files_fallback": getattr(self, 'base_files_fallback', 0),
         }
 
     def _create_sitrep_content(self, metrics: dict, now: datetime) -> str:
@@ -1245,6 +1369,13 @@ run_id: "{metrics['run_id']}"
 | Extracted Buffer | {metrics['preprocess_buffer_chars']:,} chars |
 | Compression Ratio | {metrics['preprocess_compression_ratio']:.1%} |
 | Table Rows Preserved | {metrics['preprocess_table_rows']} |
+
+## Obsidian .base Generation
+
+| Metric | Value |
+|--------|-------|
+| .base Files Generated | {metrics['base_files_generated']} |
+| Fallback Templates Used | {metrics['base_files_fallback']} |
 
 ## Symbols Analyzed
 
