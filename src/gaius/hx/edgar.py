@@ -72,6 +72,29 @@ def _safe_value(val: Any) -> Any:
     return val
 
 
+def get_pyarrow_schema_from_iceberg(table: "Table") -> "pa.Schema":
+    """Convert Iceberg table schema to PyArrow schema.
+
+    This ensures the PyArrow schema always matches the current Iceberg table
+    schema, avoiding schema mismatch errors during upsert operations when
+    columns are added via schema evolution.
+
+    Args:
+        table: PyIceberg Table instance.
+
+    Returns:
+        PyArrow Schema derived from the Iceberg table.
+    """
+    import pyarrow as pa
+    from pyiceberg.io.pyarrow import schema_to_pyarrow
+
+    # Refresh table to get latest schema (important after schema evolution)
+    table.refresh()
+
+    # Convert Iceberg schema to PyArrow schema
+    return schema_to_pyarrow(table.schema())
+
+
 def normalize_accession_number(accession: str) -> str:
     """Normalize accession number to standard format.
 
@@ -588,9 +611,14 @@ class EdgarFilingSync(ExchangeCapture):
 
                 table = self._get_table()
 
-                # Read existing row
+                # Get schema dynamically from Iceberg table to handle schema evolution
+                schema = get_pyarrow_schema_from_iceberg(table)
+                all_field_names = tuple(f.name for f in schema)
+
+                # Read existing row with ALL fields from the schema
                 scan = table.scan(
                     row_filter=EqualTo("accession_number", accession),
+                    selected_fields=all_field_names,
                 )
                 df = scan.to_pandas()
 
@@ -600,58 +628,22 @@ class EdgarFilingSync(ExchangeCapture):
 
                 row = df.iloc[0].to_dict()
 
-                # Build updated row with analysis fields
-                # Use _safe_value to convert pandas NaT to None for PyArrow
-                # Order must match Iceberg table schema (source_context before analysis fields)
+                # Build updated data dict from schema (preserves all fields)
                 now = datetime.now(timezone.utc)
-                updated_data = {
-                    "accession_number": [row["accession_number"]],
-                    "symbol": [row["symbol"]],
-                    "cik": [row["cik"]],
-                    "filing_type": [row["filing_type"]],
-                    "filing_date": [row["filing_date"]],
-                    "url": [row["url"]],
-                    "raw_html": [row["raw_html"]],
-                    "content_hash": [row["content_hash"]],
-                    "raw_html_length": [row["raw_html_length"]],
-                    "title": [row.get("title", "") or ""],
-                    "fetched_at": [_safe_value(row.get("fetched_at"))],
-                    "fetch_latency_ms": [_safe_value(row.get("fetch_latency_ms"))],
-                    "extracted_text": [row.get("extracted_text")],
-                    "extracted_at": [_safe_value(row.get("extracted_at"))],
-                    "extraction_model": [row.get("extraction_model")],
-                    "source_context": [row.get("source_context", "{}")],
-                    # Analysis fields (must be last per Iceberg schema)
-                    "analyzed_at": [now],
-                    "analysis_model": [analysis_model],
-                    "analysis_json": [analysis_json],
-                    # Chain-of-thought for distillation
-                    "analysis_reasoning": [analysis_reasoning or None],
-                }
-
-                # Create PyArrow table with proper schema (order matches Iceberg table)
-                schema = pa.schema([
-                    pa.field("accession_number", pa.string(), nullable=False),
-                    pa.field("symbol", pa.string(), nullable=False),
-                    pa.field("cik", pa.string(), nullable=False),
-                    pa.field("filing_type", pa.string(), nullable=False),
-                    pa.field("filing_date", pa.string(), nullable=False),
-                    pa.field("url", pa.string(), nullable=False),
-                    pa.field("raw_html", pa.string(), nullable=False),
-                    pa.field("content_hash", pa.string(), nullable=False),
-                    pa.field("raw_html_length", pa.int64(), nullable=False),
-                    pa.field("title", pa.string(), nullable=True),
-                    pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("fetch_latency_ms", pa.int64(), nullable=True),
-                    pa.field("extracted_text", pa.string(), nullable=True),
-                    pa.field("extracted_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("extraction_model", pa.string(), nullable=True),
-                    pa.field("source_context", pa.string(), nullable=True),
-                    pa.field("analyzed_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("analysis_model", pa.string(), nullable=True),
-                    pa.field("analysis_json", pa.string(), nullable=True),
-                    pa.field("analysis_reasoning", pa.string(), nullable=True),
-                ])
+                updated_data = {}
+                for field in schema:
+                    name = field.name
+                    if name == "analyzed_at":
+                        updated_data[name] = [now]
+                    elif name == "analysis_model":
+                        updated_data[name] = [analysis_model]
+                    elif name == "analysis_json":
+                        updated_data[name] = [analysis_json]
+                    elif name == "analysis_reasoning":
+                        updated_data[name] = [analysis_reasoning or None]
+                    else:
+                        # Preserve existing value
+                        updated_data[name] = [_safe_value(row.get(name))]
 
                 arrow_table = pa.table(updated_data).cast(schema)
 
@@ -877,6 +869,9 @@ class EdgarFilingSync(ExchangeCapture):
         Uses PyIceberg's upsert with accession_number as the join key.
         Only updates extraction fields, preserving all other data.
 
+        Schema-resilient: Reads ALL fields from the table dynamically,
+        avoiding hardcoded field lists that break on schema evolution.
+
         Args:
             accession_number: Filing to update.
             extracted_text: Extracted text content.
@@ -899,17 +894,14 @@ class EdgarFilingSync(ExchangeCapture):
 
                 table = self._get_table()
 
-                # First, read the existing row to get all fields
-                # Include analysis fields so we can preserve them during upsert
+                # Get schema from table (refreshes to get latest after evolution)
+                schema = get_pyarrow_schema_from_iceberg(table)
+
+                # Read ALL fields from existing row (schema-driven, not hardcoded)
+                all_field_names = tuple(f.name for f in schema)
                 scan = table.scan(
                     row_filter=EqualTo("accession_number", accession),
-                    selected_fields=(
-                        "accession_number", "symbol", "cik", "filing_type",
-                        "filing_date", "url", "raw_html", "content_hash",
-                        "raw_html_length", "title", "fetched_at", "fetch_latency_ms",
-                        "source_context", "analyzed_at", "analysis_model", "analysis_json",
-                        "analysis_reasoning",
-                    ),
+                    selected_fields=all_field_names,
                 )
                 df = scan.to_pandas()
 
@@ -919,57 +911,20 @@ class EdgarFilingSync(ExchangeCapture):
 
                 row = df.iloc[0].to_dict()
 
-                # Build updated row with extraction fields
-                # Use _safe_value to convert pandas NaT to None for PyArrow
+                # Build updated data dict from schema (preserves all fields)
                 now = datetime.now(timezone.utc)
-                updated_data = {
-                    "accession_number": [row["accession_number"]],
-                    "symbol": [row["symbol"]],
-                    "cik": [row["cik"]],
-                    "filing_type": [row["filing_type"]],
-                    "filing_date": [row["filing_date"]],
-                    "url": [row["url"]],
-                    "raw_html": [row["raw_html"]],
-                    "content_hash": [row["content_hash"]],
-                    "raw_html_length": [row["raw_html_length"]],
-                    "title": [row.get("title", "") or ""],
-                    "fetched_at": [_safe_value(row.get("fetched_at"))],
-                    "fetch_latency_ms": [_safe_value(row.get("fetch_latency_ms"))],
-                    # Updated extraction fields
-                    "extracted_text": [extracted_text],
-                    "extracted_at": [now],
-                    "extraction_model": [extraction_model],
-                    "source_context": [row.get("source_context", "{}")],
-                    # Preserve existing analysis fields (must match full table schema)
-                    "analyzed_at": [_safe_value(row.get("analyzed_at"))],
-                    "analysis_model": [row.get("analysis_model")],
-                    "analysis_json": [row.get("analysis_json")],
-                    "analysis_reasoning": [row.get("analysis_reasoning")],
-                }
-
-                # Create PyArrow table with full schema (must match Iceberg table)
-                schema = pa.schema([
-                    pa.field("accession_number", pa.string(), nullable=False),
-                    pa.field("symbol", pa.string(), nullable=False),
-                    pa.field("cik", pa.string(), nullable=False),
-                    pa.field("filing_type", pa.string(), nullable=False),
-                    pa.field("filing_date", pa.string(), nullable=False),
-                    pa.field("url", pa.string(), nullable=False),
-                    pa.field("raw_html", pa.string(), nullable=False),
-                    pa.field("content_hash", pa.string(), nullable=False),
-                    pa.field("raw_html_length", pa.int64(), nullable=False),
-                    pa.field("title", pa.string(), nullable=True),
-                    pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("fetch_latency_ms", pa.int64(), nullable=True),
-                    pa.field("extracted_text", pa.string(), nullable=True),
-                    pa.field("extracted_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("extraction_model", pa.string(), nullable=True),
-                    pa.field("source_context", pa.string(), nullable=True),
-                    pa.field("analyzed_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("analysis_model", pa.string(), nullable=True),
-                    pa.field("analysis_json", pa.string(), nullable=True),
-                    pa.field("analysis_reasoning", pa.string(), nullable=True),
-                ])
+                updated_data = {}
+                for field in schema:
+                    name = field.name
+                    if name == "extracted_text":
+                        updated_data[name] = [extracted_text]
+                    elif name == "extracted_at":
+                        updated_data[name] = [now]
+                    elif name == "extraction_model":
+                        updated_data[name] = [extraction_model]
+                    else:
+                        # Preserve existing value, handling NaT/NA
+                        updated_data[name] = [_safe_value(row.get(name))]
 
                 arrow_table = pa.table(updated_data).cast(schema)
 
@@ -1020,6 +975,10 @@ class EdgarFilingSync(ExchangeCapture):
 
                 table = self._get_table()
 
+                # Get schema dynamically from Iceberg table to handle schema evolution
+                schema = get_pyarrow_schema_from_iceberg(table)
+                all_field_names = tuple(f.name for f in schema)
+
                 # Get all accession numbers to update
                 accessions = [normalize_accession_number(u[0]) for u in updates]
                 extraction_map = {
@@ -1027,9 +986,10 @@ class EdgarFilingSync(ExchangeCapture):
                     for u in updates
                 }
 
-                # Read existing rows (all fields including analysis for preservation)
+                # Read existing rows with ALL fields from the schema
                 scan = table.scan(
                     row_filter=In("accession_number", accessions),
+                    selected_fields=all_field_names,
                 )
                 df = scan.to_pandas()
 
@@ -1056,32 +1016,8 @@ class EdgarFilingSync(ExchangeCapture):
                 if not updated_rows:
                     return 0
 
-                # Build PyArrow table with full schema (must match Iceberg table)
-                schema = pa.schema([
-                    pa.field("accession_number", pa.string(), nullable=False),
-                    pa.field("symbol", pa.string(), nullable=False),
-                    pa.field("cik", pa.string(), nullable=False),
-                    pa.field("filing_type", pa.string(), nullable=False),
-                    pa.field("filing_date", pa.string(), nullable=False),
-                    pa.field("url", pa.string(), nullable=False),
-                    pa.field("raw_html", pa.string(), nullable=False),
-                    pa.field("content_hash", pa.string(), nullable=False),
-                    pa.field("raw_html_length", pa.int64(), nullable=False),
-                    pa.field("title", pa.string(), nullable=True),
-                    pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("fetch_latency_ms", pa.int64(), nullable=True),
-                    pa.field("extracted_text", pa.string(), nullable=True),
-                    pa.field("extracted_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("extraction_model", pa.string(), nullable=True),
-                    pa.field("source_context", pa.string(), nullable=True),
-                    pa.field("analyzed_at", pa.timestamp("us", tz="UTC"), nullable=True),
-                    pa.field("analysis_model", pa.string(), nullable=True),
-                    pa.field("analysis_json", pa.string(), nullable=True),
-                    pa.field("analysis_reasoning", pa.string(), nullable=True),
-                ])
-
-                # Convert to columnar format, handling NaT values
-                columns = {col: [_safe_value(r[col]) for r in updated_rows] for col in schema.names}
+                # Convert to columnar format using schema field names (handles new columns)
+                columns = {col: [_safe_value(r.get(col)) for r in updated_rows] for col in schema.names}
                 arrow_table = pa.table(columns).cast(schema)
 
                 # Upsert batch
@@ -1106,52 +1042,45 @@ class EdgarFilingSync(ExchangeCapture):
         """Convert a single filing to PyArrow table."""
         import pyarrow as pa
 
-        # Full schema must match Iceberg table schema
-        schema = pa.schema([
-            pa.field("accession_number", pa.string(), nullable=False),
-            pa.field("symbol", pa.string(), nullable=False),
-            pa.field("cik", pa.string(), nullable=False),
-            pa.field("filing_type", pa.string(), nullable=False),
-            pa.field("filing_date", pa.string(), nullable=False),
-            pa.field("url", pa.string(), nullable=False),
-            pa.field("raw_html", pa.string(), nullable=False),
-            pa.field("content_hash", pa.string(), nullable=False),
-            pa.field("raw_html_length", pa.int64(), nullable=False),
-            pa.field("title", pa.string(), nullable=True),
-            pa.field("fetched_at", pa.timestamp("us", tz="UTC"), nullable=True),
-            pa.field("fetch_latency_ms", pa.int64(), nullable=True),
-            pa.field("extracted_text", pa.string(), nullable=True),
-            pa.field("extracted_at", pa.timestamp("us", tz="UTC"), nullable=True),
-            pa.field("extraction_model", pa.string(), nullable=True),
-            pa.field("source_context", pa.string(), nullable=True),
-            pa.field("analyzed_at", pa.timestamp("us", tz="UTC"), nullable=True),
-            pa.field("analysis_model", pa.string(), nullable=True),
-            pa.field("analysis_json", pa.string(), nullable=True),
-            pa.field("analysis_reasoning", pa.string(), nullable=True),
-        ])
+        table = self._get_table()
 
-        data = {
-            "accession_number": [filing.accession_number],
-            "symbol": [filing.symbol],
-            "cik": [filing.cik],
-            "filing_type": [filing.filing_type],
-            "filing_date": [filing.filing_date],
-            "url": [filing.url],
-            "raw_html": [filing.raw_html],
-            "content_hash": [filing.content_hash],
-            "raw_html_length": [filing.raw_html_length],
-            "title": [filing.title or ""],
-            "fetched_at": [filing.fetched_at],
-            "fetch_latency_ms": [filing.fetch_latency_ms],
-            "extracted_text": [filing.extracted_text],
-            "extracted_at": [filing.extracted_at],
-            "extraction_model": [filing.extraction_model],
-            "source_context": [json.dumps(filing.source_context)],
-            "analyzed_at": [filing.analyzed_at],
-            "analysis_model": [filing.analysis_model],
-            "analysis_json": [filing.analysis_json],
-            "analysis_reasoning": [filing.analysis_reasoning],
+        # Get schema dynamically from Iceberg table to handle schema evolution
+        schema = get_pyarrow_schema_from_iceberg(table)
+
+        # Map EdgarFiling fields to schema fields
+        # source_context requires JSON serialization
+        filing_data = {
+            "accession_number": filing.accession_number,
+            "symbol": filing.symbol,
+            "cik": filing.cik,
+            "filing_type": filing.filing_type,
+            "filing_date": filing.filing_date,
+            "url": filing.url,
+            "raw_html": filing.raw_html,
+            "content_hash": filing.content_hash,
+            "raw_html_length": filing.raw_html_length,
+            "title": filing.title or "",
+            "fetched_at": filing.fetched_at,
+            "fetch_latency_ms": filing.fetch_latency_ms,
+            "extracted_text": filing.extracted_text,
+            "extracted_at": filing.extracted_at,
+            "extraction_model": filing.extraction_model,
+            "source_context": json.dumps(filing.source_context),
+            "analyzed_at": filing.analyzed_at,
+            "analysis_model": filing.analysis_model,
+            "analysis_json": filing.analysis_json,
+            "analysis_reasoning": filing.analysis_reasoning,
         }
+
+        # Build data dict from schema (handles new columns gracefully)
+        data = {}
+        for field in schema:
+            name = field.name
+            if name in filing_data:
+                data[name] = [filing_data[name]]
+            else:
+                # New column not in EdgarFiling - set to None
+                data[name] = [None]
 
         return pa.table(data).cast(schema)
 
