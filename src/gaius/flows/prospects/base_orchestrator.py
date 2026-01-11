@@ -482,14 +482,26 @@ def _parse_orchestrator_decision(response: str) -> OrchestratorDecision:
 # Tool Implementations
 # =============================================================================
 
+# TODO(federation): Migrate to gRPC client pattern for Engine Federation
+# Current implementation uses deprecated get_external_router() singleton.
+# Target pattern:
+#   client = await get_grpc_client()
+#   result = await client.call("Scheduler", "complete", {
+#       "prompt": "...",
+#       "agent": "cerebras-glm",  # Agent alias configured in agents.conf
+#       "max_tokens": 2048,
+#   })
+# Blocked on: Adding "cerebras-glm" and "xai-grok-fast" agent aliases to config
+# See: src/gaius/engine/FEDERATION.md
+
+
 async def _call_generate_base(
     state: OrchestrationState,
     use_prior_diagnosis: bool,
 ) -> tuple[str, ValidationResult, float]:
     """Call GLM-4.7 via engine's ExternalInferenceRouter to generate .base YAML.
 
-    Engine-First Architecture: Routes through the engine's ExternalInferenceRouter
-    which handles Cerebras API calls, budget tracking, and exchange capture.
+    DEPRECATED: Uses engine singleton instead of gRPC. See TODO above.
 
     Returns:
         Tuple of (yaml_content, validation_result, cost_usd)
@@ -568,8 +580,7 @@ async def _call_diagnose_error(
 ) -> DiagnosisResult:
     """Use Grok-4.1 fast via engine's ExternalInferenceRouter to diagnose errors.
 
-    Engine-First Architecture: Routes through the engine's ExternalInferenceRouter
-    which handles XAI API calls, budget tracking, and exchange capture.
+    DEPRECATED: Uses engine singleton instead of gRPC. See TODO(federation) above.
     """
     from gaius.engine.backends.external.router import get_external_router
 

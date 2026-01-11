@@ -24,6 +24,8 @@ They should NOT:
 
 ## Architecture Layers
 
+See `src/gaius/engine/FEDERATION.md` for the full federated architecture.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Thin Clients                                 │
@@ -32,9 +34,9 @@ They should NOT:
 │  │ cli.py  │    │ app.py  │    │ mcp_server.py │   │   Workers   │ │
 │  └────┬────┘    └────┬────┘    └──────┬────────┘   └──────┬──────┘ │
 │       │              │                 │                   │        │
-│       └──────────────┼─────────────────┼───────────────────┘        │
-│                      │ gRPC            │ Engine Singletons          │
-│                      ▼                 ▼                            │
+│       └──────────────┴─────────────────┴───────────────────┘        │
+│                               │ gRPC (ALL clients)                   │
+│                               ▼                                      │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                    gaius-engine daemon                        │  │
 │  │  ┌────────────────────────────────────────────────────────┐  │  │
@@ -61,14 +63,17 @@ They should NOT:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Metaflow Workers and Engine-First Architecture
+## Metaflow Workers and Engine Federation
 
-Metaflow flows (`src/gaius/flows/`) are a special case. Unlike CLI/TUI/MCP which connect via gRPC,
-Metaflow workers run in the same process space as the engine and can use **engine singletons directly**.
+Metaflow flows (`src/gaius/flows/`) follow the same architecture as all other clients:
+**ALL inference goes through gRPC to the engine.**
 
-### Two Valid Patterns for Metaflow Workers
+This enables **Engine Federation** where requests can be routed to remote nodes
+when local capabilities are unavailable. See `src/gaius/engine/FEDERATION.md`.
 
-**Pattern 1: gRPC Client (Preferred for Service Calls)**
+### The One Valid Pattern for Metaflow Workers
+
+**gRPC Client via SchedulerProxy**
 ```python
 from gaius.client.grpc_client import get_grpc_client, use_engine_proxy
 
@@ -79,74 +84,81 @@ async def call_engine_service():
     client = await get_grpc_client()
     result = await client.call("Scheduler", "complete", {
         "prompt": "...",
-        "agent": "reasoning",
+        "agent": "reasoning",  # Capability-based routing
         "max_tokens": 2048,
     })
     return result
 ```
 
-**Pattern 2: Engine Singletons (Preferred for Direct LLM Calls)**
+### Why gRPC Is Required (Even for Local Flows)
+
+1. **Federation-Ready**: Requests can be routed to remote nodes transparently
+2. **Capability-Based Routing**: Engine resolves agent→model→node automatically
+3. **Centralized Metrics**: All inference tracked in one place
+4. **Budget Enforcement**: Per-token limits applied consistently
+5. **Exchange Capture**: Training data flows to Iceberg
+
+### DEPRECATED: Engine Singletons
+
+**⚠️ Engine singletons are deprecated and should not be used in new code.**
+
 ```python
+# ⚠️ DEPRECATED - Bypasses federation, breaks remote node routing
 from gaius.engine.backends.external.router import get_external_router
-
-async def call_external_llm():
-    router = get_external_router()
-
-    if "cerebras" not in router.available_backends:
-        raise RuntimeError("Cerebras backend not available")
-
-    response = await router.complete(
-        messages=[{"role": "user", "content": "..."}],
-        provider="cerebras",
-        model="zai-glm-4.7",
-        temperature=0.2,
-        max_tokens=2048,
-    )
-    return response.content
+router = get_external_router()  # Don't do this in new code
 ```
 
-### Why Engine Singletons Are Acceptable for Flows
-
-Unlike thin clients, Metaflow flows:
-1. **Run on the same machine as the engine** - No network latency concerns
-2. **Are batch processes** - Not interactive, startup time is irrelevant
-3. **Need direct LLM access** - For model-specific parameters and streaming
-4. **Share engine resources** - Budget tracking, exchange capture, metrics
-
-The key insight: **Flows use engine singletons, NOT backend classes directly.**
+Existing singleton usage should be migrated to gRPC calls.
 
 ### WRONG: Direct Backend Instantiation
+
 ```python
-# ❌ VIOLATION - Creates a new backend bypassing engine tracking
+# ❌ VIOLATION - Creates a new backend bypassing engine entirely
 from gaius.engine.backends.external import CerebrasBackend
 cerebras = CerebrasBackend()
 response = await cerebras.complete(...)
 ```
 
-### CORRECT: Engine Singleton Access
+### CORRECT: gRPC via Engine
+
 ```python
-# ✅ COMPLIANT - Uses engine's singleton router
-from gaius.engine.backends.external.router import get_external_router
-router = get_external_router()
-response = await router.complete(provider="cerebras", ...)
+# ✅ COMPLIANT - Federation-ready, capability-routed
+from gaius.client.grpc_client import get_grpc_client, use_engine_proxy
+
+async def generate_with_cerebras():
+    if not use_engine_proxy():
+        raise RuntimeError("Engine not available")
+
+    client = await get_grpc_client()
+    result = await client.call("Scheduler", "complete", {
+        "prompt": "...",
+        "agent": "fast",  # Engine resolves to Cerebras endpoint
+        "max_tokens": 2048,
+    })
+    return result
 ```
 
-### Benefits of Using Engine Singletons
+### Benefits of gRPC-Only Architecture
 
-| Feature | Direct Backend | Engine Singleton |
-|---------|----------------|------------------|
-| Budget tracking | ❌ None | ✅ Per-token limits |
-| Exchange capture | ❌ None | ✅ Training data to Iceberg |
-| Metrics | ❌ None | ✅ Centralized collection |
-| Budget exhaustion handling | ❌ Crashes | ✅ Graceful fallback |
+| Feature | Direct Backend | Engine Singleton | gRPC |
+|---------|----------------|------------------|------|
+| Budget tracking | ❌ None | ✅ Local only | ✅ Federated |
+| Exchange capture | ❌ None | ✅ Local only | ✅ Federated |
+| Metrics | ❌ None | ✅ Local only | ✅ Federated |
+| Remote node routing | ❌ No | ❌ No | ✅ Yes |
+| Capability resolution | ❌ No | ❌ No | ✅ Yes |
 
-### Check Metaflow Flows for Violations
+### Audit Metaflow Flows for Violations
+
 ```bash
 # Should return zero matches - no direct backend instantiation
 grep -rn "CerebrasBackend()\|XAIBackend()\|BytezBackend()" src/gaius/flows/
 
-# Acceptable - using engine router singleton
+# DEPRECATED - flag existing singleton usage for migration
 grep -rn "get_external_router()" src/gaius/flows/
+
+# CORRECT - using gRPC client
+grep -rn "get_grpc_client()" src/gaius/flows/
 ```
 
 ## Audit Checklist
