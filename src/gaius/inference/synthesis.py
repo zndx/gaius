@@ -238,7 +238,7 @@ class ZettelkastenSynthesizer:
             params={
                 "prompt": f"Query: {query}\n\n{context}\n\nSynthesize a Zettelkasten note.",
                 "system_prompt": system,
-                "agent": "fast",
+                "agent": "instruct",
                 "technique": "cot_reflection",
             },
         )

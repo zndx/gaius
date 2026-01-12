@@ -204,8 +204,8 @@ async def _fallback_evict_endpoints(required_memory_mb: int) -> tuple[bool, list
         logger.info("Attempting to evict endpoints to free GPU memory...")
 
         # Stop endpoints in priority order (lowest priority first)
-        # Priority: reasoning > orchestrator > fast > coding
-        stop_order = ["coding", "fast"]
+        # Priority: reasoning > orchestrator > instruct
+        stop_order = ["instruct"]
 
         for endpoint_name in stop_order:
             try:

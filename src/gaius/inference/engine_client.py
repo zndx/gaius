@@ -120,8 +120,8 @@ class EngineInferenceClient:
                 # For multi-turn, append to user prompt as context
                 user_prompt += f"\nAssistant: {msg.content}\n"
 
-        # Default to fast model if not specified
-        agent = model or "fast"
+        # Default to instruct model if not specified
+        agent = model or "instruct"
 
         # Route through scheduler
         result = await scheduler.complete(

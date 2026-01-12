@@ -3,7 +3,7 @@
 Manages ambient computing workload cycles that deliver continuous,
 invisible, self-sustaining model activity. The system:
 
-1. Maintains a baseline endpoint mix (orchestrator + fast + coding)
+1. Maintains a baseline endpoint mix (orchestrator + instruct)
 2. Executes standard tasks on each endpoint to verify health
 3. Evicts baseline endpoints when reasoning tasks arrive
 4. Restores baseline after reasoning completes
@@ -103,16 +103,10 @@ BASELINE_TASKS: dict[str, AmbientTask] = {
         expected_capability="routing",
         timeout_secs=10,
     ),
-    "fast": AmbientTask(
-        endpoint="fast",
-        prompt="Explain what a hash table is in one sentence.",
-        expected_capability="generation",
-        timeout_secs=15,
-    ),
-    "coding": AmbientTask(
-        endpoint="coding",
+    "instruct": AmbientTask(
+        endpoint="instruct",
         prompt="Complete this function:\ndef fibonacci(n):\n    ",
-        expected_capability="coding",
+        expected_capability="generation",
         timeout_secs=20,
     ),
 }
@@ -126,52 +120,51 @@ DEFAULT_REASONING_TASK = AmbientTask(
 
 # Varied task pools for daemon mode
 VARIED_BASELINE_TASKS: list[tuple[str, AmbientTask]] = [
-    # Fast endpoint tasks
-    ("fast", AmbientTask(
-        endpoint="fast",
+    # Instruct endpoint tasks (varied prompts for health checks)
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Explain what a hash table is in one sentence.",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("fast", AmbientTask(
-        endpoint="fast",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="What is the time complexity of binary search?",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("fast", AmbientTask(
-        endpoint="fast",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Define polymorphism in OOP.",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("fast", AmbientTask(
-        endpoint="fast",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Name three common design patterns.",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    # Coding endpoint tasks
-    ("coding", AmbientTask(
-        endpoint="coding",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Complete this function:\ndef fibonacci(n):\n    ",
         expected_capability="coding",
         timeout_secs=20,
     )),
-    ("coding", AmbientTask(
-        endpoint="coding",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Write a Python one-liner to reverse a string.",
         expected_capability="coding",
         timeout_secs=20,
     )),
-    ("coding", AmbientTask(
-        endpoint="coding",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Implement a simple stack class in Python.",
         expected_capability="coding",
         timeout_secs=20,
     )),
-    ("coding", AmbientTask(
-        endpoint="coding",
+    ("instruct", AmbientTask(
+        endpoint="instruct",
         prompt="Write a function to check if a number is prime.",
         expected_capability="coding",
         timeout_secs=20,
@@ -1224,11 +1217,11 @@ class AmbientWorkloadService:
                 "Focus on the most interesting or important topics."
             )
 
-            # Use fast endpoint for summarization (lower latency)
+            # Use instruct endpoint for summarization (lower latency)
             response = await asyncio.wait_for(
                 self._backend_router.complete(
                     prompt=summarize_prompt,
-                    agent_alias="fast",
+                    agent_alias="instruct",
                     max_tokens=buffer_cfg.summarize_max_tokens,
                     temperature=0.7,
                 ),

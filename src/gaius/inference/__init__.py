@@ -90,7 +90,7 @@ def get_client(config: InferenceConfig | None = None) -> InferenceClient:
             result = await client.call(
                 service="Scheduler",
                 action="complete",
-                params={"prompt": "...", "agent": "fast"},
+                params={"prompt": "...", "agent": "instruct"},
             )
     """
     import warnings
@@ -144,7 +144,7 @@ async def ask_local(
         service="scheduler",
         action="complete",
         params={
-            "agent": "fast",  # Use fast agent for quick queries
+            "agent": "instruct",  # Use instruct agent for quick queries
             "prompt": question,
             "max_tokens": max_tokens,
         },

@@ -1253,7 +1253,7 @@ def create_server() -> "FastMCP":
                 action="complete",
                 params={
                     "prompt": question,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "technique": technique or "",
                     "max_tokens": max_tokens,
                 },
@@ -1356,7 +1356,7 @@ Be concise but thorough."""
                 params={
                     "prompt": synthesis_prompt,
                     "system_prompt": f"You are a research assistant specializing in {domain or 'general topics'}.",
-                    "agent": "fast",
+                    "agent": "instruct",
                     "technique": "cot_reflection",
                     "max_tokens": 2048,
                 },
@@ -1864,7 +1864,7 @@ Domain: {domain or 'general'}
                     params={
                         "prompt": question,
                         "system_prompt": system_prompt or "",
-                        "agent": "fast",
+                        "agent": "instruct",
                         "temperature": 0.6,
                         "max_tokens": max_tokens,
                     },

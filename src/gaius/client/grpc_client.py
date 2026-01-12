@@ -65,6 +65,8 @@ from ..engine.generated import (
     ForceHealthCheckRequest,
     ListIncidentsRequest,
     GetIncidentDetailRequest,
+    ResolveIncidentRequest,
+    GetOrphanedIssuesRequest,
     # Observability Dashboard
     ObserveStatusRequest,
     # X Bookmarks
@@ -683,7 +685,7 @@ class GrpcEngineClient:
 
         elif action == "complete":
             request = CompleteRequest(
-                agent_alias=params.get("agent", "fast"),
+                agent_alias=params.get("agent", "instruct"),
                 prompt=params.get("prompt", ""),
                 system_prompt=params.get("system_prompt", ""),
                 max_tokens=params.get("max_tokens", 2048),
@@ -695,7 +697,7 @@ class GrpcEngineClient:
 
         elif action == "submit":
             request = SubmitJobRequest(
-                agent_alias=params.get("agent", "fast"),
+                agent_alias=params.get("agent", "instruct"),
                 prompt=params.get("prompt", ""),
                 system_prompt=params.get("system_prompt", ""),
                 max_tokens=params.get("max_tokens", 2048),
@@ -1563,6 +1565,37 @@ class GrpcEngineClient:
                     "github_issue": inc.github_issue,
                     "status": inc.status,
                 },
+            }
+
+        elif action == "resolve_incident":
+            fingerprint = params.get("fingerprint", "")
+            request = ResolveIncidentRequest(fingerprint=fingerprint)
+            response = await self._stub.HealthObserverResolveIncident(
+                request, timeout=timeout
+            )
+            return {
+                "resolved": response.resolved,
+                "fingerprint": response.fingerprint,
+                "was_active": response.was_active,
+                "note": response.note or None,
+            }
+
+        elif action == "get_orphaned_issues":
+            request = GetOrphanedIssuesRequest()
+            response = await self._stub.HealthObserverGetOrphanedIssues(
+                request, timeout=timeout
+            )
+            return {
+                "orphans": [
+                    {
+                        "issue_number": orphan.issue_number,
+                        "repo": orphan.repo,
+                        "fingerprint": orphan.fingerprint,
+                        "created_at": orphan.created_at or None,
+                        "issue_url": orphan.issue_url or None,
+                    }
+                    for orphan in response.orphans
+                ],
             }
 
         else:
@@ -2523,15 +2556,15 @@ class GrpcEngineClient:
             roles = ["Leader", "Risk", "Optimizer", "Planner", "Critic", "Executor", "Adversary"]
 
         # Map role capabilities to endpoints
-        # Capabilities: reasoning, coding, fast, long_context, adversarial, synthesis
+        # Capabilities: reasoning, instruct, long_context, adversarial, synthesis
         ROLE_TO_ENDPOINT = {
             "Leader": "orchestrator",      # reasoning/synthesis
-            "Risk": "fast",                # analysis
-            "Optimizer": "fast",           # analysis
+            "Risk": "instruct",            # analysis
+            "Optimizer": "instruct",       # analysis
             "Planner": "orchestrator",     # reasoning
-            "Critic": "fast",              # adversarial/analysis
-            "Executor": "fast",            # execution
-            "Adversary": "fast",           # adversarial
+            "Critic": "instruct",          # adversarial/analysis
+            "Executor": "instruct",        # execution
+            "Adversary": "instruct",       # adversarial
         }
 
         # Get role prompts
@@ -2544,7 +2577,7 @@ class GrpcEngineClient:
                     role_enum = AgentRole(role_name)
                     role_def = get_role(role_enum)
                     prompt = role_def.get_prompt(domain, context)
-                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "fast")
+                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "instruct")
 
                     request = CompleteRequest(
                         agent_alias=endpoint,

@@ -4,7 +4,7 @@ This module provides optimal GPU allocation scheduling using Google OR-Tools
 CP-SAT solver. It models the problem as a job shop scheduling problem where:
 
 - Machines = GPUs (6x RTX 4090)
-- Jobs = Model endpoints (orchestrator, fast, coding, reasoning)
+- Jobs = Model endpoints (orchestrator, instruct, reasoning)
 - Operations = Start/stop endpoints, serve inference
 - Objective = Minimize makespan (total transition time)
 
@@ -14,8 +14,7 @@ Usage:
     scheduler = MakespanScheduler(total_gpus=6)
 
     current = [
-        SchedulingTask("fast", "fast", "model", required_gpus=1, fixed_gpu_ids=[0]),
-        SchedulingTask("coding", "coding", "model", required_gpus=2, fixed_gpu_ids=[1,2]),
+        SchedulingTask("instruct", "instruct", "model", required_gpus=4, fixed_gpu_ids=[0,1,2,3]),
     ]
 
     target = [

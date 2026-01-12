@@ -298,7 +298,7 @@ Format as JSON with keys: overview, insights (array), tomorrow_focus"""
             action="complete",
             params={
                 "prompt": prompt,
-                "agent": "fast",
+                "agent": "instruct",
                 "max_tokens": 500,
                 "temperature": 0.6,
             },

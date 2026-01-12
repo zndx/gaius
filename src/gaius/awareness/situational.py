@@ -421,7 +421,7 @@ class SituationalAwareness:
 {entry_list}
 
 Focus on patterns, connections, or areas needing attention.""",
-                        "agent": "fast",
+                        "agent": "instruct",
                         "max_tokens": 200,
                         "temperature": 0.5,
                     },

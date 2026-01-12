@@ -1028,8 +1028,7 @@ class HealthChecker:
             # Check multiple potential vLLM endpoints
             endpoints = [
                 ("reasoning", os.getenv("GAIUS_VLLM_REASONING_URL", "http://localhost:8081/v1")),
-                ("coding", os.getenv("GAIUS_VLLM_CODING_URL", "http://localhost:8082/v1")),
-                ("fast", os.getenv("GAIUS_VLLM_FAST_URL", "http://localhost:8083/v1")),
+                ("instruct", os.getenv("GAIUS_VLLM_INSTRUCT_URL", "http://localhost:8082/v1")),
             ]
 
             available = []
@@ -2079,8 +2078,7 @@ class HealthChecker:
         # 2. Check vLLM endpoint configuration
         vllm_endpoints = [
             ("reasoning", os.getenv("GAIUS_VLLM_REASONING_URL", "http://localhost:8081/v1")),
-            ("coding", os.getenv("GAIUS_VLLM_CODING_URL", "http://localhost:8082/v1")),
-            ("fast", os.getenv("GAIUS_VLLM_FAST_URL", "http://localhost:8083/v1")),
+            ("instruct", os.getenv("GAIUS_VLLM_INSTRUCT_URL", "http://localhost:8082/v1")),
         ]
         for name, url in vllm_endpoints:
             port = urlparse(url).port

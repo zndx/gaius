@@ -49,8 +49,7 @@ if TYPE_CHECKING:
 # These could be refined with actual measurements over time
 LOAD_TIME_MS: dict[str, int] = {
     "orchestrator": 45_000,  # 45s for 8B model on 2 GPUs
-    "fast": 30_000,  # 30s for small model
-    "coding": 45_000,  # 45s for coding model
+    "instruct": 60_000,  # 60s for Devstral-24B on 4 GPUs
     "reasoning": 120_000,  # 120s for 32B on 4 GPUs
     "cap_reasoning": 120_000,  # Same as reasoning
     "embedding": 20_000,  # 20s for embedding model
@@ -58,8 +57,7 @@ LOAD_TIME_MS: dict[str, int] = {
 
 UNLOAD_TIME_MS: dict[str, int] = {
     "orchestrator": 10_000,
-    "fast": 5_000,
-    "coding": 10_000,
+    "instruct": 10_000,
     "reasoning": 15_000,
     "cap_reasoning": 15_000,
     "embedding": 5_000,
@@ -89,8 +87,7 @@ class MakespanScheduler:
         scheduler = MakespanScheduler(total_gpus=6)
 
         current = [
-            SchedulingTask("fast", "fast", "model", 1, fixed_gpu_ids=[0]),
-            SchedulingTask("coding", "coding", "model", 2, fixed_gpu_ids=[1,2]),
+            SchedulingTask("instruct", "instruct", "model", 4, fixed_gpu_ids=[0,1,2,3]),
         ]
 
         target = [

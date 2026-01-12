@@ -92,7 +92,7 @@ async def ask_reasoning(
                 params={
                     "prompt": question,
                     "system_prompt": system_prompt or "",
-                    "agent": "reasoning" if model_spec else "fast",
+                    "agent": "reasoning" if model_spec else "instruct",
                     "temperature": model_spec.default_temperature if model_spec else 0.6,
                     "max_tokens": max_tokens,
                 },
@@ -105,7 +105,7 @@ async def ask_reasoning(
                 params={
                     "prompt": question,
                     "system_prompt": system_prompt or "",
-                    "agent": "fast",
+                    "agent": "instruct",
                     "temperature": 0.6,
                     "max_tokens": max_tokens,
                 },

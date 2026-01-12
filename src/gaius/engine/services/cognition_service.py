@@ -1656,7 +1656,7 @@ Your summary note content"""
                 params={
                     "prompt": synthesis_prompt,
                     "system_prompt": f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
-                    "agent": "fast",
+                    "agent": "instruct",
                     "technique": "cot_reflection",
                     "max_tokens": 2048,
                 },

@@ -238,7 +238,7 @@ class SwarmManager:
                     action="complete",
                     params={
                         "prompt": prompt,
-                        "agent": "fast",
+                        "agent": "instruct",
                         "max_tokens": role_def.max_tokens,
                         "temperature": role_def.temperature,
                     },

@@ -210,7 +210,7 @@ class StartupConfig:
     """Autonomous startup configuration."""
 
     clean_start: bool = True  # Kill stale processes on boot
-    preload_endpoints: list[str] = field(default_factory=lambda: ["fast"])
+    preload_endpoints: list[str] = field(default_factory=lambda: ["instruct"])
     auto_start_evolution: bool = True  # Start evolution daemon if enabled
     auto_start_cognition: bool = True  # Start cognition daemon for scheduled tasks
     auto_start_flow_scheduler: bool = True  # Start flow scheduler for Metaflow pipelines
@@ -532,9 +532,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         clean_start=startup_conf.get("clean-start", True)
         if hasattr(startup_conf, "get")
         else True,
-        preload_endpoints=list(startup_conf.get("preload-endpoints", ["fast"]))
+        preload_endpoints=list(startup_conf.get("preload-endpoints", ["orchestrator", "instruct"]))
         if hasattr(startup_conf, "get")
-        else ["fast"],
+        else ["orchestrator", "instruct"],
         auto_start_evolution=startup_conf.get("auto-start-evolution", True)
         if hasattr(startup_conf, "get")
         else True,

@@ -312,7 +312,7 @@ class SchedulerProxy:
     async def complete(
         self,
         prompt: str,
-        agent: str = "fast",
+        agent: str = "instruct",
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,

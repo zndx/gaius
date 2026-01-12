@@ -94,7 +94,7 @@ class PipelineTestConfig:
     # Inference endpoints
     qwq_endpoint: str = "http://localhost:8081"
     optillm_endpoint: str = "http://localhost:8000"
-    fast_endpoint: str = "http://localhost:8083"
+    instruct_endpoint: str = "http://localhost:8082"
 
     # Timeouts
     service_start_timeout: float = 30.0

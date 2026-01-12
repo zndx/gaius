@@ -301,7 +301,7 @@ Be direct and insightful."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 150,
                     "temperature": 0.6,
                 },
@@ -373,7 +373,7 @@ Format as JSON:
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 600,
                     "temperature": 0.6,
                 },
@@ -455,7 +455,7 @@ Format as JSON:
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 500,
                     "temperature": 0.4,
                 },
@@ -585,7 +585,7 @@ Be specific and insightful, not generic."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 400 if depth == ReflectionDepth.DEEP else 200,
                     "temperature": 0.6,
                 },
@@ -633,7 +633,7 @@ Return only the questions, one per line."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 200,
                     "temperature": 0.7,
                 },
@@ -688,7 +688,7 @@ Be specific and honest about limitations."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 150,
                     "temperature": 0.4,
                 },
@@ -730,7 +730,7 @@ Return only the recommendations, one per line."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": 150,
                     "temperature": 0.5,
                 },

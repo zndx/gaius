@@ -520,6 +520,7 @@ class GaiusApp(App):
         self._graph_update_timer: Timer | None = None
         self._connection_status: ConnectionStatus = ConnectionStatus.PENDING
         self._state_generation: int = 0
+        self._health_fix_task: asyncio.Task | None = None  # Track running /health fix
         self._apply_config()
         self._load_test_data()
 
@@ -2590,7 +2591,7 @@ Use `/inference stop <endpoint>` to stop an endpoint.
                 endpoints = ["evo0", "evo1", "evo2", "evo3", "evo4", "evo5"]
                 mode_text = "**6 parallel GPUs**"
             else:
-                endpoints = ["fast"]
+                endpoints = ["instruct"]
                 mode_text = "single endpoint"
 
             content.show_file("evolve.md", f"# Evolution Daemon\n\nStarting clean start with {mode_text}...\n\nPhase 1: Cleaning stale GPU processes...")
@@ -3141,6 +3142,8 @@ Use `/evolve stop` to stop orchestrated evolution.
             /health data      - Check database/KB health
             /health cognition - Check cognition daemon
             /health inference - Check inference endpoints
+            /health fix       - ACP-powered incident remediation (matches CLI)
+            /health observer  - Observer daemon management
         """
         import asyncio
         from pathlib import Path
@@ -3151,6 +3154,18 @@ Use `/evolve stop` to stop orchestrated evolution.
 
         parts = args.split() if args else []
         subcmd = parts[0].lower() if parts else ""
+
+        # Handle /health fix separately (matches CLI parity)
+        if subcmd == "fix":
+            fix_args = " ".join(parts[1:]) if len(parts) > 1 else ""
+            self._handle_health_fix_command(fix_args)
+            return
+
+        # Handle /health observer separately
+        if subcmd == "observer":
+            observer_args = " ".join(parts[1:]) if len(parts) > 1 else ""
+            self._handle_health_observer_command(observer_args)
+            return
 
         # Determine title and check_type based on subcmd (matches CLI pattern)
         if subcmd == "quick":
@@ -3421,6 +3436,1062 @@ Use `/evolve stop` to stop orchestrated evolution.
                 content.show_file("error.txt", f"Health check failed: {e}\n\n{traceback.format_exc()}")
 
         asyncio.create_task(run_health_check())
+
+    def _handle_health_fix_command(self, args: str) -> None:
+        """Handle /health fix command for ACP-powered incident remediation.
+
+        Usage:
+            /health fix           - Process all incidents with GitHub issues via ACP
+            /health fix endpoints - Restart unhealthy inference endpoints
+            /health fix evolution - Start evolution daemon
+            /health fix <issue#>  - Investigate specific GitHub issue via ACP
+            /health fix --dry-run - Show what would be done without executing
+            /health fix --stop    - Cancel running health fix operation
+
+        CLI Parity:
+            This method matches the CLI's _health_fix() implementation for
+            ACP-powered incident remediation. Both paths share:
+            - _health_fix_all_via_acp() for ACP escalation
+            - _add_noc_github_comment() for NOC-friendly comments
+            - Zettelkasten KB notes for audit trail
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split() if args else []
+        dry_run = "--dry-run" in parts
+        stop_requested = "--stop" in parts
+        close_after = "--close" in parts
+        parts = [p for p in parts if p not in ("--dry-run", "--stop", "--close")]
+        target = parts[0] if parts else ""
+
+        # Handle --stop: cancel running health fix
+        if stop_requested:
+            if self._health_fix_task and not self._health_fix_task.done():
+                self._health_fix_task.cancel()
+                content.show_file(
+                    "health_fix.md",
+                    "# Health Fix\n\n✓ Cancelled running health fix operation.\n\n"
+                    "Any in-progress ACP sessions may complete in the background,\n"
+                    "but no further incidents will be processed."
+                )
+                self._show_output("health_fix", "Health fix cancelled")
+            else:
+                content.show_file(
+                    "health_fix.md",
+                    "# Health Fix\n\nNo health fix operation is currently running."
+                )
+            return
+
+        # Check if already running
+        if self._health_fix_task and not self._health_fix_task.done():
+            content.show_file(
+                "health_fix.md",
+                "# Health Fix\n\n⚠️ A health fix operation is already running.\n\n"
+                "Use `/health fix --stop` to cancel it first."
+            )
+            return
+
+        # Show initial status
+        content.show_file("health_fix.md", "# Health Fix\n\n*Starting remediation...*")
+
+        async def run_health_fix():
+            try:
+                from .client.engine_proxy import use_engine_proxy
+                from .client.grpc_client import get_grpc_client
+
+                if not use_engine_proxy():
+                    content.show_file(
+                        "error.txt",
+                        "Engine not available.\n"
+                        "Guru Meditation: #EXP.00000001.NOENGINE\n"
+                        "Try: devenv tasks run restart:clean"
+                    )
+                    return
+
+                client = await get_grpc_client()
+                lines = ["# Health Fix"]
+
+                # Specific fix strategies
+                if target == "endpoints":
+                    lines.extend(await self._fix_endpoints(client, dry_run))
+                elif target == "evolution":
+                    lines.extend(await self._fix_evolution(client, dry_run))
+                elif target.isdigit():
+                    # Specific GitHub issue - investigate via ACP
+                    lines.extend(await self._fix_via_acp_issue(client, int(target), dry_run))
+                else:
+                    # No target: process ALL incidents with GitHub issues via ACP
+                    # Pass content panel for streaming progress updates
+                    lines.extend(await self._fix_all_incidents_via_acp(
+                        client, dry_run, content, close_after=close_after
+                    ))
+
+                if dry_run:
+                    lines.insert(1, "")
+                    lines.insert(2, "*DRY RUN - no changes made*")
+
+                content.show_file("health_fix.md", "\n".join(lines))
+                self._show_output("health_fix", "\n".join(lines))
+
+            except asyncio.CancelledError:
+                content.show_file(
+                    "health_fix.md",
+                    "# Health Fix\n\nOperation cancelled.\n\n"
+                    "Use `/health fix` to start a new remediation."
+                )
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Health fix failed: {e}\n\n{traceback.format_exc()}")
+            finally:
+                self._health_fix_task = None
+
+        self._health_fix_task = asyncio.create_task(run_health_fix())
+
+    async def _fix_endpoints(self, client, dry_run: bool) -> list[str]:
+        """Fix unhealthy endpoints by restarting them."""
+        lines = ["", "## Endpoint Fix", ""]
+
+        orch_status = await client.call("Orchestrator", "status", {}, timeout=10.0)
+        endpoints = orch_status.get("endpoints", [])
+
+        unhealthy = [e for e in endpoints if e.get("status") != "PROCESS_STATUS_HEALTHY"]
+
+        if not unhealthy:
+            lines.append("✓ All endpoints healthy")
+            return lines
+
+        for endpoint in unhealthy:
+            name = endpoint.get("name", "unknown")
+            status = endpoint.get("status", "unknown")
+            lines.append(f"- `{name}`: {status}")
+
+            if not dry_run:
+                try:
+                    await client.call("Orchestrator", "restart", {"endpoint": name}, timeout=120.0)
+                    lines.append(f"  → Restarted `{name}`")
+                except Exception as e:
+                    lines.append(f"  → Failed to restart: {e}")
+
+        return lines
+
+    async def _fix_evolution(self, client, dry_run: bool) -> list[str]:
+        """Start evolution daemon if not running."""
+        lines = ["", "## Evolution Fix", ""]
+
+        evo_status = await client.call("Evolution", "status", {}, timeout=5.0)
+        running = evo_status.get("running", False)
+
+        if running:
+            lines.append("✓ Evolution daemon already running")
+            return lines
+
+        if dry_run:
+            lines.append("Would start evolution daemon")
+        else:
+            await client.call("Evolution", "start", {}, timeout=10.0)
+            lines.append("✓ Started evolution daemon")
+
+        return lines
+
+    async def _fix_via_acp_issue(self, client, issue_number: int, dry_run: bool) -> list[str]:
+        """Investigate a specific GitHub issue via ACP."""
+        lines = ["", f"## ACP Investigation: Issue #{issue_number}", ""]
+
+        if dry_run:
+            lines.append(f"Would investigate issue #{issue_number} via ACP")
+            return lines
+
+        # Get system state for context
+        system_state = await self._get_tui_system_state(client)
+
+        # Build ACP prompt for issue investigation
+        prompt = self._build_tui_acp_prompt_for_issue(issue_number, system_state)
+
+        lines.append("*Sending to ACP for investigation...*")
+        lines.append("")
+
+        try:
+            from .acp import GaiusACPClient, ACPConfig
+
+            config = ACPConfig(
+                include_gaius_mcp=True,
+                connection_timeout=120.0,
+            )
+            async with GaiusACPClient(config) as acp_client:
+                response = await acp_client.prompt(prompt, timeout=600.0)
+                lines.append("### ACP Response")
+                lines.append("")
+                lines.append(response[:2000] if len(response) > 2000 else response)
+        except Exception as e:
+            lines.append(f"ACP investigation failed: {e}")
+
+        return lines
+
+    async def _fix_all_incidents_via_acp(
+        self, client, dry_run: bool, content: "InfoPanel | None" = None,
+        close_after: bool = False
+    ) -> list[str]:
+        """Process ALL active incidents with GitHub issues via ACP.
+
+        This is the core TUI/CLI parity method - matches cli.py's
+        _health_fix_all_via_acp() for NOC-engineer situational awareness.
+
+        Args:
+            client: gRPC client
+            dry_run: If True, show what would be done without executing
+            content: Optional InfoPanel for streaming progress updates
+            close_after: If True, resolve incident and close GitHub issue after each fix
+        """
+        lines = ["", "## ACP-Powered Incident Remediation", ""]
+
+        def update_panel():
+            """Update Info Panel with current progress."""
+            if content:
+                content.show_file("health_fix.md", "# Health Fix\n" + "\n".join(lines))
+
+        # Get all active incidents with GitHub issues
+        incidents_result = await client.call(
+            "HealthObserver", "incidents", {"status": "all"}, timeout=5.0
+        )
+        all_incidents = incidents_result.get("incidents", [])
+        active_incidents = [
+            i for i in all_incidents
+            if i.get("status") != "resolved" and i.get("github_issue")
+        ]
+
+        if not active_incidents:
+            lines.append("✓ No active incidents with GitHub issues")
+            return lines
+
+        lines.append(f"Found **{len(active_incidents)}** incident(s) with GitHub issues:")
+        lines.append("")
+        update_panel()
+
+        if dry_run:
+            for inc in active_incidents:
+                fp = inc.get("fingerprint", "unknown")
+                issue = inc.get("github_issue", 0)
+                lines.append(f"- `{fp}` → Would investigate via ACP (Issue #{issue})")
+            return lines
+
+        # Get system state once for all incidents
+        system_state = await self._get_tui_system_state(client)
+
+        # Process each incident
+        import asyncio
+        from .acp import GaiusACPClient, ACPConfig
+        import os
+        from datetime import datetime
+        from pathlib import Path
+
+        config = ACPConfig(
+            include_gaius_mcp=True,
+            connection_timeout=120.0,
+        )
+
+        for idx, inc in enumerate(active_incidents, 1):
+            fingerprint = inc.get("fingerprint", "unknown")
+            issue_number = inc.get("github_issue", 0)
+            endpoint = inc.get("endpoint", "unknown")
+            failure_mode = inc.get("failure_mode_id", "unknown")
+            rpn_score = inc.get("rpn_score", 0)
+
+            lines.append(f"### [{idx}/{len(active_incidents)}] {fingerprint}")
+            lines.append(f"- Endpoint: `{endpoint}`")
+            lines.append(f"- GitHub Issue: #{issue_number}")
+            lines.append(f"- RPN Score: {rpn_score}")
+
+            # Check if endpoint is in preload config (obsolete detection)
+            preload = system_state.get("preload_config", "").split(",")
+            is_obsolete = endpoint not in preload and endpoint not in ["", "unknown"]
+
+            if is_obsolete:
+                lines.append(f"- **OBSOLETE**: `{endpoint}` not in preload config")
+
+            lines.append("- *Connecting to ACP...*")
+            update_panel()
+            await asyncio.sleep(0)  # Yield to event loop for UI update
+
+            # Build NOC diagnosis prompt (matches CLI)
+            prompt = self._build_tui_noc_diagnosis_prompt(inc, system_state, is_obsolete)
+
+            try:
+                async with GaiusACPClient(config) as acp_client:
+                    # Update to show we're running ACP
+                    lines[-1] = "- *ACP session active - Claude Code investigating...*"
+                    update_panel()
+                    await asyncio.sleep(0)
+
+                    # Use backoff wrapper for rate limit handling
+                    response, error = await self._attempt_acp_with_backoff(
+                        acp_client, prompt, max_attempts=3, base_delay=60, content=content
+                    )
+
+                    # Handle rate limit exhaustion
+                    if error:
+                        repo = inc.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+                        lines[-1] = f"- ✗ Rate limit exhausted after 3 attempts"
+
+                        # Post Guru Meditation error comment (with deduplication)
+                        if issue_number and not dry_run:
+                            comment_result = self._add_guru_error_comment(
+                                issue_number, repo, error, inc
+                            )
+                            if comment_result.get("skipped"):
+                                lines.append(f"- ℹ️ Error comment already exists on #{issue_number}")
+                            elif comment_result.get("success"):
+                                lines.append(f"- 📝 Posted error comment to #{issue_number}")
+                            else:
+                                lines.append(f"- ⚠️ Failed to post error comment: {comment_result.get('error', 'unknown')}")
+
+                        # Stop processing remaining incidents
+                        lines.append("")
+                        lines.append("⚠️ **Stopping** - remaining incidents skipped due to rate limit")
+                        update_panel()
+                        break
+
+                    # Success path - response is guaranteed non-None here (error case breaks above)
+                    assert response is not None  # Type narrowing for mypy/ty
+
+                    kb_root = Path(os.environ.get("GAIUS_KB_ROOT", "build/dev"))
+                    scratch_dir = kb_root / "scratch" / datetime.now().strftime("%Y-%m-%d")
+                    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+                    timestamp = datetime.now().strftime("%H%M%S")
+                    safe_fp = fingerprint.replace(":", "_").replace("/", "_")
+                    kb_note_path = scratch_dir / f"{timestamp}_health_fix_{safe_fp}.md"
+
+                    kb_content = f"""# Health Fix: {fingerprint}
+
+**Timestamp**: {datetime.now().isoformat()}
+**GitHub Issue**: #{issue_number}
+**RPN Score**: {rpn_score}
+
+## System State
+
+{self._format_system_state_for_kb(system_state)}
+
+## ACP Response
+
+{response}
+
+---
+🤖 Generated by Gaius TUI `/health fix`
+"""
+                    kb_note_path.write_text(kb_content)
+
+                    # Replace the "ACP session active" line with KB note path
+                    lines[-1] = f"- KB Note: `{kb_note_path.relative_to(kb_root)}`"
+
+                    # Add GitHub comment (NOC-friendly format)
+                    if issue_number and not dry_run:
+                        lines.append("- *Adding GitHub comment...*")
+                        update_panel()
+                        await asyncio.sleep(0)
+
+                        comment_result = self._add_tui_github_comment(
+                            issue_number, inc, response, system_state,
+                            str(kb_note_path.relative_to(kb_root))
+                        )
+                        if comment_result.get("success"):
+                            lines[-1] = f"- ✓ GitHub comment added to #{issue_number}"
+                        else:
+                            lines[-1] = f"- ✗ GitHub comment failed: {comment_result.get('error', 'unknown')}"
+
+                    lines.append(f"- ✓ ACP complete ({len(response)} chars)")
+
+                    # If --close: resolve incident and close GitHub issue
+                    if close_after and not dry_run:
+                        lines.append("- *Resolving incident and closing issue...*")
+                        update_panel()
+                        await asyncio.sleep(0)
+
+                        # 1. Resolve incident in HealthObserver
+                        resolve_result = await client.call(
+                            "HealthObserver", "resolve_incident",
+                            {"fingerprint": fingerprint}, timeout=30.0
+                        )
+                        resolved = resolve_result.get("resolved", False)
+                        was_active = resolve_result.get("was_active", False)
+
+                        # 2. Close GitHub issue
+                        repo = inc.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+                        close_result = self._tui_close_github_issue(
+                            issue_number, repo, fingerprint, response,
+                            str(kb_note_path.relative_to(kb_root))
+                        )
+
+                        if resolved and close_result.get("success"):
+                            lines[-1] = f"- ✓ Incident resolved & issue #{issue_number} closed"
+                            if not was_active:
+                                lines.append("  (incident was already resolved)")
+                        elif resolved:
+                            lines[-1] = f"- ✓ Incident resolved, issue close failed: {close_result.get('error', 'unknown')}"
+                        else:
+                            lines[-1] = f"- ✗ Failed to resolve incident: {resolve_result.get('note', 'unknown error')}"
+
+            except Exception as e:
+                # Replace the progress line with failure
+                lines[-1] = f"- ✗ ACP failed: {e}"
+
+            lines.append("")
+            update_panel()
+            await asyncio.sleep(0)  # Yield for UI update
+
+        # If --close, clean up any orphaned issues (race condition recovery)
+        if close_after and not dry_run:
+            orphan_results = await self._tui_close_orphaned_issues(client)
+            if orphan_results.get("closed_count", 0) > 0:
+                lines.append("")
+                lines.append(f"## Orphaned Issues Cleanup")
+                lines.append(f"Closed {orphan_results['closed_count']} orphaned issue(s)")
+                for detail in orphan_results.get("details", []):
+                    if detail.get("closed"):
+                        lines.append(f"- #{detail['issue_number']}: closed (fingerprint: `{detail['fingerprint']}`)")
+                    elif detail.get("already_closed"):
+                        lines.append(f"- #{detail['issue_number']}: already closed")
+                update_panel()
+
+        return lines
+
+    def _tui_close_github_issue(
+        self, issue_number: int, repo: str, fingerprint: str,
+        acp_response: str, kb_note_path: str
+    ) -> dict:
+        """Close GitHub issue with resolution comment (TUI version).
+
+        Args:
+            issue_number: GitHub issue number
+            repo: GitHub repo (e.g., "zndx/gaius-acp")
+            fingerprint: Incident fingerprint
+            acp_response: ACP diagnostic response
+            kb_note_path: Path to KB note
+
+        Returns:
+            Dict with close status
+        """
+        import subprocess
+        import json
+        from datetime import datetime
+
+        # Check if already closed
+        try:
+            check_result = subprocess.run(
+                ["gh", "issue", "view", str(issue_number), "--repo", repo, "--json", "state"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if check_result.returncode == 0:
+                data = json.loads(check_result.stdout)
+                if data.get("state") == "CLOSED":
+                    return {"success": True, "already_closed": True}
+        except Exception:
+            pass
+
+        # Build resolution comment
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        body = f"""## Incident Resolved
+
+**Fingerprint**: `{fingerprint}`
+**Resolved at**: {timestamp}
+
+### ACP Diagnostic Summary
+
+{acp_response[:1500]}{'...' if len(acp_response) > 1500 else ''}
+
+**KB Note**: `{kb_note_path}`
+
+---
+*Closed by `/health fix --close`*
+"""
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "close", str(issue_number), "--repo", repo, "--comment", body],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                return {"success": True}
+            else:
+                return {"success": False, "error": result.stderr}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "gh command timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _tui_close_orphaned_issues(self, client) -> dict:
+        """Find and close GitHub issues with no active incident (TUI version).
+
+        Handles race condition where incident was resolved but issue wasn't closed.
+
+        Args:
+            client: gRPC client
+
+        Returns:
+            Dict with closed count and details
+        """
+        import subprocess
+        import json
+        import os
+
+        try:
+            # Get orphaned issues from HealthObserver
+            result = await client.call(
+                "HealthObserver", "get_orphaned_issues", {}, timeout=30.0
+            )
+            orphans = result.get("orphans", [])
+
+            if not orphans:
+                return {"closed_count": 0, "details": []}
+
+            closed_count = 0
+            details = []
+
+            for orphan in orphans:
+                issue_number = orphan.get("issue_number")
+                repo = orphan.get("repo", os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp"))
+                fingerprint = orphan.get("fingerprint", "unknown")
+
+                # Check if already closed
+                try:
+                    check_result = subprocess.run(
+                        ["gh", "issue", "view", str(issue_number), "--repo", repo, "--json", "state"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if check_result.returncode == 0:
+                        data = json.loads(check_result.stdout)
+                        if data.get("state") == "CLOSED":
+                            details.append({
+                                "issue_number": issue_number,
+                                "fingerprint": fingerprint,
+                                "already_closed": True,
+                            })
+                            continue
+                except Exception:
+                    pass
+
+                # Close with explanatory comment
+                body = f"""## Issue Resolved (Race Condition Recovery)
+
+This incident was already resolved in the HealthObserver.
+
+The GitHub issue remained open, likely due to a race condition during prior resolution.
+
+**Fingerprint**: `{fingerprint}`
+
+---
+*Closed by `/health fix --close` (race condition recovery)*
+"""
+                try:
+                    close_result = subprocess.run(
+                        ["gh", "issue", "close", str(issue_number), "--repo", repo, "--comment", body],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if close_result.returncode == 0:
+                        closed_count += 1
+                        details.append({
+                            "issue_number": issue_number,
+                            "fingerprint": fingerprint,
+                            "closed": True,
+                        })
+                    else:
+                        details.append({
+                            "issue_number": issue_number,
+                            "fingerprint": fingerprint,
+                            "closed": False,
+                            "error": close_result.stderr,
+                        })
+                except Exception as e:
+                    details.append({
+                        "issue_number": issue_number,
+                        "fingerprint": fingerprint,
+                        "closed": False,
+                        "error": str(e),
+                    })
+
+            return {"closed_count": closed_count, "details": details}
+
+        except Exception as e:
+            return {"closed_count": 0, "error": str(e)}
+
+    async def _get_tui_system_state(self, client) -> dict:
+        """Get current system state for ACP prompts (TUI version)."""
+        # Get endpoint status
+        orch_status = await client.call("Orchestrator", "status", {}, timeout=10.0)
+        endpoints = orch_status.get("endpoints", [])
+
+        # Get GPU health
+        try:
+            gpu_result = await client.call("GpuHealth", "get", {}, timeout=10.0)
+            gpus = gpu_result.get("gpus", [])
+        except Exception:
+            gpus = []
+
+        import os
+        preload_config = os.environ.get("GAIUS_PRELOAD_ENDPOINTS", "instruct")
+
+        return {
+            "endpoints": endpoints,
+            "gpus": gpus,
+            "preload_config": preload_config,
+            "total_gpus": len(gpus),
+            "available_gpus": orch_status.get("available_gpus", 0),
+        }
+
+    def _build_tui_acp_prompt_for_issue(self, issue_number: int, system_state: dict) -> str:
+        """Build ACP prompt for investigating a specific GitHub issue."""
+        endpoints_str = "\n".join([
+            f"  - {e.get('name')}: {e.get('status')}"
+            for e in system_state.get("endpoints", [])
+        ])
+
+        return f"""You are investigating GitHub issue #{issue_number} in the Gaius platform.
+
+**Current System State**:
+Endpoints:
+{endpoints_str}
+
+GPUs: {system_state.get('total_gpus', 0)} total, {system_state.get('available_gpus', 0)} available
+Preload Config: {system_state.get('preload_config', 'unknown')}
+
+**Your Task**:
+1. Use MCP tools to gather context about issue #{issue_number}
+2. Check if the issue is still relevant or obsolete
+3. Diagnose the root cause
+4. Add a NOC-friendly GitHub comment with your findings
+
+Be thorough but concise. A NOC engineer will read this at 2am.
+"""
+
+    def _build_tui_noc_diagnosis_prompt(
+        self, incident: dict, system_state: dict, is_obsolete: bool
+    ) -> str:
+        """Build NOC diagnosis prompt for ACP (matches CLI format)."""
+        fingerprint = incident.get("fingerprint", "unknown")
+        endpoint = incident.get("endpoint", "unknown")
+        failure_mode = incident.get("failure_mode_id", "unknown")
+        rpn_score = incident.get("rpn_score", 0)
+        issue_number = incident.get("github_issue", 0)
+
+        endpoints_str = "\n".join([
+            f"  - {e.get('name')}: {e.get('status')}"
+            for e in system_state.get("endpoints", [])
+        ])
+
+        obsolete_note = ""
+        if is_obsolete:
+            obsolete_note = f"""
+**IMPORTANT**: The endpoint `{endpoint}` is NOT in the current preload configuration.
+This incident may be OBSOLETE. If confirmed obsolete, recommend closing the issue
+with label: resolved-by-architecture-change
+"""
+
+        return f"""You are investigating a health incident in the Gaius platform.
+
+**Incident**: {fingerprint}
+**GitHub Issue**: #{issue_number}
+**Endpoint**: {endpoint}
+**Failure Mode**: {failure_mode}
+**RPN Score**: {rpn_score}
+{obsolete_note}
+**Current System State**:
+Endpoints:
+{endpoints_str}
+
+GPUs: {system_state.get('total_gpus', 0)} total, {system_state.get('available_gpus', 0)} available
+Preload Config: {system_state.get('preload_config', 'unknown')}
+
+**Your Task**:
+1. Use MCP tools to gather context:
+   - `/gpu status` - Check endpoint health
+   - `/health` - Full health report
+   - Query endpoint logs if needed
+
+2. Diagnose the issue:
+   - Is the endpoint actually unhealthy?
+   - Is this incident obsolete (config changed)?
+   - What is the root cause?
+
+3. Attempt remediation if possible:
+   - If endpoint is supposed to be running, try restarting
+   - If endpoint is deprecated, note this for closure
+
+4. **ALWAYS** add a GitHub comment with your findings using:
+   gh issue comment {issue_number} --repo zndx/gaius-acp --body "## ACP Diagnostic Report..."
+
+5. Create a KB note summarizing your investigation.
+
+Be thorough but concise. A NOC engineer will read this at 2am.
+"""
+
+    def _format_system_state_for_kb(self, system_state: dict) -> str:
+        """Format system state for KB note."""
+        lines = []
+        lines.append("### Endpoints")
+        for e in system_state.get("endpoints", []):
+            lines.append(f"- `{e.get('name')}`: {e.get('status')}")
+
+        lines.append("")
+        lines.append("### GPUs")
+        lines.append(f"- Total: {system_state.get('total_gpus', 0)}")
+        lines.append(f"- Available: {system_state.get('available_gpus', 0)}")
+
+        lines.append("")
+        lines.append("### Configuration")
+        lines.append(f"- Preload: `{system_state.get('preload_config', 'unknown')}`")
+
+        return "\n".join(lines)
+
+    async def _attempt_acp_with_backoff(
+        self,
+        acp_client,  # GaiusACPClient - forward ref causes issues
+        prompt: str,
+        max_attempts: int = 3,
+        base_delay: int = 60,
+        content: "InfoPanel | None" = None,
+    ) -> tuple[str | None, str | None]:
+        """Attempt ACP prompt with exponential backoff on rate limit.
+
+        Detects rate limit errors mid-stream and retries with delays:
+        - Attempt 1: 60s wait
+        - Attempt 2: 120s wait
+        - Attempt 3: 240s wait (then give up)
+
+        Args:
+            acp_client: Connected ACP client
+            prompt: The prompt to send
+            max_attempts: Maximum retry attempts (default 3)
+            base_delay: Initial delay in seconds (default 60)
+            content: InfoPanel for progress updates
+
+        Returns:
+            (response, error) - response if success, error message if exhausted
+        """
+        import asyncio
+        from .acp import ACPConnectionError
+
+        delays = [base_delay * (2 ** i) for i in range(max_attempts)]  # 60, 120, 240
+
+        for attempt, delay in enumerate(delays, 1):
+            acp_client.reset_rate_limit_state()
+
+            try:
+                response = await acp_client.prompt(prompt, timeout=600.0)
+
+                # Check if rate limit was detected mid-stream
+                if acp_client.is_rate_limited():
+                    error_msg = acp_client.get_rate_limit_message() or "Rate limit exceeded"
+
+                    if attempt < max_attempts:
+                        if content:
+                            content.show_file(
+                                "health_fix.md",
+                                f"# Health Fix\n\n"
+                                f"⚠️ Rate limit hit (attempt {attempt}/{max_attempts})\n\n"
+                                f"Waiting {delay}s before retry...\n\n"
+                                f"```\n{error_msg[:200]}\n```"
+                            )
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        return None, error_msg
+
+                return response, None
+
+            except ACPConnectionError as e:
+                if attempt < max_attempts:
+                    await asyncio.sleep(delay)
+                    continue
+                return None, str(e)
+
+        return None, "Max retry attempts exhausted"
+
+    def _has_guru_error_comment(self, issue_number: int, repo: str) -> bool:
+        """Check if GitHub issue already has a Guru Meditation error comment.
+
+        Searches for: #ACP.00000006.RATELIMIT
+        Fails open (returns False) if check fails.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{repo}/issues/{issue_number}/comments", "--jq", ".[].body"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                return "#ACP.00000006.RATELIMIT" in result.stdout
+        except Exception:
+            pass  # Fail open
+
+        return False
+
+    def _add_guru_error_comment(
+        self,
+        issue_number: int,
+        repo: str,
+        error_message: str,
+        incident: dict,
+    ) -> dict:
+        """Add Guru Meditation error comment to GitHub issue.
+
+        Only posts if no existing error comment found (deduplication).
+        """
+        import subprocess
+        from datetime import datetime
+
+        # Check for existing error comment
+        if self._has_guru_error_comment(issue_number, repo):
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "Error comment already exists",
+            }
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        fingerprint = incident.get("fingerprint", "unknown")
+
+        body = f"""## Guru Meditation #ACP.00000006.RATELIMIT
+
+**Timestamp**: {timestamp}
+**Incident**: `{fingerprint}`
+
+### Error
+
+```
+{error_message[:500]}
+```
+
+### What Happened
+
+ACP hit a rate limit from the underlying model (Mistral) while investigating this incident.
+Retried 3 times with exponential backoff (60s, 120s, 240s) before giving up.
+
+### Remediation
+
+1. **Wait** - Rate limits typically reset within 15-60 minutes
+2. **Manual investigation** - Run `/health fix {issue_number}` later
+3. **Check quota** - Verify Mistral API quota at https://console.mistral.ai
+
+---
+🤖 Non-agentic error report from `/health fix`
+"""
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {
+                "success": result.returncode == 0,
+                "error": result.stderr if result.returncode != 0 else None,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _add_tui_github_comment(
+        self,
+        issue_number: int,
+        incident: dict,
+        acp_response: str,
+        system_state: dict,
+        kb_note_path: str | None,
+    ) -> dict:
+        """Add NOC-friendly comment to GitHub issue with ACP findings.
+
+        This creates a structured, scannable comment format designed for
+        NOC engineers reviewing incidents at 2am.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details
+            acp_response: Response from ACP investigation
+            system_state: Current system state
+            kb_note_path: Path to KB note (if created)
+
+        Returns:
+            Dict with success status and any error
+        """
+        import subprocess
+        from datetime import datetime
+
+        repo = incident.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        fingerprint = incident.get("fingerprint", "unknown")
+        endpoint = incident.get("endpoint", "unknown")
+
+        # Build endpoint status table
+        endpoint_status = []
+        for ep in system_state.get("endpoints", []):
+            status = ep.get("status", "unknown")
+            icon = "[OK]" if "HEALTHY" in str(status).upper() else "[X]"
+            endpoint_status.append(f"- **{ep['name']}**: {icon} {status} (port {ep.get('port', '?')})")
+
+        # Build GPU summary
+        gpu_summary = f"{system_state.get('available_gpus', 0)}/{system_state.get('total_gpus', 0)} GPUs available"
+
+        # Check if endpoint is in preload config (obsolete detection)
+        preload_config = system_state.get("preload_config", "")
+        preload_endpoints = [e.strip() for e in preload_config.split(",") if e.strip()]
+        is_obsolete = endpoint not in preload_endpoints and endpoint not in ["", "unknown"]
+
+        # Truncate ACP response if needed
+        acp_truncated = (
+            acp_response[:2000] + "\n...\n*[truncated - see KB note for full response]*"
+            if len(acp_response) > 2000
+            else acp_response
+        )
+
+        # Build the NOC-friendly comment
+        body = f"""## ACP Diagnostic Report - {timestamp}
+
+### System State
+{chr(10).join(endpoint_status) if endpoint_status else "- No endpoints available"}
+- **GPU Memory**: {gpu_summary}
+- **Preload Config**: {', '.join(preload_endpoints) if preload_endpoints else 'not set'}
+
+### Incident Analysis
+**Fingerprint**: `{fingerprint}`
+**Endpoint**: `{endpoint}`
+**Obsolete**: {'YES - endpoint not in current preload config' if is_obsolete else 'NO - endpoint still configured'}
+
+### ACP Investigation Summary
+
+{acp_truncated}
+
+### Recommendation
+{'This incident refers to endpoint `' + endpoint + '` which is no longer in the preload configuration. Consider closing this issue as **resolved-by-architecture-change**.' if is_obsolete else 'Review ACP findings above and take appropriate action.'}
+
+---
+Generated by TUI `/health fix` | {f'KB Note: `{kb_note_path}`' if kb_note_path else 'No KB note created'}
+"""
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {
+                "success": result.returncode == 0,
+                "error": result.stderr if result.returncode != 0 else None,
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "gh CLI not found - install with: brew install gh",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": "GitHub API timeout after 30s",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _handle_health_observer_command(self, args: str) -> None:
+        """Handle /health observer command for observer daemon management.
+
+        Usage:
+            /health observer          - Show observer status
+            /health observer start    - Start observer daemon
+            /health observer stop     - Stop observer daemon
+            /health observer check    - Force immediate health check
+            /health observer incidents - Show active incidents
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        async def run_observer_command():
+            try:
+                from .client.engine_proxy import use_engine_proxy
+                from .client.grpc_client import get_grpc_client
+
+                if not use_engine_proxy():
+                    content.show_file(
+                        "error.txt",
+                        "Engine not available.\n"
+                        "Guru Meditation: #EXP.00000001.NOENGINE\n"
+                        "Try: devenv tasks run restart:clean"
+                    )
+                    return
+
+                client = await get_grpc_client()
+                lines = ["# Health Observer"]
+
+                if subcmd == "start":
+                    result = await client.call("HealthObserver", "start", {}, timeout=10.0)
+                    if result.get("success"):
+                        lines.append("")
+                        lines.append("✓ Observer daemon started")
+                    else:
+                        lines.append("")
+                        lines.append(f"Failed to start: {result.get('error', 'unknown')}")
+
+                elif subcmd == "stop":
+                    result = await client.call("HealthObserver", "stop", {}, timeout=10.0)
+                    if result.get("success"):
+                        lines.append("")
+                        lines.append("✓ Observer daemon stopped")
+                    else:
+                        lines.append("")
+                        lines.append(f"Failed to stop: {result.get('error', 'unknown')}")
+
+                elif subcmd == "check":
+                    result = await client.call("HealthObserver", "check", {}, timeout=30.0)
+                    lines.extend(["", "## Immediate Health Check", ""])
+                    lines.append(f"- Checks run: {result.get('checks_run', 0)}")
+                    lines.append(f"- New incidents: {result.get('new_incidents', 0)}")
+                    lines.append(f"- Resolved: {result.get('resolved', 0)}")
+
+                elif subcmd == "incidents":
+                    result = await client.call(
+                        "HealthObserver", "incidents", {"status": "all"}, timeout=5.0
+                    )
+                    all_incidents = result.get("incidents", [])
+                    active = [i for i in all_incidents if i.get("status") != "resolved"]
+
+                    lines.extend(["", f"## Active Incidents ({len(active)})", ""])
+
+                    if not active:
+                        lines.append("✓ No active incidents")
+                    else:
+                        for inc in active:
+                            lines.append(f"### {inc.get('fingerprint', 'unknown')}")
+                            lines.append(f"- Status: {inc.get('status', 'unknown')}")
+                            lines.append(f"- Endpoint: `{inc.get('endpoint', 'unknown')}`")
+                            lines.append(f"- RPN: {inc.get('rpn_score', 0)}")
+                            if inc.get("github_issue"):
+                                lines.append(f"- Issue: #{inc.get('github_issue')}")
+                            lines.append("")
+
+                else:  # status (default)
+                    result = await client.call("HealthObserver", "status", {}, timeout=5.0)
+                    lines.extend(["", "## Observer Status", ""])
+                    lines.append(f"- Running: {'✓' if result.get('running') else '✗'}")
+                    lines.append(f"- Poll interval: {result.get('poll_interval_seconds', 0)}s")
+                    lines.append(f"- Checks run: {result.get('checks_run', 0)}")
+                    lines.append(f"- Active incidents: {result.get('active_incidents', 0)}")
+
+                content.show_file("health_observer.md", "\n".join(lines))
+                self._show_output("health_observer", "\n".join(lines))
+
+            except Exception as e:
+                import traceback
+                content.show_file("error.txt", f"Observer command failed: {e}\n\n{traceback.format_exc()}")
+
+        asyncio.create_task(run_observer_command())
 
     def _handle_ambient_command(self, args: str) -> None:
         """Handle /ambient command for ambient computing cycles.
@@ -5414,7 +6485,7 @@ Be concise but thorough."""
                     params={
                         "prompt": synthesis_prompt,
                         "system_prompt": f"You are a research assistant specializing in {domain}.",
-                        "agent": "fast",
+                        "agent": "instruct",
                         "technique": "cot_reflection",
                         "max_tokens": 2048,
                     },
@@ -6089,7 +7160,7 @@ The general-purpose agentic query interface.
 - Opens generated note in editor for review/editing
 
 ## Evolution (press `e` for panel)
-- `/evolve start [endpoint]`: Clean start GPU + daemon (default: fast)
+- `/evolve start [endpoint]`: Clean start GPU + daemon (default: instruct)
 - `/evolve stop`: Stop evolution daemon
 - `/evolve status`: Show daemon status
 - `/evolve trigger [agent]`: Force evolution cycle

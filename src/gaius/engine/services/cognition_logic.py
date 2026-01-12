@@ -160,6 +160,76 @@ def _get_tracer():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Proto-Typed Response Parsing
+# Engine Federation Architecture: Tight coupling to proto schema for early drift detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+from ..proto_types import CompleteResponseDTO, ProtoParseError
+
+
+def _validate_complete_response(response: dict, context: str) -> tuple[str, int]:
+    """Parse CompleteResponse into typed DTO, failing openly on schema drift.
+
+    Engine Federation Architecture:
+    This function uses CompleteResponseDTO for type-safe parsing. Field mismatches
+    are detected at:
+    1. Type checking time (ty/mypy) - IDE catches .text vs .content
+    2. Parse time - ProtoParseError if required fields missing
+    3. Runtime - accessing dto.text is explicit, not dict.get() with fallbacks
+
+    Args:
+        response: Dict from gRPC CompleteResponse (via MessageToDict)
+        context: Description of where this response came from (for diagnostics)
+
+    Returns:
+        Tuple of (text_content, tokens_used) extracted from response
+
+    Guru Codes:
+        #PROTO.00000001.PARSEFAIL - Required field missing (strict mode)
+        #COG.00000011.SCHEMADRIFT - Deprecated field names (lenient mode)
+    """
+    tracer = _get_tracer()
+
+    try:
+        # Try strict parsing first - this catches schema drift at parse time
+        dto = CompleteResponseDTO.from_proto_dict(response)
+        return dto.text, dto.tokens_used
+
+    except ProtoParseError as e:
+        # Schema drift detected - fail openly with OTel tracing
+        logger.error(
+            f"Proto schema mismatch (#{e.__class__.__name__}) in {context}: "
+            f"Missing field '{e.field}'. Actual fields: {e.actual_fields}. "
+            f"Falling back to lenient parsing. Guru: #PROTO.00000001.PARSEFAIL"
+        )
+
+        # Record in OTel span for alerting
+        if tracer:
+            try:
+                from opentelemetry import trace
+
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.add_event(
+                        "proto_parse_error",
+                        attributes={
+                            "guru_code": "PROTO.00000001.PARSEFAIL",
+                            "context": context,
+                            "missing_field": e.field,
+                            "actual_fields": str(e.actual_fields),
+                            "message_type": e.message_type,
+                        },
+                    )
+                    span.set_attribute("schema.drift_detected", True)
+            except Exception as otel_err:
+                logger.debug(f"Failed to record proto error in OTel: {otel_err}")
+
+        # Fall back to lenient parsing (handles backwards compat)
+        dto = CompleteResponseDTO.from_proto_dict_lenient(response, context)
+        return dto.text, dto.tokens_used
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Cognition Cycle - Engine Native
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -452,13 +522,15 @@ Trigger reason: {trigger_reason}"""
                 "prompt": prompt,
                 "system_prompt": "You are a knowledge analyst examining a personal knowledge base. "
                     "Find patterns, connections, and generate curiosity about the content.",
-                "agent": "fast",
+                "agent": "instruct",
                 "max_tokens": 2048,
             },
         )
 
-        tokens_out = response.get("output_tokens", 0)
-        response_content = response.get("content", "")
+        # Validate and extract response fields with schema drift detection
+        response_content, tokens_out = _validate_complete_response(
+            response, context="_generate_thoughts"
+        )
         logger.info(f"LLM response length: {len(response_content)}, tokens_out: {tokens_out}")
         if response_content:
             # Log first 500 chars to help debug parsing issues
@@ -473,9 +545,28 @@ Trigger reason: {trigger_reason}"""
         return thoughts, tokens_out
 
     except Exception as e:
-        logger.warning(f"Thought generation failed: {e}")
+        # Fail-open: Log error with OTel span, return empty results
+        # The error is visible in observability but cognition cycle continues
+        logger.error(f"Thought generation failed (#COG.00000010.LLMPATTERN): {e}")
         import traceback
-        logger.debug(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
+
+        # Record error in OTel span if available
+        tracer = _get_tracer()
+        if tracer:
+            try:
+                from opentelemetry import trace
+                from opentelemetry.trace import Status, StatusCode
+
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    span.set_attribute("error.type", type(e).__name__)
+                    span.set_attribute("error.message", str(e))
+                    span.set_attribute("guru_code", "COG.00000010.LLMPATTERN")
+            except Exception as otel_err:
+                logger.debug(f"Failed to record error in OTel span: {otel_err}")
+
         return [], 0
 
 
@@ -1177,13 +1268,16 @@ SALIENCE: 0.0-1.0"""
                 "prompt": prompt,
                 "system_prompt": "You are analyzing an AI system's thought patterns "
                     "to identify blind spots and improvement areas.",
-                "agent": "fast",
+                "agent": "instruct",
                 "max_tokens": 1024,
             },
         )
 
-        # Parse and save observations
-        observations = _parse_thoughts(response.get("content", ""))
+        # Validate and extract response fields with schema drift detection
+        response_content, _ = _validate_complete_response(
+            response, context="process_self_observation"
+        )
+        observations = _parse_thoughts(response_content)
         for obs in observations:
             obs["type"] = "self_observation"
 
@@ -1568,14 +1662,17 @@ EVALUATION: How to measure success"""
                 "prompt": prompt,
                 "system_prompt": "You are designing reasoning tasks for AI capability development. "
                     "Focus on novel, challenging tasks that test different skills.",
-                "agent": "fast",
+                "agent": "instruct",
                 "max_tokens": 2048,
             },
         )
 
-        # Parse task concepts
+        # Validate and extract response fields with schema drift detection
+        response_content, _ = _validate_complete_response(
+            response, context="process_task_ideation"
+        )
         task_names = []
-        for line in response.get("content", "").split("\n"):
+        for line in response_content.split("\n"):
             if line.strip().upper().startswith("NAME:"):
                 name = line.split(":", 1)[1].strip()
                 if name:
@@ -1776,11 +1873,15 @@ Generated: {datetime.now().isoformat()}
                         "prompt": f"Summarize this activity period:\n{summary_text}\n\n"
                             "Add brief insights about the activity level.",
                         "system_prompt": "You are generating a brief activity summary.",
-                        "agent": "fast",
+                        "agent": "instruct",
                         "max_tokens": 512,
                     },
                 )
-                summary_text += f"\n## Insights\n\n{response.get('content', '')}\n"
+                # Validate and extract response fields with schema drift detection
+                insights_text, _ = _validate_complete_response(
+                    response, context="process_daily_summary"
+                )
+                summary_text += f"\n## Insights\n\n{insights_text}\n"
             except Exception as e:
                 logger.warning(f"LLM summary failed: {e}")
 

@@ -810,7 +810,7 @@ class GaiusEngine:
         """Initialize the Ambient Computing Workload service.
 
         The AmbientWorkloadService manages ambient computing workload cycles:
-        - Maintains baseline endpoint mix (orchestrator, fast, coding)
+        - Maintains baseline endpoint mix (orchestrator, instruct)
         - Executes standard tasks on each endpoint
         - Evicts baseline for reasoning tasks
         - Restores baseline after reasoning completes
@@ -1087,7 +1087,7 @@ class GaiusEngine:
             # Create tracker with database pool for persistence
             self._agenda_tracker = AgendaTracker(
                 db_pool=self._db_pool,
-                baseline_endpoints=["orchestrator", "fast", "coding"],
+                baseline_endpoints=["orchestrator", "instruct"],
             )
 
             # Wire to OrchestratorService
@@ -1690,7 +1690,7 @@ class GaiusEngine:
                 )
 
             prompt = request.params.get("prompt", "")
-            agent = request.params.get("agent", "fast")
+            agent = request.params.get("agent", "instruct")
             system_prompt = request.params.get("system_prompt")
             temperature = request.params.get("temperature", 0.7)
             max_tokens = request.params.get("max_tokens", 2048)

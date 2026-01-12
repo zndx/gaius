@@ -4,7 +4,7 @@ This module defines the data structures used by the MakespanScheduler
 to model GPU workload transitions as a job shop scheduling problem.
 
 Machines = GPUs
-Jobs = Model endpoints (orchestrator, fast, coding, reasoning)
+Jobs = Model endpoints (orchestrator, instruct, reasoning)
 Operations = Start/stop endpoints
 Objective = Minimize makespan (total transition time)
 """
@@ -29,7 +29,7 @@ class SchedulingTask:
 
     Attributes:
         task_id: Unique identifier for this task
-        endpoint_name: Name of the endpoint (e.g., "fast", "coding", "reasoning")
+        endpoint_name: Name of the endpoint (e.g., "instruct", "reasoning")
         model_id: HuggingFace model ID or path
         required_gpus: Number of GPUs needed for this task
         salience: Priority weight for objective function (higher = more important)

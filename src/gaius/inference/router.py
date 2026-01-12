@@ -235,7 +235,7 @@ class ModelRouter:
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "fast",
+                    "agent": "instruct",
                     "max_tokens": kwargs.get("max_tokens", phase_config.max_tokens),
                     "temperature": kwargs.get("temperature", 0.7),
                 },
@@ -332,7 +332,7 @@ class EndpointRouterConfig:
 
     endpoints: dict[str, EndpointConfig] = field(default_factory=dict)
     model_routing: dict[str, str] = field(default_factory=dict)
-    default_endpoint: str = "coding"
+    default_endpoint: str = "instruct"
     failover_enabled: bool = True
 
 
@@ -415,13 +415,15 @@ class EndpointRouter:
         model_to_endpoint = {
             "orchestrator": "orchestrator",
             "nvidia/Orchestrator": "orchestrator",
-            "Mistral-7B": "fast",
-            "mistralai/Mistral": "fast",
+            "Devstral": "instruct",
+            "mistralai/Devstral": "instruct",
+            "Mistral-7B": "instruct",
+            "mistralai/Mistral": "instruct",
             "DeepSeek-R1": "reasoning",
             "deepseek-ai/DeepSeek-R1": "reasoning",
             "QwQ": "reasoning",
-            "Qwen2.5-Coder": "coding",
-            "Qwen/Qwen2.5-Coder": "coding",
+            "Qwen2.5-Coder": "instruct",
+            "Qwen/Qwen2.5-Coder": "instruct",
         }
 
         def get_endpoint_name(model_id: str) -> str:
@@ -725,7 +727,7 @@ class EndpointRouter:
             self.config.endpoints[failed_endpoint].healthy = False
 
         # First, try to start the failed endpoint on-demand if it's a known endpoint
-        if failed_endpoint in ("orchestrator", "coding", "reasoning", "fast"):
+        if failed_endpoint in ("orchestrator", "instruct", "reasoning"):
             if await self._try_start_endpoint_on_demand(failed_endpoint):
                 # Endpoint started - retry the original request
                 try:
