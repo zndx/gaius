@@ -482,31 +482,32 @@ def _parse_orchestrator_decision(response: str) -> OrchestratorDecision:
 # Tool Implementations
 # =============================================================================
 
-# TODO(federation): Migrate to gRPC client pattern for Engine Federation
-# Current implementation uses deprecated get_external_router() singleton.
-# Target pattern:
-#   client = await get_grpc_client()
-#   result = await client.call("Scheduler", "complete", {
-#       "prompt": "...",
-#       "agent": "cerebras-glm",  # Agent alias configured in agents.conf
-#       "max_tokens": 2048,
-#   })
-# Blocked on: Adding "cerebras-glm" and "xai-grok-fast" agent aliases to config
-# See: src/gaius/engine/FEDERATION.md
+# Engine Federation Architecture:
+# All LLM calls route through the engine's gRPC Scheduler service using agent
+# aliases configured in config/agents.conf. This enables:
+# - Capability-based routing (agent → model → backend)
+# - Centralized budget tracking and metrics
+# - Exchange capture for training data
+# - Federation to remote nodes when needed
+#
+# Agent aliases used:
+# - "cerebras-glm": Cerebras GLM-4.7 for YAML generation
+# - "xai-grok-fast": XAI Grok-4.1 fast for error diagnosis
 
 
 async def _call_generate_base(
     state: OrchestrationState,
     use_prior_diagnosis: bool,
 ) -> tuple[str, ValidationResult, float]:
-    """Call GLM-4.7 via engine's ExternalInferenceRouter to generate .base YAML.
+    """Call GLM-4.7 via engine gRPC to generate .base YAML.
 
-    DEPRECATED: Uses engine singleton instead of gRPC. See TODO above.
+    Uses the Engine Federation architecture with gRPC Scheduler routing.
+    Agent alias "cerebras-glm" is configured in config/agents.conf.
 
     Returns:
         Tuple of (yaml_content, validation_result, cost_usd)
     """
-    from gaius.engine.backends.external.router import get_external_router
+    from gaius.client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
     safe_symbol = state.symbol.lower().replace(" ", "_")
 
@@ -534,25 +535,21 @@ async def _call_generate_base(
             risk_level="medium",
         )
 
-    messages = [
-        {"role": "system", "content": BASE_GENERATION_SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
-
     try:
-        # Get the engine's external router singleton
-        router = get_external_router()
+        # Check if engine is available
+        if not use_engine_proxy():
+            logger.warning("Engine not available for .base generation")
+            return "", ValidationResult(valid=False, errors=["Engine not available"]), 0.0
 
-        # Check if Cerebras is available
-        if "cerebras" not in router.available_backends:
-            logger.warning("Cerebras backend not available")
-            return "", ValidationResult(valid=False, errors=["Cerebras not available"]), 0.0
+        # Get scheduler proxy for gRPC routing
+        scheduler = await get_scheduler_proxy()
 
-        # Call Cerebras via the engine's router (handles budget tracking + exchange capture)
-        response = await router.complete(
-            messages=messages,
-            provider="cerebras",
-            model="zai-glm-4.7",
+        # Call Cerebras via the engine's scheduler (handles budget tracking + exchange capture)
+        # Agent "cerebras-glm" is configured in config/agents.conf with backend="cerebras"
+        response = await scheduler.complete(
+            prompt=user_prompt,
+            agent="cerebras-glm",
+            system_prompt=BASE_GENERATION_SYSTEM_PROMPT,
             temperature=0.2,  # Low temperature for consistent YAML output
             max_tokens=2048,
         )
@@ -560,17 +557,13 @@ async def _call_generate_base(
         # Calculate cost (approximate - Cerebras pricing)
         cost_usd = (response.input_tokens + response.output_tokens) * 0.0000001  # Very cheap
 
-        if response.error:
-            logger.warning(f"Cerebras call failed: {response.error}")
-            return "", ValidationResult(valid=False, errors=[response.error]), cost_usd
-
         yaml_content = _extract_yaml(response.content)
         validation = validate_base(yaml_content)
 
         return yaml_content, validation, cost_usd
 
     except Exception as e:
-        logger.error(f"External router call failed: {e}")
+        logger.error(f"gRPC scheduler call failed: {e}")
         return "", ValidationResult(valid=False, errors=[str(e)]), 0.0
 
 
@@ -578,11 +571,12 @@ async def _call_diagnose_error(
     yaml_content: str,
     validation_errors: list[str],
 ) -> DiagnosisResult:
-    """Use Grok-4.1 fast via engine's ExternalInferenceRouter to diagnose errors.
+    """Use Grok-4.1 fast via engine gRPC to diagnose validation errors.
 
-    DEPRECATED: Uses engine singleton instead of gRPC. See TODO(federation) above.
+    Uses the Engine Federation architecture with gRPC Scheduler routing.
+    Agent alias "xai-grok-fast" is configured in config/agents.conf.
     """
-    from gaius.engine.backends.external.router import get_external_router
+    from gaius.client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
     prompt = DIAGNOSE_ERROR_PROMPT.format(
         yaml_content=yaml_content[:3000],  # Truncate for context window
@@ -590,24 +584,24 @@ async def _call_diagnose_error(
     )
 
     try:
-        # Get the engine's external router singleton
-        router = get_external_router()
-
-        # Check if XAI is available
-        if "xai" not in router.available_backends:
-            logger.warning("XAI backend not available for diagnosis")
+        # Check if engine is available
+        if not use_engine_proxy():
+            logger.warning("Engine not available for error diagnosis")
             return DiagnosisResult(
-                root_cause="Could not diagnose - XAI not available",
+                root_cause="Could not diagnose - Engine not available",
                 fix_hints=[],
                 confidence=0.0,
                 cost_usd=0.0,
             )
 
-        # Call XAI via the engine's router (handles budget tracking + exchange capture)
-        response = await router.complete(
-            messages=[{"role": "user", "content": prompt}],
-            provider="xai",
-            model="grok-4-1-fast",
+        # Get scheduler proxy for gRPC routing
+        scheduler = await get_scheduler_proxy()
+
+        # Call XAI via the engine's scheduler (handles budget tracking + exchange capture)
+        # Agent "xai-grok-fast" is configured in config/agents.conf with backend="xai"
+        response = await scheduler.complete(
+            prompt=prompt,
+            agent="xai-grok-fast",
             temperature=0.1,
             max_tokens=500,
         )
@@ -616,15 +610,6 @@ async def _call_diagnose_error(
         input_cost = response.input_tokens * 0.0000002
         output_cost = response.output_tokens * 0.0000005
         cost_usd = input_cost + output_cost
-
-        if response.error:
-            logger.warning(f"XAI diagnosis failed: {response.error}")
-            return DiagnosisResult(
-                root_cause="Could not diagnose - API error",
-                fix_hints=[],
-                confidence=0.0,
-                cost_usd=cost_usd,
-            )
 
         # Parse JSON from response
         try:
@@ -650,7 +635,7 @@ async def _call_diagnose_error(
         )
 
     except Exception as e:
-        logger.error(f"External router call failed: {e}")
+        logger.error(f"gRPC scheduler call failed: {e}")
         return DiagnosisResult(
             root_cause=f"Could not diagnose - {str(e)}",
             fix_hints=[],
@@ -806,7 +791,7 @@ async def orchestrated_generate_base(
     Returns:
         OrchestratedResult with content, validation info, and cost
     """
-    from gaius.client.grpc_client import use_engine_proxy
+    from gaius.client.engine_proxy import use_engine_proxy
 
     safe_symbol = symbol.lower().replace(" ", "_")
 

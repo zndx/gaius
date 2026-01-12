@@ -1413,11 +1413,27 @@ class OrchestratorService:
             f"checking GPUs: {sorted(target_gpus)}"
         )
 
+        # Get baseline endpoints that should NEVER be evicted
+        # These are configured in startup.preload_endpoints
+        baseline_endpoints = set(
+            getattr(self.config.startup, "preload_endpoints", [])
+        )
+
         # Find endpoints using the target GPUs
         for proc_name, proc in self._vllm._processes.items():
             proc_gpus = set(proc.gpu_ids) if proc.gpu_ids else set()
             if proc_gpus & target_gpus:
                 # This endpoint uses one of our target GPUs
+                if proc_name in baseline_endpoints:
+                    # NEVER evict baseline endpoints - they are critical for system operation
+                    # Flow scheduler should use different GPUs or wait
+                    logger.warning(
+                        f"Refusing to evict baseline endpoint {proc_name} (GPUs {proc.gpu_ids}) "
+                        f"for workload {workload_id}. Flow should use non-overlapping GPUs. "
+                        f"Guru: #ORCH.00000010.BASELINEPROTECT"
+                    )
+                    continue
+
                 logger.info(
                     f"Endpoint {proc_name} uses GPUs {proc.gpu_ids}, "
                     f"overlaps with target {target_gpus}"
@@ -2131,8 +2147,17 @@ class OrchestratorService:
         now = time.time()
 
         for alias, proc in list(self._vllm._processes.items()):
-            # Handle stuck STARTING state
+            # Handle STARTING state - check if endpoint has become healthy
             if proc.status == ProcessStatus.STARTING:
+                # Try HTTP health check to see if startup is complete
+                healthy = await self._vllm._check_health(proc)
+                if healthy:
+                    proc.status = ProcessStatus.HEALTHY
+                    proc.consecutive_failures = 0
+                    logger.info(f"Endpoint {alias} transitioned STARTING → HEALTHY")
+                    continue
+
+                # Not healthy yet - check for stuck starting timeout
                 if proc.started_at:
                     elapsed = now - proc.started_at.timestamp()
                     if elapsed > self._stuck_starting_timeout:
