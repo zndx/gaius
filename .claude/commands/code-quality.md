@@ -112,6 +112,51 @@ def process(df: pd.DataFrame | Any) -> pd.DataFrame:
     ...
 ```
 
+### 6. Proto-Typed Coupling (Engine Federation)
+
+**Anti-pattern**: Using `dict.get()` to access gRPC response fields
+
+```python
+# BAD: Silent field mismatch - if proto changes, this silently returns empty
+response = await client.call("Scheduler", "complete", params)
+text = response.get("content", "")  # WRONG FIELD NAME - proto uses "text"
+tokens = response.get("output_tokens", 0)  # WRONG - proto uses "tokens_used"
+```
+
+**Correct pattern**: Use typed DTOs that mirror proto schema
+
+```python
+from gaius.engine.proto_types import CompleteResponseDTO, ProtoParseError
+
+# GOOD: Fails at parse time if proto field missing
+try:
+    dto = CompleteResponseDTO.from_proto_dict(response)
+    text = dto.text  # Type-safe, IDE autocomplete
+    tokens = dto.tokens_used
+except ProtoParseError as e:
+    logger.error(f"Proto schema drift: {e.field} missing. Guru: #PROTO.00000001.PARSEFAIL")
+    # Fall back to lenient parsing with warning
+    dto = CompleteResponseDTO.from_proto_dict_lenient(response, "context")
+```
+
+**Why this matters for Engine Federation:**
+- Engine nodes may run different proto versions
+- `MessageToDict` produces untyped dicts that bypass all checking
+- Field name typos (`content` vs `text`) silently return empty strings
+- Typed DTOs catch drift at: type-check time, parse time, and runtime
+
+**Detection layers:**
+
+| Layer | When | Guru Code |
+|-------|------|-----------|
+| Type checking | `ty check` | N/A (compile-time) |
+| Parse time | `from_proto_dict()` | `#PROTO.00000001.PARSEFAIL` |
+| Runtime | Lenient fallback | `#COG.00000011.SCHEMADRIFT` |
+
+**Key files:**
+- `src/gaius/engine/proto_types.py` - Typed DTO definitions
+- `src/gaius/engine/proto/gaius_service.proto` - Source of truth
+
 ## Audit Process
 
 ### Step 1: Run ty check

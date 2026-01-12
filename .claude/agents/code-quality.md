@@ -81,6 +81,48 @@ def process(df: pd.DataFrame) -> pd.DataFrame:
     # Explicitly requires pandas DataFrame for type safety
 ```
 
+### Pattern 5: Proto-Typed Coupling (Engine Federation)
+
+**Detect**: Using `dict.get()` to access gRPC response fields
+**Fix**: Use typed DTOs that mirror proto schema
+
+```python
+# BEFORE (silent field mismatch - if proto changes, silently returns empty)
+response = await client.call("Scheduler", "complete", params)
+text = response.get("content", "")  # WRONG FIELD NAME - proto uses "text"
+tokens = response.get("output_tokens", 0)  # WRONG - proto uses "tokens_used"
+
+# AFTER (fails at parse time if proto field missing)
+from gaius.engine.proto_types import CompleteResponseDTO, ProtoParseError
+
+try:
+    dto = CompleteResponseDTO.from_proto_dict(response)
+    text = dto.text  # Type-safe, IDE autocomplete
+    tokens = dto.tokens_used
+except ProtoParseError as e:
+    logger.error(f"Proto schema drift: {e.field} missing. Guru: #PROTO.00000001.PARSEFAIL")
+    # Fall back to lenient parsing with warning
+    dto = CompleteResponseDTO.from_proto_dict_lenient(response, "context")
+```
+
+**Why this matters for Engine Federation:**
+- Engine nodes may run different proto versions
+- `MessageToDict` produces untyped dicts that bypass all checking
+- Field name typos (`content` vs `text`) silently return empty strings
+- Typed DTOs catch drift at: type-check time, parse time, and runtime
+
+**Detection layers:**
+
+| Layer | When | Guru Code |
+|-------|------|-----------|
+| Type checking | `ty check` | N/A (compile-time) |
+| Parse time | `from_proto_dict()` | `#PROTO.00000001.PARSEFAIL` |
+| Runtime | Lenient fallback | `#COG.00000011.SCHEMADRIFT` |
+
+**Key files:**
+- `src/gaius/engine/proto_types.py` - Typed DTO definitions
+- `src/gaius/engine/proto/gaius_service.proto` - Source of truth
+
 ## Audit Procedure
 
 ### Step 1: Run Type Checker
@@ -169,8 +211,12 @@ Components:
 - `GR` - gRPC
 - `DB` - Database
 - `DF` - DataFrames
+- `PROTO` - Protobuf schema drift
+- `COG` - Cognition service
 
 Example: `#MOD.00000001.NOTFOUND`
+Example: `#PROTO.00000001.PARSEFAIL` (proto field missing)
+Example: `#COG.00000011.SCHEMADRIFT` (non-canonical field usage)
 
 ## Report Format
 
@@ -262,6 +308,7 @@ from .core.iso_features import compute_persistence_entropy
 4. **Silent Type Widening**: Return type changed from specific to general
 5. **Unjustified Ignores**: `# type: ignore` without explanation
 6. **Stub Modules**: Creating empty modules to silence import warnings
+7. **Untyped Proto Access**: `response.get("field")` on gRPC response dicts instead of typed DTOs
 
 ## Legacy Code Directive
 
@@ -281,6 +328,8 @@ Defensive import patterns (try/except with None fallback) and comments like `# X
 - `src/gaius/workers/manager.py` - Worker pool
 - `src/gaius/client/grpc_client.py` - gRPC client
 - `src/gaius/engine/grpc/servicers/gaius_servicer.py` - Engine servicer
+- `src/gaius/engine/proto_types.py` - Typed DTOs for proto schema coupling
+- `src/gaius/engine/proto/gaius_service.proto` - Proto source of truth
 
 ## Reference Heuristics
 
@@ -289,3 +338,4 @@ See KB for detailed patterns:
 - `current/heuristics/gaius/typing/type-ignore-justification.md`
 - `current/heuristics/gaius/typing/lsp-compliance.md`
 - `current/heuristics/gaius/typing/third-party-stubs.md`
+- `current/heuristics/gaius/typing/proto-typed-coupling.md`
