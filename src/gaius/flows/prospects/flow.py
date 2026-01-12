@@ -418,7 +418,7 @@ class ProspectsCheckFlow(TracedFlow, GaiusFlow):
         self.next(self.end)
 
     @traced_step
-    @card(type="blank")  # type: ignore[unknown-argument]
+    @card(type="blank")  # type: ignore[unknown-argument] - Metaflow stubs incomplete, type= is valid
     @step
     def end(self):
         """Emit recommendation and lineage."""
