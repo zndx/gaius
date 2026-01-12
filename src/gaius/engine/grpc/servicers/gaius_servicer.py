@@ -179,6 +179,11 @@ from ...generated import (
     GetIncidentDetailResponse,
     ListIncidentsRequest,
     ListIncidentsResponse,
+    ResolveIncidentRequest,
+    ResolveIncidentResponse,
+    GetOrphanedIssuesRequest,
+    GetOrphanedIssuesResponse,
+    OrphanedGitHubIssue,
     # Observability Dashboard
     ObserveStatusRequest,
     ObserveStatusResponse,
@@ -600,7 +605,7 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             result = await self._services.backend_router.complete(
                 prompt=request.prompt,
-                agent_alias=request.agent_alias or "fast",
+                agent_alias=request.agent_alias or "instruct",
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
@@ -1102,12 +1107,12 @@ class GaiusServicer(GaiusServiceServicer):
         # Map role capabilities to endpoints
         ROLE_TO_ENDPOINT = {
             "Leader": "orchestrator",
-            "Risk": "fast",
-            "Optimizer": "fast",
+            "Risk": "instruct",
+            "Optimizer": "instruct",
             "Planner": "orchestrator",
-            "Critic": "fast",
-            "Executor": "fast",
-            "Adversary": "fast",
+            "Critic": "instruct",
+            "Executor": "instruct",
+            "Adversary": "instruct",
         }
 
         for i, role_name in enumerate(roles):
@@ -1125,7 +1130,7 @@ class GaiusServicer(GaiusServiceServicer):
                 role_enum = AgentRole(role_name)
                 role_def = get_role(role_enum)
                 prompt = role_def.get_prompt(domain, context_str)
-                endpoint = ROLE_TO_ENDPOINT.get(role_name, "fast")
+                endpoint = ROLE_TO_ENDPOINT.get(role_name, "instruct")
 
                 # Run the agent
                 if self._services.backend_router:
@@ -2390,7 +2395,7 @@ class GaiusServicer(GaiusServiceServicer):
 
                 result = await self._services.backend_router.complete(
                     prompt=prompt,
-                    agent_alias="fast",  # Use fast endpoint for explain
+                    agent_alias="instruct",  # Use instruct endpoint for explain
                     temperature=0.7,
                     max_tokens=max_tokens,
                 )
@@ -4415,6 +4420,90 @@ class GaiusServicer(GaiusServiceServicer):
                 guru_code="#GR.HO.00002.GETFAIL",
             )
             return GetIncidentDetailResponse(found=False)
+
+    async def HealthObserverResolveIncident(
+        self,
+        request: ResolveIncidentRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ResolveIncidentResponse:
+        """Explicitly resolve an incident by fingerprint.
+
+        Called by /health fix --close after successful ACP investigation.
+        Removes incident from active tracking and updates GitHub issue status.
+        """
+        try:
+            service = self._services.health_observer_service
+            if not service:
+                return ResolveIncidentResponse(
+                    resolved=False,
+                    fingerprint=request.fingerprint,
+                    was_active=False,
+                    note="HealthObserverService not initialized",
+                )
+
+            result = await service.resolve_incident(request.fingerprint)
+
+            return ResolveIncidentResponse(
+                resolved=result.get("resolved", False),
+                fingerprint=result.get("fingerprint", request.fingerprint),
+                was_active=result.get("was_active", False),
+                note=result.get("note") or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverResolveIncident failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverResolveIncident",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00003.RESOLVEFAIL",
+            )
+            return ResolveIncidentResponse(
+                resolved=False,
+                fingerprint=request.fingerprint,
+                was_active=False,
+                note=f"Error: {e}",
+            )
+
+    async def HealthObserverGetOrphanedIssues(
+        self,
+        request: GetOrphanedIssuesRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetOrphanedIssuesResponse:
+        """Get orphaned GitHub issues (open issues with no active incident).
+
+        Used by /health fix --close to handle race conditions where
+        incidents were resolved but GitHub issues weren't closed.
+        """
+        try:
+            service = self._services.health_observer_service
+            if not service:
+                return GetOrphanedIssuesResponse(orphans=[])
+
+            orphans = await service.get_orphaned_github_issues()
+
+            proto_orphans = [
+                OrphanedGitHubIssue(
+                    issue_number=o.get("issue_number", 0),
+                    repo=o.get("repo", ""),
+                    fingerprint=o.get("fingerprint", ""),
+                    created_at=o.get("created_at") or "",
+                    issue_url=o.get("issue_url") or "",
+                )
+                for o in orphans
+            ]
+
+            return GetOrphanedIssuesResponse(orphans=proto_orphans)
+
+        except Exception as e:
+            logger.exception(f"HealthObserverGetOrphanedIssues failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverGetOrphanedIssues",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00004.ORPHANFAIL",
+            )
+            return GetOrphanedIssuesResponse(orphans=[])
 
     # =========================================================================
     # Observability Dashboard Service Methods
