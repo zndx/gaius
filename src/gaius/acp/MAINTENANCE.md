@@ -98,15 +98,24 @@ The mapping between CMMI levels and Gaius tiers:
 
 | CMMI Level | Gaius Tier | Implementation |
 |------------|------------|----------------|
-| 1 - Initial | Tier 0 | Procedural restart without analysis |
-| 2 - Managed | Tier 1 | Documented healing events with local LLM |
-| 3 - Defined | FMEA Catalog | Standardized failure mode patterns |
-| 4 - Quantitative | AdaptiveLearner | Statistical S/O/D score updates |
-| 5 - Optimizing | ACP/Tier 2 | Meta-framework evolution via Claude Code |
+| 1 - Initial | Tier 0 | Heroic ad-hoc intervention via interactive Claude Code session |
+| 2 - Managed | Tier 1 | Documented healing events with local LLM diagnosis |
+| 3 - Defined | FMEA Catalog | Standardized failure mode patterns and fix strategies |
+| 4 - Quantitative | AdaptiveLearner | Statistical S/O/D score updates via Bayesian learning |
+| 5 - Optimizing | ACP/Tier 2 | Autonomous meta-framework evolution |
 
 ### 2.2 Subjective Logic for Trust Quantification (Informative)
 
 Subjective Logic, developed by Jøsang (2016), provides a formal framework for reasoning under uncertainty when the reasoner has incomplete knowledge. Unlike Bayesian probability, which requires committed probability assignments, Subjective Logic explicitly represents **epistemic uncertainty**—the uncertainty arising from lack of knowledge rather than inherent randomness.
+
+**Historical Context: From Dempster-Shafer to Subjective Logic.** Subjective Logic borrows and specializes core ideas from Dempster-Shafer theory of evidence (Shafer, 1976)—particularly the representation of belief, disbelief, and explicit ignorance—while adding distinctly Bayesian elements. The key innovations that distinguish Subjective Logic from its Dempster-Shafer heritage:
+
+1. **Base rates (a)**: An explicit prior probability parameter absent from classical D-S theory
+2. **Binary frame restriction**: Opinions are defined over binary propositions rather than arbitrary frames of discernment
+3. **Dirichlet mapping**: A bijective correspondence between opinions and Dirichlet distributions, enabling second-order Bayesian interpretation
+4. **Operator algebra**: Conjunction, disjunction, and implication operators aligned with probability calculus and propositional logic, rather than relying solely on Dempster's rule of combination
+
+For practitioners who have used Dempster-Shafer theory for incident triage—combining evidence from heterogeneous sources under time pressure—Subjective Logic provides a natural evolution that directly addresses multi-agent AI system requirements. The base rate parameter in particular enables principled handling of prior knowledge about failure mode frequencies, while the trust discounting operator formalizes the transitive reasoning that experienced operators perform intuitively when evaluating diagnostic information through multiple inference steps.
 
 #### 2.2.1 Fundamental Definitions
 
@@ -192,12 +201,12 @@ The health maintenance system implements three tiers of escalation, each corresp
 
 ```mermaid
 graph TB
-    subgraph "Tier 0: Procedural Remediation"
-        T0[Health Check Failure]
-        T0R[Execute Restart Procedure]
-        T0V[Verify Recovery]
-        T0L[Log Healing Event]
-        T0 --> T0R --> T0V --> T0L
+    subgraph "Tier 0: Heroic Intervention (CMMI L1)"
+        T0[Incident Defies Procedure]
+        T0I[Interactive Claude Code Session]
+        T0S[Speculative Investigation]
+        T0R[Ad-hoc Remediation]
+        T0 --> T0I --> T0S --> T0R
     end
 
     subgraph "Tier 1: Agent-Assisted Diagnosis"
@@ -219,25 +228,30 @@ graph TB
         T2 --> T2I --> T2G --> T2F --> T2K --> T2C
     end
 
-    T0L -->|"Recovery Failed"| T1
+    T0R -->|"Codify Success"| T1
     T1E -->|"3+ Failures Same Mode"| T2
     T1E -->|"Stale > 24h"| T2
-    T2C -->|"Framework Evolved"| T0
+    T2C -->|"Novel Incident"| T0
 ```
 
-#### 3.1.1 Tier 0: Procedural Remediation (CMMI L1)
+#### 3.1.1 Tier 0: Heroic Intervention (CMMI L1)
 
-Tier 0 executes predefined remediation procedures without analysis. This corresponds to CMMI Level 1's "initial" maturity where success depends on having the right procedure available.
+Tier 0 represents **heroic ad-hoc professional intervention**—the foundational capability upon which all systematic process improvement builds. This corresponds to CMMI Level 1's "Initial" maturity where success depends entirely on individual competence rather than documented process.
+
+In the Gaius context, Tier 0 manifests as an interactive Claude Code session where a skilled operator conducts speculative investigation and remediation. The operator brings domain expertise, intuition, and creative problem-solving to incidents that defy procedural resolution.
 
 **Characteristics:**
-- No diagnostic reasoning
-- Fixed procedure per failure mode
-- Success/failure binary outcome
-- Minimal logging (event recorded, not analyzed)
+- Ad-hoc investigation driven by operator judgment
+- No predefined procedure—each incident addressed uniquely
+- Success depends on operator skill and available tooling
+- Outcomes may or may not be documented
+- Knowledge remains tacit unless explicitly captured
 
-**Example**: GPU endpoint unhealthy → restart vLLM process → verify health check passes.
+**Example**: Novel failure mode → operator launches Claude Code session → speculative investigation using MCP tools → creative remediation attempt → manual verification → optional documentation of findings.
 
-**Limitations**: Cannot adapt to novel failure modes or recognize patterns across incidents.
+**Critical Insight**: Tier 0 is not a failure state but a **necessary foundation**. Every systematic process (Tiers 1-2) originated from heroic intervention that was subsequently codified. The framework's value lies not in eliminating Tier 0, but in progressively reducing its frequency through systematic learning.
+
+**Limitations**: Knowledge remains siloed with the operator; similar incidents require similar heroic effort; no statistical learning occurs.
 
 #### 3.1.2 Tier 1: Agent-Assisted Diagnosis (CMMI L2-3)
 
