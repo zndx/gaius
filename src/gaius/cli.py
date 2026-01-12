@@ -7798,7 +7798,7 @@ fingerprint: "{incident.get('fingerprint', 'unknown')}"
 
         # Build closing comment
         body_parts = [
-            "## ✅ Issue Resolved",
+            "## [RESOLVED] Issue Resolved",
             f"*Closed: {timestamp}*",
             "",
             "### Health Verification",

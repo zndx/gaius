@@ -3488,7 +3488,7 @@ Use `/evolve stop` to stop orchestrated evolution.
         if self._health_fix_task and not self._health_fix_task.done():
             content.show_file(
                 "health_fix.md",
-                "# Health Fix\n\n⚠️ A health fix operation is already running.\n\n"
+                "# Health Fix\n\n**Warning:** A health fix operation is already running.\n\n"
                 "Use `/health fix --stop` to cancel it first."
             )
             return
@@ -3740,15 +3740,15 @@ Use `/evolve stop` to stop orchestrated evolution.
                                 issue_number, repo, error, inc
                             )
                             if comment_result.get("skipped"):
-                                lines.append(f"- ℹ️ Error comment already exists on #{issue_number}")
+                                lines.append(f"- [INFO] Error comment already exists on #{issue_number}")
                             elif comment_result.get("success"):
-                                lines.append(f"- 📝 Posted error comment to #{issue_number}")
+                                lines.append(f"- [POSTED] Error comment to #{issue_number}")
                             else:
-                                lines.append(f"- ⚠️ Failed to post error comment: {comment_result.get('error', 'unknown')}")
+                                lines.append(f"- [WARN] Failed to post error comment: {comment_result.get('error', 'unknown')}")
 
                         # Stop processing remaining incidents
                         lines.append("")
-                        lines.append("⚠️ **Stopping** - remaining incidents skipped due to rate limit")
+                        lines.append("**[WARN] Stopping** - remaining incidents skipped due to rate limit")
                         update_panel()
                         break
 
@@ -4189,7 +4189,7 @@ Be thorough but concise. A NOC engineer will read this at 2am.
                             content.show_file(
                                 "health_fix.md",
                                 f"# Health Fix\n\n"
-                                f"⚠️ Rate limit hit (attempt {attempt}/{max_attempts})\n\n"
+                                f"**[WARN]** Rate limit hit (attempt {attempt}/{max_attempts})\n\n"
                                 f"Waiting {delay}s before retry...\n\n"
                                 f"```\n{error_msg[:200]}\n```"
                             )

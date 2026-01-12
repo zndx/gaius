@@ -1823,27 +1823,27 @@ After creating the issue, report:
             elif event_type == "tier_entered":
                 to_tier = payload.get("to_tier", "?")
                 reason = payload.get("reason", "escalation")
-                lines.append(f"- **{ts}** ⬆️ Entered tier {to_tier} ({reason})")
+                lines.append(f"- **{ts}** [TIER] Entered tier {to_tier} ({reason})")
             elif event_type == "attempt_started":
                 action = payload.get("action", "unknown")
-                lines.append(f"- **{ts}** 🔧 Started: {action}")
+                lines.append(f"- **{ts}** [RUN] Started: {action}")
             elif event_type == "attempt_succeeded":
                 action = payload.get("action", "unknown")
                 duration = payload.get("duration_ms", 0)
-                lines.append(f"- **{ts}** ✅ Succeeded: {action} ({duration}ms)")
+                lines.append(f"- **{ts}** [OK] Succeeded: {action} ({duration}ms)")
             elif event_type == "attempt_failed":
                 action = payload.get("action", "unknown")
                 reason = payload.get("reason", "")[:50]
-                lines.append(f"- **{ts}** ❌ Failed: {action} - {reason}")
+                lines.append(f"- **{ts}** [FAIL] Failed: {action} - {reason}")
             elif event_type == "acp_escalation_started":
                 rpn = payload.get("rpn_score", "?")
                 prior = payload.get("prior_attempts", 0)
                 reason = payload.get("escalation_reason", "")[:80]
-                lines.append(f"- **{ts}** 🤖 ACP escalation started (RPN:{rpn}, {prior} prior attempts)")
+                lines.append(f"- **{ts}** [ACP] Escalation started (RPN:{rpn}, {prior} prior attempts)")
                 if reason:
                     lines.append(f"  - Reason: {reason}")
             elif event_type == "acp_escalation_completed":
-                success = "✅" if payload.get("success") else "⚠️"
+                success = "[OK]" if payload.get("success") else "[WARN]"
                 duration = payload.get("duration_human", "?")
                 lines.append(f"- **{ts}** {success} ACP completed ({duration})")
                 if payload.get("diagnosis"):
