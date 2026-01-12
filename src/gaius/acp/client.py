@@ -51,6 +51,20 @@ class ACPConnectionError(Exception):
     pass
 
 
+class ACPRateLimitError(ACPConnectionError):
+    """Rate limit hit during ACP session.
+
+    Guru Meditation: #ACP.00000006.RATELIMIT
+
+    This exception indicates the underlying model (Mistral) hit a rate limit.
+    The client supports exponential backoff retry - callers should check
+    `is_rate_limited()` after `prompt()` returns to detect mid-stream rate limits.
+    """
+    def __init__(self, message: str, retry_after: int = 60):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def _find_acp_adapter() -> str:
     """Find the vibe-acp adapter command.
 
@@ -230,6 +244,9 @@ class GaiusACPClient:
                     self._parent = parent
                     # Buffer to accumulate response text from session updates
                     self._response_buffer: list[str] = []
+                    # Rate limit detection state
+                    self._rate_limit_detected: bool = False
+                    self._rate_limit_message: str | None = None
 
                 async def read_text_file(self, path: str, session_id: str, **kwargs) -> str | None:
                     """Handle filesystem read permission request."""
@@ -287,8 +304,17 @@ class GaiusACPClient:
                             text = update.content.text
                             if text:
                                 self._response_buffer.append(text)
-                                if callback:
+
+                                # Check for rate limit error mid-stream
+                                if "Error: API error from" in text and "Rate limit" in text:
+                                    self._rate_limit_detected = True
+                                    self._rate_limit_message = text
+                                    logger.warning(f"Rate limit detected: {text[:100]}...")
+                                    if callback:
+                                        await callback("error", text)
+                                elif callback:
                                     await callback("text", text)
+
                                 logger.debug(f"Captured text chunk: {text[:50]}...")
 
                     # Handle agent thought chunks (reasoning/thinking)
@@ -323,6 +349,19 @@ class GaiusACPClient:
                     response = "".join(self._response_buffer)
                     self._response_buffer.clear()
                     return response
+
+                def is_rate_limited(self) -> bool:
+                    """Check if rate limit was detected during streaming."""
+                    return self._rate_limit_detected
+
+                def get_rate_limit_message(self) -> str | None:
+                    """Get the rate limit error message if detected."""
+                    return self._rate_limit_message
+
+                def reset_rate_limit_state(self) -> None:
+                    """Reset rate limit detection for retry."""
+                    self._rate_limit_detected = False
+                    self._rate_limit_message = None
 
             # Create client instance and store reference for response extraction
             gaius_client = GaiusClient(self)
@@ -584,6 +623,27 @@ class GaiusACPClient:
                 else None
             ),
         }
+
+    def is_rate_limited(self) -> bool:
+        """Check if rate limit was detected during streaming.
+
+        Call this after prompt() returns to check if the underlying model
+        (Mistral) hit a rate limit. The response may still contain partial
+        content before the error occurred.
+        """
+        return self._gaius_client.is_rate_limited() if self._gaius_client else False
+
+    def get_rate_limit_message(self) -> str | None:
+        """Get rate limit error message if detected."""
+        return self._gaius_client.get_rate_limit_message() if self._gaius_client else None
+
+    def reset_rate_limit_state(self) -> None:
+        """Reset rate limit state for retry.
+
+        Call this before retrying after a rate limit error.
+        """
+        if self._gaius_client:
+            self._gaius_client.reset_rate_limit_state()
 
     async def __aenter__(self) -> "GaiusACPClient":
         """Async context manager entry."""
