@@ -2144,6 +2144,48 @@ class ListIncidentsResponse(_message.Message):
     incidents: _containers.RepeatedCompositeFieldContainer[HealthIncident]
     def __init__(self, incidents: _Optional[_Iterable[_Union[HealthIncident, _Mapping]]] = ...) -> None: ...
 
+class ResolveIncidentRequest(_message.Message):
+    __slots__ = ("fingerprint",)
+    FINGERPRINT_FIELD_NUMBER: _ClassVar[int]
+    fingerprint: str
+    def __init__(self, fingerprint: _Optional[str] = ...) -> None: ...
+
+class ResolveIncidentResponse(_message.Message):
+    __slots__ = ("resolved", "fingerprint", "was_active", "note")
+    RESOLVED_FIELD_NUMBER: _ClassVar[int]
+    FINGERPRINT_FIELD_NUMBER: _ClassVar[int]
+    WAS_ACTIVE_FIELD_NUMBER: _ClassVar[int]
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    resolved: bool
+    fingerprint: str
+    was_active: bool
+    note: str
+    def __init__(self, resolved: bool = ..., fingerprint: _Optional[str] = ..., was_active: bool = ..., note: _Optional[str] = ...) -> None: ...
+
+class GetOrphanedIssuesRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class GetOrphanedIssuesResponse(_message.Message):
+    __slots__ = ("orphans",)
+    ORPHANS_FIELD_NUMBER: _ClassVar[int]
+    orphans: _containers.RepeatedCompositeFieldContainer[OrphanedGitHubIssue]
+    def __init__(self, orphans: _Optional[_Iterable[_Union[OrphanedGitHubIssue, _Mapping]]] = ...) -> None: ...
+
+class OrphanedGitHubIssue(_message.Message):
+    __slots__ = ("issue_number", "repo", "fingerprint", "created_at", "issue_url")
+    ISSUE_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    REPO_FIELD_NUMBER: _ClassVar[int]
+    FINGERPRINT_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    ISSUE_URL_FIELD_NUMBER: _ClassVar[int]
+    issue_number: int
+    repo: str
+    fingerprint: str
+    created_at: str
+    issue_url: str
+    def __init__(self, issue_number: _Optional[int] = ..., repo: _Optional[str] = ..., fingerprint: _Optional[str] = ..., created_at: _Optional[str] = ..., issue_url: _Optional[str] = ...) -> None: ...
+
 class XBookmarksAuthRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...

@@ -1431,6 +1431,36 @@ message ListIncidentsResponse {
   repeated HealthIncident incidents = 1;
 }
 
+// Request to explicitly resolve an incident
+message ResolveIncidentRequest {
+  string fingerprint = 1;          // Incident fingerprint (e.g., "GPU_001:reasoning")
+}
+
+// Response for incident resolution
+message ResolveIncidentResponse {
+  bool resolved = 1;               // True if operation succeeded
+  string fingerprint = 2;          // The fingerprint that was resolved
+  bool was_active = 3;             // True if incident was in active tracking
+  string note = 4;                 // Additional info (e.g., "already resolved")
+}
+
+// Request to get orphaned GitHub issues
+message GetOrphanedIssuesRequest {}
+
+// Response with orphaned GitHub issues
+message GetOrphanedIssuesResponse {
+  repeated OrphanedGitHubIssue orphans = 1;
+}
+
+// Represents an orphaned GitHub issue (open issue with no active incident)
+message OrphanedGitHubIssue {
+  int32 issue_number = 1;          // GitHub issue number
+  string repo = 2;                 // Repository name
+  string fingerprint = 3;          // Incident fingerprint
+  string created_at = 4;           // ISO timestamp when issue was created
+  string issue_url = 5;            // Full GitHub issue URL
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // X Bookmarks Service Messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2154,6 +2184,8 @@ service GaiusService {
   rpc HealthObserverForceCheck(ForceHealthCheckRequest) returns (ForceHealthCheckResponse);
   rpc HealthObserverListIncidents(ListIncidentsRequest) returns (ListIncidentsResponse);
   rpc HealthObserverGetIncident(GetIncidentDetailRequest) returns (GetIncidentDetailResponse);
+  rpc HealthObserverResolveIncident(ResolveIncidentRequest) returns (ResolveIncidentResponse);
+  rpc HealthObserverGetOrphanedIssues(GetOrphanedIssuesRequest) returns (GetOrphanedIssuesResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Observability Dashboard

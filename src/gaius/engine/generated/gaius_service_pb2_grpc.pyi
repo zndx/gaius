@@ -189,6 +189,8 @@ class GaiusServiceStub:
     HealthObserverForceCheck: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ForceHealthCheckRequest, gaius_service_pb2.ForceHealthCheckResponse]
     HealthObserverListIncidents: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ListIncidentsRequest, gaius_service_pb2.ListIncidentsResponse]
     HealthObserverGetIncident: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetIncidentDetailRequest, gaius_service_pb2.GetIncidentDetailResponse]
+    HealthObserverResolveIncident: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ResolveIncidentRequest, gaius_service_pb2.ResolveIncidentResponse]
+    HealthObserverGetOrphanedIssues: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetOrphanedIssuesRequest, gaius_service_pb2.GetOrphanedIssuesResponse]
     ObserveStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ObserveStatusRequest, gaius_service_pb2.ObserveStatusResponse]
     """─────────────────────────────────────────────────────────────────────────
     Observability Dashboard
@@ -414,6 +416,8 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     HealthObserverForceCheck: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ForceHealthCheckRequest, gaius_service_pb2.ForceHealthCheckResponse]  # type: ignore[assignment]
     HealthObserverListIncidents: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ListIncidentsRequest, gaius_service_pb2.ListIncidentsResponse]  # type: ignore[assignment]
     HealthObserverGetIncident: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetIncidentDetailRequest, gaius_service_pb2.GetIncidentDetailResponse]  # type: ignore[assignment]
+    HealthObserverResolveIncident: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ResolveIncidentRequest, gaius_service_pb2.ResolveIncidentResponse]  # type: ignore[assignment]
+    HealthObserverGetOrphanedIssues: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetOrphanedIssuesRequest, gaius_service_pb2.GetOrphanedIssuesResponse]  # type: ignore[assignment]
     ObserveStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ObserveStatusRequest, gaius_service_pb2.ObserveStatusResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
     Observability Dashboard
@@ -1032,6 +1036,20 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.GetIncidentDetailRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.GetIncidentDetailResponse, collections.abc.Awaitable[gaius_service_pb2.GetIncidentDetailResponse]]: ...
+
+    @abc.abstractmethod
+    def HealthObserverResolveIncident(
+        self,
+        request: gaius_service_pb2.ResolveIncidentRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ResolveIncidentResponse, collections.abc.Awaitable[gaius_service_pb2.ResolveIncidentResponse]]: ...
+
+    @abc.abstractmethod
+    def HealthObserverGetOrphanedIssues(
+        self,
+        request: gaius_service_pb2.GetOrphanedIssuesRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.GetOrphanedIssuesResponse, collections.abc.Awaitable[gaius_service_pb2.GetOrphanedIssuesResponse]]: ...
 
     @abc.abstractmethod
     def ObserveStatus(

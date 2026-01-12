@@ -222,6 +222,11 @@ from .gaius_service_pb2 import (
     GetIncidentDetailResponse,
     ListIncidentsRequest,
     ListIncidentsResponse,
+    ResolveIncidentRequest,
+    ResolveIncidentResponse,
+    GetOrphanedIssuesRequest,
+    GetOrphanedIssuesResponse,
+    OrphanedGitHubIssue,
     # Observability Dashboard
     ObserveStatusRequest,
     ObserveStatusResponse,
@@ -526,6 +531,11 @@ __all__ = [
     "GetIncidentDetailResponse",
     "ListIncidentsRequest",
     "ListIncidentsResponse",
+    "ResolveIncidentRequest",
+    "ResolveIncidentResponse",
+    "GetOrphanedIssuesRequest",
+    "GetOrphanedIssuesResponse",
+    "OrphanedGitHubIssue",
     # Observability Dashboard
     "ObserveStatusRequest",
     "ObserveStatusResponse",

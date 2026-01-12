@@ -369,6 +369,16 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.GetIncidentDetailResponse.FromString,
                 _registered_method=True)
+        self.HealthObserverResolveIncident = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverResolveIncident',
+                request_serializer=gaius__service__pb2.ResolveIncidentRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ResolveIncidentResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverGetOrphanedIssues = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverGetOrphanedIssues',
+                request_serializer=gaius__service__pb2.GetOrphanedIssuesRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetOrphanedIssuesResponse.FromString,
+                _registered_method=True)
         self.ObserveStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/ObserveStatus',
                 request_serializer=gaius__service__pb2.ObserveStatusRequest.SerializeToString,
@@ -981,6 +991,18 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def HealthObserverResolveIncident(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverGetOrphanedIssues(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ObserveStatus(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Observability Dashboard
@@ -1510,6 +1532,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.HealthObserverGetIncident,
                     request_deserializer=gaius__service__pb2.GetIncidentDetailRequest.FromString,
                     response_serializer=gaius__service__pb2.GetIncidentDetailResponse.SerializeToString,
+            ),
+            'HealthObserverResolveIncident': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverResolveIncident,
+                    request_deserializer=gaius__service__pb2.ResolveIncidentRequest.FromString,
+                    response_serializer=gaius__service__pb2.ResolveIncidentResponse.SerializeToString,
+            ),
+            'HealthObserverGetOrphanedIssues': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverGetOrphanedIssues,
+                    request_deserializer=gaius__service__pb2.GetOrphanedIssuesRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetOrphanedIssuesResponse.SerializeToString,
             ),
             'ObserveStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.ObserveStatus,
@@ -3438,6 +3470,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/HealthObserverGetIncident',
             gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
             gaius__service__pb2.GetIncidentDetailResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverResolveIncident(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverResolveIncident',
+            gaius__service__pb2.ResolveIncidentRequest.SerializeToString,
+            gaius__service__pb2.ResolveIncidentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverGetOrphanedIssues(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverGetOrphanedIssues',
+            gaius__service__pb2.GetOrphanedIssuesRequest.SerializeToString,
+            gaius__service__pb2.GetOrphanedIssuesResponse.FromString,
             options,
             channel_credentials,
             insecure,
