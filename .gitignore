@@ -34,6 +34,7 @@ resources/audit/
 resources/prod/
 docs/*.md
 docs/notes/
+*.txt
 
 .venv
 
