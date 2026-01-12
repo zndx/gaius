@@ -1503,7 +1503,9 @@ Begin your investigation now."""
             from ...acp import (
                 format_rca_observations,
                 format_rca_constraint_violations,
+                format_issue_body,
                 RCA_ISSUE_BODY_TEMPLATE,
+                _find_acp_adapter,
             )
             from ...acp.security import (
                 sanitize_issue_content,
@@ -1536,8 +1538,12 @@ Begin your investigation now."""
                 rca_result.get("constraint_violations", [])
             )
 
-            # Build issue body
-            body = RCA_ISSUE_BODY_TEMPLATE.format(
+            # Build issue body with dynamic model attribution
+            # Detect which ACP adapter would be used for attribution
+            agent_command = _find_acp_adapter()
+            body = format_issue_body(
+                RCA_ISSUE_BODY_TEMPLATE,
+                agent_command=agent_command,
                 fingerprint=incident.fingerprint,
                 highest_order=highest_order,
                 highest_order_name=order_name,

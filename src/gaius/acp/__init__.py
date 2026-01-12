@@ -21,6 +21,7 @@ Usage:
 from .client import (
     GaiusACPClient,
     ACPConnectionError,
+    ACPRateLimitError,
     ACPConfig,
     StreamCallback,
     _find_acp_adapter,
@@ -33,11 +34,18 @@ from .prompts import (
     build_rca_prompt,
     format_rca_observations,
     format_rca_constraint_violations,
+    format_issue_body,
     ISSUE_BODY_TEMPLATE,
     ISSUE_UPDATE_TEMPLATE,
     ISSUE_RESOLUTION_TEMPLATE,
     SYSTEM_PROMPT_RCA,
     RCA_ISSUE_BODY_TEMPLATE,
+)
+from .attribution import (
+    ModelAttribution,
+    get_model_attribution,
+    MODEL_ATTRIBUTION_MAP,
+    DEFAULT_ATTRIBUTION,
 )
 from .security import (
     GitHubSecurityError,
@@ -65,6 +73,7 @@ __all__ = [
     # Client
     "GaiusACPClient",
     "ACPConnectionError",
+    "ACPRateLimitError",
     "ACPConfig",
     "StreamCallback",
     "_find_acp_adapter",
@@ -76,11 +85,17 @@ __all__ = [
     "build_rca_prompt",
     "format_rca_observations",
     "format_rca_constraint_violations",
+    "format_issue_body",
     "ISSUE_BODY_TEMPLATE",
     "ISSUE_UPDATE_TEMPLATE",
     "ISSUE_RESOLUTION_TEMPLATE",
     "SYSTEM_PROMPT_RCA",
     "RCA_ISSUE_BODY_TEMPLATE",
+    # Attribution
+    "ModelAttribution",
+    "get_model_attribution",
+    "MODEL_ATTRIBUTION_MAP",
+    "DEFAULT_ATTRIBUTION",
     # Security
     "GitHubSecurityError",
     "RepositoryNotAllowedError",
