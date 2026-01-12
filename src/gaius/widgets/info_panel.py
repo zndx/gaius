@@ -1,5 +1,7 @@
 """Info panel for displaying brief contextual information."""
 
+import re
+import logging
 from textual.widget import Widget
 from textual.widgets import Static, Markdown
 from textual.containers import VerticalScroll
@@ -8,6 +10,22 @@ from rich.text import Text
 from rich.markdown import Markdown as RichMarkdown
 
 from ..core.state import AppState
+
+logger = logging.getLogger(__name__)
+
+# Regex to detect emoji characters that may break TUI rendering.
+# Covers common emoji ranges: emoticons, symbols, dingbats, transport, misc.
+# Note: This is not exhaustive but catches the most common TUI-breaking emojis.
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"  # Misc Symbols, Emoticons, Dingbats, etc.
+    "\U00002600-\U000027BF"  # Misc symbols (sun, stars, arrows, etc.)
+    "\U0001FA00-\U0001FAFF"  # Chess, symbols
+    "\U00002300-\U000023FF"  # Misc technical (hourglass, keyboard, etc.)
+    "\U0001F600-\U0001F64F"  # Emoticons
+    "]+",
+    flags=re.UNICODE,
+)
 
 
 class InfoPanel(Widget, can_focus=True):
@@ -77,6 +95,54 @@ class InfoPanel(Widget, can_focus=True):
         self._content = ""
         self._content_type = "text"  # "text", "markdown", "agent"
         self._title = "Content"
+        self._emoji_warning_emitted: set[str] = set()  # Dedupe warnings per content hash
+
+    def _check_emoji_content(self, content: str, source: str) -> None:
+        """Check content for emojis and emit OTel event if found.
+
+        Emojis break TUI rendering and should be replaced with ASCII
+        text markers before reaching the InfoPanel. This detection
+        provides fail-fast observability so developers can fix the
+        source of emoji content.
+
+        Args:
+            content: The content string to check
+            source: Identifier for the content source (e.g., "show_file:health_fix.md")
+        """
+        matches = _EMOJI_PATTERN.findall(content)
+        if not matches:
+            return
+
+        # Dedupe: only warn once per unique (source, emoji_set) combination
+        emoji_key = f"{source}:{','.join(sorted(set(''.join(matches))))}"
+        if emoji_key in self._emoji_warning_emitted:
+            return
+        self._emoji_warning_emitted.add(emoji_key)
+
+        # Extract unique emojis found
+        unique_emojis = sorted(set("".join(matches)))
+        emoji_sample = "".join(unique_emojis[:5])  # Show first 5 unique
+
+        # Log warning with actionable context
+        logger.warning(
+            "Emoji content detected in InfoPanel - will break TUI rendering. "
+            "Guru Meditation: #TUI.00000001.EMOJI | "
+            f"source={source} emojis={emoji_sample!r} count={len(matches)}"
+        )
+
+        # Emit OTel metric for Observe panel visibility
+        try:
+            from ..engine.metrics import record_exception_caught
+            record_exception_caught(
+                component="tui",
+                operation="info_panel_render",
+                exception_type="EmojiContentWarning",
+                failure_mode_id="TUI_001",
+                guru_code="#TUI.00000001.EMOJI",
+            )
+        except ImportError:
+            # Engine metrics not available (e.g., standalone widget test)
+            pass
 
     def compose(self):
         """Compose the content panel."""
@@ -87,12 +153,15 @@ class InfoPanel(Widget, can_focus=True):
 
     def show_file(self, path: str, content: str) -> None:
         """Display file content."""
+        # Check for emoji content and emit OTel warning if found
+        self._check_emoji_content(content, f"show_file:{path}")
+
         self._title = path.split("/")[-1]
         self._content = content
         self._content_type = "markdown" if path.endswith(".md") else "text"
 
         header = self.query_one("#content-header", Static)
-        header.update(f"📄 {self._title}")
+        header.update(f"[FILE] {self._title}")
 
         body = self.query_one("#content-body", Static)
         if self._content_type == "markdown":
@@ -102,6 +171,9 @@ class InfoPanel(Widget, can_focus=True):
 
     def show_agent(self, name: str, role: str, output: str, color: str = "white") -> None:
         """Display agent information and output."""
+        # Check for emoji content and emit OTel warning if found
+        self._check_emoji_content(output, f"show_agent:{name}")
+
         self._title = f"Agent: {name}"
         self._content_type = "agent"
 
@@ -120,11 +192,14 @@ class InfoPanel(Widget, can_focus=True):
 
     def show_position_info(self, x: int, y: int, hint: str) -> None:
         """Display information about a grid position."""
+        # Check for emoji content and emit OTel warning if found
+        self._check_emoji_content(hint, f"show_position_info:{x},{y}")
+
         coord = self._coord_string(x, y)
         self._title = f"Position {coord}"
 
         header = self.query_one("#content-header", Static)
-        header.update(f"📍 {coord}")
+        header.update(f"[POS] {coord}")
 
         text = Text()
         text.append(f"Coordinates: ", style="dim")
@@ -141,11 +216,15 @@ class InfoPanel(Widget, can_focus=True):
         Args:
             agents_output: List of (name, color, output) tuples
         """
+        # Check for emoji content in all agent outputs
+        for name, _color, output in agents_output:
+            self._check_emoji_content(output, f"show_swarm_output:{name}")
+
         self._title = "Swarm Round"
         self._content_type = "swarm"
 
         header = self.query_one("#content-header", Static)
-        header.update("🐝 Swarm Output")
+        header.update("[SWARM] Output")
 
         text = Text()
         for name, color, output in agents_output:
