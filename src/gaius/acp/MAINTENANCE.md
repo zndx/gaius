@@ -98,7 +98,7 @@ The mapping between CMMI levels and Gaius tiers:
 
 | CMMI Level | Gaius Tier | Implementation |
 |------------|------------|----------------|
-| 1 - Initial | Tier 0 | Heroic ad-hoc intervention via interactive Claude Code session |
+| 1 - Initial | Tier 0 | _Ad hoc_ intervention via interactive investigation and remediation |
 | 2 - Managed | Tier 1 | Documented healing events with local LLM diagnosis |
 | 3 - Defined | FMEA Catalog | Standardized failure mode patterns and fix strategies |
 | 4 - Quantitative | AdaptiveLearner | Statistical S/O/D score updates via Bayesian learning |
