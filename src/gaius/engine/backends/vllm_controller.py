@@ -597,10 +597,21 @@ class VLLMController:
                 error="Controller not started",
             )
 
+        # Debug logging for process lookup
+        available_keys = list(self._processes.keys())
+        logger.info(
+            f"VLLMController.complete: agent_alias={request.agent_alias}, "
+            f"model={request.model}, available_processes={available_keys}"
+        )
+
         # Find endpoint for this agent/model
         proc = None
         if request.agent_alias:
             proc = self._processes.get(request.agent_alias)
+            if not proc:
+                logger.warning(
+                    f"Process lookup failed: '{request.agent_alias}' not in {available_keys}"
+                )
 
         if not proc:
             # Find any endpoint with this model
@@ -610,10 +621,20 @@ class VLLMController:
                     break
 
         if not proc or proc.status != ProcessStatus.HEALTHY:
+            # Include available processes in error for debugging
+            available_info = [
+                f"{k}:{p.status.value}" for k, p in self._processes.items()
+            ]
+            error_msg = (
+                f"No healthy endpoint for agent={request.agent_alias}, model={request.model}. "
+                f"Available: {available_info}. "
+                f"Guru: #VLLM.00000003.NOENDPOINT"
+            )
+            logger.error(error_msg)
             return VLLMResponse(
                 content="",
                 model=request.model,
-                error=f"No healthy endpoint for model: {request.model}",
+                error=error_msg,
             )
 
         # Build OpenAI-compatible request
@@ -636,10 +657,23 @@ class VLLMController:
             data = response.json()
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
+            # Debug log raw response structure
+            logger.info(
+                f"VLLMController.complete: raw response keys={list(data.keys())}, "
+                f"choices_count={len(data.get('choices', []))}"
+            )
+
             # Parse response
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
             usage = data.get("usage", {})
+
+            content = message.get("content", "")
+            logger.info(
+                f"VLLMController.complete: content_length={len(content)}, "
+                f"output_tokens={usage.get('completion_tokens', 0)}, "
+                f"latency_ms={latency_ms}"
+            )
 
             proc.requests_served += 1
 

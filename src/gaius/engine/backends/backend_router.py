@@ -317,10 +317,20 @@ class BackendRouter:
         Returns:
             InferenceResponse from vLLM
         """
+        # Debug logging for routing
+        logger.info(
+            f"BackendRouter._route_to_vllm: agent_alias={request.agent_alias}, "
+            f"model={agent_config.model}, backend={agent_config.backend}"
+        )
+
         # Ensure endpoint is running
         proc = self.vllm.get_process(request.agent_alias)
 
         if not proc or proc.status.value != "healthy":
+            logger.info(
+                f"Endpoint not healthy for {request.agent_alias}, "
+                f"proc={proc.status.value if proc else 'None'}, attempting start"
+            )
             # Try to start the endpoint
             try:
                 proc = await self.vllm.start_endpoint(request.agent_alias, agent_config)
