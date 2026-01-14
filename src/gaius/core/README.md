@@ -158,7 +158,7 @@ UMAP (McInnes, Healy, & Melville, 2018) projects 768-dimensional embeddings to 2
 graph LR
     A[768-D Embeddings] --> B[UMAP<br/>n_neighbors=15]
     B --> C[2-D Continuous]
-    C --> D[Normalize<br/>to [0, 18]]
+    C --> D[Normalize<br/>to 0,18]
     D --> E[Quantize<br/>to Integers]
     E --> F[19×19 Grid]
 ```
