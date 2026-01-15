@@ -36,6 +36,16 @@ def _register_builtin_flows():
     except ImportError:
         pass  # prospects dependencies may not be installed
 
+    try:
+        from gaius.flows.search import SearchFlow  # noqa: F401
+    except ImportError:
+        pass  # search dependencies may not be installed
+
+    try:
+        from gaius.flows.research import ResearchFlow  # noqa: F401
+    except ImportError:
+        pass  # research dependencies may not be installed
+
 
 _register_builtin_flows()
 
