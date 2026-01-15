@@ -122,3 +122,55 @@ class EventNames:
     # Evaluation
     EVALUATION_STARTED = "evaluation.started"
     EVALUATION_COMPLETED = "evaluation.completed"
+
+    # Heartbeat (for long-running operations)
+    HEARTBEAT = "heartbeat"
+    HEARTBEAT_COMPLETED = "heartbeat.completed"
+    PROGRESS = "progress"
+
+    # Operation monitoring
+    OPERATION_STARTED = "operation.started"
+    OPERATION_COMPLETED = "operation.completed"
+    OPERATION_ANOMALY = "operation.anomaly"
+
+
+class HeartbeatAttrs:
+    """Heartbeat-specific OTel attributes.
+
+    These attributes enable monitoring of long-running operations
+    and anomaly detection based on statistical baselines.
+    """
+
+    # Heartbeat identification
+    SEQUENCE = "heartbeat.sequence"  # Heartbeat number in sequence
+    OPERATION = "heartbeat.operation"  # Operation type (e.g., "gpu_allocation")
+    ENDPOINT = "heartbeat.endpoint"  # Endpoint context (e.g., "reasoning")
+
+    # Timing
+    ELAPSED_S = "heartbeat.elapsed_s"  # Seconds since operation start
+    INTERVAL_S = "heartbeat.interval_s"  # Configured heartbeat interval
+
+    # Progress
+    PHASE = "heartbeat.phase"  # Current operation phase
+    PROGRESS_PCT = "heartbeat.progress_pct"  # Progress percentage (0-100)
+
+    # Anomaly detection
+    Z_SCORE = "heartbeat.z_score"  # Standard deviations from baseline mean
+    ANOMALY = "heartbeat.anomaly"  # Boolean: is this duration anomalous?
+    BASELINE_MEAN = "heartbeat.baseline_mean"  # Baseline mean duration
+    BASELINE_STDDEV = "heartbeat.baseline_stddev"  # Baseline standard deviation
+    BASELINE_COUNT = "heartbeat.baseline_count"  # Samples in baseline
+
+    # Completion
+    TOTAL_HEARTBEATS = "heartbeat.total_heartbeats"  # Total heartbeats emitted
+    FINAL_Z_SCORE = "heartbeat.final_z_score"  # Z-score at completion
+
+
+class ProgressAttrs:
+    """Progress event attributes for bridging PostgreSQL progress to OTel."""
+
+    PCT = "progress.pct"  # Progress percentage (0-100)
+    PHASE = "progress.phase"  # Phase name
+    MESSAGE = "progress.message"  # Human-readable message
+    PASS_NUMBER = "progress.pass_number"  # Pass number (for multi-pass flows)
+    SESSION_ID = "progress.session_id"  # Session correlation ID

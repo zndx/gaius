@@ -1,27 +1,36 @@
 """NiFi OTel Receiving Flow creation for MetaAgent.
 
-Creates a NiFi flow that receives OpenTelemetry data via ListenOTLP,
-routes by Metaflow step name, and outputs JSON for monitoring.
+Creates a NiFi flow that receives OpenTelemetry data via ListenOTLP (gRPC),
+routes by Metaflow step name and event type, and outputs JSON for monitoring.
 
 Architecture:
-    Metaflow Step          OTel Collector        NiFi Canvas
-    ─────────────          ──────────────        ───────────
+    Metaflow Step              NiFi Canvas
+    ─────────────              ───────────
 
-     @traced_step                                ┌─────────────┐
-     def fetch_pdf()  ───▶  OTLP/gRPC  ───▶     │ ListenOTLP  │
-       span attrs:          (4317)               │ (port 4319) │
-       - step=fetch_pdf                          └──────┬──────┘
-       - flow=ArxivFlow                                 │
-       - run_id=xxx                                     ▼
-                                                 ┌─────────────┐
-                                                 │RouteOnAttr  │
-                                                 │step=fetch_pdf
-                                                 └──────┬──────┘
-                                                        │
-                                                        ▼
-                                                 ┌─────────────┐
-                                                 │ LogAttr     │◀── JSON output
-                                                 └─────────────┘
+     @traced_step              ┌─────────────┐
+     def fetch_pdf()           │ ListenOTLP  │  (gRPC on port 4319)
+       emit_event()    ──────▶ │ (gRPC)      │
+       heartbeats              └──────┬──────┘
+                                      │
+                               ┌──────▼──────┐
+                               │RouteOnAttr  │ Route by metaflow.step_name
+                               │             │ and heartbeat.operation
+                               └──────┬──────┘
+                      ┌───────────────┼───────────────┐
+                      ▼               ▼               ▼
+               ┌───────────┐   ┌───────────┐   ┌───────────┐
+               │Step:start │   │Step:search│   │Heartbeats │
+               │LogAttr    │   │LogAttr    │   │LogAttr    │
+               └───────────┘   └───────────┘   └───────────┘
+
+Key Features:
+    - gRPC transport (port 4319) for consistency with engine
+    - Per-step LogAttribute processors with step-specific filtering
+    - Heartbeat/progress event routing for anomaly visibility
+    - RouteOnAttribute filters by:
+        - metaflow.step_name: Step lifecycle events
+        - heartbeat.operation: Long-running operation monitoring
+        - progress.phase: ResearchFlow progress events
 
 Usage:
     from gaius.agents.metaagent.nifi.otel_flow import create_otel_receiving_flow
@@ -52,13 +61,29 @@ class OTelFlowConfig:
     process_group_name: str = "Metaflow-Telemetry"
     position: Position = field(default_factory=lambda: Position(400, 100))
 
-    # ListenOTLP settings
-    otlp_port: int = 4319  # NiFi-side OTLP receiver port
+    # ListenOTLP settings - gRPC transport for consistency with engine
+    otlp_port: int = 4319  # NiFi-side OTLP receiver port (gRPC)
+    transport: str = "grpc"  # Use gRPC for consistency with engine
 
     # Step names to create dedicated routes for
     # Each gets its own LogAttribute processor
     steps_to_route: list[str] = field(
         default_factory=lambda: ["start", "end", "fetch_pdf", "extract_text"]
+    )
+
+    # Event types to create dedicated routes for
+    # Heartbeats and progress events get separate processors for anomaly visibility
+    event_types_to_route: list[str] = field(
+        default_factory=lambda: ["heartbeat", "progress", "heartbeat.completed"]
+    )
+
+    # ResearchFlow progress phases to route
+    # These come from gaius.flows.research.progress.EVENT_TYPES
+    research_phases_to_route: list[str] = field(
+        default_factory=lambda: [
+            "pass_started", "pass_search", "pass_swarm", "pass_grok",
+            "pass_completed", "converged", "completed", "failed"
+        ]
     )
 
 
@@ -87,10 +112,15 @@ async def create_otel_receiving_flow(
 
     Creates:
     1. Process group named "Metaflow-Telemetry"
-    2. ListenOTLP processor on specified port
-    3. RouteOnAttribute to route by metaflow.step_name
+    2. ListenOTLP processor on gRPC port (for consistency with engine)
+    3. RouteOnAttribute to route by:
+       - metaflow.step_name: Step lifecycle events
+       - event.name: Heartbeat/progress events
+       - progress.phase: ResearchFlow progress phases
     4. LogAttribute for each configured step (JSON output)
-    5. LogAttribute for unmatched (catch-all)
+    5. LogAttribute for heartbeats (with anomaly filtering)
+    6. LogAttribute for progress phases
+    7. LogAttribute for unmatched (catch-all)
 
     Args:
         client: Connected NiFi client
@@ -111,33 +141,43 @@ async def create_otel_receiving_flow(
             parent_id=parent_id,
             name=config.process_group_name,
             position=config.position,
-            comments="Receives OTel telemetry from Metaflow steps",
+            comments="Receives OTel telemetry from Metaflow steps via gRPC",
         )
         pg_id = pg["id"]
         logger.info(f"Created process group: {config.process_group_name} ({pg_id})")
 
-        # Create ListenOTLP processor
-        # Note: This is a placeholder since ListenOTLP may not be available
-        # in all NiFi installations. Fall back to GenerateFlowFile for testing.
+        # Create ListenOTLP processor (gRPC transport)
         listen_otlp = await _create_listen_otlp_or_placeholder(
-            client, pg_id, config.otlp_port
+            client, pg_id, config.otlp_port, config.transport
         )
         listen_id = listen_otlp["id"]
-        logger.info(f"Created ListenOTLP: {listen_id}")
+        logger.info(f"Created ListenOTLP (gRPC): {listen_id}")
 
-        # Create RouteOnAttribute for step-based routing
+        # Create RouteOnAttribute for comprehensive routing
         route_props = {
-            # Dynamic properties for each step
+            # Step-based routing
             **{
-                step: "${metaflow.step_name:equals('" + step + "')}"
+                f"step_{step}": "${metaflow.step_name:equals('" + step + "')}"
                 for step in config.steps_to_route
-            }
+            },
+            # Event type routing (heartbeats, progress)
+            **{
+                f"event_{evt}": "${event.name:equals('" + evt + "')}"
+                for evt in config.event_types_to_route
+            },
+            # ResearchFlow progress phase routing
+            **{
+                f"phase_{phase}": "${progress.phase:equals('" + phase + "')}"
+                for phase in config.research_phases_to_route
+            },
+            # Anomaly detection routing - filter heartbeats with anomaly=true
+            "anomaly_detected": "${heartbeat.anomaly:equals('true')}",
         }
         route_config = ProcessorConfig(properties=route_props)
         route = await client.create_processor(
             process_group_id=pg_id,
             processor_type=PROCESSOR_TYPES["route"],
-            name="Route-By-Step",
+            name="Route-By-Step-And-Event",
             position=Position(400, 200),
             config=route_config,
         )
@@ -153,19 +193,22 @@ async def create_otel_receiving_flow(
             name="otel-to-route",
         )
 
+        # Track vertical position for processor layout
+        y_pos = 400
+
         # Create LogAttribute for each step
         step_log_ids: dict[str, str] = {}
         for i, step in enumerate(config.steps_to_route):
             log = await client.create_processor(
                 process_group_id=pg_id,
                 processor_type=PROCESSOR_TYPES["log"],
-                name=f"Log-{step}",
-                position=Position(200 + i * 200, 400),
+                name=f"Log-step-{step}",
+                position=Position(100 + i * 180, y_pos),
                 config=ProcessorConfig(
                     properties={
                         "Log Level": "info",
                         "Log Payload": "true",
-                        "Attributes to Log": "metaflow.*, nifi.*, gaius.*",
+                        "Attributes to Log": "metaflow.*, nifi.*, gaius.*, heartbeat.*",
                     }
                 ),
             )
@@ -177,16 +220,113 @@ async def create_otel_receiving_flow(
                 process_group_id=pg_id,
                 source_id=route_id,
                 dest_id=log["id"],
-                relationships=[step],
-                name=f"route-to-{step}",
+                relationships=[f"step_{step}"],
+                name=f"route-to-step-{step}",
             )
+
+        y_pos += 150
+
+        # Create LogAttribute for event types (heartbeats, progress)
+        event_log_ids: dict[str, str] = {}
+        for i, evt in enumerate(config.event_types_to_route):
+            log = await client.create_processor(
+                process_group_id=pg_id,
+                processor_type=PROCESSOR_TYPES["log"],
+                name=f"Log-event-{evt}",
+                position=Position(100 + i * 200, y_pos),
+                config=ProcessorConfig(
+                    properties={
+                        "Log Level": "info",
+                        "Log Payload": "true",
+                        # Include baseline metrics for observability value
+                        "Attributes to Log": (
+                            "heartbeat.*, progress.*, "
+                            "metaflow.step_name, metaflow.flow_name"
+                        ),
+                    }
+                ),
+            )
+            event_log_ids[evt] = log["id"]
+            logger.info(f"Created LogAttribute for event '{evt}': {log['id']}")
+
+            # Connect route to event logger
+            await client.create_connection(
+                process_group_id=pg_id,
+                source_id=route_id,
+                dest_id=log["id"],
+                relationships=[f"event_{evt}"],
+                name=f"route-to-event-{evt}",
+            )
+
+        y_pos += 150
+
+        # Create LogAttribute for ResearchFlow progress phases
+        phase_log_ids: dict[str, str] = {}
+        for i, phase in enumerate(config.research_phases_to_route):
+            log = await client.create_processor(
+                process_group_id=pg_id,
+                processor_type=PROCESSOR_TYPES["log"],
+                name=f"Log-phase-{phase}",
+                position=Position(100 + (i % 4) * 200, y_pos + (i // 4) * 100),
+                config=ProcessorConfig(
+                    properties={
+                        "Log Level": "info",
+                        "Log Payload": "true",
+                        "Attributes to Log": (
+                            "progress.*, research.*, "
+                            "metaflow.step_name, metaflow.flow_name"
+                        ),
+                    }
+                ),
+            )
+            phase_log_ids[phase] = log["id"]
+            logger.info(f"Created LogAttribute for phase '{phase}': {log['id']}")
+
+            # Connect route to phase logger
+            await client.create_connection(
+                process_group_id=pg_id,
+                source_id=route_id,
+                dest_id=log["id"],
+                relationships=[f"phase_{phase}"],
+                name=f"route-to-phase-{phase}",
+            )
+
+        y_pos += 250
+
+        # Create LogAttribute for anomaly alerts (warn level)
+        anomaly_log = await client.create_processor(
+            process_group_id=pg_id,
+            processor_type=PROCESSOR_TYPES["log"],
+            name="Log-anomaly-alert",
+            position=Position(100, y_pos),
+            config=ProcessorConfig(
+                properties={
+                    "Log Level": "warn",
+                    "Log Payload": "true",
+                    # All heartbeat metrics for anomaly analysis
+                    "Attributes to Log": (
+                        "heartbeat.*, metaflow.*, gaius.*"
+                    ),
+                }
+            ),
+        )
+        logger.info(f"Created anomaly alert LogAttribute: {anomaly_log['id']}")
+
+        # Connect route to anomaly logger
+        await client.create_connection(
+            process_group_id=pg_id,
+            source_id=route_id,
+            dest_id=anomaly_log["id"],
+            relationships=["anomaly_detected"],
+            name="route-to-anomaly-alert",
+        )
 
         # Create catch-all LogAttribute for unmatched
         unmatched_log = await client.create_processor(
             process_group_id=pg_id,
             processor_type=PROCESSOR_TYPES["log"],
             name="Log-unmatched",
-            position=Position(600, 400),
+            position=Position(400, y_pos),
             config=ProcessorConfig(
                 properties={
                     "Log Level": "debug",
@@ -216,30 +356,51 @@ async def _create_listen_otlp_or_placeholder(
     client: NiFiClient,
     pg_id: str,
     otlp_port: int,
+    transport: str = "grpc",
 ) -> dict:
     """Create ListenOTLP processor or GenerateFlowFile placeholder.
 
     ListenOTLP may not be available in all NiFi installations.
     Falls back to GenerateFlowFile with simulated attributes for testing.
+
+    Args:
+        client: NiFi client
+        pg_id: Process group ID
+        otlp_port: Port for OTLP receiver
+        transport: Transport type ("grpc" or "http")
     """
     try:
-        # Try to create actual ListenOTLP
+        # Try to create actual ListenOTLP with gRPC transport
+        # gRPC is preferred for consistency with engine
+        properties = {
+            "gRPC Port" if transport == "grpc" else "HTTP Port": str(otlp_port),
+        }
         return await client.create_processor(
             process_group_id=pg_id,
             processor_type=PROCESSOR_TYPES["listen_otlp"],
-            name="ListenOTLP",
+            name=f"ListenOTLP-{transport}",
             position=Position(400, 50),
-            config=ProcessorConfig(
-                properties={
-                    "HTTP Port": str(otlp_port),
-                }
-            ),
+            config=ProcessorConfig(properties=properties),
         )
     except Exception as e:
         # Fall back to placeholder for testing
         logger.warning(
             f"ListenOTLP not available ({e}), using GenerateFlowFile placeholder"
         )
+        # Simulated OTel data with heartbeat attributes for testing
+        simulated_data = {
+            "metaflow.step_name": "fetch_pdf",
+            "metaflow.flow_name": "ArxivFlow",
+            "heartbeat.sequence": 1,
+            "heartbeat.operation": "metaflow.ArxivFlow.fetch_pdf",
+            "heartbeat.elapsed_s": 5.0,
+            "heartbeat.baseline_mean_s": 10.0,
+            "heartbeat.z_score": -0.5,
+            "heartbeat.anomaly": False,
+            "progress.pct": 25.0,
+            "progress.phase": "pass_search",
+        }
+        import json
         return await client.create_processor(
             process_group_id=pg_id,
             processor_type=PROCESSOR_TYPES["generate"],
@@ -247,7 +408,7 @@ async def _create_listen_otlp_or_placeholder(
             position=Position(400, 50),
             config=ProcessorConfig(
                 properties={
-                    "Custom Text": '{"metaflow.step_name": "fetch_pdf", "metaflow.flow_name": "ArxivFlow"}',
+                    "Custom Text": json.dumps(simulated_data),
                 },
                 scheduling_period="10 sec",
             ),
