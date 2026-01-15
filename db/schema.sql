@@ -1,4 +1,4 @@
-\restrict 5XFwpqwq1F12g5zjfo9yrPPhrlMXxlhJGlswfuk5NeZxm7GIpRZzjuRHob24Cdk
+\restrict ntpo9x5LVqShSsLk24FgdU4c3fCvYWctYmf6KsofIWtoDdwFqB22cvRjdetrAAQ
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -215,6 +215,32 @@ CREATE TYPE public.source_type AS ENUM (
 
 
 --
+-- Name: cleanup_research_progress(integer); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.cleanup_research_progress(retention_hours integer DEFAULT 24) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM meta.research_progress
+    WHERE created_at < NOW() - (retention_hours || ' hours')::INTERVAL;
+
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION cleanup_research_progress(retention_hours integer); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.cleanup_research_progress(retention_hours integer) IS 'Prune research progress events older than retention period';
+
+
+--
 -- Name: complete_fmp_sync_run(integer, character varying, integer, integer, integer, real, real, integer, text); Type: FUNCTION; Schema: meta; Owner: -
 --
 
@@ -269,6 +295,86 @@ $$;
 --
 
 COMMENT ON FUNCTION meta.cron_job_status() IS 'Check status of meta observability cron jobs';
+
+
+--
+-- Name: notify_flow_event(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.notify_flow_event() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Only notify on status changes to completed/failed
+    IF NEW.status IN ('completed', 'failed') AND
+       (OLD.status IS NULL OR OLD.status != NEW.status) THEN
+
+        -- Send notification to channel
+        PERFORM pg_notify(
+            'flow_events',
+            json_build_object(
+                'run_id', NEW.run_id::text,
+                'flow_type', NEW.flow_type,
+                'status', NEW.status,
+                'started_at', COALESCE(NEW.started_at::text, ''),
+                'completed_at', COALESCE(NEW.completed_at::text, ''),
+                'duration_ms', COALESCE(NEW.duration_ms, 0)
+            )::text
+        );
+
+        -- Insert audit record
+        INSERT INTO meta.flow_events (
+            run_id, flow_type, status, started_at, completed_at, duration_ms
+        ) VALUES (
+            NEW.run_id, NEW.flow_type, NEW.status,
+            NEW.started_at, NEW.completed_at, NEW.duration_ms
+        );
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION notify_flow_event(); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.notify_flow_event() IS 'Trigger function for flow completion LISTEN/NOTIFY';
+
+
+--
+-- Name: notify_research_progress(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.notify_research_progress() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Push notification for every new event
+    PERFORM pg_notify(
+        'research_progress',
+        json_build_object(
+            'event_id', NEW.event_id,
+            'session_id', NEW.session_id,
+            'event_type', NEW.event_type,
+            'event_name', NEW.event_name,
+            'pass_number', NEW.pass_number,
+            'progress', NEW.progress,
+            'message', NEW.message,
+            'metadata', NEW.metadata
+        )::text
+    );
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION notify_research_progress(); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.notify_research_progress() IS 'Push research progress events via pg_notify on insert';
 
 
 --
@@ -387,6 +493,20 @@ $$;
 --
 
 COMMENT ON FUNCTION meta.sync_prospect_watchlist(p_symbols character varying[], p_profile character varying) IS 'Sync watchlist config to DB: activate configured symbols, archive removed ones';
+
+
+--
+-- Name: update_flow_runs_timestamp(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.update_flow_runs_timestamp() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -2901,6 +3021,71 @@ COMMENT ON VIEW meta.endpoint_transition_metrics IS 'Endpoint state transitions 
 
 
 --
+-- Name: flow_events; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.flow_events (
+    event_id integer NOT NULL,
+    run_id uuid NOT NULL,
+    flow_type text NOT NULL,
+    status text NOT NULL,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    duration_ms integer,
+    created_at timestamp with time zone DEFAULT now(),
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE flow_events; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.flow_events IS 'Audit trail for flow completion events (LISTEN/NOTIFY)';
+
+
+--
+-- Name: COLUMN flow_events.run_id; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.flow_events.run_id IS 'References meta.flow_runs';
+
+
+--
+-- Name: COLUMN flow_events.flow_type; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.flow_events.flow_type IS 'Type of flow (ResearchFlow, ArxivDoclingFlow, etc.)';
+
+
+--
+-- Name: COLUMN flow_events.status; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.flow_events.status IS 'Terminal status: completed or failed';
+
+
+--
+-- Name: flow_events_event_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.flow_events_event_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: flow_events_event_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.flow_events_event_id_seq OWNED BY meta.flow_events.event_id;
+
+
+--
 -- Name: flow_runs; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -2913,7 +3098,8 @@ CREATE TABLE meta.flow_runs (
     status text,
     inputs_count integer DEFAULT 0,
     outputs_count integer DEFAULT 0,
-    metadata jsonb DEFAULT '{}'::jsonb
+    metadata jsonb DEFAULT '{}'::jsonb,
+    updated_at timestamp with time zone DEFAULT now()
 );
 
 
@@ -3542,6 +3728,159 @@ CREATE VIEW meta.recent_agendas_summary AS
 --
 
 COMMENT ON VIEW meta.recent_agendas_summary IS 'Last 24 hours of operations for Metabase real-time dashboard';
+
+
+--
+-- Name: research_progress; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.research_progress (
+    event_id bigint NOT NULL,
+    session_id text NOT NULL,
+    event_type integer NOT NULL,
+    event_name text NOT NULL,
+    pass_number integer DEFAULT 0,
+    progress real DEFAULT 0.0,
+    message text DEFAULT ''::text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE research_progress; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.research_progress IS 'Fine-grained ResearchFlow progress events for TUI streaming';
+
+
+--
+-- Name: COLUMN research_progress.session_id; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_progress.session_id IS 'Research session ID (e.g., res_20260114_070504)';
+
+
+--
+-- Name: COLUMN research_progress.event_type; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_progress.event_type IS 'Event type enum (matches ResearchFlowEvent.Type proto)';
+
+
+--
+-- Name: COLUMN research_progress.event_name; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_progress.event_name IS 'Human-readable event name (e.g., pass_search, converged)';
+
+
+--
+-- Name: COLUMN research_progress.pass_number; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_progress.pass_number IS 'Current pass number (1-indexed, 0 for non-pass events)';
+
+
+--
+-- Name: COLUMN research_progress.progress; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_progress.progress IS 'Progress 0.0-1.0 for progress bar display';
+
+
+--
+-- Name: COLUMN research_progress.metadata; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_progress.metadata IS 'Additional event data (q_value, sources_count, etc.)';
+
+
+--
+-- Name: research_progress_event_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.research_progress_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: research_progress_event_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.research_progress_event_id_seq OWNED BY meta.research_progress.event_id;
+
+
+--
+-- Name: research_state; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.research_state (
+    session_id text NOT NULL,
+    query text NOT NULL,
+    pass_number integer DEFAULT 0 NOT NULL,
+    converged boolean DEFAULT false NOT NULL,
+    convergence_reason text DEFAULT ''::text,
+    q_value real DEFAULT 0.5,
+    reward_components jsonb DEFAULT '{}'::jsonb,
+    timing jsonb DEFAULT '{}'::jsonb,
+    tracker_state jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE research_state; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.research_state IS 'Research session state for engine-coordinated multi-pass';
+
+
+--
+-- Name: COLUMN research_state.session_id; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_state.session_id IS 'Unique session ID (e.g., res_20260114_070504)';
+
+
+--
+-- Name: COLUMN research_state.query; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_state.query IS 'Research query string';
+
+
+--
+-- Name: COLUMN research_state.pass_number; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_state.pass_number IS 'Current pass number (1-indexed)';
+
+
+--
+-- Name: COLUMN research_state.converged; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_state.converged IS 'True if research has converged';
+
+
+--
+-- Name: COLUMN research_state.convergence_reason; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_state.convergence_reason IS 'Reason for convergence (e.g., drift_converged:0.05)';
+
+
+--
+-- Name: COLUMN research_state.tracker_state; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.research_state.tracker_state IS 'Serialized ConvergenceTracker state';
 
 
 --
@@ -11913,10 +12252,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__2s7m9j0u09l_2z__qjxsa; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__2s7m9j0u09l_2z__qjxsa (
+CREATE TABLE public.search_index__hb1n_kttbix_pfzn1lton (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11949,11 +12288,11 @@ CREATE TABLE public.search_index__2s7m9j0u09l_2z__qjxsa (
 
 
 --
--- Name: search_index__2s7m9j0u09l_2z__qjxsa_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__2s7m9j0u09l_2z__qjxsa ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__2s7m9j0u09l_2z__qjxsa_id_seq
+ALTER TABLE public.search_index__hb1n_kttbix_pfzn1lton ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__hb1n_kttbix_pfzn1lton_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -11963,10 +12302,10 @@ ALTER TABLE public.search_index__2s7m9j0u09l_2z__qjxsa ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__jxkxi7eiec25gkkkxnsrq; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__popme6otpibpsdt7mqxh_; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__jxkxi7eiec25gkkkxnsrq (
+CREATE TABLE public.search_index__popme6otpibpsdt7mqxh_ (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -11999,11 +12338,11 @@ CREATE TABLE public.search_index__jxkxi7eiec25gkkkxnsrq (
 
 
 --
--- Name: search_index__jxkxi7eiec25gkkkxnsrq_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__popme6otpibpsdt7mqxh__id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__jxkxi7eiec25gkkkxnsrq ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__jxkxi7eiec25gkkkxnsrq_id_seq
+ALTER TABLE public.search_index__popme6otpibpsdt7mqxh_ ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__popme6otpibpsdt7mqxh__id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -13896,6 +14235,13 @@ ALTER TABLE ONLY meta.document_clusters ALTER COLUMN id SET DEFAULT nextval('met
 
 
 --
+-- Name: flow_events event_id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.flow_events ALTER COLUMN event_id SET DEFAULT nextval('meta.flow_events_event_id_seq'::regclass);
+
+
+--
 -- Name: fmp_sync_runs id; Type: DEFAULT; Schema: meta; Owner: -
 --
 
@@ -13935,6 +14281,13 @@ ALTER TABLE ONLY meta.prospect_candidates ALTER COLUMN id SET DEFAULT nextval('m
 --
 
 ALTER TABLE ONLY meta.prospect_strategies ALTER COLUMN id SET DEFAULT nextval('meta.prospect_strategies_id_seq'::regclass);
+
+
+--
+-- Name: research_progress event_id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.research_progress ALTER COLUMN event_id SET DEFAULT nextval('meta.research_progress_event_id_seq'::regclass);
 
 
 --
@@ -14443,6 +14796,14 @@ ALTER TABLE ONLY meta.document_clusters
 
 
 --
+-- Name: flow_events flow_events_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.flow_events
+    ADD CONSTRAINT flow_events_pkey PRIMARY KEY (event_id);
+
+
+--
 -- Name: flow_runs flow_runs_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -14608,6 +14969,22 @@ ALTER TABLE ONLY meta.prospect_strategies
 
 ALTER TABLE ONLY meta.prospect_strategies
     ADD CONSTRAINT prospect_strategies_symbol_profile_domain_key UNIQUE (symbol, profile, domain);
+
+
+--
+-- Name: research_progress research_progress_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.research_progress
+    ADD CONSTRAINT research_progress_pkey PRIMARY KEY (event_id);
+
+
+--
+-- Name: research_state research_state_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.research_state
+    ADD CONSTRAINT research_state_pkey PRIMARY KEY (session_id);
 
 
 --
@@ -16419,19 +16796,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__2s7m9j0u09l_2z__qjxsa search_index__2s7m9j0u09l_2z__qjxsa_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton search_index__hb1n_kttbix_pfzn1lton_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__2s7m9j0u09l_2z__qjxsa
-    ADD CONSTRAINT search_index__2s7m9j0u09l_2z__qjxsa_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__hb1n_kttbix_pfzn1lton
+    ADD CONSTRAINT search_index__hb1n_kttbix_pfzn1lton_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__jxkxi7eiec25gkkkxnsrq search_index__jxkxi7eiec25gkkkxnsrq_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__popme6otpibpsdt7mqxh_ search_index__popme6otpibpsdt7mqxh__pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__jxkxi7eiec25gkkkxnsrq
-    ADD CONSTRAINT search_index__jxkxi7eiec25gkkkxnsrq_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__popme6otpibpsdt7mqxh_
+    ADD CONSTRAINT search_index__popme6otpibpsdt7mqxh__pkey PRIMARY KEY (id);
 
 
 --
@@ -16930,6 +17307,34 @@ CREATE INDEX idx_meta_deps_target ON meta.data_dependencies USING btree (target_
 
 
 --
+-- Name: idx_meta_flow_events_created_at; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_events_created_at ON meta.flow_events USING btree (created_at DESC);
+
+
+--
+-- Name: idx_meta_flow_events_flow_type; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_events_flow_type ON meta.flow_events USING btree (flow_type, created_at DESC);
+
+
+--
+-- Name: idx_meta_flow_events_run_id; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_events_run_id ON meta.flow_events USING btree (run_id);
+
+
+--
+-- Name: idx_meta_flow_events_status; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_events_status ON meta.flow_events USING btree (status);
+
+
+--
 -- Name: idx_meta_flow_runs_status; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -16941,6 +17346,13 @@ CREATE INDEX idx_meta_flow_runs_status ON meta.flow_runs USING btree (status);
 --
 
 CREATE INDEX idx_meta_flow_runs_type ON meta.flow_runs USING btree (flow_type, started_at DESC);
+
+
+--
+-- Name: idx_meta_flow_runs_updated_at; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_flow_runs_updated_at ON meta.flow_runs USING btree (updated_at DESC);
 
 
 --
@@ -16969,6 +17381,20 @@ CREATE INDEX idx_meta_kb_topology_time ON meta.kb_topology USING btree (computed
 --
 
 CREATE INDEX idx_meta_nifi_flows_status ON meta.nifi_flows USING btree (status);
+
+
+--
+-- Name: idx_meta_research_state_converged; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_research_state_converged ON meta.research_state USING btree (converged, updated_at DESC);
+
+
+--
+-- Name: idx_meta_research_state_updated; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_research_state_updated ON meta.research_state USING btree (updated_at DESC);
 
 
 --
@@ -17039,6 +17465,27 @@ CREATE INDEX idx_prospect_strategies_profile ON meta.prospect_strategies USING b
 --
 
 CREATE INDEX idx_prospect_strategies_symbol ON meta.prospect_strategies USING btree (symbol);
+
+
+--
+-- Name: idx_research_progress_created; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_research_progress_created ON meta.research_progress USING btree (created_at DESC);
+
+
+--
+-- Name: idx_research_progress_session; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_research_progress_session ON meta.research_progress USING btree (session_id, event_id);
+
+
+--
+-- Name: idx_research_progress_session_created; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_research_progress_session_created ON meta.research_progress USING btree (session_id, created_at DESC);
 
 
 --
@@ -19784,73 +20231,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__2s7m9j0u09l_2z__qjxsa_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_archived_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING btree (archived);
-
-
---
--- Name: search_index__2s7m9j0u09l_2z__qjxsa_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__2s7m9j0u09l_2z__qjxsa_identity_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING btree (model, model_id);
+CREATE INDEX search_index__hb1n_kttbix_pfzn1lton_archived_idx ON public.search_index__hb1n_kttbix_pfzn1lton USING btree (archived);
 
 
 --
--- Name: search_index__2s7m9j0u09l_2z__qjxsa_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_model_archived_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING btree (model, archived);
-
-
---
--- Name: search_index__2s7m9j0u09l_2z__qjxsa_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_native_tsvector_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index__hb1n_kttbix_pfzn1lton_identity_idx ON public.search_index__hb1n_kttbix_pfzn1lton USING btree (model, model_id);
 
 
 --
--- Name: search_index__2s7m9j0u09l_2z__qjxsa_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__2s7m9j0u09l_2z__qjxsa_tsvector_idx ON public.search_index__2s7m9j0u09l_2z__qjxsa USING gin (search_vector);
-
-
---
--- Name: search_index__jxkxi7eiec25gkkkxnsrq_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_archived_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING btree (archived);
+CREATE INDEX search_index__hb1n_kttbix_pfzn1lton_model_archived_idx ON public.search_index__hb1n_kttbix_pfzn1lton USING btree (model, archived);
 
 
 --
--- Name: search_index__jxkxi7eiec25gkkkxnsrq_identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__jxkxi7eiec25gkkkxnsrq_identity_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING btree (model, model_id);
-
-
---
--- Name: search_index__jxkxi7eiec25gkkkxnsrq_model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_model_archived_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING btree (model, archived);
+CREATE INDEX search_index__hb1n_kttbix_pfzn1lton_native_tsvector_idx ON public.search_index__hb1n_kttbix_pfzn1lton USING gin (with_native_query_vector);
 
 
 --
--- Name: search_index__jxkxi7eiec25gkkkxnsrq_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__hb1n_kttbix_pfzn1lton_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_native_tsvector_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING gin (with_native_query_vector);
+CREATE INDEX search_index__hb1n_kttbix_pfzn1lton_tsvector_idx ON public.search_index__hb1n_kttbix_pfzn1lton USING gin (search_vector);
 
 
 --
--- Name: search_index__jxkxi7eiec25gkkkxnsrq_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__popme6otpibpsdt7mqxh__archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__jxkxi7eiec25gkkkxnsrq_tsvector_idx ON public.search_index__jxkxi7eiec25gkkkxnsrq USING gin (search_vector);
+CREATE INDEX search_index__popme6otpibpsdt7mqxh__archived_idx ON public.search_index__popme6otpibpsdt7mqxh_ USING btree (archived);
+
+
+--
+-- Name: search_index__popme6otpibpsdt7mqxh__identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__popme6otpibpsdt7mqxh__identity_idx ON public.search_index__popme6otpibpsdt7mqxh_ USING btree (model, model_id);
+
+
+--
+-- Name: search_index__popme6otpibpsdt7mqxh__model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__popme6otpibpsdt7mqxh__model_archived_idx ON public.search_index__popme6otpibpsdt7mqxh_ USING btree (model, archived);
+
+
+--
+-- Name: search_index__popme6otpibpsdt7mqxh__native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__popme6otpibpsdt7mqxh__native_tsvector_idx ON public.search_index__popme6otpibpsdt7mqxh_ USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__popme6otpibpsdt7mqxh__tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__popme6otpibpsdt7mqxh__tsvector_idx ON public.search_index__popme6otpibpsdt7mqxh_ USING gin (search_vector);
 
 
 --
@@ -19883,6 +20330,41 @@ CREATE OR REPLACE VIEW public.v_source_status AS
      LEFT JOIN public.profiles p ON ((p.id = ps.profile_id)))
   GROUP BY fs.id
   ORDER BY fs.name;
+
+
+--
+-- Name: flow_runs meta_flow_runs_notify; Type: TRIGGER; Schema: meta; Owner: -
+--
+
+CREATE TRIGGER meta_flow_runs_notify AFTER UPDATE ON meta.flow_runs FOR EACH ROW EXECUTE FUNCTION meta.notify_flow_event();
+
+
+--
+-- Name: TRIGGER meta_flow_runs_notify ON flow_runs; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TRIGGER meta_flow_runs_notify ON meta.flow_runs IS 'Fires pg_notify when flow status changes to completed/failed';
+
+
+--
+-- Name: flow_runs meta_flow_runs_update_timestamp; Type: TRIGGER; Schema: meta; Owner: -
+--
+
+CREATE TRIGGER meta_flow_runs_update_timestamp BEFORE UPDATE ON meta.flow_runs FOR EACH ROW EXECUTE FUNCTION meta.update_flow_runs_timestamp();
+
+
+--
+-- Name: research_progress research_progress_notify; Type: TRIGGER; Schema: meta; Owner: -
+--
+
+CREATE TRIGGER research_progress_notify AFTER INSERT ON meta.research_progress FOR EACH ROW EXECUTE FUNCTION meta.notify_research_progress();
+
+
+--
+-- Name: TRIGGER research_progress_notify ON research_progress; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TRIGGER research_progress_notify ON meta.research_progress IS 'Real-time progress streaming to TUI via LISTEN/NOTIFY';
 
 
 --
@@ -19936,6 +20418,14 @@ ALTER TABLE ONLY meta.data_dependencies
 
 ALTER TABLE ONLY meta.document_clusters
     ADD CONSTRAINT document_clusters_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES meta.kb_topology(snapshot_id);
+
+
+--
+-- Name: flow_events fk_flow_events_run_id; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.flow_events
+    ADD CONSTRAINT fk_flow_events_run_id FOREIGN KEY (run_id) REFERENCES meta.flow_runs(run_id) ON DELETE CASCADE;
 
 
 --
@@ -21430,7 +21920,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 5XFwpqwq1F12g5zjfo9yrPPhrlMXxlhJGlswfuk5NeZxm7GIpRZzjuRHob24Cdk
+\unrestrict ntpo9x5LVqShSsLk24FgdU4c3fCvYWctYmf6KsofIWtoDdwFqB22cvRjdetrAAQ
 
 
 --
@@ -21482,4 +21972,7 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260109000001'),
     ('20260109120000'),
     ('20260111000001'),
-    ('20260111000002');
+    ('20260111000002'),
+    ('20260114000001'),
+    ('20260114000002'),
+    ('20260114000003');

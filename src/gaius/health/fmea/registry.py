@@ -183,6 +183,22 @@ FMEA_REGISTRY: tuple[FMEAMapping, ...] = (
         heuristic_path="rase/task_generation_failed",
         check_names=("objective_task_generation",),
     ),
+    # Operations - Heartbeat/Progress Anomalies
+    FMEAMapping(
+        fmea_id="OPS_001",
+        heuristic_path="operations/heartbeat_anomaly",
+        check_names=("heartbeat_anomaly",),
+    ),
+    FMEAMapping(
+        fmea_id="OPS_002",
+        heuristic_path="operations/missing_heartbeat",
+        check_names=("missing_heartbeat",),
+    ),
+    FMEAMapping(
+        fmea_id="OPS_003",
+        heuristic_path="operations/progress_stall",
+        check_names=("progress_stall",),
+    ),
 )
 
 # Build index structures for fast lookup

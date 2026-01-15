@@ -61,6 +61,11 @@ HEALTH_CHECK_TO_FMEA: dict[str, str] = {
     "calibration_provider": "RASE_007",
     "daemon_oracle_scoring": "RASE_008",
     "objective_task_generation": "RASE_009",
+
+    # Operations - Heartbeat/Progress Anomalies
+    "heartbeat_anomaly": "OPS_001",
+    "missing_heartbeat": "OPS_002",
+    "progress_stall": "OPS_003",
 }
 
 # Reverse mapping for lookup

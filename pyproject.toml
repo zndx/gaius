@@ -233,7 +233,8 @@ dev = [
     "pytest-xdist>=3.8.0",
     "textual-dev>=1.8.0",
     "types-protobuf>=6.32.1.20251210",
-    "types-aioboto3>=15.0.0",  # Type stubs for aioboto3
+    "types-aioboto3>=15.0.0", # Type stubs for aioboto3
+    "bcrypt>=5.0.0",
 ]
 
 # UV configuration
