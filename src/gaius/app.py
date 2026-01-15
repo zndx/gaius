@@ -6322,241 +6322,604 @@ Press `i` to cycle modes or `/iso <mode>` to switch.
 Press `i` to cycle modes or `/iso <mode>` to switch.
 """)
 
-    def _run_search(self, query: str) -> None:
-        """Search KB and optionally web for a query."""
+    def _run_search(self, args: str) -> None:
+        """Search KB + web with dual-LLM synthesis via Metaflow SearchFlow.
+
+        Uses engine-managed Metaflow workflow with:
+        - BM25 lexical search
+        - ColNomic vector search (GPU orchestrated)
+        - Web search (Brave API)
+        - Parallel synthesis (local + Grok via branch/join)
+        - KB artifact creation
+
+        All phases are orchestrated by the engine with completion gates,
+        eliminating brittle inline fallbacks.
+
+        Flags:
+            --local: Skip Grok, use local model only (faster)
+        """
         import asyncio
         from datetime import datetime
 
         content = self.query_one("#info-panel", InfoPanel)
         think = self.query_one("#think-panel", ThinkPanel)
 
+        # Parse --local flag
+        skip_grok = "--local" in args
+        query = args.replace("--local", "").strip()
+
         if not query:
-            content.show_file("error.txt", "Usage: /search <query>\n\nSearches KB files and content.")
+            content.show_file("error.txt", "Usage: /search <query>\n\nSearches KB + web with LLM synthesis.\n\nFlags:\n  --local: Skip Grok, use local model only")
             return
 
-        content.show_file("search.md", f"Searching for: **{query}**\n\n*Searching KB...*")
-        think.stream_reasoning(f"Searching KB for: {query}")
+        mode_hint = " (local only)" if skip_grok else " (local + Grok)"
+        content.show_file("search.md", f"Searching for: **{query}**{mode_hint}\n\n*Starting SearchFlow...*")
+        think.stream_reasoning(f"Searching: {query}")
 
         async def search():
+            from .client import get_grpc_client
+
             start_time = datetime.now()
-            kb_root = Path(self.config.kb.root)
-            results = []
+            kb_path = ""
+            errors: list[str] = []
+            final_result: dict = {}
 
-            # Search KB files
-            for allowed_dir in ("archive", "current", "scratch"):
-                dir_path = kb_root / allowed_dir
-                if not dir_path.exists():
-                    continue
+            try:
+                client = await get_grpc_client()
 
-                for md_file in dir_path.rglob("*.md"):
-                    # Check filename
-                    if query.lower() in md_file.name.lower():
-                        rel_path = md_file.relative_to(kb_root)
-                        results.append({
-                            "path": str(rel_path),
-                            "match": "filename",
-                            "preview": md_file.name,
-                        })
-                        continue
+                # Stream SearchFlow events from engine
+                async for event in client.stream(
+                    service="SearchFlow",
+                    action="search_stream",
+                    params={
+                        "query": query,
+                        "skip_grok": skip_grok,
+                    },
+                    timeout=300.0,  # 5 minute idle timeout for full workflow
+                ):
+                    type_name = event.get("type_name", "UNKNOWN")
+                    progress = event.get("progress", 0.0)
+                    message = event.get("message", "")
 
-                    # Check content
-                    try:
-                        file_content = md_file.read_text()
-                        if query.lower() in file_content.lower():
-                            idx = file_content.lower().find(query.lower())
-                            start = max(0, idx - 50)
-                            end = min(len(file_content), idx + len(query) + 50)
-                            preview = file_content[start:end].replace("\n", " ")
-                            if start > 0:
-                                preview = "..." + preview
-                            if end < len(file_content):
-                                preview = preview + "..."
+                    # Stream progress to ThinkPanel
+                    progress_pct = int(progress * 100)
+                    if type_name not in ("COMPLETED", "FAILED", "UNSPECIFIED"):
+                        think.stream_reasoning(f"[{progress_pct}%] {message}")
 
-                            rel_path = md_file.relative_to(kb_root)
-                            results.append({
-                                "path": str(rel_path),
-                                "match": "content",
-                                "preview": preview,
-                            })
-                    except Exception:
-                        continue
+                    # Handle completion
+                    if type_name == "COMPLETED":
+                        final_result = event.get("result", {})
+                        # kb_path is nested inside result from proto: SearchFlowEvent.result.kb_path
+                        kb_path = final_result.get("kb_path", "")
+                        think.stream_reasoning(f"Search complete: {kb_path}")
 
-                    if len(results) >= 20:
-                        break
-                if len(results) >= 20:
-                    break
+                    # Handle failure
+                    if type_name == "FAILED":
+                        error = event.get("error", message)
+                        guru_code = event.get("guru_code", "")
+                        error_msg = f"{error}" + (f" ({guru_code})" if guru_code else "")
+                        errors.append(error_msg)
+                        think.stream_reasoning(f"Error: {error_msg}")
+
+            except Exception as e:
+                errors.append(f"SearchFlow error: {e}")
 
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
-            # Format results
-            lines = [
-                f"# Search: {query}",
-                "",
-                f"**Found:** {len(results)} results in KB",
-                "",
-            ]
-
-            if results:
-                lines.append("## KB Results")
+            # Display results
+            if kb_path:
+                # Load and display the KB artifact created by SearchFlow
+                try:
+                    kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+                    full_path = os.path.join(kb_root, kb_path) if not kb_path.startswith(kb_root) else kb_path
+                    if os.path.exists(full_path):
+                        with open(full_path) as f:
+                            kb_content = f.read()
+                        self._show_output("search", kb_content)
+                    else:
+                        # Show result summary if KB file not found
+                        self._format_search_result(query, final_result, errors, duration_ms)
+                except Exception as e:
+                    errors.append(f"Error loading KB artifact: {e}")
+                    self._format_search_result(query, final_result, errors, duration_ms)
+            elif errors:
+                # Show errors
+                lines = [f"# Search: {query}", "", "## Errors", ""]
+                for err in errors:
+                    lines.append(f"- {err}")
                 lines.append("")
-                for r in results:
-                    match_type = "[FILE]" if r["match"] == "filename" else "[TEXT]"
-                    lines.append(f"- {match_type} **{r['path']}**")
-                    lines.append(f"  {r['preview'][:100]}")
-                    lines.append("")
+                lines.append(f"[action:/search --local {query}]")
+                self._show_output("search_error", "\n".join(lines))
             else:
-                lines.append("*No results in KB.*")
-                lines.append("")
-                lines.append("Try `/research <topic>` to search the web and save to KB.")
-
-            self._show_output("search", "\n".join(lines))
+                # Unexpected: no KB path and no errors
+                self._format_search_result(query, final_result, ["No results returned"], duration_ms)
 
             # Record trace
             think.complete_trace(
                 operation="search",
                 query=query,
-                summary=f"Found {len(results)} KB results",
+                summary=f"KB:{kb_path or 'none'} Errors:{len(errors)}",
                 tokens=0,
-                sources=len(results),
+                sources=0,
                 duration_ms=duration_ms,
             )
 
-        asyncio.create_task(search())
+        async def search_with_error_handling():
+            try:
+                await search()
+            except Exception as e:
+                import traceback
+                error_content = f"# Search Error\n\n```\n{traceback.format_exc()}\n```"
+                self._show_output("search_error", error_content)
+                think.clear_active()
 
-    def _run_research(self, topic: str) -> None:
-        """Research a topic using web search and LLM synthesis."""
+        asyncio.create_task(search_with_error_handling())
+
+    def _format_search_result(
+        self,
+        query: str,
+        result: dict,
+        errors: list[str],
+        duration_ms: int,
+    ) -> None:
+        """Format search result for display when KB artifact not available."""
+        lines = [f"# Search: {query}", "", "---", ""]
+
+        # Synthesis results
+        local_synthesis = result.get("local_synthesis", "")
+        grok_synthesis = result.get("grok_synthesis", "")
+
+        if grok_synthesis:
+            lines.append("## Grok Analysis")
+            lines.append("")
+            lines.append(grok_synthesis)
+            lines.append("")
+
+        if local_synthesis:
+            lines.append("## Local Analysis")
+            lines.append("")
+            lines.append(local_synthesis)
+            lines.append("")
+
+        # KB results
+        kb_results = result.get("kb_results", [])
+        if kb_results:
+            lines.append("## KB Sources")
+            lines.append("")
+            for r in kb_results[:5]:
+                path = r.get("path", "")
+                if path.startswith("build/dev/"):
+                    path = path[10:]
+                title = r.get("title", path)
+                lines.append(f"- [[{path}]] - {title}")
+            lines.append("")
+
+        # Web results
+        web_results = result.get("web_results", [])
+        if web_results:
+            lines.append("## Web Sources")
+            lines.append("")
+            for r in web_results[:3]:
+                title = r.get("title", "")
+                url = r.get("url", "")
+                lines.append(f"- [{title}]({url})")
+            lines.append("")
+
+        # Actions
+        lines.append("## Actions")
+        lines.append("")
+        lines.append(f"[action:/research {query}]")
+        lines.append(f"[action:/search --local {query}]")
+        lines.append("")
+
+        # Warnings
+        if errors:
+            lines.append("## Warnings")
+            lines.append("")
+            for err in errors:
+                lines.append(f"- {err}")
+            lines.append("")
+
+        lines.append(f"*Completed in {duration_ms}ms*")
+
+        self._show_output("search", "\n".join(lines))
+
+    def _handle_research_command(self, args: str) -> None:
+        """Handle /research command with subcommands for status and stop.
+
+        Usage:
+            /research <query>     - Start deep research with streaming progress
+            /research status      - Check if research is running
+            /research stop        - Stop current research
+
+        Uses engine-managed Metaflow workflow with:
+        - MemRL episodic memory (Q-value weighted retrieval)
+        - Multi-pass research cycle with convergence detection
+        - 7-agent swarm analysis (STORM-inspired)
+        - Grok synthesis for polished output
+        - KB artifact creation with MemRL frontmatter
+        """
         import asyncio
-        from datetime import datetime
 
         content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.strip().split(maxsplit=1) if args else []
+        subcommand = parts[0].lower() if parts else ""
+
+        # Check for subcommands first
+        if subcommand == "status":
+            self._run_research_status(content)
+        elif subcommand == "stop":
+            self._run_research_stop(content)
+        elif subcommand == "help" or not args.strip():
+            # Show help
+            content.show_file("research.md", """# Research
+
+**Usage:**
+- `/research <query>`  Start deep research with streaming progress
+- `/research status`   Check if research is running
+- `/research stop`     Stop current research
+
+**Features:**
+- Q-value weighted memory retrieval
+- 7-agent swarm analysis
+- Grok synthesis
+- Convergence detection
+""")
+        else:
+            # Start research with the full args as the query
+            self._run_research_start(content, args.strip())
+
+    def _run_research_start(self, content: "InfoPanel", topic: str) -> None:
+        """Start multi-pass deep research with streaming progress in InfoPanel.
+
+        Fire and forget - starts research and streams progress to InfoPanel.
+        Uses debounced updates (200ms) to keep TUI responsive.
+        """
+        import asyncio
+        import time
+        from datetime import datetime
+
         think = self.query_one("#think-panel", ThinkPanel)
 
-        if not topic:
-            content.show_file("error.txt", "Usage: /research <topic>\n\nSearches web and synthesizes results to KB.")
-            return
+        content.show_file("research.md", f"# Research\n\n**Query:** {topic}\n\n*Starting ResearchFlow...*")
+        think.stream_reasoning(f"Research: {topic}")
 
-        domain = self.state.domain or "open"
-        content.show_file("research.md", f"Researching: **{topic}**\n\nDomain: {domain}\n\n*Searching web...*")
-        think.stream_reasoning(f"Researching: {topic}")
+        def make_progress_bar(pct: float, width: int = 25) -> str:
+            """Create ASCII progress bar."""
+            filled = int(width * pct / 100)
+            return f"[{'=' * filled}{' ' * (width - filled)}]"
 
         async def research():
+            from .client import get_grpc_client
+
             start_time = datetime.now()
+            kb_path = ""
+            errors: list[str] = []
+            final_result: dict = {}
+            current_pass = 0
+            best_q_value = 0.0
+
+            # Debounce tracking for UI updates
+            last_update = 0.0
+            UPDATE_INTERVAL = 0.2  # 200ms max update frequency
+
+            # Completed phases for display
+            completed_phases: list[str] = []
+
             try:
-                from .client import get_grpc_client
-                from .inference import get_search
-
-                # Search for information
-                think.stream_reasoning("Searching web sources...")
-                search = get_search()
-                results = await search.search_for_kb(topic, domain, count=5)
-
-                if not results:
-                    content.show_file("research.md", f"# Research: {topic}\n\n*No search results found.*\n\nTry a different query or check your internet connection.")
-                    think.clear_active()
-                    return
-
-                # Show search progress
-                content.show_file("research.md", f"Researching: **{topic}**\n\nDomain: {domain}\n\nFound {len(results)} sources, synthesizing...")
-                think.stream_reasoning(f"Found {len(results)} sources, synthesizing...")
-
-                # Format sources for synthesis
-                sources_text = "\n".join(
-                    f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
-                )
-
-                # Synthesize with LLM via gRPC
                 client = await get_grpc_client()
-                synthesis_prompt = f"""Topic: {topic}
-Domain: {domain}
 
-Sources:
-{sources_text}
-
-Create a structured markdown note with:
-1. Key points and facts
-2. Implications or applications
-3. Related concepts (as wiki-links using [[concept]] syntax)
-
-Be concise but thorough."""
-
-                synthesis = await client.call(
-                    service="Scheduler",
-                    action="complete",
+                # Stream ResearchFlow events from engine
+                async for event in client.stream(
+                    service="ResearchFlow",
+                    action="research_stream",
                     params={
-                        "prompt": synthesis_prompt,
-                        "system_prompt": f"You are a research assistant specializing in {domain}.",
-                        "agent": "instruct",
-                        "technique": "cot_reflection",
-                        "max_tokens": 2048,
+                        "query": topic,
                     },
-                )
-                synthesis_content = synthesis.get("content", "")
+                    timeout=600.0,  # 10 minute idle timeout for full research workflow
+                ):
+                    type_name = event.get("type_name", "UNKNOWN")
+                    progress = event.get("progress", 0.0)
+                    message = event.get("message", "")
+                    pass_num = event.get("pass_number", 0)
 
-                # Save to KB
-                today = datetime.now().strftime("%Y-%m-%d")
-                timestamp = datetime.now().strftime("%H%M%S")
-                safe_topic = topic.replace(" ", "_").replace("/", "-")[:50]
-                kb_path = f"scratch/{today}/{timestamp}_{safe_topic}.md"
+                    # Track current pass
+                    if pass_num > current_pass:
+                        current_pass = pass_num
 
-                full_content = f"""# {topic}
+                    # Stream progress to ThinkPanel with pass info
+                    progress_pct = int(progress * 100)
+                    if type_name not in ("completed", "failed"):
+                        pass_info = f" (pass {current_pass})" if current_pass > 0 else ""
+                        think.stream_reasoning(f"[{progress_pct}%]{pass_info} {message}")
 
-Created: {datetime.now().isoformat()}
-Domain: {domain}
+                    # Track completed phases
+                    if progress >= 1.0 and type_name not in completed_phases:
+                        completed_phases.append(type_name)
 
----
+                    # Handle convergence
+                    if type_name == "converged":
+                        reason = event.get("convergence_reason", "")
+                        completed_phases.append(f"converged: {reason}")
 
-{synthesis_content}
+                    # Handle completion
+                    if type_name == "completed":
+                        final_result = event.get("result", {})
+                        kb_path = final_result.get("kb_path", event.get("kb_path", ""))
+                        best_q_value = final_result.get("best_q_value", event.get("best_q_value", 0.0))
+                        convergence_reason = final_result.get("convergence_reason", event.get("convergence_reason", ""))
+                        total_passes = final_result.get("total_passes", event.get("total_passes", current_pass))
+                        think.stream_reasoning(
+                            f"Research complete: {kb_path} "
+                            f"(Q={best_q_value:.2f}, {total_passes} passes, {convergence_reason})"
+                        )
 
----
+                    # Handle failure
+                    if type_name == "failed":
+                        error = event.get("error", message)
+                        guru_code = event.get("guru_code", "")
+                        error_msg = f"{error}" + (f" ({guru_code})" if guru_code else "")
+                        errors.append(error_msg)
+                        think.stream_reasoning(f"Error: {error_msg}")
 
-## Sources
+                    # Debounced UI updates
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        last_update = now
 
-{sources_text}
-"""
-                kb_root = Path(self.config.kb.root)
-                full_path = kb_root / kb_path
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                full_path.write_text(full_content)
+                        # Build progress display
+                        elapsed_s = (datetime.now() - start_time).total_seconds()
+                        lines = [f"# Research: {topic}", ""]
 
-                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                        # Pass and progress info
+                        if current_pass > 0:
+                            lines.append(f"**Pass {current_pass}**")
+                        lines.append(f"{make_progress_bar(progress_pct)} {progress_pct}%")
+                        lines.append(f"*Elapsed: {elapsed_s:.0f}s*")
+                        lines.append("")
 
-                # Show result
-                result_text = f"""# Research: {topic}
+                        # Completed phases
+                        if completed_phases:
+                            for phase in completed_phases[-5:]:  # Last 5 phases
+                                # Use checkmark for completed phases
+                                lines.append(f"[OK] {phase}")
+                            lines.append("")
 
-**Domain:** {domain}
-**Saved to:** `{kb_path}`
+                        # Current status
+                        if type_name not in ("completed", "failed"):
+                            lines.append(f"*{message}*")
 
----
-
-{synthesis_content}
-
----
-
-## Sources
-
-{sources_text}
-"""
-                self._show_output("research", result_text)
-
-                # Record trace
-                think.complete_trace(
-                    operation="research",
-                    query=topic,
-                    summary=f"Synthesized {len(results)} sources → {kb_path}",
-                    tokens=synthesis.get("input_tokens", 0) + synthesis.get("output_tokens", 0),
-                    sources=len(results),
-                    duration_ms=duration_ms,
-                )
-
-                # Refresh file tree
-                file_tree = self.query_one("#file-tree", FileTree)
-                file_tree.refresh_tree()
+                        content.show_file("research.md", "\n".join(lines))
+                        await asyncio.sleep(0)  # Yield to TUI event loop
 
             except Exception as e:
-                think.clear_active()
-                content.show_file("error.txt", f"Research failed: {e}\n\nCheck that inference services are running.")
+                errors.append(f"ResearchFlow error: {e}")
 
-        asyncio.create_task(research())
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+
+            # Display results
+            if kb_path:
+                # Load and display the KB artifact created by ResearchFlow
+                try:
+                    kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+                    full_path = os.path.join(kb_root, kb_path) if not kb_path.startswith(kb_root) else kb_path
+                    if os.path.exists(full_path):
+                        with open(full_path) as f:
+                            kb_content = f.read()
+                        self._show_output("research", kb_content)
+
+                        # Refresh file tree
+                        file_tree = self.query_one("#file-tree", FileTree)
+                        file_tree.refresh_tree()
+                    else:
+                        # Show result summary if KB file not found
+                        self._format_research_result(topic, final_result, errors, duration_ms)
+                except Exception as e:
+                    errors.append(f"Error loading KB artifact: {e}")
+                    self._format_research_result(topic, final_result, errors, duration_ms)
+            elif errors:
+                # Show errors
+                lines = [f"# Research: {topic}", "", "## Errors", ""]
+                for err in errors:
+                    lines.append(f"- {err}")
+                lines.append("")
+                lines.append("## Actions")
+                lines.append("")
+                lines.append(f"[action:/search {topic}]")
+                self._show_output("research_error", "\n".join(lines))
+            else:
+                # Unexpected: no KB path and no errors
+                self._format_research_result(topic, final_result, ["No results returned"], duration_ms)
+
+            # Record trace
+            think.complete_trace(
+                operation="research",
+                query=topic,
+                summary=f"KB:{kb_path or 'none'} Q={best_q_value:.2f} Passes:{current_pass} Errors:{len(errors)}",
+                tokens=0,
+                sources=0,
+                duration_ms=duration_ms,
+            )
+
+        async def research_with_error_handling():
+            try:
+                await research()
+            except Exception as e:
+                import traceback
+                error_content = f"# Research Error\n\n```\n{traceback.format_exc()}\n```"
+                self._show_output("research_error", error_content)
+                think.clear_active()
+
+        asyncio.create_task(research_with_error_handling())
+
+    def _format_research_result(
+        self,
+        query: str,
+        result: dict,
+        errors: list[str],
+        duration_ms: int,
+    ) -> None:
+        """Format research result for display when KB artifact not available."""
+        lines = [f"# Research: {query}", "", "---", ""]
+
+        # Research metadata
+        best_q_value = result.get("best_q_value", 0.0)
+        total_passes = result.get("total_passes", 0)
+        convergence_reason = result.get("convergence_reason", "")
+
+        if best_q_value > 0 or total_passes > 0:
+            lines.append("## Research Summary")
+            lines.append("")
+            if total_passes > 0:
+                lines.append(f"- **Passes:** {total_passes}")
+            if best_q_value > 0:
+                lines.append(f"- **Best Q-value:** {best_q_value:.2f}")
+            if convergence_reason:
+                lines.append(f"- **Convergence:** {convergence_reason}")
+            lines.append("")
+
+        # Actions
+        lines.append("## Actions")
+        lines.append("")
+        lines.append(f"[action:/search {query}]")
+        lines.append("")
+
+        # Warnings
+        if errors:
+            lines.append("## Warnings")
+            lines.append("")
+            for err in errors:
+                lines.append(f"- {err}")
+            lines.append("")
+
+        lines.append(f"*Completed in {duration_ms}ms*")
+
+        self._show_output("research", "\n".join(lines))
+
+    def _run_research_status(self, content: "InfoPanel") -> None:
+        """Show current research status via gRPC."""
+        import asyncio
+
+        content.show_file("research.md", "# Research Status\n\n*Fetching...*")
+
+        async def get_status():
+            try:
+                from .client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call(
+                    service="ResearchFlow",
+                    action="status",
+                    params={},
+                    timeout=5.0,
+                )
+
+                running = result.get("running", False)
+                nbsp = "\u00a0"
+
+                if running:
+                    query = result.get("query", "N/A")
+                    pass_num = result.get("pass_number", 0)
+                    progress = result.get("progress", 0.0) * 100
+                    phase = result.get("phase", "N/A")
+                    elapsed_s = result.get("elapsed_s", 0.0)
+                    stop_requested = result.get("stop_requested", False)
+
+                    lines = [
+                        "# Research Status",
+                        "",
+                        f"Running{nbsp * 4}Yes  ",
+                        f"Query{nbsp * 6}{query}  ",
+                        f"Pass{nbsp * 7}{pass_num}  ",
+                        f"Progress{nbsp * 3}{progress:.0f}%  ",
+                        f"Phase{nbsp * 6}{phase}  ",
+                        f"Elapsed{nbsp * 4}{elapsed_s:.0f}s",
+                    ]
+                    if stop_requested:
+                        lines.append("")
+                        lines.append("*Stop requested - completing current phase...*")
+
+                    lines.extend([
+                        "",
+                        "---",
+                        "",
+                        "`/research stop`",
+                    ])
+                else:
+                    lines = [
+                        "# Research Status",
+                        "",
+                        "**Running:** No",
+                        "",
+                        "No research currently active.",
+                        "",
+                        "---",
+                        "",
+                        "`/research <query>`  Start research  ",
+                        "`/research status`   Check status  ",
+                        "`/research stop`     Stop research",
+                    ]
+
+                content.show_file("research.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("error.txt", f"Failed to get research status: {e}")
+
+        asyncio.create_task(get_status())
+
+    def _run_research_stop(self, content: "InfoPanel") -> None:
+        """Request stop of current research via gRPC."""
+        import asyncio
+
+        content.show_file("research.md", "# Research\n\n*Requesting stop...*")
+
+        async def request_stop():
+            try:
+                from .client import get_grpc_client
+
+                client = await get_grpc_client()
+                result = await client.call(
+                    service="ResearchFlow",
+                    action="stop",
+                    params={},
+                    timeout=5.0,
+                )
+
+                success = result.get("success", False)
+                message = result.get("message", "")
+                error = result.get("error", "")
+
+                if success:
+                    lines = [
+                        "# Research Stopped",
+                        "",
+                        f"[OK] {message or 'Stop requested'}",
+                        "",
+                        "*Research will stop after completing current phase.*",
+                        "",
+                        "---",
+                        "",
+                        "`/research status`",
+                    ]
+                else:
+                    lines = [
+                        "# Research Stop",
+                        "",
+                        f"**Error:** {error or 'Unknown error'}",
+                        "",
+                        "---",
+                        "",
+                        "`/research status`  Check if research is running  ",
+                        "`/research <query>` Start new research",
+                    ]
+
+                content.show_file("research.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("error.txt", f"Failed to stop research: {e}")
+
+        asyncio.create_task(request_stop())
 
     def _run_ask(self, args: str) -> None:
         """General-purpose agentic query - /ask away!
@@ -8215,8 +8578,8 @@ Use `/reindex` to refresh TDA from current KB.
             # Search KB
             self._run_search(args)
         elif command == "research":
-            # Research topic (web search + LLM synthesis)
-            self._run_research(args)
+            # Research topic with streaming progress (web search + LLM synthesis)
+            self._handle_research_command(args)
         elif command == "ask":
             # General-purpose agentic query - /ask away!
             self._run_ask(args)

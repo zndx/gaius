@@ -40,7 +40,10 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import TextIO, cast
+from typing import TYPE_CHECKING, TextIO, cast
+
+if TYPE_CHECKING:
+    from gaius.inference.parallel_synthesis import ParallelResult
 
 logger = logging.getLogger(__name__)
 
@@ -1279,7 +1282,7 @@ class GaiusCLI:
                 "watch [cmd] [filter]": "OTel telemetry (status, traces, spans, metrics, logs)",
                 # Search and research
                 "search <query>": "Hybrid search (BM25 + Vector + Web)",
-                "research <topic>": "Hybrid search + LLM → Zettelkasten note",
+                "research [cmd]": "Deep research (status, stop, or <query>)",
                 "research-eval <topic>": "Research + evaluate with frontier model",
                 "eval <path>": "Evaluate a Zettelkasten note",
                 "eval-stats": "Show aggregate evaluation statistics",
@@ -2209,9 +2212,10 @@ for name, obj in list(locals().items()):
         Usage:
             /ask <question>              - Auto-route based on query analysis
             /ask --reason <question>     - Force reasoning mode
-            /ask --search <question>     - Force search + synthesis
+            /ask --search <question>     - Force search + synthesis (dual-LLM)
             /ask --swarm <question>      - Force multi-agent analysis
             /ask --platform <error>      - Diagnose platform issues
+            /ask --local                 - Skip Grok, use local model only (faster)
             /ask --save                  - Save response to KB as heuristic
         """
         if not args:
@@ -2223,10 +2227,11 @@ for name, obj in list(locals().items()):
         force_swarm = "--swarm" in args
         is_platform = "--platform" in args
         save_to_kb = "--save" in args
+        skip_grok = "--local" in args
 
         # Clean up flags from query
         query = args
-        for flag in ["--reason", "--search", "--swarm", "--platform", "--save"]:
+        for flag in ["--reason", "--search", "--swarm", "--platform", "--save", "--local"]:
             query = query.replace(flag, "").strip()
 
         if not query:
@@ -2239,14 +2244,14 @@ for name, obj in list(locals().items()):
         if force_swarm:
             return await self._ask_swarm(query, engine_client, save_to_kb)
         elif force_search:
-            return await self._ask_search(query, engine_client, save_to_kb)
+            return await self._ask_search(query, engine_client, save_to_kb, skip_grok=skip_grok)
         elif force_reason:
             return await self._ask_reason(query, engine_client, save_to_kb)
         elif is_platform:
             return await self._ask_platform(query, engine_client, save_to_kb)
         else:
             # Auto-route based on query analysis
-            return await self._ask_auto(query, engine_client, save_to_kb)
+            return await self._ask_auto(query, engine_client, save_to_kb, skip_grok=skip_grok)
 
     async def _get_engine_client_cached(self):
         """Get cached engine client if available.
@@ -2345,7 +2350,9 @@ for name, obj in list(locals().items()):
             logging.getLogger(__name__).debug(f"Engine inference failed: {e}")
             return None
 
-    async def _ask_auto(self, query: str, engine_client, save_to_kb: bool) -> dict:
+    async def _ask_auto(
+        self, query: str, engine_client, save_to_kb: bool, skip_grok: bool = False
+    ) -> dict:
         """Auto-route query based on content analysis."""
         query_lower = query.lower()
 
@@ -2363,7 +2370,9 @@ for name, obj in list(locals().items()):
             "pros and cons", "best practice", "documentation",
         ]
         if any(p in query_lower for p in research_patterns):
-            return await self._ask_search(query, engine_client, save_to_kb)
+            return await self._ask_search(
+                query, engine_client, save_to_kb, skip_grok=skip_grok
+            )
 
         # Domain analysis patterns (benefit from swarm)
         domain_patterns = [
@@ -2446,7 +2455,9 @@ When discussing technical topics, be precise and cite sources when possible."""
         except ImportError:
             raise RuntimeError("Inference not available. Run: uv sync --extra inference")
 
-    async def _ask_search(self, query: str, engine_client, save_to_kb: bool) -> dict:
+    async def _ask_search(
+        self, query: str, engine_client, save_to_kb: bool, skip_grok: bool = False
+    ) -> dict:
         """Search + synthesis mode.
 
         When --save is specified, leverages /research to create a full
@@ -2460,8 +2471,9 @@ When discussing technical topics, be precise and cite sources when possible."""
             return await self._ask_research(query, engine_client)
 
         # Quick synthesis mode (no save)
-        # Run hybrid search
-        search_result = await self._cmd_search(query)
+        # Run hybrid search with --local flag if skip_grok is True
+        search_args = f"--local {query}" if skip_grok else query
+        search_result = await self._cmd_search(search_args)
 
         kb_results = search_result.get("kb_results", [])
         web_results = search_result.get("web_results", [])
@@ -2868,99 +2880,108 @@ Respond with:
         return filepath
 
     async def _cmd_search(self, args: str) -> dict:
-        """Hybrid search: BM25 + Vector (Qdrant) + Brave web search.
+        """Hybrid search via Metaflow SearchFlow with engine-managed orchestration.
 
-        Combines lexical, semantic, and web results for comprehensive search.
-        Uses RRF (Reciprocal Rank Fusion) to merge KB results.
+        Uses engine-managed Metaflow workflow with:
+        - BM25 lexical search
+        - ColNomic vector search (GPU orchestrated)
+        - Web search (Brave API)
+        - Parallel synthesis (local + Grok via branch/join)
+        - KB artifact creation
+
+        All phases are orchestrated by the engine with completion gates,
+        eliminating brittle inline fallbacks.
+
+        Flags:
+            --local: Skip Grok, use only local model (faster, for demos)
         """
-        if not args:
+        from .client import get_grpc_client
+
+        # Parse --local flag
+        skip_grok = "--local" in args
+        query = args.replace("--local", "").strip()
+
+        if not query:
             raise ValueError("search requires a query")
 
-        bm25_results = []
-        vector_results = []
-        web_results = []
-        errors = []
+        errors: list[str] = []
+        kb_path = ""
+        final_result: dict = {}
+        events: list[dict] = []
 
-        # BM25 lexical search over KB
         try:
-            from .inference.search import get_kb_search
+            client = await get_grpc_client()
 
-            kb_search = get_kb_search()
-            if kb_search.index_size == 0:
-                kb_search.build_index()
+            # Stream SearchFlow events from engine
+            async for event in client.stream(
+                service="SearchFlow",
+                action="search_stream",
+                params={
+                    "query": query,
+                    "skip_grok": skip_grok,
+                },
+                timeout=300.0,  # 5 minute idle timeout for full workflow
+            ):
+                events.append(event)
+                type_name = event.get("type_name", "UNKNOWN")
 
-            bm25_hits = kb_search.search(args, top_k=10)
-            bm25_results = [
-                {
-                    "source": "bm25",
-                    "path": r.path,
-                    "title": r.title,
-                    "snippet": r.snippet[:150],
-                    "score": round(r.score, 2),
-                    "citation": f"{r.path}:/{r.match_pattern}/" if r.match_pattern else r.path,
-                }
-                for r in bm25_hits
-            ]
-        except ImportError:
-            errors.append("BM25 not available (run: uv sync --extra search)")
+                # Handle completion
+                if type_name == "COMPLETED":
+                    final_result = event.get("result", {})
+                    # kb_path is nested inside result from proto: SearchFlowEvent.result.kb_path
+                    kb_path = final_result.get("kb_path", "")
+
+                # Handle failure
+                if type_name == "FAILED":
+                    error = event.get("error", "")
+                    guru_code = event.get("guru_code", "")
+                    error_msg = f"{error}" + (f" ({guru_code})" if guru_code else "")
+                    errors.append(error_msg)
+
         except Exception as e:
-            errors.append(f"BM25 error: {e}")
+            errors.append(f"SearchFlow error: {e}")
 
-        # Vector semantic search over KB (Qdrant)
-        try:
-            from .inference.search import get_vector_search
+        # Return structured result
+        if kb_path:
+            # Load KB artifact content
+            import os
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            full_path = os.path.join(kb_root, kb_path) if not kb_path.startswith(kb_root) else kb_path
+            content = ""
+            if os.path.exists(full_path):
+                with open(full_path) as f:
+                    content = f.read()
 
-            vector_search = get_vector_search()
-            vector_hits = vector_search.search(args, top_k=10)
-            vector_results = [
-                {
-                    "source": "vector",
-                    "path": r.path,
-                    "title": r.title,
-                    "snippet": r.snippet[:150],
-                    "score": round(r.score, 3),
-                    "chunk_id": r.chunk_id,
-                }
-                for r in vector_hits
-            ]
-        except ImportError:
-            errors.append("Vector search not available")
-        except Exception as e:
-            errors.append(f"Vector search error: {e}")
+            return {
+                "query": query,
+                "content": content,
+                "kb_path": kb_path,
+                "kb_results": final_result.get("kb_results", []),
+                "web_results": final_result.get("web_results", []),
+                "has_grok": bool(final_result.get("grok_synthesis")),
+                "has_local": bool(final_result.get("local_synthesis")),
+                "errors": errors if errors else None,
+                "events": events,
+            }
+        else:
+            # Return error result
+            lines = [f"# Search: {query}", "", "## Errors", ""]
+            for err in errors:
+                lines.append(f"- {err}")
+            lines.append("")
+            lines.append(f"[action:/search --local {query}]")
 
-        # Brave web search
-        try:
-            from .inference import get_search
-
-            search = get_search()
-            web_hits = await search.search(args, count=5)
-            web_results = [
-                {
-                    "source": "web",
-                    "url": r.url,
-                    "title": r.title,
-                    "snippet": r.snippet[:150],
-                }
-                for r in web_hits
-            ]
-        except ImportError:
-            errors.append("Brave search not available")
-        except RuntimeError as e:
-            errors.append(f"Web search error: {e}")
-
-        # RRF fusion of BM25 + Vector results
-        fused_kb = self._rrf_fusion(bm25_results, vector_results, k=60)
-
-        return {
-            "query": args,
-            "kb_results": fused_kb[:10],  # Top 10 fused
-            "web_results": web_results,
-            "kb_count": len(fused_kb),
-            "web_count": len(web_results),
-            "bm25_count": len(bm25_results),
-            "vector_count": len(vector_results),
-            "errors": errors if errors else None,
-        }
+            return {
+                "query": query,
+                "content": "\n".join(lines),
+                "kb_path": "",
+                "kb_results": [],
+                "web_results": [],
+                "has_grok": False,
+                "has_local": False,
+                "errors": errors,
+                "events": events,
+            }
 
     def _rrf_fusion(
         self,
@@ -3005,54 +3026,259 @@ Respond with:
 
         return result
 
-    async def _cmd_research(self, args: str) -> dict:
-        """Research topic using hybrid search and generate Zettelkasten note.
+    def _format_search_output(
+        self,
+        query: str,
+        synthesis: "ParallelResult",
+        kb_results: list[dict],
+        web_results: list[dict],
+        errors: list[str],
+    ) -> dict:
+        """Format search results as Zettelkasten with dual synthesis.
 
-        Uses BM25 + Vector + Web search, then synthesizes with LLM.
+        Structure:
+        1. Grok Analysis (above the fold - frontier perspective)
+        2. Local Analysis (local model perspective)
+        3. KB Sources (wiki-links for Graph Panel navigation)
+        4. Web Sources (markdown links)
+        5. Actions (action-links for Graph Panel)
+        6. Warnings (if any errors occurred)
         """
-        if not args:
-            raise ValueError("research requires a topic")
+        # Import here to avoid circular imports
+        from gaius.inference.parallel_synthesis import ParallelResult
 
-        try:
-            # First, run hybrid search
-            search_result = await self._cmd_search(args)
+        lines = []
 
-            kb_results = search_result.get("kb_results", [])
-            web_results = search_result.get("web_results", [])
+        # Header
+        lines.append(f"# Search: {query}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
 
-            if not kb_results and not web_results:
-                return {"error": "No search results found"}
+        # Grok Analysis (above the fold)
+        if synthesis.has_grok:
+            lines.append("## Grok Analysis")
+            lines.append("")
+            lines.append(synthesis.grok_content)
+            lines.append("")
+            lines.append(f"*Model: {synthesis.grok_model} | {synthesis.grok_latency_ms}ms*")
+            lines.append("")
+        elif synthesis.grok_error and "Skipped" not in synthesis.grok_error:
+            lines.append("## Grok Analysis")
+            lines.append("")
+            lines.append(f"*Unavailable: {synthesis.grok_error}*")
+            lines.append("")
 
-            # Synthesize Zettelkasten note
-            from .inference import ZettelkastenSynthesizer
+        # Local Analysis
+        if synthesis.has_local:
+            lines.append("## Local Analysis")
+            lines.append("")
+            lines.append(synthesis.local_content)
+            lines.append("")
+            lines.append(f"*Model: {synthesis.local_model} | {synthesis.local_latency_ms}ms*")
+            lines.append("")
+        elif synthesis.local_error and "Skipped" not in synthesis.local_error:
+            lines.append("## Local Analysis")
+            lines.append("")
+            lines.append(f"*Unavailable: {synthesis.local_error}*")
+            lines.append("")
 
-            synthesizer = ZettelkastenSynthesizer()
-            note = await synthesizer.synthesize(
-                query=args,
-                kb_results=kb_results,
-                web_results=web_results,
-                domain=self.state.domain,
-            )
+        lines.append("---")
+        lines.append("")
 
-            # Save note
-            saved_path = note.save()
+        # KB Sources with wiki-links for Graph Panel
+        if kb_results:
+            lines.append("## KB Sources")
+            lines.append("")
+            for r in kb_results[:5]:
+                path = r.get("path", "")
+                # Strip build/dev/ prefix for cleaner wiki-links
+                if path.startswith("build/dev/"):
+                    path = path[10:]
+                title = r.get("title", "Untitled")
+                snippet = r.get("snippet", "")[:80]
+                lines.append(f"- [[{path}]] - {title}")
+                if snippet:
+                    lines.append(f"  > {snippet}...")
+            lines.append("")
 
-            # Verify KB citations
-            verification = synthesizer.verify_citations(note)
-            verified_count = sum(1 for v in verification.values() if v)
+        # Web Sources
+        if web_results:
+            lines.append("## Web Sources")
+            lines.append("")
+            for r in web_results[:3]:
+                url = r.get("url", "")
+                title = r.get("title", "Untitled")
+                lines.append(f"- [{title}]({url})")
+            lines.append("")
 
+        # Actions with action-links for Graph Panel
+        lines.append("## Actions")
+        lines.append("")
+        lines.append(f"[action:/research {query}]")
+        lines.append(f"[action:/search --local {query}]")
+        lines.append("")
+
+        # Errors/Warnings
+        all_errors = (errors or []) + synthesis.errors
+        if all_errors:
+            lines.append("## Warnings")
+            lines.append("")
+            for e in all_errors:
+                lines.append(f"- {e}")
+            lines.append("")
+            # Fallback action link
+            lines.append(f"Retry local only: [action:/search --local {query}]")
+            lines.append("")
+
+        content = "\n".join(lines)
+
+        return {
+            "query": query,
+            "content": content,
+            "kb_results": kb_results,
+            "web_results": web_results,
+            "has_grok": synthesis.has_grok,
+            "has_local": synthesis.has_local,
+            "grok_model": synthesis.grok_model,
+            "local_model": synthesis.local_model,
+            "grok_latency_ms": synthesis.grok_latency_ms,
+            "local_latency_ms": synthesis.local_latency_ms,
+            "errors": all_errors if all_errors else None,
+        }
+
+    async def _cmd_research(self, args: str) -> dict:
+        """Multi-pass deep research with MemRL via Metaflow ResearchFlow.
+
+        Usage:
+            /research <query>   - Start deep research with streaming progress
+            /research status    - Check if research is running
+            /research stop      - Stop current research
+
+        Uses engine-managed Metaflow workflow with:
+        - MemRL episodic memory (Q-value weighted retrieval)
+        - Multi-pass research cycles with convergence detection
+        - 7-agent swarm analysis (STORM-inspired)
+        - Grok synthesis for polished output
+        - KB artifact creation with MemRL frontmatter
+        """
+        parts = args.strip().split(maxsplit=1) if args else []
+        subcommand = parts[0].lower() if parts else ""
+
+        # Handle subcommands
+        if subcommand == "status":
+            return await self._cmd_research_status()
+        elif subcommand == "stop":
+            return await self._cmd_research_stop()
+        elif subcommand == "help" or not args.strip():
             return {
-                "topic": args,
-                "saved_to": str(saved_path),
-                "kb_sources": len([c for c in note.citations if not c.is_web]),
-                "web_sources": len([c for c in note.citations if c.is_web]),
-                "wiki_links": note.wiki_links,
-                "citations_verified": f"{verified_count}/{len(verification)}",
-                "model": note.metadata.get("model"),
-                "technique": note.metadata.get("technique"),
+                "help": True,
+                "usage": [
+                    "/research <query>   Start deep research with streaming progress",
+                    "/research status    Check if research is running",
+                    "/research stop      Stop current research",
+                ],
+                "features": [
+                    "Q-value weighted memory retrieval",
+                    "7-agent swarm analysis",
+                    "Grok synthesis",
+                    "Convergence detection",
+                ],
             }
-        except ImportError as e:
-            raise RuntimeError(f"Inference not available: {e}. Run: uv sync --extra search")
+
+        query = args.strip()
+
+        from .client import get_grpc_client
+
+        client = await get_grpc_client()
+        errors: list[str] = []
+        kb_path = ""
+        best_q_value = 0.0
+        total_passes = 0
+        convergence_reason = ""
+        events_log: list[dict] = []
+
+        # Stream ResearchFlow events from engine
+        async for event in client.stream(
+            service="ResearchFlow",
+            action="research_stream",
+            params={
+                "query": query,
+            },
+            timeout=600.0,  # 10 minute idle timeout for full research
+        ):
+            type_name = event.get("type_name", "unknown")
+            progress = event.get("progress", 0.0)
+            message = event.get("message", "")
+            pass_num = event.get("pass_number", 0)
+
+            # Track progress
+            if pass_num > total_passes:
+                total_passes = pass_num
+
+            events_log.append({
+                "type": type_name,
+                "progress": progress,
+                "pass": pass_num,
+                "message": message[:100] if message else "",
+            })
+
+            # Handle completion
+            if type_name == "completed":
+                result = event.get("result", {})
+                kb_path = result.get("kb_path", event.get("kb_path", ""))
+                best_q_value = result.get("best_q_value", event.get("best_q_value", 0.0))
+                convergence_reason = result.get("convergence_reason", event.get("convergence_reason", ""))
+                total_passes = result.get("total_passes", event.get("total_passes", total_passes))
+
+            # Handle failure
+            if type_name == "failed":
+                error = event.get("error", message)
+                guru_code = event.get("guru_code", "")
+                error_msg = f"{error}" + (f" ({guru_code})" if guru_code else "")
+                errors.append(error_msg)
+
+        if errors:
+            return {
+                "error": "; ".join(errors),
+                "topic": query,
+                "events": events_log[-10:] if events_log else [],
+            }
+
+        return {
+            "topic": query,
+            "kb_path": kb_path,
+            "best_q_value": best_q_value,
+            "total_passes": total_passes,
+            "convergence_reason": convergence_reason,
+            "events": events_log[-10:] if events_log else [],
+        }
+
+    async def _cmd_research_status(self) -> dict:
+        """Get current research status via gRPC."""
+        from .client import get_grpc_client
+
+        client = await get_grpc_client()
+        result = await client.call(
+            service="ResearchFlow",
+            action="status",
+            params={},
+            timeout=5.0,
+        )
+        return result
+
+    async def _cmd_research_stop(self) -> dict:
+        """Request stop of current research via gRPC."""
+        from .client import get_grpc_client
+
+        client = await get_grpc_client()
+        result = await client.call(
+            service="ResearchFlow",
+            action="stop",
+            params={},
+            timeout=5.0,
+        )
+        return result
 
     async def _cmd_research_eval(self, args: str) -> dict:
         """Research topic and evaluate the generated note with frontier model."""
