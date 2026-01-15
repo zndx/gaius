@@ -79,6 +79,22 @@ class GaiusServiceStub:
     Semantic Search
     ─────────────────────────────────────────────────────────────────────────
     """
+    SemanticSearchStream: grpc.UnaryStreamMultiCallable[gaius_service_pb2.SemanticSearchRequest, gaius_service_pb2.SemanticSearchEvent]
+    """Streaming semantic search with progress events for observing ColNomic deployment
+    Use this when the TUI needs to show GPU allocation and model loading progress
+    """
+    SearchFlowStream: grpc.UnaryStreamMultiCallable[gaius_service_pb2.SearchFlowRequest, gaius_service_pb2.SearchFlowEvent]
+    """Multi-phase search workflow with Metaflow execution
+    Combines BM25, vector search, web search, and parallel LLM synthesis
+    """
+    ResearchFlowStream: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ResearchFlowRequest, gaius_service_pb2.ResearchFlowEvent]
+    """Deep research workflow with MemRL (multi-pass with Q-learning)
+    Combines search, 7-agent swarm, Grok synthesis, and convergence detection
+    """
+    ResearchFlowStatus: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.ResearchFlowStatusResponse]
+    """Get current research status (for /research status)"""
+    ResearchFlowStop: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.ResearchFlowStopResponse]
+    """Request stop of running research (for /research stop)"""
     EvolutionStatus: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.EvolutionStatusResponse]
     """─────────────────────────────────────────────────────────────────────────
     Evolution
@@ -306,6 +322,22 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     Semantic Search
     ─────────────────────────────────────────────────────────────────────────
     """
+    SemanticSearchStream: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.SemanticSearchRequest, gaius_service_pb2.SemanticSearchEvent]  # type: ignore[assignment]
+    """Streaming semantic search with progress events for observing ColNomic deployment
+    Use this when the TUI needs to show GPU allocation and model loading progress
+    """
+    SearchFlowStream: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.SearchFlowRequest, gaius_service_pb2.SearchFlowEvent]  # type: ignore[assignment]
+    """Multi-phase search workflow with Metaflow execution
+    Combines BM25, vector search, web search, and parallel LLM synthesis
+    """
+    ResearchFlowStream: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ResearchFlowRequest, gaius_service_pb2.ResearchFlowEvent]  # type: ignore[assignment]
+    """Deep research workflow with MemRL (multi-pass with Q-learning)
+    Combines search, 7-agent swarm, Grok synthesis, and convergence detection
+    """
+    ResearchFlowStatus: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.ResearchFlowStatusResponse]  # type: ignore[assignment]
+    """Get current research status (for /research status)"""
+    ResearchFlowStop: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.ResearchFlowStopResponse]  # type: ignore[assignment]
+    """Request stop of running research (for /research stop)"""
     EvolutionStatus: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.EvolutionStatusResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
     Evolution
@@ -632,6 +664,52 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         Semantic Search
         ─────────────────────────────────────────────────────────────────────────
         """
+
+    @abc.abstractmethod
+    def SemanticSearchStream(
+        self,
+        request: gaius_service_pb2.SemanticSearchRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.SemanticSearchEvent], collections.abc.AsyncIterator[gaius_service_pb2.SemanticSearchEvent]]:
+        """Streaming semantic search with progress events for observing ColNomic deployment
+        Use this when the TUI needs to show GPU allocation and model loading progress
+        """
+
+    @abc.abstractmethod
+    def SearchFlowStream(
+        self,
+        request: gaius_service_pb2.SearchFlowRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.SearchFlowEvent], collections.abc.AsyncIterator[gaius_service_pb2.SearchFlowEvent]]:
+        """Multi-phase search workflow with Metaflow execution
+        Combines BM25, vector search, web search, and parallel LLM synthesis
+        """
+
+    @abc.abstractmethod
+    def ResearchFlowStream(
+        self,
+        request: gaius_service_pb2.ResearchFlowRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ResearchFlowEvent], collections.abc.AsyncIterator[gaius_service_pb2.ResearchFlowEvent]]:
+        """Deep research workflow with MemRL (multi-pass with Q-learning)
+        Combines search, 7-agent swarm, Grok synthesis, and convergence detection
+        """
+
+    @abc.abstractmethod
+    def ResearchFlowStatus(
+        self,
+        request: google.protobuf.empty_pb2.Empty,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ResearchFlowStatusResponse, collections.abc.Awaitable[gaius_service_pb2.ResearchFlowStatusResponse]]:
+        """Get current research status (for /research status)"""
+
+    @abc.abstractmethod
+    def ResearchFlowStop(
+        self,
+        request: google.protobuf.empty_pb2.Empty,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ResearchFlowStopResponse, collections.abc.Awaitable[gaius_service_pb2.ResearchFlowStopResponse]]:
+        """Request stop of running research (for /research stop)"""
 
     @abc.abstractmethod
     def EvolutionStatus(

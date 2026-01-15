@@ -572,6 +572,204 @@ message SemanticSearchResponse {
   int32 latency_ms = 5;
 }
 
+// Streaming semantic search event for observing ColNomic deployment progress
+message SemanticSearchEvent {
+  enum Phase {
+    PHASE_UNSPECIFIED = 0;
+    REQUESTING_GPU = 1;       // Requesting GPU via orchestrator workload system
+    EVICTING_ENDPOINTS = 2;   // Evicting vLLM endpoints to free GPU
+    LOADING_MODEL = 3;        // Loading ColNomic model onto GPU
+    SEARCHING = 4;            // Executing MaxSim search on Qdrant
+    COMPLETE = 5;             // Search complete with results
+    ERROR = 6;                // Error occurred
+  }
+
+  Phase phase = 1;
+  string message = 2;              // Human-readable status message
+  int32 progress_pct = 3;          // 0-100 progress within phase
+  int64 timestamp_ms = 4;
+
+  // Populated on COMPLETE phase
+  SemanticSearchResponse response = 5;
+
+  // Populated on ERROR phase
+  string error = 6;
+  string guru_code = 7;            // Guru Meditation code for diagnostics
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Multi-Phase Search Flow Messages (Metaflow-backed)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request for multi-phase search workflow
+message SearchFlowRequest {
+  string query = 1;                // Search query text
+  bool skip_grok = 2;              // Skip Grok synthesis (--local flag)
+  int32 bm25_limit = 3;            // BM25 result limit (default: 10)
+  int32 vector_limit = 4;          // Vector search limit (default: 10)
+  int32 web_limit = 5;             // Web search limit (default: 5)
+}
+
+// Web search result from Brave API
+message WebSearchResult {
+  string title = 1;
+  string url = 2;
+  string snippet = 3;
+  string source = 4;               // "brave"
+}
+
+// Complete search result combining all sources
+message SearchFlowResult {
+  repeated SearchResult bm25_results = 1;
+  repeated SearchResult vector_results = 2;
+  repeated WebSearchResult web_results = 3;
+  string local_synthesis = 4;
+  string local_model = 5;
+  int32 local_latency_ms = 6;
+  string grok_synthesis = 7;
+  int32 grok_latency_ms = 8;
+  string kb_path = 9;              // Path to generated zettelkasten
+}
+
+// Streaming event for multi-phase search workflow
+message SearchFlowEvent {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    QUEUED = 1;                    // Flow queued for execution
+    BM25_STARTED = 2;              // Starting BM25 lexical search
+    BM25_COMPLETED = 3;            // BM25 search completed
+    VECTOR_STARTED = 4;            // Starting ColNomic vector search
+    VECTOR_EVICTING = 5;           // Evicting endpoints for ColNomic GPU
+    VECTOR_LOADING = 6;            // Loading ColNomic model
+    VECTOR_COMPLETED = 7;          // Vector search completed
+    WEB_STARTED = 8;               // Starting Brave web search
+    WEB_COMPLETED = 9;             // Web search completed
+    INSTRUCT_RESTORING = 10;       // Restoring instruct endpoint
+    INSTRUCT_READY = 11;           // Instruct endpoint healthy
+    LOCAL_SYNTHESIS_STARTED = 12;  // Starting local LLM synthesis
+    LOCAL_SYNTHESIS_COMPLETED = 13; // Local synthesis completed
+    GROK_SYNTHESIS_STARTED = 14;   // Starting XAI Grok synthesis
+    GROK_SYNTHESIS_COMPLETED = 15; // Grok synthesis completed
+    SYNTHESIS_MERGED = 16;         // Parallel syntheses merged
+    KB_WRITE = 17;                 // Writing zettelkasten to KB
+    COMPLETED = 18;                // Flow completed successfully
+    FAILED = 19;                   // Flow failed with error
+  }
+
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  float progress = 3;              // 0.0 to 1.0 overall progress
+  string message = 4;              // Human-readable status message
+  SearchFlowResult result = 5;     // Populated on COMPLETED
+  string error = 6;                // Populated on FAILED
+  string guru_code = 7;            // Guru Meditation code for diagnostics
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Deep Research Flow Messages (MemRL-backed multi-pass)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request for deep research workflow with MemRL
+message ResearchFlowRequest {
+  string query = 1;                // Research query text
+  int32 max_passes = 2;            // Maximum research passes (default: 5)
+  float drift_threshold = 3;       // Convergence threshold (default: 0.15)
+  int32 bm25_limit = 4;            // BM25 result limit (default: 10)
+  int32 vector_limit = 5;          // Vector search limit (default: 10)
+  int32 web_limit = 6;             // Web search limit (default: 5)
+}
+
+// MemRL reward components for research quality
+message RewardComponents {
+  float coherence = 1;             // Logical flow, consistency (40%)
+  float coverage = 2;              // Query aspects addressed (35%)
+  float novelty = 3;               // Distance from prior research (25%)
+  float total = 4;                 // Weighted total
+}
+
+// Research pass result
+message ResearchPassResult {
+  int32 pass_number = 1;
+  float q_value = 2;               // MemRL Q-value
+  RewardComponents reward = 3;
+  int32 sources_count = 4;
+  int32 duration_ms = 5;
+  string synthesis_excerpt = 6;    // First 500 chars of synthesis
+}
+
+// Retrieved high-Q memory from prior research
+message ResearchMemoryRef {
+  string session_id = 1;
+  string query = 2;
+  float q_value = 3;
+  string kb_path = 4;
+}
+
+// Complete research result
+message ResearchFlowResult {
+  string session_id = 1;
+  string query = 2;
+  int32 total_passes = 3;
+  string convergence_reason = 4;
+  float best_q_value = 5;
+  repeated ResearchMemoryRef memories_used = 6;
+  repeated ResearchPassResult passes = 7;
+  string final_synthesis = 8;
+  string kb_path = 9;
+  map<string, string> agent_perspectives = 10;  // role -> perspective
+}
+
+// Streaming event for deep research workflow
+message ResearchFlowEvent {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    QUEUED = 1;                    // Flow queued for execution
+    MEMORIES_RETRIEVING = 2;       // Retrieving high-Q memories
+    MEMORIES_RETRIEVED = 3;        // MemRL retrieval completed
+    PASS_STARTED = 4;              // Research pass N started
+    PASS_SEARCH = 5;               // Search phase (BM25/Vector/Web)
+    PASS_SWARM = 6;                // 7-agent swarm analysis
+    PASS_GROK = 7;                 // Grok synthesis
+    PASS_EVALUATE = 8;             // Reward computation
+    PASS_QUPDATE = 9;              // Q-value Bellman update
+    PASS_COMPLETED = 10;           // Pass N completed
+    CONVERGED = 11;                // Convergence criteria met
+    FINAL_SYNTHESIS = 12;          // Final Grok report generation
+    KB_WRITE = 13;                 // Writing zettelkasten
+    COMPLETED = 14;                // Flow completed successfully
+    FAILED = 15;                   // Flow failed with error
+  }
+
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  float progress = 3;              // 0.0 to 1.0 overall progress
+  string message = 4;              // Human-readable status message
+  int32 pass_number = 5;           // Current pass (1-indexed)
+  float current_q_value = 6;       // Q-value for current pass
+  ResearchFlowResult result = 7;   // Populated on COMPLETED
+  string error = 8;                // Populated on FAILED
+  string guru_code = 9;            // Guru Meditation code
+}
+
+// Status response for /research status command
+message ResearchFlowStatusResponse {
+  bool running = 1;                  // True if research is active
+  string query = 2;                  // Current query being researched
+  int32 pass_number = 3;             // Current pass (1-indexed)
+  float progress = 4;                // 0.0 to 1.0 overall progress
+  string phase = 5;                  // Current phase (search, swarm, etc.)
+  float elapsed_s = 6;               // Seconds since start
+  int32 events_count = 7;            // Number of events emitted
+  bool stop_requested = 8;           // True if stop has been requested
+}
+
+// Response for /research stop command
+message ResearchFlowStopResponse {
+  bool success = 1;                  // True if stop was initiated
+  string message = 2;                // Status message
+  string error = 3;                  // Error message if success=false
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Health Streaming Messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2069,6 +2267,22 @@ service GaiusService {
   // Semantic Search
   // ─────────────────────────────────────────────────────────────────────────
   rpc SemanticSearch(SemanticSearchRequest) returns (SemanticSearchResponse);
+
+  // Streaming semantic search with progress events for observing ColNomic deployment
+  // Use this when the TUI needs to show GPU allocation and model loading progress
+  rpc SemanticSearchStream(SemanticSearchRequest) returns (stream SemanticSearchEvent);
+
+  // Multi-phase search workflow with Metaflow execution
+  // Combines BM25, vector search, web search, and parallel LLM synthesis
+  rpc SearchFlowStream(SearchFlowRequest) returns (stream SearchFlowEvent);
+
+  // Deep research workflow with MemRL (multi-pass with Q-learning)
+  // Combines search, 7-agent swarm, Grok synthesis, and convergence detection
+  rpc ResearchFlowStream(ResearchFlowRequest) returns (stream ResearchFlowEvent);
+  // Get current research status (for /research status)
+  rpc ResearchFlowStatus(google.protobuf.Empty) returns (ResearchFlowStatusResponse);
+  // Request stop of running research (for /research stop)
+  rpc ResearchFlowStop(google.protobuf.Empty) returns (ResearchFlowStopResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Evolution

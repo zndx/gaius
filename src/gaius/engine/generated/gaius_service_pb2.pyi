@@ -882,6 +882,321 @@ class SemanticSearchResponse(_message.Message):
     latency_ms: int
     def __init__(self, results: _Optional[_Iterable[_Union[SearchResult, _Mapping]]] = ..., total: _Optional[int] = ..., collection: _Optional[str] = ..., embedding_model: _Optional[str] = ..., latency_ms: _Optional[int] = ...) -> None: ...
 
+class SemanticSearchEvent(_message.Message):
+    __slots__ = ("phase", "message", "progress_pct", "timestamp_ms", "response", "error", "guru_code")
+    class Phase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        PHASE_UNSPECIFIED: _ClassVar[SemanticSearchEvent.Phase]
+        REQUESTING_GPU: _ClassVar[SemanticSearchEvent.Phase]
+        EVICTING_ENDPOINTS: _ClassVar[SemanticSearchEvent.Phase]
+        LOADING_MODEL: _ClassVar[SemanticSearchEvent.Phase]
+        SEARCHING: _ClassVar[SemanticSearchEvent.Phase]
+        COMPLETE: _ClassVar[SemanticSearchEvent.Phase]
+        ERROR: _ClassVar[SemanticSearchEvent.Phase]
+    PHASE_UNSPECIFIED: SemanticSearchEvent.Phase
+    REQUESTING_GPU: SemanticSearchEvent.Phase
+    EVICTING_ENDPOINTS: SemanticSearchEvent.Phase
+    LOADING_MODEL: SemanticSearchEvent.Phase
+    SEARCHING: SemanticSearchEvent.Phase
+    COMPLETE: SemanticSearchEvent.Phase
+    ERROR: SemanticSearchEvent.Phase
+    PHASE_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_PCT_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    GURU_CODE_FIELD_NUMBER: _ClassVar[int]
+    phase: SemanticSearchEvent.Phase
+    message: str
+    progress_pct: int
+    timestamp_ms: int
+    response: SemanticSearchResponse
+    error: str
+    guru_code: str
+    def __init__(self, phase: _Optional[_Union[SemanticSearchEvent.Phase, str]] = ..., message: _Optional[str] = ..., progress_pct: _Optional[int] = ..., timestamp_ms: _Optional[int] = ..., response: _Optional[_Union[SemanticSearchResponse, _Mapping]] = ..., error: _Optional[str] = ..., guru_code: _Optional[str] = ...) -> None: ...
+
+class SearchFlowRequest(_message.Message):
+    __slots__ = ("query", "skip_grok", "bm25_limit", "vector_limit", "web_limit")
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    SKIP_GROK_FIELD_NUMBER: _ClassVar[int]
+    BM25_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    VECTOR_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    WEB_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    query: str
+    skip_grok: bool
+    bm25_limit: int
+    vector_limit: int
+    web_limit: int
+    def __init__(self, query: _Optional[str] = ..., skip_grok: bool = ..., bm25_limit: _Optional[int] = ..., vector_limit: _Optional[int] = ..., web_limit: _Optional[int] = ...) -> None: ...
+
+class WebSearchResult(_message.Message):
+    __slots__ = ("title", "url", "snippet", "source")
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    SNIPPET_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    title: str
+    url: str
+    snippet: str
+    source: str
+    def __init__(self, title: _Optional[str] = ..., url: _Optional[str] = ..., snippet: _Optional[str] = ..., source: _Optional[str] = ...) -> None: ...
+
+class SearchFlowResult(_message.Message):
+    __slots__ = ("bm25_results", "vector_results", "web_results", "local_synthesis", "local_model", "local_latency_ms", "grok_synthesis", "grok_latency_ms", "kb_path")
+    BM25_RESULTS_FIELD_NUMBER: _ClassVar[int]
+    VECTOR_RESULTS_FIELD_NUMBER: _ClassVar[int]
+    WEB_RESULTS_FIELD_NUMBER: _ClassVar[int]
+    LOCAL_SYNTHESIS_FIELD_NUMBER: _ClassVar[int]
+    LOCAL_MODEL_FIELD_NUMBER: _ClassVar[int]
+    LOCAL_LATENCY_MS_FIELD_NUMBER: _ClassVar[int]
+    GROK_SYNTHESIS_FIELD_NUMBER: _ClassVar[int]
+    GROK_LATENCY_MS_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    bm25_results: _containers.RepeatedCompositeFieldContainer[SearchResult]
+    vector_results: _containers.RepeatedCompositeFieldContainer[SearchResult]
+    web_results: _containers.RepeatedCompositeFieldContainer[WebSearchResult]
+    local_synthesis: str
+    local_model: str
+    local_latency_ms: int
+    grok_synthesis: str
+    grok_latency_ms: int
+    kb_path: str
+    def __init__(self, bm25_results: _Optional[_Iterable[_Union[SearchResult, _Mapping]]] = ..., vector_results: _Optional[_Iterable[_Union[SearchResult, _Mapping]]] = ..., web_results: _Optional[_Iterable[_Union[WebSearchResult, _Mapping]]] = ..., local_synthesis: _Optional[str] = ..., local_model: _Optional[str] = ..., local_latency_ms: _Optional[int] = ..., grok_synthesis: _Optional[str] = ..., grok_latency_ms: _Optional[int] = ..., kb_path: _Optional[str] = ...) -> None: ...
+
+class SearchFlowEvent(_message.Message):
+    __slots__ = ("type", "timestamp_ms", "progress", "message", "result", "error", "guru_code")
+    class Type(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        TYPE_UNSPECIFIED: _ClassVar[SearchFlowEvent.Type]
+        QUEUED: _ClassVar[SearchFlowEvent.Type]
+        BM25_STARTED: _ClassVar[SearchFlowEvent.Type]
+        BM25_COMPLETED: _ClassVar[SearchFlowEvent.Type]
+        VECTOR_STARTED: _ClassVar[SearchFlowEvent.Type]
+        VECTOR_EVICTING: _ClassVar[SearchFlowEvent.Type]
+        VECTOR_LOADING: _ClassVar[SearchFlowEvent.Type]
+        VECTOR_COMPLETED: _ClassVar[SearchFlowEvent.Type]
+        WEB_STARTED: _ClassVar[SearchFlowEvent.Type]
+        WEB_COMPLETED: _ClassVar[SearchFlowEvent.Type]
+        INSTRUCT_RESTORING: _ClassVar[SearchFlowEvent.Type]
+        INSTRUCT_READY: _ClassVar[SearchFlowEvent.Type]
+        LOCAL_SYNTHESIS_STARTED: _ClassVar[SearchFlowEvent.Type]
+        LOCAL_SYNTHESIS_COMPLETED: _ClassVar[SearchFlowEvent.Type]
+        GROK_SYNTHESIS_STARTED: _ClassVar[SearchFlowEvent.Type]
+        GROK_SYNTHESIS_COMPLETED: _ClassVar[SearchFlowEvent.Type]
+        SYNTHESIS_MERGED: _ClassVar[SearchFlowEvent.Type]
+        KB_WRITE: _ClassVar[SearchFlowEvent.Type]
+        COMPLETED: _ClassVar[SearchFlowEvent.Type]
+        FAILED: _ClassVar[SearchFlowEvent.Type]
+    TYPE_UNSPECIFIED: SearchFlowEvent.Type
+    QUEUED: SearchFlowEvent.Type
+    BM25_STARTED: SearchFlowEvent.Type
+    BM25_COMPLETED: SearchFlowEvent.Type
+    VECTOR_STARTED: SearchFlowEvent.Type
+    VECTOR_EVICTING: SearchFlowEvent.Type
+    VECTOR_LOADING: SearchFlowEvent.Type
+    VECTOR_COMPLETED: SearchFlowEvent.Type
+    WEB_STARTED: SearchFlowEvent.Type
+    WEB_COMPLETED: SearchFlowEvent.Type
+    INSTRUCT_RESTORING: SearchFlowEvent.Type
+    INSTRUCT_READY: SearchFlowEvent.Type
+    LOCAL_SYNTHESIS_STARTED: SearchFlowEvent.Type
+    LOCAL_SYNTHESIS_COMPLETED: SearchFlowEvent.Type
+    GROK_SYNTHESIS_STARTED: SearchFlowEvent.Type
+    GROK_SYNTHESIS_COMPLETED: SearchFlowEvent.Type
+    SYNTHESIS_MERGED: SearchFlowEvent.Type
+    KB_WRITE: SearchFlowEvent.Type
+    COMPLETED: SearchFlowEvent.Type
+    FAILED: SearchFlowEvent.Type
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    GURU_CODE_FIELD_NUMBER: _ClassVar[int]
+    type: SearchFlowEvent.Type
+    timestamp_ms: int
+    progress: float
+    message: str
+    result: SearchFlowResult
+    error: str
+    guru_code: str
+    def __init__(self, type: _Optional[_Union[SearchFlowEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., result: _Optional[_Union[SearchFlowResult, _Mapping]] = ..., error: _Optional[str] = ..., guru_code: _Optional[str] = ...) -> None: ...
+
+class ResearchFlowRequest(_message.Message):
+    __slots__ = ("query", "max_passes", "drift_threshold", "bm25_limit", "vector_limit", "web_limit")
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    MAX_PASSES_FIELD_NUMBER: _ClassVar[int]
+    DRIFT_THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    BM25_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    VECTOR_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    WEB_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    query: str
+    max_passes: int
+    drift_threshold: float
+    bm25_limit: int
+    vector_limit: int
+    web_limit: int
+    def __init__(self, query: _Optional[str] = ..., max_passes: _Optional[int] = ..., drift_threshold: _Optional[float] = ..., bm25_limit: _Optional[int] = ..., vector_limit: _Optional[int] = ..., web_limit: _Optional[int] = ...) -> None: ...
+
+class RewardComponents(_message.Message):
+    __slots__ = ("coherence", "coverage", "novelty", "total")
+    COHERENCE_FIELD_NUMBER: _ClassVar[int]
+    COVERAGE_FIELD_NUMBER: _ClassVar[int]
+    NOVELTY_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    coherence: float
+    coverage: float
+    novelty: float
+    total: float
+    def __init__(self, coherence: _Optional[float] = ..., coverage: _Optional[float] = ..., novelty: _Optional[float] = ..., total: _Optional[float] = ...) -> None: ...
+
+class ResearchPassResult(_message.Message):
+    __slots__ = ("pass_number", "q_value", "reward", "sources_count", "duration_ms", "synthesis_excerpt")
+    PASS_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    Q_VALUE_FIELD_NUMBER: _ClassVar[int]
+    REWARD_FIELD_NUMBER: _ClassVar[int]
+    SOURCES_COUNT_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    SYNTHESIS_EXCERPT_FIELD_NUMBER: _ClassVar[int]
+    pass_number: int
+    q_value: float
+    reward: RewardComponents
+    sources_count: int
+    duration_ms: int
+    synthesis_excerpt: str
+    def __init__(self, pass_number: _Optional[int] = ..., q_value: _Optional[float] = ..., reward: _Optional[_Union[RewardComponents, _Mapping]] = ..., sources_count: _Optional[int] = ..., duration_ms: _Optional[int] = ..., synthesis_excerpt: _Optional[str] = ...) -> None: ...
+
+class ResearchMemoryRef(_message.Message):
+    __slots__ = ("session_id", "query", "q_value", "kb_path")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    Q_VALUE_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    query: str
+    q_value: float
+    kb_path: str
+    def __init__(self, session_id: _Optional[str] = ..., query: _Optional[str] = ..., q_value: _Optional[float] = ..., kb_path: _Optional[str] = ...) -> None: ...
+
+class ResearchFlowResult(_message.Message):
+    __slots__ = ("session_id", "query", "total_passes", "convergence_reason", "best_q_value", "memories_used", "passes", "final_synthesis", "kb_path", "agent_perspectives")
+    class AgentPerspectivesEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_PASSES_FIELD_NUMBER: _ClassVar[int]
+    CONVERGENCE_REASON_FIELD_NUMBER: _ClassVar[int]
+    BEST_Q_VALUE_FIELD_NUMBER: _ClassVar[int]
+    MEMORIES_USED_FIELD_NUMBER: _ClassVar[int]
+    PASSES_FIELD_NUMBER: _ClassVar[int]
+    FINAL_SYNTHESIS_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    AGENT_PERSPECTIVES_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    query: str
+    total_passes: int
+    convergence_reason: str
+    best_q_value: float
+    memories_used: _containers.RepeatedCompositeFieldContainer[ResearchMemoryRef]
+    passes: _containers.RepeatedCompositeFieldContainer[ResearchPassResult]
+    final_synthesis: str
+    kb_path: str
+    agent_perspectives: _containers.ScalarMap[str, str]
+    def __init__(self, session_id: _Optional[str] = ..., query: _Optional[str] = ..., total_passes: _Optional[int] = ..., convergence_reason: _Optional[str] = ..., best_q_value: _Optional[float] = ..., memories_used: _Optional[_Iterable[_Union[ResearchMemoryRef, _Mapping]]] = ..., passes: _Optional[_Iterable[_Union[ResearchPassResult, _Mapping]]] = ..., final_synthesis: _Optional[str] = ..., kb_path: _Optional[str] = ..., agent_perspectives: _Optional[_Mapping[str, str]] = ...) -> None: ...
+
+class ResearchFlowEvent(_message.Message):
+    __slots__ = ("type", "timestamp_ms", "progress", "message", "pass_number", "current_q_value", "result", "error", "guru_code")
+    class Type(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        TYPE_UNSPECIFIED: _ClassVar[ResearchFlowEvent.Type]
+        QUEUED: _ClassVar[ResearchFlowEvent.Type]
+        MEMORIES_RETRIEVING: _ClassVar[ResearchFlowEvent.Type]
+        MEMORIES_RETRIEVED: _ClassVar[ResearchFlowEvent.Type]
+        PASS_STARTED: _ClassVar[ResearchFlowEvent.Type]
+        PASS_SEARCH: _ClassVar[ResearchFlowEvent.Type]
+        PASS_SWARM: _ClassVar[ResearchFlowEvent.Type]
+        PASS_GROK: _ClassVar[ResearchFlowEvent.Type]
+        PASS_EVALUATE: _ClassVar[ResearchFlowEvent.Type]
+        PASS_QUPDATE: _ClassVar[ResearchFlowEvent.Type]
+        PASS_COMPLETED: _ClassVar[ResearchFlowEvent.Type]
+        CONVERGED: _ClassVar[ResearchFlowEvent.Type]
+        FINAL_SYNTHESIS: _ClassVar[ResearchFlowEvent.Type]
+        KB_WRITE: _ClassVar[ResearchFlowEvent.Type]
+        COMPLETED: _ClassVar[ResearchFlowEvent.Type]
+        FAILED: _ClassVar[ResearchFlowEvent.Type]
+    TYPE_UNSPECIFIED: ResearchFlowEvent.Type
+    QUEUED: ResearchFlowEvent.Type
+    MEMORIES_RETRIEVING: ResearchFlowEvent.Type
+    MEMORIES_RETRIEVED: ResearchFlowEvent.Type
+    PASS_STARTED: ResearchFlowEvent.Type
+    PASS_SEARCH: ResearchFlowEvent.Type
+    PASS_SWARM: ResearchFlowEvent.Type
+    PASS_GROK: ResearchFlowEvent.Type
+    PASS_EVALUATE: ResearchFlowEvent.Type
+    PASS_QUPDATE: ResearchFlowEvent.Type
+    PASS_COMPLETED: ResearchFlowEvent.Type
+    CONVERGED: ResearchFlowEvent.Type
+    FINAL_SYNTHESIS: ResearchFlowEvent.Type
+    KB_WRITE: ResearchFlowEvent.Type
+    COMPLETED: ResearchFlowEvent.Type
+    FAILED: ResearchFlowEvent.Type
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PASS_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_Q_VALUE_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    GURU_CODE_FIELD_NUMBER: _ClassVar[int]
+    type: ResearchFlowEvent.Type
+    timestamp_ms: int
+    progress: float
+    message: str
+    pass_number: int
+    current_q_value: float
+    result: ResearchFlowResult
+    error: str
+    guru_code: str
+    def __init__(self, type: _Optional[_Union[ResearchFlowEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., pass_number: _Optional[int] = ..., current_q_value: _Optional[float] = ..., result: _Optional[_Union[ResearchFlowResult, _Mapping]] = ..., error: _Optional[str] = ..., guru_code: _Optional[str] = ...) -> None: ...
+
+class ResearchFlowStatusResponse(_message.Message):
+    __slots__ = ("running", "query", "pass_number", "progress", "phase", "elapsed_s", "events_count", "stop_requested")
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    PASS_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    PHASE_FIELD_NUMBER: _ClassVar[int]
+    ELAPSED_S_FIELD_NUMBER: _ClassVar[int]
+    EVENTS_COUNT_FIELD_NUMBER: _ClassVar[int]
+    STOP_REQUESTED_FIELD_NUMBER: _ClassVar[int]
+    running: bool
+    query: str
+    pass_number: int
+    progress: float
+    phase: str
+    elapsed_s: float
+    events_count: int
+    stop_requested: bool
+    def __init__(self, running: bool = ..., query: _Optional[str] = ..., pass_number: _Optional[int] = ..., progress: _Optional[float] = ..., phase: _Optional[str] = ..., elapsed_s: _Optional[float] = ..., events_count: _Optional[int] = ..., stop_requested: bool = ...) -> None: ...
+
+class ResearchFlowStopResponse(_message.Message):
+    __slots__ = ("success", "message", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    message: str
+    error: str
+    def __init__(self, success: bool = ..., message: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
 class HealthStreamRequest(_message.Message):
     __slots__ = ("interval_ms",)
     INTERVAL_MS_FIELD_NUMBER: _ClassVar[int]

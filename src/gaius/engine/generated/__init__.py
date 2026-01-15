@@ -175,6 +175,21 @@ from .gaius_service_pb2 import (
     SemanticSearchRequest,
     SearchResult,
     SemanticSearchResponse,
+    SemanticSearchEvent,
+    # Multi-Phase Search Flow
+    SearchFlowRequest,
+    WebSearchResult,
+    SearchFlowResult,
+    SearchFlowEvent,
+    # Deep Research Flow (MemRL)
+    ResearchFlowRequest,
+    RewardComponents,
+    ResearchPassResult,
+    ResearchMemoryRef,
+    ResearchFlowResult,
+    ResearchFlowEvent,
+    ResearchFlowStatusResponse,
+    ResearchFlowStopResponse,
     # Command Execution
     ExecuteCommandRequest,
     ExecuteCommandResponse,
@@ -484,6 +499,21 @@ __all__ = [
     "SemanticSearchRequest",
     "SearchResult",
     "SemanticSearchResponse",
+    "SemanticSearchEvent",
+    # Multi-Phase Search Flow
+    "SearchFlowRequest",
+    "WebSearchResult",
+    "SearchFlowResult",
+    "SearchFlowEvent",
+    # Deep Research Flow (MemRL)
+    "ResearchFlowRequest",
+    "RewardComponents",
+    "ResearchPassResult",
+    "ResearchMemoryRef",
+    "ResearchFlowResult",
+    "ResearchFlowEvent",
+    "ResearchFlowStatusResponse",
+    "ResearchFlowStopResponse",
     # Command Execution
     "ExecuteCommandRequest",
     "ExecuteCommandResponse",

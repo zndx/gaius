@@ -124,6 +124,31 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.SemanticSearchRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.SemanticSearchResponse.FromString,
                 _registered_method=True)
+        self.SemanticSearchStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/SemanticSearchStream',
+                request_serializer=gaius__service__pb2.SemanticSearchRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SemanticSearchEvent.FromString,
+                _registered_method=True)
+        self.SearchFlowStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/SearchFlowStream',
+                request_serializer=gaius__service__pb2.SearchFlowRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SearchFlowEvent.FromString,
+                _registered_method=True)
+        self.ResearchFlowStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/ResearchFlowStream',
+                request_serializer=gaius__service__pb2.ResearchFlowRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ResearchFlowEvent.FromString,
+                _registered_method=True)
+        self.ResearchFlowStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ResearchFlowStatus',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.ResearchFlowStatusResponse.FromString,
+                _registered_method=True)
+        self.ResearchFlowStop = channel.unary_unary(
+                '/gaius.engine.GaiusService/ResearchFlowStop',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.ResearchFlowStopResponse.FromString,
+                _registered_method=True)
         self.EvolutionStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/EvolutionStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -645,6 +670,44 @@ class GaiusServiceServicer(object):
         """─────────────────────────────────────────────────────────────────────────
         Semantic Search
         ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SemanticSearchStream(self, request, context):
+        """Streaming semantic search with progress events for observing ColNomic deployment
+        Use this when the TUI needs to show GPU allocation and model loading progress
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SearchFlowStream(self, request, context):
+        """Multi-phase search workflow with Metaflow execution
+        Combines BM25, vector search, web search, and parallel LLM synthesis
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResearchFlowStream(self, request, context):
+        """Deep research workflow with MemRL (multi-pass with Q-learning)
+        Combines search, 7-agent swarm, Grok synthesis, and convergence detection
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResearchFlowStatus(self, request, context):
+        """Get current research status (for /research status)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResearchFlowStop(self, request, context):
+        """Request stop of running research (for /research stop)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1287,6 +1350,31 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.SemanticSearch,
                     request_deserializer=gaius__service__pb2.SemanticSearchRequest.FromString,
                     response_serializer=gaius__service__pb2.SemanticSearchResponse.SerializeToString,
+            ),
+            'SemanticSearchStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.SemanticSearchStream,
+                    request_deserializer=gaius__service__pb2.SemanticSearchRequest.FromString,
+                    response_serializer=gaius__service__pb2.SemanticSearchEvent.SerializeToString,
+            ),
+            'SearchFlowStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.SearchFlowStream,
+                    request_deserializer=gaius__service__pb2.SearchFlowRequest.FromString,
+                    response_serializer=gaius__service__pb2.SearchFlowEvent.SerializeToString,
+            ),
+            'ResearchFlowStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.ResearchFlowStream,
+                    request_deserializer=gaius__service__pb2.ResearchFlowRequest.FromString,
+                    response_serializer=gaius__service__pb2.ResearchFlowEvent.SerializeToString,
+            ),
+            'ResearchFlowStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResearchFlowStatus,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.ResearchFlowStatusResponse.SerializeToString,
+            ),
+            'ResearchFlowStop': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResearchFlowStop,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.ResearchFlowStopResponse.SerializeToString,
             ),
             'EvolutionStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.EvolutionStatus,
@@ -2147,6 +2235,141 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/SemanticSearch',
             gaius__service__pb2.SemanticSearchRequest.SerializeToString,
             gaius__service__pb2.SemanticSearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SemanticSearchStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SemanticSearchStream',
+            gaius__service__pb2.SemanticSearchRequest.SerializeToString,
+            gaius__service__pb2.SemanticSearchEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SearchFlowStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SearchFlowStream',
+            gaius__service__pb2.SearchFlowRequest.SerializeToString,
+            gaius__service__pb2.SearchFlowEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResearchFlowStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ResearchFlowStream',
+            gaius__service__pb2.ResearchFlowRequest.SerializeToString,
+            gaius__service__pb2.ResearchFlowEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResearchFlowStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ResearchFlowStatus',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.ResearchFlowStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResearchFlowStop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ResearchFlowStop',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.ResearchFlowStopResponse.FromString,
             options,
             channel_credentials,
             insecure,
