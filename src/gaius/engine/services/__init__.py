@@ -90,6 +90,10 @@ from .prospects_analysis import (
     PositionSynthesis,
     ProspectsAnalyzer,
 )
+from .vector_search_service import (
+    VectorSearchConfig,
+    VectorSearchService,
+)
 
 __all__ = [
     # Orchestrator
@@ -171,6 +175,9 @@ __all__ = [
     "FilingAnalysis",
     "PositionSynthesis",
     "ProspectsAnalyzer",
+    # Vector Search
+    "VectorSearchConfig",
+    "VectorSearchService",
     # CLT (lazy-loaded)
     "AgentCLTState",
     "CLTProjectionBridge",

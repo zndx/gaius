@@ -32,6 +32,7 @@ import asyncpg
 
 if TYPE_CHECKING:
     from .orchestrator_service import OrchestratorService
+    from .flow_event_listener import FlowEvent, FlowEventListener
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,9 @@ class FlowSchedulerService:
         self._processed_ids: set[str] = set()  # Track processed items
         self._pool: Optional[asyncpg.Pool] = None
 
+        # FlowEventListener for LISTEN/NOTIFY (initialized in start())
+        self._flow_event_listener: Optional["FlowEventListener"] = None
+
         # Metrics
         self._flows_started = 0
         self._flows_completed = 0
@@ -131,6 +135,7 @@ class FlowSchedulerService:
         self._last_poll_at: Optional[datetime] = None
         self._endpoints_evicted = 0
         self._endpoints_restored = 0
+        self._events_received = 0  # From LISTEN/NOTIFY
 
     async def start(self) -> None:
         """Start the flow scheduler daemon."""
@@ -153,6 +158,20 @@ class FlowSchedulerService:
         # Load already processed items from KB
         await self._load_processed_items()
 
+        # Start FlowEventListener for LISTEN/NOTIFY
+        try:
+            from .flow_event_listener import FlowEventListener
+
+            self._flow_event_listener = FlowEventListener(
+                database_url=self.config.database_url,
+                handler=self._on_flow_event,
+            )
+            await self._flow_event_listener.start()
+            logger.info("FlowEventListener started for flow completion events")
+        except Exception as e:
+            logger.warning(f"FlowEventListener failed to start: {e}")
+            # Continue without LISTEN/NOTIFY - fall back to polling
+
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
         logger.info(f"FlowSchedulerService started (poll every {self.config.poll_interval_seconds}s)")
@@ -172,6 +191,11 @@ class FlowSchedulerService:
             except asyncio.CancelledError:
                 pass
 
+        # Stop FlowEventListener
+        if self._flow_event_listener:
+            await self._flow_event_listener.stop()
+            self._flow_event_listener = None
+
         # Wait for active flows to complete
         if self._active_runs:
             logger.info(f"Waiting for {len(self._active_runs)} active flows to complete...")
@@ -188,7 +212,7 @@ class FlowSchedulerService:
 
     def get_status(self) -> dict:
         """Get current service status."""
-        return {
+        status = {
             "running": self._running,
             "active_flows": len(self._active_runs),
             "flows_started": self._flows_started,
@@ -202,7 +226,15 @@ class FlowSchedulerService:
             "use_orchestrator": self.config.use_orchestrator and self._orchestrator is not None,
             "endpoints_evicted": self._endpoints_evicted,
             "endpoints_restored": self._endpoints_restored,
+            # LISTEN/NOTIFY metrics
+            "events_received": self._events_received,
         }
+
+        # Include FlowEventListener status if available
+        if self._flow_event_listener:
+            status["flow_event_listener"] = self._flow_event_listener.get_status()
+
+        return status
 
     async def _run_loop(self) -> None:
         """Main polling loop."""
@@ -561,3 +593,197 @@ class FlowSchedulerService:
             "triggered": False,
             "error": f"Unknown flow type: {flow_type}",
         }
+
+    async def _on_flow_event(self, event: "FlowEvent") -> None:
+        """Handle flow completion event from LISTEN/NOTIFY.
+
+        This is called by FlowEventListener when a flow completes or fails.
+        Downstream triggers are hardcoded for simplicity.
+        Add new if/elif branches here for new trigger relationships.
+
+        Args:
+            event: Flow completion event from PostgreSQL notification
+        """
+        self._events_received += 1
+
+        if event.status == "completed":
+            self._flows_completed += 1
+            logger.info(
+                f"Flow completed via LISTEN/NOTIFY: {event.flow_type} "
+                f"{event.run_id} ({event.duration_ms}ms)"
+            )
+
+            # Hardcoded downstream triggers
+            # Add new trigger relationships here as needed
+            if event.flow_type == "ResearchFlow":
+                # Engine-coordinated multi-pass: check if another pass is needed
+                await self._handle_research_completion(event)
+            elif event.flow_type == "ArxivDoclingFlow":
+                # Arxiv paper processed - log for now, could trigger embedding
+                logger.debug(f"ArxivDoclingFlow completed: {event.run_id}")
+
+        elif event.status == "failed":
+            self._flows_failed += 1
+            logger.warning(
+                f"Flow failed via LISTEN/NOTIFY: {event.flow_type} "
+                f"{event.run_id}"
+            )
+
+        # Clean up active run tracking if we have it
+        # (LISTEN/NOTIFY may receive events for flows started by other services)
+        for arxiv_id, run in list(self._active_runs.items()):
+            # Match by checking if run_id is part of the process metadata
+            # or if it's a flow we started and the arxiv_id matches
+            if event.flow_type == "ArxivDoclingFlow" and run.arxiv_id in event.run_id:
+                if event.status == "completed":
+                    self._processed_ids.add(arxiv_id)
+                del self._active_runs[arxiv_id]
+
+                # Release GPU resources if we tracked a workload
+                if run.workload_id:
+                    await self._release_flow_resources(
+                        run.workload_id, run.evicted_endpoints
+                    )
+                break
+
+    async def _handle_research_completion(self, event: "FlowEvent") -> None:
+        """Handle ResearchFlow completion for engine-coordinated multi-pass.
+
+        Engine-coordinated multi-pass flow:
+        1. ResearchFlow completes a single pass
+        2. Flow saves state to meta.research_state (converged=False if more passes needed)
+        3. This handler checks the state
+        4. If not converged and passes < max_passes, trigger next pass
+
+        This eliminates in-flow recursion, enabling Metaflow's foreach for parallel
+        searches while maintaining multi-pass convergence.
+
+        Args:
+            event: Flow completion event from LISTEN/NOTIFY
+        """
+        # Query research state from PostgreSQL
+        try:
+            async with self._pool.acquire() as conn:
+                # Get the most recently updated research state
+                # (flow just completed, so this is the relevant session)
+                row = await conn.fetchrow(
+                    """
+                    SELECT session_id, query, pass_number, converged,
+                           convergence_reason, q_value, tracker_state
+                    FROM meta.research_state
+                    WHERE updated_at > NOW() - INTERVAL '5 minutes'
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """
+                )
+
+                if not row:
+                    logger.debug(f"No recent research state found for {event.run_id}")
+                    return
+
+                session_id = row["session_id"]
+                query = row["query"]
+                pass_number = row["pass_number"]
+                converged = row["converged"]
+                convergence_reason = row["convergence_reason"] or ""
+                q_value = row["q_value"] or 0.0
+                tracker_state = row["tracker_state"] or {}
+
+                logger.info(
+                    f"Research state: session={session_id} pass={pass_number} "
+                    f"converged={converged} reason={convergence_reason} Q={q_value:.3f}"
+                )
+
+                if converged:
+                    logger.info(
+                        f"ResearchFlow converged: {session_id} "
+                        f"({convergence_reason}) after {pass_number} passes"
+                    )
+                    return
+
+                # Check max passes (from tracker state or default)
+                max_passes = tracker_state.get("max_passes", 5)
+                if pass_number >= max_passes:
+                    logger.info(
+                        f"ResearchFlow reached max passes: {session_id} "
+                        f"({pass_number}/{max_passes})"
+                    )
+                    return
+
+                # Trigger next pass
+                logger.info(
+                    f"Triggering ResearchFlow pass {pass_number + 1}: "
+                    f"session={session_id} query='{query[:50]}...'"
+                )
+                await self._trigger_research_pass(
+                    session_id=session_id,
+                    query=query,
+                    pass_number=pass_number + 1,
+                    tracker_state=tracker_state,
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to handle research completion: {e}",
+                exc_info=True,
+            )
+
+    async def _trigger_research_pass(
+        self,
+        session_id: str,
+        query: str,
+        pass_number: int,
+        tracker_state: dict,
+    ) -> None:
+        """Trigger a ResearchFlow pass via subprocess.
+
+        Args:
+            session_id: Research session ID
+            query: Research query
+            pass_number: Pass number (1-indexed)
+            tracker_state: Serialized ConvergenceTracker state for resumption
+        """
+        import json
+        import subprocess
+
+        project_root = Path(__file__).parent.parent.parent.parent.parent
+        flow_file = project_root / "src" / "gaius" / "flows" / "research" / "flow.py"
+
+        if not flow_file.exists():
+            logger.error(f"ResearchFlow not found: {flow_file}")
+            return
+
+        # Build command with parameters
+        cmd = [
+            "uv", "run", "python", str(flow_file), "run",
+            "--query", query,
+            "--session-id", session_id,
+            "--pass-number", str(pass_number),
+        ]
+
+        # Add tracker state if available
+        if tracker_state:
+            cmd.extend(["--tracker-state", json.dumps(tracker_state)])
+
+        # Set environment
+        env = os.environ.copy()
+        env["GAIUS_KB_ROOT"] = self._config.kb_root
+
+        logger.info(f"Starting ResearchFlow pass {pass_number}: {' '.join(cmd[:8])}...")
+
+        try:
+            # Start as background process (fire and forget)
+            # LISTEN/NOTIFY will receive completion event
+            process = subprocess.Popen(
+                cmd,
+                env=env,
+                cwd=str(project_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.info(
+                f"ResearchFlow pass {pass_number} started: pid={process.pid} "
+                f"session={session_id}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to start ResearchFlow pass: {e}")

@@ -1362,6 +1362,7 @@ class OrchestratorService:
         workload_id: str,
         required_memory_mb: int,
         metadata: dict | None = None,
+        allow_baseline_eviction: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Evict vLLM endpoints to free GPU memory for transient CUDA workloads.
 
@@ -1372,6 +1373,9 @@ class OrchestratorService:
             workload_id: ID of the requesting workload (for logging)
             required_memory_mb: GPU memory required in MB
             metadata: Workload metadata (may contain 'target_gpus' hint)
+            allow_baseline_eviction: If True, allows evicting baseline endpoints.
+                Used by VectorSearch/ColNomic workloads for dynamic scheduling
+                where user-requested operations take priority.
 
         Returns:
             Tuple of (evicted_endpoints, restore_plan)
@@ -1413,8 +1417,8 @@ class OrchestratorService:
             f"checking GPUs: {sorted(target_gpus)}"
         )
 
-        # Get baseline endpoints that should NEVER be evicted
-        # These are configured in startup.preload_endpoints
+        # Get baseline endpoints - normally protected but can be evicted
+        # when allow_baseline_eviction=True (for VectorSearch/ColNomic workloads)
         baseline_endpoints = set(
             getattr(self.config.startup, "preload_endpoints", [])
         )
@@ -1424,9 +1428,9 @@ class OrchestratorService:
             proc_gpus = set(proc.gpu_ids) if proc.gpu_ids else set()
             if proc_gpus & target_gpus:
                 # This endpoint uses one of our target GPUs
-                if proc_name in baseline_endpoints:
-                    # NEVER evict baseline endpoints - they are critical for system operation
-                    # Flow scheduler should use different GPUs or wait
+                if proc_name in baseline_endpoints and not allow_baseline_eviction:
+                    # Protect baseline endpoints for flow workloads (Docling, etc.)
+                    # But allow eviction for user-interactive workloads (VectorSearch)
                     logger.warning(
                         f"Refusing to evict baseline endpoint {proc_name} (GPUs {proc.gpu_ids}) "
                         f"for workload {workload_id}. Flow should use non-overlapping GPUs. "
@@ -1504,13 +1508,17 @@ class OrchestratorService:
             f"(type={request.workload_type.name}, priority={request.priority.name})"
         )
 
-        # Handle GPU memory-based workloads (e.g., Docling flows)
+        # Handle GPU memory-based workloads (e.g., Docling flows, VectorSearch)
         # These need raw GPU VRAM, not vLLM endpoints
         if request.is_gpu_workload and not request.required_capabilities:
+            # VectorSearch workloads set allow_baseline_eviction=True in metadata
+            # to enable Yunikorn-style dynamic scheduling
+            allow_baseline = request.metadata.get("allow_baseline_eviction", False)
             evicted, restore_plan = await self._evict_for_gpu_memory(
                 workload_id=request.workload_id,
                 required_memory_mb=request.estimated_memory_mb,
                 metadata=request.metadata,
+                allow_baseline_eviction=allow_baseline,
             )
 
         # Use OR-Tools scheduler for capability-based workloads

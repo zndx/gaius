@@ -101,6 +101,12 @@ from ..engine.generated import (
     ProspectsCheckResponse,
     ProspectsUpdateRequest,
     ProspectsUpdateEvent,
+    # Multi-Phase Search Flow
+    SearchFlowRequest,
+    SearchFlowEvent,
+    # Deep Research Flow (MemRL)
+    ResearchFlowRequest,
+    ResearchFlowEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -490,6 +496,15 @@ class GrpcEngineClient:
         if service == "Prospects" and action == "update":
             async for event in self._stream_prospects_update(params, timeout):
                 yield event
+        elif service == "Search" and action == "semantic_stream":
+            async for event in self._stream_semantic_search(params, timeout):
+                yield event
+        elif service == "SearchFlow" and action == "search_stream":
+            async for event in self._stream_search_flow(params, timeout):
+                yield event
+        elif service == "ResearchFlow" and action == "research_stream":
+            async for event in self._stream_research_flow(params, timeout):
+                yield event
         else:
             raise ValueError(
                 f"Streaming not supported for {service}.{action}. "
@@ -562,6 +577,287 @@ class GrpcEngineClient:
             else:
                 raise RuntimeError(f"ProspectsUpdate stream error ({code.name}): {details}")
 
+    async def _stream_search_flow(
+        self,
+        params: dict,
+        idle_timeout: float,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream SearchFlow events with idle timeout.
+
+        Uses Metaflow-based multi-phase search with:
+        - BM25 lexical search
+        - ColNomic vector search (GPU orchestrated)
+        - Web search (Brave API)
+        - Parallel synthesis (local + Grok)
+        - KB artifact creation
+
+        Args:
+            params: Search parameters (query, skip_grok, limits)
+            idle_timeout: Idle timeout in seconds (default 300s = 5 minutes).
+                          Only triggers if no events received for this duration.
+
+        Yields:
+            Event dicts with type, progress, message, etc.
+        """
+        request = SearchFlowRequest(
+            query=params.get("query", ""),
+            skip_grok=params.get("skip_grok", False),
+            bm25_limit=params.get("bm25_limit", 0),
+            vector_limit=params.get("vector_limit", 0),
+            web_limit=params.get("web_limit", 0),
+        )
+
+        # Map proto Type enum to string names
+        TYPE_NAMES = {
+            0: "UNSPECIFIED",
+            1: "QUEUED",
+            2: "BM25_STARTED",
+            3: "BM25_COMPLETED",
+            4: "VECTOR_STARTED",
+            5: "VECTOR_EVICTING",
+            6: "VECTOR_LOADING",
+            7: "VECTOR_COMPLETED",
+            8: "WEB_STARTED",
+            9: "WEB_COMPLETED",
+            10: "INSTRUCT_RESTORING",
+            11: "INSTRUCT_READY",
+            12: "LOCAL_SYNTHESIS_STARTED",
+            13: "LOCAL_SYNTHESIS_COMPLETED",
+            14: "GROK_SYNTHESIS_STARTED",
+            15: "GROK_SYNTHESIS_COMPLETED",
+            16: "SYNTHESIS_MERGED",
+            17: "KB_WRITE",
+            18: "COMPLETED",
+            19: "FAILED",
+        }
+
+        try:
+            stream = self._stub.SearchFlowStream(request)
+            async_iter = stream.__aiter__()
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        async_iter.__anext__(),
+                        timeout=idle_timeout,
+                    )
+
+                    # Convert to dict with readable type name
+                    event_dict = MessageToDict(event, preserving_proto_field_name=True)
+                    event_type = event.type if hasattr(event, "type") else 0
+                    event_dict["type_name"] = TYPE_NAMES.get(event_type, f"UNKNOWN_{event_type}")
+
+                    yield event_dict
+
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        f"SearchFlow stream idle for {idle_timeout}s with no events. "
+                        f"The operation may be stuck. Check engine logs for details."
+                    )
+
+        except grpc.RpcError as e:
+            code = e.code()
+            details = e.details()
+
+            if code == grpc.StatusCode.UNAVAILABLE:
+                self._connected = False
+                raise ConnectionError(f"Service unavailable during streaming: {details}")
+            else:
+                raise RuntimeError(f"SearchFlow stream error ({code.name}): {details}")
+
+    async def _stream_research_flow(
+        self,
+        params: dict,
+        idle_timeout: float,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream ResearchFlow events with idle timeout.
+
+        Uses Metaflow-based multi-pass deep research with MemRL:
+        - Episodic memory retrieval (Q-value weighted)
+        - Multi-pass research cycles
+        - 7-agent swarm analysis
+        - Grok synthesis
+        - Convergence detection
+        - KB artifact creation
+
+        Args:
+            params: Research parameters (query, max_passes, drift_threshold, limits)
+            idle_timeout: Idle timeout in seconds (default 600s = 10 minutes).
+                          Only triggers if no events received for this duration.
+
+        Yields:
+            Event dicts with type, progress, message, pass_number, etc.
+        """
+        request = ResearchFlowRequest(
+            query=params.get("query", ""),
+            max_passes=params.get("max_passes", 0),
+            drift_threshold=params.get("drift_threshold", 0.0),
+            bm25_limit=params.get("bm25_limit", 0),
+            vector_limit=params.get("vector_limit", 0),
+            web_limit=params.get("web_limit", 0),
+        )
+
+        # Map proto Type enum to string names (matches proto definition)
+        TYPE_NAMES = {
+            0: "unspecified",
+            1: "queued",
+            2: "memories_retrieving",
+            3: "memories_retrieved",
+            4: "pass_started",
+            5: "pass_search",
+            6: "pass_swarm",
+            7: "pass_grok",
+            8: "pass_evaluate",
+            9: "pass_qupdate",
+            10: "pass_completed",
+            11: "converged",
+            12: "final_synthesis",
+            13: "kb_write",
+            14: "completed",
+            15: "failed",
+        }
+
+        try:
+            stream = self._stub.ResearchFlowStream(request)
+            async_iter = stream.__aiter__()
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        async_iter.__anext__(),
+                        timeout=idle_timeout,
+                    )
+
+                    # Convert to dict with readable type name
+                    event_dict = MessageToDict(event, preserving_proto_field_name=True)
+                    event_type = event.type if hasattr(event, "type") else 0
+                    event_dict["type_name"] = TYPE_NAMES.get(event_type, f"unknown_{event_type}")
+
+                    yield event_dict
+
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        f"ResearchFlow stream idle for {idle_timeout}s with no events. "
+                        f"The operation may be stuck. Check engine logs for details."
+                    )
+
+        except grpc.RpcError as e:
+            code = e.code()
+            details = e.details()
+
+            if code == grpc.StatusCode.UNAVAILABLE:
+                self._connected = False
+                raise ConnectionError(f"Service unavailable during streaming: {details}")
+            else:
+                raise RuntimeError(f"ResearchFlow stream error ({code.name}): {details}")
+
+    async def _stream_semantic_search(
+        self,
+        params: dict,
+        idle_timeout: float,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream SemanticSearchEvent progress events with idle timeout.
+
+        Uses streaming to show GPU allocation and model loading progress
+        during ColNomic cold start (~10-20s), rather than blocking on a
+        long timeout.
+
+        Args:
+            params: Search parameters (query, limit, use_maxsim, etc.)
+            idle_timeout: Idle timeout in seconds (default 60s for cold start).
+                          Only triggers if no events received for this duration.
+
+        Yields:
+            Event dicts with phase, progress_pct, message, and results on COMPLETE.
+        """
+        from ..engine.generated import SemanticSearchRequest
+
+        request = SemanticSearchRequest(
+            query=params.get("query", ""),
+            collection=params.get("collection", "kb"),
+            limit=params.get("limit", 10),
+            min_score=params.get("min_score", 0.0),
+            use_maxsim=params.get("use_maxsim", True),
+            content_type=params.get("content_type", ""),
+        )
+
+        # Map proto Phase enum to string names
+        PHASE_NAMES = {
+            0: "UNSPECIFIED",
+            1: "REQUESTING_GPU",
+            2: "EVICTING_ENDPOINTS",
+            3: "LOADING_MODEL",
+            4: "SEARCHING",
+            5: "COMPLETE",
+            6: "ERROR",
+        }
+
+        try:
+            stream = self._stub.SemanticSearchStream(request)
+            async_iter = stream.__aiter__()
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        async_iter.__anext__(),
+                        timeout=idle_timeout,
+                    )
+
+                    # Convert event to dict
+                    event_dict = {
+                        "phase": PHASE_NAMES.get(event.phase, "UNKNOWN"),
+                        "message": event.message,
+                        "progress_pct": event.progress_pct,
+                        "timestamp_ms": event.timestamp_ms,
+                    }
+
+                    # Add error info if present
+                    if event.error:
+                        event_dict["error"] = event.error
+                    if event.guru_code:
+                        event_dict["guru_code"] = event.guru_code
+
+                    # Add response on COMPLETE
+                    if event.phase == 5 and event.response.total > 0:  # COMPLETE
+                        event_dict["results"] = [
+                            {
+                                "path": r.path,
+                                "title": r.title,
+                                "score": r.score,
+                                "snippet": r.snippet,
+                                "chunk_id": r.chunk_id,
+                                "content_type": r.content_type,
+                            }
+                            for r in event.response.results
+                        ]
+                        event_dict["total"] = event.response.total
+                        event_dict["collection"] = event.response.collection
+                        event_dict["embedding_model"] = event.response.embedding_model
+
+                    yield event_dict
+
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    raise TimeoutError(
+                        f"SemanticSearchStream idle for {idle_timeout}s with no events. "
+                        f"ColNomic loading may be stuck. Check /gpu status."
+                    )
+
+        except grpc.RpcError as e:
+            code = e.code()
+            details = e.details()
+
+            if code == grpc.StatusCode.UNAVAILABLE:
+                self._connected = False
+                raise ConnectionError(f"Service unavailable during streaming: {details}")
+            else:
+                raise RuntimeError(f"SemanticSearchStream error ({code.name}): {details}")
+
     async def _dispatch_call(
         self, service: str, action: str, params: dict, timeout: float
     ) -> dict[str, Any]:
@@ -606,6 +902,8 @@ class GrpcEngineClient:
             return await self._call_models(action, params, timeout)
         elif service == "Prospects":
             return await self._call_prospects(action, params, timeout)
+        elif service == "ResearchFlow":
+            return await self._call_research_flow(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
 
@@ -2351,6 +2649,43 @@ class GrpcEngineClient:
             raise ValueError(
                 f"Unknown Prospects action: {action}. "
                 f"For 'update', use stream() method instead of call()."
+            )
+
+    async def _call_research_flow(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle ResearchFlow service calls via gRPC.
+
+        Actions:
+            status: Get current research status
+            stop: Request stop of running research
+
+        Note: For streaming research operations, use the stream() method instead.
+
+        Args:
+            action: Action to perform (status, stop)
+            params: Action parameters (unused)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with research status or stop result
+        """
+        if action == "status":
+            response = await self._stub.ResearchFlowStatus(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "stop":
+            response = await self._stub.ResearchFlowStop(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(
+                f"Unknown ResearchFlow action: {action}. "
+                f"For 'research_stream', use stream() method instead of call()."
             )
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:

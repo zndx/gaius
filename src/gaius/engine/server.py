@@ -108,6 +108,9 @@ class GaiusEngine:
         # Ambient computing workload service
         self._ambient_service = None
 
+        # Vector search service (orchestrator-managed ColNomic)
+        self._vector_search_service = None
+
         # Health service (basic metrics)
         self._health_service = None
 
@@ -282,6 +285,9 @@ class GaiusEngine:
 
         # Initialize ambient computing workload service
         await self._init_ambient_service()
+
+        # Initialize vector search service (orchestrator-managed ColNomic)
+        await self._init_vector_search_service()
 
         # NOTE: X Bookmarks service is initialized EARLY (after gRPC starts, before PRELOAD)
         # to ensure XB status is available during the ~240s vLLM preload phase
@@ -847,6 +853,55 @@ class GaiusEngine:
             logger.warning(f"Ambient Workload service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize Ambient Workload service: {e}")
+
+    async def _init_vector_search_service(self) -> None:
+        """Initialize the Vector Search service.
+
+        VectorSearchService wraps ColNomic multi-vector embeddings with
+        orchestrator GPU coordination using the workload system:
+        - Uses begin_workload()/complete_workload() for GPU allocation
+        - LRU-style caching: model stays loaded until idle timeout
+        - Graceful queuing when GPU unavailable
+        - Fail-fast: no silent degradation to CPU
+
+        Follows Yunikorn-style dynamic scheduling where ColNomic and
+        reasoning endpoints can evict each other based on demand.
+        """
+        try:
+            from .services.vector_search_service import (
+                VectorSearchService,
+                VectorSearchConfig,
+            )
+
+            logger.info("Initializing Vector Search service...")
+
+            # Requires orchestrator for GPU coordination
+            if not self._orchestrator_service:
+                logger.warning("Vector Search service skipped: orchestrator not available")
+                return
+
+            # Create config from environment (with HOCON fallback)
+            config = VectorSearchConfig.from_env()
+
+            self._vector_search_service = VectorSearchService(
+                orchestrator=self._orchestrator_service,
+                config=config,
+            )
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "vector_search_service", self._vector_search_service
+                )
+                logger.info(
+                    f"Vector Search service registered with gRPC "
+                    f"(idle_timeout={config.idle_timeout_s}s)"
+                )
+
+        except ImportError as e:
+            logger.warning(f"Vector Search service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Vector Search service: {e}")
 
     async def _maybe_resume_ambient(self) -> None:
         """Auto-resume ambient workload if it was running before restart.

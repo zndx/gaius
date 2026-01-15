@@ -72,6 +72,7 @@ from ...generated import (
     SemanticSearchRequest,
     SearchResult,
     SemanticSearchResponse,
+    SemanticSearchEvent,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
@@ -261,6 +262,17 @@ from ...generated import (
     ProspectsCheckResponse,
     ProspectsUpdateRequest,
     ProspectsUpdateEvent,
+    # Multi-Phase Search Flow
+    SearchFlowRequest,
+    WebSearchResult,
+    SearchFlowResult,
+    SearchFlowEvent,
+    # Deep Research Flow (MemRL)
+    ResearchFlowRequest,
+    ResearchFlowResult,
+    ResearchFlowEvent,
+    ResearchFlowStatusResponse,
+    ResearchFlowStopResponse,
     # Servicer base
     GaiusServiceServicer,
 )
@@ -303,6 +315,8 @@ class GaiusServicer(GaiusServiceServicer):
     def __init__(self, services: "ServiceRegistry"):
         self._services = services
         self._event_subscribers: list[asyncio.Queue] = []
+        # Cached research service for status/stop operations
+        self._research_service: "ResearchWorkloadService | None" = None
 
     def _get_free_gpu(self) -> int:
         """Get a free GPU from ResourceManager.
@@ -932,28 +946,37 @@ class GaiusServicer(GaiusServiceServicer):
         request: SemanticSearchRequest,
         context: aio.ServicerContext,
     ) -> SemanticSearchResponse:
-        """Perform semantic search using ColNomic multi-vectors with MaxSim.
+        """Perform semantic search using orchestrator-managed ColNomic.
 
-        Uses VectorSearchMulti for GPU-accelerated MaxSim search over
-        the KB Qdrant collection indexed with ColNomic embeddings.
+        Uses VectorSearchService for GPU-coordinated MaxSim search over
+        the KB Qdrant collection. GPU allocation is managed through the
+        orchestrator's workload system for proper resource accounting.
+
+        The VectorSearchService implements LRU-style caching:
+        - First request loads ColNomic (~10-20s cold start)
+        - Subsequent requests use cached model (fast)
+        - After idle timeout (default 300s), model is unloaded
+
+        Follows Yunikorn-style dynamic scheduling where ColNomic and
+        reasoning endpoints can evict each other based on demand.
         """
         import time
 
         start_time = time.time()
 
         try:
-            from gaius.inference.search.vector_multi import get_vector_search_multi
+            vector_search = self._services.vector_search_service
+            if vector_search is None:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "VectorSearchService not available.\n"
+                    "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                    "  Fix: devenv tasks run restart:clean"
+                )
+                return SemanticSearchResponse()
 
-            # Get a free GPU from ResourceManager
-            free_gpu = self._get_free_gpu()
-            device = f"cuda:{free_gpu}"
-            logger.debug(f"SemanticSearch using {device}")
-
-            # Get or create vector search instance with selected GPU
-            vector_search = get_vector_search_multi(device=device)
-
-            # Execute search
-            results = vector_search.search(
+            # Execute search (GPU allocation is handled by the service)
+            results = await vector_search.search(
                 query=request.query,
                 top_k=request.limit if request.limit > 0 else 10,
                 min_score=request.min_score,
@@ -984,11 +1007,132 @@ class GaiusServicer(GaiusServiceServicer):
                 latency_ms=latency_ms,
             )
 
+        except asyncio.TimeoutError:
+            context.set_code(grpc.StatusCode.DEADLINE_EXCEEDED)
+            context.set_details(
+                "GPU allocation timeout for vector search.\n"
+                "  Guru Meditation: #VS.00000003.TIMEOUT\n"
+                "  Check: /gpu status"
+            )
+            return SemanticSearchResponse()
+
+        except RuntimeError as e:
+            # VectorSearchService raises RuntimeError with Guru codes for GPU failures
+            logger.error(f"SemanticSearch failed: {e}")
+            context.set_code(grpc.StatusCode.UNAVAILABLE)
+            context.set_details(str(e))
+            return SemanticSearchResponse()
+
         except Exception as e:
             logger.error(f"SemanticSearch failed: {e}")
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return SemanticSearchResponse()
+
+    async def SemanticSearchStream(
+        self,
+        request: SemanticSearchRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[SemanticSearchEvent]:
+        """Streaming semantic search with progress events.
+
+        Yields SemanticSearchEvent messages showing GPU allocation,
+        model loading, and search progress. This is preferred for TUI
+        clients that want to display progress during the 10-20s ColNomic
+        cold start instead of blocking on a long timeout.
+
+        Phases:
+        1. REQUESTING_GPU - Requesting GPU via orchestrator workload system
+        2. EVICTING_ENDPOINTS - Evicting vLLM endpoints to free GPU
+        3. LOADING_MODEL - Loading ColNomic model onto GPU
+        4. SEARCHING - Executing MaxSim search on Qdrant
+        5. COMPLETE - Search complete with results
+        6. ERROR - Error occurred
+        """
+        from ...services.vector_search_service import SearchPhase
+
+        # Map internal SearchPhase to proto Phase
+        PHASE_MAP = {
+            SearchPhase.REQUESTING_GPU: SemanticSearchEvent.Phase.REQUESTING_GPU,
+            SearchPhase.EVICTING_ENDPOINTS: SemanticSearchEvent.Phase.EVICTING_ENDPOINTS,
+            SearchPhase.LOADING_MODEL: SemanticSearchEvent.Phase.LOADING_MODEL,
+            SearchPhase.SEARCHING: SemanticSearchEvent.Phase.SEARCHING,
+            SearchPhase.COMPLETE: SemanticSearchEvent.Phase.COMPLETE,
+            SearchPhase.ERROR: SemanticSearchEvent.Phase.ERROR,
+        }
+
+        vector_search = self._services.vector_search_service
+        if vector_search is None:
+            yield SemanticSearchEvent(
+                phase=SemanticSearchEvent.Phase.ERROR,
+                message="VectorSearchService not available",
+                progress_pct=0,
+                timestamp_ms=int(time.time() * 1000),
+                error="VectorSearchService not available.\n  Guru Meditation: #VS.00000001.SVCNOTINIT\n  Fix: devenv tasks run restart:clean",
+                guru_code="#VS.00000001.SVCNOTINIT",
+            )
+            return
+
+        try:
+            async for event in vector_search.search_stream(
+                query=request.query,
+                top_k=request.limit if request.limit > 0 else 10,
+                min_score=request.min_score,
+                use_maxsim=request.use_maxsim if request.use_maxsim else True,
+                content_type=request.content_type or None,
+            ):
+                proto_phase = PHASE_MAP.get(
+                    event.phase, SemanticSearchEvent.Phase.PHASE_UNSPECIFIED
+                )
+
+                # Build base event
+                proto_event = SemanticSearchEvent(
+                    phase=proto_phase,
+                    message=event.message,
+                    progress_pct=event.progress_pct,
+                    timestamp_ms=event.timestamp_ms,
+                )
+
+                # Add error info if present
+                if event.error:
+                    proto_event.error = event.error
+                if event.guru_code:
+                    proto_event.guru_code = event.guru_code
+
+                # Add results on COMPLETE
+                if event.phase == SearchPhase.COMPLETE and event.results:
+                    proto_results = [
+                        SearchResult(
+                            path=r.path,
+                            title=r.title,
+                            score=r.score,
+                            snippet=r.snippet[:500] if r.snippet else "",
+                            chunk_id=r.chunk_id,
+                            content_type=r.content_type,
+                        )
+                        for r in event.results
+                    ]
+                    proto_event.response.CopyFrom(
+                        SemanticSearchResponse(
+                            results=proto_results,
+                            total=len(proto_results),
+                            collection=vector_search.collection_name,
+                            embedding_model="colnomic",
+                        )
+                    )
+
+                yield proto_event
+
+        except Exception as e:
+            logger.error(f"SemanticSearchStream failed: {e}")
+            yield SemanticSearchEvent(
+                phase=SemanticSearchEvent.Phase.ERROR,
+                message=str(e),
+                progress_pct=0,
+                timestamp_ms=int(time.time() * 1000),
+                error=str(e),
+                guru_code="#VS.00000099.UNKNOWN",
+            )
 
     # =========================================================================
     # Swarm Streaming
@@ -6170,4 +6314,245 @@ class GaiusServicer(GaiusServiceServicer):
                 timestamp_ms=int(time.time() * 1000),
                 progress=0.0,
                 message=str(e),
+            )
+
+    # =========================================================================
+    # Search (Multi-Phase Metaflow Search Flow)
+    # =========================================================================
+
+    async def SearchFlowStream(
+        self,
+        request: SearchFlowRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[SearchFlowEvent]:
+        """Run multi-phase search via Metaflow SearchFlow (streaming progress events).
+
+        Phases:
+        1. BM25 lexical search (KB)
+        2. Vector search (ColNomic MaxSim - evicts instruct)
+        3. Web search (Brave API)
+        4. Ensure instruct endpoint restored
+        5. Parallel synthesis (local + Grok branch/join)
+        6. Merge results and write KB zettelkasten
+        """
+        try:
+            # Emit queued event
+            yield SearchFlowEvent(
+                type=SearchFlowEvent.QUEUED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message=f"Search queued: {request.query}",
+            )
+
+            # Lazy import to avoid circular dependencies
+            from ...services.search_workload_service import SearchWorkloadService
+
+            # Create service instance (stateless - no need for long-lived service)
+            service = SearchWorkloadService()
+            await service.start()
+
+            try:
+                # Stream progress events from service
+                async for event in service.run_search(
+                    query=request.query,
+                    skip_grok=request.skip_grok,
+                    bm25_limit=request.bm25_limit if request.bm25_limit > 0 else None,
+                    vector_limit=request.vector_limit if request.vector_limit > 0 else None,
+                    web_limit=request.web_limit if request.web_limit > 0 else None,
+                ):
+                    # Map event type to proto enum
+                    event_type = event.get("type", 0)
+
+                    # Build SearchFlowEvent - include result for COMPLETED events
+                    flow_event = SearchFlowEvent(
+                        type=event_type,
+                        timestamp_ms=event.get("timestamp_ms", int(time.time() * 1000)),
+                        progress=event.get("progress", 0.0),
+                        message=event.get("message", ""),
+                        error=event.get("error", ""),
+                        guru_code=event.get("guru_code", ""),
+                    )
+
+                    # Include result with kb_path for COMPLETED events
+                    kb_path = event.get("kb_path", "")
+                    if event_type == SearchFlowEvent.COMPLETED and kb_path:
+                        flow_event.result.CopyFrom(SearchFlowResult(kb_path=kb_path))
+
+                    yield flow_event
+
+            finally:
+                await service.stop()
+
+        except Exception as e:
+            logger.exception(f"SearchFlowStream failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="SearchFlowStream",
+                exception_type=type(e).__name__,
+                guru_code="#GR.SF.00001.STREAMFAIL",
+            )
+            yield SearchFlowEvent(
+                type=SearchFlowEvent.FAILED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message=str(e),
+                guru_code="#SF.00000007.FLOWFAIL",
+            )
+
+    # =========================================================================
+    # Research (Multi-Pass Deep Research Flow with MemRL)
+    # =========================================================================
+
+    async def ResearchFlowStream(
+        self,
+        request: ResearchFlowRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[ResearchFlowEvent]:
+        """Run multi-pass deep research via Metaflow ResearchFlow (streaming progress events).
+
+        Implements MemRL pattern:
+        1. Retrieve episodic memories from KB (Q-value weighted)
+        2. Multi-pass research cycle:
+           - Search (BM25 + vector + web)
+           - 7-agent swarm analysis
+           - Grok synthesis
+           - Reward computation (coherence/coverage/novelty)
+           - Q-value update via Bellman EMA
+        3. Convergence detection (drift threshold or max passes)
+        4. Final Grok synthesis for polished output
+        5. Write to KB with MemRL frontmatter
+        """
+        try:
+            # Emit queued event
+            yield ResearchFlowEvent(
+                type=ResearchFlowEvent.QUEUED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message=f"Research queued: {request.query}",
+            )
+
+            # Lazy import to avoid circular dependencies
+            from ...services.research_workload_service import ResearchWorkloadService
+
+            # Create and cache service instance for status/stop operations
+            service = ResearchWorkloadService()
+            self._research_service = service
+            await service.start()
+
+            try:
+                # Stream progress events from service
+                async for event in service.run_research(
+                    query=request.query,
+                    max_passes=request.max_passes if request.max_passes > 0 else None,
+                    drift_threshold=request.drift_threshold if request.drift_threshold > 0 else None,
+                    bm25_limit=request.bm25_limit if request.bm25_limit > 0 else None,
+                    vector_limit=request.vector_limit if request.vector_limit > 0 else None,
+                    web_limit=request.web_limit if request.web_limit > 0 else None,
+                ):
+                    # Map event type to proto enum
+                    event_type = event.get("type", 0)
+                    type_name = event.get("type_name", "")
+
+                    # Build ResearchFlowEvent
+                    flow_event = ResearchFlowEvent(
+                        type=event_type,
+                        timestamp_ms=event.get("timestamp_ms", int(time.time() * 1000)),
+                        progress=event.get("progress", 0.0),
+                        message=event.get("message", ""),
+                        error=event.get("error", ""),
+                        guru_code=event.get("guru_code", ""),
+                        pass_number=event.get("pass_number", 0),
+                    )
+
+                    # Include result for COMPLETED events
+                    kb_path = event.get("kb_path", "")
+                    best_q_value = event.get("best_q_value", 0.0)
+                    total_passes = event.get("total_passes", 0)
+                    convergence_reason = event.get("convergence_reason", "")
+
+                    if type_name == "completed" and kb_path:
+                        flow_event.result.CopyFrom(ResearchFlowResult(
+                            kb_path=kb_path,
+                            best_q_value=best_q_value,
+                            total_passes=total_passes,
+                            convergence_reason=convergence_reason,
+                        ))
+
+                    yield flow_event
+
+            finally:
+                await service.stop()
+
+        except Exception as e:
+            logger.exception(f"ResearchFlowStream failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ResearchFlowStream",
+                exception_type=type(e).__name__,
+                guru_code="#GR.RF.00001.STREAMFAIL",
+            )
+            yield ResearchFlowEvent(
+                type=ResearchFlowEvent.FAILED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message=str(e),
+                guru_code="#RF.00000007.FLOWFAIL",
+            )
+
+    async def ResearchFlowStatus(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext,
+    ) -> ResearchFlowStatusResponse:
+        """Get current research status for /research status command."""
+        if self._research_service is None:
+            # No research has been started yet
+            return ResearchFlowStatusResponse(
+                running=False,
+                query="",
+                pass_number=0,
+                progress=0.0,
+                phase="",
+                elapsed_s=0.0,
+                events_count=0,
+                stop_requested=False,
+            )
+
+        status = await self._research_service.get_status()
+        return ResearchFlowStatusResponse(
+            running=status.get("running", False),
+            query=status.get("query", ""),
+            pass_number=status.get("pass", 0),
+            progress=float(status.get("progress", 0.0)),
+            phase=status.get("phase", ""),
+            elapsed_s=float(status.get("elapsed_s", 0.0)),
+            events_count=status.get("events_count", 0),
+            stop_requested=status.get("stop_requested", False),
+        )
+
+    async def ResearchFlowStop(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext,
+    ) -> ResearchFlowStopResponse:
+        """Request stop of running research for /research stop command."""
+        if self._research_service is None:
+            return ResearchFlowStopResponse(
+                success=False,
+                message="",
+                error="No research running",
+            )
+
+        result = await self._research_service.request_stop()
+        if result.get("success", False):
+            return ResearchFlowStopResponse(
+                success=True,
+                message=result.get("message", "Stop requested"),
+                error="",
+            )
+        else:
+            return ResearchFlowStopResponse(
+                success=False,
+                message="",
+                error=result.get("error", "Unknown error"),
             )

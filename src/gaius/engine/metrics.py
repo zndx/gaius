@@ -37,6 +37,18 @@ logger = logging.getLogger(__name__)
 _metrics_instance: Optional["EngineMetrics"] = None
 
 
+def _z_score_bucket(z: float) -> str:
+    """Convert Z-score to bucket label for metrics aggregation."""
+    if z < 2.0:
+        return "normal"
+    elif z < 3.0:
+        return "elevated"
+    elif z < 4.0:
+        return "high"
+    else:
+        return "extreme"
+
+
 class EngineMetrics:
     """Centralized OTel metrics for the engine.
 
@@ -98,6 +110,11 @@ class EngineMetrics:
         # Operational exception tracking (for fail-fast visibility)
         self._exception_caught: Any = None
 
+        # Operation/heartbeat metrics (for timeout replacement)
+        self._operation_duration: Any = None
+        self._operation_heartbeat: Any = None
+        self._operation_anomaly: Any = None
+
         self._init_instruments()
 
     def _init_instruments(self) -> None:
@@ -137,6 +154,7 @@ class EngineMetrics:
             self._create_healing_instruments()
             self._create_general_instruments()
             self._create_exception_instruments()
+            self._create_operation_instruments()
 
             self._initialized = True
             logger.info("Engine OTel metrics instruments created")
@@ -360,6 +378,36 @@ class EngineMetrics:
         self._exception_caught = self._meter.create_counter(
             "gaius.exception.caught",
             description="Operational exceptions caught and handled",
+            unit="1",
+        )
+
+    def _create_operation_instruments(self) -> None:
+        """Create operation monitoring instruments.
+
+        These metrics enable monitoring of long-running operations and
+        replace hard timeouts with statistical anomaly detection.
+
+        Metric meanings:
+        - operation_duration: Histogram of operation durations by type
+        - operation_heartbeat: Counter of heartbeats emitted (liveness signals)
+        - operation_anomaly: Counter of anomalies detected (Z > threshold)
+        """
+        if not self._meter:
+            return
+
+        self._operation_duration = self._meter.create_histogram(
+            "gaius.operation.duration",
+            description="Operation duration in seconds by type",
+            unit="s",
+        )
+        self._operation_heartbeat = self._meter.create_counter(
+            "gaius.operation.heartbeat",
+            description="Heartbeats emitted during long operations",
+            unit="1",
+        )
+        self._operation_anomaly = self._meter.create_counter(
+            "gaius.operation.anomaly",
+            description="Anomalous operation durations detected (Z > threshold)",
             unit="1",
         )
 
@@ -692,6 +740,81 @@ class EngineMetrics:
         logger.debug(
             f"Recorded exception: component={component} operation={operation} "
             f"type={exception_type} guru={guru_code}"
+        )
+
+    def record_operation_duration(
+        self,
+        operation: str,
+        duration_s: float,
+        endpoint: str = "",
+    ) -> None:
+        """Record an operation's duration.
+
+        Args:
+            operation: Operation type (e.g., "gpu_allocation", "llm_inference")
+            duration_s: Duration in seconds
+            endpoint: Optional endpoint context
+        """
+        if not self._operation_duration:
+            return
+
+        attrs = {"operation": operation}
+        if endpoint:
+            attrs["endpoint"] = endpoint
+
+        self._operation_duration.record(duration_s, attrs)
+
+    def record_heartbeat(
+        self,
+        operation: str,
+        endpoint: str = "",
+        elapsed_s: float = 0.0,
+    ) -> None:
+        """Record a heartbeat emission.
+
+        Args:
+            operation: Operation type
+            endpoint: Optional endpoint context
+            elapsed_s: Time elapsed since operation start
+        """
+        if not self._operation_heartbeat:
+            return
+
+        attrs = {"operation": operation}
+        if endpoint:
+            attrs["endpoint"] = endpoint
+
+        self._operation_heartbeat.add(1, attrs)
+
+    def record_operation_anomaly(
+        self,
+        operation: str,
+        z_score: float,
+        duration_s: float,
+        endpoint: str = "",
+    ) -> None:
+        """Record an operation anomaly detection.
+
+        Args:
+            operation: Operation type
+            z_score: Z-score (standard deviations from mean)
+            duration_s: Actual duration
+            endpoint: Optional endpoint context
+        """
+        if not self._operation_anomaly:
+            return
+
+        attrs = {
+            "operation": operation,
+            "z_score_bucket": _z_score_bucket(z_score),
+        }
+        if endpoint:
+            attrs["endpoint"] = endpoint
+
+        self._operation_anomaly.add(1, attrs)
+        logger.warning(
+            f"Operation anomaly: operation={operation} endpoint={endpoint} "
+            f"duration={duration_s:.1f}s Z={z_score:.2f}"
         )
 
     @classmethod

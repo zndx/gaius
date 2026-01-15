@@ -3,12 +3,92 @@
 Configuration hierarchy (highest to lowest priority):
 1. CLI flags: --backend=optillm --technique=cot_reflection --offline
 2. Environment: GAIUS_BACKEND, GAIUS_OPTILLM_TECHNIQUE, BRAVE_API_KEY
-3. Defaults: offline-first, optillm backend
+3. HOCON config: ~/.config/gaius/inference.conf
+4. Defaults: offline-first, optillm backend
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any
+import logging
 import os
+
+logger = logging.getLogger(__name__)
+
+# Default values for parallel synthesis
+DEFAULT_GROK_TIMEOUT = 10.0  # seconds after local completes
+DEFAULT_GROK_ENABLED = True
+
+
+def _load_hocon_config() -> dict[str, Any]:
+    """Load HOCON config from ~/.config/gaius/inference.conf if exists."""
+    config_path = Path.home() / ".config/gaius/inference.conf"
+    if not config_path.exists():
+        return {}
+
+    try:
+        from pyhocon import ConfigFactory
+
+        conf = ConfigFactory.parse_file(str(config_path))
+        return conf.as_plain_ordered_dict()
+    except ImportError:
+        logger.debug("pyhocon not available, using defaults")
+        return {}
+    except Exception as e:
+        logger.warning(f"Failed to parse inference.conf: {e}")
+        return {}
+
+
+def get_grok_timeout() -> float:
+    """Get Grok relative timeout in seconds.
+
+    Priority:
+    1. GAIUS_GROK_TIMEOUT environment variable
+    2. inference.grok.relative_timeout_seconds in ~/.config/gaius/inference.conf
+    3. Default: 10.0 seconds
+
+    This timeout is applied *after* the local model completes, giving Grok
+    a grace period to finish. If Grok hasn't completed when the timeout
+    expires, we return partial results with local synthesis only.
+    """
+    # Environment override first
+    if env_val := os.getenv("GAIUS_GROK_TIMEOUT"):
+        try:
+            return float(env_val)
+        except ValueError:
+            logger.warning(f"Invalid GAIUS_GROK_TIMEOUT value: {env_val}")
+
+    # HOCON config
+    conf = _load_hocon_config()
+    if "inference" in conf and "grok" in conf["inference"]:
+        grok_conf = conf["inference"]["grok"]
+        if "relative_timeout_seconds" in grok_conf:
+            return float(grok_conf["relative_timeout_seconds"])
+
+    return DEFAULT_GROK_TIMEOUT
+
+
+def is_grok_enabled() -> bool:
+    """Check if Grok synthesis is enabled.
+
+    Priority:
+    1. GAIUS_GROK_ENABLED environment variable (true/false/1/0)
+    2. inference.grok.enabled in ~/.config/gaius/inference.conf
+    3. Default: True
+    """
+    # Environment override first
+    if env_val := os.getenv("GAIUS_GROK_ENABLED"):
+        return env_val.lower() in ("true", "1", "yes")
+
+    # HOCON config
+    conf = _load_hocon_config()
+    if "inference" in conf and "grok" in conf["inference"]:
+        grok_conf = conf["inference"]["grok"]
+        if "enabled" in grok_conf:
+            return bool(grok_conf["enabled"])
+
+    return DEFAULT_GROK_ENABLED
 
 
 class InferenceBackend(Enum):

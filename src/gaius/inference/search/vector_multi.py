@@ -125,11 +125,18 @@ class VectorSearchMulti:
     def embedder(self) -> ColQwenEmbedder:
         """Get or create ColNomic embedder.
 
+        When a device is specified, creates a fresh embedder on that device
+        instead of using the module-level singleton. This ensures model tensors
+        are on the correct GPU when the orchestrator allocates different GPUs.
+
         Raises:
             RuntimeError: If GPU is not available
         """
         if self._embedder is None:
             import torch
+            from opentelemetry import trace
+
+            tracer = trace.get_tracer("gaius.inference.search")
 
             if not torch.cuda.is_available():
                 raise RuntimeError(
@@ -137,16 +144,26 @@ class VectorSearchMulti:
                     "Check GPU health with /gpu or nvidia-smi."
                 )
 
-            # Use specified device or auto-detect
-            device = self._device
-            if device is None:
-                # Default to first available GPU
-                device = "cuda:0"
+            # Determine device
+            device = self._device if self._device else "cuda:0"
 
-            self._embedder = get_colqwen_embedder()
-            # Override device if specified
+            # When device is explicitly specified by VectorSearchService,
+            # create a fresh embedder on that device instead of using singleton.
+            # The singleton may be on a different GPU from a previous allocation.
             if self._device:
-                self._embedder.device = self._device
+                with tracer.start_as_current_span("colnomic.embedder.create") as span:
+                    span.set_attribute("device", device)
+                    span.set_attribute("singleton", False)
+                    span.add_event("colnomic.device.explicit", {"device": device})
+                    self._embedder = ColQwenEmbedder(device=device)
+                    span.add_event("colnomic.embedder.ready")
+            else:
+                # Use singleton for default behavior (backwards compatibility)
+                with tracer.start_as_current_span("colnomic.embedder.singleton") as span:
+                    span.set_attribute("device", device)
+                    span.set_attribute("singleton", True)
+                    self._embedder = get_colqwen_embedder()
+                    span.add_event("colnomic.singleton.retrieved")
 
         return self._embedder
 
@@ -304,43 +321,73 @@ class VectorSearchMulti:
         Raises:
             RuntimeError: If GPU is not available
         """
-        # Ensure collection exists
-        try:
-            self.ensure_collection()
-        except Exception as e:
-            logger.error(f"Qdrant not available: {e}")
-            raise RuntimeError(f"Qdrant connection failed: {e}")
+        from opentelemetry import trace
+        from opentelemetry.trace import StatusCode
 
-        # Check if collection has points
-        info = self.client.get_collection(self.collection_name)
-        if info.points_count == 0:
-            return []
+        tracer = trace.get_tracer("gaius.inference.search")
 
-        # Generate query embedding using ColNomic
-        query_multi_vecs, query_agg_vec = self.embedder.encode_text(
-            query, prefix="search_query: "
-        )
+        with tracer.start_as_current_span("vector_search.search") as span:
+            span.set_attribute("query", query[:100])  # Truncate for safety
+            span.set_attribute("top_k", top_k)
+            span.set_attribute("min_score", min_score)
+            span.set_attribute("use_maxsim", use_maxsim)
+            span.set_attribute("content_type", content_type or "all")
+            span.set_attribute("device", self._device or "default")
 
-        # Build filter if content_type specified
-        query_filter = None
-        if content_type:
-            query_filter = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="content_type",
-                        match=models.MatchValue(value=content_type),
+            try:
+                # Ensure collection exists
+                try:
+                    self.ensure_collection()
+                except Exception as e:
+                    span.set_status(StatusCode.ERROR, f"Qdrant connection failed: {e}")
+                    span.record_exception(e)
+                    raise RuntimeError(f"Qdrant connection failed: {e}")
+
+                # Check if collection has points
+                info = self.client.get_collection(self.collection_name)
+                span.set_attribute("collection_points", info.points_count)
+                if info.points_count == 0:
+                    span.add_event("search.empty_collection")
+                    return []
+
+                # Generate query embedding using ColNomic
+                span.add_event("search.encoding_query")
+                query_multi_vecs, query_agg_vec = self.embedder.encode_text(
+                    query, prefix="search_query: "
+                )
+                span.add_event("search.query_encoded", {"embedding_dim": len(query_agg_vec)})
+
+                # Build filter if content_type specified
+                query_filter = None
+                if content_type:
+                    query_filter = models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="content_type",
+                                match=models.MatchValue(value=content_type),
+                            )
+                        ]
                     )
-                ]
-            )
 
-        if use_maxsim:
-            return self._search_maxsim(
-                query_multi_vecs, query_agg_vec, top_k, min_score, query_filter
-            )
-        else:
-            return self._search_aggregated(
-                query_agg_vec, top_k, min_score, query_filter
-            )
+                # Execute search
+                span.add_event("search.executing", {"strategy": "maxsim" if use_maxsim else "aggregated"})
+                if use_maxsim:
+                    results = self._search_maxsim(
+                        query_multi_vecs, query_agg_vec, top_k, min_score, query_filter
+                    )
+                else:
+                    results = self._search_aggregated(
+                        query_agg_vec, top_k, min_score, query_filter
+                    )
+
+                span.set_attribute("results_count", len(results))
+                span.add_event("search.completed", {"results_count": len(results)})
+                return results
+
+            except Exception as e:
+                span.set_status(StatusCode.ERROR, str(e))
+                span.record_exception(e)
+                raise
 
     def search_by_image(
         self,

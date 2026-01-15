@@ -19,13 +19,24 @@ Usage:
     note = await synthesize_search(query, kb_results, web_results)
 """
 
-from .config import InferenceConfig, InferenceBackend, OptillmTechnique
+from .config import (
+    InferenceConfig,
+    InferenceBackend,
+    OptillmTechnique,
+    get_grok_timeout,
+    is_grok_enabled,
+)
 from .client import InferenceClient, Message, CompletionResult
 from .synthesis import (
     ZettelkastenSynthesizer,
     ZettelkastenNote,
     Citation,
     synthesize_search,
+)
+from .parallel_synthesis import (
+    ParallelSynthesizer,
+    ParallelResult,
+    get_parallel_synthesizer,
 )
 from .evaluation import (
     SynthesisEvaluator,
@@ -42,6 +53,8 @@ __all__ = [
     "InferenceConfig",
     "InferenceBackend",
     "OptillmTechnique",
+    "get_grok_timeout",
+    "is_grok_enabled",
     # Client
     "InferenceClient",
     "Message",
@@ -51,6 +64,10 @@ __all__ = [
     "ZettelkastenNote",
     "Citation",
     "synthesize_search",
+    # Parallel Synthesis
+    "ParallelSynthesizer",
+    "ParallelResult",
+    "get_parallel_synthesizer",
     # Evaluation
     "SynthesisEvaluator",
     "EvaluationResult",
