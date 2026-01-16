@@ -10,9 +10,12 @@ import logging
 import signal
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from gaius.hx.writer import ContentItem as HxContentItem
 
 from gaius.workers.base import FetcherRegistry
 from gaius.workers.config import WorkerConfig
@@ -76,11 +79,25 @@ class WorkerPool:
     def __init__(self, config: WorkerConfig, enable_hx: bool = True):
         self.config = config
         self.enable_hx = enable_hx
-        self.db: Database | None = None
+        self._db: Database | None = None
         self.http: httpx.AsyncClient | None = None
         self._shutdown = asyncio.Event()
         self._workers: list[asyncio.Task] = []
         self._hx_store = None  # Lazy-loaded IcebergContentStore
+
+    @property
+    def db(self) -> Database:
+        """Get the database connection (fail-fast if not connected).
+
+        Raises:
+            RuntimeError: If database is not connected
+        """
+        if self._db is None:
+            raise RuntimeError(
+                "Database not connected. Run worker within _resources() context.\n"
+                "  Guru Meditation: #WRK.00000001.NODBCONN"
+            )
+        return self._db
 
     def _get_hx_store(self):
         """Get or create the HX content store (lazy initialization).
@@ -171,7 +188,7 @@ class WorkerPool:
     @asynccontextmanager
     async def _resources(self) -> AsyncIterator[None]:
         """Context manager for shared resources."""
-        self.db = await Database.connect(
+        self._db = await Database.connect(
             self.config.db_url,
             min_size=2,
             max_size=self.config.pool_size + 2,
@@ -185,7 +202,7 @@ class WorkerPool:
             yield
         finally:
             await self.http.aclose()
-            await self.db.close()
+            await self._db.close()
 
     async def run(self) -> None:
         """Run the worker pool until shutdown."""
@@ -278,6 +295,11 @@ class WorkerPool:
         source = job.source
 
         # Get the appropriate fetcher
+        if self.http is None:
+            raise RuntimeError(
+                "HTTP client not initialized.\n"
+                "  Guru Meditation: #WORKER.00000001.HTTP_NOT_INIT"
+            )
         fetcher = FetcherRegistry.create(
             source.source_type,
             self.config,

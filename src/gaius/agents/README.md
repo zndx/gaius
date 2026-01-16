@@ -1,349 +1,242 @@
 # Gaius Agents
 
-Multi-agent swarms, autonomous cognition, and self-evolving agent systems for Gaius.
+LLM orchestration patterns for domain analysis. This module provides role-based prompt execution, parallel inference coordination, and temporal consolidation pipelines.
+
+> **Terminology Note**: Components in this module are labeled "agents" following pre-2024 conventions (cf. LangChain, AutoGPT). They are *orchestrated pipelines* rather than autonomous agents in the contemporary sense—they lack observe-reason-act loops, self-directed goal pursuit, and multi-step planning with self-correction.
 
 ## Architecture
 
 ```mermaid
 graph TB
-    subgraph "Swarm Layer"
-        SWARM[SwarmManager<br/>Parallel Execution]
-        LATENT[LatentSwarmManager<br/>Embedding-Based]
-        ROLES[Role Definitions<br/>7 Agents]
+    subgraph "Execution Patterns"
+        SWARM[SwarmManager<br/>Parallel Role Execution]
+        LATENT[LatentSwarmManager<br/>Embedding Coordination]
+        META[MetaAgentManager<br/>Domain-Specific Queries]
     end
 
-    subgraph "Cognition Layer"
+    subgraph "Consolidation Pipeline"
+        THETA[ThetaAgent<br/>Temporal Slicing]
+        NVAR[ThetaDynamics<br/>NVAR Signal]
+        SUBS[SubsumptionInferencer<br/>BERTSubs]
+        KG[KnowledgeGradientPolicy<br/>Selection]
+    end
+
+    subgraph "Background Processes"
         COG[CognitionAgent<br/>Pattern Detection]
-        REFL[Reflection<br/>Meta-Cognition]
-        DAILY[DailySummary<br/>Session Reports]
+        EVOL[EvolutionDaemon<br/>Prompt Optimization]
     end
 
-    subgraph "Evolution Layer"
-        ENGINE[EvolutionEngine<br/>Central Loop]
-        DAEMON[EvolutionDaemon<br/>Background]
-        ATROPOS[GaiusEvolutionEnv<br/>Atropos RL]
-    end
-
-    subgraph "Support"
-        TASK[TaskIdeation<br/>Generate Tasks]
-        MERGE[MergeCoordinator<br/>Model Merging]
-        HELD[HeldOutManager<br/>Evaluation]
+    subgraph "Infrastructure"
+        ROLES[Role Definitions]
+        MEMORY[LatentWorkingMemory<br/>Qdrant]
     end
 
     SWARM --> ROLES
-    LATENT --> ROLES
-    COG --> REFL
-    COG --> DAILY
-    ENGINE --> DAEMON
-    ENGINE --> ATROPOS
-    ENGINE --> TASK
-    ENGINE --> MERGE
-    ENGINE --> HELD
+    LATENT --> MEMORY
+    META --> ROLES
+
+    THETA --> NVAR
+    THETA --> SUBS
+    THETA --> KG
 ```
 
 ## Module Structure
 
 ```
 agents/
-├── __init__.py          # Module exports
-├── roles.py             # Agent role definitions
-├── swarm.py             # SwarmManager, LatentSwarmManager
-├── cognition.py         # CognitionAgent for pattern detection
-├── reflection.py        # Meta-cognitive reflection
-├── daily_summary.py     # Session summary generation
+├── swarm.py              # SwarmManager, parallel execution
+├── roles.py              # Role definitions (system prompts)
+├── metaagent_swarm.py    # MetaAgentManager, domain queries
+├── cognition.py          # CognitionAgent, pattern detection
+├── theta/                # Consolidation pipeline
+│   ├── agent.py          # ThetaAgent orchestrator
+│   ├── consolidation.py  # ThetaDynamics (NVAR)
+│   ├── subsumption.py    # BERTSubs integration
+│   ├── kg_policy.py      # Knowledge Gradient selection
+│   ├── augmentation.py   # Document link injection
+│   └── effectiveness.py  # SHAP-based evaluation
 ├── latent/
-│   ├── __init__.py
-│   └── memory.py        # Qdrant-backed latent memory
-├── evolution/
-│   ├── __init__.py
-│   ├── daemon.py        # Background evolution daemon
-│   ├── engine.py        # Central evolution loop
-│   ├── runner.py        # Agent execution
-│   ├── atropos_env.py   # Atropos RL compatibility
-│   ├── curriculum.py    # Training curriculum
-│   ├── collector.py     # Training data collection
-│   ├── evaluation.py    # Held-out evaluation
-│   ├── task_ideation.py # Autonomous task generation
-│   ├── task_authoring.py # Task formatting
-│   ├── reasoning_tasks.py # Nous Research format
-│   ├── merge_coordinator.py # Model merging
-│   ├── orchestrated.py  # Engine integration
-│   └── preemption.py    # GPU preemption handling
-└── modeladd/
-    ├── __init__.py
-    ├── orchestrator.py  # Model addition workflow
-    ├── prompts.py       # ModelSpec generation prompts
-    ├── sandbox.py       # Validation sandbox
-    └── tools.py         # MCP tools
-```
-
-## Swarm Roles
-
-### Core Roles
-
-| Role | Purpose | Temperature | Behavior |
-|------|---------|-------------|----------|
-| **Leader** | Strategic oversight, consensus | 0.7 | Center-seeking |
-| **Risk** | Threat identification | 0.6 | Peripheral |
-| **Optimizer** | Efficiency, opportunities | 0.7 | Cluster-seeking |
-| **Planner** | Long-term roadmap | 0.7 | Random |
-| **Critic** | Devil's advocate | 0.8 | Peripheral |
-| **Executor** | Implementation simulation | 0.6 | Cluster-seeking |
-| **Adversary** | Stress testing | 0.8 | Peripheral |
-
-### Extended Roles
-
-| Role | Purpose |
-|------|---------|
-| **Synthesizer** | Combine perspectives |
-| **Questioner** | Generate inquiry |
-| **Metacognizer** | Pattern recognition |
-
-### Role Definition
-
-```python
-@dataclass
-class RoleDefinition:
-    role: AgentRole
-    name: str
-    description: str
-    system_prompt: str
-    color: str  # For grid visualization
-
-    temperature: float = 0.7
-    max_tokens: int = 1024
-
-    # Model affinity
-    preferred_model_id: str | None = None
-    model_capabilities: list[str] = field(default_factory=list)
-    min_context_length: int = 4096
-
-    # Grid projection
-    projection_behavior: Literal["center", "peripheral", "random"]
-    cluster_affinity: float  # 0=avoid, 1=seek clusters
-
-    # Collaboration
-    responds_to: list[AgentRole] = field(default_factory=list)
-    triggers: list[AgentRole] = field(default_factory=list)
+│   ├── memory.py         # LatentWorkingMemory
+│   └── clt_memory.py     # Cross-Layer Transcoder features
+└── evolution/
+    ├── daemon.py         # Background optimization
+    ├── engine.py         # Evolution loop
+    └── merge_coordinator.py  # Model merging
 ```
 
 ## Swarm Execution
 
-### Standard Swarm
+### Role-Based Prompts
 
-Text-based parallel agent execution:
+The swarm pattern executes multiple LLM calls with distinct system prompts, collecting responses for synthesis. Each role defines a perspective on the input domain.
+
+| Role | Perspective | Temperature |
+|------|-------------|-------------|
+| Leader | Strategic synthesis | 0.7 |
+| Risk | Threat identification | 0.6 |
+| Optimizer | Efficiency analysis | 0.7 |
+| Planner | Roadmap development | 0.7 |
+| Critic | Adversarial review | 0.8 |
+| Executor | Implementation assessment | 0.6 |
+| Adversary | Stress testing | 0.8 |
+
+### Execution Model
 
 ```python
-from gaius.agents import SwarmManager, run_swarm_round
-
+# Parallel execution with role-specific prompts
 swarm = SwarmManager()
 result = await swarm.run_round(
     domain="pension asset allocation",
-    context="Recent KB entries about LDI strategies",
+    context="LDI strategy analysis",
 )
 
+# Result contains individual responses + synthesized consensus
 for response in result.responses:
-    print(f"{response.role.value}: {response.content[:100]}...")
-
-print(f"Consensus: {result.consensus}")
+    print(f"{response.role}: {response.content[:100]}...")
 ```
+
+Execution is *parallel* (concurrent LLM calls) but *not agentic*—roles do not observe each other's outputs, make decisions about next actions, or iterate based on feedback.
 
 ### Latent Swarm (LatentMAS)
 
-Embedding-based collaboration with 70-90% token reduction:
+An optimization reducing inter-agent token transfer by sharing embeddings instead of text (Guo et al., 2024). Agents store output embeddings in Qdrant; subsequent agents retrieve relevant context via semantic search rather than receiving full text.
+
+Token reduction: 70–90% compared to text-based coordination.
 
 ```mermaid
 sequenceDiagram
-    participant Q as Query
     participant A1 as Agent 1
-    participant M as Latent Memory
+    participant M as Qdrant Memory
     participant A2 as Agent 2
     participant L as Leader
 
-    Q->>A1: Domain context
-    A1->>M: Store embedding
-    A1-->>A2: (no direct text)
-    M->>A2: Retrieve relevant
-    A2->>M: Store embedding
-    M->>L: All embeddings
+    A1->>M: Store embedding(output_1)
+    M->>A2: Retrieve relevant(query)
+    A2->>M: Store embedding(output_2)
+    M->>L: Retrieve all
     L->>L: Synthesize
 ```
 
-```python
-from gaius.agents import LatentSwarmManager, run_latent_swarm_round
+## ThetaAgent: Consolidation Pipeline
 
-latent_swarm = LatentSwarmManager()
-result = await latent_swarm.run_round(
-    domain="pension risk",
-    context="",
-)
-# ~70-90% fewer tokens than text-based swarm
+ThetaAgent executes a deterministic consolidation sequence for cross-temporal knowledge linking. The pipeline draws on nonlinear dynamics for timing signals and ontological inference for relationship discovery.
+
+### Pipeline Stages
+
+```
+1. Temporal Slicing → 2. NVAR Signal → 3. BERTSubs Inference → 4. KG Selection → 5. Augmentation
 ```
 
-## Cognition Agent
+#### Stage 1: Temporal Slicing
 
-Generates "thoughts" between sessions - patterns, connections, curiosities.
+Documents are organized into weekly slices (`YYYY-WNN` format). Each slice represents a temporal context for consolidation.
 
-### Thought Types
+#### Stage 2: NVAR Dynamics
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `PATTERN` | Emerging trends | "Raft mentions up 3x this week" |
-| `CONNECTION` | Cross-domain links | "LDI and climate risk share frameworks" |
-| `CURIOSITY` | Questions to investigate | "Why do LLM optimizations ignore drift?" |
-| `MOMENTUM` | Trending topics | "Byzantine fault tolerance trending" |
-| `OBSERVATION` | Notable changes | "Heavy distributed systems activity" |
-| `SYNTHESIS` | Consolidated understanding | "Here's what we know about X" |
-| `SELF_OBSERVATION` | Meta-cognition | "My patterns focus heavily on..." |
-| `ENGINE_AUDIT` | System health | "Evolution cycles slowing..." |
+Nonlinear Vector AutoRegression (NVAR) using reservoir computing (Gauthier et al., 2021) computes a consolidation signal from embedding centroid trajectories.
+
+Given slice centroids $\mathbf{c}_1, \ldots, \mathbf{c}_t \in \mathbb{R}^{768}$, NVAR predicts $\hat{\mathbf{c}}_{t+1}$ and computes:
+
+$$\text{drift} = \|\hat{\mathbf{c}}_{t+1} - \mathbf{c}_t\|_2$$
+
+$$\text{urgency} = \sigma(\alpha \cdot \text{drift})$$
+
+where $\sigma$ is the sigmoid function and $\alpha$ scales drift to urgency. High urgency indicates rapid semantic drift requiring consolidation attention.
+
+#### Stage 3: BERTSubs Inference
+
+Subsumption relationships between concepts are inferred using BERTSubs (Chen et al., 2023) from DeepOnto. The inferencer identifies $A \sqsubseteq B$ (A is-a B) relationships via fine-tuned BERT classification on ontology subsumptions.
+
+Requirements:
+- OWL domain ontology with `rdfs:subClassOf` axioms
+- DeepOnto with JVM (via JPype)
+- Sufficient class count for training data extraction (~50+ classes)
+
+#### Stage 4: Knowledge Gradient Selection
+
+Candidate relationships are filtered using the Knowledge Gradient (KG) policy (Powell & Ryzhov, 2012). KG balances exploration (learning about uncertain candidates) against exploitation (selecting high-confidence relationships):
+
+$$\text{KG}(x \mid S) = \mathbb{E}[\max_{x'} \mu_{n+1}(x') \mid S_n = S, x_n = x] - \max_{x'} \mu_n(x')$$
+
+where $\mu_n(x)$ is the posterior mean value of candidate $x$ after $n$ observations. Candidates with high KG scores offer the greatest expected improvement in overall selection quality.
+
+#### Stage 5: Document Augmentation
+
+Selected relationships are injected into source documents as:
+- **Wikilinks**: `[[Target Document]]` for navigation
+- **Action links**: `[action:search "query"]` for deferred execution
 
 ### Usage
 
 ```python
-from gaius.agents.cognition import get_cognition_agent
+theta = ThetaAgent(kb_root="build/dev")
+result = await theta.run_consolidation(
+    temporal_slice="2025-W52",
+    max_candidates=10,
+)
 
-agent = get_cognition_agent()
-thoughts = await agent.think()
-
-for thought in thoughts:
-    print(f"[{thought.thought_type.value}] {thought.title}")
-    print(f"  {thought.summary}")
+print(f"Candidates evaluated: {result.candidates_evaluated}")
+print(f"Documents augmented: {result.documents_augmented}")
 ```
 
-## Evolution System
+## MetaAgent: Domain Query Coordination
 
-### Atropos-Compatible RL
+MetaAgentManager coordinates specialist "analysts" to answer natural language questions by querying structured data sources. Each analyst translates questions into domain-specific queries (Cypher for lineage graphs, SQL for metrics).
 
-Integration with NousResearch's Atropos reinforcement learning framework:
-
-```mermaid
-graph LR
-    A[Agent Config] --> B[EvolutionEnv]
-    B --> C[Generate Trajectory]
-    C --> D[Score Outputs]
-    D --> E{Better?}
-    E -->|Yes| F[Promote Version]
-    E -->|No| G[Adjust Curriculum]
-    F --> H[Record Lineage]
+```
+User Question → [Lineage, Ops, Resource, Topology] Analysts → Correlator → Answer
 ```
 
-### Evolution Engine
+This is *parallel execution with synthesis*, not autonomous multi-agent reasoning. Analysts execute fixed query patterns; the Correlator is a single LLM call synthesizing results.
 
-Central loop with proper GPU management:
+## Cognition: Pattern Detection
 
-```python
-from gaius.agents.evolution import get_engine
+CognitionAgent analyzes recent KB activity to generate "thoughts"—observations about patterns, connections, and questions. Execution is triggered (scheduled or manual), not continuous.
 
-engine = await get_engine()
+| Thought Type | Description |
+|--------------|-------------|
+| `PATTERN` | Recurring themes across documents |
+| `CONNECTION` | Cross-domain relationships |
+| `CURIOSITY` | Questions warranting investigation |
+| `SELF_OBSERVATION` | Meta-cognitive patterns |
 
-# Run single cycle
-result = await engine.run_evolution_cycle("leader")
-print(f"Score: {result.score:.3f}")
-print(f"Improvement: {result.improvement:.3f}")
+## Evolution: Prompt Optimization
 
-# Get status
-status = engine.get_status()
-print(f"Cycles: {status['cycles_completed']}")
-```
+The evolution subsystem applies prompt optimization techniques during GPU idle periods.
 
-### Evolution Daemon
+### Optimization Methods
 
-Background processing during GPU idle:
-
-```python
-from gaius.agents.evolution import get_evolution_daemon
-
-daemon = get_evolution_daemon()
-await daemon.start()
-
-# Daemon monitors GPU utilization
-# Runs evolution cycles when idle > threshold
-# Rotates through agents: leader → risk → critic → ...
-```
-
-### Task Ideation
-
-Autonomous generation of new reasoning tasks:
-
-```python
-from gaius.agents.evolution import get_task_ideation_agent
-
-ideation = get_task_ideation_agent()
-concepts = await ideation.ideate(max_concepts=5)
-
-for concept in concepts:
-    print(f"Task: {concept.name}")
-    print(f"Capability: {concept.capability}")
-    print(f"Novelty: {concept.novelty_score:.2f}")
-```
+| Method | Description | Reference |
+|--------|-------------|-----------|
+| APO | Automatic Prompt Optimization | (Zhou et al., 2023) |
+| GEPA | Genetic Evolution of Prompt Architectures | (Guo et al., 2024) |
 
 ### Model Merging
 
-TIES/DARE-based version merging:
+Agent versions can be combined using parameter-space merging:
 
-```python
-from gaius.agents.evolution import get_merge_coordinator
-
-coordinator = get_merge_coordinator()
-result = await coordinator.run_merge_cycle("leader")
-
-print(f"Parents: {result.parent_versions}")
-print(f"New version: {result.merged_version_id}")
-print(f"Score improvement: {result.score_improvement:.3f}")
-```
-
-## Knowledge Gradient Framework
-
-Guides exploration vs exploitation trade-offs:
-
-$$KG(x|S) = \mathbb{E}[\max_{x'} \mu_{n+1}(x') | S_n = S, x_n = x] - \max_{x'} \mu_n(x')$$
-
-Where:
-- $x$ = candidate action (topic to explore, agent to evolve)
-- $S$ = current belief state
-- $\mu_n$ = value estimate after $n$ observations
-- $KG$ = expected improvement from learning about $x$
-
-### Application
-
-| Decision | High KG | Low KG |
-|----------|---------|--------|
-| Topic exploration | Uncertain, high-impact topics | Well-understood topics |
-| Agent evolution | Agents with high variance | Stable, optimized agents |
-| Task ideation | Novel capability gaps | Well-covered capabilities |
+| Method | Formula |
+|--------|---------|
+| Linear | $\theta = \alpha\theta_1 + (1-\alpha)\theta_2$ |
+| TIES | Resolves sign conflicts (Yadav et al., 2023) |
+| DARE | Drop and rescale (Yu et al., 2024) |
 
 ## Latent Memory
 
-Qdrant-backed working memory for cross-agent coordination:
+Qdrant-backed working memory for cross-component coordination:
 
 ```python
-from gaius.agents import get_latent_memory
-
-memory = get_latent_memory()
-
-# Store agent output as embedding
-await memory.store(
-    agent_id="risk",
-    content="Analysis of LDI concentration risk...",
-    domain="pension",
-)
-
-# Retrieve relevant context for another agent
-context = await memory.retrieve(
-    agent_id="leader",
-    domain="pension",
-    limit=5,
-)
+memory = LatentWorkingMemory()
+await memory.store(agent_id="risk", content="...", domain="pension")
+context = await memory.retrieve(agent_id="leader", domain="pension", limit=5)
 ```
 
-### Memory Structure
-
+Collection schema:
 ```
-Qdrant Collection: gaius_latent_memory
-├── domain: string (partition key)
+gaius_latent_memory
+├── domain: string
 ├── agent_id: string
-├── embedding: [768] (Nomic)
-├── content_hash: string
+├── embedding: vector[768]
 ├── timestamp: datetime
 └── session_id: string
 ```
@@ -354,28 +247,161 @@ Qdrant Collection: gaius_latent_memory
 agents {
     swarm {
         parallel = true
-        default_roles = ["leader", "risk", "optimizer", "planner", "critic", "executor", "adversary"]
         timeout = 60
     }
-
-    cognition {
-        think_interval = 14400  # 4 hours
-        max_thoughts = 5
-        self_observation_interval = 28800  # 8 hours
+    theta {
+        confidence_threshold = 0.8
+        research_mode = true  # Bypass KG cost threshold
     }
-
     evolution {
         enabled = true
         idle_threshold = 60
         cycle_interval = 3600
-        rotation = ["leader", "risk", "critic", "optimizer"]
-        min_examples = 10
     }
 }
 ```
 
+## References
+
+- Chen, J., He, Y., Geng, Y., Jiménez-Ruiz, E., Dong, H., & Horrocks, I. (2023). Contextual semantic embeddings for ontology subsumption prediction. *World Wide Web*, 26, 2569–2591.
+- Gauthier, D. J., Bollt, E., Griffith, A., & Barbosa, W. A. (2021). Next generation reservoir computing. *Nature Communications*, 12, 5564.
+- Guo, T., Chen, X., Wang, Y., et al. (2024). Large Language Model based Multi-Agents: A Survey of Progress and Challenges. *arXiv:2402.01680*.
+- Powell, W. B., & Ryzhov, I. O. (2012). *Optimal Learning*. Wiley.
+- Yadav, P., Tam, D., Choshen, L., Raffel, C., & Bansal, M. (2023). TIES-Merging: Resolving Interference When Merging Models. *NeurIPS 2023*.
+- Yu, L., Yu, B., Yu, H., Huang, F., & Li, Y. (2024). Language Models are Super Mario: Absorbing Abilities from Homologous Models as a Free Lunch. *ICML 2024*.
+- Zhou, Y., Muresanu, A. I., Han, Z., et al. (2023). Large Language Models Are Human-Level Prompt Engineers. *ICLR 2023*.
+
+## Call Graph
+
+```
+# Swarm Execution Path
+app.py:action_swarm_analysis()
+  └─→ get_swarm_manager()                    # singleton factory
+      └─→ SwarmManager.analyze(query, domain)
+          ├─→ roles.get_roles_for_domain()   # load role definitions
+          └─→ inference.parallel_inference() # concurrent LLM calls
+              └─→ client.grpc_client.infer() # → engine
+                  └─→ engine.backends.vllm_controller
+                      └─→ vLLM
+
+# ThetaAgent Consolidation Path
+mcp_server.py:theta_consolidate()
+  └─→ ThetaAgent.run_consolidation()
+      ├─→ theta.consolidation.ThetaDynamics.detect_drift()
+      │     └─→ engine.services.ngrc.NGRCPredictor
+      ├─→ theta.subsumption.SubsumptionInferencer.infer()
+      │     └─→ deeponto.onto.Ontology (JVM via JPype)
+      ├─→ theta.kg_policy.KnowledgeGradientPolicy.select()
+      └─→ theta.augmentation.AugmentationWriter.inject()
+            └─→ storage.kb_ops.update_document()
+
+# Evolution Daemon Path
+engine.server.py:start()
+  └─→ EvolutionService.start_daemon()
+      └─→ evolution.daemon.EvolutionDaemon.run()
+          └─→ while True:
+              ├─→ check_gpu_idle()           # <30% utilization
+              ├─→ select_next_agent()        # round-robin
+              └─→ evolution.engine.optimize_agent()
+                  ├─→ inference.client.infer() # generate candidates
+                  ├─→ models.evaluation.evaluate() # score
+                  └─→ models.versioning.save_version()
+```
+
+## Data Flow
+
+```mermaid
+graph TB
+    Query[User Query]
+
+    Swarm[Swarm Manager]
+    Theta[Theta Agent]
+    Meta[MetaAgent Manager]
+
+    Leader[Leader]
+    Risk[Risk]
+    Critic[Critic]
+
+    NVAR[NVAR → Subs → KG → Augment]
+
+    Lineage[Lineage Analyst]
+    Ops[Ops]
+    Topo[Topo]
+
+    Synth[Synthesize]
+    KBUpdate[KB Update]
+    Correlate[Correlate]
+
+    Query --> Swarm
+    Query --> Theta
+    Query --> Meta
+
+    Swarm --> Leader
+    Swarm --> Risk
+    Swarm --> Critic
+
+    Theta --> NVAR
+
+    Meta --> Lineage
+    Meta --> Ops
+    Meta --> Topo
+
+    Leader --> Synth
+    Risk --> Synth
+    Critic --> Synth
+
+    NVAR --> KBUpdate
+
+    Lineage --> Correlate
+    Ops --> Correlate
+    Topo --> Correlate
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `SwarmManager` | inference, roles | app, mcp_server | `get_swarm_manager()` |
+| `ThetaAgent` | storage, hx.lineage, deeponto | mcp_server | Direct instantiation |
+| `LatentWorkingMemory` | qdrant_client | LatentSwarmManager | Collection: `gaius_latent_memory` |
+| `EvolutionDaemon` | models, inference | engine | `EvolutionService.start_daemon()` |
+| `CognitionAgent` | storage, inference | engine.cognition_service | Scheduled trigger |
+
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Engine README](../engine/README.md) - Evolution service integration
-- [Inference README](../inference/README.md) - Agent execution
+- [Parent README](../README.md) — System overview, layer architecture
+- [Inference README](../inference/README.md) — `parallel_inference()` implementation
+- [Engine README](../engine/README.md) — gRPC services, daemon lifecycle
+- [Models README](../models/README.md) — Evaluation, versioning, merging
+- [Storage README](../storage/README.md) — KB operations for augmentation
+- [HX README](../hx/README.md) — OpenLineage for provenance tracking
+
+---
+
+<!-- GAI:META
+module: gaius.agents
+layer: L5-orchestration
+singleton: get_swarm_manager
+key_types: [SwarmManager, ThetaAgent, LatentWorkingMemory, EvolutionDaemon, CognitionAgent, MetaAgentManager]
+key_funcs: [run_swarm, run_latent_swarm, run_clt_swarm]
+submodules: [theta, latent, evolution, metaagent, modeladd]
+depends: [inference, models, storage, hx.lineage, core.telemetry, client]
+dependents: [app, mcp_server, engine.services.evolution_service, engine.services.cognition_service]
+config_keys: [agents.swarm.parallel, agents.swarm.timeout, agents.theta.confidence_threshold, agents.evolution.enabled, agents.evolution.idle_threshold]
+env_vars: [GAIUS_SWARM_TIMEOUT]
+grpc_services: []
+qdrant_collections: [gaius_latent_memory, gaius_clt_memory]
+external_deps: [deeponto, jpype, qdrant_client]
+call_paths:
+  swarm: app.action_swarm_analysis→get_swarm_manager→SwarmManager.analyze→roles.get_roles→inference.parallel_inference
+  theta: mcp.theta_consolidate→ThetaAgent.run_consolidation→ThetaDynamics→SubsumptionInferencer→KGPolicy→AugmentationWriter
+  evolution: engine.EvolutionService→EvolutionDaemon.run→optimize_agent→evaluate→save_version
+  cognition: engine.CognitionService→CognitionAgent.generate_thoughts→storage.create_kb
+test_cmds:
+  swarm: 'uv run gaius-cli --cmd "/swarm \"test query\" --domain pension"'
+  sitrep: 'uv run gaius-cli --cmd "/sitrep"'
+  evolution: 'uv run gaius-cli --cmd "/evolve status"'
+guru_codes: [AG.00001.NOENDPOINT, AG.00002.TIMEOUT, AG.00003.DEEPONTO_JVM]
+fail_fast: true
+-->
+

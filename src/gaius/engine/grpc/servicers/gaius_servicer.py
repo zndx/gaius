@@ -15,14 +15,24 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
-from typing import TYPE_CHECKING, AsyncIterator, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
 
 import grpc
 from grpc import aio
 from google.protobuf import empty_pb2
 
 from ...generated import (
+    # Process Status Enum
+    ProcessStatus,
+    PROCESS_STATUS_UNSPECIFIED,
+    PROCESS_STATUS_STOPPED,
+    PROCESS_STATUS_STARTING,
+    PROCESS_STATUS_HEALTHY,
+    PROCESS_STATUS_UNHEALTHY,
+    PROCESS_STATUS_STOPPING,
+    PROCESS_STATUS_FAILED,
+    PROCESS_STATUS_PENDING,
     # Orchestrator
     OrchestratorStatusResponse,
     GPUAllocation,
@@ -41,6 +51,7 @@ from ...generated import (
     GetJobResultRequest,
     GetJobResultResponse,
     SchedulerStatusResponse,
+    XAIBudgetResponse,
     # Swarm streaming
     SwarmStreamRequest,
     SwarmEvent,
@@ -57,6 +68,10 @@ from ...generated import (
     EmbedTextsRequest,
     EmbedTextsResponse,
     EmbeddingVector,
+    # Semantic Search
+    SemanticSearchRequest,
+    SearchResult,
+    SemanticSearchResponse,
     # Evolution
     EvolutionStatusResponse,
     TriggerEvolutionRequest,
@@ -69,6 +84,10 @@ from ...generated import (
     TriggerCognitionRequest,
     TriggerCognitionResponse,
     CognitionActivityResponse,
+    SelfObservationRequest,
+    SelfObservationResponse,
+    EngineAuditRequest,
+    EngineAuditResponse,
     # State Service (Thin Client Architecture)
     GetStateRequest,
     GridState,
@@ -127,14 +146,151 @@ from ...generated import (
     DatasetLineageResponse,
     LineageNode,
     LineageEdge,
+    # MetaAgent
+    MetaAgentQueryRequest,
+    MetaAgentQueryResponse,
+    MetaAgentEvent,
+    # ThetaAgent
+    ThetaSitrepRequest,
+    ThetaSitrepResponse,
+    ThetaConsolidateRequest,
+    ThetaConsolidateResponse,
+    ThetaConsolidationStatsRequest,
+    ThetaConsolidationStatsResponse,
+    # CLT (Cross-Layer Transcoders)
+    CLTExtractRequest,
+    CLTExtractResponse,
+    SparseFeature as ProtoSparseFeature,
+    CLTAttributeRequest,
+    CLTAttributeResponse,
+    CLTAttributionEdge as ProtoAttributionEdge,
+    CLTStatusRequest,
+    CLTStatusResponse,
+    # HealthObserver
+    HealthObserverStatusRequest,
+    HealthObserverStatusResponse,
+    HealthIncident as ProtoHealthIncident,
+    HealthObserverMetrics as ProtoHealthObserverMetrics,
+    HealthObserverConfig as ProtoHealthObserverConfig,
+    ForceHealthCheckRequest,
+    ForceHealthCheckResponse,
+    HealthCheckResult,
+    GetIncidentDetailRequest,
+    GetIncidentDetailResponse,
+    ListIncidentsRequest,
+    ListIncidentsResponse,
+    ResolveIncidentRequest,
+    ResolveIncidentResponse,
+    GetOrphanedIssuesRequest,
+    GetOrphanedIssuesResponse,
+    OrphanedGitHubIssue,
+    # Observability Dashboard
+    ObserveStatusRequest,
+    ObserveStatusResponse,
+    MetricSnapshot,
+    EndpointSnapshot,
+    # X Bookmarks
+    XBookmarksAuthRequest,
+    XBookmarksAuthResponse,
+    XBookmarksCompleteAuthByStateRequest,
+    XBookmarksCompleteAuthRequest,
+    XBookmarksCompleteAuthResponse,
+    XBookmarksAuthStatusRequest,
+    XBookmarksAuthStatusResponse,
+    XBookmarksSyncRequest,
+    XBookmarksSyncResponse,
+    XBookmarksSyncStatusRequest,
+    XBookmarksSyncStatusResponse,
+    XBookmarksServiceStatusRequest,
+    XBookmarksServiceStatusResponse,
+    XBookmarksListFoldersRequest,
+    XBookmarksListFoldersResponse,
+    XBookmarkFolder,
+    XBookmarksQueueStatusRequest,
+    XBookmarksQueueStatusResponse,
+    XBookmarksEmitTestEventRequest,
+    XBookmarksEmitTestEventResponse,
+    # Ambient Computing Workload
+    AmbientCycleRequest,
+    AmbientPhaseEvent,
+    AmbientStatusResponse,
+    AmbientCycleResponse,
+    AmbientStartRequest,
+    AmbientStartResponse,
+    AmbientStopRequest,
+    AmbientStopResponse,
+    AmbientSubscribeRequest,
+    AmbientBufferExportRequest,
+    AmbientBufferExportResponse,
+    AMBIENT_PHASE_UNSPECIFIED,
+    # HuggingFace Dataset Discovery
+    ListHFDatasetsRequest,
+    ListHFDatasetsResponse,
+    HFDatasetInfo,
+    AddExternalDatasetRequest,
+    AddExternalDatasetResponse,
+    GetHFDatasetInfoRequest,
+    GetHFDatasetInfoResponse,
+    ListKBDatasetsRequest,
+    ListKBDatasetsResponse,
+    KBDatasetEntry,
+    # HuggingFace Model Discovery
+    ListHFModelsRequest,
+    ListHFModelsResponse,
+    HFModelInfo,
+    AddExternalModelRequest,
+    AddExternalModelResponse,
+    GetHFModelInfoRequest,
+    GetHFModelInfoResponse,
+    ListKBModelsRequest,
+    ListKBModelsResponse,
+    KBModelEntry,
+    AMBIENT_PHASE_BASELINE_HEALTH,
+    AMBIENT_PHASE_BASELINE_WORKLOAD,
+    AMBIENT_PHASE_REASONING_EVICTION,
+    AMBIENT_PHASE_REASONING_WORKLOAD,
+    AMBIENT_PHASE_BASELINE_RESTORATION,
+    AMBIENT_PHASE_COMPLETE,
+    AMBIENT_PHASE_ERROR,
+    # Prospects/Stewardship
+    CandidateSummary,
+    StrategySummary,
+    ProspectsStatusRequest,
+    ProspectsStatusResponse,
+    ProspectsCheckRequest,
+    ProspectsCheckResponse,
+    ProspectsUpdateRequest,
+    ProspectsUpdateEvent,
     # Servicer base
     GaiusServiceServicer,
 )
+
+from ...metrics import record_exception_caught
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
 
 logger = logging.getLogger(__name__)
+
+
+# Map string status values to ProcessStatus enum
+_STATUS_MAP = {
+    "stopped": PROCESS_STATUS_STOPPED,
+    "starting": PROCESS_STATUS_STARTING,
+    "healthy": PROCESS_STATUS_HEALTHY,
+    "running": PROCESS_STATUS_HEALTHY,  # alias for healthy
+    "ready": PROCESS_STATUS_HEALTHY,  # alias for healthy (used by InitController)
+    "unhealthy": PROCESS_STATUS_UNHEALTHY,
+    "stopping": PROCESS_STATUS_STOPPING,
+    "failed": PROCESS_STATUS_FAILED,
+    "error": PROCESS_STATUS_FAILED,  # alias for failed
+    "pending": PROCESS_STATUS_PENDING,  # queued for startup
+}
+
+
+def _status_to_enum(status_str: str) -> ProcessStatus:
+    """Convert string status to ProcessStatus enum value."""
+    return _STATUS_MAP.get(status_str.lower(), PROCESS_STATUS_UNSPECIFIED)
 
 
 class GaiusServicer(GaiusServiceServicer):
@@ -148,6 +304,34 @@ class GaiusServicer(GaiusServiceServicer):
         self._services = services
         self._event_subscribers: list[asyncio.Queue] = []
 
+    def _get_free_gpu(self) -> int:
+        """Get a free GPU from ResourceManager.
+
+        Uses the orchestrator's ResourceManager to find unallocated GPUs,
+        which is more reliable than parsing nvidia-smi output.
+
+        Returns:
+            GPU index that is free, or highest-numbered GPU as fallback.
+        """
+        orchestrator = self._services.orchestrator_service
+        if orchestrator and hasattr(orchestrator, "resource_manager"):
+            free_gpus = orchestrator.resource_manager.get_free_gpus()
+            if free_gpus:
+                # Prefer highest-numbered GPU (vLLM endpoints use lower ones)
+                gpu = max(free_gpus)
+                logger.debug(f"ResourceManager selected GPU {gpu} from free: {free_gpus}")
+                return gpu
+
+        # Fallback: use highest GPU (likely free since vLLM uses 0,1,2,3)
+        config = self._services.config
+        if config and hasattr(config, "gpus"):
+            fallback = config.gpus.total - 1
+            logger.debug(f"No ResourceManager, falling back to GPU {fallback}")
+            return fallback
+
+        logger.debug("No config available, falling back to GPU 0")
+        return 0
+
     # =========================================================================
     # Orchestrator
     # =========================================================================
@@ -160,6 +344,7 @@ class GaiusServicer(GaiusServiceServicer):
         """Get orchestrator status including GPU allocations."""
         config = self._services.config
         orchestrator = self._services.orchestrator_service
+        init_controller = self._services.init_controller
 
         response = OrchestratorStatusResponse(
             total_gpus=0,
@@ -170,6 +355,9 @@ class GaiusServicer(GaiusServiceServicer):
             response.total_gpus = config.gpus.total
             response.available_gpus = config.gpus.total - len(config.gpus.reserved)
 
+        # Track which endpoints we've already added
+        seen_endpoints = set()
+
         # Use OrchestratorService if available (preferred)
         if orchestrator:
             status = orchestrator.get_status()
@@ -177,13 +365,33 @@ class GaiusServicer(GaiusServiceServicer):
                 endpoint = EndpointInfo(
                     name=alias,
                     model=ep.get("model", ""),
-                    status=ep.get("status", "stopped"),
+                    status=_status_to_enum(ep.get("status", "stopped")),
                     port=ep.get("port", 0),
                 )
                 response.endpoints.append(endpoint)
+                seen_endpoints.add(alias)
+
+        # Add pending endpoints from InitController that haven't been started yet
+        # This surfaces endpoints that are queued for startup during initialization
+        if init_controller:
+            for ep_name, ep_progress in init_controller.state.endpoints.items():
+                if ep_name not in seen_endpoints:
+                    # Map init_controller status to proto status
+                    # "pending" -> PENDING, "starting" -> STARTING, "ready" -> HEALTHY
+                    init_status = ep_progress.status
+                    endpoint = EndpointInfo(
+                        name=ep_name,
+                        model="",  # Not available until started
+                        status=_status_to_enum(init_status),
+                        port=0,  # Not allocated until started
+                    )
+                    response.endpoints.append(endpoint)
+                    seen_endpoints.add(ep_name)
+
+        if seen_endpoints:
             return response
 
-        # Fallback to backend router
+        # Fallback to backend router (no endpoints from orchestrator or init_controller)
         router = self._services.backend_router
         if router:
             status = router.get_status()
@@ -192,7 +400,7 @@ class GaiusServicer(GaiusServiceServicer):
                     endpoint = EndpointInfo(
                         name=name,
                         model=backend.get("model", ""),
-                        status="running" if backend.get("healthy") else "stopped",
+                        status=_status_to_enum("healthy" if backend.get("healthy") else "stopped"),
                         port=backend.get("port", 0),
                     )
                     response.endpoints.append(endpoint)
@@ -263,9 +471,7 @@ class GaiusServicer(GaiusServiceServicer):
             status = await orchestrator.start_endpoint(endpoint_name)
             return EndpointResponse(
                 success=status.status in ("healthy", "starting", "optillm"),
-                message=f"Endpoint '{endpoint_name}' started (status: {status.status})",
-                endpoint_name=endpoint_name,
-                port=status.port or 0,
+                message=f"Endpoint '{endpoint_name}' started (status: {status.status}, port: {status.port or 0})",
             )
         except ValueError as e:
             return EndpointResponse(success=False, message=str(e))
@@ -293,7 +499,6 @@ class GaiusServicer(GaiusServiceServicer):
             return EndpointResponse(
                 success=success,
                 message=f"Endpoint '{endpoint_name}' stopped" if success else f"Failed to stop '{endpoint_name}'",
-                endpoint_name=endpoint_name,
             )
         except Exception as e:
             logger.error(f"Failed to stop endpoint {endpoint_name}: {e}")
@@ -318,9 +523,7 @@ class GaiusServicer(GaiusServiceServicer):
             status = await orchestrator.restart_endpoint(endpoint_name)
             return EndpointResponse(
                 success=status.status in ("healthy", "starting"),
-                message=f"Endpoint '{endpoint_name}' restarted (status: {status.status})",
-                endpoint_name=endpoint_name,
-                port=status.port or 0,
+                message=f"Endpoint '{endpoint_name}' restarted (status: {status.status}, port: {status.port or 0})",
             )
         except Exception as e:
             logger.error(f"Failed to restart endpoint {endpoint_name}: {e}")
@@ -402,7 +605,7 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             result = await self._services.backend_router.complete(
                 prompt=request.prompt,
-                agent_alias=request.agent_alias or "fast",
+                agent_alias=request.agent_alias or "instruct",
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
@@ -449,6 +652,37 @@ class GaiusServicer(GaiusServiceServicer):
         return GetJobResultResponse(
             job_id=job_id,
             status="pending",
+        )
+
+    async def XAIBudget(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> XAIBudgetResponse:
+        """Get XAI API budget status.
+
+        Returns daily and weekly request usage against configured limits.
+        Used by health checks and evolution cost management.
+
+        TODO: Track actual XAI API usage through backend_router when
+        integrated with XAI/Grok API. Currently returns static limits.
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # Calculate reset time (next midnight UTC)
+        now = datetime.now(timezone.utc)
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+        # TODO: Track actual usage when XAI API integration is complete
+        # For now, return static limits - budget tracking not yet implemented
+        return XAIBudgetResponse(
+            daily_used=0,
+            daily_limit=50,
+            weekly_used=0,
+            weekly_limit=200,
+            reset_at=tomorrow.isoformat(),
         )
 
     # =========================================================================
@@ -690,6 +924,73 @@ class GaiusServicer(GaiusServiceServicer):
             return EmbedTextsResponse()
 
     # =========================================================================
+    # Semantic Search
+    # =========================================================================
+
+    async def SemanticSearch(
+        self,
+        request: SemanticSearchRequest,
+        context: aio.ServicerContext,
+    ) -> SemanticSearchResponse:
+        """Perform semantic search using ColNomic multi-vectors with MaxSim.
+
+        Uses VectorSearchMulti for GPU-accelerated MaxSim search over
+        the KB Qdrant collection indexed with ColNomic embeddings.
+        """
+        import time
+
+        start_time = time.time()
+
+        try:
+            from gaius.inference.search.vector_multi import get_vector_search_multi
+
+            # Get a free GPU from ResourceManager
+            free_gpu = self._get_free_gpu()
+            device = f"cuda:{free_gpu}"
+            logger.debug(f"SemanticSearch using {device}")
+
+            # Get or create vector search instance with selected GPU
+            vector_search = get_vector_search_multi(device=device)
+
+            # Execute search
+            results = vector_search.search(
+                query=request.query,
+                top_k=request.limit if request.limit > 0 else 10,
+                min_score=request.min_score,
+                use_maxsim=request.use_maxsim if request.use_maxsim else True,
+                content_type=request.content_type or None,
+            )
+
+            # Convert to proto results
+            proto_results = [
+                SearchResult(
+                    path=r.path,
+                    title=r.title,
+                    score=r.score,
+                    snippet=r.snippet[:500] if r.snippet else "",
+                    chunk_id=r.chunk_id,
+                    content_type=r.content_type,
+                )
+                for r in results
+            ]
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            return SemanticSearchResponse(
+                results=proto_results,
+                total=len(proto_results),
+                collection=vector_search.collection_name,
+                embedding_model="colnomic",
+                latency_ms=latency_ms,
+            )
+
+        except Exception as e:
+            logger.error(f"SemanticSearch failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return SemanticSearchResponse()
+
+    # =========================================================================
     # Swarm Streaming
     # =========================================================================
 
@@ -806,12 +1107,12 @@ class GaiusServicer(GaiusServiceServicer):
         # Map role capabilities to endpoints
         ROLE_TO_ENDPOINT = {
             "Leader": "orchestrator",
-            "Risk": "fast",
-            "Optimizer": "fast",
+            "Risk": "instruct",
+            "Optimizer": "instruct",
             "Planner": "orchestrator",
-            "Critic": "fast",
-            "Executor": "fast",
-            "Adversary": "fast",
+            "Critic": "instruct",
+            "Executor": "instruct",
+            "Adversary": "instruct",
         }
 
         for i, role_name in enumerate(roles):
@@ -829,7 +1130,7 @@ class GaiusServicer(GaiusServiceServicer):
                 role_enum = AgentRole(role_name)
                 role_def = get_role(role_enum)
                 prompt = role_def.get_prompt(domain, context_str)
-                endpoint = ROLE_TO_ENDPOINT.get(role_name, "fast")
+                endpoint = ROLE_TO_ENDPOINT.get(role_name, "instruct")
 
                 # Run the agent
                 if self._services.backend_router:
@@ -887,7 +1188,126 @@ class GaiusServicer(GaiusServiceServicer):
                     progress=base_progress + (0.8 / total_agents),
                 )
 
-        # Phase 5: Save results and send COMPLETED
+        # Phase 5: CLT processing (if enabled)
+        # Uses Yunikorn-style workload system for GPU allocation
+        clt_data = {}
+        workload_id = None
+        if request.clt:
+            try:
+                from ...workloads import WorkloadRequest, WorkloadType
+                from ...services.scheduler_service import JobPriority
+                from gaius.models.registry import TaskType
+                import uuid
+
+                orchestrator = self._services.orchestrator_service
+                if not orchestrator:
+                    raise RuntimeError("Orchestrator service not available for CLT workload")
+
+                # Request CLT capability via workload system
+                workload_id = f"clt-swarm-{uuid.uuid4().hex[:8]}"
+                workload_request = WorkloadRequest(
+                    workload_id=workload_id,
+                    workload_type=WorkloadType.SWARM,
+                    required_capabilities=[TaskType.CLT_TRACING],
+                    priority=JobPriority.NORMAL,
+                    estimated_duration_s=60,  # CLT processing estimate
+                    estimated_memory_mb=6000,  # CLT model ~6GB
+                )
+
+                # Begin workload - allocates GPU, starts CLT subprocess
+                workload_result = await orchestrator.begin_workload(workload_request)
+                if not workload_result.success:
+                    raise RuntimeError(f"CLT workload allocation failed: {workload_result.error}")
+
+                # Get CLT service from orchestrator (now has allocated GPU)
+                clt = orchestrator.get_clt_service()
+                if not clt:
+                    raise RuntimeError("CLT service not available after workload allocation")
+
+                clt.clear_states()
+
+                # Extract CLT features from each completed agent response
+                for role_name, result in results.items():
+                    if result.get("status") == "completed" and result.get("content"):
+                        try:
+                            clt.extract_features(result["content"], role_name)
+                        except Exception as e:
+                            logger.warning(f"CLT extraction failed for {role_name}: {e}")
+
+                # Update grid positions
+                try:
+                    from ....core.projection import get_grid_manager
+                    projector = get_grid_manager()
+                    clt.update_grid_positions(projector)
+                except Exception:
+                    clt.update_grid_positions(None)
+
+                # Build CLT response
+                clt_data = {
+                    "positions": [
+                        {"name": name, "x": x, "y": y, "color": color}
+                        for name, x, y, color in clt.get_agent_positions()
+                    ],
+                    "traces": {
+                        name: [{"x": x, "y": y} for x, y in positions]
+                        for name, positions in clt.get_agent_traces().items()
+                    },
+                    "consensus_features": {
+                        str(k): v for k, v in clt.compute_consensus().items()
+                    },
+                    "feature_overlap": {
+                        f"{a1}↔{a2}": sim
+                        for (a1, a2), sim in clt.compute_overlap().items()
+                    },
+                    "agent_features": {
+                        role: [
+                            {"idx": idx, "activation": act}
+                            for idx, act in sorted(
+                                state.sparse_features.items(),
+                                key=lambda x: x[1],
+                                reverse=True
+                            )[:10]
+                        ]
+                        for role, state in clt._agent_states.items()
+                    },
+                }
+
+                # Persist snapshot for temporal topology tracking
+                try:
+                    from ...services.topology_service import TopologyService
+                    topology_service = self._services.topology_service
+                    if topology_service:
+                        # Compute consensus embedding from agent states
+                        consensus_embedding = None
+                        embeddings = [
+                            s.embedding for s in clt._agent_states.values()
+                            if s.embedding is not None
+                        ]
+                        if embeddings:
+                            import numpy as np
+                            consensus_embedding = np.mean(embeddings, axis=0)
+
+                        await topology_service.save_snapshot(
+                            domain=domain,
+                            run_id=uuid.UUID(workload_id.split("-")[-1].ljust(32, "0")),
+                            agent_states=clt._agent_states,
+                            consensus_embedding=consensus_embedding,
+                            query_text=domain,  # TODO: Get actual query
+                        )
+                        logger.info(f"Saved swarm topology snapshot for domain '{domain}'")
+                except Exception as snapshot_err:
+                    logger.warning(f"Failed to save topology snapshot: {snapshot_err}")
+            except Exception as e:
+                logger.warning(f"CLT processing failed: {e}")
+            finally:
+                # Complete workload to release GPU and restore baseline
+                if workload_id and orchestrator:
+                    try:
+                        await orchestrator.complete_workload(workload_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to complete CLT workload: {e}")
+
+        # Phase 6: Save results and send COMPLETED
         total_duration_ms = int((time.time() - start_time) * 1000)
 
         # Save results to KB
@@ -907,6 +1327,10 @@ class GaiusServicer(GaiusServiceServicer):
             "failed_agents": failed,
             "total_duration_ms": total_duration_ms,
         }
+
+        # Include CLT data if available
+        if clt_data:
+            final_data["_clt"] = clt_data
 
         yield make_event(
             SwarmEvent.Type.COMPLETED,
@@ -1085,26 +1509,49 @@ class GaiusServicer(GaiusServiceServicer):
         request: TriggerCognitionRequest,
         context: aio.ServicerContext,
     ) -> TriggerCognitionResponse:
-        """Trigger a cognition cycle."""
-        from ....agents.cognition import get_cognition_agent
+        """Trigger a cognition cycle via Engine-native L3 logic.
 
+        Uses cognition_service.trigger() which routes to cognition_logic.py,
+        NOT the L5 agent (which would bypass gRPC and call inference directly).
+        """
         max_thoughts = request.max_thoughts or 5
         trigger_reason = request.trigger_reason or "manual"
 
-        try:
-            agent = get_cognition_agent()
-            result = await agent.think(
-                max_thoughts=max_thoughts,
-                trigger_reason=trigger_reason,
+        logger.info(f"TriggerCognition gRPC called: max_thoughts={max_thoughts}, trigger={trigger_reason}")
+
+        # Get cognition service from the Engine's services container
+        cognition = getattr(self._services, "cognition_service", None)
+        logger.info(f"Cognition service available: {cognition is not None}")
+        if not cognition:
+            return TriggerCognitionResponse(
+                success=False,
+                error="Cognition service not available.\n"
+                      "Guru Meditation: #COG.00000018.NOSVC\n"
+                      "Check: Engine startup logs",
             )
 
+        try:
+            # Call L3 cognition_logic via cognition_service.trigger()
+            logger.info("Calling cognition.trigger(cognition_cycle)...")
+            result = await cognition.trigger(
+                task_type="cognition_cycle",
+                payload={
+                    "max_thoughts": max_thoughts,
+                    "trigger": trigger_reason,
+                },
+            )
+            logger.info(f"Cognition trigger result: success={result.get('success')}, thoughts={result.get('thoughts_generated')}, error={result.get('error')}")
+
             return TriggerCognitionResponse(
-                success=True,
-                thoughts_generated=len(result.thoughts),
-                patterns_detected=result.patterns_detected,
-                connections_found=result.connections_found,
-                curiosities_generated=result.curiosities_generated,
-                duration_ms=result.duration_ms,
+                success=result.get("success", False),
+                thoughts_generated=result.get("thoughts_generated", 0),
+                patterns_detected=result.get("patterns_detected", 0),
+                connections_found=result.get("connections_found", 0),
+                curiosities_generated=result.get("curiosities_generated", 0),
+                duration_ms=result.get("duration_ms", 0),
+                kb_path=result.get("kb_path") or "",
+                tokens_out=result.get("tokens_out", 0),
+                error=result.get("error"),
             )
         except Exception as e:
             logger.error(f"Cognition trigger failed: {e}")
@@ -1148,6 +1595,245 @@ class GaiusServicer(GaiusServiceServicer):
             logger.debug(f"Failed to get active thoughts: {e}")
 
         return response
+
+    async def SelfObservation(
+        self,
+        request: SelfObservationRequest,
+        context: aio.ServicerContext,
+    ) -> SelfObservationResponse:
+        """Trigger self-observation - meta-cognition on recent thoughts.
+
+        Uses L3 cognition_logic.process_self_observation() for Engine-native
+        implementation that properly manages inference.
+        """
+        from ...services import cognition_logic
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return SelfObservationResponse(
+                success=False,
+                error="Cognition service not available.\n"
+                      "Guru Meditation: #COG.00000019.NOSVC\n"
+                      "Check: Engine startup logs",
+            )
+
+        try:
+            # Get database pool from cognition service
+            db_pool = getattr(cognition, "_db_pool", None)
+            if not db_pool:
+                return SelfObservationResponse(
+                    success=False,
+                    error="Database pool not available for self-observation.\n"
+                          "Guru Meditation: #COG.00000020.NODB",
+                )
+
+            # Call L3 implementation
+            result = await cognition_logic.process_self_observation(
+                db_pool=db_pool,
+                payload={"max_observations": request.max_observations or 5},
+            )
+
+            return SelfObservationResponse(
+                success=result.success,
+                observations_generated=result.self_observations,
+                duration_ms=result.duration_ms,
+                error=result.error or "",
+                observation_ids=result.thought_ids or [],
+            )
+
+        except Exception as e:
+            logger.error(f"Self-observation failed: {e}")
+            return SelfObservationResponse(
+                success=False,
+                error=f"Self-observation failed: {e}\n"
+                      "Guru Meditation: #COG.00000021.SELFOBS",
+            )
+
+    async def EngineAudit(
+        self,
+        request: EngineAuditRequest,
+        context: aio.ServicerContext,
+    ) -> EngineAuditResponse:
+        """Run engine health audit and record observations.
+
+        Uses L3 cognition_logic.process_engine_audit() for Engine-native
+        implementation.
+        """
+        from ...services import cognition_logic
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return EngineAuditResponse(
+                success=False,
+                error="Cognition service not available.\n"
+                      "Guru Meditation: #COG.00000022.NOSVC\n"
+                      "Check: Engine startup logs",
+            )
+
+        try:
+            # Get database pool from cognition service
+            db_pool = getattr(cognition, "_db_pool", None)
+            if not db_pool:
+                return EngineAuditResponse(
+                    success=False,
+                    error="Database pool not available for engine audit.\n"
+                          "Guru Meditation: #COG.00000023.NODB",
+                )
+
+            # Call L3 implementation
+            result = await cognition_logic.process_engine_audit(
+                db_pool=db_pool,
+                payload={"include_metrics": request.include_metrics},
+            )
+
+            return EngineAuditResponse(
+                success=result.success,
+                observations_recorded=result.observations_recorded,
+                anomalies_found=result.anomalies_found,
+                duration_ms=result.duration_ms,
+                error=result.error or "",
+                anomaly_details=result.anomaly_details or [],
+            )
+
+        except Exception as e:
+            logger.error(f"Engine audit failed: {e}")
+            return EngineAuditResponse(
+                success=False,
+                error=f"Engine audit failed: {e}\n"
+                      "Guru Meditation: #COG.00000024.AUDIT",
+            )
+
+    async def SubscribeCognition(
+        self,
+        request,
+        context: aio.ServicerContext,
+    ):
+        """Stream cognition events to TUI/MCP clients.
+
+        Replaces polling - clients receive real-time updates as thoughts
+        are generated, cycles start/complete, etc.
+        """
+        from ...generated import gaius_service_pb2 as pb
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            # No service - return empty stream
+            return
+
+        buffer_size = request.buffer_size or 100
+
+        try:
+            async for event in cognition.subscribe_cognition(buffer_size=buffer_size):
+                # Map event type string to proto enum
+                event_type = getattr(
+                    pb.CognitionEvent.Type,
+                    event.get("type", "THOUGHT"),
+                    pb.CognitionEvent.Type.THOUGHT,
+                )
+
+                yield pb.CognitionEvent(
+                    type=event_type,
+                    timestamp_ms=event.get("timestamp_ms", 0),
+                    thought_id=event.get("thought_id", ""),
+                    thought_type=event.get("thought_type", ""),
+                    title=event.get("title", ""),
+                    summary=event.get("summary", ""),
+                    salience=event.get("salience", 0.0),
+                    generation=event.get("generation", 0),
+                    cycle_id=event.get("cycle_id", ""),
+                    thoughts_in_cycle=event.get("thoughts_in_cycle", 0),
+                    error=event.get("error", ""),
+                )
+        except asyncio.CancelledError:
+            # Client disconnected
+            pass
+        except Exception as e:
+            logger.error(f"Cognition stream error: {e}")
+
+    async def SubscribeEvolution(
+        self,
+        request,
+        context: aio.ServicerContext,
+    ):
+        """Stream evolution events to TUI/MCP clients.
+
+        Replaces polling - clients receive real-time updates as agents
+        are evaluated, promoted, etc.
+        """
+        from ...generated import gaius_service_pb2 as pb
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return
+
+        buffer_size = request.buffer_size or 100
+        agent_filter = request.agent_filter or ""
+
+        try:
+            async for event in cognition.subscribe_evolution(
+                buffer_size=buffer_size,
+                agent_filter=agent_filter,
+            ):
+                # Map event type string to proto enum
+                event_type = getattr(
+                    pb.EvolutionEvent.Type,
+                    event.get("type", "CYCLE_START"),
+                    pb.EvolutionEvent.Type.CYCLE_START,
+                )
+
+                yield pb.EvolutionEvent(
+                    type=event_type,
+                    timestamp_ms=event.get("timestamp_ms", 0),
+                    agent_id=event.get("agent_id", ""),
+                    version_id=event.get("version_id", ""),
+                    score=event.get("score", 0.0),
+                    improvement_pct=event.get("improvement_pct", 0.0),
+                    details=event.get("details", ""),
+                    cycle_number=event.get("cycle_number", 0),
+                    merge_id=event.get("merge_id", ""),
+                    error=event.get("error", ""),
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Evolution stream error: {e}")
+
+    async def SubscribeActivity(
+        self,
+        request,
+        context: aio.ServicerContext,
+    ):
+        """Stream all activity events to TUI/MCP clients.
+
+        Unified feed of cognition, evolution, system, and KB events.
+        """
+        from ...generated import gaius_service_pb2 as pb
+
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return
+
+        buffer_size = request.buffer_size or 100
+        domains = list(request.domains) if request.domains else None
+
+        try:
+            async for event in cognition.subscribe_activity(
+                buffer_size=buffer_size,
+                domains=domains,
+            ):
+                yield pb.ActivityEvent(
+                    event_type=event.get("event_type", ""),
+                    timestamp_ms=event.get("timestamp_ms", 0),
+                    source=event.get("source", ""),
+                    domain=event.get("domain", ""),
+                    title=event.get("title", ""),
+                    summary=event.get("summary", ""),
+                    data=event.get("data", "{}").encode("utf-8"),
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Activity stream error: {e}")
 
     # =========================================================================
     # State Service (Thin Client Architecture)
@@ -1229,7 +1915,8 @@ class GaiusServicer(GaiusServiceServicer):
                     flat = [int(v) for row in allocations for v in row]
                     response.allocations.extend(flat)
                 else:
-                    response.allocations.extend([int(v) for v in allocations])
+                    # allocations is flat list of ints when not nested
+                    response.allocations.extend([int(v) for v in allocations])  # type: ignore[arg-type] - allocations contains ints at runtime
 
             # Add TDA features directly from cached dataclass
             tda_features = ProtoTDAFeatures(
@@ -1385,18 +2072,19 @@ class GaiusServicer(GaiusServiceServicer):
                     right_panel_visible=True,
                 )
 
+            # prefs is a StorageUIPreferences dataclass, access attributes directly
             return UIPreferences(
                 client_id=client_id,
-                cursor_x=prefs.get("cursor_x", 9),
-                cursor_y=prefs.get("cursor_y", 9),
-                view_mode=prefs.get("view_mode", "go"),
-                overlay_mode=prefs.get("overlay_mode", "none"),
-                iso_mode=prefs.get("iso_mode", "curvature"),
-                center_panel_mode=prefs.get("center_panel_mode", "graph"),
-                left_panel_visible=prefs.get("left_panel_visible", True),
-                right_panel_visible=prefs.get("right_panel_visible", True),
-                domain=prefs.get("domain", ""),
-                preferences_json=json.dumps(prefs.get("preferences_json", {})).encode(),
+                cursor_x=prefs.cursor_x,
+                cursor_y=prefs.cursor_y,
+                view_mode=prefs.view_mode,
+                overlay_mode=prefs.overlay_mode,
+                iso_mode=prefs.iso_mode,
+                center_panel_mode=prefs.center_panel_mode,
+                left_panel_visible=prefs.left_panel_visible,
+                right_panel_visible=prefs.right_panel_visible,
+                domain=prefs.domain or "",
+                preferences_json=json.dumps(prefs.preferences_json).encode(),
             )
 
         except Exception as e:
@@ -1412,9 +2100,10 @@ class GaiusServicer(GaiusServiceServicer):
         prefs = request.preferences
 
         try:
-            from ....storage.grid_state import save_ui_preferences
+            from ....storage.grid_state import save_ui_preferences, UIPreferences as StorageUIPreferences
 
-            await save_ui_preferences(
+            # Convert proto UIPreferences to storage UIPreferences
+            storage_prefs = StorageUIPreferences(
                 client_id=prefs.client_id,
                 cursor_x=prefs.cursor_x,
                 cursor_y=prefs.cursor_y,
@@ -1424,9 +2113,10 @@ class GaiusServicer(GaiusServiceServicer):
                 center_panel_mode=prefs.center_panel_mode,
                 left_panel_visible=prefs.left_panel_visible,
                 right_panel_visible=prefs.right_panel_visible,
-                domain=prefs.domain,
+                domain=prefs.domain if prefs.domain else None,
                 preferences_json=json.loads(prefs.preferences_json) if prefs.preferences_json else {},
             )
+            await save_ui_preferences(storage_prefs)
 
         except Exception as e:
             logger.error(f"SavePreferences failed: {e}")
@@ -1449,7 +2139,7 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             from ....storage.grid_state import prune_snapshots
 
-            result = await prune_snapshots(
+            deleted_count, deleted_ids = await prune_snapshots(
                 kb_root=kb_root,
                 keep_count=keep_count if keep_count > 0 else None,
                 older_than_days=older_than_days if older_than_days > 0 else None,
@@ -1457,8 +2147,8 @@ class GaiusServicer(GaiusServiceServicer):
             )
 
             return PruneSnapshotsResponse(
-                deleted_count=result.get("deleted_count", 0),
-                remaining_count=result.get("remaining_count", 0),
+                deleted_count=deleted_count,
+                remaining_count=0,  # Not tracked by prune_snapshots
                 dry_run=dry_run,
             )
 
@@ -1543,8 +2233,7 @@ class GaiusServicer(GaiusServiceServicer):
             from ....core.tda import get_tda_manager
             from ....core.geometry import GeometryComputer
             from ....core.minigrids import get_embed_view, get_iso_view
-            from ....inference.llm import explain_position, ExplanationContext
-            from ....inference.client import InferenceClient
+            from ....inference.llm import ExplanationContext
             from ....storage.grid_state import load_full_grid_data_for_minigrids
 
             # Get grid manager to check cache first
@@ -1617,11 +2306,12 @@ class GaiusServicer(GaiusServiceServicer):
                     curvature = curvature_map.get((cx, cy), 0.0)
 
                     # Build gradient field
-                    if hasattr(geom_features, 'gradient_field') and geom_features.gradient_field is not None:
+                    gradient_field = getattr(geom_features, 'gradient_field', None)
+                    if gradient_field is not None:
                         for i, (px, py) in enumerate(grid_coords):
-                            if i < len(geom_features.gradient_field):
+                            if i < len(gradient_field):
                                 if (int(px), int(py)) == (cx, cy):
-                                    gradient_x, gradient_y = geom_features.gradient_field[i]
+                                    gradient_x, gradient_y = gradient_field[i]
                                     break
 
             # Get TDA features
@@ -1684,16 +2374,73 @@ class GaiusServicer(GaiusServiceServicer):
                 iso_grid=iso_data.grid if iso_data else None,
             )
 
-            # Generate LLM explanation
-            client = InferenceClient()
-            await client._discover_vllm_model()
-            explanation = await explain_position(ctx, client=client, max_tokens=max_tokens)
+            # Generate LLM explanation via Engine's BackendRouter
+            # FAIL-FAST: no fallbacks, no empty content
+            if not self._services.backend_router:
+                return ExplainResponse(
+                    success=False,
+                    error=(
+                        "Backend router not available.\n"
+                        "Guru Meditation: #EXP.00000001.NOROUTER\n"
+                        "Check: /health endpoints"
+                    ),
+                    position=position,
+                    x=cx, y=cy,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            try:
+                from ....inference.llm import _build_explanation_prompt
+                prompt = _build_explanation_prompt(ctx)
+
+                result = await self._services.backend_router.complete(
+                    prompt=prompt,
+                    agent_alias="instruct",  # Use instruct endpoint for explain
+                    temperature=0.7,
+                    max_tokens=max_tokens,
+                )
+
+                if result.error:
+                    raise RuntimeError(result.error)
+
+                explanation = result.content
+                model_name = result.model or "unknown"
+
+            except Exception as llm_error:
+                # Fail-fast: LLM failure is an error, not a fallback condition
+                logger.error(f"LLM explanation failed: {llm_error}")
+                return ExplainResponse(
+                    success=False,
+                    error=(
+                        f"LLM explanation failed: {llm_error}\n"
+                        "Guru Meditation: #EXP.00000002.LLMFAIL\n"
+                        "Check: /health endpoints\n"
+                        "Or: devenv tasks run restart:clean"
+                    ),
+                    position=position,
+                    x=cx, y=cy,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # Fail-fast: Empty explanation is an error
+            if not explanation or not explanation.strip():
+                logger.error("LLM returned empty explanation")
+                return ExplainResponse(
+                    success=False,
+                    error=(
+                        "LLM returned empty explanation.\n"
+                        "Guru Meditation: #EXP.00000003.EMPTYRESP\n"
+                        "Check: /health endpoints\n"
+                        "Inference endpoint may be overloaded or unhealthy."
+                    ),
+                    position=position,
+                    x=cx, y=cy,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
 
             # Strip thinking tags if present
             if '<think>' in explanation and '</think>' in explanation:
                 explanation = explanation.split('</think>')[-1].strip()
-
-            model_name = getattr(client, '_vllm_model', 'unknown')
 
             # Save to KB if requested
             saved_path = ""
@@ -1706,24 +2453,31 @@ class GaiusServicer(GaiusServiceServicer):
                     x=cx,
                     y=cy,
                     document_title=document_title,
+                    document_path=document_path,
+                    nearby_documents=nearby_documents[:5],
                     curvature=curvature,
                     gradient=(gradient_x, gradient_y),
-                    tda_entropy=tda_entropy,
+                    risk_score=risk_score,
                     h0_count=h0_count,
                     h1_count=h1_count,
                     h2_count=h2_count,
-                    risk_score=risk_score,
-                    nearby_documents=nearby_documents[:5],
+                    tda_entropy=tda_entropy,
+                    embed_grid=embed_data.grid if embed_data else None,
+                    iso_grid=iso_data.grid if iso_data else None,
+                    grid_coverage=len(grid_data.points) / 361,
+                    total_documents=len(grid_data.points),
                     explanation=explanation,
                     model=model_name,
+                    elapsed_ms=int((time.time() - start_time) * 1000),
                 )
                 try:
-                    saved_path = capture.save(Path(kb_root) / "scratch")
+                    saved_path = str(capture.save_to_kb(Path(kb_root) / "scratch"))
                 except Exception as e:
                     logger.warning(f"Failed to save explanation: {e}")
 
             duration_ms = int((time.time() - start_time) * 1000)
 
+            # Convert to native Python types for protobuf (numpy types not supported)
             return ExplainResponse(
                 success=True,
                 position=position,
@@ -1731,20 +2485,20 @@ class GaiusServicer(GaiusServiceServicer):
                 y=cy,
                 document_title=document_title,
                 document_path=document_path,
-                curvature=curvature,
-                gradient_x=gradient_x,
-                gradient_y=gradient_y,
+                curvature=float(curvature),
+                gradient_x=float(gradient_x),
+                gradient_y=float(gradient_y),
                 divergence=0.0,
-                tda_entropy=tda_entropy,
-                h0_count=h0_count,
-                h1_count=h1_count,
-                h2_count=h2_count,
-                risk_score=risk_score,
-                grid_coverage=len(grid_data.points) / 361,
-                total_documents=len(grid_data.points),
+                tda_entropy=float(tda_entropy),
+                h0_count=int(h0_count),
+                h1_count=int(h1_count),
+                h2_count=int(h2_count),
+                risk_score=float(risk_score),
+                grid_coverage=float(len(grid_data.points) / 361),
+                total_documents=int(len(grid_data.points)),
                 nearby_documents=nearby_documents[:5],
-                embed_grid=embed_grid_flat,
-                iso_grid=iso_grid_flat,
+                embed_grid=[float(v) for v in embed_grid_flat],
+                iso_grid=[float(v) for v in iso_grid_flat],
                 explanation=explanation,
                 model=model_name,
                 duration_ms=duration_ms,
@@ -2352,16 +3106,17 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 # Build grid_coords array from embedding_to_grid mapping
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -2369,13 +3124,13 @@ class GaiusServicer(GaiusServiceServicer):
 
                 # 3. Compute geometry features (curvature, gradients, divergence)
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:  # Need at least 2 neighbors
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
-                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                        logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
@@ -2490,15 +3245,16 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -2506,13 +3262,13 @@ class GaiusServicer(GaiusServiceServicer):
 
                 # Compute geometry features
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
-                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                        logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
@@ -2578,7 +3334,9 @@ class GaiusServicer(GaiusServiceServicer):
         client_id = request.client_id or "grpc"
         force = request.force
         embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
-        projection_method = request.projection_method or "umap"
+        projection_method: Literal["umap", "pca"] = "umap"
+        if request.projection_method in ("umap", "pca"):
+            projection_method = request.projection_method  # type: ignore[assignment] - runtime check guarantees valid Literal value
 
         logger.info(f"Init: kb_root={kb_root} force={force} from {client_id}")
 
@@ -2630,15 +3388,16 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -2646,13 +3405,13 @@ class GaiusServicer(GaiusServiceServicer):
 
                 # 3. Compute geometry features (curvature, gradients, divergence)
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
-                        logger.info(f"Computed geometry features for {len(grid_data.raw_embeddings)} points")
+                        logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
@@ -2704,7 +3463,9 @@ class GaiusServicer(GaiusServiceServicer):
         client_id = request.client_id or "grpc"
         force = request.force
         embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
-        projection_method = request.projection_method or "umap"
+        projection_method: Literal["umap", "pca"] = "umap"
+        if request.projection_method in ("umap", "pca"):
+            projection_method = request.projection_method  # type: ignore[assignment] - runtime check guarantees valid Literal value
 
         logger.info(f"InitProgressStream: kb_root={kb_root} from {client_id}")
 
@@ -2791,15 +3552,16 @@ class GaiusServicer(GaiusServiceServicer):
             geometry_features = None
             grid_coords = None
 
-            if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) > 0:
+            raw_embeddings = grid_data.raw_embeddings
+            if raw_embeddings is not None and len(raw_embeddings) > 0:
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
-                    for i in range(len(grid_data.raw_embeddings))
+                    for i in range(len(raw_embeddings))
                 ])
                 tda_features = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
-                        grid_data.raw_embeddings,
+                        raw_embeddings,
                         grid_coords,
                         force_refresh=True
                     )
@@ -2812,15 +3574,15 @@ class GaiusServicer(GaiusServiceServicer):
                 message="Computing geometry features (curvature, gradients)...",
             )
 
-            logger.info(f"Geometry check: raw_embeddings={grid_data.raw_embeddings is not None}, grid_coords={grid_coords is not None}")
-            if grid_data.raw_embeddings is not None and grid_coords is not None:
+            logger.info(f"Geometry check: raw_embeddings={raw_embeddings is not None}, grid_coords={grid_coords is not None}")
+            if raw_embeddings is not None and grid_coords is not None:
                 try:
-                    k_neighbors = min(15, len(grid_data.raw_embeddings) - 1)
-                    logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(grid_data.raw_embeddings)}")
+                    k_neighbors = min(15, len(raw_embeddings) - 1)
+                    logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(raw_embeddings)}")
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
-                            grid_data.raw_embeddings, grid_coords
+                            raw_embeddings, grid_coords
                         )
                         logger.info(f"Computed geometry features: curvatures={len(geometry_features.curvatures)}, gradients={len(geometry_features.gradients)}")
                 except Exception as geom_err:
@@ -2863,6 +3625,2549 @@ class GaiusServicer(GaiusServiceServicer):
             logger.exception(f"InitProgressStream failed: {e}")
             yield InitProgress(
                 phase=InitProgress.Phase.ERROR,
+                progress=0.0,
+                message=str(e),
+            )
+
+    # ==============================================================
+    # MetaAgent (Multi-Agent Analytics)
+    # ==============================================================
+
+    async def MetaAgentQuery(
+        self,
+        request: MetaAgentQueryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetaAgentQueryResponse:
+        """Run multi-agent analytics query.
+
+        Coordinates multiple analyst agents to answer natural language
+        questions by correlating AGE lineage, meta schema operations,
+        resources, and topology data.
+
+        Uses KB semantic search for entity resolution, allowing natural
+        language references like "CSA docs" to resolve to actual KB paths.
+        """
+        start_time = time.time()
+        try:
+            from ....agents.metaagent_swarm import MetaAgentManager
+
+            # Create inference function using backend router
+            async def inference_fn(system: str, user: str, temperature: float = 0.7) -> str:
+                if self._services.backend_router:
+                    result = await self._services.backend_router.complete(
+                        prompt=user,
+                        agent_alias="orchestrator",  # Use orchestrator for multi-agent reasoning
+                        system_prompt=system,
+                        temperature=temperature,
+                        max_tokens=4096,
+                    )
+                    return result.content or ""
+                return ""
+
+            # Create search function for entity resolution
+            async def search_fn(query: str, limit: int = 10) -> list[dict]:
+                if self._services.embedding_service:
+                    try:
+                        results = await self._services.embedding_service.semantic_search(
+                            query=query,
+                            collection="kb",
+                            limit=limit,
+                        )
+                        return [
+                            {"path": r.path, "title": r.title, "score": r.score}
+                            for r in results
+                        ]
+                    except Exception as e:
+                        logger.warning(f"Search failed: {e}")
+                return []
+
+            metaagent = MetaAgentManager(
+                inference_fn=inference_fn,
+                search_fn=search_fn,
+            )
+
+            # Run analysis
+            domains = list(request.domains) if request.domains else None
+            result = await metaagent.analyze(
+                question=request.query,
+                domains=domains,
+                include_dot=request.include_dot,
+                include_markdown=request.include_markdown,
+            )
+
+            # Convert agent insights to bytes for transport
+            agent_insights_bytes: dict[str, bytes] = {}
+            for role_name, insight in result.agent_insights.items():
+                insight_data = {
+                    "role": insight.role.value,
+                    "reasoning": insight.reasoning,
+                    "query": insight.query,
+                    "query_type": insight.query_type,
+                    "results": insight.results,
+                    "insight": insight.insight,
+                    "error": insight.error,
+                    "duration_ms": insight.duration_ms,
+                }
+                agent_insights_bytes[role_name] = json.dumps(insight_data).encode()
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return MetaAgentQueryResponse(
+                success=result.succeeded,
+                answer=result.answer,
+                dot_graph=result.dot_graph,
+                markdown_tables=result.markdown_tables,
+                agent_insights=agent_insights_bytes,
+                queries_executed=result.queries_executed,
+                agents_used=len(result.agent_insights),
+                duration_ms=duration_ms,
+                error=result.error or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"MetaAgentQuery failed: {e}")
+            duration_ms = int((time.time() - start_time) * 1000)
+            return MetaAgentQueryResponse(
+                success=False,
+                error=f"MetaAgent query failed: {e}",
+                duration_ms=duration_ms,
+            )
+
+    async def MetaAgentQueryStream(
+        self,
+        request: MetaAgentQueryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[MetaAgentEvent]:
+        """Stream multi-agent analytics query with real-time progress.
+
+        Yields MetaAgentEvent messages as each analyst runs and the
+        Correlator synthesizes results.
+        """
+        try:
+            from ....agents.metaagent_swarm import (
+                MetaAgentManager,
+                MetaAgentEventType as LocalEventType,
+            )
+
+            # Create inference function using backend router
+            async def inference_fn(system: str, user: str, temperature: float = 0.7) -> str:
+                if self._services.backend_router:
+                    result = await self._services.backend_router.complete(
+                        prompt=user,
+                        agent_alias="orchestrator",  # Use orchestrator for multi-agent reasoning
+                        system_prompt=system,
+                        temperature=temperature,
+                        max_tokens=4096,
+                    )
+                    return result.content or ""
+                return ""
+
+            # Create search function for entity resolution
+            async def search_fn(query: str, limit: int = 10) -> list[dict]:
+                if self._services.embedding_service:
+                    try:
+                        results = await self._services.embedding_service.semantic_search(
+                            query=query,
+                            collection="kb",
+                            limit=limit,
+                        )
+                        return [
+                            {"path": r.path, "title": r.title, "score": r.score}
+                            for r in results
+                        ]
+                    except Exception as e:
+                        logger.warning(f"Search failed: {e}")
+                return []
+
+            metaagent = MetaAgentManager(
+                inference_fn=inference_fn,
+                search_fn=search_fn,
+            )
+
+            # Map local event type to proto event type
+            type_map = {
+                LocalEventType.AGENT_STARTED: MetaAgentEvent.Type.AGENT_STARTED,
+                LocalEventType.AGENT_QUERY: MetaAgentEvent.Type.AGENT_QUERY,
+                LocalEventType.AGENT_RESULT: MetaAgentEvent.Type.AGENT_RESULT,
+                LocalEventType.AGENT_COMPLETED: MetaAgentEvent.Type.AGENT_COMPLETED,
+                LocalEventType.CORRELATION: MetaAgentEvent.Type.CORRELATION,
+                LocalEventType.COMPLETE: MetaAgentEvent.Type.COMPLETE,
+                LocalEventType.ERROR: MetaAgentEvent.Type.ERROR,
+            }
+
+            # Stream analysis events
+            domains = list(request.domains) if request.domains else None
+            async for event in metaagent.analyze_streaming(
+                question=request.query,
+                domains=domains,
+                include_dot=request.include_dot,
+                include_markdown=request.include_markdown,
+            ):
+                proto_event = MetaAgentEvent(
+                    type=type_map.get(event.type, MetaAgentEvent.Type.ERROR),
+                    timestamp_ms=int(event.timestamp.timestamp() * 1000),
+                    agent=event.agent,
+                    domain=event.domain,
+                    message=event.message,
+                    data=json.dumps(event.data).encode() if event.data else b"",
+                )
+                yield proto_event
+
+        except Exception as e:
+            logger.exception(f"MetaAgentQueryStream failed: {e}")
+            yield MetaAgentEvent(
+                type=MetaAgentEvent.Type.ERROR,
+                timestamp_ms=int(time.time() * 1000),
+                message=f"MetaAgent stream failed: {e}",
+            )
+
+    # =========================================================================
+    # ThetaAgent (Neuromorphic Consolidation)
+    # =========================================================================
+
+    async def ThetaSitrep(
+        self,
+        request: ThetaSitrepRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaSitrepResponse:
+        """Generate situational awareness report."""
+        try:
+            import os
+            from ....agents.theta import ThetaAgent
+
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+            agent = ThetaAgent(kb_root=kb_root)
+
+            horizon = request.horizon or "day"
+            report = await agent.sitrep(horizon=horizon)
+            report_dict = report.to_dict()
+
+            return ThetaSitrepResponse(
+                success=True,
+                horizon=horizon,
+                generated_at_ms=int(report.generated_at.timestamp() * 1000),
+                healthy=report.system_status.healthy,
+                status_text=report.system_status.status_text,
+                gpu_count=report.system_status.gpu_count,
+                endpoint_count=report.system_status.endpoint_count,
+                priority_count=len(report.priorities),
+                thought_count=len(report.thoughts),
+                objective_count=len(report.objectives),
+                project_count=report.project_count,
+                report_json=json.dumps(report_dict).encode(),
+                ascii_format=report.to_ascii(),
+            )
+        except Exception as e:
+            logger.exception(f"ThetaSitrep failed: {e}")
+            return ThetaSitrepResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def ThetaConsolidate(
+        self,
+        request: ThetaConsolidateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaConsolidateResponse:
+        """Run NVAR-mediated consolidation cycle."""
+        try:
+            import os
+            from ....agents.theta import ThetaAgent
+            from ....agents.theta.subsumption import DeepOntoNotAvailableError
+
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+            agent = ThetaAgent(
+                kb_root=kb_root,
+                research_mode=request.research_mode if request.research_mode else True,
+            )
+
+            result = await agent.run_consolidation(
+                temporal_slice=request.temporal_slice or None,
+                max_candidates=request.max_candidates or 10,
+            )
+
+            return ThetaConsolidateResponse(
+                success=result.error is None,
+                slice_id=result.slice_id,
+                urgency=result.signal.urgency if result.signal else 0.0,
+                drift=result.signal.drift if result.signal else 0.0,
+                candidates_evaluated=result.candidates_evaluated,
+                candidates_selected=result.candidates_selected,
+                documents_augmented=result.documents_augmented,
+                error=result.error or "",
+            )
+        except Exception as e:
+            error_msg = str(e)
+            guru = ""
+            if "DEEPONTO_UNAVAILABLE" in error_msg:
+                guru = "#THETA.00000001.DEEPONTO_UNAVAILABLE"
+
+            logger.exception(f"ThetaConsolidate failed: {e}")
+            return ThetaConsolidateResponse(
+                success=False,
+                error=error_msg,
+                guru_meditation=guru,
+            )
+
+    async def ThetaConsolidationStats(
+        self,
+        request: ThetaConsolidationStatsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaConsolidationStatsResponse:
+        """Get consolidation statistics."""
+        try:
+            import os
+            from ....agents.theta import ThetaAgent
+
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+            agent = ThetaAgent(kb_root=kb_root)
+            stats = agent.get_consolidation_stats()
+
+            return ThetaConsolidationStatsResponse(
+                # NVAR dynamics
+                nvar_k=stats["dynamics"]["k"],
+                nvar_order=stats["dynamics"]["polynomial_order"],
+                slice_count=stats["dynamics"].get("slice_count", stats["dynamics"].get("history_length", 0)),
+                can_predict=stats["dynamics"]["can_predict"],
+                # KG policy
+                research_mode=stats["kg_policy"]["research_mode"],
+                measurement_cost=stats["kg_policy"]["measurement_cost"],
+                n_measurements=stats["kg_policy"]["belief_state"]["n_measurements"],
+                current_best_value=stats["kg_policy"]["belief_state"]["current_best"],
+                # Effectiveness
+                effectiveness_history_length=stats["effectiveness"]["history_length"],
+                effectiveness_trend=stats["effectiveness"]["trend"]["trend"],
+                mean_contribution=stats["effectiveness"]["trend"]["mean_contribution"],
+                # Subsumption
+                confidence_threshold=stats["subsumption"]["confidence_threshold"],
+                template_type=stats["subsumption"]["template_type"],
+                classifier_loaded=stats["subsumption"]["classifier_loaded"],
+            )
+        except Exception as e:
+            logger.exception(f"ThetaConsolidationStats failed: {e}")
+            # Return empty response on error
+            return ThetaConsolidationStatsResponse()
+
+    # -------------------------------------------------------------------------
+    # CLT (Cross-Layer Transcoders) - Interpretable Sparse Feature Extraction
+    # -------------------------------------------------------------------------
+
+    async def CLTExtract(
+        self,
+        request: CLTExtractRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CLTExtractResponse:
+        """Extract sparse features from text using Cross-Layer Transcoders.
+
+        Uses BluelightAI's CLT for Qwen3 to extract interpretable sparse features.
+        ~115 active features per layer from 20,480 feature space.
+
+        CLT runs in a subprocess with isolated GPU (GPU 4 by default) to avoid
+        memory conflicts with vLLM endpoints on GPUs 0-3.
+        """
+        try:
+            from ....engine.services.clt_service import get_clt_service
+
+            # Get model name (defaults to qwen3-1.7b)
+            model_name = request.model_name or "qwen3-1.7b"
+
+            # Get CLT service (spawns subprocess with isolated GPU)
+            clt = get_clt_service(model_name=model_name)
+
+            # Extract features via subprocess worker
+            # Note: layer_indices filtering not yet implemented in worker
+            top_k = request.top_k if request.top_k > 0 else 115
+
+            # Use a synthetic role for direct extraction (not swarm context)
+            state = clt.extract_features(request.text, role="_extract")
+
+            # Get features from state
+            features = []
+            for idx, activation in state.sparse_features.items():
+                features.append(
+                    ProtoSparseFeature(
+                        layer_idx=0,  # Aggregated across layers
+                        position=0,
+                        feature_idx=idx,
+                        activation=activation,
+                        semantic_label="",
+                    )
+                )
+
+            # Sort by activation descending, limit to top_k
+            features.sort(key=lambda f: f.activation, reverse=True)
+            features = features[:top_k]
+
+            return CLTExtractResponse(
+                success=True,
+                features=features,
+                total_positions=1,  # Aggregated
+                sparsity=len(features),
+                model_used=model_name,
+            )
+
+        except KeyError as e:
+            logger.error(f"CLTExtract model not found: {e}")
+            return CLTExtractResponse(
+                success=False,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.exception(f"CLTExtract failed: {e}")
+            return CLTExtractResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def CLTAttribute(
+        self,
+        request: CLTAttributeRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CLTAttributeResponse:
+        """Compute attribution graph showing feature influence paths.
+
+        Traces which sparse features influence output at target positions
+        using A_{s->t} = a_s * ||w_{s->t}|| attribution weights.
+        """
+        try:
+            from ....models.clt import load_clt_model
+
+            # Get or load CLT model
+            model_name = request.model_name or "qwen3-1.7b"
+            device = request.device or "cuda"
+
+            clt_model = load_clt_model(name=model_name, device=device)
+
+            # Parse target positions
+            target_positions = list(request.target_positions) if request.target_positions else None
+            threshold = request.threshold if request.threshold > 0 else 0.01
+
+            # Compute attribution
+            result = clt_model.compute_attribution(
+                text=request.text,
+                target_positions=target_positions,
+                threshold=threshold,
+            )
+
+            # Convert to proto edges
+            proto_edges = [
+                ProtoAttributionEdge(
+                    source_layer=e.source_layer,
+                    source_feature=e.source_feature,
+                    target_layer=e.target_layer,
+                    target_feature=e.target_feature,
+                    weight=e.weight,
+                )
+                for e in result.edges
+            ]
+
+            return CLTAttributeResponse(
+                success=True,
+                edges=proto_edges,
+                dot_graph=result.dot_graph,
+                edge_count=len(proto_edges),
+                model_used=model_name,
+            )
+
+        except KeyError as e:
+            logger.error(f"CLTAttribute model not found: {e}")
+            return CLTAttributeResponse(
+                success=False,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.exception(f"CLTAttribute failed: {e}")
+            return CLTAttributeResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def CLTStatus(
+        self,
+        request: CLTStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CLTStatusResponse:
+        """Get CLT model status and availability."""
+        try:
+            from ....models.clt import CLT_MODELS
+
+            # List available models
+            available_models = list(CLT_MODELS.keys())
+
+            # Check if models are loaded (would need model cache tracking)
+            loaded_model = ""  # TODO: Track loaded models in engine
+
+            # Get spec info for primary model
+            features_per_layer = 0
+            l0_sparsity = 0
+            if available_models:
+                spec = CLT_MODELS[available_models[0]]
+                features_per_layer = spec.features_per_layer
+                l0_sparsity = spec.l0_sparsity
+
+            return CLTStatusResponse(
+                available=True,  # Always available - circuit-tracer is required dependency
+                models=available_models,
+                loaded_model=loaded_model,
+                features_per_layer=features_per_layer,
+                l0_sparsity=l0_sparsity,
+            )
+
+        except Exception as e:
+            logger.exception(f"CLTStatus failed: {e}")
+            return CLTStatusResponse(
+                available=False,
+                error=str(e),
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HealthObserver (Autonomous FMEA Monitoring + ACP Escalation)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def HealthObserverStatus(
+        self,
+        request: HealthObserverStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> HealthObserverStatusResponse:
+        """Get health observer daemon status."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return HealthObserverStatusResponse(
+                    running=False,
+                    enabled=False,
+                    poll_count=0,
+                )
+
+            status = observer.get_status()
+
+            # Convert incidents to proto
+            proto_incidents = []
+            for inc in status.get("incidents", []):
+                proto_incidents.append(ProtoHealthIncident(
+                    incident_id=inc.get("incident_id", ""),
+                    fingerprint=inc.get("fingerprint", ""),
+                    endpoint=inc.get("endpoint", ""),
+                    failure_mode_id=inc.get("failure_mode_id", ""),
+                    rpn_score=inc.get("rpn_score", 0),
+                    rpn_severity=inc.get("rpn_severity", 5),
+                    rpn_occurrence=inc.get("rpn_occurrence", 5),
+                    rpn_detection=inc.get("rpn_detection", 5),
+                    current_tier=inc.get("current_tier", 0),
+                    sequence_id=inc.get("sequence_id") or "",
+                    created_at=inc.get("created_at", ""),
+                    last_check_at=inc.get("last_check_at", ""),
+                    attempts=inc.get("attempts", 0),
+                    github_issue=inc.get("github_issue") or 0,
+                    status=inc.get("status", "unknown"),
+                ))
+
+            metrics = status.get("metrics", {})
+            config = status.get("config", {})
+
+            return HealthObserverStatusResponse(
+                running=status.get("running", False),
+                enabled=status.get("enabled", False),
+                poll_count=status.get("poll_count", 0),
+                last_poll_at=status.get("last_poll_at") or "",
+                active_incidents=status.get("active_incidents", 0),
+                incidents=proto_incidents,
+                metrics=ProtoHealthObserverMetrics(
+                    incidents_created=metrics.get("incidents_created", 0),
+                    incidents_resolved=metrics.get("incidents_resolved", 0),
+                    acp_escalations=metrics.get("acp_escalations", 0),
+                ),
+                config=ProtoHealthObserverConfig(
+                    poll_interval=config.get("poll_interval", 30.0),
+                    escalate_to_acp=config.get("escalate_to_acp", True),
+                    github_repo=config.get("github_repo", ""),
+                ),
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverStatus failed: {e}")
+            return HealthObserverStatusResponse(
+                running=False,
+                enabled=False,
+            )
+
+    async def HealthObserverStart(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext,
+    ) -> HealthObserverStatusResponse:
+        """Start the health observer daemon."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return HealthObserverStatusResponse(
+                    running=False,
+                    enabled=False,
+                )
+
+            await observer.start()
+
+            # Return updated status
+            return await self.HealthObserverStatus(
+                HealthObserverStatusRequest(), context
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverStart failed: {e}")
+            return HealthObserverStatusResponse(
+                running=False,
+                enabled=False,
+            )
+
+    async def HealthObserverStop(
+        self,
+        request: empty_pb2.Empty,
+        context: grpc.aio.ServicerContext,
+    ) -> HealthObserverStatusResponse:
+        """Stop the health observer daemon."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return HealthObserverStatusResponse(
+                    running=False,
+                    enabled=False,
+                )
+
+            await observer.stop()
+
+            # Return updated status
+            return await self.HealthObserverStatus(
+                HealthObserverStatusRequest(), context
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverStop failed: {e}")
+            return HealthObserverStatusResponse(
+                running=False,
+                enabled=False,
+            )
+
+    async def HealthObserverForceCheck(
+        self,
+        request: ForceHealthCheckRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ForceHealthCheckResponse:
+        """Force an immediate health check."""
+        import json
+
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return ForceHealthCheckResponse(
+                    healthy=True,
+                    summary="Health observer not available",
+                )
+
+            # Get incident count before check
+            incidents_before = len(observer.active_incidents)
+
+            # Run forced check
+            report = await observer.force_check()
+
+            # Calculate new incidents
+            incidents_after = len(observer.active_incidents)
+            new_incidents = max(0, incidents_after - incidents_before)
+
+            # Count check statuses and build check result messages
+            checks = report.get("checks", [])
+            passed = sum(1 for c in checks if c.get("status") != "FAIL")
+            warnings = sum(1 for c in checks if c.get("status") == "WARN")
+            failures = sum(1 for c in checks if c.get("status") == "FAIL")
+
+            # Convert check dicts to proto messages
+            check_results = []
+            for check in checks:
+                details = check.get("details", {})
+                check_results.append(
+                    HealthCheckResult(
+                        name=check.get("name", "unknown"),
+                        status=check.get("status", "FAIL"),
+                        message=check.get("message", ""),
+                        heuristic_id=check.get("heuristic_id", ""),
+                        details_json=json.dumps(details) if details else "",
+                    )
+                )
+
+            return ForceHealthCheckResponse(
+                healthy=report.get("healthy", True),
+                summary=f"{passed} passed, {warnings} warnings, {failures} failures",
+                passed=passed,
+                warnings=warnings,
+                failures=failures,
+                new_incidents=new_incidents,
+                checks=check_results,
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverForceCheck failed: {e}")
+            return ForceHealthCheckResponse(
+                healthy=False,
+                summary=f"Error: {e}",
+            )
+
+    async def HealthObserverListIncidents(
+        self,
+        request: ListIncidentsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ListIncidentsResponse:
+        """List health incidents."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return ListIncidentsResponse()
+
+            incidents = observer.active_incidents
+            status_filter = request.status or "active"
+
+            proto_incidents = []
+            for inc in incidents:
+                # Apply status filter
+                if status_filter != "all" and inc.status != status_filter:
+                    continue
+
+                proto_incidents.append(ProtoHealthIncident(
+                    incident_id=str(inc.incident_id),
+                    fingerprint=inc.fingerprint,
+                    endpoint=inc.endpoint,
+                    failure_mode_id=inc.failure_mode_id,
+                    rpn_score=inc.rpn_score,
+                    rpn_severity=inc.rpn_severity,
+                    rpn_occurrence=inc.rpn_occurrence,
+                    rpn_detection=inc.rpn_detection,
+                    current_tier=inc.current_tier,
+                    sequence_id=str(inc.sequence_id) if inc.sequence_id else "",
+                    created_at=inc.created_at.isoformat(),
+                    last_check_at=inc.last_check_at.isoformat(),
+                    attempts=inc.attempts,
+                    github_issue=inc.github_issue or 0,
+                    status=inc.status,
+                ))
+
+            return ListIncidentsResponse(incidents=proto_incidents)
+
+        except Exception as e:
+            logger.exception(f"HealthObserverListIncidents failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverListIncidents",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00001.LISTFAIL",
+            )
+            return ListIncidentsResponse()
+
+    async def HealthObserverGetIncident(
+        self,
+        request: GetIncidentDetailRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetIncidentDetailResponse:
+        """Get details of a specific incident including ACP history."""
+        try:
+            observer = self._services.health_observer_service
+            if not observer:
+                return GetIncidentDetailResponse(found=False)
+
+            # Use the new detailed method that includes healing events and ACP history
+            detail = await observer.get_incident_detail(request.fingerprint)
+            if not detail:
+                return GetIncidentDetailResponse(found=False)
+
+            # Extract RPN values from nested dict
+            rpn_data = detail.get("rpn", {})
+
+            proto_incident = ProtoHealthIncident(
+                incident_id=detail.get("incident_id", ""),
+                fingerprint=detail.get("fingerprint", ""),
+                endpoint=detail.get("endpoint", ""),
+                failure_mode_id=detail.get("failure_mode_id", ""),
+                rpn_score=rpn_data.get("rpn", 0),
+                rpn_severity=rpn_data.get("severity", 5),
+                rpn_occurrence=rpn_data.get("occurrence", 5),
+                rpn_detection=rpn_data.get("detection", 5),
+                current_tier=detail.get("current_tier", 0),
+                sequence_id=detail.get("sequence_id") or "",
+                created_at=detail.get("created_at", ""),
+                last_check_at=detail.get("last_check_at", ""),
+                attempts=detail.get("attempts", 0),
+                github_issue=detail.get("github_issue") or 0,
+                status=detail.get("status", "unknown"),
+            )
+
+            # Include healing events and ACP history as JSON strings
+            import json
+            healing_events_json = json.dumps(detail.get("healing_events", []))
+            acp_history_json = json.dumps(detail.get("acp_history", []))
+            github_issue_detail_json = json.dumps(detail.get("github_issue_detail"))
+
+            return GetIncidentDetailResponse(
+                incident=proto_incident,
+                found=True,
+                healing_events_json=healing_events_json,
+                acp_history_json=acp_history_json,
+                github_issue_detail_json=github_issue_detail_json,
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverGetIncident failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverGetIncident",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00002.GETFAIL",
+            )
+            return GetIncidentDetailResponse(found=False)
+
+    async def HealthObserverResolveIncident(
+        self,
+        request: ResolveIncidentRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ResolveIncidentResponse:
+        """Explicitly resolve an incident by fingerprint.
+
+        Called by /health fix --close after successful ACP investigation.
+        Removes incident from active tracking and updates GitHub issue status.
+        """
+        try:
+            service = self._services.health_observer_service
+            if not service:
+                return ResolveIncidentResponse(
+                    resolved=False,
+                    fingerprint=request.fingerprint,
+                    was_active=False,
+                    note="HealthObserverService not initialized",
+                )
+
+            result = await service.resolve_incident(request.fingerprint)
+
+            return ResolveIncidentResponse(
+                resolved=result.get("resolved", False),
+                fingerprint=result.get("fingerprint", request.fingerprint),
+                was_active=result.get("was_active", False),
+                note=result.get("note") or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"HealthObserverResolveIncident failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverResolveIncident",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00003.RESOLVEFAIL",
+            )
+            return ResolveIncidentResponse(
+                resolved=False,
+                fingerprint=request.fingerprint,
+                was_active=False,
+                note=f"Error: {e}",
+            )
+
+    async def HealthObserverGetOrphanedIssues(
+        self,
+        request: GetOrphanedIssuesRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetOrphanedIssuesResponse:
+        """Get orphaned GitHub issues (open issues with no active incident).
+
+        Used by /health fix --close to handle race conditions where
+        incidents were resolved but GitHub issues weren't closed.
+        """
+        try:
+            service = self._services.health_observer_service
+            if not service:
+                return GetOrphanedIssuesResponse(orphans=[])
+
+            orphans = await service.get_orphaned_github_issues()
+
+            proto_orphans = [
+                OrphanedGitHubIssue(
+                    issue_number=o.get("issue_number", 0),
+                    repo=o.get("repo", ""),
+                    fingerprint=o.get("fingerprint", ""),
+                    created_at=o.get("created_at") or "",
+                    issue_url=o.get("issue_url") or "",
+                )
+                for o in orphans
+            ]
+
+            return GetOrphanedIssuesResponse(orphans=proto_orphans)
+
+        except Exception as e:
+            logger.exception(f"HealthObserverGetOrphanedIssues failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="HealthObserverGetOrphanedIssues",
+                exception_type=type(e).__name__,
+                guru_code="#GR.HO.00004.ORPHANFAIL",
+            )
+            return GetOrphanedIssuesResponse(orphans=[])
+
+    # =========================================================================
+    # Observability Dashboard Service Methods
+    # =========================================================================
+
+    async def ObserveStatus(
+        self,
+        request: ObserveStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ObserveStatusResponse:
+        """Get observability dashboard data.
+
+        Aggregates metrics from Prometheus and engine state into a single
+        response for the CLI /observe command, providing TUI/CLI parity
+        with ObservePanel.
+        """
+        from gaius.observability.metrics import OBSERVE_METRICS
+        from gaius.observability.sources.prometheus import PrometheusSource
+
+        try:
+            # Initialize Prometheus source
+            prometheus = PrometheusSource()
+            prometheus_ok = await prometheus.health_check()
+
+            # Query metrics
+            metrics = []
+            for metric_def in OBSERVE_METRICS:
+                current_value = 0.0
+                sparkline_data = []
+                status = "ok"
+
+                if metric_def.source == "prometheus" and prometheus_ok:
+                    # Query current value
+                    result = await prometheus.query_instant(metric_def.query)
+                    if result:
+                        current_value = result.value
+
+                    # Query sparkline data if requested
+                    if request.include_sparklines:
+                        points = request.sparkline_points or 20
+                        duration = points * 15  # 15s per point
+                        series = await prometheus.query_range(
+                            metric_def.query,
+                            duration_seconds=duration,
+                            step_seconds=15,
+                        )
+                        sparkline_data = [v.value for v in series.values]
+
+                elif metric_def.source == "engine":
+                    # Handle engine-sourced metrics
+                    if metric_def.query == "evolution_cycles":
+                        get_evo_status = self._services.get_evolution_status
+                        if get_evo_status:
+                            status_data = get_evo_status()
+                            # Handle both sync and async callbacks
+                            if hasattr(status_data, "__await__"):
+                                status_data = await status_data
+                            current_value = float(status_data.get("cycles_completed", 0))
+
+                # Determine status from thresholds
+                status = metric_def.get_color(current_value)
+
+                metrics.append(MetricSnapshot(
+                    name=metric_def.id,
+                    display_name=metric_def.name,
+                    current_value=current_value,
+                    unit=metric_def.unit,
+                    sparkline_data=sparkline_data,
+                    status=status,
+                ))
+
+            await prometheus.close()
+
+            # Get endpoint status by reusing OrchestratorStatus (already has all fallback logic)
+            from google.protobuf import empty_pb2 as empty_pb
+
+            orch_response = await self.OrchestratorStatus(empty_pb.Empty(), context)
+
+            endpoints = []
+            healthy_count = 0
+            unhealthy_count = 0
+
+            for ep_info in orch_response.endpoints:
+                # Convert ProcessStatus integer enum to status string
+                # Use protobuf's Name() method on the descriptor
+                from ...generated import ProcessStatus
+
+                status_str = ProcessStatus.Name(ep_info.status).replace("PROCESS_STATUS_", "").lower()
+                if ep_info.status == PROCESS_STATUS_HEALTHY:
+                    healthy_count += 1
+                elif ep_info.status in (PROCESS_STATUS_UNHEALTHY, PROCESS_STATUS_FAILED):
+                    unhealthy_count += 1
+
+                endpoints.append(EndpointSnapshot(
+                    name=ep_info.name,
+                    status=status_str,
+                    gpus=[],  # OrchestratorStatus doesn't provide gpu_ids in EndpointInfo
+                    model=ep_info.model,
+                ))
+
+            # Get active incidents count
+            active_incidents = 0
+            observer = self._services.health_observer_service
+            if observer:
+                obs_status = observer.get_status()
+                incidents = obs_status.get("incidents", [])
+                active_incidents = len([i for i in incidents if i.get("status") == "active"])
+
+            # Get evolution cycles
+            evolution_cycles = 0
+            get_evo_status = self._services.get_evolution_status
+            if get_evo_status:
+                evo_status = get_evo_status()
+                # Handle both sync and async callbacks
+                if hasattr(evo_status, "__await__"):
+                    evo_status = await evo_status
+                evolution_cycles = evo_status.get("cycles_completed", 0)
+
+            return ObserveStatusResponse(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                prometheus_available=prometheus_ok,
+                metrics=metrics,
+                endpoints=endpoints,
+                healthy_endpoints=healthy_count,
+                unhealthy_endpoints=unhealthy_count,
+                active_incidents=active_incidents,
+                evolution_cycles=evolution_cycles,
+            )
+
+        except Exception as e:
+            logger.exception(f"ObserveStatus failed: {e}")
+            import traceback
+            traceback.print_exc()  # Debug: print full traceback
+            record_exception_caught(
+                component="grpc",
+                operation="ObserveStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.OB.00001.STATUSFAIL",
+            )
+            return ObserveStatusResponse(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                prometheus_available=False,
+            )
+
+    # =========================================================================
+    # X Bookmarks Service Methods
+    # =========================================================================
+
+    async def XBookmarksGetAuthUrl(
+        self,
+        request: XBookmarksAuthRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksAuthResponse:
+        """Get OAuth 2.0 authorization URL for X API access."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT\n"
+                    "  Try: /health fix x_bookmarks"
+                )
+                return XBookmarksAuthResponse()
+
+            auth_url, state, verifier = await service.get_auth_url()
+            return XBookmarksAuthResponse(
+                auth_url=auth_url,
+                state=state,
+                verifier=verifier,
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksGetAuthUrl failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksGetAuthUrl",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00001.AUTHURLFAIL",
+            )
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return XBookmarksAuthResponse()
+
+    async def XBookmarksCompleteAuth(
+        self,
+        request: XBookmarksCompleteAuthRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksCompleteAuthResponse:
+        """Complete OAuth 2.0 flow with authorization code."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT"
+                )
+                return XBookmarksCompleteAuthResponse(success=False)
+
+            # Verifier is optional - will be looked up from database if not provided
+            verifier = request.verifier if request.verifier else None
+            result = await service.complete_auth(request.code, verifier)
+            return XBookmarksCompleteAuthResponse(
+                success=True,
+                message="Authentication successful",
+                user_id=result.get("user_id", ""),
+                username=result.get("username", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksCompleteAuth failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksCompleteAuth",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00002.COMPLETEFAIL",
+            )
+            return XBookmarksCompleteAuthResponse(
+                success=False,
+                error=str(e),
+                message=str(e),
+            )
+
+    async def XBookmarksCompleteAuthByState(
+        self,
+        request: XBookmarksCompleteAuthByStateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksCompleteAuthResponse:
+        """Complete OAuth using state parameter to look up verifier.
+
+        Used by Engine Federation and Cloudflare Worker callbacks where
+        the state parameter is known but verifier needs to be looked up
+        from the database.
+        """
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT"
+                )
+                return XBookmarksCompleteAuthResponse(success=False)
+
+            result = await service.complete_auth_by_state(request.code, request.state)
+
+            if "error" in result:
+                return XBookmarksCompleteAuthResponse(
+                    success=False,
+                    error=result.get("error", "Unknown error"),
+                    message=result.get("error", "Unknown error"),
+                )
+
+            return XBookmarksCompleteAuthResponse(
+                success=True,
+                message="Authentication successful",
+                user_id=result.get("user_id", ""),
+                username=result.get("username", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksCompleteAuthByState failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksCompleteAuthByState",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00003.COMPLETEBYSTATEFAIL",
+            )
+            return XBookmarksCompleteAuthResponse(
+                success=False,
+                error=str(e),
+                message=str(e),
+            )
+
+    async def XBookmarksAuthStatus(
+        self,
+        request: XBookmarksAuthStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksAuthStatusResponse:
+        """Check X API authentication status."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                return XBookmarksAuthStatusResponse(
+                    authenticated=False,
+                    error="XBookmarksService not initialized",
+                    guru_code="#XB.00000001.SVCNOTINIT",
+                    action_required="NOT_INITIALIZED",
+                    guidance_message=(
+                        "X Bookmarks service is still initializing. "
+                        "Wait for engine startup to complete."
+                    ),
+                )
+
+            status = await service.get_auth_status()
+            return XBookmarksAuthStatusResponse(
+                authenticated=status.get("authenticated", False),
+                user_id=status.get("user_id", ""),
+                username=status.get("username", ""),
+                expires_at=status.get("expires_at", ""),
+                scopes=status.get("scopes", []),
+                error=status.get("error", ""),
+                guru_code=status.get("guru_code", ""),
+                action_required=status.get("action_required", ""),
+                guidance_message=status.get("message", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksAuthStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksAuthStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00004.AUTHSTATUSFAIL",
+            )
+            return XBookmarksAuthStatusResponse(
+                authenticated=False,
+                error=str(e),
+                action_required="ERROR",
+                guidance_message="Check engine logs for details.",
+            )
+
+    async def XBookmarksTriggerSync(
+        self,
+        request: XBookmarksSyncRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksSyncResponse:
+        """Trigger X bookmarks sync with Iceberg write and work queue population."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details(
+                    "XBookmarksService not initialized.\n"
+                    "  Guru: #XB.00000001.SVCNOTINIT"
+                )
+                return XBookmarksSyncResponse(
+                    started=False,
+                    status="failed",
+                    action_required="NOT_INITIALIZED",
+                    guidance_message="Engine is starting. Wait for vLLM preload to complete.",
+                )
+
+            sync_run = await service.trigger_sync(
+                user_id=request.user_id if request.user_id else None,
+                force=request.full_sync,  # full_sync maps to force
+            )
+            return XBookmarksSyncResponse(
+                started=True,
+                run_id=sync_run.run_id,
+                status=sync_run.status,
+                message=f"Sync {sync_run.status}: {sync_run.bookmarks_fetched} fetched, {sync_run.iceberg_written} to Iceberg, {sync_run.queue_items} queued",
+                bookmarks_fetched=sync_run.bookmarks_fetched,
+                iceberg_written=sync_run.iceberg_written,
+                queue_items=sync_run.queue_items,
+                action_required=sync_run.action_required or "",
+                guidance_message=sync_run.guidance_message or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksTriggerSync failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksTriggerSync",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00005.SYNCFAIL",
+            )
+            # Check if it's an auth error
+            error_str = str(e)
+            action_required = ""
+            guidance_message = ""
+            if "expired" in error_str.lower() or "token" in error_str.lower():
+                action_required = "TOKEN_EXPIRED"
+                guidance_message = "Re-authenticate using /x-bookmarks auth to continue syncing."
+            elif "authentication" in error_str.lower() or "oauth" in error_str.lower():
+                action_required = "NOT_AUTHENTICATED"
+                guidance_message = "Run /x-bookmarks auth to set up X API access."
+
+            return XBookmarksSyncResponse(
+                started=False,
+                status="failed",
+                message=str(e),
+                action_required=action_required,
+                guidance_message=guidance_message,
+            )
+
+    async def XBookmarksSyncStatus(
+        self,
+        request: XBookmarksSyncStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksSyncStatusResponse:
+        """Get sync status and history."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                return XBookmarksSyncStatusResponse(
+                    configured=False,
+                    action_required="NOT_INITIALIZED",
+                    guidance_message=(
+                        "X Bookmarks service is still initializing. "
+                        "Wait for engine startup to complete."
+                    ),
+                )
+
+            status = await service.get_sync_status(
+                user_id=request.user_id if request.user_id else None,
+            )
+
+            return XBookmarksSyncStatusResponse(
+                configured=status.get("configured", False),
+                user_id=status.get("user_id", ""),
+                username=status.get("username", ""),
+                token_status=status.get("token_status", "none"),
+                folder_count=status.get("folder_count", 0),
+                bookmark_count=status.get("bookmark_count", 0),
+                queued_requests=status.get("queued_requests", 0),
+                last_sync_at=status.get("last_sync_at", ""),
+                last_run_status=status.get("last_run_status", ""),
+                action_required=status.get("action_required", ""),
+                guidance_message=status.get("message", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksSyncStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksSyncStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00006.SYNCSTATUSFAIL",
+            )
+            return XBookmarksSyncStatusResponse(
+                configured=False,
+                action_required="ERROR",
+                guidance_message="Check engine logs for details.",
+            )
+
+    async def XBookmarksServiceStatus(
+        self,
+        request: XBookmarksServiceStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksServiceStatusResponse:
+        """Get overall X Bookmarks service status."""
+        try:
+            service = self._services.x_bookmarks_service
+            if not service:
+                return XBookmarksServiceStatusResponse(running=False)
+
+            status = await service.get_service_status()
+
+            return XBookmarksServiceStatusResponse(
+                running=status.get("running", False),
+                total_syncs=status.get("total_syncs", 0),
+                total_bookmarks=status.get("total_bookmarks", 0),
+                last_sync_at=status.get("last_sync_at", ""),
+                queue_poll_interval_s=status.get("queue_poll_interval_s", 0),
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksServiceStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksServiceStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00007.SVCSTATUSFAIL",
+            )
+            return XBookmarksServiceStatusResponse(running=False)
+
+    async def XBookmarksListFolders(
+        self,
+        request: XBookmarksListFoldersRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> XBookmarksListFoldersResponse:
+        """List X bookmark folders."""
+        try:
+            service = self._services.x_bookmarks_service
+            if service is None:
+                return XBookmarksListFoldersResponse(
+                    folders_available=False,
+                    message="XBookmarksService not initialized",
+                )
+
+            # Check if folders are available
+            folders_available = await service.check_folders_available()
+            if not folders_available:
+                return XBookmarksListFoldersResponse(
+                    folders_available=False,
+                    message="Bookmark folders not available for your API tier.\n"
+                    "  Guru Meditation: #XB.00000011.NOFOLDER",
+                )
+
+            # Get folders from database
+            user_id = request.user_id if request.user_id else None
+            folders = await service.list_folders(user_id)
+
+            return XBookmarksListFoldersResponse(
+                folders=[
+                    XBookmarkFolder(
+                        id=f["id"],
+                        name=f["name"],
+                        kb_path=f["kb_path"],
+                        bookmark_count=f["bookmark_count"],
+                    )
+                    for f in folders
+                ],
+                folders_available=True,
+                message=f"{len(folders)} folders",
+            )
+
+        except Exception as e:
+            logger.exception(f"XBookmarksListFolders failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksListFolders",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00008.LISTFOLDERSFAIL",
+            )
+            return XBookmarksListFoldersResponse(
+                folders_available=False,
+                message=str(e),
+            )
+
+    async def XBookmarksQueueStatus(
+        self,
+        request: XBookmarksQueueStatusRequest,
+        context: aio.ServicerContext,
+    ) -> XBookmarksQueueStatusResponse:
+        """Get queue status and cooldown timer for InitPanel display."""
+        service = self._services.x_bookmarks_service
+        if service is None:
+            logger.warning("XBookmarksQueueStatus: service is None")
+            return XBookmarksQueueStatusResponse(
+                queue_depth=0,
+                can_request=False,
+                cooldown_seconds=0,
+            )
+
+        try:
+            status = await service.get_queue_status()
+            logger.info(f"XBookmarksQueueStatus: got status={status}")
+            return XBookmarksQueueStatusResponse(
+                queue_depth=status.get("queue_depth", 0),
+                cooldown_end_iso=status.get("cooldown_end_iso", ""),
+                cooldown_seconds=status.get("cooldown_seconds", 0),
+                can_request=status.get("can_request", False),
+            )
+        except Exception as e:
+            logger.warning(f"XBookmarksQueueStatus error: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksQueueStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00009.QUEUESTATUSFAIL",
+            )
+            return XBookmarksQueueStatusResponse(
+                queue_depth=0,
+                can_request=False,
+            )
+
+    async def XBookmarksEmitTestEvent(
+        self,
+        request: XBookmarksEmitTestEventRequest,
+        context: aio.ServicerContext,
+    ) -> XBookmarksEmitTestEventResponse:
+        """Emit a test XB event for debugging the event propagation chain with OTel tracing.
+
+        This endpoint allows firing simulated XB events to verify the complete flow
+        from engine → InitController → InitStream → TUI InitPanel without requiring
+        actual OAuth completion.
+        """
+        service = self._services.x_bookmarks_service
+        if service is None:
+            logger.warning("XBookmarksEmitTestEvent: service is None")
+            return XBookmarksEmitTestEventResponse(
+                success=False,
+                message="X Bookmarks service not initialized",
+            )
+
+        try:
+            event_type = request.event_type or "XB_AUTH_COMPLETED"
+            result = await service.emit_test_event(event_type=event_type)
+            logger.info(f"XBookmarksEmitTestEvent: emitted {event_type}, result={result}")
+            return XBookmarksEmitTestEventResponse(
+                success=result.get("success", False),
+                event_type=result.get("event_type", event_type),
+                message=f"Emitted test event: {event_type}",
+            )
+        except Exception as e:
+            logger.warning(f"XBookmarksEmitTestEvent error: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="XBookmarksEmitTestEvent",
+                exception_type=type(e).__name__,
+                guru_code="#GR.XB.00010.TESTEMITFAIL",
+            )
+            return XBookmarksEmitTestEventResponse(
+                success=False,
+                message=str(e),
+            )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Ambient Computing Workload
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def AmbientCycle(
+        self,
+        request: AmbientCycleRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[AmbientPhaseEvent]:
+        """Execute an ambient computing workload cycle with streaming progress.
+
+        This streaming RPC executes a multi-phase workload cycle that:
+        1. Verifies baseline endpoint health
+        2. Runs standard tasks on each baseline endpoint
+        3. (Optional) Evicts baseline endpoints for reasoning
+        4. (Optional) Runs reasoning workload
+        5. (Optional) Restores baseline endpoints
+
+        Args:
+            request: AmbientCycleRequest with skip_reasoning, baseline_task_count
+            context: gRPC context
+
+        Yields:
+            AmbientPhaseEvent for each phase transition
+        """
+        service = self._services.ambient_service
+        if service is None:
+            logger.warning("AmbientCycle: service is None")
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message="AmbientWorkloadService not initialized.\n"
+                "  Guru: #AMB.00000001.SVCNOTINIT\n"
+                "  Check engine startup logs.",
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+            return
+
+        try:
+            logger.info(
+                f"AmbientCycle starting: skip_reasoning={request.skip_reasoning}, "
+                f"baseline_task_count={request.baseline_task_count or 1}"
+            )
+
+            # Use _run_varied_cycle which includes all phases:
+            # FETCH_CONTENT, BUFFER_ANALYSIS, SUMMARIZATION
+            baseline_only = request.skip_reasoning
+            async for event in service._run_varied_cycle(baseline_only):
+                yield event
+
+        except Exception as e:
+            logger.exception(f"AmbientCycle failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="AmbientCycle",
+                exception_type=type(e).__name__,
+                guru_code="#GR.AMB.00001.CYCLEFAIL",
+            )
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message=str(e),
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+
+    async def AmbientStatus(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> AmbientStatusResponse:
+        """Get current ambient computing status.
+
+        Returns cycle running state, last result, and configuration.
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientStatusResponse(
+                cycle_running=False,
+                current_phase=AMBIENT_PHASE_UNSPECIFIED,
+                cycles_completed=0,
+            )
+
+        try:
+            status = service.get_status()
+
+            # Build last_result if available
+            last_result = None
+            if status.get("last_result"):
+                lr = status["last_result"]
+                last_result = AmbientCycleResponse(
+                    success=lr.get("success", False),
+                    phases_completed=lr.get("phases_completed", 0),
+                    total_tasks=lr.get("total_tasks", 0),
+                    successful_tasks=lr.get("successful_tasks", 0),
+                    error_message=lr.get("error_message", ""),
+                    duration_ms=lr.get("duration_ms", 0),
+                )
+                for ep, lat in lr.get("endpoint_latencies", {}).items():
+                    last_result.endpoint_latencies[ep] = lat
+
+            # Map phase string to enum
+            phase_map = {
+                "baseline_health": AMBIENT_PHASE_BASELINE_HEALTH,
+                "baseline_workload": AMBIENT_PHASE_BASELINE_WORKLOAD,
+                "reasoning_eviction": AMBIENT_PHASE_REASONING_EVICTION,
+                "reasoning_workload": AMBIENT_PHASE_REASONING_WORKLOAD,
+                "baseline_restoration": AMBIENT_PHASE_BASELINE_RESTORATION,
+                "complete": AMBIENT_PHASE_COMPLETE,
+                "error": AMBIENT_PHASE_ERROR,
+            }
+            current_phase = phase_map.get(
+                status.get("current_phase", "complete"),
+                AMBIENT_PHASE_UNSPECIFIED,
+            )
+
+            # Convert daemon timestamps to ms since epoch
+            def iso_to_ms(iso_str: str | None) -> int:
+                if not iso_str:
+                    return 0
+                try:
+                    return int(datetime.fromisoformat(iso_str).timestamp() * 1000)
+                except Exception:
+                    return 0
+
+            response = AmbientStatusResponse(
+                cycle_running=status.get("cycle_running", False),
+                current_phase=current_phase,
+                cycles_completed=status.get("cycles_completed", 0),
+                last_cycle_timestamp_ms=(
+                    int(datetime.fromisoformat(status["last_cycle_at"]).timestamp() * 1000)
+                    if status.get("last_cycle_at")
+                    else 0
+                ),
+                reasoning_endpoint=status.get("reasoning_endpoint", "reasoning"),
+                # Daemon mode fields
+                daemon_running=status.get("daemon_running", False),
+                max_cycles=status.get("max_cycles") or 0,
+                current_cycle=status.get("daemon_cycle", 0),
+                daemon_started_at_ms=iso_to_ms(status.get("daemon_started_at")),
+                daemon_stopped_at_ms=iso_to_ms(status.get("daemon_stopped_at")),
+            )
+
+            # Add baseline endpoints
+            for ep in status.get("baseline_endpoints", []):
+                response.baseline_endpoints.append(ep)
+
+            if last_result:
+                response.last_result.CopyFrom(last_result)
+
+            return response
+
+        except Exception as e:
+            logger.exception(f"AmbientStatus failed: {e}")
+            return AmbientStatusResponse(
+                cycle_running=False,
+                current_phase=AMBIENT_PHASE_ERROR,
+            )
+
+    async def AmbientStart(
+        self,
+        request: AmbientStartRequest,
+        context: aio.ServicerContext,
+    ) -> AmbientStartResponse:
+        """Start continuous ambient cycling daemon.
+
+        Returns immediately. Events can be consumed via AmbientSubscribe.
+
+        Args:
+            request: AmbientStartRequest with baseline_only and max_cycles
+            context: gRPC context
+
+        Returns:
+            AmbientStartResponse with success status
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientStartResponse(
+                success=False,
+                message="AmbientWorkloadService not initialized.\n"
+                "  Guru: #AMB.00000001.SVCNOTINIT\n"
+                "  Check engine startup logs.",
+            )
+
+        try:
+            max_cycles = request.max_cycles if request.max_cycles > 0 else None
+            result = await service.start_daemon(
+                baseline_only=request.baseline_only,
+                max_cycles=max_cycles,
+            )
+
+            return AmbientStartResponse(
+                success=result["success"],
+                message=result["message"],
+                max_cycles=result.get("max_cycles") or 0,
+            )
+
+        except Exception as e:
+            logger.exception(f"AmbientStart failed: {e}")
+            return AmbientStartResponse(
+                success=False,
+                message=str(e),
+            )
+
+    async def AmbientStop(
+        self,
+        request: AmbientStopRequest,
+        context: aio.ServicerContext,
+    ) -> AmbientStopResponse:
+        """Stop ambient cycling daemon gracefully.
+
+        Returns summary of cycles completed.
+
+        Args:
+            request: AmbientStopRequest (empty)
+            context: gRPC context
+
+        Returns:
+            AmbientStopResponse with cycle count and summary
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientStopResponse(
+                success=False,
+                message="AmbientWorkloadService not initialized.",
+                cycles_completed=0,
+            )
+
+        try:
+            result = await service.stop_daemon()
+
+            return AmbientStopResponse(
+                success=result["success"],
+                message=result["message"],
+                cycles_completed=result.get("cycles_completed", 0),
+            )
+
+        except Exception as e:
+            logger.exception(f"AmbientStop failed: {e}")
+            return AmbientStopResponse(
+                success=False,
+                message=str(e),
+                cycles_completed=0,
+            )
+
+    async def AmbientSubscribe(
+        self,
+        request: AmbientSubscribeRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[AmbientPhaseEvent]:
+        """Subscribe to ambient events stream.
+
+        Streams events from the running daemon to the caller.
+        Used by TUI InfoPanel to display progress.
+
+        Args:
+            request: AmbientSubscribeRequest (empty)
+            context: gRPC context
+
+        Yields:
+            AmbientPhaseEvent for each phase transition
+        """
+        service = self._services.ambient_service
+        if service is None:
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message="AmbientWorkloadService not initialized.",
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+            return
+
+        try:
+            async for event in service.subscribe_events():
+                yield event
+
+        except Exception as e:
+            logger.exception(f"AmbientSubscribe failed: {e}")
+            yield AmbientPhaseEvent(
+                phase=AMBIENT_PHASE_ERROR,
+                message=str(e),
+                progress=0.0,
+                timestamp_ms=int(time.time() * 1000),
+            )
+
+    async def AmbientBufferExport(
+        self,
+        request: AmbientBufferExportRequest,
+        context: aio.ServicerContext,
+    ) -> AmbientBufferExportResponse:
+        """Export ambient buffer to zettelkasten file.
+
+        Creates a markdown file at scratch/{date}/{HHMMSS}_buffer.md
+        containing all current buffer entries grouped by role.
+
+        Args:
+            request: AmbientBufferExportRequest with optional kb_root
+            context: gRPC context
+
+        Returns:
+            AmbientBufferExportResponse with path or error
+        """
+        service = self._services.ambient_service
+        if service is None:
+            return AmbientBufferExportResponse(
+                error="AmbientWorkloadService not initialized."
+            )
+
+        try:
+            kb_root = request.kb_root or "build/dev"
+            result = await service.export_buffer(kb_root)
+
+            return AmbientBufferExportResponse(
+                path=result.get("path", ""),
+                entry_count=result.get("entry_count", 0),
+                total_bytes=result.get("total_bytes", 0),
+                error=result.get("error", ""),
+            )
+        except Exception as e:
+            logger.exception(f"AmbientBufferExport failed: {e}")
+            return AmbientBufferExportResponse(error=str(e))
+
+    # =========================================================================
+    # HuggingFace Dataset Discovery
+    # =========================================================================
+
+    async def ListHFDatasets(
+        self,
+        request: ListHFDatasetsRequest,
+        context: aio.ServicerContext,
+    ) -> ListHFDatasetsResponse:
+        """List recent datasets from HuggingFace Hub with rich content.
+
+        Uses two-phase fetch with Iceberg caching:
+        1. Fetch larger batch from HF API
+        2. Check Iceberg cache for README content
+        3. Fetch README for uncached items via DatasetCard
+        4. Return top N with richest content (README > 100 chars)
+        """
+        from pathlib import Path
+        from datetime import datetime
+
+        try:
+            from ....hx import get_hf_capture
+
+            limit = request.limit if request.limit > 0 else 5  # Default to 5 for rich content
+            capture = get_hf_capture()
+
+            # Use two-phase fetch with Iceberg caching
+            rich_datasets = await capture.get_rich_datasets(
+                limit=limit,
+                fetch_batch=50,  # Fetch more to find ones with README
+                min_readme_length=100,
+            )
+
+            if not rich_datasets:
+                return ListHFDatasetsResponse(
+                    count=0,
+                    error="No datasets with rich README content found",
+                )
+
+            # Generate zettelkasten note with README content
+            today = datetime.now().strftime("%Y-%m-%d")
+            lines = [
+                f"# HuggingFace Dataset Discovery - {today}",
+                "",
+                f"*{len(rich_datasets)} datasets with informative README content*",
+                "",
+            ]
+
+            for ds in rich_datasets:
+                ds_id = ds.get("dataset_id", "unknown")
+                author = ds.get("author", "")
+                downloads = ds.get("downloads", 0)
+                likes = ds.get("likes", 0)
+                readme = ds.get("readme_content", "")
+                tags = ds.get("tags", [])
+
+                lines.append(f"## {ds_id}")
+                lines.append("")
+                if author:
+                    lines.append(f"**Author:** {author}")
+                lines.append(f"**Downloads:** {downloads:,} | **Likes:** {likes}")
+                if tags:
+                    display_tags = [t for t in tags[:5] if not t.startswith("region:")]
+                    if display_tags:
+                        lines.append(f"**Tags:** {', '.join(display_tags)}")
+                lines.append("")
+
+                # Include README excerpt
+                if readme:
+                    excerpt = readme[:500] + ("..." if len(readme) > 500 else "")
+                    lines.append(excerpt)
+                    lines.append("")
+
+                # Action links
+                lines.append(f"- [action:/datasets info {ds_id}]")
+                lines.append(f"- [action:/datasets add {ds_id}]")
+                lines.append("")
+
+            content = "\n".join(lines)
+
+            # Save to scratch directory
+            kb_root = Path("build/dev")
+            scratch_dir = kb_root / "scratch" / today
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{timestamp}_hf_datasets.md"
+            file_path = scratch_dir / filename
+            file_path.write_text(content)
+
+            # Build response with README as description
+            hf_datasets = []
+            for ds in rich_datasets:
+                readme = ds.get("readme_content", "")
+                # Extract dates with proper None handling
+                created_at = ds.get("created_at")
+                last_modified = ds.get("last_modified")
+                hf_datasets.append(HFDatasetInfo(
+                    id=ds.get("dataset_id", ""),
+                    author=ds.get("author", ""),
+                    description=readme[:500] if readme else "",
+                    downloads=ds.get("downloads", 0),
+                    likes=ds.get("likes", 0),
+                    private=ds.get("private", False),
+                    created_at=created_at.isoformat() if created_at else "",
+                    last_modified=last_modified.isoformat() if last_modified else "",
+                    tags=ds.get("tags", [])[:10],
+                ))
+
+            return ListHFDatasetsResponse(
+                datasets=hf_datasets,
+                count=len(rich_datasets),
+                saved_to=str(file_path.relative_to(kb_root)),
+            )
+
+        except Exception as e:
+            logger.exception(f"ListHFDatasets failed: {e}")
+            return ListHFDatasetsResponse(error=str(e))
+
+    async def AddExternalDataset(
+        self,
+        request: AddExternalDatasetRequest,
+        context: aio.ServicerContext,
+    ) -> AddExternalDatasetResponse:
+        """Add an external HuggingFace dataset to the KB registry."""
+        from pathlib import Path
+
+        try:
+            from ....integrations import get_dataset_info
+
+            dataset_id = request.dataset_id
+            notes = request.notes or ""
+
+            info = get_dataset_info(dataset_id)
+
+            # Determine path: current/datasets/external/<org>/<name>.md
+            if "/" in dataset_id:
+                org, name = dataset_id.split("/", 1)
+            else:
+                org = "community"
+                name = dataset_id
+
+            kb_root = Path("build/dev")
+            external_dir = kb_root / "current" / "datasets" / "external" / org
+            external_dir.mkdir(parents=True, exist_ok=True)
+
+            file_path = external_dir / f"{name}.md"
+
+            if file_path.exists():
+                return AddExternalDatasetResponse(
+                    success=False,
+                    dataset_id=dataset_id,
+                    error=f"Dataset already exists in KB: {file_path.relative_to(kb_root)}",
+                )
+
+            # Generate KB entry
+            content = info.to_kb_entry(notes=notes)
+            file_path.write_text(content)
+
+            return AddExternalDatasetResponse(
+                success=True,
+                dataset_id=dataset_id,
+                saved_to=str(file_path.relative_to(kb_root)),
+                downloads=info.downloads,
+                likes=info.likes,
+                description=info.description[:200] if info.description else "",
+            )
+
+        except Exception as e:
+            logger.exception(f"AddExternalDataset failed: {e}")
+            return AddExternalDatasetResponse(
+                success=False,
+                dataset_id=request.dataset_id,
+                error=str(e),
+            )
+
+    async def GetHFDatasetInfo(
+        self,
+        request: GetHFDatasetInfoRequest,
+        context: aio.ServicerContext,
+    ) -> GetHFDatasetInfoResponse:
+        """Get detailed info for a specific HuggingFace dataset."""
+        try:
+            from ....integrations import get_dataset_info
+
+            info = get_dataset_info(request.dataset_id)
+
+            return GetHFDatasetInfoResponse(
+                info=HFDatasetInfo(
+                    id=info.id,
+                    author=info.author,
+                    description=info.description,
+                    downloads=info.downloads,
+                    likes=info.likes,
+                    private=info.private,
+                    created_at=info.created_at.isoformat() if info.created_at else "",
+                    last_modified=info.last_modified.isoformat() if info.last_modified else "",
+                    tags=info.tags,
+                ),
+                url=f"https://huggingface.co/datasets/{info.id}",
+            )
+
+        except Exception as e:
+            logger.exception(f"GetHFDatasetInfo failed: {e}")
+            return GetHFDatasetInfoResponse(error=str(e))
+
+    async def ListKBDatasets(
+        self,
+        request: ListKBDatasetsRequest,
+        context: aio.ServicerContext,
+    ) -> ListKBDatasetsResponse:
+        """List known datasets in the KB (internal + external)."""
+        from pathlib import Path
+
+        kb_root = Path("build/dev")
+        datasets_dir = kb_root / "current" / "datasets"
+
+        internal = []
+        external = []
+
+        # Scan internal datasets
+        internal_dir = datasets_dir / "internal"
+        if internal_dir.exists():
+            for item in internal_dir.iterdir():
+                # Skip README.md and other metadata files
+                if item.name.upper() == "README.MD":
+                    continue
+                if item.is_dir() or (item.is_file() and item.suffix == ".md"):
+                    internal.append(KBDatasetEntry(
+                        id=item.stem if item.is_file() else item.name,
+                        type="internal",
+                        path=str(item.relative_to(kb_root)),
+                    ))
+
+        # Scan external datasets
+        external_dir = datasets_dir / "external"
+        if external_dir.exists():
+            for org_dir in external_dir.iterdir():
+                if org_dir.is_dir():
+                    for ds_file in org_dir.glob("*.md"):
+                        external.append(KBDatasetEntry(
+                            id=f"{org_dir.name}/{ds_file.stem}",
+                            type="external",
+                            path=str(ds_file.relative_to(kb_root)),
+                        ))
+
+        return ListKBDatasetsResponse(
+            internal=internal,
+            external=external,
+            internal_count=len(internal),
+            external_count=len(external),
+        )
+
+    # =========================================================================
+    # HuggingFace Model Discovery
+    # =========================================================================
+
+    async def ListHFModels(
+        self,
+        request: ListHFModelsRequest,
+        context: aio.ServicerContext,
+    ) -> ListHFModelsResponse:
+        """List recent models from HuggingFace Hub with rich content.
+
+        Uses two-phase fetch with Iceberg caching:
+        1. Fetch larger batch from HF API
+        2. Check Iceberg cache for README content
+        3. Fetch README for uncached items via ModelCard
+        4. Return top N with richest content (README > 100 chars)
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        try:
+            from ....hx import get_hf_capture
+
+            limit = request.limit if request.limit > 0 else 5  # Default to 5 for rich content
+            filter_tag = request.filter if request.filter else None
+            capture = get_hf_capture()
+
+            # Use two-phase fetch with Iceberg caching
+            rich_models = await capture.get_rich_models(
+                limit=limit,
+                fetch_batch=50,  # Fetch more to find ones with README
+                min_readme_length=100,
+                filter_tag=filter_tag,
+            )
+
+            if not rich_models:
+                return ListHFModelsResponse(
+                    count=0,
+                    error="No models with rich README content found",
+                )
+
+            # Generate zettelkasten note with README content
+            today = datetime.now().strftime("%Y-%m-%d")
+            lines = [
+                f"# HuggingFace Model Discovery - {today}",
+                "",
+                f"*{len(rich_models)} models with informative README content*",
+                "",
+            ]
+
+            for m in rich_models:
+                m_id = m.get("model_id", "unknown")
+                author = m.get("author", "")
+                pipeline = m.get("pipeline_tag", "")
+                library = m.get("library_name", "")
+                downloads = m.get("downloads", 0)
+                likes = m.get("likes", 0)
+                readme = m.get("readme_content", "")
+                tags = m.get("tags", [])
+
+                lines.append(f"## {m_id}")
+                lines.append("")
+                if author:
+                    lines.append(f"**Author:** {author}")
+                lines.append(f"**Downloads:** {downloads:,} | **Likes:** {likes}")
+                if pipeline:
+                    lines.append(f"**Pipeline:** {pipeline}")
+                if library:
+                    lines.append(f"**Library:** {library}")
+                if tags:
+                    display_tags = [t for t in tags[:5] if not t.startswith("region:") and not t.startswith("license:")]
+                    if display_tags:
+                        lines.append(f"**Tags:** {', '.join(display_tags)}")
+                lines.append("")
+
+                # Include README excerpt
+                if readme:
+                    excerpt = readme[:500] + ("..." if len(readme) > 500 else "")
+                    lines.append(excerpt)
+                    lines.append("")
+
+                # Action links
+                lines.append(f"- [action:/models info {m_id}]")
+                lines.append(f"- [action:/models add {m_id}]")
+                lines.append("")
+
+            content = "\n".join(lines)
+
+            # Save to scratch directory
+            kb_root = Path("build/dev")
+            scratch_dir = kb_root / "scratch" / today
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"{timestamp}_hf_models.md"
+            file_path = scratch_dir / filename
+            file_path.write_text(content)
+
+            # Build response with README as description
+            model_infos = []
+            for m in rich_models:
+                readme = m.get("readme_content", "")
+                # Extract dates with proper None handling
+                created_at = m.get("created_at")
+                last_modified = m.get("last_modified")
+                model_infos.append(HFModelInfo(
+                    id=m.get("model_id", ""),
+                    author=m.get("author", ""),
+                    pipeline_tag=m.get("pipeline_tag", ""),
+                    downloads=m.get("downloads", 0),
+                    likes=m.get("likes", 0),
+                    private=m.get("private", False),
+                    created_at=created_at.isoformat() if created_at else "",
+                    last_modified=last_modified.isoformat() if last_modified else "",
+                    tags=m.get("tags", [])[:10],
+                    gated=m.get("gated", False),
+                    library_name=m.get("library_name", ""),
+                ))
+
+            return ListHFModelsResponse(
+                models=model_infos,
+                count=len(rich_models),
+                saved_to=str(file_path.relative_to(kb_root)),
+            )
+
+        except Exception as e:
+            logger.exception(f"ListHFModels failed: {e}")
+            return ListHFModelsResponse(error=str(e))
+
+    async def AddExternalModel(
+        self,
+        request: AddExternalModelRequest,
+        context: aio.ServicerContext,
+    ) -> AddExternalModelResponse:
+        """Add an external model reference to KB."""
+        from pathlib import Path
+
+        try:
+            from huggingface_hub import model_info
+
+            model_id = request.model_id
+            notes = request.notes
+
+            # Fetch model info
+            info = model_info(model_id)
+
+            # Determine path: current/models/external/<org>/<name>.md
+            if "/" in model_id:
+                org, name = model_id.split("/", 1)
+            else:
+                org = "community"
+                name = model_id
+
+            kb_root = Path("build/dev")
+            external_dir = kb_root / "current" / "models" / "external" / org
+            external_dir.mkdir(parents=True, exist_ok=True)
+
+            file_path = external_dir / f"{name}.md"
+
+            # Check if already exists
+            if file_path.exists():
+                return AddExternalModelResponse(
+                    success=False,
+                    model_id=model_id,
+                    error=f"Model already exists in KB: {file_path.relative_to(kb_root)}",
+                )
+
+            # Generate KB entry
+            content = f"""# {model_id}
+
+**URL**: https://huggingface.co/{model_id}
+**Pipeline**: {info.pipeline_tag or 'N/A'}
+**Library**: {info.library_name or 'N/A'}
+**Downloads**: {info.downloads or 0:,}
+**Likes**: {info.likes or 0}
+**Gated**: {'Yes' if info.gated else 'No'}
+
+## Tags
+{', '.join(info.tags) if info.tags else 'None'}
+
+## Notes
+{notes if notes else 'No notes provided.'}
+
+---
+*Added to KB on {Path(file_path).stat().st_mtime if file_path.exists() else 'now'}*
+"""
+            file_path.write_text(content)
+
+            return AddExternalModelResponse(
+                success=True,
+                model_id=model_id,
+                saved_to=str(file_path.relative_to(kb_root)),
+                downloads=info.downloads or 0,
+                likes=info.likes or 0,
+                pipeline_tag=info.pipeline_tag or "",
+            )
+
+        except Exception as e:
+            logger.exception(f"AddExternalModel failed: {e}")
+            return AddExternalModelResponse(error=str(e))
+
+    async def GetHFModelInfo(
+        self,
+        request: GetHFModelInfoRequest,
+        context: aio.ServicerContext,
+    ) -> GetHFModelInfoResponse:
+        """Get detailed info for a specific HuggingFace model."""
+        try:
+            from huggingface_hub import model_info
+
+            info = model_info(request.model_id)
+
+            return GetHFModelInfoResponse(
+                info=HFModelInfo(
+                    id=info.id,
+                    author=info.author or "",
+                    pipeline_tag=info.pipeline_tag or "",
+                    downloads=info.downloads or 0,
+                    likes=info.likes or 0,
+                    private=info.private or False,
+                    created_at=info.created_at.isoformat() if info.created_at else "",
+                    last_modified=info.last_modified.isoformat() if info.last_modified else "",
+                    tags=list(info.tags) if info.tags else [],
+                    gated=bool(info.gated) if hasattr(info, 'gated') else False,
+                    library_name=info.library_name or "",
+                ),
+                url=f"https://huggingface.co/{info.id}",
+            )
+
+        except Exception as e:
+            logger.exception(f"GetHFModelInfo failed: {e}")
+            return GetHFModelInfoResponse(error=str(e))
+
+    async def ListKBModels(
+        self,
+        request: ListKBModelsRequest,
+        context: aio.ServicerContext,
+    ) -> ListKBModelsResponse:
+        """List known models in the KB (internal = cached, external = references)."""
+        from pathlib import Path
+        import os
+
+        kb_root = Path("build/dev")
+        models_dir = kb_root / "current" / "models"
+        hf_cache = Path(os.environ.get("HF_HOME", "/raid/cache/huggingface")) / "hub"
+
+        internal = []
+        external = []
+        total_cache_bytes = 0
+
+        # Scan HuggingFace cache for internal (cached) models
+        if hf_cache.exists():
+            for item in hf_cache.iterdir():
+                if item.is_dir() and item.name.startswith("models--"):
+                    # Parse model ID from cache dir name: models--org--name -> org/name
+                    parts = item.name.replace("models--", "").split("--")
+                    if len(parts) >= 2:
+                        model_id = f"{parts[0]}/{parts[1]}"
+                    else:
+                        model_id = parts[0]
+
+                    # Calculate size
+                    size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                    total_cache_bytes += size
+
+                    internal.append(KBModelEntry(
+                        id=model_id,
+                        type="internal",
+                        path=str(item),
+                        size_bytes=size,
+                    ))
+
+        # Scan external model references in KB
+        external_dir = models_dir / "external"
+        if external_dir.exists():
+            for org_dir in external_dir.iterdir():
+                if org_dir.is_dir():
+                    for model_file in org_dir.glob("*.md"):
+                        external.append(KBModelEntry(
+                            id=f"{org_dir.name}/{model_file.stem}",
+                            type="external",
+                            path=str(model_file.relative_to(kb_root)),
+                        ))
+
+        return ListKBModelsResponse(
+            internal=internal,
+            external=external,
+            internal_count=len(internal),
+            external_count=len(external),
+            total_cache_bytes=total_cache_bytes,
+        )
+
+    # =========================================================================
+    # Prospects / Stewardship
+    # =========================================================================
+
+    async def ProspectsStatus(
+        self,
+        request: ProspectsStatusRequest,
+        context: aio.ServicerContext,
+    ) -> ProspectsStatusResponse:
+        """Get lightweight prospects status (no LLM calls, cached data)."""
+        try:
+            service = self._services.prospects_service
+            if not service:
+                # Service not yet initialized - return empty but valid response
+                return ProspectsStatusResponse(
+                    success=True,
+                    profile=request.profile or "zndx",
+                    domain=request.domain or "prospecting",
+                    update_recommended=False,
+                    update_reason="Prospects service initializing",
+                )
+
+            status = await service.get_status(
+                profile=request.profile,
+                domain=request.domain,
+                symbols=list(request.symbols) if request.symbols else None,
+            )
+
+            # Convert to proto candidates
+            candidates = []
+            for c in status.get("candidates", []):
+                candidates.append(CandidateSummary(
+                    symbol=c.get("symbol", ""),
+                    company_name=c.get("company_name", ""),
+                    exchange=c.get("exchange", ""),
+                    cik=c.get("cik", ""),
+                    last_filing_date=c.get("last_filing_date", ""),
+                    last_filing_type=c.get("last_filing_type", ""),
+                    pending_filings=c.get("pending_filings", 0),
+                ))
+
+            # Convert to proto strategies
+            strategies = []
+            for s in status.get("strategies", []):
+                strategies.append(StrategySummary(
+                    symbol=s.get("symbol", ""),
+                    category=s.get("category", ""),
+                    allocation_weight=s.get("allocation_weight", 0.0),
+                    target_weight=s.get("target_weight", 0.0),
+                    conviction=s.get("conviction", 0.0),
+                    last_analysis_at=s.get("last_analysis_at", ""),
+                    needs_update=s.get("needs_update", False),
+                ))
+
+            return ProspectsStatusResponse(
+                success=True,
+                profile=status.get("profile", request.profile or "zndx"),
+                domain=status.get("domain", request.domain or "prospecting"),
+                candidates=candidates,
+                strategies=strategies,
+                pending_filings=status.get("pending_filings", 0),
+                last_fmp_sync_at=status.get("last_fmp_sync_at", ""),
+                update_recommended=status.get("update_recommended", False),
+                update_reason=status.get("update_reason", ""),
+            )
+
+        except Exception as e:
+            logger.exception(f"ProspectsStatus failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ProspectsStatus",
+                exception_type=type(e).__name__,
+                guru_code="#GR.PS.00001.STATUSFAIL",
+            )
+            return ProspectsStatusResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def ProspectsCheck(
+        self,
+        request: ProspectsCheckRequest,
+        context: aio.ServicerContext,
+    ) -> ProspectsCheckResponse:
+        """Run daily check for new SEC filings (local LLM only, $0 cost)."""
+        try:
+            service = self._services.prospects_service
+            if not service:
+                return ProspectsCheckResponse(
+                    success=False,
+                    error="Prospects service not initialized",
+                )
+
+            start_time = time.time()
+
+            result = await service.run_check(
+                profile=request.profile,
+                domain=request.domain,
+                force=request.force,
+            )
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            return ProspectsCheckResponse(
+                success=True,
+                update_recommended=result.get("update_recommended", False),
+                reason=result.get("reason", ""),
+                new_filings_count=result.get("new_filings_count", 0),
+                symbols_with_new_filings=result.get("symbols_with_new_filings", []),
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            logger.exception(f"ProspectsCheck failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ProspectsCheck",
+                exception_type=type(e).__name__,
+                guru_code="#GR.PS.00002.CHECKFAIL",
+            )
+            return ProspectsCheckResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def ProspectsUpdate(
+        self,
+        request: ProspectsUpdateRequest,
+        context: aio.ServicerContext,
+    ) -> AsyncIterator[ProspectsUpdateEvent]:
+        """Run full billable analysis (streaming progress events).
+
+        Cost model:
+        - ~$0.06/filing (Cerebras GLM 4.7 analysis)
+        - ~$0.50/synthesis (XAI Grok)
+        """
+        try:
+            # Emit queued event
+            yield ProspectsUpdateEvent(
+                type=ProspectsUpdateEvent.QUEUED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=0.0,
+                message="Update queued",
+            )
+
+            service = self._services.prospects_service
+            if not service:
+                yield ProspectsUpdateEvent(
+                    type=ProspectsUpdateEvent.FAILED,
+                    timestamp_ms=int(time.time() * 1000),
+                    progress=0.0,
+                    message="Prospects service not initialized",
+                )
+                return
+
+            # Stream progress events from service
+            sitrep_path = ""
+            async for event in service.run_update(
+                profile=request.profile,
+                domain=request.domain,
+                symbols=list(request.symbols) if request.symbols else None,
+                force=request.force,
+                filings_per_symbol=request.filings_per_symbol if request.filings_per_symbol > 0 else None,
+            ):
+                # Track sitrep_path from events
+                if "sitrep_path" in event and event["sitrep_path"]:
+                    sitrep_path = event["sitrep_path"]
+
+                yield ProspectsUpdateEvent(
+                    type=event.get("type", ProspectsUpdateEvent.QUEUED),
+                    timestamp_ms=int(time.time() * 1000),
+                    progress=event.get("progress", 0.0),
+                    message=event.get("message", ""),
+                    symbol=event.get("symbol", ""),
+                    filing_type=event.get("filing_type", ""),
+                    sitrep_path=event.get("sitrep_path", ""),
+                )
+
+            yield ProspectsUpdateEvent(
+                type=ProspectsUpdateEvent.COMPLETED,
+                timestamp_ms=int(time.time() * 1000),
+                progress=1.0,
+                message="Update completed",
+                sitrep_path=sitrep_path,
+            )
+
+        except Exception as e:
+            logger.exception(f"ProspectsUpdate failed: {e}")
+            record_exception_caught(
+                component="grpc",
+                operation="ProspectsUpdate",
+                exception_type=type(e).__name__,
+                guru_code="#GR.PS.00003.UPDATEFAIL",
+            )
+            yield ProspectsUpdateEvent(
+                type=ProspectsUpdateEvent.FAILED,
+                timestamp_ms=int(time.time() * 1000),
                 progress=0.0,
                 message=str(e),
             )

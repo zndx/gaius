@@ -403,7 +403,7 @@ def extract_pdf_pages(pdf_path: Path | str) -> list[Image.Image]:
         List of PIL Images (one per page)
     """
     try:
-        import pypdf
+        import pypdf  # type: ignore[import-not-found] - Optional dep for PDF handling
     except ImportError as e:
         raise ImportError(
             "pypdf not installed. Install with: uv sync --extra multimodal"
@@ -464,8 +464,11 @@ def get_colqwen_embedder(
                 aggregation = AggregationMethod(agg_str)
         except Exception:
             # Use defaults if config not available
-            if model_name is None:
-                model_name = ColQwenEmbedder.DEFAULT_MODEL
+            pass
+
+        # Ensure model_name is set
+        if model_name is None:
+            model_name = ColQwenEmbedder.DEFAULT_MODEL
 
         _embedder = ColQwenEmbedder(
             model_name=model_name,

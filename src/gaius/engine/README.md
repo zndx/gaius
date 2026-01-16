@@ -1,6 +1,6 @@
 # Gaius Engine
 
-Centralized daemon for GPU orchestration, inference scheduling, and agent evolution. The engine serves as the control plane for all Gaius operations.
+Centralized daemon for GPU orchestration, inference scheduling, and background processes. The engine serves as the control plane for all Gaius operations, exposing a gRPC interface for client communication.
 
 ## Architecture
 
@@ -14,18 +14,17 @@ graph TB
 
     subgraph "Transport Layer"
         GRPC[gRPC Server<br/>:50051]
-        SOCK[Unix Socket<br/>/tmp/gaius-engine.sock]
     end
 
     subgraph "Services"
         ORCH[Orchestrator<br/>Endpoint Lifecycle]
-        SCHED[Scheduler<br/>Job Queue]
-        EVOL[Evolution<br/>Agent Improvement]
-        COG[Cognition<br/>Autonomous Thinking]
+        SCHED[Scheduler<br/>Priority Queue]
+        EVOL[Evolution<br/>Prompt Optimization]
+        COG[Cognition<br/>Pattern Detection]
         HEALTH[Health<br/>Monitoring]
     end
 
-    subgraph "Backends"
+    subgraph "Backend Controllers"
         ROUTER[Backend Router]
         VLLM[vLLM Controller]
         OPT[optillm Controller]
@@ -40,7 +39,6 @@ graph TB
     TUI --> GRPC
     MCP --> GRPC
     EXT --> GRPC
-    TUI -.-> SOCK
 
     GRPC --> ORCH
     GRPC --> SCHED
@@ -63,25 +61,25 @@ graph TB
 
 ```
 engine/
-├── server.py              # Main daemon loop
+├── server.py              # Main daemon entry point
 ├── config.py              # Engine configuration
 ├── init_controller.py     # Initialization progress streaming
 ├── workloads.py           # Workload definitions
 ├── grpc/
 │   ├── server.py          # gRPC server
 │   └── servicers/
-│       ├── inference_servicer.py  # KServe OIP
+│       ├── inference_servicer.py  # KServe OIP implementation
 │       └── gaius_servicer.py      # Custom extensions
 ├── backends/
-│   ├── backend_router.py  # Unified routing
+│   ├── backend_router.py  # Unified request routing
 │   ├── vllm_controller.py # vLLM process management
 │   ├── optillm_controller.py
 │   └── embedding_controller.py
 ├── services/
 │   ├── orchestrator_service.py  # Endpoint lifecycle
 │   ├── scheduler_service.py     # Job scheduling
-│   ├── evolution_service.py     # Agent evolution
-│   ├── cognition_service.py     # Autonomous thinking
+│   ├── evolution_service.py     # Prompt optimization
+│   ├── cognition_service.py     # Pattern detection
 │   └── health_service.py        # Health monitoring
 ├── compute/
 │   ├── grid_service.py    # UMAP projection
@@ -89,18 +87,15 @@ engine/
 ├── resources/
 │   ├── manager.py         # Resource allocation
 │   └── allocations.py     # GPU allocations
-├── transport/
-│   ├── protocol.py        # Message protocol
-│   └── aeron_bridge.py    # Aeron IPC (legacy)
 ├── generated/             # Protobuf generated code
 └── proto/                 # Protobuf definitions
 ```
 
 ## gRPC Protocol
 
-### KServe Open Inference Protocol (OIP)
+### KServe Open Inference Protocol
 
-The engine implements KServe's standard inference protocol for compatibility with Cloudera and other ML platforms:
+The engine implements KServe's standard inference protocol (KServe, 2023) for compatibility with Cloudera AI and other ML platforms:
 
 ```protobuf
 service GRPCInferenceService {
@@ -134,7 +129,9 @@ service GaiusService {
 }
 ```
 
-## Initialization Flow
+## Initialization Protocol
+
+The engine implements a phased initialization with progress streaming, allowing clients to display real-time status during the ~4 minute vLLM startup:
 
 ```mermaid
 sequenceDiagram
@@ -166,13 +163,13 @@ sequenceDiagram
     Client->>GRPC: Ready for inference
 ```
 
-The gRPC server starts **early** so clients can connect immediately and receive real-time progress updates during the ~4 minute vLLM preload phase.
+The gRPC server starts early so clients can connect immediately and receive real-time progress updates during vLLM model loading.
 
 ## Services
 
 ### Orchestrator Service
 
-Manages vLLM/optillm endpoint lifecycle:
+Manages vLLM and optillm endpoint lifecycle with capability-based routing:
 
 ```python
 @dataclass
@@ -185,25 +182,27 @@ class EndpointStatus:
     startup_progress: float  # 0.0 - 1.0
 ```
 
-**Yunikorn-Style Workload Management:**
-- Capability-based routing: requests declare capabilities, not endpoints
+**Workload Management**: Follows Yunikorn-style capability-based scheduling (Apache Yunikorn, 2024):
+- Requests declare required capabilities, not specific endpoints
 - Priority-based preemption: idle endpoints evicted for higher-priority work
 - Makespan fulfillment: engine ensures work completes, then restores set points
 
 ### Scheduler Service
 
-Priority-based job queue for inference requests:
+Priority-based job queue using weighted completion time minimization:
 
-| Priority | Use Case |
-|----------|----------|
-| `critical` | Interactive user requests |
-| `high` | Agent evolution |
-| `normal` | Background processing |
-| `low` | Speculative inference |
+| Priority | Weight | Use Case |
+|----------|--------|----------|
+| `critical` | 1.0 | Interactive user requests |
+| `high` | 2.0 | Swarm agent coordination |
+| `normal` | 4.0 | Background processing |
+| `low` | 8.0 | Speculative inference |
+
+Lower weights receive preferential scheduling.
 
 ### Evolution Service
 
-Continuous agent improvement via APO (Automatic Prompt Optimization):
+Background prompt optimization using APO (Zhou et al., 2023):
 
 ```mermaid
 graph LR
@@ -215,15 +214,17 @@ graph LR
     E --> G[Record Lineage]
 ```
 
+Evolution cycles execute during GPU idle periods, optimizing agent system prompts based on evaluation feedback.
+
 ### Cognition Service
 
-Scheduled autonomous thinking:
+Scheduled background tasks for pattern detection:
 
 | Task | Schedule | Purpose |
 |------|----------|---------|
-| `cognition_cycle` | Every 4h | Generate new thoughts |
-| `self_observation` | Every 8h | Meta-cognitive reflection |
-| `engine_audit` | Every 12h | System health analysis |
+| `cognition_cycle` | Every 4h | Detect patterns in recent KB activity |
+| `self_observation` | Every 8h | Meta-cognitive reflection on thought patterns |
+| `engine_audit` | Every 12h | System health and resource analysis |
 
 ## Backend Controllers
 
@@ -246,28 +247,27 @@ class VLLMController:
     async def health_check(self, port: int) -> bool
 ```
 
-**Process Management:**
-- Graceful shutdown with SIGTERM
-- Force kill after timeout
-- CUDA memory cleanup
-- Orphan process detection
+**Process Management**:
+- Graceful shutdown with SIGTERM, force kill after timeout
+- CUDA memory cleanup via `torch.cuda.empty_cache()`
+- Orphan process detection and cleanup
+- Circular log buffer (500 lines) for diagnostics
 
 ### optillm Controller
 
-Manages optillm reasoning enhancement server:
+Manages optillm reasoning enhancement server (Maheshwari, 2024):
 
-```python
-class OptillmController:
-    async def start(self) -> ProcessStatus
-    async def stop(self) -> bool
-    async def health_check(self) -> bool
-```
-
-Supports techniques: `cot_reflection`, `bon`, `moa`, `rto`, `z3`, `leap`.
+Supported techniques:
+- `cot_reflection`: Chain-of-thought with reflection
+- `bon`: Best-of-N sampling
+- `moa`: Mixture of Agents
+- `rto`: Round-trip optimization
+- `z3`: Z3 solver integration for logical reasoning
+- `leap`: Learn from examples
 
 ### Backend Router
 
-Unified routing to appropriate backend:
+Unified request routing to appropriate backend based on capability requirements:
 
 ```python
 class BackendRouter:
@@ -318,10 +318,10 @@ engine {
 
 ```bash
 # Start engine daemon
-uv run python -m gaius.engine
-
-# Or via entry point
 uv run gaius-engine
+
+# Or as module
+uv run python -m gaius.engine
 ```
 
 ### Client Connection
@@ -340,22 +340,109 @@ for progress in stub.WatchInit(InitRequest()):
 
 ### Security
 
-**Secure-by-Default Architecture:**
-
-All inference requests route through the gRPC engine for:
+All inference requests route through the gRPC engine for centralized:
 - Authentication and authorization
 - Audit logging
 - Resource management and rate limiting
 
-Direct HTTP access to optillm/vLLM is disabled by default:
+All clients (TUI, CLI, MCP) must connect via gRPC. Direct HTTP access to optillm/vLLM backends is not supported.
 
-```bash
-# Enable direct HTTP fallbacks (dev/debug only)
-export GAIUS_ALLOW_FALLBACKS=true
+## References
+
+- Apache Yunikorn. (2024). *Yunikorn: A Universal Resource Scheduler*. https://yunikorn.apache.org/
+- KServe. (2023). *Open Inference Protocol*. https://kserve.github.io/website/latest/modelserving/data_plane/
+- Maheshwari, P. (2024). *optillm: Inference-time reasoning optimization*. https://github.com/codelion/optillm
+- Zhou, Y., Muresanu, A. I., Han, Z., et al. (2023). Large Language Models Are Human-Level Prompt Engineers. *ICLR 2023*.
+
+## Call Graph
+
 ```
+# Engine Startup (gaius-engine)
+engine/server.py:main()
+  └─→ GaiusEngine.start()
+      ├─→ Phase 1: InitController.start()
+      ├─→ Phase 2: grpc.server.start()          # Clients can connect early
+      ├─→ Phase 3: core.telemetry.setup()
+      ├─→ Phase 4: backends.router.initialize()
+      │     ├─→ vllm_controller.start()
+      │     └─→ optillm_controller.start()
+      ├─→ Phase 5: orchestrator_service.start()
+      ├─→ Phase 6: preload_endpoints()          # Load models to VRAM (~240s)
+      │     └─→ vllm_controller.start_endpoint("reasoning")
+      ├─→ Phase 7: transport.aeron_bridge.start()
+      ├─→ Phase 8: background_services.start()
+      │     ├─→ cognition_service.start()
+      │     ├─→ evolution_service.start()
+      │     ├─→ flow_scheduler_service.start()
+      │     └─→ topology_service.start()
+      └─→ Phase 9: init_controller.mark_complete()
+
+# Inference Request Path
+client.grpc_client.infer(messages)
+  └─→ grpc.servicers.gaius_servicer.ModelInfer()
+      └─→ scheduler_service.submit_job()
+          └─→ backends.router.route_inference()
+              ├─→ optillm_controller.enhance()  # if technique specified
+              └─→ vllm_controller.infer()
+                  └─→ HTTP POST to vLLM endpoint
+
+# Evolution Daemon Path
+evolution_service.start_daemon()
+  └─→ EvolutionDaemon.run()
+      └─→ while True:
+          ├─→ gpu_monitor.check_idle()         # <30% utilization
+          ├─→ wait_for_idle(idle_threshold)
+          └─→ evolution.engine.run_cycle()
+              ├─→ select_agent()               # round-robin
+              ├─→ generate_candidates()
+              ├─→ evaluate_candidates()
+              └─→ promote_best()
+```
+
+## Integration Points
+
+| Service | Provides | Consumers | Protocol |
+|---------|----------|-----------|----------|
+| `GrpcServer` | Inference, health, evolution APIs | TUI, CLI, MCP | gRPC |
+| `OrchestratorService` | Endpoint lifecycle | Scheduler, health | Internal |
+| `SchedulerService` | Job queue, priority | gRPC servicers | Internal |
+| `EvolutionService` | Prompt optimization | Background daemon | Internal |
+| `CognitionService` | Pattern detection | Scheduled tasks | Internal |
+| `VllmController` | vLLM process management | Orchestrator | HTTP |
+| `OptillmController` | Reasoning enhancement | Router | HTTP |
 
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Inference README](../inference/README.md) - vLLM orchestration details
-- [Health README](../health/README.md) - Self-healing integration
+- [Parent README](../README.md) — System overview, layer architecture
+- [Client README](../client/README.md) — gRPC client implementation
+- [Inference README](../inference/README.md) — vLLM orchestration details
+- [Agents README](../agents/README.md) — Evolution daemon, cognition
+- [Health README](../health/README.md) — Self-healing integration
+- [Models README](../models/README.md) — Versioning for evolution
+
+---
+
+<!-- GAI:META
+module: gaius.engine
+layer: L3-engine
+entry_point: gaius-engine
+key_types: [GaiusEngine, GrpcServer, OrchestratorService, SchedulerService, EvolutionService, VllmController, OptillmController, BackendRouter]
+key_funcs: []
+submodules: [grpc, backends, services, compute, resources, transport, generated]
+depends: [core.telemetry, core.config, models, agents.evolution, health]
+dependents: [client, app, mcp_server]
+config_keys: [engine.grpc.port, engine.grpc.host, engine.orchestrator.preload_endpoints, engine.scheduler.max_queue_size, engine.evolution.enabled, engine.evolution.idle_threshold]
+env_vars: [GAIUS_ENGINE_HOST, GAIUS_ENGINE_PORT]
+grpc_services: [GaiusService, GRPCInferenceService]
+ports: [50051]
+startup_phases: [INIT, GRPC, TELEMETRY, BACKENDS, ORCHESTRATOR, ENDPOINTS, TRANSPORT, SERVICES, COMPLETE]
+external_deps: [grpc, vllm, optillm, pynvml]
+call_paths:
+  startup: main→GaiusEngine.start→9_phases→init_complete
+  inference: grpc.ModelInfer→scheduler.submit→router.route→vllm.infer
+  evolution: evolution_service→EvolutionDaemon.run→run_cycle→promote
+test_cmd: 'uv run gaius-engine'
+guru_codes: [EN.00001.GRPC_BIND, EN.00002.VLLM_START, EN.00003.GPU_OOM, EN.00004.ORPHAN_PROC]
+fail_fast: true
+-->
+

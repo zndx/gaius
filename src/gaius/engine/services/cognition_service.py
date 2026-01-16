@@ -4,6 +4,10 @@ Daemon that processes scheduled cognition tasks from the database,
 running cognition cycles and engine audits when triggered by pg_cron
 or delta detection.
 
+Implements BaseDaemon protocol with CRITICAL criticality - engine enters
+DEGRADED mode if this daemon fails to start (not exit), allowing ACP-Claude
+to investigate accumulated error states.
+
 Task Types Handled:
 - cognition_cycle: Run a full cognition cycle (patterns, connections, etc.)
 - engine_audit: Audit engine health and record observations
@@ -35,6 +39,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
+from .base_daemon import (
+    BaseDaemon,
+    DaemonCriticality,
+    DaemonHealth,
+    DaemonStartupError,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +73,11 @@ class CognitionConfig:
     database_url: str = ""
 
 
-class CognitionService:
+class CognitionService(BaseDaemon):
     """Cognition daemon for scheduled thought generation.
+
+    Implements BaseDaemon with CRITICAL criticality - if this daemon fails,
+    engine enters DEGRADED mode to allow ACP-Claude investigation.
 
     Monitors the scheduled_tasks table and processes cognition-related
     tasks when they become due. Integrates with the CognitionAgent
@@ -81,6 +95,17 @@ class CognitionService:
     - engine_audit: Run CognitionAgent._audit_engine_health()
     - delta_check: Run detect_cognition_delta() SQL function
     """
+
+    # BaseDaemon protocol implementation
+    @property
+    def name(self) -> str:
+        """Unique daemon name."""
+        return "cognition"
+
+    @property
+    def criticality(self) -> DaemonCriticality:
+        """CRITICAL - engine enters DEGRADED if this fails."""
+        return DaemonCriticality.CRITICAL
 
     def __init__(
         self,
@@ -114,6 +139,14 @@ class CognitionService:
 
         # Progress callbacks
         self._progress_callbacks: list[Callable[[str], None]] = []
+
+        # Streaming subscribers (for TUI real-time updates)
+        self._cognition_subscribers: list[asyncio.Queue] = []
+        self._evolution_subscribers: list[asyncio.Queue] = []
+        self._activity_subscribers: list[asyncio.Queue] = []
+
+        # Current cycle ID for tracking
+        self._current_cycle_id: Optional[str] = None
 
         logger.info("CognitionService initialized")
 
@@ -185,6 +218,10 @@ class CognitionService:
         "cognition_cycle",
         "engine_audit",
         "delta_check",
+        # Content pipeline tasks (autonomous triage)
+        "heuristic_triage",
+        "llm_triage",
+        "content_processing",
         # Long-term evolution tasks
         "content_diversity_check",
         "evolution_cycle",
@@ -290,6 +327,10 @@ class CognitionService:
             "cognition_cycle": self._run_cognition_cycle,
             "engine_audit": self._run_engine_audit,
             "delta_check": self._run_delta_check,
+            # Content pipeline tasks (autonomous triage)
+            "heuristic_triage": self._run_heuristic_triage,
+            "llm_triage": self._run_llm_triage,
+            "content_processing": self._run_content_processing,
             # Long-term evolution tasks
             "content_diversity_check": self._run_content_diversity_check,
             "evolution_cycle": self._run_evolution_cycle,
@@ -324,40 +365,59 @@ class CognitionService:
     # Task Handlers
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _run_cognition_cycle(self, payload: dict) -> dict:
+    async def _run_cognition_cycle(self, payload: dict, bypass_rate_limit: bool = False) -> dict:
         """Run a full cognition cycle.
 
         Args:
             payload: Task payload with optional parameters
+            bypass_rate_limit: Skip rate limiting (for manual/CLI triggers)
 
         Returns:
             Result dict with thoughts generated
         """
-        # Check rate limit
-        if not self._can_run_cycle():
+        # Check rate limit (skip for manual triggers)
+        if not bypass_rate_limit and not self._can_run_cycle():
+            logger.info(f"Rate limit: {len(self._recent_cycles)}/{self.config.max_cycles_per_hour} cycles this hour")
             return {
+                "success": False,
+                "thoughts_generated": 0,
+                "patterns_detected": 0,
+                "connections_found": 0,
+                "curiosities_generated": 0,
+                "self_observations": 0,
+                "engine_audits": 0,
+                "tokens_used": 0,
+                "duration_ms": 0,
+                "error": f"Rate limited: {len(self._recent_cycles)}/{self.config.max_cycles_per_hour} cycles this hour",
                 "skipped": True,
                 "reason": "rate_limit",
-                "cycles_this_hour": len(self._recent_cycles),
             }
 
         # Record cycle start for rate limiting
         self._recent_cycles.append(datetime.now())
 
-        # Get cognition agent
-        from ...agents.cognition import get_cognition_agent
+        # Use engine-native cognition logic (no L5 agent imports)
+        from .cognition_logic import process_cognition_cycle
 
-        agent = get_cognition_agent()
-
-        # Extract parameters from payload
-        max_thoughts = payload.get("max_thoughts", self.config.max_thoughts_per_cycle)
-        trigger_reason = payload.get("trigger", "scheduled")
+        # Build payload with service config defaults
+        cycle_payload = {
+            "max_thoughts": payload.get("max_thoughts", self.config.max_thoughts_per_cycle),
+            "trigger": payload.get("trigger", "scheduled"),
+        }
 
         # Run cognition cycle
         self._notify_progress("Running cognition cycle...")
-        result = await agent.think(
-            max_thoughts=max_thoughts,
-            trigger_reason=trigger_reason,
+        result = await process_cognition_cycle(
+            db_pool=self._db_pool,
+            payload=cycle_payload,
+        )
+
+        # Emit streaming event for real-time TUI updates
+        self._emit_cognition_event(
+            "THOUGHT" if result.thoughts_generated > 0 else "CYCLE_END",
+            thought_type="cognition_cycle",
+            title=f"Generated {result.thoughts_generated} thoughts",
+            summary=f"{result.patterns_detected} patterns, {result.connections_found} connections",
         )
 
         # Update statistics
@@ -365,20 +425,24 @@ class CognitionService:
         self._last_cycle_at = datetime.now()
 
         self._notify_progress(
-            f"Generated {len(result.thoughts)} thoughts "
+            f"Generated {result.thoughts_generated} thoughts "
             f"({result.patterns_detected} patterns, "
             f"{result.connections_found} connections)"
         )
 
         return {
-            "thoughts_generated": len(result.thoughts),
+            "success": result.success,
+            "thoughts_generated": result.thoughts_generated,
             "patterns_detected": result.patterns_detected,
             "connections_found": result.connections_found,
             "curiosities_generated": result.curiosities_generated,
             "self_observations": result.self_observations,
             "engine_audits": result.engine_audits,
             "tokens_used": result.tokens_used,
+            "tokens_out": result.tokens_out,
             "duration_ms": result.duration_ms,
+            "kb_path": result.kb_path,
+            "error": result.error,
         }
 
     async def _run_engine_audit(self, payload: dict) -> dict:
@@ -421,17 +485,27 @@ class CognitionService:
             logger.error(f"Engine audit error: {e}")
             return {"error": str(e)}
 
-        # If anomalies found, generate a thought about them
+        # If anomalies found, generate a thought about them using engine-native logic
         if anomalies_found > 0 and self.config.enable_engine_audit:
-            from ...agents.cognition import get_cognition_agent
+            from .cognition_logic import process_engine_audit
 
-            agent = get_cognition_agent()
-            context = await agent._gather_context()
-            context.engine_observations = observations
+            audit_result = await process_engine_audit(
+                db_pool=self._db_pool,
+                payload={
+                    "observations": observations,
+                    "anomalies": anomalies,
+                },
+            )
+            if audit_result.success:
+                logger.info(f"Engine audit generated {audit_result.observations_recorded} observations")
 
-            audit_thoughts = await agent._audit_engine_health(context)
-            for thought in audit_thoughts:
-                await agent._save_thought(thought)
+            # Emit streaming event
+            self._emit_cognition_event(
+                "ENGINE_AUDIT",
+                thought_type="engine_audit",
+                title=f"Found {anomalies_found} anomalies",
+                summary=str(anomalies)[:200] if anomalies_found else "",
+            )
 
         return {
             "observations_recorded": len(observations),
@@ -480,6 +554,434 @@ class CognitionService:
             "tasks_scheduled": len(tasks_scheduled),
             "tasks": tasks_scheduled,
         }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Content Pipeline Task Handlers (Autonomous Triage)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_heuristic_triage(self, payload: dict) -> dict:
+        """Run heuristic triage on newly fetched content.
+
+        Fast keyword/pattern-based scoring without LLM inference.
+        Items scoring >= 30 pass to LLM triage; others are excluded.
+
+        Args:
+            payload: Task payload with optional:
+                - limit: Max items to process (default 100)
+
+        Returns:
+            Result dict with scored/excluded counts
+        """
+        if not self._db_pool:
+            return {"error": "no_database"}
+
+        limit = payload.get("limit", 100)
+        logger.info(f"Running heuristic triage (limit={limit})")
+        self._notify_progress(f"Heuristic triage: processing up to {limit} items...")
+
+        try:
+            # Import the heuristic scorer from workers module
+            try:
+                from ...workers.models import ContentItem
+                from ...workers.triage import HeuristicScorer, TriageConfig
+                config = TriageConfig.from_env()
+                scorer = HeuristicScorer(config)
+                ContentItemCls = ContentItem
+            except (ImportError, Exception) as e:
+                # Fallback: simple keyword-based scoring
+                scorer = None
+                ContentItemCls = None
+                logger.warning(f"HeuristicScorer not available ({e}), using fallback scoring")
+
+            async with self._db_pool.acquire() as conn:
+                # Get items needing heuristic scoring
+                # Note: content is stored in Iceberg, not PostgreSQL, so we use summary instead
+                items = await conn.fetch("""
+                    SELECT ci.id, ci.title, ci.url, ci.summary,
+                           ci.metadata, ci.source_id, ci.authors, ci.published_at,
+                           fs.name as source_name
+                    FROM content_items ci
+                    LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                    WHERE ci.heuristic_score IS NULL
+                    ORDER BY ci.fetched_at DESC
+                    LIMIT $1
+                """, limit)
+
+                if not items:
+                    logger.info("No items need heuristic scoring")
+                    return {"scored": 0, "excluded": 0, "message": "no_items_pending"}
+
+                scored = 0
+                excluded = 0
+                passed = 0
+
+                for item in items:
+                    # Compute score
+                    if scorer and ContentItemCls:
+                        # Convert db row to ContentItem for the scorer
+                        # Note: metadata is stored as TEXT, need to parse as JSON
+                        row_dict = dict(item)
+                        if isinstance(row_dict.get("metadata"), str):
+                            try:
+                                row_dict["metadata"] = json.loads(row_dict["metadata"])
+                            except (json.JSONDecodeError, TypeError):
+                                row_dict["metadata"] = {}
+                        content_item = ContentItemCls.from_row(row_dict)
+                        result = scorer.score(content_item)
+                        score = result.get("total", 50)
+                    else:
+                        # Fallback: basic scoring based on title/summary presence
+                        score = 50  # Default pass
+                        title = item.get("title") or ""
+                        summary = item.get("summary") or ""
+                        if len(title) < 10:
+                            score -= 20
+                        if len(summary) < 50:
+                            score -= 15
+                        if not item.get("url"):
+                            score -= 10
+
+                    # Clamp score to 0-100
+                    score = max(0, min(100, score))
+
+                    # Items < 30 are excluded
+                    is_excluded = score < 30
+                    exclusion_reason = "low_heuristic" if is_excluded else None
+
+                    # Update the item
+                    await conn.execute("""
+                        UPDATE content_items
+                        SET heuristic_score = $1,
+                            summary_excluded = $2,
+                            exclusion_reason = $3
+                        WHERE id = $4
+                    """, score, is_excluded, exclusion_reason, item["id"])
+
+                    # Record in triage_assessments for lineage
+                    await conn.execute("""
+                        INSERT INTO triage_assessments (content_item_id, assessment_type, score, details)
+                        VALUES ($1, 'heuristic', $2, $3)
+                    """, item["id"], score, json.dumps({
+                        "title_length": len(item.get("title") or ""),
+                        "summary_length": len(item.get("summary") or ""),
+                        "source": item.get("source_name"),
+                    }))
+
+                    scored += 1
+                    if is_excluded:
+                        excluded += 1
+                    else:
+                        passed += 1
+
+                logger.info(f"Heuristic triage: {scored} scored, {passed} passed, {excluded} excluded")
+
+                return {
+                    "scored": scored,
+                    "passed": passed,
+                    "excluded": excluded,
+                    "pass_rate": round(passed / scored * 100, 1) if scored > 0 else 0,
+                }
+
+        except Exception as e:
+            logger.error(f"Heuristic triage failed: {e}")
+            return {"error": str(e)}
+
+    async def _run_llm_triage(self, payload: dict) -> dict:
+        """Run LLM quality assessment on heuristic-passed content.
+
+        Uses inference endpoint to assess quality and relevance.
+        Items scoring >= 50 pass to KB write; others are excluded.
+        Also computes content_hash for duplicate detection.
+
+        Args:
+            payload: Task payload with optional:
+                - limit: Max items to process (default 50)
+
+        Returns:
+            Result dict with scored/excluded/duplicate counts
+        """
+        if not self._db_pool:
+            return {"error": "no_database"}
+
+        limit = payload.get("limit", 50)
+        logger.info(f"Running LLM triage (limit={limit})")
+        self._notify_progress(f"LLM triage: assessing up to {limit} items...")
+
+        try:
+            # Import LLM assessor from workers module
+            try:
+                from ...workers.models import ContentItem
+                from ...workers.triage import LLMTriageAssessor, TriageConfig
+                config = TriageConfig.from_env()
+                assessor = LLMTriageAssessor(config)
+                ContentItemCls = ContentItem
+            except (ImportError, Exception) as e:
+                # Fallback: skip LLM assessment, pass through
+                assessor = None
+                ContentItemCls = None
+                logger.warning(f"LLMTriageAssessor not available ({e}), using passthrough")
+
+            import hashlib
+
+            async with self._db_pool.acquire() as conn:
+                # Get items that passed heuristic but need LLM scoring
+                # Note: content is stored in Iceberg, not PostgreSQL, so we use summary instead
+                items = await conn.fetch("""
+                    SELECT ci.id, ci.title, ci.url, ci.summary, ci.metadata,
+                           ci.source_id, ci.authors, ci.published_at,
+                           ci.heuristic_score, fs.name as source_name
+                    FROM content_items ci
+                    LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                    WHERE ci.heuristic_score >= 30
+                      AND ci.llm_quality_score IS NULL
+                      AND NOT COALESCE(ci.summary_excluded, false)
+                    ORDER BY ci.heuristic_score DESC
+                    LIMIT $1
+                """, limit)
+
+                if not items:
+                    logger.info("No items need LLM scoring")
+                    return {"scored": 0, "excluded": 0, "duplicates": 0, "message": "no_items_pending"}
+
+                scored = 0
+                excluded = 0
+                passed = 0
+                duplicates = 0
+
+                for item in items:
+                    # Compute content hash for duplicate detection
+                    content_for_hash = f"{item.get('title', '')}\n{item.get('summary', '')}"
+                    content_hash = hashlib.sha256(content_for_hash.encode()).hexdigest()[:32]
+
+                    # Check for duplicate
+                    dup_row = await conn.fetchrow("""
+                        SELECT id FROM content_items
+                        WHERE content_hash = $1 AND id != $2
+                        LIMIT 1
+                    """, content_hash, item["id"])
+
+                    if dup_row:
+                        # Mark as duplicate
+                        await conn.execute("""
+                            UPDATE content_items
+                            SET llm_quality_score = 0,
+                                content_hash = $1,
+                                summary_excluded = true,
+                                exclusion_reason = 'duplicate'
+                            WHERE id = $2
+                        """, content_hash, item["id"])
+                        duplicates += 1
+                        scored += 1
+                        continue
+
+                    # LLM assessment
+                    if assessor and ContentItemCls:
+                        try:
+                            # Convert db row to ContentItem for the assessor
+                            # Note: metadata is stored as TEXT, need to parse as JSON
+                            row_dict = dict(item)
+                            if isinstance(row_dict.get("metadata"), str):
+                                try:
+                                    row_dict["metadata"] = json.loads(row_dict["metadata"])
+                                except (json.JSONDecodeError, TypeError):
+                                    row_dict["metadata"] = {}
+                            content_item = ContentItemCls.from_row(row_dict)
+                            result = await assessor.assess(content_item)
+                            score = result.get("total", 50)
+                        except Exception as e:
+                            logger.warning(f"LLM assessment failed for {item['id']}: {e}")
+                            score = 50  # Default pass on error
+                    else:
+                        # Fallback: use heuristic score adjusted slightly
+                        score = min(100, item.get("heuristic_score", 50) + 10)
+
+                    # Clamp score
+                    score = max(0, min(100, score))
+
+                    # Items < 50 are excluded
+                    is_excluded = score < 50
+                    exclusion_reason = "low_llm_quality" if is_excluded else None
+
+                    # Update the item
+                    await conn.execute("""
+                        UPDATE content_items
+                        SET llm_quality_score = $1,
+                            content_hash = $2,
+                            summary_excluded = COALESCE(summary_excluded, false) OR $3,
+                            exclusion_reason = COALESCE(exclusion_reason, $4)
+                        WHERE id = $5
+                    """, score, content_hash, is_excluded, exclusion_reason, item["id"])
+
+                    # Record in triage_assessments
+                    await conn.execute("""
+                        INSERT INTO triage_assessments (content_item_id, assessment_type, score, details)
+                        VALUES ($1, 'llm', $2, $3)
+                    """, item["id"], score, json.dumps({
+                        "heuristic_score": item.get("heuristic_score"),
+                        "content_hash": content_hash,
+                        "llm_available": assessor is not None,
+                    }))
+
+                    scored += 1
+                    if is_excluded:
+                        excluded += 1
+                    else:
+                        passed += 1
+
+                logger.info(f"LLM triage: {scored} scored, {passed} passed, {excluded} excluded, {duplicates} duplicates")
+
+                return {
+                    "scored": scored,
+                    "passed": passed,
+                    "excluded": excluded,
+                    "duplicates": duplicates,
+                    "pass_rate": round(passed / scored * 100, 1) if scored > 0 else 0,
+                }
+
+        except Exception as e:
+            logger.error(f"LLM triage failed: {e}")
+            return {"error": str(e)}
+
+    async def _run_content_processing(self, payload: dict) -> dict:
+        """Write triaged content to KB as zettelkasten notes.
+
+        Processes items that passed both heuristic and LLM triage
+        (llm_quality_score >= 50) and writes them to KB.
+
+        Args:
+            payload: Task payload with optional:
+                - limit: Max items to process (default 30)
+
+        Returns:
+            Result dict with processed count
+        """
+        if not self._db_pool:
+            return {"error": "no_database"}
+
+        limit = payload.get("limit", 30)
+        logger.info(f"Running content processing (limit={limit})")
+        self._notify_progress(f"Writing {limit} triaged items to KB...")
+
+        try:
+            import os
+            from pathlib import Path
+            from datetime import datetime
+
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+
+            async with self._db_pool.acquire() as conn:
+                # Get items ready for KB write
+                items = await conn.fetch("""
+                    SELECT ci.*, fs.name as source_name
+                    FROM content_items ci
+                    LEFT JOIN feed_sources fs ON ci.source_id = fs.id
+                    WHERE ci.llm_quality_score >= 50
+                      AND ci.processed_at IS NULL
+                      AND NOT COALESCE(ci.summary_excluded, false)
+                    ORDER BY ci.llm_quality_score DESC
+                    LIMIT $1
+                """, limit)
+
+                if not items:
+                    logger.info("No items ready for KB write")
+                    return {"processed": 0, "message": "no_items_pending"}
+
+                processed = 0
+                errors = 0
+
+                for item in items:
+                    try:
+                        # Generate KB path: current/content/{source}/{date}/{slug}.md
+                        source_name = (item.get("source_name") or "unknown").lower()
+                        source_name = "".join(c if c.isalnum() or c == "-" else "_" for c in source_name)
+
+                        title = item.get("title") or "untitled"
+                        slug = "".join(c if c.isalnum() or c in "-_ " else "" for c in title.lower())
+                        slug = "-".join(slug.split())[:60]
+
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        timestamp = datetime.now().strftime("%H%M%S")
+                        kb_path = f"current/content/{source_name}/{today}/{timestamp}_{slug}.md"
+
+                        full_path = kb_root / kb_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+                        # Generate markdown content
+                        lines = [f"# {title}", ""]
+
+                        # Frontmatter
+                        lines.append("---")
+                        if item.get("url"):
+                            lines.append(f"url: {item['url']}")
+                        if item.get("authors"):
+                            authors = item["authors"]
+                            if isinstance(authors, list):
+                                lines.append(f"authors: {', '.join(authors)}")
+                        if item.get("published_at"):
+                            lines.append(f"published: {item['published_at'].isoformat()}")
+                        lines.append(f"source: {source_name}")
+                        lines.append(f"heuristic_score: {item.get('heuristic_score', 0)}")
+                        lines.append(f"llm_quality_score: {item.get('llm_quality_score', 0)}")
+                        lines.append(f"fetched: {item.get('fetched_at').isoformat() if item.get('fetched_at') else 'unknown'}")
+                        lines.append("---")
+                        lines.append("")
+
+                        # Summary
+                        if item.get("summary"):
+                            lines.extend(["## Summary", "", item["summary"], ""])
+
+                        # Content (truncated if very long)
+                        if item.get("content"):
+                            content = item["content"]
+                            if len(content) > 10000:
+                                content = content[:10000] + "\n\n[Content truncated]"
+                            lines.extend(["## Content", "", content, ""])
+
+                        # Write file
+                        full_path.write_text("\n".join(lines))
+
+                        # Update database
+                        await conn.execute("""
+                            UPDATE content_items
+                            SET processed_at = NOW(), kb_path = $1
+                            WHERE id = $2
+                        """, kb_path, item["id"])
+
+                        # Log activity event
+                        await conn.execute("""
+                            INSERT INTO activity_events (event_type, domain, details)
+                            VALUES ('kb_create', $1, $2)
+                        """, source_name, json.dumps({
+                            "content_item_id": item["id"],
+                            "kb_path": kb_path,
+                            "title": title[:100],
+                            "llm_quality_score": item.get("llm_quality_score"),
+                        }))
+
+                        processed += 1
+
+                    except Exception as e:
+                        logger.error(f"Failed to process item {item.get('id')}: {e}")
+                        errors += 1
+
+                logger.info(f"Content processing: {processed} written to KB, {errors} errors")
+
+                # Emit activity event for pipeline monitoring
+                self._emit_activity_event(
+                    event_type="pipeline",
+                    source="content_processing",
+                    title=f"Wrote {processed} items to KB",
+                    summary=f"Processed {processed} triaged content items",
+                )
+
+                return {
+                    "processed": processed,
+                    "errors": errors,
+                }
+
+        except Exception as e:
+            logger.error(f"Content processing failed: {e}")
+            return {"error": str(e)}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Long-Term Evolution Task Handlers
@@ -550,37 +1052,34 @@ class CognitionService:
             Result dict with cycles run and results
         """
         try:
-            from ...agents.evolution import get_evolution_daemon
+            # Use engine-native evolution logic (no L5 agent imports)
+            from .cognition_logic import process_evolution_cycle
 
-            daemon = get_evolution_daemon()
             agents = payload.get("agents", ["leader", "risk", "critic", "opportunity", "domain"])
             source = payload.get("source", "scheduled")
 
             logger.info(f"Starting evolution cycle for {len(agents)} agents (source={source})")
             self._notify_progress(f"Running evolution for {len(agents)} agents...")
 
-            results = []
-            for agent_id in agents:
-                try:
-                    result = await daemon.force_evolution_cycle(agent_id)
-                    results.append({
-                        "agent_id": agent_id,
-                        "success": result.success if hasattr(result, 'success') else True,
-                        "improvement": getattr(result, 'improvement_percent', 0.0),
-                    })
-                except Exception as e:
-                    logger.error(f"Evolution cycle failed for {agent_id}: {e}")
-                    results.append({
-                        "agent_id": agent_id,
-                        "success": False,
-                        "error": str(e),
-                    })
+            result = await process_evolution_cycle(
+                db_pool=self._db_pool,
+                payload={
+                    "agents": agents,
+                    "source": source,
+                },
+            )
 
-            successful = sum(1 for r in results if r.get("success", False))
+            # Emit streaming event
+            self._emit_evolution_event(
+                "CYCLE_END" if result.success else "ERROR",
+                agent_id=agents[0] if agents else "",
+                details=f"Processed {result.agents_processed} agents, {result.successful} successful",
+            )
+
             return {
-                "cycles_run": len(results),
-                "successful": successful,
-                "results": results,
+                "cycles_run": result.agents_processed,
+                "successful": result.successful,
+                "results": result.results,
             }
 
         except Exception as e:
@@ -597,28 +1096,28 @@ class CognitionService:
             Result dict with drafts generated
         """
         try:
-            from ...agents.evolution import get_task_ideation_agent
+            # Use engine-native task ideation (no L5 agent imports)
+            from .cognition_logic import process_task_ideation
 
-            agent = get_task_ideation_agent()
             max_concepts = payload.get("max_concepts", 5)
             novelty_threshold = payload.get("novelty_threshold", 0.4)
 
             logger.info(f"Running task ideation (max_concepts={max_concepts})")
             self._notify_progress("Generating task concepts...")
 
-            drafts = await agent.ideate(
-                max_concepts=max_concepts,
-                novelty_threshold=novelty_threshold,
+            result = await process_task_ideation(
+                db_pool=self._db_pool,
+                payload={
+                    "max_concepts": max_concepts,
+                    "novelty_threshold": novelty_threshold,
+                },
             )
 
             return {
-                "drafts_generated": len(drafts) if drafts else 0,
-                "names": [d.name for d in drafts] if drafts else [],
+                "drafts_generated": result.drafts_generated,
+                "names": result.task_names,
             }
 
-        except ImportError:
-            logger.warning("Task ideation agent not available")
-            return {"error": "task_ideation_agent_not_available"}
         except Exception as e:
             logger.error(f"Task ideation failed: {e}")
             return {"error": str(e)}
@@ -633,41 +1132,28 @@ class CognitionService:
             Result dict with merge results
         """
         try:
-            from ...agents.evolution import get_merge_coordinator
+            # Use engine-native model merge (no L5 agent imports)
+            from .cognition_logic import process_model_merge
 
-            coordinator = get_merge_coordinator()
             agents = payload.get("agents")  # None = all agents
 
             logger.info(f"Running model merge (agents={agents or 'all'})")
             self._notify_progress("Running model merging...")
 
             if agents is None:
-                # Get all agents from config
                 agents = ["leader", "risk", "critic", "opportunity", "domain"]
 
-            results = {}
-            for agent_id in agents:
-                try:
-                    result = await coordinator.run_merge_cycle(agent_id)
-                    results[agent_id] = {
-                        "success": result.success,
-                        "merged_model_id": result.merged_model_id,
-                        "method": result.merge_method,
-                        "improvement_percent": result.improvement_percent,
-                    }
-                except Exception as e:
-                    logger.error(f"Merge failed for {agent_id}: {e}")
-                    results[agent_id] = {"success": False, "error": str(e)}
+            result = await process_model_merge(
+                db_pool=self._db_pool,
+                payload={"agents": agents},
+            )
 
             return {
-                "agents_processed": len(results),
-                "successful": sum(1 for r in results.values() if r.get("success")),
-                "results": results,
+                "agents_processed": result.agents_processed,
+                "successful": result.successful,
+                "results": result.results,
             }
 
-        except ImportError:
-            logger.warning("Merge coordinator not available")
-            return {"error": "merge_coordinator_not_available"}
         except Exception as e:
             logger.error(f"Model merge failed: {e}")
             return {"error": str(e)}
@@ -718,16 +1204,18 @@ class CognitionService:
             # Get evaluator for scoring
             evaluator = get_daily_evaluator()
 
-            # Run evaluation
+            # Run evaluation for this specific agent
             # Note: Full model loading requires orchestrator integration.
             # For now, we use the evaluator with the current agent config
             # and record that evaluation was attempted.
-            eval_result = await evaluator.evaluate_agent(
-                agent_id=agent_id,
+            eval_result = await evaluator.run_daily_evaluation(
+                agents=[agent_id],
                 sample_size=len(queries),
             )
 
-            merged_score = eval_result.avg_score if eval_result else 0.0
+            # Extract score from the summary for this agent
+            agent_summary = eval_result.agent_summaries.get(agent_id)
+            merged_score = agent_summary.held_out_score if agent_summary else 0.0
             improvement = (
                 (merged_score - baseline_score) / baseline_score * 100
                 if baseline_score > 0 else 0.0
@@ -782,31 +1270,31 @@ class CognitionService:
             Result dict with summary info
         """
         try:
-            # Try to use daily summary agent with extended period
-            from ...agents.daily_summary import get_daily_summary_agent
+            # Use engine-native daily summary (no L5 agent imports)
+            from .cognition_logic import process_daily_summary
 
-            agent = get_daily_summary_agent()
             use_llm = payload.get("use_llm", True)
             write_to_kb = payload.get("write_to_kb", True)
 
             logger.info("Generating weekly summary")
             self._notify_progress("Generating weekly summary...")
 
-            summary = await agent.generate_summary(
-                days=7,
-                use_llm=use_llm,
-                write_to_kb=write_to_kb,
+            result = await process_daily_summary(
+                db_pool=self._db_pool,
+                payload={
+                    "days": 7,
+                    "use_llm": use_llm,
+                    "write_to_kb": write_to_kb,
+                },
             )
 
             return {
                 "period": "weekly",
-                "kb_entries": summary.metrics.get("kb_entries", 0) if summary.metrics else 0,
-                "queries": summary.metrics.get("queries", 0) if summary.metrics else 0,
+                "kb_entries": result.kb_entries,
+                "queries": result.queries,
+                "kb_path": result.kb_path,
             }
 
-        except ImportError:
-            logger.warning("Daily summary agent not available")
-            return {"error": "daily_summary_agent_not_available"}
         except Exception as e:
             logger.error(f"Weekly summary failed: {e}")
             return {"error": str(e)}
@@ -1076,7 +1564,8 @@ class CognitionService:
 
         # Import inference components
         try:
-            from ...inference import get_client, get_search, Message
+            from gaius.client import get_grpc_client
+            from ...inference import get_search
         except ImportError:
             # Fallback for minimal functionality
             logger.warning("Inference module not available, skipping synthesis")
@@ -1134,7 +1623,7 @@ class CognitionService:
             )
 
         # Synthesize with LLM
-        client = get_client()
+        client = await get_grpc_client()
         synthesis_prompt = f"""Research Thread: {topic}
 Domain: {domain}
 Current Focus: {thread_data.get('current_focus', next_steps)}
@@ -1161,18 +1650,18 @@ SUMMARY:
 Your summary note content"""
 
         try:
-            synthesis = await client.complete(
-                messages=[
-                    Message(
-                        role="system",
-                        content=f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
-                    ),
-                    Message(role="user", content=synthesis_prompt),
-                ],
-                technique="cot_reflection",
-                max_tokens=2048,
+            synthesis = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": synthesis_prompt,
+                    "system_prompt": f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
+                    "agent": "instruct",
+                    "technique": "cot_reflection",
+                    "max_tokens": 2048,
+                },
             )
-            synthesis_content = synthesis.content
+            synthesis_content = synthesis.get("content", "")
         except Exception as e:
             logger.warning(f"Synthesis failed for thread {thread_id}: {e}")
             synthesis_content = f"Sources found but synthesis failed: {e}\n\nSources:\n{sources_text}"
@@ -1300,24 +1789,25 @@ Your summary note content"""
             Result dict with computation status
         """
         try:
-            from ...core.projection import GridProjection
+            from ...core.projection import GridProjector
 
             logger.info("Running TDA computation")
             self._notify_progress("Recomputing grid projections...")
 
-            projection = GridProjection()
-            # Check if recompute method exists
+            projection = GridProjector()
+            # Duck-type check for optional methods - GridProjector may be extended
+            # type: ignore[call-non-callable] - hasattr guards ensure method exists
             if hasattr(projection, 'recompute'):
-                await projection.recompute()
+                await projection.recompute()  # type: ignore[call-non-callable] - hasattr guard ensures method exists
                 return {"status": "completed"}
             elif hasattr(projection, 'project_all'):
-                await projection.project_all()
+                await projection.project_all()  # type: ignore[call-non-callable] - hasattr guard ensures method exists
                 return {"status": "completed"}
             else:
                 return {"status": "skipped", "reason": "no_recompute_method"}
 
         except ImportError:
-            logger.warning("GridProjection not available")
+            logger.warning("GridProjector not available")
             return {"error": "grid_projection_not_available"}
         except Exception as e:
             logger.error(f"TDA computation failed: {e}")
@@ -1336,14 +1826,18 @@ Your summary note content"""
             from ...agents.evolution import get_held_out_manager
 
             manager = get_held_out_manager()
-            sample_size = payload.get("sample_size", 100)
 
-            logger.info(f"Refreshing held-out pool (sample_size={sample_size})")
-            self._notify_progress("Refreshing held-out evaluation pool...")
+            logger.info("Getting held-out pool stats")
+            self._notify_progress("Getting held-out pool statistics...")
 
-            count = await manager.refresh_pool(sample_size=sample_size)
+            # Get current pool statistics
+            stats = await manager.get_stats()
 
-            return {"queries_refreshed": count}
+            return {
+                "total_queries": stats.get("total", 0),
+                "available_queries": stats.get("available", 0),
+                "domains": stats.get("domains", {}),
+            }
 
         except ImportError:
             logger.warning("Held-out manager not available")
@@ -1591,7 +2085,7 @@ Your summary note content"""
         gpu = metrics.get("gpu", {})
         if gpu.get("temperature_c", 0) > 80:
             anomalies.append(f"High GPU temperature: {gpu['temperature_c']}°C")
-        if gpu.get("memory_used_pct", 0) > 95:
+        if gpu.get("memory_used_pct", 0) > 98:
             anomalies.append(f"GPU memory nearly full: {gpu['memory_used_pct']}%")
 
         return anomalies
@@ -1671,7 +2165,8 @@ Your summary note content"""
 
         if task_type == "cognition_cycle":
             payload.setdefault("trigger", "manual")
-            return await self._run_cognition_cycle(payload)
+            # Manual triggers bypass rate limiting
+            return await self._run_cognition_cycle(payload, bypass_rate_limit=True)
         elif task_type == "engine_audit":
             return await self._run_engine_audit(payload)
         elif task_type == "delta_check":
@@ -1797,7 +2292,344 @@ Your summary note content"""
             logger.error(f"Failed to get completed tasks: {e}")
             return []
 
+    async def get_recent_thoughts(self, limit: int = 10) -> list[dict]:
+        """Get recent thoughts from the cognition_thoughts table.
+
+        Args:
+            limit: Maximum thoughts to return
+
+        Returns:
+            List of thought dicts with id, title, content, thought_type, etc.
+        """
+        if not self._db_pool:
+            return []
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, title, content, thought_type, salience,
+                           generation, note_path, created_at
+                    FROM cognition_thoughts
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+                return [dict(row) for row in rows]
+
+        except Exception as e:
+            logger.error(f"Failed to get recent thoughts: {e}")
+            return []
+
     @property
     def is_running(self) -> bool:
-        """Whether daemon is running."""
+        """Whether daemon is running (BaseDaemon protocol)."""
         return self._running
+
+    async def health_check(self) -> DaemonHealth:
+        """Check daemon health (BaseDaemon protocol).
+
+        Returns:
+            DaemonHealth with status and diagnostics
+        """
+        if not self._running:
+            return DaemonHealth(
+                healthy=False,
+                message="Cognition daemon not running",
+                guru_code="#COG.00000001.NOTRUNNING",
+                details={
+                    "running": False,
+                    "cycles_completed": self._cycles_completed,
+                },
+            )
+
+        # Check if daemon task is alive
+        if self._daemon_task and self._daemon_task.done():
+            try:
+                exc = self._daemon_task.exception()
+                return DaemonHealth(
+                    healthy=False,
+                    message=f"Cognition daemon task crashed: {exc}",
+                    guru_code="#COG.00000003.CRASHED",
+                    details={
+                        "running": False,
+                        "exception": str(exc),
+                        "cycles_completed": self._cycles_completed,
+                    },
+                )
+            except Exception:
+                pass
+
+        # Check if processing is stalled (no task processed in 10x poll interval)
+        if self._last_cycle_at:
+            stall_threshold = self.config.poll_interval_seconds * 10
+            since_last_cycle = (datetime.now() - self._last_cycle_at).total_seconds()
+            if since_last_cycle > stall_threshold:
+                return DaemonHealth(
+                    healthy=False,
+                    message=f"Cognition processing stalled ({since_last_cycle:.0f}s since last cycle)",
+                    guru_code="#COG.00000004.STALLED",
+                    details={
+                        "running": True,
+                        "seconds_since_last_cycle": since_last_cycle,
+                        "cycles_completed": self._cycles_completed,
+                        "current_task": str(self._current_task) if self._current_task else None,
+                    },
+                )
+
+        return DaemonHealth(
+            healthy=True,
+            message=f"Cognition daemon running, {self._cycles_completed} cycles completed",
+            details={
+                "running": True,
+                "cycles_completed": self._cycles_completed,
+                "tasks_processed": self._tasks_processed,
+                "current_task": self._current_task.get("task_type") if self._current_task else None,
+            },
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Streaming Subscriptions (TUI Real-time Updates)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def subscribe_cognition(
+        self,
+        buffer_size: int = 100,
+    ):
+        """Subscribe to cognition events.
+
+        Yields CognitionEvent-like dicts for streaming to TUI/MCP clients.
+
+        Args:
+            buffer_size: Maximum events to buffer
+
+        Yields:
+            Event dicts matching CognitionEvent proto structure
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._cognition_subscribers.append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+        finally:
+            self._cognition_subscribers.remove(queue)
+
+    async def subscribe_evolution(
+        self,
+        buffer_size: int = 100,
+        agent_filter: str = "",
+    ):
+        """Subscribe to evolution events.
+
+        Yields EvolutionEvent-like dicts for streaming to TUI/MCP clients.
+
+        Args:
+            buffer_size: Maximum events to buffer
+            agent_filter: Only events for this agent (empty = all)
+
+        Yields:
+            Event dicts matching EvolutionEvent proto structure
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._evolution_subscribers.append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                # Filter by agent if specified
+                if agent_filter and event.get("agent_id") != agent_filter:
+                    continue
+                yield event
+        finally:
+            self._evolution_subscribers.remove(queue)
+
+    async def subscribe_activity(
+        self,
+        buffer_size: int = 100,
+        domains: Optional[list[str]] = None,
+    ):
+        """Subscribe to all activity events.
+
+        Yields ActivityEvent-like dicts for unified activity stream.
+
+        Args:
+            buffer_size: Maximum events to buffer
+            domains: Filter by domains (None = all)
+
+        Yields:
+            Event dicts matching ActivityEvent proto structure
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._activity_subscribers.append(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                # Filter by domain if specified
+                if domains and event.get("domain") not in domains:
+                    continue
+                yield event
+        finally:
+            self._activity_subscribers.remove(queue)
+
+    def _emit_cognition_event(
+        self,
+        event_type: str,
+        thought_id: str = "",
+        thought_type: str = "",
+        title: str = "",
+        summary: str = "",
+        salience: float = 0.0,
+        generation: int = 0,
+        error: str = "",
+    ) -> None:
+        """Emit a cognition event to all subscribers.
+
+        Non-blocking - drops if subscriber queues are full.
+
+        Args:
+            event_type: Event type (CYCLE_START, THOUGHT, etc.)
+            thought_id: UUID of thought
+            thought_type: "pattern", "connection", etc.
+            title: Thought title
+            summary: Brief summary
+            salience: Importance score 0.0-1.0
+            generation: Thought generation number
+            error: Error message if type=ERROR
+        """
+        import time
+
+        event = {
+            "type": event_type,
+            "timestamp_ms": int(time.time() * 1000),
+            "thought_id": thought_id,
+            "thought_type": thought_type,
+            "title": title,
+            "summary": summary[:200] if summary else "",  # Truncate for streaming
+            "salience": salience,
+            "generation": generation,
+            "cycle_id": self._current_cycle_id or "",
+            "thoughts_in_cycle": self._cycles_completed,
+            "error": error,
+        }
+
+        for queue in self._cognition_subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+        # Also emit to activity stream
+        self._emit_activity_event(
+            event_type="cognition",
+            source="cognition_service",
+            title=title or event_type,
+            summary=summary,
+            data=event,
+        )
+
+    def _emit_evolution_event(
+        self,
+        event_type: str,
+        agent_id: str = "",
+        version_id: str = "",
+        score: float = 0.0,
+        improvement_pct: float = 0.0,
+        details: str = "",
+        merge_id: str = "",
+        error: str = "",
+    ) -> None:
+        """Emit an evolution event to all subscribers.
+
+        Non-blocking - drops if subscriber queues are full.
+
+        Args:
+            event_type: Event type (CYCLE_START, EVALUATION_DONE, etc.)
+            agent_id: Agent being evolved
+            version_id: Version being evaluated/promoted
+            score: Evaluation score 0.0-1.0
+            improvement_pct: Improvement percentage
+            details: Human-readable details
+            merge_id: Merge ID for merge events
+            error: Error message if type=ERROR
+        """
+        import time
+
+        event = {
+            "type": event_type,
+            "timestamp_ms": int(time.time() * 1000),
+            "agent_id": agent_id,
+            "version_id": version_id,
+            "score": score,
+            "improvement_pct": improvement_pct,
+            "details": details,
+            "cycle_number": self._cycles_completed,
+            "merge_id": merge_id,
+            "error": error,
+        }
+
+        for queue in self._evolution_subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+        # Also emit to activity stream
+        self._emit_activity_event(
+            event_type="evolution",
+            source="cognition_service",
+            title=f"{event_type}: {agent_id}" if agent_id else event_type,
+            summary=details,
+            data=event,
+        )
+
+    def _emit_activity_event(
+        self,
+        event_type: str,
+        source: str,
+        title: str,
+        summary: str = "",
+        domain: str = "",
+        data: Optional[dict] = None,
+    ) -> None:
+        """Emit a unified activity event to all subscribers.
+
+        Non-blocking - drops if subscriber queues are full.
+
+        Args:
+            event_type: "cognition", "evolution", "system", "kb"
+            source: Service that generated event
+            title: Brief title
+            summary: Human-readable summary
+            domain: Domain context
+            data: Full event data
+        """
+        import time
+
+        event = {
+            "event_type": event_type,
+            "timestamp_ms": int(time.time() * 1000),
+            "source": source,
+            "domain": domain,
+            "title": title,
+            "summary": summary[:500] if summary else "",
+            "data": json.dumps(data) if data else "{}",
+        }
+
+        for queue in self._activity_subscribers:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # Drop if subscriber is slow
+
+    @property
+    def subscriber_counts(self) -> dict[str, int]:
+        """Get count of active subscribers by type."""
+        return {
+            "cognition": len(self._cognition_subscribers),
+            "evolution": len(self._evolution_subscribers),
+            "activity": len(self._activity_subscribers),
+        }

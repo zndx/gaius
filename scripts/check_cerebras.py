@@ -9,7 +9,7 @@ chat_completion = client.chat.completions.create(
   messages=[
   {"role": "user", "content": "Why is fast inference important?",}
 ],
-  model="zai-glm-4.6",
+  model="zai-glm-4.7",
 )
 print(chat_completion)
 

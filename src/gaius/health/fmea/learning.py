@@ -7,7 +7,8 @@ to improve RPN accuracy over time.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .models import RPNScore
 
@@ -15,6 +16,24 @@ if TYPE_CHECKING:
     from asyncpg import Connection, Pool
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _get_connection(
+    pool: "Pool | None", conn: "Connection | None"
+) -> AsyncIterator["Connection"]:
+    """Get a database connection from pool or use existing one."""
+    if conn is not None:
+        yield conn
+    elif pool is not None:
+        async with pool.acquire() as new_conn:
+            yield new_conn
+    else:
+        raise RuntimeError(
+            "No database connection available.\n"
+            "  Guru Meditation: #FMEA.00000002.NO_DB_LEARNING\n"
+            "  Ensure pool is initialized or connection is provided."
+        )
 
 
 class AdaptiveLearner:
@@ -163,7 +182,7 @@ class AdaptiveLearner:
         if not self._pool and not conn:
             return
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             await c.execute(
                 """
                 INSERT INTO fmea_adjustments (
@@ -215,7 +234,7 @@ class AdaptiveLearner:
         if not self._pool and not conn:
             return {}
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             rows = await c.fetch(
                 """
                 SELECT
@@ -256,7 +275,7 @@ class AdaptiveLearner:
         if not self._pool and not conn:
             return 0
 
-        async with (conn or self._pool.acquire()) as c:
+        async with _get_connection(self._pool, conn) as c:
             if failure_mode_id:
                 result = await c.execute(
                     "DELETE FROM fmea_adjustments WHERE failure_mode_id = $1",

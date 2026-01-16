@@ -14,7 +14,7 @@ This is the primary transport for gaius-engine, designed to:
 import asyncio
 import logging
 from concurrent import futures
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import grpc
@@ -69,6 +69,27 @@ class ServiceRegistry:
     # Dataset service for NiFi SoM/ToM generation
     dataset_service: Any = None
 
+    # Topology service for temporal dynamics tracking
+    topology_service: Any = None
+
+    # Health service for basic metrics
+    health_service: Any = None
+
+    # Health observer service for autonomous FMEA monitoring + ACP
+    health_observer_service: Any = None
+
+    # X Bookmarks service for syncing X/Twitter bookmarks to KB
+    x_bookmarks_service: Any = None
+
+    # Prospects/Stewardship service for FMP-based intelligence
+    prospects_service: Any = None
+
+    # Ambient computing workload service
+    ambient_service: Any = None
+
+    # Embedding service for semantic search
+    embedding_service: Any = None
+
     # Engine config
     config: Any = None
 
@@ -106,6 +127,7 @@ class GrpcServer:
         orchestrator_service: Any = None,
         cognition_service: Any = None,
         dataset_service: Any = None,
+        topology_service: Any = None,
         config: Any = None,
         start_time: Optional[float] = None,
         get_health_metrics: Optional[Callable] = None,
@@ -122,6 +144,7 @@ class GrpcServer:
             orchestrator_service: OrchestratorService for endpoint management
             cognition_service: CognitionService for thought generation
             dataset_service: DatasetService for NiFi SoM/ToM generation
+            topology_service: TopologyService for temporal dynamics tracking
             config: EngineConfig instance
             start_time: Engine start timestamp
             get_health_metrics: Callback to get current health metrics
@@ -135,6 +158,7 @@ class GrpcServer:
         self._services.orchestrator_service = orchestrator_service
         self._services.cognition_service = cognition_service
         self._services.dataset_service = dataset_service
+        self._services.topology_service = topology_service
         self._services.config = config
         self._services.start_time = start_time
         self._services.get_health_metrics = get_health_metrics

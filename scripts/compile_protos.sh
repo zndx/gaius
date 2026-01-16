@@ -53,8 +53,24 @@ for file in "$OUTPUT_DIR"/*_pb2_grpc.py; do
     fi
 done
 
-# Create __init__.py for the generated package
-cat > "$OUTPUT_DIR/__init__.py" << 'EOF'
+# Check if __init__.py has manual edits (look for sections not in base template)
+INIT_FILE="$OUTPUT_DIR/__init__.py"
+PRESERVE_INIT=false
+
+if [[ -f "$INIT_FILE" ]]; then
+    # If __init__.py contains Workload, Embeddings, or SemanticSearch sections,
+    # it has been manually extended and should be preserved
+    if grep -q "# Workload\|# Embeddings\|# Semantic Search\|# Dataset Service" "$INIT_FILE" 2>/dev/null; then
+        echo "Note: Preserving existing $INIT_FILE (contains extended exports)"
+        PRESERVE_INIT=true
+    fi
+fi
+
+if [[ "$PRESERVE_INIT" == "false" ]]; then
+    # Create __init__.py for the generated package (base template)
+    # If you add new proto messages, update this file manually or regenerate
+    echo "Creating base __init__.py (add new exports manually after proto updates)"
+    cat > "$INIT_FILE" << 'EOF'
 """Generated gRPC/Protobuf bindings for Gaius Engine.
 
 This package contains:
@@ -214,6 +230,7 @@ __all__ = [
     "add_GaiusServiceServicer_to_server",
 ]
 EOF
+fi
 
 echo "Done! Generated files in $OUTPUT_DIR"
 ls -la "$OUTPUT_DIR"

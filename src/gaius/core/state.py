@@ -122,6 +122,16 @@ class InitializationState:
     error: Optional[str] = None
     connected: bool = False  # True when gRPC connection established
 
+    # XB Queue status (updated by InitPanel polling)
+    xb_queue_depth: int = 0
+    xb_cooldown_end: Optional[datetime] = None  # UTC datetime when cooldown ends
+    xb_can_request: bool = True
+
+    # XB Auth status (fetched alongside queue status)
+    xb_authenticated: bool = False
+    xb_username: str = ""
+    xb_action_required: str = ""  # "NOT_AUTHENTICATED", "TOKEN_EXPIRED", etc.
+
 
 @dataclass
 class AppState:
@@ -175,6 +185,15 @@ class AppState:
 
     # Agent positions (list of (name, x, y, color))
     agent_positions: list = field(default_factory=list)
+
+    # Agent exploration traces (dict of agent_name -> list of (x, y) positions)
+    # Used for visualizing CLT-based exploration trajectories in swarm mode
+    # Most recent position is first in the list
+    agent_traces: dict = field(default_factory=dict)
+
+    # ThetaAgent attention targets (list of (id, x, y, color))
+    # Used by THETA view mode to overlay attention schema
+    theta_targets: list = field(default_factory=list)
 
     # Center panel mode (graph/think/none)
     center_panel_mode: CenterPanelMode = CenterPanelMode.GRAPH

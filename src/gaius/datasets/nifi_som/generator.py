@@ -50,7 +50,7 @@ class NiFiSoMGenerator:
     def __init__(
         self,
         nifi_url: str = "http://localhost:8450",
-        output_dir: Path = None,
+        output_dir: Path | None = None,
         storage_backend: str = "filesystem",
         dataset_id: str = "nifi-som-v1",
         dataset_version: str = "1.0.0",
@@ -269,7 +269,7 @@ class NiFiSoMGenerator:
         flow_name: str,
         steps: list[str],
         capture_screenshot: bool = True,
-    ) -> list[DatasetExample]:
+    ) -> list[DatasetExample | TraceExample]:
         """Generate Set-of-Mark examples (single image per example)."""
         # Sync flow to NiFi (creates process group with processors)
         pg_id = await self.nifi.sync_flow(flow_name, steps)
@@ -348,7 +348,7 @@ class NiFiSoMGenerator:
         flow_name: str,
         steps: list[str],
         capture_screenshot: bool = True,
-    ) -> list[TraceExample]:
+    ) -> list[DatasetExample | TraceExample]:
         """Generate Trace-of-Mark examples (multi-frame with trajectory)."""
         # Sync flow to NiFi
         pg_id = await self.nifi.sync_flow(flow_name, steps)
@@ -560,7 +560,7 @@ class NiFiSoMGenerator:
     async def run(
         self,
         use_database: bool = False,
-        flows: list[dict] = None,
+        flows: list[dict] | None = None,
         export: bool = True,
     ) -> list[DatasetExample]:
         """Run the full generation pipeline.
@@ -616,7 +616,9 @@ class NiFiSoMGenerator:
                 dataset_id=self.dataset_id,
                 dataset_version=self.dataset_version,
             )
-            exporter.export(examples)
+            # Cast to union type for exporter (list invariance workaround)
+            export_examples: list[DatasetExample | TraceExample] = list(examples)
+            exporter.export(export_examples)
 
         # Export calibration results to Iceberg if requested
         if self.export_calibration and self._calibration_results:
@@ -878,8 +880,9 @@ async def main():
     total_frames = 0
     if args.mode == "tom":
         for ex in examples:
-            if hasattr(ex, "frames"):
-                total_frames += len(ex.frames)
+            frames = getattr(ex, "frames", None)
+            if frames is not None:
+                total_frames += len(frames)
 
     print(f"\nGenerated {len(examples)} examples")
     if args.mode == "tom" and total_frames:

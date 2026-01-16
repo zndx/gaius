@@ -22,7 +22,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Re-export common types for backwards compatibility
-from .client import Message, CompletionResult
+from .client import Message
+from ..client.engine_proxy import CompletionResult
 
 
 @dataclass
@@ -101,6 +102,11 @@ class EngineInferenceClient:
                 "Start with: devenv processes up"
             )
 
+        # Type narrowing: _ensure_connection guarantees scheduler is set
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("Scheduler unexpectedly None after connection")
+
         # Extract system prompt and user prompt from messages
         system_prompt = None
         user_prompt = ""
@@ -114,11 +120,11 @@ class EngineInferenceClient:
                 # For multi-turn, append to user prompt as context
                 user_prompt += f"\nAssistant: {msg.content}\n"
 
-        # Default to fast model if not specified
-        agent = model or "fast"
+        # Default to instruct model if not specified
+        agent = model or "instruct"
 
         # Route through scheduler
-        result = await self._scheduler.complete(
+        result = await scheduler.complete(
             prompt=user_prompt,
             agent=agent,
             system_prompt=system_prompt,
@@ -181,7 +187,11 @@ class EngineInferenceClient:
         if not await self._ensure_connection():
             raise RuntimeError("Cannot connect to Gaius Engine")
 
-        return await self._scheduler.evaluate(prompt, force_xai=force_xai)
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("Scheduler unexpectedly None after connection")
+
+        return await scheduler.evaluate(prompt, force_xai=force_xai)
 
     async def run_swarm(
         self,
@@ -196,7 +206,7 @@ class EngineInferenceClient:
             query: Query to analyze
             domain: Domain context
             num_agents: Number of agents
-            context: Additional context
+            context: Additional context (if empty, query is used)
 
         Returns:
             Tuple of (result_dict, saved_path)
@@ -204,11 +214,20 @@ class EngineInferenceClient:
         if not await self._ensure_connection():
             raise RuntimeError("Cannot connect to Gaius Engine")
 
-        return await self._scheduler.run_swarm(
-            query=query,
-            domain=domain,
-            num_agents=num_agents,
-            context=context,
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("Scheduler unexpectedly None after connection")
+
+        # Import AgentRole to determine role subset
+        from ..agents.roles import AgentRole
+
+        all_roles = [r.value for r in AgentRole]
+        roles = all_roles[:num_agents] if num_agents < len(all_roles) else None
+
+        return await scheduler.run_swarm(
+            domain=domain or query,
+            context=context or query,
+            roles=roles,
         )
 
     async def close(self) -> None:

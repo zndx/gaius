@@ -8,8 +8,10 @@ Provides 4-level escalating recovery for failed endpoints:
 
 Usage:
     from gaius.inference.recovery import RecoveryManager, RecoveryLevel
+    from gaius.client.engine_proxy import get_orchestrator_proxy
 
-    manager = RecoveryManager(orchestrator)
+    proxy = await get_orchestrator_proxy()
+    manager = RecoveryManager(proxy)
     level = manager.determine_recovery_level(failures=3, error=None)
     success = await manager.execute_recovery(endpoint, level)
 """
@@ -17,13 +19,38 @@ Usage:
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 import asyncio
 import logging
 import re
 
 if TYPE_CHECKING:
-    from .orchestrator import GPUOrchestrator
+    from ..client.engine_proxy import OrchestratorProxy
+
+
+class OrchestratorProtocol(Protocol):
+    """Protocol for orchestrator interface used by RecoveryManager.
+
+    Defines the minimal interface needed for endpoint recovery.
+    Works with both OrchestratorProxy (client-side) and OrchestratorService (engine-side).
+    """
+
+    async def health_check(self, endpoint: str) -> bool:
+        """Check if endpoint is healthy."""
+        ...
+
+    async def stop_endpoint(self, endpoint: str, timeout: float = 30.0) -> bool:
+        """Stop an endpoint."""
+        ...
+
+    async def start_endpoint(self, endpoint: str) -> Any:
+        """Start an endpoint. Returns bool (proxy) or EndpointStatus (service)."""
+        ...
+
+    async def get_endpoint_status(self, endpoint: str) -> Any:
+        """Get endpoint status."""
+        ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +108,16 @@ FATAL_ERRORS = {
 
 
 class RecoveryManager:
-    """Manages endpoint recovery with escalating strategies."""
+    """Manages endpoint recovery with escalating strategies.
+
+    Works with any orchestrator that implements OrchestratorProtocol:
+    - OrchestratorProxy (client-side, via gRPC)
+    - OrchestratorService (engine-side, direct)
+    """
 
     def __init__(
         self,
-        orchestrator: "GPUOrchestrator",
+        orchestrator: OrchestratorProtocol,
         max_attempts_per_level: int = 2,
         cooldown_seconds: float = 5.0,
     ):
@@ -266,24 +298,25 @@ class RecoveryManager:
         """Level 4: Failover - disable endpoint and alert.
 
         Actions:
-        - Mark endpoint as failed
         - Stop process if running
         - Log critical alert
-        - Could redistribute jobs to other endpoints
+        - Engine marks status as FAILED on repeated stop
+
+        Note: Status mutation happens in orchestrator service,
+        not client-side. Stopping repeatedly marks as failed.
         """
         logger.critical(
             f"FAILOVER: Endpoint {endpoint} has been disabled due to "
             f"repeated failures. Manual intervention required."
         )
 
-        # Stop the endpoint
+        # Stop the endpoint - orchestrator tracks this as failure
         await self._orchestrator.stop_endpoint(endpoint, timeout=10)
 
-        # Mark as failed in orchestrator
-        proc = self._orchestrator.get_endpoint_status(endpoint)
-        if proc:
-            from .orchestrator import ProcessStatus
-            proc.status = ProcessStatus.FAILED
+        # Log final status for observability
+        status = await self._orchestrator.get_endpoint_status(endpoint)
+        if status:
+            logger.info(f"Endpoint {endpoint} final status: {status}")
 
         # TODO: Could emit alert to external system
         # await self._emit_alert(endpoint)

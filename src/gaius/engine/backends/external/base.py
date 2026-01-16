@@ -17,13 +17,15 @@ class ExternalResponse:
     """Response from an external inference API.
 
     Attributes:
-        content: Generated text content
+        content: Generated text content (for reasoning models, parsed JSON)
         model: Model that generated response
         provider: Provider name (xai, cerebras, bytez)
         input_tokens: Number of input tokens
         output_tokens: Number of output tokens
         latency_ms: Request latency in milliseconds
         error: Error message if request failed
+        reasoning: Chain-of-thought from reasoning models (for distillation)
+        finish_reason: API finish reason (stop, length, content_filter, etc.)
     """
 
     content: str
@@ -33,11 +35,22 @@ class ExternalResponse:
     output_tokens: int = 0
     latency_ms: int = 0
     error: Optional[str] = None
+    reasoning: Optional[str] = None
+    finish_reason: Optional[str] = None
 
     @property
     def success(self) -> bool:
         """Whether request succeeded."""
         return self.error is None
+
+    @property
+    def truncated(self) -> bool:
+        """Whether response was truncated due to max_tokens limit.
+
+        This is an important signal for LLM error tracking - truncated
+        responses often indicate the model couldn't complete its output.
+        """
+        return self.finish_reason == "length"
 
     @property
     def total_tokens(self) -> int:

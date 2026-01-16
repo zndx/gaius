@@ -44,7 +44,7 @@ async def save_cached_state_async(
     projection_method: str,
     embedding_type: str = "single",
     iso_features: "IsoFeatures | None" = None,
-) -> str | None:
+) -> int | None:
     """Save computed state to Postgres cache (async).
 
     Args:
@@ -97,7 +97,7 @@ async def load_cached_state_async(
         from ..storage.grid_state import load_current_grid_state
 
         grid_data, tda_features, metadata = await load_current_grid_state(kb_root)
-        if grid_data is not None and tda_features is not None:
+        if grid_data is not None and tda_features is not None and metadata is not None:
             logger.debug(f"Loaded grid state from Postgres: {metadata.get('snapshot_id', 'unknown')}")
             # IsoFeatures not yet stored in Postgres
             return grid_data, tda_features, metadata, None
@@ -170,7 +170,7 @@ def save_cached_state(
     projection_method: str,
     embedding_type: str = "single",
     iso_features: "IsoFeatures | None" = None,
-) -> str | None:
+) -> int | None:
     """Save computed state (sync wrapper).
 
     Note: This creates a new event loop. Do not call from within an async context.

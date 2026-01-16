@@ -89,6 +89,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.GetJobResultRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.GetJobResultResponse.FromString,
                 _registered_method=True)
+        self.XAIBudget = channel.unary_unary(
+                '/gaius.engine.GaiusService/XAIBudget',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.XAIBudgetResponse.FromString,
+                _registered_method=True)
         self.SwarmStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/SwarmStream',
                 request_serializer=gaius__service__pb2.SwarmStreamRequest.SerializeToString,
@@ -113,6 +118,11 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/EmbedTexts',
                 request_serializer=gaius__service__pb2.EmbedTextsRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.EmbedTextsResponse.FromString,
+                _registered_method=True)
+        self.SemanticSearch = channel.unary_unary(
+                '/gaius.engine.GaiusService/SemanticSearch',
+                request_serializer=gaius__service__pb2.SemanticSearchRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SemanticSearchResponse.FromString,
                 _registered_method=True)
         self.EvolutionStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/EvolutionStatus',
@@ -153,6 +163,31 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/CognitionActivity',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionActivityResponse.FromString,
+                _registered_method=True)
+        self.SelfObservation = channel.unary_unary(
+                '/gaius.engine.GaiusService/SelfObservation',
+                request_serializer=gaius__service__pb2.SelfObservationRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SelfObservationResponse.FromString,
+                _registered_method=True)
+        self.EngineAudit = channel.unary_unary(
+                '/gaius.engine.GaiusService/EngineAudit',
+                request_serializer=gaius__service__pb2.EngineAuditRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EngineAuditResponse.FromString,
+                _registered_method=True)
+        self.SubscribeCognition = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeCognition',
+                request_serializer=gaius__service__pb2.CognitionStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CognitionEvent.FromString,
+                _registered_method=True)
+        self.SubscribeEvolution = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeEvolution',
+                request_serializer=gaius__service__pb2.EvolutionStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.EvolutionEvent.FromString,
+                _registered_method=True)
+        self.SubscribeActivity = channel.unary_stream(
+                '/gaius.engine.GaiusService/SubscribeActivity',
+                request_serializer=gaius__service__pb2.ActivityStreamRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ActivityEvent.FromString,
                 _registered_method=True)
         self.GetCurrentState = channel.unary_unary(
                 '/gaius.engine.GaiusService/GetCurrentState',
@@ -249,6 +284,46 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.DatasetLineageRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.DatasetLineageResponse.FromString,
                 _registered_method=True)
+        self.ThetaSitrep = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaSitrep',
+                request_serializer=gaius__service__pb2.ThetaSitrepRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaSitrepResponse.FromString,
+                _registered_method=True)
+        self.ThetaConsolidate = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaConsolidate',
+                request_serializer=gaius__service__pb2.ThetaConsolidateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaConsolidateResponse.FromString,
+                _registered_method=True)
+        self.ThetaConsolidationStats = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaConsolidationStats',
+                request_serializer=gaius__service__pb2.ThetaConsolidationStatsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaConsolidationStatsResponse.FromString,
+                _registered_method=True)
+        self.MetaAgentQuery = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetaAgentQuery',
+                request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentQueryResponse.FromString,
+                _registered_method=True)
+        self.MetaAgentQueryStream = channel.unary_stream(
+                '/gaius.engine.GaiusService/MetaAgentQueryStream',
+                request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentEvent.FromString,
+                _registered_method=True)
+        self.CLTExtract = channel.unary_unary(
+                '/gaius.engine.GaiusService/CLTExtract',
+                request_serializer=gaius__service__pb2.CLTExtractRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CLTExtractResponse.FromString,
+                _registered_method=True)
+        self.CLTAttribute = channel.unary_unary(
+                '/gaius.engine.GaiusService/CLTAttribute',
+                request_serializer=gaius__service__pb2.CLTAttributeRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CLTAttributeResponse.FromString,
+                _registered_method=True)
+        self.CLTStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/CLTStatus',
+                request_serializer=gaius__service__pb2.CLTStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CLTStatusResponse.FromString,
+                _registered_method=True)
         self.HealthStream = channel.unary_stream(
                 '/gaius.engine.GaiusService/HealthStream',
                 request_serializer=gaius__service__pb2.HealthStreamRequest.SerializeToString,
@@ -263,6 +338,186 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/InitStream',
                 request_serializer=gaius__service__pb2.InitCommand.SerializeToString,
                 response_deserializer=gaius__service__pb2.InitEvent.FromString,
+                _registered_method=True)
+        self.HealthObserverStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverStatus',
+                request_serializer=gaius__service__pb2.HealthObserverStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.HealthObserverStatusResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverStart = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverStart',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.HealthObserverStatusResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverStop = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverStop',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.HealthObserverStatusResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverForceCheck = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverForceCheck',
+                request_serializer=gaius__service__pb2.ForceHealthCheckRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ForceHealthCheckResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverListIncidents = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverListIncidents',
+                request_serializer=gaius__service__pb2.ListIncidentsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListIncidentsResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverGetIncident = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverGetIncident',
+                request_serializer=gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetIncidentDetailResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverResolveIncident = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverResolveIncident',
+                request_serializer=gaius__service__pb2.ResolveIncidentRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ResolveIncidentResponse.FromString,
+                _registered_method=True)
+        self.HealthObserverGetOrphanedIssues = channel.unary_unary(
+                '/gaius.engine.GaiusService/HealthObserverGetOrphanedIssues',
+                request_serializer=gaius__service__pb2.GetOrphanedIssuesRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetOrphanedIssuesResponse.FromString,
+                _registered_method=True)
+        self.ObserveStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ObserveStatus',
+                request_serializer=gaius__service__pb2.ObserveStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ObserveStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksGetAuthUrl = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksGetAuthUrl',
+                request_serializer=gaius__service__pb2.XBookmarksAuthRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksAuthResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksCompleteAuth = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksCompleteAuth',
+                request_serializer=gaius__service__pb2.XBookmarksCompleteAuthRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksCompleteAuthByState = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksCompleteAuthByState',
+                request_serializer=gaius__service__pb2.XBookmarksCompleteAuthByStateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksAuthStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksAuthStatus',
+                request_serializer=gaius__service__pb2.XBookmarksAuthStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksAuthStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksTriggerSync = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksTriggerSync',
+                request_serializer=gaius__service__pb2.XBookmarksSyncRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksSyncResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksSyncStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksSyncStatus',
+                request_serializer=gaius__service__pb2.XBookmarksSyncStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksSyncStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksServiceStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksServiceStatus',
+                request_serializer=gaius__service__pb2.XBookmarksServiceStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksServiceStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksListFolders = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksListFolders',
+                request_serializer=gaius__service__pb2.XBookmarksListFoldersRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksListFoldersResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksQueueStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksQueueStatus',
+                request_serializer=gaius__service__pb2.XBookmarksQueueStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksQueueStatusResponse.FromString,
+                _registered_method=True)
+        self.XBookmarksEmitTestEvent = channel.unary_unary(
+                '/gaius.engine.GaiusService/XBookmarksEmitTestEvent',
+                request_serializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
+                _registered_method=True)
+        self.ListHFDatasets = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListHFDatasets',
+                request_serializer=gaius__service__pb2.ListHFDatasetsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListHFDatasetsResponse.FromString,
+                _registered_method=True)
+        self.AddExternalDataset = channel.unary_unary(
+                '/gaius.engine.GaiusService/AddExternalDataset',
+                request_serializer=gaius__service__pb2.AddExternalDatasetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AddExternalDatasetResponse.FromString,
+                _registered_method=True)
+        self.GetHFDatasetInfo = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetHFDatasetInfo',
+                request_serializer=gaius__service__pb2.GetHFDatasetInfoRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetHFDatasetInfoResponse.FromString,
+                _registered_method=True)
+        self.ListKBDatasets = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListKBDatasets',
+                request_serializer=gaius__service__pb2.ListKBDatasetsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListKBDatasetsResponse.FromString,
+                _registered_method=True)
+        self.ListHFModels = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListHFModels',
+                request_serializer=gaius__service__pb2.ListHFModelsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListHFModelsResponse.FromString,
+                _registered_method=True)
+        self.AddExternalModel = channel.unary_unary(
+                '/gaius.engine.GaiusService/AddExternalModel',
+                request_serializer=gaius__service__pb2.AddExternalModelRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AddExternalModelResponse.FromString,
+                _registered_method=True)
+        self.GetHFModelInfo = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetHFModelInfo',
+                request_serializer=gaius__service__pb2.GetHFModelInfoRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetHFModelInfoResponse.FromString,
+                _registered_method=True)
+        self.ListKBModels = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListKBModels',
+                request_serializer=gaius__service__pb2.ListKBModelsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListKBModelsResponse.FromString,
+                _registered_method=True)
+        self.AmbientCycle = channel.unary_stream(
+                '/gaius.engine.GaiusService/AmbientCycle',
+                request_serializer=gaius__service__pb2.AmbientCycleRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientPhaseEvent.FromString,
+                _registered_method=True)
+        self.AmbientStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientStatus',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientStatusResponse.FromString,
+                _registered_method=True)
+        self.AmbientStart = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientStart',
+                request_serializer=gaius__service__pb2.AmbientStartRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientStartResponse.FromString,
+                _registered_method=True)
+        self.AmbientStop = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientStop',
+                request_serializer=gaius__service__pb2.AmbientStopRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientStopResponse.FromString,
+                _registered_method=True)
+        self.AmbientSubscribe = channel.unary_stream(
+                '/gaius.engine.GaiusService/AmbientSubscribe',
+                request_serializer=gaius__service__pb2.AmbientSubscribeRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientPhaseEvent.FromString,
+                _registered_method=True)
+        self.AmbientBufferExport = channel.unary_unary(
+                '/gaius.engine.GaiusService/AmbientBufferExport',
+                request_serializer=gaius__service__pb2.AmbientBufferExportRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AmbientBufferExportResponse.FromString,
+                _registered_method=True)
+        self.ProspectsStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ProspectsStatus',
+                request_serializer=gaius__service__pb2.ProspectsStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ProspectsStatusResponse.FromString,
+                _registered_method=True)
+        self.ProspectsCheck = channel.unary_unary(
+                '/gaius.engine.GaiusService/ProspectsCheck',
+                request_serializer=gaius__service__pb2.ProspectsCheckRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ProspectsCheckResponse.FromString,
+                _registered_method=True)
+        self.ProspectsUpdate = channel.unary_stream(
+                '/gaius.engine.GaiusService/ProspectsUpdate',
+                request_serializer=gaius__service__pb2.ProspectsUpdateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ProspectsUpdateEvent.FromString,
                 _registered_method=True)
 
 
@@ -341,6 +596,13 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def XAIBudget(self, request, context):
+        """XAI budget tracking
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SwarmStream(self, request, context):
         """Streaming swarm analysis - returns progress events then final result
         Handles backend wait internally, streaming QUEUED status while waiting
@@ -373,6 +635,15 @@ class GaiusServiceServicer(object):
     def EmbedTexts(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Embeddings (Engine-Managed)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SemanticSearch(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Semantic Search
         ─────────────────────────────────────────────────────────────────────────
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -429,6 +700,39 @@ class GaiusServiceServicer(object):
 
     def CognitionActivity(self, request, context):
         """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SelfObservation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EngineAudit(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeCognition(self, request, context):
+        """Cognition streaming - replaces TUI polling
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeEvolution(self, request, context):
+        """Evolution streaming - replaces TUI polling
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SubscribeActivity(self, request, context):
+        """Unified activity stream - all system activity
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -567,6 +871,63 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ThetaSitrep(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        ThetaAgent (Neuromorphic Consolidation)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ThetaConsolidate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ThetaConsolidationStats(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetaAgentQuery(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        MetaAgent (Multi-Agent Analytics)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetaAgentQueryStream(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CLTExtract(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        CLT (Cross-Layer Transcoders)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CLTAttribute(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CLTStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def HealthStream(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         Streaming
@@ -586,6 +947,254 @@ class GaiusServiceServicer(object):
         """Bidirectional initialization stream - allows TUI/MCP to connect immediately
         during engine startup and receive real-time progress, while also sending
         control commands (pause, cancel, health checks) back to the engine.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        HealthObserver (Autonomous FMEA Monitoring + ACP Escalation)
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverStart(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverStop(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverForceCheck(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverListIncidents(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverGetIncident(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverResolveIncident(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthObserverGetOrphanedIssues(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ObserveStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Observability Dashboard
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksGetAuthUrl(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        X Bookmarks
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksCompleteAuth(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksCompleteAuthByState(self, request, context):
+        """Engine Federation / Cloudflare Worker callback
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksAuthStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksTriggerSync(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksSyncStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksServiceStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksListFolders(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksQueueStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def XBookmarksEmitTestEvent(self, request, context):
+        """Debug: emit test event with OTel tracing
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListHFDatasets(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        HuggingFace Dataset Discovery
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddExternalDataset(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHFDatasetInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListKBDatasets(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListHFModels(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        HuggingFace Model Discovery
+        ─────────────────────────────────────────────────────────────────────────
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AddExternalModel(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHFModelInfo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListKBModels(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientCycle(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Ambient Computing Workload
+        ─────────────────────────────────────────────────────────────────────────
+        Streaming cycle with progress events (deprecated: use AmbientStart)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientStatus(self, request, context):
+        """Current ambient status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientStart(self, request, context):
+        """Start continuous ambient cycling daemon
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientStop(self, request, context):
+        """Stop ambient daemon gracefully
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientSubscribe(self, request, context):
+        """Subscribe to ambient events (TUI)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AmbientBufferExport(self, request, context):
+        """Export buffer to zettelkasten file
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ProspectsStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Prospects/Stewardship (Capital Stewardship System)
+        ─────────────────────────────────────────────────────────────────────────
+        Lightweight status check
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ProspectsCheck(self, request, context):
+        """Daily check with local LLM
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ProspectsUpdate(self, request, context):
+        """Full billable analysis (streaming)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -644,6 +1253,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.GetJobResultRequest.FromString,
                     response_serializer=gaius__service__pb2.GetJobResultResponse.SerializeToString,
             ),
+            'XAIBudget': grpc.unary_unary_rpc_method_handler(
+                    servicer.XAIBudget,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.XAIBudgetResponse.SerializeToString,
+            ),
             'SwarmStream': grpc.unary_stream_rpc_method_handler(
                     servicer.SwarmStream,
                     request_deserializer=gaius__service__pb2.SwarmStreamRequest.FromString,
@@ -668,6 +1282,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.EmbedTexts,
                     request_deserializer=gaius__service__pb2.EmbedTextsRequest.FromString,
                     response_serializer=gaius__service__pb2.EmbedTextsResponse.SerializeToString,
+            ),
+            'SemanticSearch': grpc.unary_unary_rpc_method_handler(
+                    servicer.SemanticSearch,
+                    request_deserializer=gaius__service__pb2.SemanticSearchRequest.FromString,
+                    response_serializer=gaius__service__pb2.SemanticSearchResponse.SerializeToString,
             ),
             'EvolutionStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.EvolutionStatus,
@@ -708,6 +1327,31 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.CognitionActivity,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.CognitionActivityResponse.SerializeToString,
+            ),
+            'SelfObservation': grpc.unary_unary_rpc_method_handler(
+                    servicer.SelfObservation,
+                    request_deserializer=gaius__service__pb2.SelfObservationRequest.FromString,
+                    response_serializer=gaius__service__pb2.SelfObservationResponse.SerializeToString,
+            ),
+            'EngineAudit': grpc.unary_unary_rpc_method_handler(
+                    servicer.EngineAudit,
+                    request_deserializer=gaius__service__pb2.EngineAuditRequest.FromString,
+                    response_serializer=gaius__service__pb2.EngineAuditResponse.SerializeToString,
+            ),
+            'SubscribeCognition': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeCognition,
+                    request_deserializer=gaius__service__pb2.CognitionStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.CognitionEvent.SerializeToString,
+            ),
+            'SubscribeEvolution': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeEvolution,
+                    request_deserializer=gaius__service__pb2.EvolutionStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.EvolutionEvent.SerializeToString,
+            ),
+            'SubscribeActivity': grpc.unary_stream_rpc_method_handler(
+                    servicer.SubscribeActivity,
+                    request_deserializer=gaius__service__pb2.ActivityStreamRequest.FromString,
+                    response_serializer=gaius__service__pb2.ActivityEvent.SerializeToString,
             ),
             'GetCurrentState': grpc.unary_unary_rpc_method_handler(
                     servicer.GetCurrentState,
@@ -804,6 +1448,46 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.DatasetLineageRequest.FromString,
                     response_serializer=gaius__service__pb2.DatasetLineageResponse.SerializeToString,
             ),
+            'ThetaSitrep': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaSitrep,
+                    request_deserializer=gaius__service__pb2.ThetaSitrepRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaSitrepResponse.SerializeToString,
+            ),
+            'ThetaConsolidate': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaConsolidate,
+                    request_deserializer=gaius__service__pb2.ThetaConsolidateRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaConsolidateResponse.SerializeToString,
+            ),
+            'ThetaConsolidationStats': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaConsolidationStats,
+                    request_deserializer=gaius__service__pb2.ThetaConsolidationStatsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaConsolidationStatsResponse.SerializeToString,
+            ),
+            'MetaAgentQuery': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetaAgentQuery,
+                    request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentQueryResponse.SerializeToString,
+            ),
+            'MetaAgentQueryStream': grpc.unary_stream_rpc_method_handler(
+                    servicer.MetaAgentQueryStream,
+                    request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentEvent.SerializeToString,
+            ),
+            'CLTExtract': grpc.unary_unary_rpc_method_handler(
+                    servicer.CLTExtract,
+                    request_deserializer=gaius__service__pb2.CLTExtractRequest.FromString,
+                    response_serializer=gaius__service__pb2.CLTExtractResponse.SerializeToString,
+            ),
+            'CLTAttribute': grpc.unary_unary_rpc_method_handler(
+                    servicer.CLTAttribute,
+                    request_deserializer=gaius__service__pb2.CLTAttributeRequest.FromString,
+                    response_serializer=gaius__service__pb2.CLTAttributeResponse.SerializeToString,
+            ),
+            'CLTStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.CLTStatus,
+                    request_deserializer=gaius__service__pb2.CLTStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.CLTStatusResponse.SerializeToString,
+            ),
             'HealthStream': grpc.unary_stream_rpc_method_handler(
                     servicer.HealthStream,
                     request_deserializer=gaius__service__pb2.HealthStreamRequest.FromString,
@@ -818,6 +1502,186 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.InitStream,
                     request_deserializer=gaius__service__pb2.InitCommand.FromString,
                     response_serializer=gaius__service__pb2.InitEvent.SerializeToString,
+            ),
+            'HealthObserverStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverStatus,
+                    request_deserializer=gaius__service__pb2.HealthObserverStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.HealthObserverStatusResponse.SerializeToString,
+            ),
+            'HealthObserverStart': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverStart,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.HealthObserverStatusResponse.SerializeToString,
+            ),
+            'HealthObserverStop': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverStop,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.HealthObserverStatusResponse.SerializeToString,
+            ),
+            'HealthObserverForceCheck': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverForceCheck,
+                    request_deserializer=gaius__service__pb2.ForceHealthCheckRequest.FromString,
+                    response_serializer=gaius__service__pb2.ForceHealthCheckResponse.SerializeToString,
+            ),
+            'HealthObserverListIncidents': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverListIncidents,
+                    request_deserializer=gaius__service__pb2.ListIncidentsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListIncidentsResponse.SerializeToString,
+            ),
+            'HealthObserverGetIncident': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverGetIncident,
+                    request_deserializer=gaius__service__pb2.GetIncidentDetailRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetIncidentDetailResponse.SerializeToString,
+            ),
+            'HealthObserverResolveIncident': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverResolveIncident,
+                    request_deserializer=gaius__service__pb2.ResolveIncidentRequest.FromString,
+                    response_serializer=gaius__service__pb2.ResolveIncidentResponse.SerializeToString,
+            ),
+            'HealthObserverGetOrphanedIssues': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthObserverGetOrphanedIssues,
+                    request_deserializer=gaius__service__pb2.GetOrphanedIssuesRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetOrphanedIssuesResponse.SerializeToString,
+            ),
+            'ObserveStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ObserveStatus,
+                    request_deserializer=gaius__service__pb2.ObserveStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.ObserveStatusResponse.SerializeToString,
+            ),
+            'XBookmarksGetAuthUrl': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksGetAuthUrl,
+                    request_deserializer=gaius__service__pb2.XBookmarksAuthRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksAuthResponse.SerializeToString,
+            ),
+            'XBookmarksCompleteAuth': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksCompleteAuth,
+                    request_deserializer=gaius__service__pb2.XBookmarksCompleteAuthRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.SerializeToString,
+            ),
+            'XBookmarksCompleteAuthByState': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksCompleteAuthByState,
+                    request_deserializer=gaius__service__pb2.XBookmarksCompleteAuthByStateRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksCompleteAuthResponse.SerializeToString,
+            ),
+            'XBookmarksAuthStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksAuthStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksAuthStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksAuthStatusResponse.SerializeToString,
+            ),
+            'XBookmarksTriggerSync': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksTriggerSync,
+                    request_deserializer=gaius__service__pb2.XBookmarksSyncRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksSyncResponse.SerializeToString,
+            ),
+            'XBookmarksSyncStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksSyncStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksSyncStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksSyncStatusResponse.SerializeToString,
+            ),
+            'XBookmarksServiceStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksServiceStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksServiceStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksServiceStatusResponse.SerializeToString,
+            ),
+            'XBookmarksListFolders': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksListFolders,
+                    request_deserializer=gaius__service__pb2.XBookmarksListFoldersRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksListFoldersResponse.SerializeToString,
+            ),
+            'XBookmarksQueueStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksQueueStatus,
+                    request_deserializer=gaius__service__pb2.XBookmarksQueueStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksQueueStatusResponse.SerializeToString,
+            ),
+            'XBookmarksEmitTestEvent': grpc.unary_unary_rpc_method_handler(
+                    servicer.XBookmarksEmitTestEvent,
+                    request_deserializer=gaius__service__pb2.XBookmarksEmitTestEventRequest.FromString,
+                    response_serializer=gaius__service__pb2.XBookmarksEmitTestEventResponse.SerializeToString,
+            ),
+            'ListHFDatasets': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHFDatasets,
+                    request_deserializer=gaius__service__pb2.ListHFDatasetsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListHFDatasetsResponse.SerializeToString,
+            ),
+            'AddExternalDataset': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddExternalDataset,
+                    request_deserializer=gaius__service__pb2.AddExternalDatasetRequest.FromString,
+                    response_serializer=gaius__service__pb2.AddExternalDatasetResponse.SerializeToString,
+            ),
+            'GetHFDatasetInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHFDatasetInfo,
+                    request_deserializer=gaius__service__pb2.GetHFDatasetInfoRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetHFDatasetInfoResponse.SerializeToString,
+            ),
+            'ListKBDatasets': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListKBDatasets,
+                    request_deserializer=gaius__service__pb2.ListKBDatasetsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListKBDatasetsResponse.SerializeToString,
+            ),
+            'ListHFModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHFModels,
+                    request_deserializer=gaius__service__pb2.ListHFModelsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListHFModelsResponse.SerializeToString,
+            ),
+            'AddExternalModel': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddExternalModel,
+                    request_deserializer=gaius__service__pb2.AddExternalModelRequest.FromString,
+                    response_serializer=gaius__service__pb2.AddExternalModelResponse.SerializeToString,
+            ),
+            'GetHFModelInfo': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHFModelInfo,
+                    request_deserializer=gaius__service__pb2.GetHFModelInfoRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetHFModelInfoResponse.SerializeToString,
+            ),
+            'ListKBModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListKBModels,
+                    request_deserializer=gaius__service__pb2.ListKBModelsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListKBModelsResponse.SerializeToString,
+            ),
+            'AmbientCycle': grpc.unary_stream_rpc_method_handler(
+                    servicer.AmbientCycle,
+                    request_deserializer=gaius__service__pb2.AmbientCycleRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientPhaseEvent.SerializeToString,
+            ),
+            'AmbientStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientStatus,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.AmbientStatusResponse.SerializeToString,
+            ),
+            'AmbientStart': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientStart,
+                    request_deserializer=gaius__service__pb2.AmbientStartRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientStartResponse.SerializeToString,
+            ),
+            'AmbientStop': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientStop,
+                    request_deserializer=gaius__service__pb2.AmbientStopRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientStopResponse.SerializeToString,
+            ),
+            'AmbientSubscribe': grpc.unary_stream_rpc_method_handler(
+                    servicer.AmbientSubscribe,
+                    request_deserializer=gaius__service__pb2.AmbientSubscribeRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientPhaseEvent.SerializeToString,
+            ),
+            'AmbientBufferExport': grpc.unary_unary_rpc_method_handler(
+                    servicer.AmbientBufferExport,
+                    request_deserializer=gaius__service__pb2.AmbientBufferExportRequest.FromString,
+                    response_serializer=gaius__service__pb2.AmbientBufferExportResponse.SerializeToString,
+            ),
+            'ProspectsStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ProspectsStatus,
+                    request_deserializer=gaius__service__pb2.ProspectsStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.ProspectsStatusResponse.SerializeToString,
+            ),
+            'ProspectsCheck': grpc.unary_unary_rpc_method_handler(
+                    servicer.ProspectsCheck,
+                    request_deserializer=gaius__service__pb2.ProspectsCheckRequest.FromString,
+                    response_serializer=gaius__service__pb2.ProspectsCheckResponse.SerializeToString,
+            ),
+            'ProspectsUpdate': grpc.unary_stream_rpc_method_handler(
+                    servicer.ProspectsUpdate,
+                    request_deserializer=gaius__service__pb2.ProspectsUpdateRequest.FromString,
+                    response_serializer=gaius__service__pb2.ProspectsUpdateEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1105,6 +1969,33 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def XAIBudget(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XAIBudget',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.XAIBudgetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def SwarmStream(request,
             target,
             options=(),
@@ -1229,6 +2120,33 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/EmbedTexts',
             gaius__service__pb2.EmbedTextsRequest.SerializeToString,
             gaius__service__pb2.EmbedTextsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SemanticSearch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SemanticSearch',
+            gaius__service__pb2.SemanticSearchRequest.SerializeToString,
+            gaius__service__pb2.SemanticSearchResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1445,6 +2363,141 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CognitionActivity',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             gaius__service__pb2.CognitionActivityResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SelfObservation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SelfObservation',
+            gaius__service__pb2.SelfObservationRequest.SerializeToString,
+            gaius__service__pb2.SelfObservationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EngineAudit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/EngineAudit',
+            gaius__service__pb2.EngineAuditRequest.SerializeToString,
+            gaius__service__pb2.EngineAuditResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeCognition(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeCognition',
+            gaius__service__pb2.CognitionStreamRequest.SerializeToString,
+            gaius__service__pb2.CognitionEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeEvolution(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeEvolution',
+            gaius__service__pb2.EvolutionStreamRequest.SerializeToString,
+            gaius__service__pb2.EvolutionEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SubscribeActivity(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SubscribeActivity',
+            gaius__service__pb2.ActivityStreamRequest.SerializeToString,
+            gaius__service__pb2.ActivityEvent.FromString,
             options,
             channel_credentials,
             insecure,
@@ -1969,6 +3022,222 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def ThetaSitrep(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaSitrep',
+            gaius__service__pb2.ThetaSitrepRequest.SerializeToString,
+            gaius__service__pb2.ThetaSitrepResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ThetaConsolidate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaConsolidate',
+            gaius__service__pb2.ThetaConsolidateRequest.SerializeToString,
+            gaius__service__pb2.ThetaConsolidateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ThetaConsolidationStats(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaConsolidationStats',
+            gaius__service__pb2.ThetaConsolidationStatsRequest.SerializeToString,
+            gaius__service__pb2.ThetaConsolidationStatsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentQuery(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentQuery',
+            gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentQueryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentQueryStream(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentQueryStream',
+            gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CLTExtract(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CLTExtract',
+            gaius__service__pb2.CLTExtractRequest.SerializeToString,
+            gaius__service__pb2.CLTExtractResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CLTAttribute(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CLTAttribute',
+            gaius__service__pb2.CLTAttributeRequest.SerializeToString,
+            gaius__service__pb2.CLTAttributeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CLTStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CLTStatus',
+            gaius__service__pb2.CLTStatusRequest.SerializeToString,
+            gaius__service__pb2.CLTStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def HealthStream(request,
             target,
             options=(),
@@ -2048,3 +3317,979 @@ class GaiusService(object):
             timeout,
             metadata,
             _registered_method=True)
+
+    @staticmethod
+    def HealthObserverStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverStatus',
+            gaius__service__pb2.HealthObserverStatusRequest.SerializeToString,
+            gaius__service__pb2.HealthObserverStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverStart(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverStart',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.HealthObserverStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverStop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverStop',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.HealthObserverStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverForceCheck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverForceCheck',
+            gaius__service__pb2.ForceHealthCheckRequest.SerializeToString,
+            gaius__service__pb2.ForceHealthCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverListIncidents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverListIncidents',
+            gaius__service__pb2.ListIncidentsRequest.SerializeToString,
+            gaius__service__pb2.ListIncidentsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverGetIncident(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverGetIncident',
+            gaius__service__pb2.GetIncidentDetailRequest.SerializeToString,
+            gaius__service__pb2.GetIncidentDetailResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverResolveIncident(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverResolveIncident',
+            gaius__service__pb2.ResolveIncidentRequest.SerializeToString,
+            gaius__service__pb2.ResolveIncidentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthObserverGetOrphanedIssues(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/HealthObserverGetOrphanedIssues',
+            gaius__service__pb2.GetOrphanedIssuesRequest.SerializeToString,
+            gaius__service__pb2.GetOrphanedIssuesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ObserveStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ObserveStatus',
+            gaius__service__pb2.ObserveStatusRequest.SerializeToString,
+            gaius__service__pb2.ObserveStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksGetAuthUrl(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksGetAuthUrl',
+            gaius__service__pb2.XBookmarksAuthRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksAuthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksCompleteAuth(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksCompleteAuth',
+            gaius__service__pb2.XBookmarksCompleteAuthRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksCompleteAuthByState(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksCompleteAuthByState',
+            gaius__service__pb2.XBookmarksCompleteAuthByStateRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksCompleteAuthResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksAuthStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksAuthStatus',
+            gaius__service__pb2.XBookmarksAuthStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksAuthStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksTriggerSync(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksTriggerSync',
+            gaius__service__pb2.XBookmarksSyncRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksSyncResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksSyncStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksSyncStatus',
+            gaius__service__pb2.XBookmarksSyncStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksSyncStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksServiceStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksServiceStatus',
+            gaius__service__pb2.XBookmarksServiceStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksServiceStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksListFolders(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksListFolders',
+            gaius__service__pb2.XBookmarksListFoldersRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksListFoldersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksQueueStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksQueueStatus',
+            gaius__service__pb2.XBookmarksQueueStatusRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksQueueStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def XBookmarksEmitTestEvent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/XBookmarksEmitTestEvent',
+            gaius__service__pb2.XBookmarksEmitTestEventRequest.SerializeToString,
+            gaius__service__pb2.XBookmarksEmitTestEventResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHFDatasets(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListHFDatasets',
+            gaius__service__pb2.ListHFDatasetsRequest.SerializeToString,
+            gaius__service__pb2.ListHFDatasetsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddExternalDataset(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AddExternalDataset',
+            gaius__service__pb2.AddExternalDatasetRequest.SerializeToString,
+            gaius__service__pb2.AddExternalDatasetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHFDatasetInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetHFDatasetInfo',
+            gaius__service__pb2.GetHFDatasetInfoRequest.SerializeToString,
+            gaius__service__pb2.GetHFDatasetInfoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListKBDatasets(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListKBDatasets',
+            gaius__service__pb2.ListKBDatasetsRequest.SerializeToString,
+            gaius__service__pb2.ListKBDatasetsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListHFModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListHFModels',
+            gaius__service__pb2.ListHFModelsRequest.SerializeToString,
+            gaius__service__pb2.ListHFModelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddExternalModel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AddExternalModel',
+            gaius__service__pb2.AddExternalModelRequest.SerializeToString,
+            gaius__service__pb2.AddExternalModelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHFModelInfo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetHFModelInfo',
+            gaius__service__pb2.GetHFModelInfoRequest.SerializeToString,
+            gaius__service__pb2.GetHFModelInfoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListKBModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListKBModels',
+            gaius__service__pb2.ListKBModelsRequest.SerializeToString,
+            gaius__service__pb2.ListKBModelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientCycle(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientCycle',
+            gaius__service__pb2.AmbientCycleRequest.SerializeToString,
+            gaius__service__pb2.AmbientPhaseEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientStatus',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.AmbientStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientStart(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientStart',
+            gaius__service__pb2.AmbientStartRequest.SerializeToString,
+            gaius__service__pb2.AmbientStartResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientStop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientStop',
+            gaius__service__pb2.AmbientStopRequest.SerializeToString,
+            gaius__service__pb2.AmbientStopResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientSubscribe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientSubscribe',
+            gaius__service__pb2.AmbientSubscribeRequest.SerializeToString,
+            gaius__service__pb2.AmbientPhaseEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AmbientBufferExport(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AmbientBufferExport',
+            gaius__service__pb2.AmbientBufferExportRequest.SerializeToString,
+            gaius__service__pb2.AmbientBufferExportResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProspectsStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ProspectsStatus',
+            gaius__service__pb2.ProspectsStatusRequest.SerializeToString,
+            gaius__service__pb2.ProspectsStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProspectsCheck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ProspectsCheck',
+            gaius__service__pb2.ProspectsCheckRequest.SerializeToString,
+            gaius__service__pb2.ProspectsCheckResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ProspectsUpdate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ProspectsUpdate',
+            gaius__service__pb2.ProspectsUpdateRequest.SerializeToString,
+            gaius__service__pb2.ProspectsUpdateEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+# Async stub alias - same class works with grpc.aio.Channel
+# Type hints in .pyi declare this as a subclass for type checking
+GaiusServiceAsyncStub = GaiusServiceStub

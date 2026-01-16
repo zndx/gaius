@@ -117,32 +117,112 @@ class MainGrid(Widget):
                 grid[y][x] = ("○", "white")
 
     def _render_theta_mode(self, grid: list) -> None:
-        """Render information density (theta view).
+        """Render information density (theta view) with attention targets.
 
         Theta waves (4-8 Hz) facilitate memory consolidation - the transfer
         of information from short-term to long-term storage. This view shows
         information density as a heatmap, revealing regions of high vs low
         knowledge accumulation.
+
+        When ThetaAgent provides attention targets (from AttentionSchema),
+        they are overlaid on the density map:
+        - Focus target: bright_yellow marker
+        - High salience periphery: cyan markers
+        - Low salience periphery: dim markers
         """
-        if not self.state.allocations:
-            return
-        for y in range(19):
-            for x in range(19):
-                if y < len(self.state.allocations) and x < len(self.state.allocations[y]):
-                    v = self.state.allocations[y][x]
-                    if v > 75:
-                        grid[y][x] = ("▓", "green")
-                    elif v > 50:
-                        grid[y][x] = ("▒", "yellow")
-                    elif v > 25:
-                        grid[y][x] = ("░", "blue")
-                    # else keep as empty
+        # Render density heatmap
+        if self.state.allocations:
+            for y in range(19):
+                for x in range(19):
+                    if y < len(self.state.allocations) and x < len(self.state.allocations[y]):
+                        v = self.state.allocations[y][x]
+                        if v > 75:
+                            grid[y][x] = ("▓", "green")
+                        elif v > 50:
+                            grid[y][x] = ("▒", "yellow")
+                        elif v > 25:
+                            grid[y][x] = ("░", "blue")
+                        # else keep as empty
+
+        # Overlay ThetaAgent attention targets (AST schema visualization)
+        if self.state.theta_targets:
+            for target_id, x, y, color in self.state.theta_targets:
+                if 0 <= x < 19 and 0 <= y < 19:
+                    # Use different markers based on color (salience level)
+                    if color == "bright_yellow":
+                        grid[y][x] = ("◉", f"bold {color}")  # Focus target
+                    elif color == "cyan":
+                        grid[y][x] = ("◎", color)  # High salience
+                    else:
+                        grid[y][x] = ("○", color)  # Low salience
 
     def _render_swarm_mode(self, grid: list) -> None:
-        """Render swarm agent positions prominently."""
+        """Render swarm agent positions with exploration traces.
+
+        Traces show the agent's recent exploration trajectory:
+        - Current position: solid circle (●)
+        - t-1 position: medium dot (◉)
+        - t-2 position: small dot (○)
+        - t-3 position: dim dot (·)
+
+        This visualizes NVAR-style time-delay dynamics, showing where
+        each agent has been exploring in semantic space.
+        """
+        # First, render traces (so current positions render on top)
+        if self.state.agent_traces:
+            self._render_traces(grid)
+
+        # Then render current agent positions
         for name, x, y, color in self.state.agent_positions:
             if 0 <= x < 19 and 0 <= y < 19:
                 grid[y][x] = ("●", f"bold {color}")
+
+    def _render_traces(self, grid: list) -> None:
+        """Render agent exploration traces.
+
+        Each trace shows recent positions with fading intensity:
+        - Position 0 (current): rendered by _render_swarm_mode
+        - Position 1 (t-1): medium marker
+        - Position 2 (t-2): small marker
+        - Position 3+ (older): dim marker
+
+        Traces are colored to match their agent's color.
+        """
+        # Build agent color lookup from current positions
+        agent_colors: dict[str, str] = {}
+        for name, x, y, color in self.state.agent_positions:
+            agent_colors[name] = color
+
+        # Unicode markers for trace points (newest to oldest)
+        trace_markers = ["◉", "○", "·"]  # t-1, t-2, t-3+
+
+        for agent_name, positions in self.state.agent_traces.items():
+            # Skip first position (rendered as current by _render_swarm_mode)
+            trace_positions = positions[1:] if len(positions) > 1 else []
+
+            # Get agent color (default to white if not found)
+            color = agent_colors.get(agent_name, "white")
+
+            for i, (x, y) in enumerate(trace_positions):
+                if 0 <= x < 19 and 0 <= y < 19:
+                    # Don't overwrite current agent positions
+                    current_char, current_style = grid[y][x]
+                    if current_char == "●":
+                        continue  # Don't overwrite current positions
+
+                    # Select marker based on age
+                    marker_idx = min(i, len(trace_markers) - 1)
+                    marker = trace_markers[marker_idx]
+
+                    # Fade style based on age
+                    if i == 0:
+                        style = color  # t-1: normal color
+                    elif i == 1:
+                        style = f"dim {color}"  # t-2: dimmed
+                    else:
+                        style = "dim"  # t-3+: very dim
+
+                    grid[y][x] = (marker, style)
 
     def _render_topology(self, grid: list) -> None:
         """Render TOPOLOGY overlay: H0/H1/H2 persistent homology features.
@@ -156,7 +236,7 @@ class MainGrid(Widget):
                     if 0 <= x < 19 and 0 <= y < 19:
                         # Only mark edges of the bounding box
                         if x == x1 or x == x2 or y == y1 or y == y2:
-                            grid[y][x] = ("⚠", "bold red on dark_red")
+                            grid[y][x] = ("!", "bold red on dark_red")
 
         # H2 voids (2-voids/cavities) - magenta diamonds
         for x1, y1, x2, y2 in self.state.h2_voids:

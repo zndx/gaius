@@ -14,7 +14,7 @@ Usage:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pyhocon import ConfigFactory, ConfigTree
 
@@ -101,7 +101,7 @@ class OptillmConfig:
 class VllmConfig:
     """vLLM-specific settings."""
 
-    # Default to coding endpoint (8082) per base.conf
+    # Default to instruct endpoint (8082) per base.conf
     # Engine manages endpoints; this is overridden by HOCON config
     url: str = "http://localhost:8082/v1"
 
@@ -182,7 +182,7 @@ class TDAConfig:
 
     enabled: bool = True
     compute_interval_minutes: int = 60
-    projection_method: str = "umap"  # or "pca"
+    projection_method: Literal["umap", "pca"] = "umap"
     max_points: int = 500  # Subsample for TDA (giotto-tda is O(n^3))
 
 
@@ -483,7 +483,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     )
 
     vllm = VllmConfig(
-        url=g.get("inference.vllm.url", "http://localhost:8082/v1"),  # coding endpoint
+        url=g.get("inference.vllm.url", "http://localhost:8082/v1"),  # instruct endpoint
     )
 
     phase_models = PhaseModels(
@@ -528,10 +528,15 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         roles=list(g.get("swarm.roles", [])) or SwarmConfig().roles,
     )
 
+    # Validate projection_method is a valid literal
+    raw_projection_method = g.get("tda.projection_method", "umap")
+    projection_method: Literal["umap", "pca"] = (
+        raw_projection_method if raw_projection_method in ("umap", "pca") else "umap"
+    )  # type: ignore[assignment] - runtime check guarantees valid Literal value
     tda = TDAConfig(
         enabled=g.get("tda.enabled", True),
         compute_interval_minutes=int(g.get("tda.compute_interval_minutes", 60)),
-        projection_method=g.get("tda.projection_method", "umap"),
+        projection_method=projection_method,
         max_points=int(g.get("tda.max_points", 500)),
     )
 
@@ -759,3 +764,25 @@ def reset_config() -> None:
     """Reset the global config singleton (for testing)."""
     global _config
     _config = None
+
+
+def get_database_url() -> str:
+    """Get database URL from config.
+
+    This is a convenience function that provides a consistent way to get the
+    database URL across the codebase. Previously this was defined in multiple
+    places (storage/database.py, storage/grid_state.py, etc.).
+
+    Returns:
+        PostgreSQL connection URL from config.
+    """
+    import os
+
+    # Check environment first (highest priority)
+    env_url = os.environ.get("GAIUS_DATABASE_URL")
+    if env_url:
+        return env_url
+
+    # Fall back to config
+    config = get_config()
+    return config.database.url

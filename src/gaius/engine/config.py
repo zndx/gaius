@@ -8,7 +8,10 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyhocon import ConfigTree
 
 logger = logging.getLogger(__name__)
 
@@ -180,16 +183,42 @@ class FlowSchedulerConfig:
 
 
 @dataclass
+class AmbientBufferConfig:
+    """Ambient buffer configuration for content fetching and summarization.
+
+    The ambient workload ALWAYS fetches external content and summarizes it.
+    This is core to ambient computing - exercising real operations to discover
+    failures and accumulate operational metrics.
+
+    Uses Firebase API for HN new comments (RSS doesn't support comments).
+    """
+
+    # HN Firebase API endpoint
+    source_url: str = "https://hacker-news.firebaseio.com/v0/updates.json"
+    newcomments: bool = True  # Fetch new comments via Firebase API
+    max_items: int = 10  # Items per fetch cycle
+
+    # Buffer sizing (byte-based FIFO)
+    buffer_max_bytes: int = 256 * 1024  # 256KB default
+
+    # Summarization
+    summarize_max_tokens: int = 256
+
+
+@dataclass
 class StartupConfig:
     """Autonomous startup configuration."""
 
     clean_start: bool = True  # Kill stale processes on boot
-    preload_endpoints: list[str] = field(default_factory=lambda: ["fast"])
+    preload_endpoints: list[str] = field(default_factory=lambda: ["instruct"])
     auto_start_evolution: bool = True  # Start evolution daemon if enabled
     auto_start_cognition: bool = True  # Start cognition daemon for scheduled tasks
     auto_start_flow_scheduler: bool = True  # Start flow scheduler for Metaflow pipelines
     auto_restart_failed: bool = True  # Auto-restart failed endpoints
     max_restart_attempts: int = 3
+
+    # Ambient workload auto-restart after engine restart
+    auto_resume_ambient: bool = True  # Resume ambient daemon if it was running before restart
 
 
 @dataclass
@@ -207,6 +236,7 @@ class EngineConfig:
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     flow_scheduler: FlowSchedulerConfig = field(default_factory=FlowSchedulerConfig)
+    ambient_buffer: AmbientBufferConfig = field(default_factory=AmbientBufferConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
 
 
@@ -227,25 +257,27 @@ def load_config(config_path: Optional[str] = None) -> EngineConfig:
         return EngineConfig()
 
     # Determine config path
+    resolved_path: Path
     if config_path is None:
-        config_path = os.environ.get("GAIUS_CONFIG")
+        env_path = os.environ.get("GAIUS_CONFIG")
+        if env_path is not None:
+            resolved_path = Path(env_path)
+        else:
+            # Look for config relative to project root
+            # __file__ is src/gaius/engine/config.py, so parents[3] is project root
+            project_root = Path(__file__).parents[3]
+            resolved_path = project_root / "config" / "agents.conf"
+    else:
+        resolved_path = Path(config_path)
 
-    if config_path is None:
-        # Look for config relative to project root
-        # __file__ is src/gaius/engine/config.py, so parents[3] is project root
-        project_root = Path(__file__).parents[3]
-        config_path = project_root / "config" / "agents.conf"
-
-    config_path = Path(config_path)
-
-    if not config_path.exists():
-        logger.warning(f"Config file not found: {config_path}, using defaults")
+    if not resolved_path.exists():
+        logger.warning(f"Config file not found: {resolved_path}, using defaults")
         return EngineConfig()
 
-    logger.info(f"Loading config from {config_path}")
+    logger.info(f"Loading config from {resolved_path}")
 
     # Parse HOCON
-    conf = ConfigFactory.parse_file(str(config_path))
+    conf = ConfigFactory.parse_file(str(resolved_path))
 
     return _parse_config(conf)
 
@@ -474,15 +506,35 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         else False,
     )
 
+    # Parse ambient_buffer config (mandatory content fetching and summarization)
+    ambient_conf = get("gaius.ambient_buffer", {})
+    ambient_buffer = AmbientBufferConfig(
+        source_url=ambient_conf.get("source-url", "https://hacker-news.firebaseio.com/v0/updates.json")
+        if hasattr(ambient_conf, "get")
+        else "https://hacker-news.firebaseio.com/v0/updates.json",
+        newcomments=ambient_conf.get("newcomments", True)
+        if hasattr(ambient_conf, "get")
+        else True,
+        max_items=ambient_conf.get("max-items", 10)
+        if hasattr(ambient_conf, "get")
+        else 10,
+        buffer_max_bytes=ambient_conf.get("buffer-max-bytes", 256 * 1024)
+        if hasattr(ambient_conf, "get")
+        else 256 * 1024,
+        summarize_max_tokens=ambient_conf.get("summarize-max-tokens", 256)
+        if hasattr(ambient_conf, "get")
+        else 256,
+    )
+
     # Parse startup config
     startup_conf = get("gaius.startup", {})
     startup = StartupConfig(
         clean_start=startup_conf.get("clean-start", True)
         if hasattr(startup_conf, "get")
         else True,
-        preload_endpoints=list(startup_conf.get("preload-endpoints", ["fast"]))
+        preload_endpoints=list(startup_conf.get("preload-endpoints", ["orchestrator", "instruct"]))
         if hasattr(startup_conf, "get")
-        else ["fast"],
+        else ["orchestrator", "instruct"],
         auto_start_evolution=startup_conf.get("auto-start-evolution", True)
         if hasattr(startup_conf, "get")
         else True,
@@ -498,6 +550,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         max_restart_attempts=startup_conf.get("max-restart-attempts", 3)
         if hasattr(startup_conf, "get")
         else 3,
+        auto_resume_ambient=startup_conf.get("auto-resume-ambient", True)
+        if hasattr(startup_conf, "get")
+        else True,
     )
 
     return EngineConfig(
@@ -512,6 +567,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         scheduling=scheduling,
         evolution=evolution,
         flow_scheduler=flow_scheduler,
+        ambient_buffer=ambient_buffer,
         startup=startup,
     )
 

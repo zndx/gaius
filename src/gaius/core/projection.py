@@ -240,7 +240,12 @@ class GridProjector:
 
                 for point in results:
                     # Named vectors: point.vector is a dict with "agg" key
-                    vector = point.vector.get("agg") if point.vector else None
+                    point_vector = point.vector
+                    vector = (
+                        point_vector.get("agg")
+                        if isinstance(point_vector, dict)
+                        else None
+                    )
 
                     if vector is not None:
                         all_embeddings.append(vector)

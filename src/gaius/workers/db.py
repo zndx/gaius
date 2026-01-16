@@ -277,7 +277,7 @@ class Database:
             )
 
             # Get iceberg_id for this item if available
-            iceberg_id = iceberg_ids.get(item.external_id)
+            iceberg_id = iceberg_ids.get(item.external_id or "")
 
             item_id = await self.insert_content_item(
                 item,

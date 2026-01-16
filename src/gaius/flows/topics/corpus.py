@@ -11,7 +11,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +43,8 @@ class CorpusState:
     dictionary_path: str | None = None  # MinIO path
     corpus_path: str | None = None  # MinIO path
     model_path: str | None = None  # MinIO path
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -73,8 +73,8 @@ class CorpusState:
             dictionary_path=data.get("dictionary_path"),
             corpus_path=data.get("corpus_path"),
             model_path=data.get("model_path"),
-            created_at=data.get("created_at", datetime.utcnow().isoformat()),
-            updated_at=data.get("updated_at", datetime.utcnow().isoformat()),
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            updated_at=data.get("updated_at", datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -246,7 +246,7 @@ def save_dictionary(
     dictionary: Any,
     bucket: str = "gaius-models",
     prefix: str = "corpora",
-    version_id: str = None,
+    version_id: str | None = None,
 ) -> str:
     """Save Gensim dictionary to MinIO.
 
@@ -264,7 +264,7 @@ def save_dictionary(
     client = get_minio_client()
 
     if version_id is None:
-        version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        version_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     s3_path = f"{prefix}/{version_id}/dictionary.dict"
 
@@ -308,7 +308,7 @@ def save_corpus(
     corpus: list[list[tuple[int, int]]],
     bucket: str = "gaius-models",
     prefix: str = "corpora",
-    version_id: str = None,
+    version_id: str | None = None,
 ) -> str:
     """Save corpus to MinIO in Market Matrix format.
 
@@ -328,7 +328,7 @@ def save_corpus(
     client = get_minio_client()
 
     if version_id is None:
-        version_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        version_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     s3_path = f"{prefix}/{version_id}/corpus.mm"
 

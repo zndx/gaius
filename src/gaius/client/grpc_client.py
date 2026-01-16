@@ -37,6 +37,7 @@ from ..engine.generated import (
     InferParameter,
     # Gaius stubs
     GaiusServiceStub,
+    GaiusServiceAsyncStub,
     CompleteRequest,
     SubmitJobRequest,
     GetJobResultRequest,
@@ -58,6 +59,48 @@ from ..engine.generated import (
     # Swarm streaming
     SwarmStreamRequest,
     SwarmEvent,
+    # HealthObserver
+    HealthObserverStatusRequest,
+    HealthObserverControlRequest,
+    ForceHealthCheckRequest,
+    ListIncidentsRequest,
+    GetIncidentDetailRequest,
+    ResolveIncidentRequest,
+    GetOrphanedIssuesRequest,
+    # Observability Dashboard
+    ObserveStatusRequest,
+    # X Bookmarks
+    XBookmarksAuthRequest,
+    XBookmarksCompleteAuthRequest,
+    XBookmarksAuthStatusRequest,
+    XBookmarksSyncRequest,
+    XBookmarksSyncStatusRequest,
+    XBookmarksServiceStatusRequest,
+    XBookmarksListFoldersRequest,
+    XBookmarksQueueStatusRequest,
+    XBookmarksEmitTestEventRequest,
+    # Streaming (Cognition/Evolution/Activity)
+    CognitionStreamRequest,
+    CognitionEvent,
+    EvolutionStreamRequest,
+    EvolutionEvent,
+    ActivityStreamRequest,
+    ActivityEvent,
+    # Ambient Computing
+    AmbientCycleRequest,
+    AmbientPhaseEvent,
+    AmbientStartRequest,
+    AmbientStartResponse,
+    AmbientStopRequest,
+    AmbientStopResponse,
+    AmbientSubscribeRequest,
+    # Prospects/Stewardship
+    ProspectsStatusRequest,
+    ProspectsStatusResponse,
+    ProspectsCheckRequest,
+    ProspectsCheckResponse,
+    ProspectsUpdateRequest,
+    ProspectsUpdateEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,12 +115,16 @@ class GrpcClientConfig:
         port: Server port
         timeout: Request timeout in seconds
         connect_timeout: Connection timeout in seconds
+        max_retries: Max connection retries (-1 = infinite, for TUI)
+        retry_interval: Seconds between retry attempts
     """
 
     host: str = "localhost"
     port: int = 50051
     timeout: float = 30.0
     connect_timeout: float = 5.0
+    max_retries: int = 3  # Default for CLI/MCP (finite)
+    retry_interval: float = 5.0  # Poll every 5 seconds
 
     @classmethod
     def from_env(cls) -> "GrpcClientConfig":
@@ -87,7 +134,39 @@ class GrpcClientConfig:
             port=int(os.environ.get("GAIUS_GRPC_PORT", "50051")),
             timeout=float(os.environ.get("GAIUS_ENGINE_TIMEOUT", "30")),
             connect_timeout=float(os.environ.get("GAIUS_CONNECT_TIMEOUT", "5")),
+            max_retries=int(os.environ.get("GAIUS_MAX_RETRIES", "3")),
+            retry_interval=float(os.environ.get("GAIUS_RETRY_INTERVAL", "5")),
         )
+
+    @classmethod
+    def for_tui(cls) -> "GrpcClientConfig":
+        """Create config for TUI (infinite retries).
+
+        TUI should never give up - it polls forever until engine is available.
+        """
+        config = cls.from_env()
+        config.max_retries = -1  # Infinite retries
+        return config
+
+    @classmethod
+    def for_cli(cls, max_retries: int = 3) -> "GrpcClientConfig":
+        """Create config for CLI (finite retries).
+
+        CLI operations are transactional - fail after max_retries.
+        """
+        config = cls.from_env()
+        config.max_retries = max_retries
+        return config
+
+    @classmethod
+    def for_mcp(cls, max_retries: int = 3) -> "GrpcClientConfig":
+        """Create config for MCP server (finite retries).
+
+        MCP operations are transactional - fail after max_retries.
+        """
+        config = cls.from_env()
+        config.max_retries = max_retries
+        return config
 
 
 class GrpcEngineClient:
@@ -120,7 +199,7 @@ class GrpcEngineClient:
         # gRPC channel and stubs
         self._channel: Optional[aio.Channel] = None
         self._inference_stub: Optional[GRPCInferenceServiceStub] = None
-        self._gaius_stub: Optional[GaiusServiceStub] = None
+        self._gaius_stub: Optional[GaiusServiceAsyncStub] = None
 
         # Event subscribers
         self._event_callbacks: list[Callable] = []
@@ -133,6 +212,56 @@ class GrpcEngineClient:
         # State
         self._connected = False
         self._using_socket = False  # For compatibility with EngineClient
+
+    @property
+    def _stub(self) -> GaiusServiceAsyncStub:
+        """Get the Gaius service stub, raising if not connected.
+
+        This property provides type-safe access to the stub with fail-fast
+        behavior if the client is not connected.
+
+        Raises:
+            RuntimeError: If client is not connected.
+        """
+        if self._gaius_stub is None:
+            raise RuntimeError(
+                "gRPC client not connected.\n"
+                "  Guru Meditation: #GRPC.00000001.NOT_CONNECTED\n"
+                "  Call connect() before using the client."
+            )
+        return self._gaius_stub
+
+    @property
+    def _inference(self) -> GRPCInferenceServiceStub:
+        """Get the inference service stub, raising if not connected.
+
+        Raises:
+            RuntimeError: If client is not connected.
+        """
+        if self._inference_stub is None:
+            raise RuntimeError(
+                "gRPC client not connected.\n"
+                "  Guru Meditation: #GRPC.00000001.NOT_CONNECTED\n"
+                "  Call connect() before using the client."
+            )
+        return self._inference_stub
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Async Context Manager Support
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def __aenter__(self) -> "GrpcEngineClient":
+        """Async context manager entry - connects to the engine."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Async context manager exit - disconnects from the engine."""
+        await self.disconnect()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Connection Management
+    # ─────────────────────────────────────────────────────────────────────────
 
     async def connect(self) -> bool:
         """Connect to the engine via gRPC.
@@ -163,7 +292,7 @@ class GrpcEngineClient:
 
             # Create stubs
             self._inference_stub = GRPCInferenceServiceStub(self._channel)
-            self._gaius_stub = GaiusServiceStub(self._channel)
+            self._gaius_stub = GaiusServiceAsyncStub(self._channel)
 
             self._connected = True
             logger.info(f"Connected to engine via gRPC at {target}")
@@ -199,15 +328,19 @@ class GrpcEngineClient:
             except asyncio.CancelledError:
                 pass
 
-        # Close channel
+        # Close channel (grace=None for immediate close)
         if self._channel:
-            await self._channel.close()
+            await self._channel.close(grace=None)
 
         self._connected = False
         self._channel = None
         self._inference_stub = None
         self._gaius_stub = None
         logger.info("Disconnected from engine (gRPC)")
+
+    async def close(self) -> None:
+        """Close the client connection (alias for disconnect)."""
+        await self.disconnect()
 
     async def call(
         self,
@@ -216,9 +349,10 @@ class GrpcEngineClient:
         params: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> dict[str, Any]:
-        """Call a service action.
+        """Call a service action with automatic retry on connection failure.
 
-        Maps service/action pairs to gRPC method calls.
+        Maps service/action pairs to gRPC method calls. Retries on connection
+        failures according to config.max_retries (-1 = infinite for TUI).
 
         Args:
             service: Service name (Orchestrator, Scheduler, etc.)
@@ -231,70 +365,263 @@ class GrpcEngineClient:
 
         Raises:
             TimeoutError: If request times out
-            ConnectionError: If not connected after retry
+            ConnectionError: If not connected after max retries
             RuntimeError: If request fails
         """
-        # Attempt reconnection if not connected
-        if not self._connected:
-            connected = await self.connect()
-            if not connected:
-                raise ConnectionError("Not connected to engine (reconnection failed)")
-
         timeout = timeout or self.config.timeout
         params = params or {}
 
-        try:
-            # Route to appropriate gRPC method
-            if service == "Orchestrator":
-                return await self._call_orchestrator(action, params, timeout)
-            elif service == "Scheduler":
-                return await self._call_scheduler(action, params, timeout)
-            elif service == "Evolution":
-                return await self._call_evolution(action, params, timeout)
-            elif service == "Grid":
-                return await self._call_grid(action, params, timeout)
-            elif service == "Tda":
-                return await self._call_tda(action, params, timeout)
-            elif service == "Health":
-                return await self._call_health(action, params, timeout)
-            elif service == "Cognition":
-                return await self._call_cognition(action, params, timeout)
-            elif service == "Workload":
-                return await self._call_workload(action, params, timeout)
-            elif service == "Embedding":
-                return await self._call_embedding(action, params, timeout)
-            elif service == "Init":
-                return await self._call_init(action, params, timeout)
-            else:
-                raise ValueError(f"Unknown service: {service}")
+        attempt = 0
+        last_error: Optional[Exception] = None
 
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"Request {service}.{action} timed out")
+        while True:
+            attempt += 1
+            infinite_retries = self.config.max_retries == -1
+
+            # Attempt connection if not connected
+            if not self._connected:
+                connected = await self.connect()
+                if not connected:
+                    # Check if we should retry
+                    if infinite_retries or attempt <= self.config.max_retries:
+                        logger.debug(
+                            f"gRPC connection failed, retry {attempt}"
+                            f"{'/' + str(self.config.max_retries) if not infinite_retries else ' (infinite)'}"
+                            f" in {self.config.retry_interval}s"
+                        )
+                        await asyncio.sleep(self.config.retry_interval)
+                        continue
+                    else:
+                        # #GR.00000001.CONNFAIL - gRPC connection failed after max retries
+                        error_msg = (
+                            f"#GR.00000001.CONNFAIL: gRPC connection failed after {attempt} attempts.\n"
+                            f"  Engine may not be running. Try:\n"
+                            f"  1. Check engine status: devenv processes\n"
+                            f"  2. Restart engine: devenv tasks run restart:clean\n"
+                            f"  3. Check logs: tail -f .devenv/processes.log"
+                        )
+                        logger.error(error_msg)
+                        raise ConnectionError(error_msg)
+
+            try:
+                # Route to appropriate gRPC method
+                return await self._dispatch_call(service, action, params, timeout)
+
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"Request {service}.{action} timed out")
+            except grpc.RpcError as e:
+                code = e.code()
+                details = e.details()
+
+                if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                    raise TimeoutError(f"Request {service}.{action} timed out")
+
+                elif code == grpc.StatusCode.UNAVAILABLE:
+                    # Mark as disconnected for retry
+                    self._connected = False
+                    last_error = ConnectionError(f"Service unavailable: {details}")
+
+                    # Check if we should retry
+                    if infinite_retries or attempt <= self.config.max_retries:
+                        logger.debug(
+                            f"gRPC service unavailable, retry {attempt}"
+                            f"{'/' + str(self.config.max_retries) if not infinite_retries else ' (infinite)'}"
+                            f" in {self.config.retry_interval}s"
+                        )
+                        await asyncio.sleep(self.config.retry_interval)
+                        continue
+                    else:
+                        # #GR.00000002.SVCUNAVAIL - Service unavailable after max retries
+                        error_msg = (
+                            f"#GR.00000002.SVCUNAVAIL: gRPC service unavailable after {attempt} attempts.\n"
+                            f"  Engine may have crashed or restarted. Try:\n"
+                            f"  1. Check engine status: /health quick\n"
+                            f"  2. Restart engine: devenv tasks run restart:clean"
+                        )
+                        logger.error(error_msg)
+                        raise ConnectionError(error_msg)
+
+                else:
+                    raise RuntimeError(f"gRPC error ({code.name}): {details}")
+
+    async def stream(
+        self,
+        service: str,
+        action: str,
+        params: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream events from a server-streaming RPC with idle timeout.
+
+        Uses an idle timeout that resets each time an event is received.
+        This allows long-running operations to proceed indefinitely as long
+        as they're making progress, while detecting stuck operations.
+
+        Currently supports:
+            - Prospects.update: Stream progress events during full analysis
+
+        Args:
+            service: Service name (e.g., "Prospects")
+            action: Action to perform (e.g., "update")
+            params: Action parameters
+            timeout: Idle timeout in seconds (default 300s = 5 minutes).
+                     Only triggers if no events received for this duration.
+
+        Yields:
+            Event dicts from the streaming response
+
+        Raises:
+            TimeoutError: If no events received within idle timeout
+            ConnectionError: If not connected
+            RuntimeError: If request fails
+        """
+        timeout = timeout or 300.0  # 5 minute idle timeout (resets on each event received)
+        params = params or {}
+
+        # Ensure connected
+        if not self._connected:
+            connected = await self.connect()
+            if not connected:
+                raise ConnectionError(
+                    "#GR.00000001.CONNFAIL: gRPC not connected for streaming call"
+                )
+
+        # Dispatch to appropriate streaming method
+        if service == "Prospects" and action == "update":
+            async for event in self._stream_prospects_update(params, timeout):
+                yield event
+        else:
+            raise ValueError(
+                f"Streaming not supported for {service}.{action}. "
+                f"Use call() for non-streaming operations."
+            )
+
+    async def _stream_prospects_update(
+        self,
+        params: dict,
+        idle_timeout: float,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream ProspectsUpdate events with idle timeout.
+
+        Uses an idle timeout that resets on each received event, rather than
+        an absolute deadline. This allows long-running operations to proceed
+        as long as they're making progress.
+
+        Args:
+            params: Update parameters (profile, domain, symbols, force)
+            idle_timeout: Idle timeout in seconds (default 300s = 5 minutes).
+                          Only triggers if no events received for this duration.
+
+        Yields:
+            Event dicts with type, progress, message, etc.
+        """
+        profile = params.get("profile", "zndx")
+        domain = params.get("domain", "prospecting")
+        symbols = params.get("symbols", [])
+        force = params.get("force", False)
+        filings_per_symbol = params.get("filings_per_symbol", 0)
+
+        request = ProspectsUpdateRequest(
+            profile=profile,
+            domain=domain,
+            symbols=symbols,
+            force=force,
+            filings_per_symbol=filings_per_symbol,
+        )
+
+        try:
+            # Use no gRPC timeout - we manage idle timeout ourselves
+            stream = self._stub.ProspectsUpdate(request)
+            async_iter = stream.__aiter__()
+
+            while True:
+                try:
+                    # Wait for next event with idle timeout
+                    event = await asyncio.wait_for(
+                        async_iter.__anext__(),
+                        timeout=idle_timeout,
+                    )
+                    yield MessageToDict(event, preserving_proto_field_name=True)
+                except StopAsyncIteration:
+                    # Stream completed normally
+                    break
+                except asyncio.TimeoutError:
+                    # No event received within idle timeout
+                    raise TimeoutError(
+                        f"ProspectsUpdate stream idle for {idle_timeout}s with no events. "
+                        f"The operation may be stuck. Check /prospects status for details."
+                    )
+
         except grpc.RpcError as e:
             code = e.code()
             details = e.details()
-            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
-                raise TimeoutError(f"Request {service}.{action} timed out")
-            elif code == grpc.StatusCode.UNAVAILABLE:
-                # Mark as disconnected so next call triggers reconnection
+
+            if code == grpc.StatusCode.UNAVAILABLE:
                 self._connected = False
-                raise ConnectionError(f"Service unavailable: {details}")
+                raise ConnectionError(f"Service unavailable during streaming: {details}")
             else:
-                raise RuntimeError(f"gRPC error ({code.name}): {details}")
+                raise RuntimeError(f"ProspectsUpdate stream error ({code.name}): {details}")
+
+    async def _dispatch_call(
+        self, service: str, action: str, params: dict, timeout: float
+    ) -> dict[str, Any]:
+        """Dispatch call to appropriate service handler."""
+        if service == "Orchestrator":
+            return await self._call_orchestrator(action, params, timeout)
+        elif service == "Scheduler":
+            return await self._call_scheduler(action, params, timeout)
+        elif service == "Evolution":
+            return await self._call_evolution(action, params, timeout)
+        elif service == "Grid":
+            return await self._call_grid(action, params, timeout)
+        elif service == "Tda":
+            return await self._call_tda(action, params, timeout)
+        elif service == "Health":
+            return await self._call_health(action, params, timeout)
+        elif service == "Cognition":
+            return await self._call_cognition(action, params, timeout)
+        elif service == "Workload":
+            return await self._call_workload(action, params, timeout)
+        elif service == "Embedding":
+            return await self._call_embedding(action, params, timeout)
+        elif service == "Init":
+            return await self._call_init(action, params, timeout)
+        elif service == "Search":
+            return await self._call_search(action, params, timeout)
+        elif service == "Gaius":
+            return await self._call_gaius(action, params, timeout)
+        elif service == "CLT":
+            return await self._call_clt(action, params, timeout)
+        elif service == "HealthObserver":
+            return await self._call_health_observer(action, params, timeout)
+        elif service == "Observe":
+            return await self._call_observe(action, params, timeout)
+        elif service == "XBookmarks":
+            return await self._call_x_bookmarks(action, params, timeout)
+        elif service == "Ambient":
+            return await self._call_ambient(action, params, timeout)
+        elif service == "Datasets":
+            return await self._call_datasets(action, params, timeout)
+        elif service == "Models":
+            return await self._call_models(action, params, timeout)
+        elif service == "Prospects":
+            return await self._call_prospects(action, params, timeout)
+        else:
+            raise ValueError(f"Unknown service: {service}")
 
     async def _call_orchestrator(
         self, action: str, params: dict, timeout: float
     ) -> dict:
         """Handle Orchestrator service calls."""
         if action == "status":
-            response = await self._gaius_stub.OrchestratorStatus(
+            response = await self._stub.OrchestratorStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "list_agents":
-            response = await self._gaius_stub.OrchestratorStatus(
+            response = await self._stub.OrchestratorStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -304,7 +631,7 @@ class GrpcEngineClient:
         elif action == "ensure":
             # Agent-first: ensure endpoint is available
             endpoint = params.get("endpoint", "")
-            response = await self._gaius_stub.EnsureEndpoint(
+            response = await self._stub.EnsureEndpoint(
                 StartEndpointRequest(endpoint_name=endpoint),  # Reuse StartEndpointRequest
                 timeout=timeout,
             )
@@ -312,7 +639,7 @@ class GrpcEngineClient:
 
         elif action == "start":
             endpoint = params.get("endpoint", "")
-            response = await self._gaius_stub.StartEndpoint(
+            response = await self._stub.StartEndpoint(
                 StartEndpointRequest(endpoint_name=endpoint),
                 timeout=timeout,
             )
@@ -321,7 +648,7 @@ class GrpcEngineClient:
         elif action == "stop":
             endpoint = params.get("endpoint", "")
             force = params.get("force", False)
-            response = await self._gaius_stub.StopEndpoint(
+            response = await self._stub.StopEndpoint(
                 StopEndpointRequest(endpoint_name=endpoint, force=force),
                 timeout=timeout,
             )
@@ -329,7 +656,7 @@ class GrpcEngineClient:
 
         elif action == "restart":
             endpoint = params.get("endpoint", "")
-            response = await self._gaius_stub.RestartEndpoint(
+            response = await self._stub.RestartEndpoint(
                 RestartEndpointRequest(endpoint_name=endpoint),
                 timeout=timeout,
             )
@@ -338,7 +665,7 @@ class GrpcEngineClient:
         elif action == "clean_start":
             from ..engine.generated import CleanStartRequest
             endpoints = params.get("endpoints", [])
-            response = await self._gaius_stub.CleanStart(
+            response = await self._stub.CleanStart(
                 CleanStartRequest(endpoints=endpoints),
                 timeout=timeout,
             )
@@ -350,7 +677,7 @@ class GrpcEngineClient:
     async def _call_scheduler(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Scheduler service calls."""
         if action == "status":
-            response = await self._gaius_stub.SchedulerStatus(
+            response = await self._stub.SchedulerStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -358,31 +685,31 @@ class GrpcEngineClient:
 
         elif action == "complete":
             request = CompleteRequest(
-                agent_alias=params.get("agent", "fast"),
+                agent_alias=params.get("agent", "instruct"),
                 prompt=params.get("prompt", ""),
                 system_prompt=params.get("system_prompt", ""),
                 max_tokens=params.get("max_tokens", 2048),
                 temperature=params.get("temperature", 0.7),
                 priority=params.get("priority", "normal"),
             )
-            response = await self._gaius_stub.Complete(request, timeout=timeout)
+            response = await self._stub.Complete(request, timeout=timeout)
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "submit":
             request = SubmitJobRequest(
-                agent_alias=params.get("agent", "fast"),
+                agent_alias=params.get("agent", "instruct"),
                 prompt=params.get("prompt", ""),
                 system_prompt=params.get("system_prompt", ""),
                 max_tokens=params.get("max_tokens", 2048),
                 temperature=params.get("temperature", 0.7),
                 priority=params.get("priority", "normal"),
             )
-            response = await self._gaius_stub.SubmitJob(request, timeout=timeout)
+            response = await self._stub.SubmitJob(request, timeout=timeout)
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "get_result":
             job_id = params.get("job_id", "")
-            response = await self._gaius_stub.GetJobResult(
+            response = await self._stub.GetJobResult(
                 GetJobResultRequest(job_id=job_id),
                 timeout=timeout,
             )
@@ -392,13 +719,21 @@ class GrpcEngineClient:
             # Run swarm by calling Complete for each agent role
             return await self._run_swarm_via_grpc(params, timeout)
 
+        elif action == "budget":
+            # XAI budget status via gRPC
+            response = await self._stub.XAIBudget(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
         else:
             raise ValueError(f"Unknown Scheduler action: {action}")
 
     async def _call_evolution(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Evolution service calls."""
         if action == "status":
-            response = await self._gaius_stub.EvolutionStatus(
+            response = await self._stub.EvolutionStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -406,21 +741,21 @@ class GrpcEngineClient:
 
         elif action == "trigger":
             agent_id = params.get("agent_id", "")
-            response = await self._gaius_stub.TriggerEvolution(
+            response = await self._stub.TriggerEvolution(
                 TriggerEvolutionRequest(agent_id=agent_id),
                 timeout=timeout,
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "start":
-            response = await self._gaius_stub.StartEvolution(
+            response = await self._stub.StartEvolution(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
         elif action == "stop":
-            response = await self._gaius_stub.StopEvolution(
+            response = await self._stub.StopEvolution(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -438,7 +773,7 @@ class GrpcEngineClient:
             embedding_ids = params.get("embedding_ids", [])
             method = params.get("method", "umap")
             grid_size = params.get("grid_size", 19)
-            response = await self._gaius_stub.ProjectEmbeddings(
+            response = await self._stub.ProjectEmbeddings(
                 ProjectEmbeddingsRequest(
                     embedding_ids=embedding_ids,
                     method=method,
@@ -451,7 +786,7 @@ class GrpcEngineClient:
         elif action == "project_query":
             embedding = params.get("embedding", [])
             method = params.get("method", "umap")
-            response = await self._gaius_stub.ProjectQuery(
+            response = await self._stub.ProjectQuery(
                 ProjectQueryRequest(embedding=embedding, method=method),
                 timeout=timeout,
             )
@@ -469,7 +804,7 @@ class GrpcEngineClient:
             embedding_ids = params.get("embedding_ids", [])
             method = params.get("method", "persistent_homology")
             max_dimension = params.get("max_dimension", 2)
-            response = await self._gaius_stub.ComputeTDA(
+            response = await self._stub.ComputeTDA(
                 ComputeTDARequest(
                     embedding_ids=embedding_ids,
                     method=method,
@@ -515,7 +850,7 @@ class GrpcEngineClient:
                     "Ensure gaius-engine is running."
                 )
 
-        response = await self._gaius_stub.Explain(
+        response = await self._stub.Explain(
             ExplainRequest(
                 kb_root=kb_root,
                 x=x,
@@ -532,7 +867,7 @@ class GrpcEngineClient:
         """Handle Health service calls."""
         if action == "status" or action == "live":
             # Use OIP ServerLive
-            response = await self._inference_stub.ServerLive(
+            response = await self._inference.ServerLive(
                 ServerLiveRequest(),
                 timeout=timeout,
             )
@@ -540,16 +875,26 @@ class GrpcEngineClient:
 
         elif action == "check":
             # Comprehensive health check - get endpoint status from orchestrator
-            orch_response = await self._gaius_stub.OrchestratorStatus(
+            orch_response = await self._stub.OrchestratorStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
             result = MessageToDict(orch_response, preserving_proto_field_name=True)
             # Convert endpoints list to dict for easier access
+            # Normalize protobuf enum status to simple strings
+            status_map = {
+                "PROCESS_STATUS_HEALTHY": "healthy",
+                "PROCESS_STATUS_UNHEALTHY": "unhealthy",
+                "PROCESS_STATUS_STARTING": "starting",
+                "PROCESS_STATUS_STOPPED": "stopped",
+                "PROCESS_STATUS_STOPPING": "stopping",
+                "PROCESS_STATUS_FAILED": "failed",
+            }
             endpoints = {}
             for ep in result.get("endpoints", []):
+                raw_status = ep.get("status", "unknown")
                 endpoints[ep.get("name", "")] = {
-                    "status": ep.get("status", "unknown"),
+                    "status": status_map.get(raw_status, raw_status),
                     "port": ep.get("port", 0),
                     "model": ep.get("model", ""),
                 }
@@ -560,7 +905,7 @@ class GrpcEngineClient:
             return {"utilization": {}}
 
         elif action == "ready":
-            response = await self._inference_stub.ServerReady(
+            response = await self._inference.ServerReady(
                 ServerReadyRequest(),
                 timeout=timeout,
             )
@@ -568,7 +913,7 @@ class GrpcEngineClient:
 
         elif action == "model_ready":
             model_name = params.get("model", "")
-            response = await self._inference_stub.ModelReady(
+            response = await self._inference.ModelReady(
                 ModelReadyRequest(name=model_name),
                 timeout=timeout,
             )
@@ -582,6 +927,32 @@ class GrpcEngineClient:
                 "queue_depth": 0,
             }
 
+        elif action == "gpu_detailed":
+            # Get detailed GPU health via HealthStream (single snapshot)
+            from ..engine.generated import gaius_service_pb2
+            request = gaius_service_pb2.HealthStreamRequest(interval_ms=0)
+            try:
+                # Stream returns first message immediately with interval_ms=0
+                async for metrics in self._stub.HealthStream(request, timeout=timeout):
+                    # Convert protobuf to dict
+                    gpus = []
+                    for gpu in metrics.gpus:
+                        gpus.append({
+                            "gpu_id": gpu.gpu_id,
+                            "utilization": gpu.utilization,
+                            "memory_used_gb": gpu.memory_used_gb,
+                            "memory_total_gb": gpu.memory_total_gb,
+                            "temperature_c": gpu.temperature_c,
+                            "power_watts": gpu.power_watts,
+                            "is_healthy": gpu.temperature_c < 85 and gpu.memory_used_gb < gpu.memory_total_gb * 0.95,
+                        })
+                    return {"gpus": gpus}
+            except Exception as e:
+                # Fallback: return empty GPU list with error
+                return {"gpus": [], "error": str(e)}
+            # Stream was empty (no messages received)
+            return {"gpus": [], "error": "No GPU metrics received from stream"}
+
         else:
             raise ValueError(f"Unknown Health action: {action}")
 
@@ -590,7 +961,7 @@ class GrpcEngineClient:
         from datetime import datetime
 
         if action == "status":
-            response = await self._gaius_stub.CognitionStatus(
+            response = await self._stub.CognitionStatus(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -610,7 +981,7 @@ class GrpcEngineClient:
             from ..engine.generated import GetRecentThoughtsRequest
 
             limit = params.get("limit", 10)
-            response = await self._gaius_stub.GetRecentThoughts(
+            response = await self._stub.GetRecentThoughts(
                 GetRecentThoughtsRequest(limit=limit),
                 timeout=timeout,
             )
@@ -634,7 +1005,7 @@ class GrpcEngineClient:
             return {"thoughts": thoughts}
 
         elif action == "activity":
-            response = await self._gaius_stub.CognitionActivity(
+            response = await self._stub.CognitionActivity(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -652,7 +1023,7 @@ class GrpcEngineClient:
 
             max_thoughts = params.get("max_thoughts", 5)
             trigger_reason = params.get("trigger_reason", "manual")
-            response = await self._gaius_stub.TriggerCognition(
+            response = await self._stub.TriggerCognition(
                 TriggerCognitionRequest(
                     max_thoughts=max_thoughts,
                     trigger_reason=trigger_reason,
@@ -666,7 +1037,42 @@ class GrpcEngineClient:
                 "connections_found": response.connections_found,
                 "curiosities_generated": response.curiosities_generated,
                 "duration_ms": response.duration_ms,
+                "kb_path": response.kb_path if response.kb_path else None,
+                "tokens_out": response.tokens_out,
                 "error": response.error or None,
+            }
+
+        elif action == "self_observation":
+            from ..engine.generated import SelfObservationRequest
+
+            max_observations = params.get("max_observations", 5)
+            response = await self._stub.SelfObservation(
+                SelfObservationRequest(max_observations=max_observations),
+                timeout=timeout,
+            )
+            return {
+                "success": response.success,
+                "observations_generated": response.observations_generated,
+                "duration_ms": response.duration_ms,
+                "error": response.error or None,
+                "observation_ids": list(response.observation_ids),
+            }
+
+        elif action == "engine_audit":
+            from ..engine.generated import EngineAuditRequest
+
+            include_metrics = params.get("include_metrics", True)
+            response = await self._stub.EngineAudit(
+                EngineAuditRequest(include_metrics=include_metrics),
+                timeout=timeout,
+            )
+            return {
+                "success": response.success,
+                "observations_recorded": response.observations_recorded,
+                "anomalies_found": response.anomalies_found,
+                "duration_ms": response.duration_ms,
+                "error": response.error or None,
+                "anomaly_details": list(response.anomaly_details),
             }
 
         else:
@@ -702,7 +1108,7 @@ class GrpcEngineClient:
                 estimated_duration_s=params.get("estimated_duration_s", 60),
                 estimated_memory_mb=params.get("estimated_memory_mb", 0),
             )
-            response = await self._gaius_stub.BeginWorkload(request, timeout=timeout)
+            response = await self._stub.BeginWorkload(request, timeout=timeout)
             result = MessageToDict(response, preserving_proto_field_name=True)
             return result
 
@@ -710,11 +1116,11 @@ class GrpcEngineClient:
             request = CompleteWorkloadRequest(
                 workload_id=params.get("workload_id", ""),
             )
-            await self._gaius_stub.CompleteWorkload(request, timeout=timeout)
+            await self._stub.CompleteWorkload(request, timeout=timeout)
             return {"success": True}
 
         elif action == "active":
-            response = await self._gaius_stub.GetActiveWorkloads(
+            response = await self._stub.GetActiveWorkloads(
                 empty_pb2.Empty(),
                 timeout=timeout,
             )
@@ -733,7 +1139,7 @@ class GrpcEngineClient:
             model = params.get("model", "")
 
             request = EmbedTextsRequest(texts=texts, model=model)
-            response = await self._gaius_stub.EmbedTexts(request, timeout=timeout)
+            response = await self._stub.EmbedTexts(request, timeout=timeout)
 
             # Convert embeddings to lists
             embeddings = [list(v.values) for v in response.embeddings]
@@ -749,6 +1155,1203 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Embedding action: {action}")
+
+    async def _call_search(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Search service calls via gRPC."""
+        from ..engine.generated import SemanticSearchRequest
+
+        if action == "semantic":
+            request = SemanticSearchRequest(
+                query=params.get("query", ""),
+                collection=params.get("collection", "kb"),
+                limit=params.get("limit", 10),
+                min_score=params.get("min_score", 0.0),
+                use_maxsim=params.get("use_maxsim", True),
+                content_type=params.get("content_type", ""),
+            )
+            response = await self._stub.SemanticSearch(request, timeout=timeout)
+
+            return {
+                "results": [
+                    {
+                        "path": r.path,
+                        "title": r.title,
+                        "score": r.score,
+                        "snippet": r.snippet,
+                        "chunk_id": r.chunk_id,
+                        "content_type": r.content_type,
+                    }
+                    for r in response.results
+                ],
+                "total": response.total,
+                "collection": response.collection,
+                "embedding_model": response.embedding_model,
+                "latency_ms": response.latency_ms,
+            }
+
+        else:
+            raise ValueError(f"Unknown Search action: {action}")
+
+    async def _call_gaius(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Gaius-specific service calls (MetaAgent, ThetaAgent, etc.)."""
+        from ..engine.generated import (
+            MetaAgentQueryRequest,
+            ThetaSitrepRequest,
+            ThetaConsolidateRequest,
+            ThetaConsolidationStatsRequest,
+        )
+
+        if action == "ThetaSitrep":
+            request = ThetaSitrepRequest(
+                horizon=params.get("horizon", "day"),
+            )
+            response = await self._stub.ThetaSitrep(request, timeout=timeout)
+            # Parse report_json if available for detailed data
+            import json
+            report_data = {}
+            if response.report_json:
+                try:
+                    report_data = json.loads(response.report_json.decode())
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+            return {
+                "success": response.success,
+                "horizon": response.horizon,
+                "healthy": response.healthy,
+                "status_text": response.status_text,
+                "gpu_count": response.gpu_count,
+                "endpoint_count": response.endpoint_count,
+                "priority_count": response.priority_count,
+                "thought_count": response.thought_count,
+                "objective_count": response.objective_count,
+                "project_count": response.project_count,
+                "ascii_format": response.ascii_format,
+                "report": report_data,
+                "error": response.error,
+            }
+
+        elif action == "ThetaConsolidate":
+            request = ThetaConsolidateRequest(
+                temporal_slice=params.get("temporal_slice", ""),
+                max_candidates=params.get("max_candidates", 10),
+                research_mode=params.get("research_mode", True),
+            )
+            response = await self._stub.ThetaConsolidate(request, timeout=timeout)
+            return {
+                "success": response.success,
+                "slice_id": response.slice_id,
+                "urgency": response.urgency,
+                "drift": response.drift,
+                "candidates_evaluated": response.candidates_evaluated,
+                "candidates_selected": response.candidates_selected,
+                "documents_augmented": response.documents_augmented,
+                "error": response.error,
+                "guru_meditation": response.guru_meditation,
+            }
+
+        elif action == "ThetaConsolidationStats":
+            request = ThetaConsolidationStatsRequest()
+            response = await self._stub.ThetaConsolidationStats(
+                request, timeout=timeout
+            )
+            return {
+                "dynamics": {
+                    "k": response.nvar_k,
+                    "polynomial_order": response.nvar_order,
+                    "slice_count": response.slice_count,
+                    "can_predict": response.can_predict,
+                },
+                "kg_policy": {
+                    "research_mode": response.research_mode,
+                    "measurement_cost": response.measurement_cost,
+                    "belief_state": {
+                        "n_measurements": response.n_measurements,
+                        "current_best": response.current_best_value,
+                    },
+                },
+                "effectiveness": {
+                    "history_length": response.effectiveness_history_length,
+                    "trend": {
+                        "trend": response.effectiveness_trend,
+                        "mean_contribution": response.mean_contribution,
+                    },
+                },
+                "subsumption": {
+                    "confidence_threshold": response.confidence_threshold,
+                    "template_type": response.template_type,
+                    "classifier_loaded": response.classifier_loaded,
+                },
+            }
+
+        elif action == "MetaAgentQuery":
+            request = MetaAgentQueryRequest(
+                query=params.get("query", ""),
+                domains=params.get("domains", []),
+                include_dot=params.get("include_dot", True),
+                include_markdown=params.get("include_markdown", True),
+                max_agents=params.get("max_agents", 5),
+            )
+            response = await self._stub.MetaAgentQuery(request, timeout=timeout)
+
+            # Decode agent insights bytes
+            agent_insights = {}
+            for role_name, insight_bytes in response.agent_insights.items():
+                import json
+                try:
+                    agent_insights[role_name] = json.loads(insight_bytes.decode())
+                except Exception:
+                    agent_insights[role_name] = {}
+
+            return {
+                "success": response.success,
+                "answer": response.answer,
+                "dot_graph": response.dot_graph,
+                "markdown_tables": list(response.markdown_tables),
+                "agent_insights": agent_insights,
+                "queries_executed": list(response.queries_executed),
+                "agents_used": response.agents_used,
+                "duration_ms": response.duration_ms,
+                "error": response.error,
+            }
+
+        else:
+            raise ValueError(f"Unknown Gaius action: {action}")
+
+    async def _call_clt(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle CLT (Cross-Layer Transcoders) service calls.
+
+        CLT provides interpretable sparse feature extraction and attribution
+        graphs for circuit tracing via BluelightAI's circuit-tracer library.
+
+        Args:
+            action: Action to perform (status, extract, attribute)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with sparse features or attribution edges
+        """
+        from ..engine.generated import (
+            CLTStatusRequest,
+            CLTExtractRequest,
+            CLTAttributeRequest,
+        )
+
+        if action == "status":
+            request = CLTStatusRequest()
+            response = await self._stub.CLTStatus(request, timeout=timeout)
+            return {
+                "available": response.available,
+                "models": list(response.models),
+                "loaded_model": response.loaded_model,
+                "features_per_layer": response.features_per_layer,
+                "l0_sparsity": response.l0_sparsity,
+                "error": response.error,
+            }
+
+        elif action == "extract":
+            request = CLTExtractRequest(
+                text=params.get("text", ""),
+                model_name=params.get("model_name", "qwen3-1.7b"),
+                layer_indices=params.get("layer_indices", []),
+                top_k=params.get("top_k", 115),
+                device=params.get("device", "cuda"),
+            )
+            response = await self._stub.CLTExtract(request, timeout=timeout)
+
+            # Convert proto features to dicts
+            features = [
+                {
+                    "layer_idx": f.layer_idx,
+                    "position": f.position,
+                    "feature_idx": f.feature_idx,
+                    "activation": f.activation,
+                    "semantic_label": f.semantic_label,
+                }
+                for f in response.features
+            ]
+
+            return {
+                "success": response.success,
+                "features": features,
+                "total_positions": response.total_positions,
+                "sparsity": response.sparsity,
+                "text": params.get("text", ""),  # Echo back input text
+                "error": response.error,
+            }
+
+        elif action == "attribute":
+            request = CLTAttributeRequest(
+                text=params.get("text", ""),
+                model_name=params.get("model_name", "qwen3-1.7b"),
+                target_positions=params.get("target_positions", []),
+                threshold=params.get("threshold", 0.01),
+                device=params.get("device", "cuda"),
+            )
+            response = await self._stub.CLTAttribute(request, timeout=timeout)
+
+            # Convert proto edges to dicts
+            edges = [
+                {
+                    "source_layer": e.source_layer,
+                    "source_feature": e.source_feature,
+                    "target_layer": e.target_layer,
+                    "target_feature": e.target_feature,
+                    "weight": e.weight,
+                }
+                for e in response.edges
+            ]
+
+            return {
+                "success": response.success,
+                "edges": edges,
+                "dot_graph": response.dot_graph,
+                "text": params.get("text", ""),  # Echo back input text
+                "target_positions": params.get("target_positions", []),  # Echo back input
+                "error": response.error,
+            }
+
+        else:
+            raise ValueError(f"Unknown CLT action: {action}")
+
+    async def _call_health_observer(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle HealthObserver service calls via gRPC.
+
+        HealthObserver provides autonomous FMEA-based health monitoring
+        with tiered remediation and ACP escalation for complex issues.
+
+        Args:
+            action: Action to perform (status, start, stop, incidents, check, incident_detail)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with status, incidents, or health check results
+        """
+        if action == "status":
+            request = HealthObserverStatusRequest()
+            response = await self._stub.HealthObserverStatus(
+                request, timeout=timeout
+            )
+            return {
+                "running": response.running,
+                "enabled": response.enabled,
+                "poll_count": response.poll_count,
+                "last_poll_at": response.last_poll_at or None,
+                "poll_interval": response.config.poll_interval if response.config else 30,
+                "escalate_to_acp": response.config.escalate_to_acp if response.config else True,
+                "github_repo": response.config.github_repo if response.config else "",
+                "incidents_created": response.metrics.incidents_created if response.metrics else 0,
+                "incidents_resolved": response.metrics.incidents_resolved if response.metrics else 0,
+                "acp_escalations": response.metrics.acp_escalations if response.metrics else 0,
+                "active_incident_count": response.active_incidents,
+                "incidents": [
+                    {
+                        "incident_id": inc.incident_id,
+                        "fingerprint": inc.fingerprint,
+                        "endpoint": inc.endpoint,
+                        "failure_mode_id": inc.failure_mode_id,
+                        "rpn_score": inc.rpn_score,
+                        "current_tier": inc.current_tier,
+                        "attempts": inc.attempts,
+                        "status": inc.status,
+                        "created_at": inc.created_at,
+                        "github_issue": inc.github_issue if inc.github_issue else None,
+                    }
+                    for inc in response.incidents
+                ],
+            }
+
+        elif action == "start":
+            response = await self._stub.HealthObserverStart(
+                empty_pb2.Empty(), timeout=timeout
+            )
+            return {
+                "status": "started" if response.running else "already_running",
+                "poll_interval": response.config.poll_interval if response.config else 30,
+                "escalate_to_acp": response.config.escalate_to_acp if response.config else True,
+            }
+
+        elif action == "stop":
+            response = await self._stub.HealthObserverStop(
+                empty_pb2.Empty(), timeout=timeout
+            )
+            return {
+                "status": "stopped",
+                "active_incidents": response.active_incidents,  # Already an int count
+            }
+
+        elif action == "incidents":
+            status_filter = params.get("status", "active")
+            request = ListIncidentsRequest(status=status_filter)
+            response = await self._stub.HealthObserverListIncidents(
+                request, timeout=timeout
+            )
+            return {
+                "status_filter": status_filter,
+                "count": len(response.incidents),
+                "incidents": [
+                    {
+                        "incident_id": inc.incident_id,
+                        "fingerprint": inc.fingerprint,
+                        "endpoint": inc.endpoint,
+                        "failure_mode_id": inc.failure_mode_id,
+                        "rpn_score": inc.rpn_score,
+                        "current_tier": inc.current_tier,
+                        "attempts": inc.attempts,
+                        "status": inc.status,
+                        "created_at": inc.created_at,
+                        "github_issue": inc.github_issue if inc.github_issue else None,
+                    }
+                    for inc in response.incidents
+                ],
+            }
+
+        elif action == "check":
+            import json
+
+            request = ForceHealthCheckRequest()
+            response = await self._stub.HealthObserverForceCheck(
+                request, timeout=timeout
+            )
+            # Parse check details from proto messages
+            checks = []
+            for check in response.checks:
+                checks.append({
+                    "name": check.name,
+                    "status": check.status,
+                    "message": check.message,
+                    "heuristic_id": check.heuristic_id,
+                    "details": json.loads(check.details_json) if check.details_json else {},
+                })
+            return {
+                "healthy": response.healthy,
+                "summary": response.summary,
+                "passed": response.passed,
+                "warnings": response.warnings,
+                "failures": response.failures,
+                "new_incidents": response.new_incidents,
+                "checks": checks,
+            }
+
+        elif action == "incident_detail":
+            fingerprint = params.get("fingerprint", "")
+            request = GetIncidentDetailRequest(fingerprint=fingerprint)
+            response = await self._stub.HealthObserverGetIncident(
+                request, timeout=timeout
+            )
+            if not response.found:
+                return {
+                    "error": f"Incident not found: {fingerprint}",
+                }
+            inc = response.incident
+            return {
+                "incident": {
+                    "incident_id": inc.incident_id,
+                    "fingerprint": inc.fingerprint,
+                    "endpoint": inc.endpoint,
+                    "failure_mode_id": inc.failure_mode_id,
+                    "rpn_score": inc.rpn_score,
+                    "rpn_severity": inc.rpn_severity,
+                    "rpn_occurrence": inc.rpn_occurrence,
+                    "rpn_detection": inc.rpn_detection,
+                    "current_tier": inc.current_tier,
+                    "sequence_id": inc.sequence_id,
+                    "created_at": inc.created_at,
+                    "last_check_at": inc.last_check_at,
+                    "attempts": inc.attempts,
+                    "github_issue": inc.github_issue,
+                    "status": inc.status,
+                },
+            }
+
+        elif action == "resolve_incident":
+            fingerprint = params.get("fingerprint", "")
+            request = ResolveIncidentRequest(fingerprint=fingerprint)
+            response = await self._stub.HealthObserverResolveIncident(
+                request, timeout=timeout
+            )
+            return {
+                "resolved": response.resolved,
+                "fingerprint": response.fingerprint,
+                "was_active": response.was_active,
+                "note": response.note or None,
+            }
+
+        elif action == "get_orphaned_issues":
+            request = GetOrphanedIssuesRequest()
+            response = await self._stub.HealthObserverGetOrphanedIssues(
+                request, timeout=timeout
+            )
+            return {
+                "orphans": [
+                    {
+                        "issue_number": orphan.issue_number,
+                        "repo": orphan.repo,
+                        "fingerprint": orphan.fingerprint,
+                        "created_at": orphan.created_at or None,
+                        "issue_url": orphan.issue_url or None,
+                    }
+                    for orphan in response.orphans
+                ],
+            }
+
+        else:
+            raise ValueError(f"Unknown HealthObserver action: {action}")
+
+    async def _call_observe(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle Observe service calls via gRPC.
+
+        Provides observability dashboard data, aggregating metrics from
+        Prometheus and engine state for CLI /observe command.
+
+        Args:
+            action: Action to perform (status)
+            params: Action parameters (include_sparklines, sparkline_points)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with metrics, endpoints, and health summary
+        """
+        if action == "status":
+            include_sparklines = params.get("include_sparklines", False)
+            sparkline_points = params.get("sparkline_points", 20)
+
+            request = ObserveStatusRequest(
+                include_sparklines=include_sparklines,
+                sparkline_points=sparkline_points,
+            )
+            response = await self._stub.ObserveStatus(
+                request, timeout=timeout
+            )
+            return {
+                "timestamp": response.timestamp,
+                "prometheus_available": response.prometheus_available,
+                "metrics": [
+                    {
+                        "name": m.name,
+                        "display_name": m.display_name,
+                        "current_value": m.current_value,
+                        "unit": m.unit,
+                        "sparkline_data": list(m.sparkline_data) if m.sparkline_data else [],
+                        "status": m.status,
+                    }
+                    for m in response.metrics
+                ],
+                "endpoints": [
+                    {
+                        "name": ep.name,
+                        "status": ep.status,
+                        "gpus": list(ep.gpus) if ep.gpus else [],
+                        "model": ep.model,
+                    }
+                    for ep in response.endpoints
+                ],
+                "healthy_endpoints": response.healthy_endpoints,
+                "unhealthy_endpoints": response.unhealthy_endpoints,
+                "active_incidents": response.active_incidents,
+                "evolution_cycles": response.evolution_cycles,
+            }
+
+        else:
+            raise ValueError(f"Unknown Observe action: {action}")
+
+    async def _call_x_bookmarks(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        """Handle X Bookmarks service calls via gRPC.
+
+        X Bookmarks provides sync of X/Twitter bookmarks to Gaius KB
+        with OAuth 2.0 PKCE authentication and rate limiting.
+
+        Args:
+            action: Action to perform (get_auth_url, complete_auth, auth_status, trigger_sync, sync_status, service_status)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with auth info, sync status, or service status
+        """
+        if action == "get_auth_url":
+            request = XBookmarksAuthRequest()
+            response = await self._stub.XBookmarksGetAuthUrl(
+                request, timeout=timeout
+            )
+            return {
+                "auth_url": response.auth_url,
+                "state": response.state,
+                "verifier": response.verifier,
+            }
+
+        elif action == "complete_auth":
+            code = params.get("code", "")
+            verifier = params.get("verifier", "")
+            request = XBookmarksCompleteAuthRequest(code=code, verifier=verifier)
+            response = await self._stub.XBookmarksCompleteAuth(
+                request, timeout=timeout
+            )
+            return {
+                "success": response.success,
+                "message": response.message,
+            }
+
+        elif action == "auth_status":
+            request = XBookmarksAuthStatusRequest()
+            response = await self._stub.XBookmarksAuthStatus(
+                request, timeout=timeout
+            )
+            result = {
+                "authenticated": response.authenticated,
+                "user_id": response.user_id,
+                "username": response.username,
+                "expires_at": response.expires_at,
+                "scopes": list(response.scopes),
+                "error": response.error if response.error else None,
+                "guru_code": response.guru_code if response.guru_code else None,
+            }
+            # Add guidance fields if present
+            if response.action_required:
+                result["action_required"] = response.action_required
+            if response.guidance_message:
+                result["message"] = response.guidance_message
+            return result
+
+        elif action == "trigger_sync":
+            full_sync = params.get("full_sync", False)
+            folder_id = params.get("folder_id", "")
+            request = XBookmarksSyncRequest(full_sync=full_sync, folder_id=folder_id)
+            response = await self._stub.XBookmarksTriggerSync(
+                request, timeout=timeout
+            )
+            result = {
+                "started": response.started,
+                "run_id": response.run_id,
+                "message": response.message,
+                # Extended fields for detailed sync results
+                "status": response.status,
+                "bookmarks_fetched": response.bookmarks_fetched,
+                "iceberg_written": response.iceberg_written,
+                "queue_items": response.queue_items,
+            }
+            # Add guidance fields if present
+            if response.action_required:
+                result["action_required"] = response.action_required
+            if response.guidance_message:
+                result["guidance_message"] = response.guidance_message
+            return result
+
+        elif action == "sync_status":
+            user_id = params.get("user_id", "")
+            request = XBookmarksSyncStatusRequest(user_id=user_id)
+            response = await self._stub.XBookmarksSyncStatus(
+                request, timeout=timeout
+            )
+            result = {
+                "configured": response.configured,
+                "user_id": response.user_id,
+                "username": response.username,
+                "token_status": response.token_status,
+                "folder_count": response.folder_count,
+                "bookmark_count": response.bookmark_count,
+                "queued_requests": response.queued_requests,
+                "last_sync_at": response.last_sync_at,
+                "last_run_status": response.last_run_status,
+            }
+            # Add guidance fields if present
+            if response.action_required:
+                result["action_required"] = response.action_required
+            if response.guidance_message:
+                result["message"] = response.guidance_message
+            return result
+
+        elif action == "service_status":
+            request = XBookmarksServiceStatusRequest()
+            response = await self._stub.XBookmarksServiceStatus(
+                request, timeout=timeout
+            )
+            return {
+                "running": response.running,
+                "total_syncs": response.total_syncs,
+                "total_bookmarks": response.total_bookmarks,
+                "last_sync_at": response.last_sync_at,
+                "queue_poll_interval_s": response.queue_poll_interval_s,
+            }
+
+        elif action == "list_folders":
+            user_id = params.get("user_id", "")
+            request = XBookmarksListFoldersRequest(user_id=user_id)
+            response = await self._stub.XBookmarksListFolders(
+                request, timeout=timeout
+            )
+            return {
+                "folders_available": response.folders_available,
+                "folders": [
+                    {
+                        "id": f.id,
+                        "name": f.name,
+                        "kb_path": f.kb_path,
+                        "bookmark_count": f.bookmark_count,
+                    }
+                    for f in response.folders
+                ],
+                "message": response.message,
+            }
+
+        elif action == "queue_status":
+            request = XBookmarksQueueStatusRequest()
+            response = await self._stub.XBookmarksQueueStatus(
+                request, timeout=timeout
+            )
+            return {
+                "queue_depth": response.queue_depth,
+                "cooldown_end_iso": response.cooldown_end_iso,
+                "cooldown_seconds": response.cooldown_seconds,
+                "can_request": response.can_request,
+            }
+
+        elif action == "emit_test_event":
+            event_type = params.get("event_type", "XB_AUTH_COMPLETED")
+            request = XBookmarksEmitTestEventRequest(event_type=event_type)
+            response = await self._stub.XBookmarksEmitTestEvent(
+                request, timeout=timeout
+            )
+            return {
+                "success": response.success,
+                "event_type": response.event_type,
+                "message": response.message,
+            }
+
+        else:
+            raise ValueError(f"Unknown XBookmarks action: {action}")
+
+    async def _call_ambient(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Ambient Computing service calls via gRPC.
+
+        Ambient Computing provides invisible, self-sustaining workloads that
+        maintain baseline endpoints and exercise GPU resources.
+
+        Args:
+            action: Action to perform (status, cycle)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with status or cycle results
+        """
+        if action == "status":
+            response = await self._stub.AmbientStatus(
+                empty_pb2.Empty(), timeout=timeout
+            )
+            # Map the proto field name to a friendlier name for CLI
+            current_phase_value = response.current_phase
+            # Get phase name from proto enum
+            phase_name = "IDLE"
+            try:
+                from ..engine.generated import AmbientPhase
+                phase_name = AmbientPhase.Name(current_phase_value)
+            except Exception:
+                phase_name = str(current_phase_value)
+
+            return {
+                "running": response.cycle_running,
+                "current_phase": phase_name,
+                "last_cycle_at": response.last_cycle_timestamp_ms,
+                "cycles_completed": response.cycles_completed,
+                "baseline_endpoints": list(response.baseline_endpoints),
+                "reasoning_endpoint": response.reasoning_endpoint,
+                # Daemon mode fields
+                "daemon_running": response.daemon_running,
+                "current_cycle": response.current_cycle,
+                "max_cycles": response.max_cycles,
+                "daemon_started_at": response.daemon_started_at_ms,
+                "daemon_stopped_at": response.daemon_stopped_at_ms,
+            }
+
+        elif action == "start":
+            # Start ambient daemon
+            baseline_only = params.get("baseline_only", False)
+            max_cycles = params.get("max_cycles", 0)
+
+            request = AmbientStartRequest(
+                baseline_only=baseline_only,
+                max_cycles=max_cycles,
+            )
+
+            response = await self._stub.AmbientStart(request, timeout=timeout)
+
+            return {
+                "success": response.success,
+                "message": response.message,
+                "max_cycles": response.max_cycles,
+            }
+
+        elif action == "stop":
+            # Stop ambient daemon
+            request = AmbientStopRequest()
+            response = await self._stub.AmbientStop(request, timeout=timeout)
+
+            return {
+                "success": response.success,
+                "message": response.message,
+                "cycles_completed": response.cycles_completed,
+            }
+
+        elif action == "cycle":
+            # For non-streaming cycle, collect all events and return final result
+            from ..engine.generated import AmbientPhase
+
+            skip_reasoning = params.get("skip_reasoning", False)
+            baseline_task_count = params.get("baseline_task_count", 1)
+            reasoning_prompt = params.get("reasoning_prompt", "")
+
+            request = AmbientCycleRequest(
+                skip_reasoning=skip_reasoning,
+                baseline_task_count=baseline_task_count,
+                reasoning_prompt=reasoning_prompt,
+            )
+
+            events = []
+            final_result = {}
+            async for event in self._stub.AmbientCycle(request, timeout=timeout):
+                # Get phase name from enum
+                try:
+                    phase_name = AmbientPhase.Name(event.phase)
+                except Exception:
+                    phase_name = str(event.phase)
+
+                # Extract metrics from the map field
+                metrics = dict(event.metrics) if event.metrics else {}
+
+                event_dict = {
+                    "phase": phase_name,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "metrics": metrics,
+                    "timestamp_ms": event.timestamp_ms,
+                    # Derived fields for CLI display
+                    "endpoint": metrics.get("endpoint", ""),
+                    "success": "error" not in event.message.lower(),
+                    "latency_ms": int(metrics.get("latency_ms", 0)) if metrics.get("latency_ms") else 0,
+                }
+                events.append(event_dict)
+
+                # Check if this is a terminal phase
+                if phase_name in ("AMBIENT_PHASE_COMPLETE", "AMBIENT_PHASE_ERROR"):
+                    final_result = event_dict
+
+            return {
+                "events": events,
+                "final": final_result,
+                "total_events": len(events),
+            }
+
+        elif action == "buffer_export":
+            # Export buffer to zettelkasten file
+            from ..engine.generated import AmbientBufferExportRequest
+
+            kb_root = params.get("kb_root", "build/dev")
+            request = AmbientBufferExportRequest(kb_root=kb_root)
+            response = await self._stub.AmbientBufferExport(request, timeout=timeout)
+
+            return {
+                "path": response.path,
+                "entry_count": response.entry_count,
+                "total_bytes": response.total_bytes,
+                "error": response.error if response.error else None,
+            }
+
+        else:
+            raise ValueError(f"Unknown Ambient action: {action}")
+
+    async def ambient_cycle_stream(
+        self,
+        skip_reasoning: bool = False,
+        baseline_task_count: int = 1,
+        reasoning_prompt: str = "",
+    ) -> AsyncIterator[dict]:
+        """Stream ambient cycle progress events.
+
+        Executes a full ambient computing cycle with real-time progress updates.
+        Use this for CLI/TUI progress display.
+
+        Args:
+            skip_reasoning: Skip reasoning phase (baseline-only test)
+            baseline_task_count: Number of tasks per baseline endpoint
+            reasoning_prompt: Custom reasoning prompt (optional)
+
+        Yields:
+            AmbientPhaseEvent dicts with phase, endpoint, message, progress, success
+        """
+        if not self._connected:
+            await self.connect()
+
+        request = AmbientCycleRequest(
+            skip_reasoning=skip_reasoning,
+            baseline_task_count=baseline_task_count,
+            reasoning_prompt=reasoning_prompt,
+        )
+
+        try:
+            from ..engine.generated import AmbientPhase
+
+            async for event in self._stub.AmbientCycle(request):
+                # Get phase name from enum
+                try:
+                    phase_name = AmbientPhase.Name(event.phase)
+                except Exception:
+                    phase_name = str(event.phase)
+
+                # Extract metrics from the map field
+                metrics = dict(event.metrics) if event.metrics else {}
+
+                yield {
+                    "phase": phase_name,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "metrics": metrics,
+                    "timestamp_ms": event.timestamp_ms,
+                    # Derived fields for CLI display
+                    "endpoint": metrics.get("endpoint", ""),
+                    "success": "error" not in event.message.lower(),
+                    "latency_ms": int(metrics.get("latency_ms", 0)) if metrics.get("latency_ms") else 0,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"AmbientCycle error: {e}")
+                yield {
+                    "phase": "AMBIENT_PHASE_ERROR",
+                    "message": f"Stream error: {e.details()}",
+                    "progress": 0.0,
+                    "success": False,
+                    "endpoint": "",
+                    "latency_ms": 0,
+                    "metrics": {},
+                    "timestamp_ms": 0,
+                }
+
+    async def ambient_subscribe_stream(self) -> AsyncIterator[dict]:
+        """Subscribe to ambient daemon events stream.
+
+        Yields events from a running ambient daemon.
+        Used by TUI to display progress while daemon runs.
+
+        Yields:
+            AmbientPhaseEvent dicts with phase, message, progress, metrics
+        """
+        if not self._connected:
+            await self.connect()
+
+        request = AmbientSubscribeRequest()
+
+        try:
+            from ..engine.generated import AmbientPhase
+
+            async for event in self._stub.AmbientSubscribe(request):
+                # Get phase name from enum
+                try:
+                    phase_name = AmbientPhase.Name(event.phase)
+                except Exception:
+                    phase_name = str(event.phase)
+
+                # Extract metrics from the map field
+                metrics = dict(event.metrics) if event.metrics else {}
+
+                yield {
+                    "phase": phase_name,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "metrics": metrics,
+                    "timestamp_ms": event.timestamp_ms,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"AmbientSubscribe error: {e}")
+                yield {
+                    "phase": "AMBIENT_PHASE_ERROR",
+                    "message": f"Stream error: {e.details()}",
+                    "progress": 0.0,
+                    "metrics": {},
+                    "timestamp_ms": 0,
+                }
+
+    async def _call_datasets(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle HuggingFace Dataset Discovery service calls via gRPC.
+
+        Provides operations for discovering datasets from HuggingFace Hub
+        and managing dataset references in the KB.
+
+        Args:
+            action: Action to perform (list, add, info, list_kb)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with datasets or operation status
+        """
+        from ..engine.generated import (
+            ListHFDatasetsRequest,
+            AddExternalDatasetRequest,
+            GetHFDatasetInfoRequest,
+            ListKBDatasetsRequest,
+        )
+
+        if action == "list":
+            limit = params.get("limit", 20)
+            request = ListHFDatasetsRequest(limit=limit)
+            response = await self._stub.ListHFDatasets(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            return {
+                "datasets": [
+                    {
+                        "id": ds.id,
+                        "author": ds.author,
+                        "description": ds.description,
+                        "downloads": ds.downloads,
+                        "likes": ds.likes,
+                        "private": ds.private,
+                        "created_at": ds.created_at,
+                        "last_modified": ds.last_modified,
+                        "tags": list(ds.tags),
+                    }
+                    for ds in response.datasets
+                ],
+                "count": response.count,
+                "saved_to": response.saved_to,
+            }
+
+        elif action == "add":
+            dataset_id = params.get("dataset_id", "")
+            notes = params.get("notes", "")
+            request = AddExternalDatasetRequest(dataset_id=dataset_id, notes=notes)
+            response = await self._stub.AddExternalDataset(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error, "success": False}
+
+            return {
+                "success": response.success,
+                "dataset_id": response.dataset_id,
+                "saved_to": response.saved_to,
+                "downloads": response.downloads,
+                "likes": response.likes,
+                "description": response.description,
+            }
+
+        elif action == "info":
+            dataset_id = params.get("dataset_id", "")
+            request = GetHFDatasetInfoRequest(dataset_id=dataset_id)
+            response = await self._stub.GetHFDatasetInfo(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            info = response.info
+            return {
+                "id": info.id,
+                "author": info.author,
+                "description": info.description,
+                "downloads": info.downloads,
+                "likes": info.likes,
+                "private": info.private,
+                "created_at": info.created_at,
+                "last_modified": info.last_modified,
+                "tags": list(info.tags),
+                "url": response.url,
+            }
+
+        elif action == "list_kb":
+            request = ListKBDatasetsRequest()
+            response = await self._stub.ListKBDatasets(request, timeout=timeout)
+
+            return {
+                "internal": [
+                    {"id": ds.id, "type": ds.type, "path": ds.path}
+                    for ds in response.internal
+                ],
+                "external": [
+                    {"id": ds.id, "type": ds.type, "path": ds.path}
+                    for ds in response.external
+                ],
+                "internal_count": response.internal_count,
+                "external_count": response.external_count,
+            }
+
+        else:
+            raise ValueError(f"Unknown Datasets action: {action}")
+
+    async def _call_models(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Models service calls via gRPC.
+
+        Actions:
+            list: List recent models from HuggingFace
+            add: Add external model reference to KB
+            info: Get detailed info for a specific model
+            list_kb: List models in KB (internal = cached, external = references)
+
+        Args:
+            action: Action to perform
+            params: Action parameters (model_id, limit, filter, notes)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with models list or model info
+        """
+        from ..engine.generated import (
+            ListHFModelsRequest,
+            AddExternalModelRequest,
+            GetHFModelInfoRequest,
+            ListKBModelsRequest,
+        )
+
+        if action == "list":
+            limit = params.get("limit", 20)
+            filter_tag = params.get("filter", "")
+            request = ListHFModelsRequest(limit=limit, filter=filter_tag)
+            response = await self._stub.ListHFModels(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            return {
+                "models": [
+                    {
+                        "id": m.id,
+                        "author": m.author,
+                        "pipeline_tag": m.pipeline_tag,
+                        "downloads": m.downloads,
+                        "likes": m.likes,
+                        "private": m.private,
+                        "created_at": m.created_at,
+                        "last_modified": m.last_modified,
+                        "tags": list(m.tags),
+                        "gated": m.gated,
+                        "library_name": m.library_name,
+                    }
+                    for m in response.models
+                ],
+                "count": response.count,
+                "saved_to": response.saved_to,
+            }
+
+        elif action == "add":
+            model_id = params.get("model_id", "")
+            notes = params.get("notes", "")
+            request = AddExternalModelRequest(model_id=model_id, notes=notes)
+            response = await self._stub.AddExternalModel(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            return {
+                "success": response.success,
+                "model_id": response.model_id,
+                "saved_to": response.saved_to,
+                "downloads": response.downloads,
+                "likes": response.likes,
+                "pipeline_tag": response.pipeline_tag,
+            }
+
+        elif action == "info":
+            model_id = params.get("model_id", "")
+            request = GetHFModelInfoRequest(model_id=model_id)
+            response = await self._stub.GetHFModelInfo(request, timeout=timeout)
+
+            if response.error:
+                return {"error": response.error}
+
+            info = response.info
+            return {
+                "id": info.id,
+                "author": info.author,
+                "pipeline_tag": info.pipeline_tag,
+                "downloads": info.downloads,
+                "likes": info.likes,
+                "private": info.private,
+                "created_at": info.created_at,
+                "last_modified": info.last_modified,
+                "tags": list(info.tags),
+                "gated": info.gated,
+                "library_name": info.library_name,
+                "url": response.url,
+            }
+
+        elif action == "list_kb":
+            request = ListKBModelsRequest()
+            response = await self._stub.ListKBModels(request, timeout=timeout)
+
+            return {
+                "internal": [
+                    {
+                        "id": m.id,
+                        "type": m.type,
+                        "path": m.path,
+                        "size_bytes": m.size_bytes,
+                        "pipeline_tag": m.pipeline_tag,
+                    }
+                    for m in response.internal
+                ],
+                "external": [
+                    {
+                        "id": m.id,
+                        "type": m.type,
+                        "path": m.path,
+                        "size_bytes": m.size_bytes,
+                        "pipeline_tag": m.pipeline_tag,
+                    }
+                    for m in response.external
+                ],
+                "internal_count": response.internal_count,
+                "external_count": response.external_count,
+                "total_cache_bytes": response.total_cache_bytes,
+            }
+
+        else:
+            raise ValueError(f"Unknown Models action: {action}")
+
+    async def _call_prospects(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Prospects/Stewardship service calls via gRPC.
+
+        Actions:
+            status: Get current prospects status (cached, $0)
+            check: Check for new SEC filings (~$0)
+            update: Run full LLM analysis (~$0.60/prospect) - NOT IMPLEMENTED via call()
+
+        Note: For streaming update operations, use the stream() method instead.
+
+        Args:
+            action: Action to perform
+            params: Action parameters (profile, domain, force, symbols)
+            timeout: Request timeout
+
+        Returns:
+            Result dict with prospects status or check results
+        """
+        profile = params.get("profile", "zndx")
+        domain = params.get("domain", "prospecting")
+
+        if action == "status":
+            request = ProspectsStatusRequest(profile=profile, domain=domain)
+            response = await self._stub.ProspectsStatus(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "check":
+            force = params.get("force", False)
+            request = ProspectsCheckRequest(profile=profile, domain=domain, force=force)
+            response = await self._stub.ProspectsCheck(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(
+                f"Unknown Prospects action: {action}. "
+                f"For 'update', use stream() method instead of call()."
+            )
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.
@@ -784,7 +2387,7 @@ class GrpcEngineClient:
                 embedding_model=embedding_model,
                 projection_method=projection_method,
             )
-            response = await self._gaius_stub.Init(request, timeout=timeout)
+            response = await self._stub.Init(request, timeout=timeout)
             return {
                 "success": response.success,
                 "message": response.message,
@@ -809,7 +2412,7 @@ class GrpcEngineClient:
                 force=force,
                 embedding_model=embedding_model,
             )
-            response = await self._gaius_stub.Reindex(request, timeout=timeout)
+            response = await self._stub.Reindex(request, timeout=timeout)
             return {
                 "success": response.success,
                 "message": response.message,
@@ -867,7 +2470,7 @@ class GrpcEngineClient:
             InitProgress.Phase.ERROR: "error",
         }
 
-        async for progress in self._gaius_stub.InitProgressStream(request):
+        async for progress in self._stub.InitProgressStream(request):
             yield {
                 "phase": phase_names.get(progress.phase, "unknown"),
                 "progress": progress.progress,
@@ -913,7 +2516,7 @@ class GrpcEngineClient:
             ReindexProgress.Phase.ERROR: "error",
         }
 
-        async for progress in self._gaius_stub.ReindexStream(request):
+        async for progress in self._stub.ReindexStream(request):
             yield {
                 "phase": phase_names.get(progress.phase, "unknown"),
                 "progress": progress.progress,
@@ -928,7 +2531,7 @@ class GrpcEngineClient:
 
     async def _run_swarm_via_grpc(
         self, params: dict, timeout: float
-    ) -> dict[str, dict]:
+    ) -> dict[str, dict | str]:
         """Run swarm analysis by calling Complete for each agent role.
 
         Maps role capabilities to appropriate agent endpoints and runs
@@ -953,15 +2556,15 @@ class GrpcEngineClient:
             roles = ["Leader", "Risk", "Optimizer", "Planner", "Critic", "Executor", "Adversary"]
 
         # Map role capabilities to endpoints
-        # Capabilities: reasoning, coding, fast, long_context, adversarial, synthesis
+        # Capabilities: reasoning, instruct, long_context, adversarial, synthesis
         ROLE_TO_ENDPOINT = {
             "Leader": "orchestrator",      # reasoning/synthesis
-            "Risk": "fast",                # analysis
-            "Optimizer": "fast",           # analysis
+            "Risk": "instruct",            # analysis
+            "Optimizer": "instruct",       # analysis
             "Planner": "orchestrator",     # reasoning
-            "Critic": "fast",              # adversarial/analysis
-            "Executor": "fast",            # execution
-            "Adversary": "fast",           # adversarial
+            "Critic": "instruct",          # adversarial/analysis
+            "Executor": "instruct",        # execution
+            "Adversary": "instruct",       # adversarial
         }
 
         # Get role prompts
@@ -974,7 +2577,7 @@ class GrpcEngineClient:
                     role_enum = AgentRole(role_name)
                     role_def = get_role(role_enum)
                     prompt = role_def.get_prompt(domain, context)
-                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "fast")
+                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "instruct")
 
                     request = CompleteRequest(
                         agent_alias=endpoint,
@@ -984,7 +2587,7 @@ class GrpcEngineClient:
                         temperature=role_def.temperature,
                         priority="high",
                     )
-                    response = await self._gaius_stub.Complete(request, timeout=timeout)
+                    response = await self._stub.Complete(request, timeout=timeout)
                     result = MessageToDict(response, preserving_proto_field_name=True)
 
                     latency = int((time.perf_counter() - start) * 1000)
@@ -1022,7 +2625,7 @@ class GrpcEngineClient:
 
     async def server_live(self) -> bool:
         """Check if server is live (OIP ServerLive)."""
-        response = await self._inference_stub.ServerLive(
+        response = await self._inference.ServerLive(
             ServerLiveRequest(),
             timeout=self.config.timeout,
         )
@@ -1030,7 +2633,7 @@ class GrpcEngineClient:
 
     async def server_ready(self) -> bool:
         """Check if server is ready (OIP ServerReady)."""
-        response = await self._inference_stub.ServerReady(
+        response = await self._inference.ServerReady(
             ServerReadyRequest(),
             timeout=self.config.timeout,
         )
@@ -1038,7 +2641,7 @@ class GrpcEngineClient:
 
     async def model_ready(self, model_name: str) -> bool:
         """Check if a specific model is ready (OIP ModelReady)."""
-        response = await self._inference_stub.ModelReady(
+        response = await self._inference.ModelReady(
             ModelReadyRequest(name=model_name),
             timeout=self.config.timeout,
         )
@@ -1046,7 +2649,7 @@ class GrpcEngineClient:
 
     async def server_metadata(self) -> dict:
         """Get server metadata (OIP ServerMetadata)."""
-        response = await self._inference_stub.ServerMetadata(
+        response = await self._inference.ServerMetadata(
             ServerMetadataRequest(),
             timeout=self.config.timeout,
         )
@@ -1054,7 +2657,7 @@ class GrpcEngineClient:
 
     async def model_metadata(self, model_name: str) -> dict:
         """Get model metadata (OIP ModelMetadata)."""
-        response = await self._inference_stub.ModelMetadata(
+        response = await self._inference.ModelMetadata(
             ModelMetadataRequest(name=model_name),
             timeout=self.config.timeout,
         )
@@ -1102,7 +2705,7 @@ class GrpcEngineClient:
         """Background task to receive event stream."""
         try:
             request = EventStreamRequest()
-            async for event in self._gaius_stub.EventStream(request):
+            async for event in self._stub.EventStream(request):
                 event_dict = MessageToDict(event, preserving_proto_field_name=True)
                 for callback in self._event_callbacks:
                     try:
@@ -1119,7 +2722,7 @@ class GrpcEngineClient:
         """Background task to receive health stream."""
         try:
             request = HealthStreamRequest(interval_ms=1000)
-            async for metrics in self._gaius_stub.HealthStream(request):
+            async for metrics in self._stub.HealthStream(request):
                 metrics_dict = MessageToDict(metrics, preserving_proto_field_name=True)
                 for callback in self._health_callbacks:
                     try:
@@ -1144,7 +2747,7 @@ class GrpcEngineClient:
             Health metrics dicts
         """
         request = HealthStreamRequest(interval_ms=interval_ms)
-        async for metrics in self._gaius_stub.HealthStream(request):
+        async for metrics in self._stub.HealthStream(request):
             yield MessageToDict(metrics, preserving_proto_field_name=True)
 
     async def event_stream(
@@ -1159,7 +2762,7 @@ class GrpcEngineClient:
             Event dicts
         """
         request = EventStreamRequest(event_types=event_types or [])
-        async for event in self._gaius_stub.EventStream(request):
+        async for event in self._stub.EventStream(request):
             yield MessageToDict(event, preserving_proto_field_name=True)
 
     async def init_stream(self) -> AsyncIterator[dict]:
@@ -1188,10 +2791,11 @@ class GrpcEngineClient:
 
         try:
             # Bidirectional streaming - send commands, receive events
-            call = self._gaius_stub.InitStream(command_generator())
+            call = self._stub.InitStream(command_generator())
             async for event in call:
                 event_dict = {
                     "type": InitEvent.Type.Name(event.type),
+                    "type_enum": event.type,  # Raw proto enum for direct comparison
                     "timestamp_ms": event.timestamp_ms,
                     "phase": event.phase,
                     "progress": event.progress,
@@ -1244,7 +2848,7 @@ class GrpcEngineClient:
 
         try:
             # Send command (don't wait for response stream)
-            call = self._gaius_stub.InitStream(single_command())
+            call = self._stub.InitStream(single_command())
             # Read one response to confirm receipt
             async for event in call:
                 logger.debug(f"Init command response: {event.type}")
@@ -1257,6 +2861,7 @@ class GrpcEngineClient:
         domain: str,
         context: str = "",
         roles: Optional[list[str]] = None,
+        clt: bool = False,
     ) -> AsyncIterator[dict]:
         """Stream swarm analysis with real-time progress updates.
 
@@ -1268,6 +2873,7 @@ class GrpcEngineClient:
             domain: Domain to analyze (e.g., "pension", "kudu")
             context: Additional context for the analysis
             roles: Agent roles to include (default: all core roles)
+            clt: Use CLT-enhanced swarm with interpretable features
 
         Yields:
             SwarmEvent dicts with:
@@ -1278,10 +2884,10 @@ class GrpcEngineClient:
                 - progress: 0.0-1.0 overall progress
                 - message: Human-readable status message
                 - data: JSON payload (agent result on AGENT_COMPLETED,
-                        final results on COMPLETED)
+                        final results on COMPLETED, includes _clt if clt=True)
 
         Example:
-            async for event in client.swarm_stream("pension"):
+            async for event in client.swarm_stream("pension", clt=True):
                 print(f"{event['type']}: {event['message']} ({event['progress']:.0%})")
                 if event['type'] == 'COMPLETED':
                     final = json.loads(event['data'])
@@ -1291,10 +2897,11 @@ class GrpcEngineClient:
             domain=domain,
             context=context,
             roles=roles or [],
+            clt=clt,
         )
 
         try:
-            async for event in self._gaius_stub.SwarmStream(request):
+            async for event in self._stub.SwarmStream(request):
                 yield {
                     "type": SwarmEvent.Type.Name(event.type),
                     "timestamp_ms": event.timestamp_ms,
@@ -1316,6 +2923,174 @@ class GrpcEngineClient:
                     "data": "",
                 }
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Cognition/Evolution Streaming
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def subscribe_cognition(
+        self,
+        buffer_size: int = 100,
+        event_types: Optional[list[str]] = None,
+    ) -> AsyncIterator[dict]:
+        """Subscribe to cognition events (thoughts, patterns, connections).
+
+        Real-time stream of engine cognition activity. Use this instead of
+        polling get_recent_thoughts() for responsive TUI updates.
+
+        Args:
+            buffer_size: Server-side buffer size for events
+            event_types: Filter to specific event types (default: all)
+
+        Yields:
+            CognitionEvent dicts with:
+                - type: Event type (CYCLE_START, THOUGHT, PATTERN, CONNECTION,
+                        CURIOSITY, SELF_OBSERVATION, ENGINE_AUDIT, CYCLE_END, ERROR)
+                - timestamp_ms: Event timestamp
+                - thought_id: Unique thought ID
+                - thought_type: Thought type string
+                - title: Thought title/summary
+                - content: Full thought content
+                - confidence: Confidence score (0.0-1.0)
+                - cycle_id: Cognition cycle ID
+                - error_message: Error details (for ERROR type)
+        """
+        request = CognitionStreamRequest(
+            buffer_size=buffer_size,
+            event_types=event_types or [],
+        )
+
+        try:
+            async for event in self._stub.SubscribeCognition(request):
+                yield {
+                    "type": CognitionEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "thought_id": event.thought_id,
+                    "thought_type": event.thought_type,
+                    "title": event.title,
+                    "summary": event.summary,
+                    "salience": event.salience,
+                    "generation": event.generation,
+                    "cycle_id": event.cycle_id,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SubscribeCognition error: {e}")
+                yield {
+                    "type": "ERROR",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "thought_id": "",
+                    "thought_type": "",
+                    "title": "Stream error",
+                    "summary": str(e.details()) if hasattr(e, 'details') else str(e),
+                    "salience": 0.0,
+                    "generation": 0,
+                    "cycle_id": "",
+                }
+
+    async def subscribe_evolution(
+        self,
+        buffer_size: int = 100,
+        agent_filter: Optional[str] = None,
+    ) -> AsyncIterator[dict]:
+        """Subscribe to evolution events (optimization cycles, metrics).
+
+        Real-time stream of agent evolution activity. Use this instead of
+        polling evolution_status() for responsive TUI updates.
+
+        Args:
+            buffer_size: Server-side buffer size for events
+            agent_filter: Filter to specific agent (default: all)
+
+        Yields:
+            EvolutionEvent dicts with:
+                - type: Event type (CYCLE_START, OPTIMIZATION_STEP, EVALUATION,
+                        PROMOTION, ROLLBACK, CYCLE_END, ERROR)
+                - timestamp_ms: Event timestamp
+                - cycle_id: Evolution cycle ID
+                - agent_id: Agent being optimized
+                - version_id: Version being evaluated
+                - score: Evaluation score
+                - improvement: Score improvement delta
+                - message: Status message
+                - error_message: Error details (for ERROR type)
+        """
+        request = EvolutionStreamRequest(
+            buffer_size=buffer_size,
+            agent_filter=agent_filter or "",
+        )
+
+        try:
+            async for event in self._stub.SubscribeEvolution(request):
+                yield {
+                    "type": EvolutionEvent.Type.Name(event.type),
+                    "timestamp_ms": event.timestamp_ms,
+                    "cycle_number": event.cycle_number,
+                    "agent_id": event.agent_id,
+                    "version_id": event.version_id,
+                    "score": event.score,
+                    "improvement_pct": event.improvement_pct,
+                    "details": event.details,
+                    "merge_id": event.merge_id,
+                    "error": event.error,
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SubscribeEvolution error: {e}")
+                yield {
+                    "type": "ERROR",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "cycle_number": 0,
+                    "agent_id": "",
+                    "version_id": "",
+                    "score": 0.0,
+                    "improvement_pct": 0.0,
+                    "details": "Stream error",
+                    "merge_id": "",
+                    "error": str(e.details()) if hasattr(e, 'details') else str(e),
+                }
+
+    async def subscribe_activity(
+        self,
+        buffer_size: int = 100,
+        domains: list[str] | None = None,
+    ) -> AsyncIterator[dict]:
+        """Subscribe to general engine activity events.
+
+        Unified stream for health, endpoints, and other engine activity.
+        Useful for TUI status updates.
+
+        Args:
+            buffer_size: Server-side buffer size for events
+            domains: Filter by domain (empty/None = all)
+
+        Yields:
+            ActivityEvent dicts with:
+                - type: Event type (HEALTH_UPDATE, ENDPOINT_STATUS, GPU_METRICS,
+                        QUEUE_STATUS, DAEMON_STATUS, ERROR)
+                - timestamp_ms: Event timestamp
+                - data: JSON payload with event-specific data
+        """
+        request = ActivityStreamRequest(
+            buffer_size=buffer_size,
+            domains=domains or [],
+        )
+
+        try:
+            async for event in self._stub.SubscribeActivity(request):
+                yield {
+                    "type": event.event_type,
+                    "timestamp_ms": event.timestamp_ms,
+                    "data": event.data.decode() if event.data else "",
+                }
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.CANCELLED:
+                logger.error(f"SubscribeActivity error: {e}")
+                yield {
+                    "type": "ERROR",
+                    "timestamp_ms": int(time.time() * 1000),
+                    "data": f'{{"error": "{e.details()}"}}',
+                }
+
     @property
     def is_connected(self) -> bool:
         """Whether client is connected."""
@@ -1333,6 +3108,24 @@ class GrpcEngineClient:
 
 _grpc_client: Optional[GrpcEngineClient] = None
 _grpc_connect_lock: asyncio.Lock | None = None
+_grpc_default_config: Optional[GrpcClientConfig] = None
+
+
+def configure_grpc_client(config: GrpcClientConfig) -> None:
+    """Configure the gRPC client singleton before first use.
+
+    Call this early in application startup (e.g., in TUI __init__) to set
+    the retry behavior. Must be called before first get_grpc_client() call.
+
+    Args:
+        config: Configuration to use. Common patterns:
+            - GrpcClientConfig.for_tui() - TUI with infinite retries
+            - GrpcClientConfig.for_cli() - CLI with finite retries
+            - GrpcClientConfig.for_mcp() - MCP with finite retries
+    """
+    global _grpc_default_config
+    _grpc_default_config = config
+    logger.debug(f"gRPC client configured: max_retries={config.max_retries}")
 
 
 def _get_connect_lock() -> asyncio.Lock:
@@ -1343,7 +3136,9 @@ def _get_connect_lock() -> asyncio.Lock:
     return _grpc_connect_lock
 
 
-async def get_grpc_client() -> GrpcEngineClient:
+async def get_grpc_client(
+    config: Optional[GrpcClientConfig] = None,
+) -> GrpcEngineClient:
     """Get or create the gRPC engine client singleton.
 
     If the client exists but is not connected, attempts to reconnect.
@@ -1351,11 +3146,19 @@ async def get_grpc_client() -> GrpcEngineClient:
 
     Uses a lock to prevent concurrent connection attempts (which cause
     ENHANCE_YOUR_CALM errors from the server).
+
+    Args:
+        config: Optional config to use when creating a new client.
+                - Use GrpcClientConfig.for_tui() for infinite retries
+                - Use GrpcClientConfig.for_cli() for finite retries (default)
+                Ignored if client already exists.
     """
-    global _grpc_client
+    global _grpc_client, _grpc_default_config
 
     if _grpc_client is None:
-        _grpc_client = GrpcEngineClient()
+        # Use provided config, or default config, or create from env
+        effective_config = config or _grpc_default_config
+        _grpc_client = GrpcEngineClient(effective_config)
 
     # Use lock to prevent concurrent connect attempts
     if not _grpc_client.is_connected:
@@ -1399,3 +3202,8 @@ async def call_grpc(
     """
     client = await get_grpc_client()
     return await client.call(service, action, params)
+
+
+# Alias for backward compatibility
+# Some code uses GaiusClient as the class name
+GaiusClient = GrpcEngineClient

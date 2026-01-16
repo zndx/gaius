@@ -101,21 +101,21 @@ class Thought:
 
     def to_markdown(self) -> str:
         """Format thought as markdown section."""
-        emoji = {
-            ThoughtType.PATTERN: "📊",
-            ThoughtType.CONNECTION: "🔗",
-            ThoughtType.CURIOSITY: "❓",
-            ThoughtType.MOMENTUM: "📈",
-            ThoughtType.OBSERVATION: "👁️",
-            ThoughtType.SYNTHESIS: "🧩",
-            ThoughtType.SELF_OBSERVATION: "🪞",
-            ThoughtType.ENGINE_AUDIT: "⚙️",
-            ThoughtType.META_REFLECTION: "🔮",
-            ThoughtType.TASK_IDEA: "🧪",
-            ThoughtType.EVOLUTION_INSIGHT: "🧬",
-        }.get(self.thought_type, "💭")
+        indicator = {
+            ThoughtType.PATTERN: "[PATTERN]",
+            ThoughtType.CONNECTION: "[LINK]",
+            ThoughtType.CURIOSITY: "[?]",
+            ThoughtType.MOMENTUM: "[TREND]",
+            ThoughtType.OBSERVATION: "[OBS]",
+            ThoughtType.SYNTHESIS: "[SYNTH]",
+            ThoughtType.SELF_OBSERVATION: "[SELF]",
+            ThoughtType.ENGINE_AUDIT: "[AUDIT]",
+            ThoughtType.META_REFLECTION: "[META]",
+            ThoughtType.TASK_IDEA: "[TASK]",
+            ThoughtType.EVOLUTION_INSIGHT: "[EVOL]",
+        }.get(self.thought_type, "[*]")
 
-        lines = [f"### {emoji} {self.title}"]
+        lines = [f"### {indicator} {self.title}"]
 
         if self.summary:
             lines.append(f"_{self.summary}_")
@@ -162,6 +162,7 @@ class CognitionContext:
     # Recent content
     recent_kb_entries: list[dict] = field(default_factory=list)
     recent_content_items: list[dict] = field(default_factory=list)
+    kb_entries_scanned: int = 0
 
     # Activity
     queries_today: list[str] = field(default_factory=list)
@@ -365,8 +366,11 @@ class CognitionAgent:
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to get active thoughts: {e}")
-            return []
+            raise RuntimeError(
+                f"Failed to get active thoughts from database: {e}\n"
+                "Guru Meditation: #COG.00000002.DBREAD\n"
+                "Check: /health postgres"
+            ) from e
 
     async def mark_surfaced(self, thought_ids: list[str]) -> None:
         """Mark thoughts as surfaced (shown to user)."""
@@ -392,7 +396,11 @@ class CognitionAgent:
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to mark thoughts surfaced: {e}")
+            raise RuntimeError(
+                f"Failed to mark thoughts surfaced in database: {e}\n"
+                "Guru Meditation: #COG.00000003.DBWRITE\n"
+                "Check: /health postgres"
+            ) from e
 
     # ─────────────────────────────────────────────────────────────────────────
     # Context Gathering
@@ -458,7 +466,11 @@ class CognitionAgent:
             entries.sort(key=lambda e: e["mtime"], reverse=True)
 
         except Exception as e:
-            logger.warning(f"Failed to scan KB entries: {e}")
+            raise RuntimeError(
+                f"Failed to scan KB entries: {e}\n"
+                "Guru Meditation: #COG.00000009.KBSCAN\n"
+                "Check: KB root path exists and is accessible"
+            ) from e
 
         return entries[:100]  # Limit for performance
 
@@ -471,10 +483,11 @@ class CognitionAgent:
             try:
                 rows = await conn.fetch(
                     """
-                    SELECT id, title, source_name, kb_path, fetched_at
-                    FROM content_items
-                    WHERE fetched_at > NOW() - ($1 || ' days')::INTERVAL
-                    ORDER BY fetched_at DESC
+                    SELECT c.id, c.title, s.name AS source_name, c.kb_path, c.fetched_at
+                    FROM content_items c
+                    LEFT JOIN feed_sources s ON c.source_id = s.id
+                    WHERE c.fetched_at > NOW() - ($1 || ' days')::INTERVAL
+                    ORDER BY c.fetched_at DESC
                     LIMIT 100
                     """,
                     str(days),
@@ -483,8 +496,12 @@ class CognitionAgent:
             finally:
                 await conn.close()
 
-        except Exception:
-            return []
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get recent content items from database: {e}\n"
+                "Guru Meditation: #COG.00000004.DBCONTENT\n"
+                "Check: /health postgres"
+            ) from e
 
     async def _get_recent_queries(self, days: int = 1) -> list[str]:
         """Get recent user queries from activity log."""
@@ -509,8 +526,12 @@ class CognitionAgent:
             finally:
                 await conn.close()
 
-        except Exception:
-            return []
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get recent queries from database: {e}\n"
+                "Guru Meditation: #COG.00000005.DBQUERIES\n"
+                "Check: /health postgres"
+            ) from e
 
     async def _get_recent_swarm_runs(self, days: int = 7) -> list[dict]:
         """Get recent swarm analysis runs."""
@@ -534,8 +555,12 @@ class CognitionAgent:
             finally:
                 await conn.close()
 
-        except Exception:
-            return []
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get recent swarm runs from database: {e}\n"
+                "Guru Meditation: #COG.00000006.DBSWARM\n"
+                "Check: /health postgres"
+            ) from e
 
     async def _get_active_domains(self) -> list[str]:
         """Get domains with recent activity."""
@@ -556,8 +581,12 @@ class CognitionAgent:
             finally:
                 await conn.close()
 
-        except Exception:
-            return []
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get active domains from database: {e}\n"
+                "Guru Meditation: #COG.00000007.DBDOMAINS\n"
+                "Check: /health postgres"
+            ) from e
 
     async def _time_since_last_think(self) -> timedelta:
         """Get time since last cognition cycle."""
@@ -580,8 +609,12 @@ class CognitionAgent:
             finally:
                 await conn.close()
 
-        except Exception:
-            return timedelta(days=999)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get time since last cognition from database: {e}\n"
+                "Guru Meditation: #COG.00000008.DBLAST\n"
+                "Check: /health postgres"
+            ) from e
 
     # ─────────────────────────────────────────────────────────────────────────
     # Thought Generation Strategies
@@ -592,7 +625,7 @@ class CognitionAgent:
         if not context.recent_kb_entries:
             return []
 
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Build entry list
         entry_summaries = []
@@ -617,17 +650,22 @@ For each pattern, provide:
 Format as JSON array: [{{"title": "...", "summary": "...", "evidence": ["..."], "salience": 0.7}}]"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=500,
-                temperature=0.6,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 500,
+                    "temperature": 0.6,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -651,15 +689,18 @@ Format as JSON array: [{{"title": "...", "summary": "...", "evidence": ["..."], 
             return thoughts
 
         except Exception as e:
-            logger.warning(f"Pattern detection failed: {e}")
-            return []
+            raise RuntimeError(
+                f"Pattern detection failed during inference: {e}\n"
+                "Guru Meditation: #COG.00000010.LLMPATTERN\n"
+                "Check: /health endpoints"
+            ) from e
 
     async def _find_connections(self, context: CognitionContext) -> list[Thought]:
         """Find cross-domain connections using LLM."""
         if len(context.domains_active) < 2:
             return []
 
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Group entries by domain
         by_domain: dict[str, list[str]] = {}
@@ -689,17 +730,22 @@ Provide:
 Format as JSON: {{"title": "...", "explanation": "...", "significance": "...", "domains": ["...", "..."]}}"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400,
-                temperature=0.7,  # Higher for creative connections
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 400,
+                    "temperature": 0.7,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -719,12 +765,15 @@ Format as JSON: {{"title": "...", "explanation": "...", "significance": "...", "
             )]
 
         except Exception as e:
-            logger.warning(f"Connection finding failed: {e}")
-            return []
+            raise RuntimeError(
+                f"Connection finding failed during inference: {e}\n"
+                "Guru Meditation: #COG.00000011.LLMCONNECT\n"
+                "Check: /health endpoints"
+            ) from e
 
     async def _generate_curiosities(self, context: CognitionContext) -> list[Thought]:
         """Generate curiosity-driven questions."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Combine recent activity
         topics = []
@@ -750,17 +799,22 @@ Generate questions that:
 Format as JSON array: [{{"question": "...", "context": "...", "significance": "..."}}]"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400,
-                temperature=0.7,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 400,
+                    "temperature": 0.7,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -783,8 +837,11 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
             return thoughts
 
         except Exception as e:
-            logger.warning(f"Curiosity generation failed: {e}")
-            return []
+            raise RuntimeError(
+                f"Curiosity generation failed during inference: {e}\n"
+                "Guru Meditation: #COG.00000012.LLMCURIOSITY\n"
+                "Check: /health endpoints"
+            ) from e
 
     async def _track_momentum(self, context: CognitionContext) -> list[Thought]:
         """Track topic momentum (what's gaining attention)."""
@@ -834,7 +891,7 @@ Format as JSON array: [{{"question": "...", "context": "...", "significance": ".
         if len(context.active_thoughts) < 3:
             return []
 
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Analyze thought patterns
         thought_types = {}
@@ -880,17 +937,22 @@ Be introspective and specific. Reference actual thoughts when relevant.
 Format as JSON array: [{{"title": "...", "observation": "...", "insight": "...", "salience": 0.7}}]"""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=600,
-                temperature=0.7,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 600,
+                    "temperature": 0.7,
+                },
             )
 
             # Parse response
             import json
 
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -930,8 +992,11 @@ Format as JSON array: [{{"title": "...", "observation": "...", "insight": "...",
             return thoughts
 
         except Exception as e:
-            logger.warning(f"Self-observation failed: {e}")
-            return []
+            raise RuntimeError(
+                f"Self-observation failed during inference: {e}\n"
+                "Guru Meditation: #COG.00000013.LLMSELFOBS\n"
+                "Check: /health endpoints"
+            ) from e
 
     async def _audit_engine_health(self, context: CognitionContext) -> list[Thought]:
         """Generate ENGINE_AUDIT thoughts by observing engine processes.
@@ -1055,7 +1120,7 @@ Format as JSON array: [{{"title": "...", "observation": "...", "insight": "...",
         Avoids generic titles like "Pattern Detected" in favor of
         specific, intriguing titles that reference the actual content.
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         prompt = f"""Generate an interesting, specific title for this {thought_type.value} thought.
 
@@ -1077,13 +1142,18 @@ Examples of GOOD titles:
 Return ONLY the title, no quotes or explanation."""
 
         try:
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=30,
-                temperature=0.7,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 30,
+                    "temperature": 0.7,
+                },
             )
-            return result.content.strip().strip('"').strip("'")
+            return result.get("content", "").strip().strip('"').strip("'")
 
         except Exception as e:
             logger.warning(f"Title generation failed: {e}")
@@ -1223,8 +1293,11 @@ Return ONLY the title, no quotes or explanation."""
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to save thought: {e}")
-            return None
+            raise RuntimeError(
+                f"Failed to save thought to database: {e}\n"
+                "Guru Meditation: #COG.00000014.DBSAVE\n"
+                "Check: /health postgres"
+            ) from e
 
     async def _save_thought_as_note(self, thought: Thought) -> str | None:
         """Save thought as a project note with bidirectional prev:/next: linking."""
@@ -1251,7 +1324,8 @@ Return ONLY the title, no quotes or explanation."""
                     prev_rel = prev_note.relative_to(kb_root)
                     prev_link = f"[[{prev_rel}]]"
                 except ValueError:
-                    prev_link = f"[[{prev_note}]]"
+                    # Fallback: use just the filename stem to avoid absolute paths in links
+                    prev_link = f"[[{prev_note.stem}]]"
 
             # Build note content
             note_content = f"""[[current/agents/cognition]]
@@ -1297,8 +1371,11 @@ generation: {thought.generation}
             return str(note_path.relative_to(kb_root))
 
         except Exception as e:
-            logger.warning(f"Failed to save thought as note: {e}")
-            return None
+            raise RuntimeError(
+                f"Failed to save thought as note: {e}\n"
+                "Guru Meditation: #COG.00000015.KBWRITE\n"
+                "Check: KB scratch directory is writable"
+            ) from e
 
     async def _record_cycle(self, result: CognitionResult) -> None:
         """Record cognition cycle to database."""
@@ -1334,7 +1411,11 @@ generation: {thought.generation}
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to record cognition cycle: {e}")
+            raise RuntimeError(
+                f"Failed to record cognition cycle: {e}\n"
+                "Guru Meditation: #COG.00000016.DBCYCLE\n"
+                "Check: /health postgres"
+            ) from e
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

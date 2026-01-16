@@ -207,9 +207,24 @@ class MinioFixStrategy(ServiceFixStrategy):
 
 
 class SingletonFixStrategy(ServiceFixStrategy):
-    """Fix strategy for Python client singletons."""
+    """Fix strategy for Python client singletons.
+
+    DEPRECATED: With Engine Federation architecture, client-side singleton
+    management is no longer the recommended approach. Use EngineFixStrategy
+    instead, which includes gRPC client reset as part of engine recovery.
+
+    The gRPC client reset is still available but should not be called in
+    isolation - it's now part of the engine reconnection flow.
+    """
 
     def __init__(self):
+        import warnings
+        warnings.warn(
+            "SingletonFixStrategy is deprecated. Use EngineFixStrategy which "
+            "includes gRPC singleton reset as part of engine recovery.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__("singletons")
 
     def create_fix_actions(
@@ -872,7 +887,524 @@ else:
         return actions
 
 
+class PipelineFixStrategy(ServiceFixStrategy):
+    """Fix strategy for content pipeline stalls.
+
+    Handles issues with:
+    - Task queue stalls (stuck/stale scheduled tasks)
+    - Pipeline backlogs at each stage
+    - Content processing failures
+
+    Guru Meditation: #PIPE.00000001.STALLED
+    """
+
+    def __init__(self):
+        super().__init__("pipeline")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix content pipeline issues."""
+        actions = []
+
+        # Step 1: Diagnose - Check task queue and pipeline status
+        actions.append(
+            RemediationAction(
+                name="Diagnose pipeline status",
+                description="Check pipeline stage backlogs and stuck tasks",
+                code='''
+import asyncio
+import os
+import asyncpg
+
+async def diagnose():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        print("=== Pipeline Status ===")
+
+        # Check for stuck tasks
+        stale = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NULL
+              AND scheduled_for < NOW() - interval '30 minutes'
+        """)
+        stuck = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NOT NULL
+              AND completed_at IS NULL
+              AND picked_up_at < NOW() - interval '10 minutes'
+        """)
+
+        print(f"Stale pending tasks: {stale}")
+        print(f"Stuck running tasks: {stuck}")
+
+        # Check content pipeline stages
+        needs_heuristic = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score IS NULL
+        """)
+        needs_llm = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score >= 30
+              AND llm_quality_score IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+        needs_kb = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE llm_quality_score >= 50
+              AND processed_at IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+
+        print(f"\\nPending heuristic triage: {needs_heuristic}")
+        print(f"Pending LLM triage: {needs_llm}")
+        print(f"Pending KB write: {needs_kb}")
+
+        await conn.close()
+        return {"stale": stale, "stuck": stuck}
+
+    except Exception as e:
+        print(f"Diagnosis failed: {e}")
+        return {"error": str(e)}
+
+result = asyncio.run(diagnose())
+print(f"\\nDiagnosis: {result}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 2: Reset stuck tasks
+        actions.append(
+            RemediationAction(
+                name="Reset stuck tasks",
+                description="Reset tasks that have been running too long",
+                code='''
+import asyncio
+import os
+import asyncpg
+
+async def reset_stuck():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        # Reset stuck running tasks
+        stuck_result = await conn.execute("""
+            UPDATE scheduled_tasks
+            SET picked_up_at = NULL,
+                error = 'reset by pipeline fix: stuck running'
+            WHERE picked_up_at IS NOT NULL
+              AND completed_at IS NULL
+              AND picked_up_at < NOW() - interval '10 minutes'
+        """)
+        stuck_count = int(stuck_result.split()[-1]) if stuck_result else 0
+        print(f"Reset {stuck_count} stuck running tasks")
+
+        # Reset stale pending tasks that may have stale metadata
+        stale_result = await conn.execute("""
+            UPDATE scheduled_tasks
+            SET scheduled_for = NOW()
+            WHERE picked_up_at IS NULL
+              AND scheduled_for < NOW() - interval '1 hour'
+              AND completed_at IS NULL
+        """)
+        stale_count = int(stale_result.split()[-1]) if stale_result else 0
+        print(f"Rescheduled {stale_count} stale pending tasks")
+
+        await conn.close()
+        return stuck_count + stale_count
+
+    except Exception as e:
+        print(f"Reset failed: {e}")
+        return 0
+
+count = asyncio.run(reset_stuck())
+print(f"Total tasks reset: {count}")
+''',
+                safety=SafetyLevel.CAUTION,
+                timeout=15,
+            )
+        )
+
+        # Step 3: Schedule immediate triage if backlog exists
+        actions.append(
+            RemediationAction(
+                name="Schedule triage tasks",
+                description="Schedule immediate triage if content backlog exists",
+                code='''
+import asyncio
+import os
+import asyncpg
+import json
+
+async def schedule_triage():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+        scheduled = []
+
+        # Check if heuristic triage is needed
+        needs_heuristic = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score IS NULL
+        """)
+        if needs_heuristic > 0:
+            await conn.execute("""
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('heuristic_triage', $1, 'pipeline_fix', NOW())
+            """, json.dumps({"limit": min(needs_heuristic, 200)}))
+            scheduled.append(f"heuristic_triage ({needs_heuristic} pending)")
+
+        # Check if LLM triage is needed
+        needs_llm = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE heuristic_score >= 30
+              AND llm_quality_score IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+        if needs_llm > 0:
+            await conn.execute("""
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('llm_triage', $1, 'pipeline_fix', NOW())
+            """, json.dumps({"limit": min(needs_llm, 100)}))
+            scheduled.append(f"llm_triage ({needs_llm} pending)")
+
+        # Check if content processing is needed
+        needs_kb = await conn.fetchval("""
+            SELECT COUNT(*) FROM content_items
+            WHERE llm_quality_score >= 50
+              AND processed_at IS NULL
+              AND NOT COALESCE(summary_excluded, false)
+        """)
+        if needs_kb > 0:
+            await conn.execute("""
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('content_processing', $1, 'pipeline_fix', NOW())
+            """, json.dumps({"limit": min(needs_kb, 50)}))
+            scheduled.append(f"content_processing ({needs_kb} pending)")
+
+        await conn.close()
+
+        if scheduled:
+            print("Scheduled tasks:")
+            for task in scheduled:
+                print(f"  - {task}")
+        else:
+            print("No triage tasks needed (pipeline is clear)")
+
+        return len(scheduled)
+
+    except Exception as e:
+        print(f"Scheduling failed: {e}")
+        return 0
+
+count = asyncio.run(schedule_triage())
+print(f"\\nScheduled {count} task(s)")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        # Step 4: Verify cognition daemon is processing
+        actions.append(
+            RemediationAction(
+                name="Verify cognition daemon",
+                description="Check that cognition daemon is processing tasks",
+                code='''
+import asyncio
+import os
+import asyncpg
+
+async def verify():
+    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        # Check recent task completions
+        completed = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE completed_at > NOW() - interval '1 hour'
+        """)
+        pending = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NULL
+              AND completed_at IS NULL
+        """)
+        running = await conn.fetchval("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE picked_up_at IS NOT NULL
+              AND completed_at IS NULL
+        """)
+
+        await conn.close()
+
+        print(f"Tasks in last hour: {completed} completed")
+        print(f"Pending tasks: {pending}")
+        print(f"Currently running: {running}")
+
+        if completed == 0 and pending > 0:
+            print("\\n[WARN] Tasks pending but none completed - cognition daemon may not be running")
+            print("  Try: /health fix engine (daemon runs in engine)")
+        elif running > 5:
+            print("\\n[WARN] Many tasks running - may be backlogged")
+        else:
+            print("\\n[OK] Task processing appears healthy")
+
+    except Exception as e:
+        print(f"Verification failed: {e}")
+
+asyncio.run(verify())
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        return actions
+
+
+class RASEFixStrategy(ServiceFixStrategy):
+    """Fix strategy for RASE intrinsic verification components.
+
+    Handles issues with:
+    - KB Oracle state and objective loading
+    - Evidence capture to HX Iceberg storage
+    - Calibration loop with Cerebras/XAI
+    - Daemon Oracle scoring
+
+    Guru Meditation: #RASE.0000000X
+    """
+
+    def __init__(self):
+        super().__init__("rase")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix RASE component issues."""
+        actions = []
+
+        # Step 1: Validate KB objectives directory exists
+        actions.append(
+            RemediationAction(
+                name="Validate KB objectives",
+                description="Check objectives directory and validate objective files",
+                code='''
+import os
+from pathlib import Path
+
+kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+objectives_dir = Path(kb_root) / "current" / "objectives"
+
+print(f"Checking objectives directory: {objectives_dir}")
+
+if not objectives_dir.exists():
+    print(f"Creating objectives directory: {objectives_dir}")
+    objectives_dir.mkdir(parents=True, exist_ok=True)
+    print("[OK] Directory created")
+else:
+    print(f"[OK] Directory exists")
+
+# List objectives
+objectives = list(objectives_dir.glob("*.md"))
+print(f"Found {len(objectives)} objective files:")
+for obj in objectives:
+    print(f"  - {obj.name}")
+
+if not objectives:
+    print("[WARN] No objectives found. Create objectives in current/objectives/")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=10,
+            )
+        )
+
+        # Step 2: Test KB Oracle initialization
+        actions.append(
+            RemediationAction(
+                name="Test KB Oracle",
+                description="Initialize and test KBOracle functionality",
+                code='''
+import asyncio
+import os
+
+async def test_oracle():
+    from gaius.rase.domains.kb import KBOracle, KBState
+
+    kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+    print(f"Testing KBOracle with kb_root={kb_root}")
+
+    # Test state capture
+    try:
+        state = KBState.capture(kb_root)
+        print(f"[OK] KBState captured: {len(state.documents)} documents")
+        if state.is_stale():
+            print("[WARN] State is stale, will refresh on next verification")
+    except Exception as e:
+        print(f"[FAIL] KBState capture failed: {e}")
+        return False
+
+    # Test oracle creation
+    try:
+        oracle = KBOracle(kb_root=kb_root)
+        print(f"[OK] KBOracle created")
+    except Exception as e:
+        print(f"[FAIL] KBOracle creation failed: {e}")
+        return False
+
+    return True
+
+result = asyncio.run(test_oracle())
+print(f"\\nOracle test: {'PASS' if result else 'FAIL'}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 3: Test HX evidence capture
+        actions.append(
+            RemediationAction(
+                name="Test evidence capture",
+                description="Verify HX Iceberg evidence storage is accessible",
+                code='''
+import asyncio
+
+async def test_evidence():
+    try:
+        from gaius.hx import get_evidence_capture
+
+        capture = get_evidence_capture()
+        status = capture.get_status()
+        print(f"[OK] EvidenceCapture singleton: {type(capture).__name__}")
+        print(f"  - enabled: {status['enabled']}")
+        print(f"  - namespace: {status['namespace']}")
+        print(f"  - table: {status['table_name']}")
+        print(f"  - kb_root: {status['kb_root']}")
+
+        # Test MinIO connectivity
+        from gaius.storage.minio_client import get_minio_client
+        try:
+            client = get_minio_client()
+            buckets = client.list_buckets()
+            print(f"[OK] MinIO connected: {len(buckets)} buckets")
+        except Exception as e:
+            print(f"[WARN] MinIO check failed (may not be critical): {e}")
+
+        return True
+    except Exception as e:
+        print(f"[FAIL] Evidence capture test failed: {e}")
+        return False
+
+result = asyncio.run(test_evidence())
+print(f"\\nEvidence test: {'PASS' if result else 'FAIL'}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        # Step 4: Reset RASE singletons
+        actions.append(
+            RemediationAction(
+                name="Reset RASE singletons",
+                description="Clear cached RASE component instances",
+                code='''
+print("Resetting RASE singletons...")
+
+# Reset daemon oracle
+try:
+    from gaius.agents.evolution import daemon_oracle
+    daemon_oracle._daemon_oracle = None
+    print("[OK] DaemonOracle singleton reset")
+except Exception as e:
+    print(f"[WARN] DaemonOracle reset: {e}")
+
+# Reset objective generator
+try:
+    from gaius.agents.evolution import objective_generator
+    objective_generator._generator = None
+    print("[OK] ObjectiveTaskGenerator singleton reset")
+except Exception as e:
+    print(f"[WARN] ObjectiveTaskGenerator reset: {e}")
+
+# Reset calibration oracle
+try:
+    from gaius.agents.evolution import calibration
+    calibration._calibration_oracle = None
+    print("[OK] CalibrationOracle singleton reset")
+except Exception as e:
+    print(f"[WARN] CalibrationOracle reset: {e}")
+
+# Reset KB oracle (in domains)
+try:
+    from gaius.rase.domains.kb import oracle
+    if hasattr(oracle, '_kb_oracle'):
+        oracle._kb_oracle = None
+        print("[OK] KBOracle singleton reset")
+except Exception as e:
+    print(f"[WARN] KBOracle reset: {e}")
+
+print("\\nRASE singletons reset complete")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=10,
+            )
+        )
+
+        # Step 5: Verify calibration providers
+        actions.append(
+            RemediationAction(
+                name="Check calibration providers",
+                description="Verify Cerebras and XAI API keys are configured",
+                code='''
+import os
+
+print("Checking calibration provider configuration...")
+
+cerebras_key = os.environ.get("CEREBRAS_API_KEY", "")
+xai_key = os.environ.get("XAI_API_KEY", "")
+
+if cerebras_key:
+    print(f"[OK] CEREBRAS_API_KEY configured ({len(cerebras_key)} chars)")
+else:
+    print("[WARN] CEREBRAS_API_KEY not set (calibration will fall back to XAI)")
+
+if xai_key:
+    print(f"[OK] XAI_API_KEY configured ({len(xai_key)} chars)")
+else:
+    print("[WARN] XAI_API_KEY not set (calibration may not work)")
+
+if not cerebras_key and not xai_key:
+    print("\\n[FAIL] No calibration providers configured!")
+    print("  Set CEREBRAS_API_KEY or XAI_API_KEY in environment")
+else:
+    print("\\n[OK] At least one calibration provider available")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=5,
+            )
+        )
+
+        return actions
+
+
 # Service registry - maps service names to strategies
+#
+# NOTE: With Engine Federation architecture, most remediation should go through
+# the engine's HealthObserverService via gRPC. The strategies here are for
+# client-side remediation when the engine is not available.
+#
+# Deprecated: "singletons" - use "engine" which includes gRPC singleton reset
 SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "engine": EngineFixStrategy(),
     "grpc": EngineFixStrategy(),  # Alias
@@ -882,7 +1414,7 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "qdrant": QdrantFixStrategy(),
     "minio": MinioFixStrategy(),
     "s3": MinioFixStrategy(),  # Alias
-    "singletons": SingletonFixStrategy(),
+    # "singletons" removed - deprecated, use "engine" instead
     "all": AllServicesFixStrategy(),
     "endpoints": EndpointFixStrategy(),
     "inference": EndpointFixStrategy(),  # Alias
@@ -891,6 +1423,13 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "dataset": DatasetFixStrategy(),
     "datasetservice": DatasetFixStrategy(),  # Alias
     "nifi": NiFiFixStrategy(),
+    "rase": RASEFixStrategy(),
+    "kb_oracle": RASEFixStrategy(),  # Alias
+    "intrinsic": RASEFixStrategy(),  # Alias
+    "objectives": RASEFixStrategy(),  # Alias
+    "pipeline": PipelineFixStrategy(),
+    "triage": PipelineFixStrategy(),  # Alias
+    "content": PipelineFixStrategy(),  # Alias
 }
 
 

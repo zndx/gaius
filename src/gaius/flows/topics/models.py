@@ -335,6 +335,10 @@ def _get_gensim_topics(
     """Get topics from Gensim model."""
     from gaius.flows.topics.corpus import tokenize_document
 
+    # Gensim models require a dictionary
+    if topic_model.dictionary is None:
+        raise ValueError("Gensim topic model requires dictionary for BOW conversion")
+
     # Tokenize and convert to BOW
     tokens = tokenize_document(document)
     bow = topic_model.dictionary.doc2bow(tokens)
@@ -385,7 +389,9 @@ def save_topic_model(topic_model: TopicModel, path: Path) -> None:
                 f,
             )
     else:
-        # Gensim models
+        # Gensim models require dictionary
+        if topic_model.dictionary is None:
+            raise ValueError("Cannot save Gensim model without dictionary")
         topic_model.model.save(str(path / "model"))
         topic_model.dictionary.save(str(path / "dictionary"))
         with open(path / "metadata.pkl", "wb") as f:

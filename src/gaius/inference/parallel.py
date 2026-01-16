@@ -65,6 +65,8 @@ class ParallelInferenceClient:
         orchestrator = get_orchestrator()
 
         # Get endpoint configs
+        if config._raw is None:
+            raise RuntimeError("Config not loaded - cannot determine endpoints")
         inference = config._raw.get("gaius", {}).get("inference", {})
         endpoints_raw = inference.get("endpoints", {})
 

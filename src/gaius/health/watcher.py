@@ -26,7 +26,7 @@ import time
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Pattern, TypedDict
 
 
 class ObservationType(Enum):
@@ -42,6 +42,14 @@ class ObservationType(Enum):
     # OTel-specific types
     SPAN_EVENT = "span_event"
     SPAN_ATTRIBUTE = "span_attribute"
+
+
+class LogPattern(TypedDict, total=False):
+    """Type definition for log pattern dictionaries."""
+
+    pattern: Pattern[str]
+    type: ObservationType
+    action: str
 
 
 @dataclass
@@ -345,13 +353,9 @@ class WatchResult:
 
 
 # Standard patterns to watch for in log output
-STANDARD_PATTERNS = [
-    # Legacy fallback pattern (project convention)
-    {
-        "pattern": re.compile(r"LEGACY_FALLBACK:\s*(.+?)\s*-\s*tech debt", re.IGNORECASE),
-        "type": ObservationType.LEGACY,
-        "action": "warn_tech_debt",
-    },
+# Note: Engine availability patterns removed - if engine is offline,
+# the watcher (which runs in the engine) won't be watching anyway.
+STANDARD_PATTERNS: list[LogPattern] = [
     # Stub implementations
     {
         "pattern": re.compile(r"\(stub\)|\bstub\b", re.IGNORECASE),
@@ -402,7 +406,7 @@ class CommandWatcher:
 
     def __init__(
         self,
-        patterns: list[dict] | None = None,
+        patterns: list[LogPattern] | None = None,
         span_patterns: list[FactPattern] | None = None,
     ):
         """Initialize watcher with patterns to watch for.
@@ -411,7 +415,7 @@ class CommandWatcher:
             patterns: Custom log patterns to match. If None, uses STANDARD_PATTERNS.
             span_patterns: Custom span fact patterns. If None, uses SPAN_FACT_PATTERNS.
         """
-        self.patterns = patterns or STANDARD_PATTERNS
+        self.patterns: list[LogPattern] = patterns or STANDARD_PATTERNS
         self.span_patterns = span_patterns or SPAN_FACT_PATTERNS
         self.observations: list[Observation] = []
         self.span_collector = SpanFactCollector()
@@ -433,13 +437,15 @@ class CommandWatcher:
             pattern = pattern_def["pattern"]
             match = pattern.search(line)
             if match:
+                obs_type: ObservationType = pattern_def["type"]
+                obs_action: str | None = pattern_def.get("action")
                 obs = Observation(
-                    type=pattern_def["type"],
+                    type=obs_type,
                     message=match.group(0),
                     source=source,
                     level=level,
                     line=line.strip(),
-                    action=pattern_def.get("action"),
+                    action=obs_action,
                 )
                 observations.append(obs)
                 self.observations.append(obs)
@@ -700,25 +706,6 @@ def emit_fallback_event(
         span.set_attribute("fallback.used", True)
         span.set_attribute("fallback.target", fallback_to)
         span.set_attribute("fallback.reason", reason)
-
-
-def emit_legacy_fallback(span: Any, component: str, tech_debt_note: str) -> None:
-    """Emit span event for legacy fallback (matches LEGACY_FALLBACK log convention).
-
-    Usage in code:
-        with tracer.start_as_current_span("orchestrator.status") as span:
-            if not use_engine_proxy():
-                emit_legacy_fallback(span, "orchestrator_status", "bypassing engine")
-                logger.warning("LEGACY_FALLBACK: orchestrator_status bypassing engine - tech debt")
-    """
-    if hasattr(span, "add_event"):
-        span.add_event("legacy_fallback", {
-            "component": component,
-            "tech_debt": tech_debt_note,
-        })
-    if hasattr(span, "set_attribute"):
-        span.set_attribute("implementation.status", "legacy")
-        span.set_attribute("tech_debt.component", component)
 
 
 def emit_exception_caught(span: Any, exc: Exception, continued: bool = True) -> None:

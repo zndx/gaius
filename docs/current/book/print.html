@@ -1693,6 +1693,150 @@ for i, (xx, yy) in enumerate(zip(x_proj, y_proj)):
 <li>With async parallelism: ~500ms total</li>
 </ul>
 <p>Always use <code>async</code> invocation for swarm rounds. The <code>@work</code> decorator handles this.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="metaagent-analytics"><a class="header" href="#metaagent-analytics">MetaAgent Analytics</a></h1>
+<p>MetaAgent is Gaius's natural language interface to observability data. It translates questions into structured queries across multiple data domains, executing them in parallel and synthesizing correlated insights.</p>
+<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
+<p>While <a href="https://www.metabase.com/">Metabase</a> provides guided dashboards for quantitative exploration, MetaAgent enables conversational queries:</p>
+<div class="table-wrapper"><table><thead><tr><th>Interface</th><th>Modality</th><th>Best For</th></tr></thead><tbody>
+<tr><td>Metabase</td><td>Visual dashboards</td><td>Exploring metrics, building reports</td></tr>
+<tr><td>MetaAgent</td><td>Natural language</td><td>Specific questions, cross-domain correlation</td></tr>
+</tbody></table>
+</div>
+<p><strong>Example queries:</strong></p>
+<ul>
+<li>"What sources feed into the CSA docs?"</li>
+<li>"Why might Cloudera docs sync be slow?"</li>
+<li>"How many documents are in the KB?"</li>
+</ul>
+<h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
+<p>MetaAgent deploys 4 specialized analysts in parallel, each querying a different data domain:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                         MetaAgent (gRPC)                            │
+├─────────────────────────────────────────────────────────────────────┤
+│  User Question: "Why are arxiv flows slow?"                         │
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐│
+│  │ Lineage      │  │ Ops          │  │ Resource     │  │ Topology ││
+│  │ Analyst      │  │ Analyst      │  │ Analyst      │  │ Analyst  ││
+│  │ (AGE/Cypher) │  │ (meta.*)     │  │ (meta.*)     │  │ (meta.*) ││
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └────┬─────┘│
+│         │                 │                 │                │      │
+│         └─────────────────┴─────────────────┴────────────────┘      │
+│                                    │                                │
+│                            ┌───────▼───────┐                        │
+│                            │  Correlator   │                        │
+│                            │  (Synthesis)  │                        │
+│                            └───────┬───────┘                        │
+│                                    │                                │
+│  Answer: "Flow processing 15 papers, GPU 2 at 98% memory..."        │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="the-four-analysts"><a class="header" href="#the-four-analysts">The Four Analysts</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Analyst</th><th>Data Source</th><th>Query Language</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><strong>LineageAnalyst</strong></td><td>Apache AGE graph</td><td>Cypher</td><td>Data provenance, dependencies</td></tr>
+<tr><td><strong>OpsAnalyst</strong></td><td><code>meta.flow_runs</code>, <code>meta.agent_performance</code></td><td>SQL</td><td>Flow status, agent health</td></tr>
+<tr><td><strong>ResourceAnalyst</strong></td><td><code>meta.gpu_utilization</code>, <code>meta.inference_throughput</code></td><td>SQL</td><td>GPU metrics, bottlenecks</td></tr>
+<tr><td><strong>TopologyAnalyst</strong></td><td><code>meta.kb_topology</code>, <code>meta.document_clusters</code></td><td>SQL</td><td>KB structure, coverage</td></tr>
+</tbody></table>
+</div>
+<p>Each analyst:</p>
+<ol>
+<li>Receives the user's question</li>
+<li>Generates an appropriate query (Cypher or SQL)</li>
+<li>Executes it against the database</li>
+<li>Returns structured findings</li>
+</ol>
+<p>The <strong>Correlator</strong> synthesizes all findings into a coherent answer.</p>
+<h2 id="data-domains"><a class="header" href="#data-domains">Data Domains</a></h2>
+<h3 id="age-lineage-graph-gaius_hx"><a class="header" href="#age-lineage-graph-gaius_hx">AGE Lineage Graph (<code>gaius_hx</code>)</a></h3>
+<p>The lineage graph tracks data provenance using OpenLineage semantics:</p>
+<pre><code class="language-cypher">-- Find sources that feed into CSA documentation
+MATCH (s:Dataset)-[:INPUT_TO]-&gt;(:Run)-[:OUTPUTS]-&gt;(t:Dataset)
+WHERE t.name CONTAINS 'csa'
+RETURN s.namespace, s.name, t.name
+</code></pre>
+<p>Vertex types:</p>
+<ul>
+<li><strong>Dataset</strong>: Files, KB entries, external sources</li>
+<li><strong>Job</strong>: ETL pipelines, sync flows</li>
+<li><strong>Run</strong>: Individual execution of a job</li>
+</ul>
+<p>Edge types:</p>
+<ul>
+<li><code>INPUT_TO</code>: Dataset consumed by a Run</li>
+<li><code>OUTPUTS</code>: Run produces a Dataset</li>
+<li><code>EXECUTES</code>: Job executes a Run</li>
+</ul>
+<h3 id="meta-schema-meta"><a class="header" href="#meta-schema-meta">Meta Schema (<code>meta.*</code>)</a></h3>
+<p>Analytics tables populated by MetaSyncFlow:</p>
+<div class="table-wrapper"><table><thead><tr><th>Table</th><th>Content</th></tr></thead><tbody>
+<tr><td><code>meta.flow_runs</code></td><td>Flow executions with status, duration</td></tr>
+<tr><td><code>meta.job_catalog</code></td><td>Aggregate job statistics</td></tr>
+<tr><td><code>meta.agent_performance</code></td><td>Agent evaluation scores over time</td></tr>
+<tr><td><code>meta.gpu_utilization</code></td><td>GPU memory and utilization time-series</td></tr>
+<tr><td><code>meta.inference_throughput</code></td><td>Model throughput by hour</td></tr>
+<tr><td><code>meta.kb_topology</code></td><td>Betti numbers, entropy, document counts</td></tr>
+<tr><td><code>meta.document_clusters</code></td><td>HDBSCAN clusters with topics</td></tr>
+</tbody></table>
+</div>
+<h2 id="usage"><a class="header" href="#usage">Usage</a></h2>
+<h3 id="cli"><a class="header" href="#cli">CLI</a></h3>
+<pre><code class="language-bash"># Simple lineage query
+uv run gaius-cli --cmd "/meta 'What sources feed into CSA docs?'" --format json
+
+# Cross-domain correlation
+uv run gaius-cli --cmd "/meta 'Why might Cloudera docs sync be slow?'" --format json
+
+# KB topology
+uv run gaius-cli --cmd "/meta 'How many documents are in the KB?'" --format json
+</code></pre>
+<h3 id="mcp-tool"><a class="header" href="#mcp-tool">MCP Tool</a></h3>
+<pre><code class="language-python"># Available as MCP tool: metaagent_query
+result = await metaagent_query(
+    query="What flows ran recently?",
+    include_dot=True,      # GraphViz DOT visualization
+    include_markdown=True  # Markdown evidence tables
+)
+</code></pre>
+<h3 id="grpc"><a class="header" href="#grpc">gRPC</a></h3>
+<pre><code class="language-protobuf">rpc MetaAgentQuery(MetaAgentQueryRequest) returns (MetaAgentQueryResponse);
+rpc MetaAgentQueryStream(MetaAgentQueryRequest) returns (stream MetaAgentEvent);
+</code></pre>
+<h2 id="response-format"><a class="header" href="#response-format">Response Format</a></h2>
+<pre><code class="language-json">{
+  "question": "What sources feed into CSA docs?",
+  "success": true,
+  "answer": "The CSA documentation outputs are fed by two primary sources...",
+  "agents_used": 4,
+  "duration_ms": 9754,
+  "queries_executed": [
+    "MATCH (s:Dataset)-[:INPUT_TO]-&gt;(:Run)-[:OUTPUTS]-&gt;(t:Dataset)...",
+    "SELECT name, namespace FROM meta.job_catalog WHERE name LIKE '%CSA%';",
+    "SELECT NULL",
+    "SELECT name, document_paths FROM meta.semantic_regions WHERE name = 'CSA'"
+  ],
+  "evidence_tables": 2,
+  "dot_graph_bytes": 435
+}
+</code></pre>
+<h2 id="relationship-to-other-systems"><a class="header" href="#relationship-to-other-systems">Relationship to Other Systems</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>System</th><th>Role</th><th>Integration</th></tr></thead><tbody>
+<tr><td><strong>Metabase</strong></td><td>Visual dashboards</td><td>Queries same <code>meta.*</code> tables</td></tr>
+<tr><td><strong>OpenTelemetry</strong></td><td>Runtime metrics</td><td>Future: OTelAnalyst for latency queries</td></tr>
+<tr><td><strong>GEPA</strong></td><td>Prompt optimization</td><td>Future: Optimize Correlator synthesis</td></tr>
+<tr><td><strong>Swarm</strong></td><td>Domain analysis</td><td>MetaAgent focuses on observability, Swarm on exploration</td></tr>
+</tbody></table>
+</div>
+<h2 id="fmea-failure-modes"><a class="header" href="#fmea-failure-modes">FMEA Failure Modes</a></h2>
+<p>MetaAgent has dedicated failure modes in the FMEA catalog:</p>
+<div class="table-wrapper"><table><thead><tr><th>Code</th><th>Name</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>META_001</code></td><td>Cypher Query Failure</td><td>AGE graph query errors</td></tr>
+<tr><td><code>META_002</code></td><td>Analyst Timeout</td><td>Analyst taking &gt;30s to respond</td></tr>
+<tr><td><code>META_003</code></td><td>Correlator Empty</td><td>No analyst findings to synthesize</td></tr>
+<tr><td><code>META_004</code></td><td>Entity Resolution Failure</td><td>KB semantic search returns no matches</td></tr>
+</tbody></table>
+</div>
+<p>These integrate with the <code>/health</code> command for automated remediation.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="vector-memory-1"><a class="header" href="#vector-memory-1">Vector Memory</a></h1>
 <p>Vector Memory is the persistent substrate from which all analysis emerges. It stores embeddings, enables semantic retrieval, and provides the point cloud for topological analysis.</p>
 <h2 id="core-data-structure"><a class="header" href="#core-data-structure">Core Data Structure</a></h2>
@@ -3760,7 +3904,7 @@ Teaching/demo mode</li>
 └── README.md
 </code></pre>
 <p>Files within each date directory are prefixed with zero-padded numbers indicating creation order.</p>
-<h2 id="purpose"><a class="header" href="#purpose">Purpose</a></h2>
+<h2 id="purpose-1"><a class="header" href="#purpose-1">Purpose</a></h2>
 <p>These notes serve as:</p>
 <ul>
 <li><strong>Development history</strong>: Track decisions and their rationale</li>
@@ -3768,7 +3912,7 @@ Teaching/demo mode</li>
 <li><strong>Session summaries</strong>: Capture work done in each session</li>
 <li><strong>Future reference</strong>: Help understand past context</li>
 </ul>
-<h2 id="usage"><a class="header" href="#usage">Usage</a></h2>
+<h2 id="usage-1"><a class="header" href="#usage-1">Usage</a></h2>
 <p>When starting a session:</p>
 <ol>
 <li>Create today's directory if it doesn't exist</li>

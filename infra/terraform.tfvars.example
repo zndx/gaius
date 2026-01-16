@@ -1,0 +1,7 @@
+# Example terraform.tfvars
+# Copy to terraform.tfvars and fill in your values
+
+cloudflare_account_id = "your-account-id-here"
+zone_name             = "zndx.org"
+subdomain             = "gaius"
+worker_name           = "gaius-web"

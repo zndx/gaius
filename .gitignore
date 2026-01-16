@@ -1,5 +1,11 @@
-Metaflow
+# Runtime Artifacts
+result
+
+# Metaflow
 .metaflow
+
+# Metabase
+plugins/
 
 # Devenv
 .devenv*
@@ -28,6 +34,7 @@ resources/audit/
 resources/prod/
 docs/*.md
 docs/notes/
+*.txt
 
 .venv
 
@@ -81,3 +88,25 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+node_modules/
+package-lock.json
+
+# Terraform/OpenTofu
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/*.tfvars
+!infra/*.tfvars.example
+infra/.terraform.lock.hcl
+
+# gaius-ui
+gaius-ui/node_modules/
+gaius-ui/.turbo/
+gaius-ui/.wrangler/
+gaius-ui/dist/
+gaius-ui/**/dist/
+scripts/output/
+
+# Private configuration (prospects, API keys, etc.)
+config/
+.coverage

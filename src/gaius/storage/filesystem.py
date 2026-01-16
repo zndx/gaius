@@ -5,10 +5,13 @@ It wraps deepagents' FilesystemBackend with Gaius-specific extensions.
 """
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
+
+import yaml
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
@@ -21,6 +24,64 @@ from deepagents.backends.protocol import (
 )
 
 from .protocol import KBDocument, StorageBackend, StorageConfig
+
+
+# Frontmatter regex: matches --- at start, YAML content, closing ---
+_FRONTMATTER_PATTERN = re.compile(
+    r"^---\s*\n(.*?)\n---\s*\n?",
+    re.DOTALL,
+)
+
+
+def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
+    """Parse YAML frontmatter from markdown content.
+
+    Extracts YAML frontmatter block delimited by --- markers at the
+    start of the document. Returns the parsed YAML as a dict and
+    the remaining body content.
+
+    Args:
+        content: Full markdown content potentially with frontmatter
+
+    Returns:
+        Tuple of (frontmatter_dict, body_content).
+        If no frontmatter, returns ({}, content).
+
+    Raises:
+        ValueError: If frontmatter is present but invalid YAML
+
+    Example:
+        >>> content = '''---
+        ... name: my-doc
+        ... tags: [a, b]
+        ... ---
+        ... # Body content
+        ... '''
+        >>> fm, body = parse_frontmatter(content)
+        >>> fm
+        {'name': 'my-doc', 'tags': ['a', 'b']}
+        >>> body
+        '# Body content\\n'
+    """
+    match = _FRONTMATTER_PATTERN.match(content)
+
+    if not match:
+        return {}, content
+
+    yaml_content = match.group(1)
+    body = content[match.end():]
+
+    try:
+        frontmatter = yaml.safe_load(yaml_content)
+        if frontmatter is None:
+            frontmatter = {}
+        if not isinstance(frontmatter, dict):
+            raise ValueError(
+                f"Frontmatter must be a YAML mapping, got {type(frontmatter).__name__}"
+            )
+        return frontmatter, body
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in frontmatter: {e}") from e
 
 
 class FilesystemStorage:
@@ -209,10 +270,10 @@ class FilesystemStorage:
 
     def get_stats(self) -> dict:
         """Get storage statistics."""
-        stats = {
-            "total_documents": 0,
-            "total_size_bytes": 0,
-            "by_directory": {},
+        total_documents = 0
+        total_size_bytes = 0
+        by_directory: dict[str, dict[str, int]] = {}
+        stats: dict[str, object] = {
             "backend_type": "filesystem",
             "root": str(self._root),
         }
@@ -230,13 +291,16 @@ class FilesystemStorage:
                     dir_count += 1
                     dir_size += file_path.stat().st_size
 
-            stats["by_directory"][dir_name] = {
+            by_directory[dir_name] = {
                 "documents": dir_count,
                 "size_bytes": dir_size,
             }
-            stats["total_documents"] += dir_count
-            stats["total_size_bytes"] += dir_size
+            total_documents += dir_count
+            total_size_bytes += dir_size
 
+        stats["total_documents"] = total_documents
+        stats["total_size_bytes"] = total_size_bytes
+        stats["by_directory"] = by_directory
         return stats
 
     def _extract_title(self, content: str, fallback: str) -> str:

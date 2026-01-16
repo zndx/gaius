@@ -54,11 +54,14 @@ class EngineMetrics:
         self._inference_latency: Any = None
         self._inference_errors: Any = None
         self._inference_tokens: Any = None
+        self._inference_tokens_in: Any = None  # Input tokens (prompt)
+        self._inference_tokens_out: Any = None  # Output tokens (completion)
 
         # GPU metrics (gauges via observable callbacks)
         self._gpu_memory_used: Any = None
         self._gpu_memory_total: Any = None
         self._gpu_utilization: Any = None
+        self._gpu_flops_utilization: Any = None  # FLOPS-weighted aggregate
 
         # Endpoint metrics
         self._endpoint_healthy: Any = None
@@ -85,9 +88,15 @@ class EngineMetrics:
         self._healing_in_progress: Any = None
         self._healing_cooldown: Any = None
 
+        # Incident tracking (for Observe panel visibility)
+        self._incidents_active: Any = None
+
         # Error/request metrics for rate calculations
         self._request_total: Any = None
         self._error_total: Any = None
+
+        # Operational exception tracking (for fail-fast visibility)
+        self._exception_caught: Any = None
 
         self._init_instruments()
 
@@ -127,6 +136,7 @@ class EngineMetrics:
             self._create_search_instruments()
             self._create_healing_instruments()
             self._create_general_instruments()
+            self._create_exception_instruments()
 
             self._initialized = True
             logger.info("Engine OTel metrics instruments created")
@@ -163,6 +173,16 @@ class EngineMetrics:
             description="Total tokens processed",
             unit="1",
         )
+        self._inference_tokens_in = self._meter.create_counter(
+            "gaius.inference.tokens_in",
+            description="Input tokens (prompts)",
+            unit="1",
+        )
+        self._inference_tokens_out = self._meter.create_counter(
+            "gaius.inference.tokens_out",
+            description="Output tokens (completions)",
+            unit="1",
+        )
 
     def _create_gpu_instruments(self) -> None:
         """Create GPU-related instruments."""
@@ -177,6 +197,12 @@ class EngineMetrics:
         self._gpu_utilization = self._meter.create_histogram(
             "gaius.gpu.utilization",
             description="GPU utilization percentage",
+            unit="%",
+        )
+        # FLOPS-weighted aggregate utilization for Observe panel sparkline
+        self._gpu_flops_utilization = self._meter.create_gauge(
+            "gaius.gpu.flops_utilization",
+            description="FLOPS-weighted GPU utilization across all GPUs",
             unit="%",
         )
 
@@ -291,6 +317,14 @@ class EngineMetrics:
             unit="1",
         )
 
+        # Incident tracking gauge for Observe panel
+        # This tracks currently active incidents (including those with open GitHub issues)
+        self._incidents_active = self._meter.create_up_down_counter(
+            "gaius.incidents.active",
+            description="Currently active health incidents",
+            unit="1",
+        )
+
     def _create_general_instruments(self) -> None:
         """Create general request/error instruments for rate calculations."""
         if not self._meter:
@@ -307,6 +341,28 @@ class EngineMetrics:
             unit="1",
         )
 
+    def _create_exception_instruments(self) -> None:
+        """Create instruments for tracking caught operational exceptions.
+
+        This provides visibility into operational errors that are caught and
+        handled but should still be surfaced for observability (fail-fast principle).
+
+        The counter is labeled with:
+        - component: Which component caught the exception (health, acp, engine)
+        - operation: What operation was being attempted
+        - exception_type: The exception class name
+        - failure_mode_id: FMEA failure mode if applicable
+        - guru_code: Guru Meditation code if applicable
+        """
+        if not self._meter:
+            return
+
+        self._exception_caught = self._meter.create_counter(
+            "gaius.exception.caught",
+            description="Operational exceptions caught and handled",
+            unit="1",
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Recording Methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -316,17 +372,23 @@ class EngineMetrics:
         model: str,
         latency_ms: float,
         tokens: int = 0,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
         success: bool = True,
         technique: str = "",
+        provider: str = "",
     ) -> None:
         """Record an inference request.
 
         Args:
             model: Model/endpoint name
             latency_ms: Request latency in ms
-            tokens: Tokens processed (input + output)
+            tokens: Tokens processed (input + output) - legacy, use tokens_in/out
+            tokens_in: Input tokens (prompt)
+            tokens_out: Output tokens (completion)
             success: Whether request succeeded
             technique: optillm technique if used
+            provider: Provider name (cerebras, xai, local) for filtering
         """
         if not self._inference_count:
             logger.warning(
@@ -338,12 +400,26 @@ class EngineMetrics:
         attrs = {"model": model}
         if technique:
             attrs["technique"] = technique
+        if provider:
+            attrs["provider"] = provider
 
-        logger.info(f"Recording inference metric: model={model}, latency={latency_ms}ms, tokens={tokens}")
+        # Calculate total if only separate counts provided
+        total_tokens = tokens if tokens > 0 else (tokens_in + tokens_out)
+
+        logger.info(
+            f"Recording inference metric: provider={provider}, model={model}, "
+            f"latency={latency_ms}ms, tokens_in={tokens_in}, tokens_out={tokens_out}"
+        )
         self._inference_count.add(1, attrs)
         self._inference_latency.record(latency_ms, attrs)
-        if tokens > 0:
-            self._inference_tokens.add(tokens, attrs)
+
+        # Record both total and separate token counts
+        if total_tokens > 0:
+            self._inference_tokens.add(total_tokens, attrs)
+        if tokens_in > 0 and self._inference_tokens_in:
+            self._inference_tokens_in.add(tokens_in, attrs)
+        if tokens_out > 0 and self._inference_tokens_out:
+            self._inference_tokens_out.add(tokens_out, attrs)
 
         self._request_total.add(1, {"type": "inference"})
 
@@ -395,6 +471,20 @@ class EngineMetrics:
         attrs = {"gpu_id": str(gpu_id)}
         self._gpu_memory_used.record(memory_used_mb, attrs)
         self._gpu_utilization.record(utilization_percent, attrs)
+
+    def record_gpu_flops_utilization(self, utilization_pct: float) -> None:
+        """Record FLOPS-weighted GPU utilization aggregate.
+
+        This is the streaming Welford mean across all GPUs, weighted by
+        each GPU's theoretical TFLOPS capacity. Used for the Observe panel
+        Compute sparkline.
+
+        Args:
+            utilization_pct: Current FLOPS-weighted utilization (0-100)
+        """
+        if not self._gpu_flops_utilization:
+            return
+        self._gpu_flops_utilization.set(utilization_pct)
 
     def record_endpoint_health(
         self,
@@ -539,6 +629,21 @@ class EngineMetrics:
         delta = 1 if active else -1
         self._healing_cooldown.add(delta, {"endpoint": endpoint})
 
+    def record_incident_change(self, delta: int, status: str = "active") -> None:
+        """Record incident count change for Observe panel.
+
+        Used to track currently active incidents. An incident remains "active"
+        even if it transitions to manual_required (GitHub issue opened) until
+        the issue is closed.
+
+        Args:
+            delta: Change in incident count (+1 for new, -1 for resolved)
+            status: Current incident status (active, recovering, manual_required)
+        """
+        if not self._incidents_active:
+            return
+        self._incidents_active.add(delta, {"status": status})
+
     def record_error(self, error_type: str = "general") -> None:
         """Record a general error.
 
@@ -548,6 +653,46 @@ class EngineMetrics:
         if not self._error_total:
             return
         self._error_total.add(1, {"type": error_type})
+
+    def record_exception_caught(
+        self,
+        component: str,
+        operation: str,
+        exception_type: str,
+        failure_mode_id: str | None = None,
+        guru_code: str | None = None,
+    ) -> None:
+        """Record an exception that was caught and handled.
+
+        This is for operational visibility following fail-fast principles.
+        Even when exceptions are handled gracefully, they should be recorded
+        for observability so silent failures don't accumulate.
+
+        Args:
+            component: Component catching the exception (health, acp, engine)
+            operation: Operation being attempted (remediation, escalation, etc.)
+            exception_type: Exception class name (e.g., "RepositoryNotAllowedError")
+            failure_mode_id: FMEA failure mode ID if applicable (e.g., "GPU_001")
+            guru_code: Guru Meditation code (e.g., "#ACP.SEC.00000002.NOTALLOWED")
+        """
+        if not self._exception_caught:
+            return
+
+        attrs = {
+            "component": component,
+            "operation": operation,
+            "exception_type": exception_type,
+        }
+        if failure_mode_id:
+            attrs["failure_mode_id"] = failure_mode_id
+        if guru_code:
+            attrs["guru_code"] = guru_code
+
+        self._exception_caught.add(1, attrs)
+        logger.debug(
+            f"Recorded exception: component={component} operation={operation} "
+            f"type={exception_type} guru={guru_code}"
+        )
 
     @classmethod
     def get_instance(cls) -> "EngineMetrics":
@@ -563,12 +708,15 @@ def record_inference(
     model: str,
     latency_ms: float,
     tokens: int = 0,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
     success: bool = True,
     technique: str = "",
+    provider: str = "",
 ) -> None:
     """Record an inference request."""
     EngineMetrics.get_instance().record_inference(
-        model, latency_ms, tokens, success, technique
+        model, latency_ms, tokens, tokens_in, tokens_out, success, technique, provider
     )
 
 
@@ -593,3 +741,41 @@ def record_healing_attempt(
 def record_healing_escalation(endpoint: str, from_tier: int, to_tier: int) -> None:
     """Record a healing tier escalation."""
     EngineMetrics.get_instance().record_healing_escalation(endpoint, from_tier, to_tier)
+
+
+def record_exception_caught(
+    component: str,
+    operation: str,
+    exception_type: str,
+    failure_mode_id: str | None = None,
+    guru_code: str | None = None,
+) -> None:
+    """Record an exception that was caught and handled.
+
+    This provides operational visibility following fail-fast principles.
+    Even when exceptions are handled gracefully, they should be recorded
+    for observability so silent failures don't accumulate.
+
+    Args:
+        component: Component catching the exception (health, acp, engine)
+        operation: Operation being attempted (remediation, escalation, etc.)
+        exception_type: Exception class name
+        failure_mode_id: FMEA failure mode ID if applicable
+        guru_code: Guru Meditation code if applicable
+    """
+    EngineMetrics.get_instance().record_exception_caught(
+        component, operation, exception_type, failure_mode_id, guru_code
+    )
+
+
+def record_incident_change(delta: int, status: str = "active") -> None:
+    """Record incident count change for Observe panel.
+
+    Used to track currently active incidents for observability.
+    Incidents remain counted even with GitHub issues until resolved.
+
+    Args:
+        delta: Change in incident count (+1 for new, -1 for resolved)
+        status: Current incident status (active, recovering, manual_required)
+    """
+    EngineMetrics.get_instance().record_incident_change(delta, status)

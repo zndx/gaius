@@ -36,6 +36,7 @@ class LatentThought:
         content_summary: First 200 chars of content (for debugging)
         embedding: 768-dim Nomic embedding
         domain: Domain/topic context
+        temporal_slice: Time period identifier (e.g., "2025-W52", "2025-Q4")
         created_at: Timestamp
         metadata: Additional metadata
     """
@@ -45,6 +46,7 @@ class LatentThought:
     content_summary: str
     embedding: np.ndarray
     domain: str
+    temporal_slice: str = ""  # For NVAR-mediated consolidation
     created_at: datetime = field(default_factory=datetime.now)
     metadata: dict = field(default_factory=dict)
 
@@ -55,6 +57,7 @@ class LatentThought:
         content: str,
         embedding: np.ndarray,
         domain: str = "",
+        temporal_slice: str = "",
         metadata: dict | None = None,
     ) -> "LatentThought":
         """Create a new latent thought.
@@ -64,6 +67,7 @@ class LatentThought:
             content: Full content (will be summarized)
             embedding: 768-dim embedding vector
             domain: Domain context
+            temporal_slice: Time period identifier (e.g., "2025-W52")
             metadata: Optional metadata
         """
         return cls(
@@ -72,6 +76,7 @@ class LatentThought:
             content_summary=content[:200] + ("..." if len(content) > 200 else ""),
             embedding=embedding,
             domain=domain,
+            temporal_slice=temporal_slice,
             metadata=metadata or {},
         )
 
@@ -169,6 +174,7 @@ class LatentWorkingMemory:
             "agent_role": thought.agent_role,
             "content_summary": thought.content_summary,
             "domain": thought.domain,
+            "temporal_slice": thought.temporal_slice,
             "created_at": thought.created_at.isoformat(),
             **thought.metadata,
         }
@@ -260,11 +266,113 @@ class LatentWorkingMemory:
                 content_summary=payload.get("content_summary", ""),
                 embedding=np.array(hit.vector) if hit.vector else np.zeros(EMBEDDING_DIM),
                 domain=payload.get("domain", ""),
+                temporal_slice=payload.get("temporal_slice", ""),
                 created_at=datetime.fromisoformat(payload["created_at"]) if "created_at" in payload else datetime.now(),
-                metadata={k: v for k, v in payload.items() if k not in ("agent_role", "content_summary", "domain", "created_at")},
+                metadata={k: v for k, v in payload.items() if k not in ("agent_role", "content_summary", "domain", "temporal_slice", "created_at")},
             ))
 
         return thoughts
+
+    async def retrieve_by_slice(
+        self,
+        temporal_slice: str,
+        limit: int = 100,
+        domain: str | None = None,
+    ) -> list[LatentThought]:
+        """Retrieve thoughts from a specific temporal slice.
+
+        Used by NVAR-mediated consolidation to compute slice centroids.
+
+        Args:
+            temporal_slice: Time period identifier (e.g., "2025-W52")
+            limit: Maximum results to return
+            domain: Optional domain filter
+
+        Returns:
+            List of LatentThoughts from the specified slice
+        """
+        await self._ensure_collection()
+
+        from qdrant_client import models
+
+        client = self._get_client()
+
+        # Build filter for temporal slice
+        must_conditions = [
+            models.FieldCondition(
+                key="temporal_slice",
+                match=models.MatchValue(value=temporal_slice),
+            )
+        ]
+
+        if domain:
+            must_conditions.append(
+                models.FieldCondition(
+                    key="domain",
+                    match=models.MatchValue(value=domain),
+                )
+            )
+
+        # Scroll through results
+        results = client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=models.Filter(must=must_conditions),
+            limit=limit,
+            with_vectors=True,
+        )
+
+        points = results[0]
+
+        # Convert to LatentThought objects
+        thoughts = []
+        for p in points:
+            payload = p.payload or {}
+            thoughts.append(LatentThought(
+                id=str(p.id),
+                agent_role=payload.get("agent_role", ""),
+                content_summary=payload.get("content_summary", ""),
+                embedding=np.array(p.vector) if p.vector else np.zeros(EMBEDDING_DIM),
+                domain=payload.get("domain", ""),
+                temporal_slice=payload.get("temporal_slice", ""),
+                created_at=datetime.fromisoformat(payload["created_at"]) if "created_at" in payload else datetime.now(),
+                metadata={k: v for k, v in payload.items() if k not in ("agent_role", "content_summary", "domain", "temporal_slice", "created_at")},
+            ))
+
+        return thoughts
+
+    async def compute_slice_centroid(
+        self,
+        temporal_slice: str,
+        domain: str | None = None,
+    ) -> np.ndarray:
+        """Compute the centroid embedding for a temporal slice.
+
+        Used by ThetaDynamics for NVAR-based consolidation.
+
+        Args:
+            temporal_slice: Time period identifier (e.g., "2025-W52")
+            domain: Optional domain filter
+
+        Returns:
+            768-dim normalized centroid embedding
+        """
+        thoughts = await self.retrieve_by_slice(temporal_slice, domain=domain)
+
+        if not thoughts:
+            return np.zeros(EMBEDDING_DIM)
+
+        embeddings = [t.embedding for t in thoughts if t.embedding is not None]
+        if not embeddings:
+            return np.zeros(EMBEDDING_DIM)
+
+        centroid = np.mean(embeddings, axis=0)
+
+        # Normalize
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+
+        return centroid
 
     async def get_consensus(self, domain: str, limit: int = 10) -> np.ndarray:
         """Compute consensus embedding for a domain.

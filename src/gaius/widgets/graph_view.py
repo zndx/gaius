@@ -1,4 +1,4 @@
-"""Graph view widget for visualizing wiki-link relationships.
+"""Graph view widget for visualizing wiki-link and action link relationships.
 
 Uses a force-directed spring placement algorithm on a 19×19 borderless grid.
 """
@@ -13,11 +13,11 @@ from textual.message import Message
 from textual import events
 from rich.text import Text
 
-from ..core.links import parse_wikilinks, LinkGraph
+from ..core.links import parse_wikilinks, parse_action_links, LinkGraph
 
 
 class GraphView(Widget, can_focus=True):
-    """Displays wiki-links as a force-directed graph on a 19×19 grid.
+    """Displays wiki-links and action links as a force-directed graph on a 19×19 grid.
 
     The current note is placed at center (9,9). Connected nodes are
     positioned using spring-based force-directed placement:
@@ -25,9 +25,15 @@ class GraphView(Widget, can_focus=True):
     - All nodes repel each other (repulsive force)
     - Iterate until stable layout
 
+    Node types:
+    - Current file (yellow ◉)
+    - Forward wiki-links (green ○)
+    - Backlinks (cyan ●)
+    - Action links (magenta ◇) - slash command links
+
     Navigation:
     - Arrow keys: Move between nodes
-    - Enter: Open selected node's file
+    - Enter: Open selected node's file or execute action
     """
 
     class NodeSelected(Message):
@@ -36,10 +42,23 @@ class GraphView(Widget, can_focus=True):
             self.filepath = filepath
             super().__init__()
 
+    class ActionSelected(Message):
+        """Emitted when Enter is pressed on an action link node."""
+        def __init__(self, command: str) -> None:
+            self.command = command
+            super().__init__()
+
     class NodeHighlighted(Message):
         """Emitted when cursor moves to a new node."""
-        def __init__(self, filepath: str) -> None:
+        def __init__(
+            self,
+            node_type: str,
+            filepath: str | None = None,
+            command: str | None = None,
+        ) -> None:
+            self.node_type = node_type
             self.filepath = filepath
+            self.command = command
             super().__init__()
 
     DEFAULT_CSS = """
@@ -66,6 +85,7 @@ class GraphView(Widget, can_focus=True):
     # Maximum nodes to display (excluding current)
     MAX_FORWARD = 12
     MAX_BACK = 12
+    MAX_ACTIONS = 8  # Action links shown on right side
 
     current_file: reactive[str | None] = reactive(None)
     selected_node: reactive[str | None] = reactive(None)  # Currently selected node ID
@@ -90,6 +110,7 @@ class GraphView(Widget, can_focus=True):
         # Overflow counts
         self._total_forward: int = 0
         self._total_back: int = 0
+        self._total_actions: int = 0
 
     def update_for_file(self, filepath: str | None) -> None:
         """Update the graph view for a given file."""
@@ -106,6 +127,7 @@ class GraphView(Widget, can_focus=True):
         self._current_id = None
         self._total_forward = 0
         self._total_back = 0
+        self._total_actions = 0
 
         if not filepath:
             return
@@ -123,12 +145,14 @@ class GraphView(Widget, can_focus=True):
         }
         self._positions["current"] = (float(self.CENTER), float(self.CENTER))
 
-        # Parse forward links from current file
+        # Parse forward links and action links from current file
         try:
             content = path.read_text()
             forward_links = parse_wikilinks(content)
+            action_links = parse_action_links(content)
         except Exception:
             forward_links = []
+            action_links = []
 
         self._total_forward = len(forward_links)
         displayed_forward = forward_links[:self.MAX_FORWARD]
@@ -173,6 +197,27 @@ class GraphView(Widget, can_focus=True):
             y = self.CENTER + radius * math.sin(angle)
             self._positions[node_id] = (x, y)
             self._edges.append((node_id, "current"))
+
+        # Add action link nodes - spread on right side
+        self._total_actions = len(action_links)
+        displayed_actions = action_links[:self.MAX_ACTIONS]
+
+        for i, action in enumerate(displayed_actions):
+            node_id = f"action_{i}"
+            self._graph_nodes[node_id] = {
+                "name": action.display_name,
+                "type": "action",
+                "command": action.command,  # Full command for execution
+            }
+            # Position action links to the right of center, vertical spread
+            count = len(displayed_actions)
+            # Spread vertically from top to bottom on right side
+            y_offset = (i - (count - 1) / 2) * 1.5
+            radius = 4 + (i % 2)  # Stagger radii
+            x = self.CENTER + radius
+            y = self.CENTER + y_offset
+            self._positions[node_id] = (x, y)
+            self._edges.append(("current", node_id))
 
     def _run_layout(self) -> None:
         """Run force-directed layout algorithm."""
@@ -305,6 +350,9 @@ class GraphView(Widget, can_focus=True):
                 elif info["type"] == "backlink":
                     grid[gy][gx] = "◆ " if is_selected else "● "
                     styles[gy][gx] = "bold reverse cyan" if is_selected else "cyan"
+                elif info["type"] == "action":
+                    grid[gy][gx] = "◆ " if is_selected else "◇ "
+                    styles[gy][gx] = "bold reverse magenta" if is_selected else "magenta"
 
         # Build output text
         text = Text()
@@ -312,30 +360,21 @@ class GraphView(Widget, can_focus=True):
         # Title row with counts (highlight when focused)
         back_count = sum(1 for n in self._graph_nodes if "back" in n)
         fwd_count = sum(1 for n in self._graph_nodes if "fwd" in n)
+        action_count = sum(1 for n in self._graph_nodes if "action" in n)
         title_style = "bold reverse green" if self.has_focus else "bold dim"
         text.append("  Link Graph ", style=title_style)
         text.append(f"●{self._total_back}", style="cyan")
         text.append(" ", style="dim")
-        text.append(f"○{self._total_forward}\n", style="green")
+        text.append(f"○{self._total_forward}", style="green")
+        if self._total_actions > 0:
+            text.append(" ", style="dim")
+            text.append(f"◇{self._total_actions}", style="magenta")
+        text.append("\n")
 
         for row in range(self.GRID_SIZE):
             for col in range(self.GRID_SIZE):
                 text.append(grid[row][col], style=styles[row][col])
             text.append("\n")
-
-        # Legend with overflow indicators
-        text.append(" ◉", style="bold yellow")
-        text.append("=here ", style="dim")
-        text.append("●", style="cyan")
-        if self._total_back > back_count:
-            text.append(f"={back_count}/{self._total_back} ", style="dim")
-        else:
-            text.append(f"={back_count} ", style="dim")
-        text.append("○", style="green")
-        if self._total_forward > fwd_count:
-            text.append(f"={fwd_count}/{self._total_forward}", style="dim")
-        else:
-            text.append(f"={fwd_count}", style="dim")
 
         return text
 
@@ -408,7 +447,10 @@ class GraphView(Widget, can_focus=True):
         elif event.key == "enter":
             if self.selected_node and self.selected_node in self._graph_nodes:
                 info = self._graph_nodes[self.selected_node]
-                if "path" in info:
+                if info["type"] == "action" and "command" in info:
+                    # Emit action command for execution
+                    self.post_message(self.ActionSelected(info["command"]))
+                elif "path" in info:
                     self.post_message(self.NodeSelected(info["path"]))
             event.stop()
             event.prevent_default()
@@ -419,6 +461,14 @@ class GraphView(Widget, can_focus=True):
         if not self.selected_node or self.selected_node not in self._positions:
             if self._current_id:
                 self.selected_node = self._current_id
+                # Emit highlight message for initial selection
+                if self.selected_node in self._graph_nodes:
+                    info = self._graph_nodes[self.selected_node]
+                    self.post_message(self.NodeHighlighted(
+                        node_type=info["type"],
+                        filepath=info.get("path"),
+                        command=info.get("command"),
+                    ))
                 self.refresh()
             return
 
@@ -446,19 +496,27 @@ class GraphView(Widget, can_focus=True):
         if candidates:
             candidates.sort()
             self.selected_node = candidates[0][1]
-
-            # Emit highlight message with file path
-            if self.selected_node in self._graph_nodes:
-                info = self._graph_nodes[self.selected_node]
-                if "path" in info:
-                    self.post_message(self.NodeHighlighted(info["path"]))
-
             self.refresh()
+
+        # Always emit highlight message for current selection (even if no movement)
+        if self.selected_node in self._graph_nodes:
+            info = self._graph_nodes[self.selected_node]
+            self.post_message(self.NodeHighlighted(
+                node_type=info["type"],
+                filepath=info.get("path"),
+                command=info.get("command"),
+            ))
 
     def select_node_by_path(self, filepath: str) -> None:
         """Select a node by its file path (for sync with FileTree)."""
         for node_id, info in self._graph_nodes.items():
             if info.get("path") == filepath:
                 self.selected_node = node_id
+                # Emit highlight message for the selected node
+                self.post_message(self.NodeHighlighted(
+                    node_type=info["type"],
+                    filepath=info.get("path"),
+                    command=info.get("command"),
+                ))
                 self.refresh()
                 return

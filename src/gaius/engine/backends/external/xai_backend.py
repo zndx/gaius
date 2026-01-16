@@ -19,22 +19,31 @@ class XAIBackend(ExternalBackend):
     """XAI Grok inference backend.
 
     Features:
-    - Grok-2 frontier model
-    - Per-token pricing (budget tier)
+    - Grok 4.1 Fast: 2M context window, optimized for agentic workflows
+    - Per-token pricing ($0.20/M input, $0.50/M output)
     - OpenAI-compatible API
+
+    Model variants:
+    - grok-4-1-fast: Default, 2M context, reasoning disabled
+    - grok-4-1-fast-reasoning: With chain-of-thought reasoning enabled
+    - grok-3: Legacy 131K context model
 
     Environment:
         XAI_API_KEY: API key for XAI
     """
 
-    DEFAULT_MODEL = "grok-3"
+    # Grok 4.1 Fast: 2M context, 16K max output, 25x cheaper than Grok-3
+    DEFAULT_MODEL = "grok-4-1-fast"
     API_BASE = "https://api.x.ai/v1"
+
+    # Recommended max_tokens for synthesis (Grok 4.1 supports up to 16K output)
+    RECOMMENDED_MAX_TOKENS = 16384
 
     def __init__(self, model: Optional[str] = None):
         """Initialize XAI backend.
 
         Args:
-            model: Model to use (default: grok-2-latest)
+            model: Model to use (default: grok-4-1-fast)
         """
         self._api_key = os.environ.get("XAI_API_KEY")
         self._model = model or self.DEFAULT_MODEL
@@ -82,46 +91,137 @@ class XAIBackend(ExternalBackend):
         use_model = model or self._model
         start_time = time.time()
 
+        # Retry configuration for transient errors (502, 503, 429)
+        max_retries = 3
+        retry_delay = 2.0  # Initial delay in seconds
+
         try:
             import httpx
 
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.API_BASE}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": use_model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
-                    timeout=60.0,
-                )
+            last_error: Exception | None = None
+            for attempt in range(max_retries):
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.post(
+                            f"{self.API_BASE}/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {self._api_key}",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "model": use_model,
+                                "messages": messages,
+                                "temperature": temperature,
+                                "max_tokens": max_tokens,
+                            },
+                            timeout=120.0,  # Increased for large context
+                        )
 
-                response.raise_for_status()
-                data = response.json()
+                        # Check for retryable status codes
+                        if response.status_code in (429, 502, 503, 504):
+                            last_error = httpx.HTTPStatusError(
+                                f"Server error '{response.status_code}'",
+                                request=response.request,
+                                response=response,
+                            )
+                            if attempt < max_retries - 1:
+                                delay = retry_delay * (2 ** attempt)  # Exponential backoff
+                                logger.warning(
+                                    f"XAI transient error {response.status_code}, "
+                                    f"retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+
+                        response.raise_for_status()
+                        data = response.json()
+                        break  # Success - exit retry loop
+
+                except httpx.HTTPStatusError as e:
+                    last_error = e
+                    if e.response.status_code in (429, 502, 503, 504) and attempt < max_retries - 1:
+                        delay = retry_delay * (2 ** attempt)
+                        logger.warning(
+                            f"XAI transient error {e.response.status_code}, "
+                            f"retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+            else:
+                # All retries exhausted
+                if last_error:
+                    raise last_error
 
             latency_ms = int((time.time() - start_time) * 1000)
 
             # Extract response
-            content = data["choices"][0]["message"]["content"] if data.get("choices") else ""
+            content = ""
+            finish_reason = None
+            if data.get("choices"):
+                choice = data["choices"][0]
+                content = choice.get("message", {}).get("content", "")
+                finish_reason = choice.get("finish_reason")
+
             usage = data.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+
+            # Check for truncation (finish_reason == "length")
+            is_truncated = finish_reason == "length"
+            if is_truncated:
+                logger.warning(
+                    f"XAI response truncated: model={use_model}, "
+                    f"output_tokens={output_tokens}, finish_reason={finish_reason}"
+                )
+
+            # Record telemetry for token tracking
+            try:
+                from ...metrics import record_inference, EngineMetrics
+                record_inference(
+                    model=use_model,
+                    latency_ms=latency_ms,
+                    tokens_in=input_tokens,
+                    tokens_out=output_tokens,
+                    success=True,
+                    provider="xai",
+                )
+                # Record truncation as an LLM error for Observe panel visibility
+                if is_truncated:
+                    EngineMetrics.get_instance().record_error("llm_truncated")
+                    # Also record with attributes for investigation
+                    EngineMetrics.get_instance()._inference_errors.add(
+                        1, {"model": use_model, "provider": "xai", "reason": "truncated"}
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to record telemetry: {e}")
 
             return ExternalResponse(
                 content=content,
                 model=use_model,
                 provider="xai",
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 latency_ms=latency_ms,
+                finish_reason=finish_reason,
             )
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             logger.error(f"XAI completion failed: {e}")
+
+            # Record failed request telemetry
+            try:
+                from ...metrics import record_inference
+                record_inference(
+                    model=use_model,
+                    latency_ms=latency_ms,
+                    success=False,
+                    provider="xai",
+                )
+            except Exception:
+                pass  # Don't fail on telemetry errors
+
             return ExternalResponse(
                 content="",
                 model=use_model,

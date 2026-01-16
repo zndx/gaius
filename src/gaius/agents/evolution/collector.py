@@ -250,7 +250,7 @@ class TrainingCollector:
                     context=thought.content,
                     evaluation_criteria=criteria,
                     source_type="cognition",
-                    source_id=thought.id if hasattr(thought, "id") else "",
+                    source_id=str(thought.id) if hasattr(thought, "id") and thought.id else "",
                 ))
 
             return examples

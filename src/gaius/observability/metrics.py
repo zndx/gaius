@@ -84,6 +84,11 @@ class MetricDefinition:
 # Note: Prometheus metrics have "gaius_gaius_" prefix:
 #   - "gaius_" from OTel Collector namespace config
 #   - "gaius." from SDK metric naming (becomes "gaius_" after export)
+#
+# Windowed Stats Philosophy (Flink-inspired):
+# - Use 10-minute windows for rate calculations to survive bursty workloads
+# - Sparklines show 5-minute history at 15-second resolution
+# - Current value shows meaningful aggregate rather than instantaneous zero
 OBSERVE_METRICS: list[MetricDefinition] = [
     # --- Prometheus metrics (time series with sparklines) ---
     # Note: Metric names follow the pattern gaius_gaius_<name>_<unit> from OTel export
@@ -91,60 +96,85 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         id="inference_latency_p95",
         name="Latency p95",
         source="prometheus",
-        query='histogram_quantile(0.95, rate(gaius_gaius_inference_latency_milliseconds_bucket[5m]))',
-        display=MetricDisplay.SPARKLINE,
+        # Sum across all models, keeping only the 'le' bucket label for histogram_quantile
+        # 10-minute window for bursty workloads like ambient reasoning
+        query='histogram_quantile(0.95, sum by (le) (rate(gaius_gaius_inference_latency_milliseconds_bucket[10m])))',
+        display=MetricDisplay.GAUGE,
         unit="ms",
         warning_threshold=500,
         critical_threshold=1000,
+        max_value=2000.0,  # 2s max for gauge scale
+        width=12,
+        precision=0,
     ),
     MetricDefinition(
         id="inference_rate",
         name="Infer/hr",
         source="prometheus",
-        query='sum(rate(gaius_gaius_inference_count_total[1m])) * 3600',
+        # 10-minute windowed rate extrapolated to hourly
+        # This keeps the metric hydrated even during quiet periods
+        query='sum(rate(gaius_gaius_inference_count_total[10m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         unit="",
         width=15,
-        # Run rate: current minute's rate extrapolated to hourly
     ),
     MetricDefinition(
         id="tokens_rate",
         name="Tokens/hr",
         source="prometheus",
-        query='sum(rate(gaius_gaius_inference_tokens_total[1m])) * 3600',
+        # 10-minute windowed rate extrapolated to hourly
+        query='sum(rate(gaius_gaius_inference_tokens_total[10m])) * 3600',
         display=MetricDisplay.SPARKLINE,
         unit="",
         width=15,
-        # Run rate: current minute's rate extrapolated to hourly
     ),
     # Note: Search/min metric available but not displayed in panel
-    # query='rate(gaius_gaius_search_count_total[1m]) * 60'
+    # query='rate(gaius_gaius_search_count_total[10m]) * 60'
     MetricDefinition(
         id="error_rate",
-        name="Errors",
+        name="LLM Errors",
         source="prometheus",
-        query='rate(gaius_gaius_error_total[5m]) / (rate(gaius_gaius_request_total[5m]) + 0.0001) * 100',
+        # 10-minute windowed error rate for stability
+        query='rate(gaius_gaius_error_total[10m]) / (rate(gaius_gaius_request_total[10m]) + 0.0001) * 100',
         display=MetricDisplay.PERCENTAGE,
         unit="%",
         warning_threshold=1,
         critical_threshold=5,
         precision=2,
     ),
-    # --- Engine metrics (gauges for current state) ---
-    # Compute capacity: % of GPU compute that is functional (not just "process alive")
-    # This accounts for GPUs per endpoint and shows capacity relative to total
+    # --- Operational Errors (fail-fast visibility) ---
+    # Tracks caught operational exceptions that should be surfaced for observability.
+    # Separate from "Errors" which tracks LLM inference error rate.
+    # Shows count of operational failures (GitHub issues, ACP escalation, RCA, etc.)
     MetricDefinition(
-        id="compute_capacity",
-        name="Compute",
-        source="engine",
-        query="compute_capacity",
-        display=MetricDisplay.GAUGE,
-        unit="%",
-        warning_threshold=80,
-        critical_threshold=50,
-        threshold_direction="below",  # Below 50% is red, below 80% is yellow
+        id="ops_errors",
+        name="Ops Errors",
+        source="prometheus",
+        query='sum(increase(gaius_gaius_exception_caught_total[10m])) or vector(0)',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=1,
+        critical_threshold=5,
         precision=0,
-        max_value=100.0,
+    ),
+    # --- GPU FLOPS Utilization (Prometheus via OTel) ---
+    # FLOPS-weighted GPU utilization across all GPUs using Welford streaming mean.
+    # Shows actual compute load relative to theoretical peak FLOPS for 6x RTX 4090s.
+    # - Near 0% when idle or during changeover
+    # - High % when inference is active
+    # - 100% when all GPUs under full load (e.g., TP=2, PP=3 with active inference)
+    MetricDefinition(
+        id="gpu_flops_utilization",
+        name="Compute",
+        source="prometheus",
+        query="gaius_gaius_gpu_flops_utilization_percent",  # From OTel export
+        display=MetricDisplay.SPARKLINE,  # Now with history!
+        unit="%",
+        warning_threshold=95,
+        critical_threshold=99,
+        threshold_direction="above",
+        width=15,
+        precision=0,
     ),
     MetricDefinition(
         id="evolution",
@@ -157,27 +187,17 @@ OBSERVE_METRICS: list[MetricDefinition] = [
     ),
     # --- Healing metrics (self-healing observability) ---
     # These use gaius_gaius_healing_* metrics from healing_metrics.py or engine/metrics.py
+    # Active incidents count - includes incidents with open GitHub issues
     MetricDefinition(
-        id="healing_success_rate",
-        name="Heal Rate",
+        id="active_incidents",
+        name="Incidents",
         source="prometheus",
-        query='sum(rate(gaius_gaius_healing_success_total[5m])) / (sum(rate(gaius_gaius_healing_attempts_total[5m])) + 0.0001) * 100',
-        display=MetricDisplay.PERCENTAGE,
-        unit="%",
-        warning_threshold=80,
-        critical_threshold=50,
-        threshold_direction="below",
+        query='sum(gaius_gaius_incidents_active) or vector(0)',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=1,
+        critical_threshold=3,
         precision=0,
-    ),
-    MetricDefinition(
-        id="healing_attempts_rate",
-        name="Heals/hr",
-        source="prometheus",
-        query='sum(rate(gaius_gaius_healing_attempts_total[1m])) * 3600',
-        display=MetricDisplay.SPARKLINE,
-        warning_threshold=60,   # 1/min average = concerning
-        critical_threshold=120,  # 2/min average = critical
-        width=15,
     ),
     MetricDefinition(
         id="healing_escalations",

@@ -5,11 +5,14 @@ exploratory data analysis. It extracts data from:
 - lineage_events -> meta.dataset_catalog, meta.job_catalog, meta.data_dependencies
 - agent_evaluations, evolution_cycles -> meta.agent_performance, meta.flow_runs
 - grid_snapshots -> meta.kb_topology, meta.document_clusters
+- GPU health metrics -> meta.gpu_minute_stats (via health service)
+- fmea_outcomes -> meta.fmea_rpn_timeseries
+- data_dependencies -> meta.lineage_sankey_agg (for Sankey charts)
 """
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from metaflow import FlowSpec, step, Parameter, current
@@ -76,6 +79,7 @@ class MetaSyncFlow(FlowSpec):
             "lineage": {"datasets": 0, "jobs": 0, "dependencies": 0},
             "operations": {"flow_runs": 0, "agent_records": 0},
             "topology": {"snapshots": 0, "clusters": 0},
+            "observability": {"gpu_stats": 0, "fmea_rpn": 0, "sankey": 0},
         }
 
         self.next(self.sync_lineage)
@@ -96,7 +100,7 @@ class MetaSyncFlow(FlowSpec):
             if self.sync_mode == "full":
                 time_filter = ""
             else:
-                cutoff = datetime.utcnow() - timedelta(hours=self.lookback_hours)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
                 time_filter = f"WHERE event_time > '{cutoff.isoformat()}'"
 
             # Extract datasets from lineage_events
@@ -213,7 +217,7 @@ class MetaSyncFlow(FlowSpec):
             if self.sync_mode == "full":
                 time_filter = ""
             else:
-                cutoff = datetime.utcnow() - timedelta(hours=self.lookback_hours)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=self.lookback_hours)
                 time_filter = f"WHERE started.event_time > '{cutoff.isoformat()}'"
 
             cur.execute(f"""
@@ -350,6 +354,132 @@ class MetaSyncFlow(FlowSpec):
         finally:
             conn.close()
 
+        self.next(self.sync_observability)
+
+    @step
+    def sync_observability(self):
+        """Sync observability data: GPU stats, FMEA RPN timeseries, Sankey aggregation.
+
+        This step:
+        - Collects GPU stats via pynvml -> meta.gpu_minute_stats
+        - fmea_outcomes -> meta.fmea_rpn_timeseries (hourly RPN stats)
+        - data_dependencies -> meta.lineage_sankey_agg (for Sankey visualization)
+        """
+        import psycopg2
+
+        logger.info("Syncing observability data...")
+
+        conn = psycopg2.connect(self.db_url)
+        cur = conn.cursor()
+
+        try:
+            # 0. Collect GPU stats (single sample per sync run)
+            gpu_rows = self._collect_gpu_stats()
+            if gpu_rows:
+                for row in gpu_rows:
+                    cur.execute(
+                        """
+                        INSERT INTO meta.gpu_minute_stats
+                            (minute, gpu_index, samples, memory_min_mb, memory_max_mb,
+                             memory_avg_mb, util_min_pct, util_max_pct, util_avg_pct,
+                             temp_max_c, power_avg_w)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (minute, gpu_index) DO UPDATE SET
+                            samples = meta.gpu_minute_stats.samples + EXCLUDED.samples,
+                            memory_min_mb = LEAST(meta.gpu_minute_stats.memory_min_mb, EXCLUDED.memory_min_mb),
+                            memory_max_mb = GREATEST(meta.gpu_minute_stats.memory_max_mb, EXCLUDED.memory_max_mb),
+                            memory_avg_mb = (meta.gpu_minute_stats.memory_avg_mb * meta.gpu_minute_stats.samples +
+                                            EXCLUDED.memory_avg_mb * EXCLUDED.samples) /
+                                            (meta.gpu_minute_stats.samples + EXCLUDED.samples),
+                            util_min_pct = LEAST(meta.gpu_minute_stats.util_min_pct, EXCLUDED.util_min_pct),
+                            util_max_pct = GREATEST(meta.gpu_minute_stats.util_max_pct, EXCLUDED.util_max_pct),
+                            util_avg_pct = (meta.gpu_minute_stats.util_avg_pct * meta.gpu_minute_stats.samples +
+                                           EXCLUDED.util_avg_pct * EXCLUDED.samples) /
+                                           (meta.gpu_minute_stats.samples + EXCLUDED.samples),
+                            temp_max_c = GREATEST(meta.gpu_minute_stats.temp_max_c, EXCLUDED.temp_max_c),
+                            power_avg_w = (meta.gpu_minute_stats.power_avg_w * meta.gpu_minute_stats.samples +
+                                          EXCLUDED.power_avg_w * EXCLUDED.samples) /
+                                          (meta.gpu_minute_stats.samples + EXCLUDED.samples)
+                        """,
+                        (
+                            row["minute"],
+                            row["gpu_index"],
+                            row["samples"],
+                            row["memory_mb"],
+                            row["memory_mb"],
+                            row["memory_mb"],
+                            row["util_pct"],
+                            row["util_pct"],
+                            row["util_pct"],
+                            row["temp_c"],
+                            row["power_w"],
+                        ),
+                    )
+                self.sync_stats["observability"]["gpu_stats"] = len(gpu_rows)
+
+            # 1. Aggregate FMEA RPN timeseries (hourly stats)
+            cur.execute("""
+                INSERT INTO meta.fmea_rpn_timeseries
+                    (failure_mode_id, hour, avg_rpn, min_rpn, max_rpn, outcome_count, success_count, failure_count)
+                SELECT
+                    failure_mode_id,
+                    date_trunc('hour', created_at) AS hour,
+                    AVG(rpn_score),
+                    MIN(rpn_score),
+                    MAX(rpn_score),
+                    COUNT(*),
+                    SUM(CASE WHEN success THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN NOT success THEN 1 ELSE 0 END)
+                FROM fmea_outcomes
+                WHERE created_at > NOW() - INTERVAL '2 hours'
+                GROUP BY failure_mode_id, date_trunc('hour', created_at)
+                ON CONFLICT (failure_mode_id, hour) DO UPDATE SET
+                    avg_rpn = EXCLUDED.avg_rpn,
+                    min_rpn = LEAST(meta.fmea_rpn_timeseries.min_rpn, EXCLUDED.min_rpn),
+                    max_rpn = GREATEST(meta.fmea_rpn_timeseries.max_rpn, EXCLUDED.max_rpn),
+                    outcome_count = meta.fmea_rpn_timeseries.outcome_count + EXCLUDED.outcome_count,
+                    success_count = meta.fmea_rpn_timeseries.success_count + EXCLUDED.success_count,
+                    failure_count = meta.fmea_rpn_timeseries.failure_count + EXCLUDED.failure_count
+            """)
+            self.sync_stats["observability"]["fmea_rpn"] = cur.rowcount
+
+            # 2. Aggregate Sankey data from data_dependencies
+            cur.execute("""
+                INSERT INTO meta.lineage_sankey_agg
+                    (time_window, window_start, source_namespace, source_name,
+                     target_namespace, target_name, via_job, flow_count, computed_at)
+                SELECT
+                    'daily',
+                    date_trunc('day', last_observed),
+                    split_part(source_dataset_id, ':', 1),
+                    split_part(source_dataset_id, ':', 2),
+                    split_part(target_dataset_id, ':', 1),
+                    split_part(target_dataset_id, ':', 2),
+                    COALESCE(via_job_id, ''),
+                    occurrence_count,
+                    NOW()
+                FROM meta.data_dependencies
+                WHERE last_observed > NOW() - INTERVAL '25 hours'
+                ON CONFLICT (time_window, window_start, source_namespace, source_name,
+                             target_namespace, target_name, via_job)
+                DO UPDATE SET
+                    flow_count = EXCLUDED.flow_count,
+                    computed_at = NOW()
+            """)
+            self.sync_stats["observability"]["sankey"] = cur.rowcount
+
+            conn.commit()
+            logger.info(
+                f"Synced observability: {self.sync_stats['observability']['fmea_rpn']} FMEA RPN rows, "
+                f"{self.sync_stats['observability']['sankey']} Sankey rows"
+            )
+
+        except Exception as e:
+            logger.error(f"Observability sync failed: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
         self.next(self.update_watermarks)
 
     @step
@@ -363,7 +493,7 @@ class MetaSyncFlow(FlowSpec):
         cur = conn.cursor()
 
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             for sync_type, stats in self.sync_stats.items():
                 total = sum(stats.values())
                 cur.execute(
@@ -382,6 +512,63 @@ class MetaSyncFlow(FlowSpec):
             conn.close()
 
         self.next(self.end)
+
+    def _collect_gpu_stats(self) -> list[dict[str, Any]]:
+        """Collect GPU stats via pynvml.
+
+        Returns a list of dicts with GPU metrics for the current minute.
+        Each sample represents one sync cycle's observation.
+        """
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+        except Exception as e:
+            logger.warning(f"pynvml not available: {e}")
+            return []
+
+        try:
+            now = datetime.now(timezone.utc)
+            current_minute = now.replace(second=0, microsecond=0)
+
+            rows = []
+            device_count = pynvml.nvmlDeviceGetCount()
+
+            for i in range(device_count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+
+                # Get memory
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                memory_mb = memory.used / (1024**2)
+
+                # Get utilization
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+
+                # Get temperature
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+
+                # Get power (may fail on some GPUs)
+                try:
+                    power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000  # mW to W
+                except Exception:
+                    power = 0.0
+
+                rows.append({
+                    "minute": current_minute,
+                    "gpu_index": i,
+                    "samples": 1,
+                    "memory_mb": memory_mb,
+                    "util_pct": float(util.gpu),
+                    "temp_c": float(temp),
+                    "power_w": power,
+                })
+
+            pynvml.nvmlShutdown()
+            return rows
+
+        except Exception as e:
+            logger.error(f"GPU stats collection failed: {e}")
+            return []
 
     @step
     def end(self):

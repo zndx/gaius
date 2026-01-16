@@ -28,7 +28,12 @@ from ..config import EngineConfig
 from ..resources import ResourceManager
 
 if TYPE_CHECKING:
-    from gaius.models.registry import TaskType
+    from gaius.models.registry import ModelSpec, TaskType
+    from ..backends.vllm_controller import VLLMProcess
+    from ..config import AgentConfig
+    from ..scheduling.types import SchedulingTask, TransitionPlan
+    from ..workloads import WorkloadRequest, WorkloadResult
+    from .agenda_tracker import AgendaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -76,15 +81,9 @@ class CleanupResult:
 
     processes_found: int = 0
     processes_killed: int = 0
-    pids_killed: list[int] = None
+    pids_killed: list[int] = field(default_factory=list)
     cuda_cache_cleared: bool = False
-    errors: list[str] = None
-
-    def __post_init__(self):
-        if self.pids_killed is None:
-            self.pids_killed = []
-        if self.errors is None:
-            self.errors = []
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -189,6 +188,14 @@ class OrchestratorService:
         # Active workloads being tracked
         self._active_workloads: dict[str, Any] = {}  # workload_id -> ActiveWorkload
 
+        # CLT subprocess capability (managed separately from vLLM endpoints)
+        # Stores (CLTService, allocated_gpu_id) when CLT is active
+        self._clt_capability: Optional[tuple[Any, int]] = None
+
+        # Agenda-centric incident tracking
+        # Wired via set_agenda_tracker() after server initialization
+        self._agenda_tracker: Optional["AgendaTracker"] = None
+
         logger.info("OrchestratorService initialized")
 
     async def start(self) -> None:
@@ -219,6 +226,20 @@ class OrchestratorService:
                 pass
 
         logger.info("OrchestratorService stopped")
+
+    def set_agenda_tracker(self, tracker: "AgendaTracker") -> None:
+        """Set the agenda tracker for workload incident tracking.
+
+        This enables agenda-centric incident tracking where:
+        - Agenda (scheduled capability phases) is the unit of health
+        - Makespan fulfillment is the success metric
+        - Positive control is required for resolution
+
+        Args:
+            tracker: AgendaTracker instance
+        """
+        self._agenda_tracker = tracker
+        logger.info("AgendaTracker wired to OrchestratorService")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Endpoint Management
@@ -254,6 +275,24 @@ class OrchestratorService:
                 gpu_ids=[],
                 status="optillm",  # Uses shared optillm, always available
             )
+
+        # ColPali backend for multi-vector embeddings (ColNomic)
+        if backend == "colpali":
+            # Check if ColPali endpoint already exists
+            from ..backends.colpali_controller import get_colpali_controller
+            controller = get_colpali_controller()
+            endpoints = controller.list_endpoints()
+            for ep in endpoints:
+                if ep and ep.get("status") == "ready":
+                    return EndpointStatus(
+                        agent_alias=agent_alias,
+                        model=agent_config.model,
+                        port=None,  # ColPali doesn't use HTTP
+                        gpu_ids=ep.get("gpu_ids", []),
+                        status="healthy",
+                    )
+            # Not loaded yet, start it
+            return await self._start_colpali_endpoint(agent_alias, agent_config)
 
         # Note: sentence-transformers backend is deprecated.
         # Use backend = "vllm" with endpoint.task = "embed" instead.
@@ -343,6 +382,10 @@ class OrchestratorService:
                 gpu_ids=[],
                 status="optillm",  # Uses optillm, no dedicated endpoint
             )
+
+        # ColPali backend for multi-vector embeddings (ColNomic)
+        if backend == "colpali":
+            return await self._start_colpali_endpoint(agent_alias, agent_config)
 
         # Note: sentence-transformers backend is deprecated.
         # Use backend = "vllm" with endpoint.task = "embed" instead.
@@ -437,7 +480,7 @@ class OrchestratorService:
             )
 
             # Track the allocation
-            self.resource_manager.allocate(agent_alias, gpu_ids)
+            self.resource_manager.allocate(agent_alias, agent_config)
 
             return EndpointStatus(
                 agent_alias=agent_alias,
@@ -459,6 +502,85 @@ class OrchestratorService:
                 startup_message=f"Failed: {e}",
             )
 
+    async def _start_colpali_endpoint(
+        self,
+        agent_alias: str,
+        agent_config: "AgentConfig",
+    ) -> EndpointStatus:
+        """Start a ColPali multi-vector embedding endpoint.
+
+        Uses the ColPaliController to load ColNomic or other ColPali models.
+        ColPali produces multi-vector embeddings (one per token) for
+        late-interaction retrieval patterns.
+
+        Args:
+            agent_alias: Agent identifier
+            agent_config: Agent configuration
+
+        Returns:
+            EndpointStatus with startup state
+        """
+        from ..backends.colpali_controller import get_colpali_controller
+        from gaius.models.registry import ModelSpec
+
+        try:
+            controller = get_colpali_controller()
+
+            # Create ModelSpec from agent config
+            model_spec = ModelSpec(
+                model_id=agent_config.model,
+                name=agent_alias,
+                provider="colpali",
+            )
+
+            # Allocate GPU for ColPali model
+            required_gpus = agent_config.resources.gpus
+            free_gpus = self.resource_manager.get_free_gpus()
+
+            if len(free_gpus) < required_gpus:
+                return EndpointStatus(
+                    agent_alias=agent_alias,
+                    model=agent_config.model,
+                    port=None,
+                    gpu_ids=[],
+                    status="insufficient_resources",
+                    startup_message=f"Need {required_gpus} GPUs, only {len(free_gpus)} free",
+                )
+
+            gpu_ids = free_gpus[:required_gpus]
+
+            logger.info(f"Starting ColPali endpoint {agent_alias} on GPUs {gpu_ids}")
+
+            # Start ColPali endpoint
+            endpoint = await controller.start_colpali_endpoint(
+                model_spec=model_spec,
+                gpu_ids=gpu_ids,
+                endpoint_name=agent_alias,
+            )
+
+            # Track the allocation
+            self.resource_manager.allocate(agent_alias, agent_config)
+
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,  # ColPali endpoints don't use HTTP
+                gpu_ids=gpu_ids,
+                status="healthy" if endpoint.status.value == "ready" else endpoint.status.value,
+                startup_message=f"ColPali model {agent_config.model} loaded",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to start ColPali endpoint {agent_alias}: {e}")
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=agent_config.model,
+                port=None,
+                gpu_ids=[],
+                status="failed",
+                startup_message=f"Failed: {e}",
+            )
+
     def get_endpoint_status(self, agent_alias: str) -> Optional[EndpointStatus]:
         """Get status of a specific endpoint.
 
@@ -468,25 +590,46 @@ class OrchestratorService:
         Returns:
             EndpointStatus if exists
         """
+        # Check vLLM processes first
         proc = self._vllm.get_process(agent_alias)
-        if not proc:
-            return None
+        if proc:
+            # Get startup progress
+            message, progress = self._vllm.get_startup_progress(agent_alias)
 
-        # Get startup progress
-        message, progress = self._vllm.get_startup_progress(agent_alias)
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model=proc.model,
+                port=proc.port,
+                gpu_ids=proc.gpu_ids,
+                status=proc.status.value,
+                pid=proc.pid,
+                started_at=proc.started_at,
+                requests_served=proc.requests_served,
+                startup_progress=progress,
+                startup_message=message,
+            )
 
-        return EndpointStatus(
-            agent_alias=agent_alias,
-            model=proc.model,
-            port=proc.port,
-            gpu_ids=proc.gpu_ids,
-            status=proc.status.value,
-            pid=proc.pid,
-            started_at=proc.started_at,
-            requests_served=proc.requests_served,
-            startup_progress=progress,
-            startup_message=message,
-        )
+        # Check ColPali endpoints if this is a colpali-backed agent
+        if agent_alias in self.config.agents:
+            agent_config = self.config.agents[agent_alias]
+            if agent_config.backend.lower() == "colpali":
+                try:
+                    from ..backends.colpali_controller import get_colpali_controller
+                    controller = get_colpali_controller()
+                    info = controller.get_endpoint_info(agent_alias)
+                    if info:
+                        return EndpointStatus(
+                            agent_alias=agent_alias,
+                            model=info.get("model", agent_config.model),
+                            port=None,
+                            gpu_ids=info.get("gpu_ids", []),
+                            status="healthy" if info.get("status") == "ready" else info.get("status", "unknown"),
+                            requests_served=info.get("requests_served", 0),
+                        )
+                except Exception:
+                    pass
+
+        return None
 
     def get_all_endpoint_status(self) -> dict[str, EndpointStatus]:
         """Get status of all endpoints.
@@ -697,7 +840,11 @@ class OrchestratorService:
         if model_spec.provider == "vllm" and model_spec.vllm_config:
             # Create a temporary agent config for the endpoint
             port = self._find_available_port()
-            cmd, env = model_spec.serve_command(port=port, gpus=gpus)
+            cmd_str, env = model_spec.serve_command(port=port, gpus=gpus)
+
+            # serve_command returns a string; split into list for subprocess
+            import shlex
+            cmd = shlex.split(cmd_str)
 
             # Start via vLLM controller
             proc = await self._vllm.start_model(
@@ -716,6 +863,14 @@ class OrchestratorService:
                 gpu_ids=gpus,
                 status=proc.status.value if proc else "failed",
                 pid=proc.pid if proc else None,
+            )
+        elif model_spec.provider == "clt":
+            # CLT subprocess-based capability
+            # Uses a subprocess worker with isolated GPU (not vLLM)
+            return await self._start_clt_capability(
+                endpoint_name=endpoint_name,
+                model_spec=model_spec,
+                gpu=gpus[0] if gpus else 0,
             )
         else:
             # Non-vLLM model (embedding, API, etc.)
@@ -769,6 +924,317 @@ class OrchestratorService:
                 return port
 
         raise RuntimeError(f"No available ports in range {start}-{end}")
+
+    async def _start_clt_capability(
+        self,
+        endpoint_name: str,
+        model_spec: "ModelSpec",
+        gpu: int,
+    ) -> EndpointStatus:
+        """Start CLT subprocess capability.
+
+        CLT runs as a subprocess with isolated GPU (not vLLM). The orchestrator
+        manages the lifecycle and GPU allocation.
+
+        Args:
+            endpoint_name: Name for the capability endpoint
+            model_spec: CLT model specification
+            gpu: GPU index to use
+
+        Returns:
+            EndpointStatus with CLT capability info
+        """
+        from .clt_service import CLTService
+        from ..resources.allocations import GPUAllocation, AllocationState
+
+        logger.info(f"Starting CLT capability on GPU {gpu}")
+
+        try:
+            # Create CLT service with orchestrator-assigned GPU
+            clt_service = CLTService(
+                model_name="qwen3-1.7b",
+                gpu_index=gpu,
+            )
+
+            # Pre-load the model (starts subprocess worker)
+            clt_service.ensure_loaded()
+
+            # Track the CLT capability
+            self._clt_capability = (clt_service, gpu)
+
+            # Register GPU allocation with ResourceManager
+            allocation = GPUAllocation(
+                agent_alias="clt",
+                model=model_spec.model_id,
+                gpu_ids=[gpu],
+                vram_reserved_gb=6.0,  # CLT uses ~6GB
+                state=AllocationState.ACTIVE,
+            )
+            self.resource_manager.allocations["clt"] = allocation
+
+            return EndpointStatus(
+                agent_alias=endpoint_name,
+                model=model_spec.model_id,
+                port=None,  # CLT doesn't use HTTP port
+                gpu_ids=[gpu],
+                status="healthy",
+                pid=clt_service._worker.pid if clt_service._worker else None,
+                startup_message=f"CLT loaded on GPU {gpu}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to start CLT capability: {e}")
+            return EndpointStatus(
+                agent_alias=endpoint_name,
+                model=model_spec.model_id,
+                port=None,
+                gpu_ids=[],
+                status="failed",
+                startup_message=f"CLT startup failed: {e}",
+            )
+
+    def stop_clt_capability(self) -> None:
+        """Stop CLT capability and release GPU.
+
+        Called when CLT workload completes to free resources.
+        """
+        if self._clt_capability is None:
+            return
+
+        clt_service, gpu = self._clt_capability
+
+        try:
+            clt_service.unload()
+            logger.info(f"CLT capability stopped, releasing GPU {gpu}")
+        except Exception as e:
+            logger.warning(f"Error stopping CLT: {e}")
+        finally:
+            # Release GPU allocation via ResourceManager
+            self.resource_manager.release("clt")
+            self._clt_capability = None
+
+    def get_clt_service(self) -> Optional[Any]:
+        """Get active CLT service if one is running.
+
+        Returns:
+            CLTService instance or None
+        """
+        if self._clt_capability:
+            return self._clt_capability[0]
+        return None
+
+    def _build_current_scheduling_tasks(self) -> list["SchedulingTask"]:
+        """Build SchedulingTasks from currently running endpoints.
+
+        Returns:
+            List of SchedulingTask objects representing current GPU allocations
+        """
+        from ..scheduling import SchedulingTask
+
+        tasks = []
+
+        # Get all running vLLM processes
+        for proc_name, proc in self._vllm._processes.items():
+            if proc.status.value not in ("healthy", "starting"):
+                continue
+
+            # Get activity info if tracked
+            activity = self._endpoint_activity.get(proc_name)
+            capability = activity.capability if activity else None
+            priority = activity.priority if activity else 2  # NORMAL
+
+            tasks.append(
+                SchedulingTask(
+                    task_id=proc_name,
+                    endpoint_name=proc_name,
+                    model_id=proc.model,
+                    required_gpus=len(proc.gpu_ids),
+                    salience=float(priority),
+                    capability=capability,
+                    prefer_contiguous=len(proc.gpu_ids) > 1,
+                    fixed_gpu_ids=list(proc.gpu_ids),
+                    is_current=True,
+                )
+            )
+
+        return tasks
+
+    def _build_target_scheduling_tasks(
+        self,
+        request: "WorkloadRequest",
+        current_tasks: list["SchedulingTask"],
+    ) -> list["SchedulingTask"]:
+        """Build target SchedulingTasks from a workload request.
+
+        Args:
+            request: WorkloadRequest with required capabilities
+            current_tasks: Currently running tasks
+
+        Returns:
+            List of SchedulingTask for desired target state
+        """
+        from gaius.models.registry import get_model_registry
+        from ..scheduling import SchedulingTask
+
+        registry = get_model_registry()
+        target_tasks = []
+
+        # Check which capabilities we need that aren't already running
+        current_capabilities = {
+            t.capability for t in current_tasks if t.capability
+        }
+
+        for task_type in request.required_capabilities:
+            capability_key = task_type.value
+
+            # If we already have this capability, keep it
+            for task in current_tasks:
+                if task.capability == capability_key:
+                    target_tasks.append(task)
+                    break
+            else:
+                # Need to start a new endpoint for this capability
+                model_spec = registry.get_for_task(task_type, require_local=True)
+                if not model_spec:
+                    logger.warning(f"No model for capability {capability_key}")
+                    continue
+
+                requirements = model_spec.get_resource_requirements()
+
+                target_tasks.append(
+                    SchedulingTask(
+                        task_id=f"cap_{capability_key}",
+                        endpoint_name=f"cap_{capability_key}",
+                        model_id=model_spec.model_id,
+                        required_gpus=requirements.num_gpus,
+                        salience=float(request.priority.value),
+                        capability=capability_key,
+                        prefer_contiguous=requirements.num_gpus > 1,
+                        is_current=False,
+                    )
+                )
+
+        return target_tasks
+
+    async def _execute_transition_plan(
+        self,
+        plan: "TransitionPlan",
+    ) -> bool:
+        """Execute a transition plan from the scheduler.
+
+        Executes stops in parallel, then starts in dependency order.
+
+        Args:
+            plan: TransitionPlan from MakespanScheduler
+
+        Returns:
+            True if all steps succeeded
+        """
+        from ..scheduling import TransitionType
+
+        # Execute stop steps (can run in parallel)
+        stop_tasks = []
+        for step in plan.steps:
+            if step.transition_type == TransitionType.STOP_ENDPOINT:
+                stop_tasks.append(self.stop_endpoint(step.endpoint_name))
+
+        if stop_tasks:
+            logger.info(f"Stopping {len(stop_tasks)} endpoints in parallel")
+            results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Failed to stop endpoint: {result}")
+
+        # Wait for GPU memory release
+        await asyncio.sleep(2)
+
+        # Execute start steps in order (respecting dependencies)
+        completed_steps: set[int] = {
+            s.step_id for s in plan.steps
+            if s.transition_type == TransitionType.STOP_ENDPOINT
+        }
+
+        start_steps = [
+            s for s in plan.steps
+            if s.transition_type == TransitionType.START_ENDPOINT
+        ]
+
+        for step in start_steps:
+            # Wait for dependencies
+            if not all(d in completed_steps for d in step.depends_on):
+                logger.warning(f"Step {step.step_id} has unmet dependencies")
+
+            logger.info(
+                f"Starting {step.endpoint_name} on GPUs {step.gpu_ids}"
+            )
+
+            # Start the endpoint with the scheduled GPU assignment
+            status = await self._start_scheduled_endpoint(
+                endpoint_name=step.endpoint_name,
+                gpu_ids=step.gpu_ids,
+            )
+
+            if status.status not in ("healthy", "starting"):
+                logger.error(f"Failed to start {step.endpoint_name}: {status.status}")
+                return False
+
+            completed_steps.add(step.step_id)
+
+        return True
+
+    async def _start_scheduled_endpoint(
+        self,
+        endpoint_name: str,
+        gpu_ids: list[int],
+    ) -> EndpointStatus:
+        """Start an endpoint with pre-computed GPU assignment.
+
+        Args:
+            endpoint_name: Name of the endpoint (e.g., "cap_REASONING")
+            gpu_ids: GPUs to use (from scheduler)
+
+        Returns:
+            EndpointStatus
+        """
+        from gaius.models.registry import get_model_registry, TaskType
+
+        # Parse capability from endpoint name
+        if endpoint_name.startswith("cap_"):
+            capability_key = endpoint_name[4:]  # Remove "cap_" prefix
+            try:
+                task_type = TaskType(capability_key)
+            except ValueError:
+                return EndpointStatus(
+                    agent_alias=endpoint_name,
+                    model="",
+                    port=None,
+                    gpu_ids=gpu_ids,
+                    status="invalid_capability",
+                    startup_message=f"Unknown capability: {capability_key}",
+                )
+
+            # Get the model for this capability
+            registry = get_model_registry()
+            model_spec = registry.get_for_task(task_type, require_local=True)
+
+            if not model_spec:
+                return EndpointStatus(
+                    agent_alias=endpoint_name,
+                    model="",
+                    port=None,
+                    gpu_ids=gpu_ids,
+                    status="no_model",
+                    startup_message=f"No model for capability: {capability_key}",
+                )
+
+            return await self._start_capability_endpoint(
+                endpoint_name=endpoint_name,
+                model_spec=model_spec,
+                task_type=task_type,
+                gpus=gpu_ids,
+            )
+        else:
+            # Regular endpoint from config
+            return await self.start_endpoint(endpoint_name)
 
     async def _find_and_evict_for_resources(
         self,
@@ -947,11 +1413,27 @@ class OrchestratorService:
             f"checking GPUs: {sorted(target_gpus)}"
         )
 
+        # Get baseline endpoints that should NEVER be evicted
+        # These are configured in startup.preload_endpoints
+        baseline_endpoints = set(
+            getattr(self.config.startup, "preload_endpoints", [])
+        )
+
         # Find endpoints using the target GPUs
         for proc_name, proc in self._vllm._processes.items():
             proc_gpus = set(proc.gpu_ids) if proc.gpu_ids else set()
             if proc_gpus & target_gpus:
                 # This endpoint uses one of our target GPUs
+                if proc_name in baseline_endpoints:
+                    # NEVER evict baseline endpoints - they are critical for system operation
+                    # Flow scheduler should use different GPUs or wait
+                    logger.warning(
+                        f"Refusing to evict baseline endpoint {proc_name} (GPUs {proc.gpu_ids}) "
+                        f"for workload {workload_id}. Flow should use non-overlapping GPUs. "
+                        f"Guru: #ORCH.00000010.BASELINEPROTECT"
+                    )
+                    continue
+
                 logger.info(
                     f"Endpoint {proc_name} uses GPUs {proc.gpu_ids}, "
                     f"overlaps with target {target_gpus}"
@@ -1015,6 +1497,7 @@ class OrchestratorService:
         allocated: dict = {}
         evicted: list[str] = []
         restore_plan: list[str] = []
+        schedule_result = None  # Will hold OR-Tools result if capability-based
 
         logger.info(
             f"Beginning workload {request.workload_id} "
@@ -1030,42 +1513,86 @@ class OrchestratorService:
                 metadata=request.metadata,
             )
 
-        # Allocate endpoints for each required capability
-        for task_type in request.required_capabilities:
-            status = await self.ensure_capability(
-                task_type=task_type,
-                priority=request.priority.value,
-            )
+        # Use OR-Tools scheduler for capability-based workloads
+        if request.required_capabilities:
+            from ..scheduling import MakespanScheduler, ORTOOLS_AVAILABLE
 
-            if status.status in ("healthy", "starting"):
-                allocated[task_type] = EndpointAllocation(
-                    endpoint_name=status.agent_alias,
-                    capability=task_type,
-                    port=status.port or 0,
-                    healthy=status.status == "healthy",
-                    model_id=status.model,
-                )
-            elif status.status == "requires_embedding_controller":
-                # This capability needs the embedding controller (Phase 5)
-                # For now, mark as pending
-                allocated[task_type] = EndpointAllocation(
-                    endpoint_name="pending_embedding",
-                    capability=task_type,
-                    port=0,
-                    healthy=False,
-                    model_id=status.model,
-                )
-            else:
-                # Failed to allocate this capability
-                logger.error(
-                    f"Failed to allocate capability {task_type.value}: {status.status}"
-                )
+            if not ORTOOLS_AVAILABLE:
                 return WorkloadResult(
                     success=False,
                     workload_id=request.workload_id,
-                    error=f"Failed to allocate {task_type.value}: {status.startup_message}",
+                    error="OR-Tools not available.\n"
+                          "  Install: uv sync --extra scheduler\n"
+                          "  Guru Meditation: #SCH.00000001.NOORDEPS",
                     wait_time_ms=int((time.time() - start_time) * 1000),
                 )
+
+            # Build current and target scheduling tasks
+            current_tasks = self._build_current_scheduling_tasks()
+            target_tasks = self._build_target_scheduling_tasks(request, current_tasks)
+
+            logger.info(
+                f"Scheduling transition: current={[t.endpoint_name for t in current_tasks]}, "
+                f"target={[t.endpoint_name for t in target_tasks]}"
+            )
+
+            # Plan the transition with OR-Tools
+            scheduler = MakespanScheduler(
+                total_gpus=self.resource_manager.total_gpus,
+                reserved_gpus=set(self.resource_manager.reserved_gpus),
+            )
+
+            schedule_result = scheduler.plan_transition(current_tasks, target_tasks)
+
+            if not schedule_result.success:
+                logger.error(f"Scheduling failed: {schedule_result.error}")
+                return WorkloadResult(
+                    success=False,
+                    workload_id=request.workload_id,
+                    error=schedule_result.error,
+                    wait_time_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # plan is guaranteed to exist when success=True
+            plan = schedule_result.plan
+            assert plan is not None, "plan should exist when success=True"
+
+            logger.info(
+                f"Schedule found: makespan={plan.total_makespan_ms}ms, "
+                f"evicting={plan.evicted_endpoints}, "
+                f"assignments={plan.gpu_assignments}"
+            )
+
+            # Execute the transition plan
+            success = await self._execute_transition_plan(plan)
+
+            if not success:
+                return WorkloadResult(
+                    success=False,
+                    workload_id=request.workload_id,
+                    error="Transition plan execution failed.\n"
+                          "  Guru Meditation: #SCH.00000003.EXECFAIL",
+                    wait_time_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # Build allocated endpoints from the plan
+            evicted = plan.evicted_endpoints
+            restore_plan = plan.restore_plan
+
+            for task_type in request.required_capabilities:
+                capability_key = task_type.value
+                endpoint_name = f"cap_{capability_key}"
+
+                if endpoint_name in plan.gpu_assignments:
+                    status = self.get_endpoint_status(endpoint_name)
+                    if status:
+                        allocated[task_type] = EndpointAllocation(
+                            endpoint_name=endpoint_name,
+                            capability=task_type,
+                            port=status.port or 0,
+                            healthy=status.status == "healthy",
+                            model_id=status.model,
+                        )
 
         # Track this workload
         request.started_at = datetime.now()
@@ -1083,6 +1610,16 @@ class OrchestratorService:
             result=result,
         )
 
+        # Create agenda incident for tracking makespan and control mode
+        if self._agenda_tracker:
+            try:
+                await self._agenda_tracker.on_workload_begin(
+                    request=request,
+                    schedule_result=schedule_result,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create agenda incident: {e}")
+
         logger.info(
             f"Workload {request.workload_id} started with "
             f"{len(allocated)} endpoints allocated"
@@ -1095,6 +1632,11 @@ class OrchestratorService:
 
         Called when a workload finishes to release resources and
         potentially restore previously evicted endpoints.
+
+        The sequence is:
+        1. Stop transient endpoints allocated for this workload (e.g., cap_reasoning)
+        2. Wait for GPU memory release
+        3. Restore previously evicted baseline endpoints
 
         Args:
             workload_id: ID of the completed workload
@@ -1111,13 +1653,59 @@ class OrchestratorService:
             f"(duration={workload.elapsed_s:.1f}s)"
         )
 
-        # Restore evicted endpoints if specified
+        # Step 1: Stop transient endpoints allocated for this workload
+        # These are dynamically created endpoints like cap_reasoning
+        allocated_endpoints = [
+            alloc.endpoint_name
+            for alloc in workload.result.allocated_endpoints.values()
+        ]
+
+        if allocated_endpoints:
+            logger.info(f"Stopping transient endpoints: {allocated_endpoints}")
+            stop_tasks = [
+                self.stop_endpoint(endpoint_name)
+                for endpoint_name in allocated_endpoints
+            ]
+            results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(
+                        f"Failed to stop transient endpoint {allocated_endpoints[i]}: {result}"
+                    )
+
+            # Wait for GPU memory to be released
+            await asyncio.sleep(3)
+
+        # Step 2: Restore evicted endpoints if specified
+        restore_success = True
+        restore_error = None
         for endpoint_name in workload.result.restore_plan:
             try:
                 logger.info(f"Restoring evicted endpoint: {endpoint_name}")
                 await self.start_endpoint(endpoint_name)
             except Exception as e:
+                restore_success = False
+                restore_error = str(e)
                 logger.error(f"Failed to restore endpoint {endpoint_name}: {e}")
+
+        # Complete agenda incident tracking
+        if self._agenda_tracker:
+            try:
+                from ..workloads import WorkloadResult
+
+                # Create completion result for agenda tracker
+                completion_result = WorkloadResult(
+                    success=restore_success,
+                    workload_id=workload_id,
+                    error=restore_error,
+                    wait_time_ms=int(workload.elapsed_s * 1000),
+                )
+                await self._agenda_tracker.on_workload_complete(
+                    workload_id=workload_id,
+                    result=completion_result,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to complete agenda incident: {e}")
 
     def get_active_workloads(self) -> dict[str, dict]:
         """Get information about active workloads.
@@ -1139,6 +1727,7 @@ class OrchestratorService:
                     alloc.endpoint_name
                     for alloc in workload.result.allocated_endpoints.values()
                 ],
+                "restore_plan": workload.result.restore_plan,
             }
         return result
 
@@ -1165,41 +1754,38 @@ class OrchestratorService:
         """
         logger.info("Performing clean start...")
 
-        results = {
-            "cleanup": None,
-            "startup": {},
-            "success": False,
-        }
-
         # Step 1: Cleanup stale processes
-        results["cleanup"] = await self.cleanup_stale_processes()
+        cleanup_result = await self.cleanup_stale_processes()
 
         # Step 2: Start requested endpoints
         if endpoints is None:
             endpoints = ["reasoning"]  # Default for evolution
 
+        startup_results: dict[str, dict[str, Any]] = {}
         for alias in endpoints:
             if alias in self.config.agents:
                 try:
                     status = await self.start_endpoint(alias)
-                    results["startup"][alias] = {
+                    startup_results[alias] = {
                         "success": status.status == "healthy",
                         "port": status.port,
                         "gpu_ids": status.gpu_ids,
                     }
                 except Exception as e:
                     logger.error(f"Failed to start {alias}: {e}")
-                    results["startup"][alias] = {
+                    startup_results[alias] = {
                         "success": False,
                         "error": str(e),
                     }
 
         # Determine overall success
-        results["success"] = any(
-            r.get("success", False) for r in results["startup"].values()
-        )
+        success = any(r.get("success", False) for r in startup_results.values())
 
-        return results
+        return {
+            "cleanup": cleanup_result,
+            "startup": startup_results,
+            "success": success,
+        }
 
     async def cleanup_stale_processes(self) -> CleanupResult:
         """Kill stale vLLM processes to free GPU memory.
@@ -1410,11 +1996,14 @@ class OrchestratorService:
         Returns:
             Dict with reconciliation results
         """
-        results = {
+        # Explicitly typed to help type checker with heterogeneous dict
+        actions: list[dict[str, Any]] = []
+        errors: list[str] = []
+        results: dict[str, Any] = {
             "actual_state": {},
             "desired_state": {},
-            "actions": [],
-            "errors": [],
+            "actions": actions,
+            "errors": errors,
         }
 
         # Build desired state from config
@@ -1440,7 +2029,7 @@ class OrchestratorService:
                 if info.get("pid"):
                     try:
                         os.kill(info["pid"], 9)
-                        results["actions"].append({
+                        actions.append({
                             "action": "killed_orphan",
                             "port": port,
                             "pid": info["pid"],
@@ -1448,7 +2037,7 @@ class OrchestratorService:
                         })
                         logger.warning(f"Killed orphan vLLM on port {port}: {info.get('model')}")
                     except Exception as e:
-                        results["errors"].append(f"Failed to kill orphan on {port}: {e}")
+                        errors.append(f"Failed to kill orphan on {port}: {e}")
 
         # Find mismatches (wrong model on expected port)
         for port, desired_info in desired.items():
@@ -1467,7 +2056,7 @@ class OrchestratorService:
                     if actual_info.get("pid"):
                         try:
                             os.kill(actual_info["pid"], 9)
-                            results["actions"].append({
+                            actions.append({
                                 "action": "killed_mismatch",
                                 "port": port,
                                 "pid": actual_info["pid"],
@@ -1482,13 +2071,13 @@ class OrchestratorService:
                             await asyncio.sleep(3)
                             # Restart correct endpoint
                             await self.start_endpoint(desired_info["name"])
-                            results["actions"].append({
+                            actions.append({
                                 "action": "restarted",
                                 "port": port,
                                 "endpoint": desired_info["name"],
                             })
                         except Exception as e:
-                            results["errors"].append(f"Failed to fix mismatch on {port}: {e}")
+                            errors.append(f"Failed to fix mismatch on {port}: {e}")
 
         logger.info(
             f"Reconciliation complete: {len(results['actions'])} actions, "
@@ -1558,8 +2147,17 @@ class OrchestratorService:
         now = time.time()
 
         for alias, proc in list(self._vllm._processes.items()):
-            # Handle stuck STARTING state
+            # Handle STARTING state - check if endpoint has become healthy
             if proc.status == ProcessStatus.STARTING:
+                # Try HTTP health check to see if startup is complete
+                healthy = await self._vllm._check_health(proc)
+                if healthy:
+                    proc.status = ProcessStatus.HEALTHY
+                    proc.consecutive_failures = 0
+                    logger.info(f"Endpoint {alias} transitioned STARTING → HEALTHY")
+                    continue
+
+                # Not healthy yet - check for stuck starting timeout
                 if proc.started_at:
                     elapsed = now - proc.started_at.timestamp()
                     if elapsed > self._stuck_starting_timeout:
@@ -1873,12 +2471,14 @@ class OrchestratorService:
         Returns:
             Dict with scaling results and previous state for restoration
         """
-        result = {
+        # Use typed variables for type checker narrowing
+        errors: list[str] = []
+        result: dict[str, Any] = {
             "success": True,
             "previous_workers": None,
             "current_workers": None,
             "optillm_scaled": False,
-            "errors": [],
+            "errors": errors,
         }
 
         if self._optillm:
@@ -1897,12 +2497,12 @@ class OrchestratorService:
                         f"for large model deployment on GPUs {target_gpus}"
                     )
                 else:
-                    result["errors"].append("Failed to scale optillm workers")
+                    errors.append("Failed to scale optillm workers")
                     result["success"] = False
 
             except Exception as e:
                 logger.error(f"Error scaling optillm for large model: {e}")
-                result["errors"].append(str(e))
+                errors.append(str(e))
                 result["success"] = False
 
         return result
@@ -1919,12 +2519,14 @@ class OrchestratorService:
         Returns:
             Dict with restoration results
         """
-        result = {
+        # Use typed variables for type checker narrowing
+        errors: list[str] = []
+        result: dict[str, Any] = {
             "success": True,
             "previous_workers": 1,
             "current_workers": previous_workers,
             "optillm_scaled": False,
-            "errors": [],
+            "errors": errors,
         }
 
         if self._optillm:
@@ -1939,12 +2541,12 @@ class OrchestratorService:
                 if success:
                     logger.info(f"Restored optillm workers to {previous_workers}")
                 else:
-                    result["errors"].append("Failed to restore optillm workers")
+                    errors.append("Failed to restore optillm workers")
                     result["success"] = False
 
             except Exception as e:
                 logger.error(f"Error restoring optillm workers: {e}")
-                result["errors"].append(str(e))
+                errors.append(str(e))
                 result["success"] = False
 
         return result
@@ -2070,3 +2672,46 @@ class OrchestratorService:
             ),
             "resources": self.resource_manager.get_summary(),
         }
+
+
+# =============================================================================
+# Module-level singleton factory
+# =============================================================================
+
+_orchestrator_service: OrchestratorService | None = None
+
+
+def get_orchestrator_service() -> OrchestratorService:
+    """Get the global OrchestratorService singleton.
+
+    The singleton must be set by the engine server via set_orchestrator_service()
+    during startup. This function is used by components that need orchestrator
+    access outside of the main engine server context (e.g., HealthObserver).
+
+    Returns:
+        OrchestratorService instance
+
+    Raises:
+        RuntimeError: If the service has not been registered
+    """
+    global _orchestrator_service
+    if _orchestrator_service is None:
+        raise RuntimeError(
+            "OrchestratorService not initialized.\n"
+            "  The engine server must call set_orchestrator_service() during startup.\n"
+            "  Guru Meditation: #ORCH.00000001.SVCNOTINIT\n"
+            "  Fix: Ensure the engine is running: devenv tasks run restart:clean"
+        )
+    return _orchestrator_service
+
+
+def set_orchestrator_service(service: OrchestratorService) -> None:
+    """Set the global OrchestratorService singleton.
+
+    Used by the engine server to register its orchestrator instance.
+
+    Args:
+        service: The OrchestratorService instance to use globally
+    """
+    global _orchestrator_service
+    _orchestrator_service = service

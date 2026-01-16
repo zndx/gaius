@@ -107,14 +107,14 @@ class ResearchThread:
 
     def to_markdown(self) -> str:
         """Format thread as markdown section."""
-        status_emoji = {
-            ThreadStatus.ACTIVE: "🔵",
-            ThreadStatus.PAUSED: "⏸️",
-            ThreadStatus.COMPLETED: "✅",
-            ThreadStatus.ABANDONED: "❌",
-        }.get(self.status, "📌")
+        status_indicator = {
+            ThreadStatus.ACTIVE: "[*]",
+            ThreadStatus.PAUSED: "[=]",
+            ThreadStatus.COMPLETED: "[OK]",
+            ThreadStatus.ABANDONED: "[X]",
+        }.get(self.status, "[?]")
 
-        lines = [f"### {status_emoji} {self.topic}"]
+        lines = [f"### {status_indicator} {self.topic}"]
 
         if self.domain:
             lines.append(f"*Domain: {self.domain}*")
@@ -606,6 +606,12 @@ class SessionManager:
 
     async def _save_session(self, session: Session) -> str | None:
         """Save session to database."""
+        from ..storage.grid_state import check_database_availability
+
+        # Check availability first (cached, logs once)
+        if not await check_database_availability():
+            return None
+
         try:
             import asyncpg
             import json
@@ -635,7 +641,7 @@ class SessionManager:
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to save session: {e}")
+            logger.warning(f"Failed to save session unexpectedly: {e}")
             return None
 
     async def _update_session(self, session: Session) -> bool:
@@ -690,6 +696,12 @@ class SessionManager:
 
     async def _get_previous_session(self) -> Session | None:
         """Get most recent completed session."""
+        from ..storage.grid_state import check_database_availability
+
+        # Check availability first (cached, logs once)
+        if not await check_database_availability():
+            return None
+
         try:
             import asyncpg
 
@@ -738,7 +750,7 @@ class SessionManager:
                 await conn.close()
 
         except Exception as e:
-            logger.warning(f"Failed to get previous session: {e}")
+            logger.warning(f"Failed to get previous session unexpectedly: {e}")
             return None
 
     async def _gather_session_metrics(self, session: Session) -> None:
@@ -819,7 +831,7 @@ class SessionManager:
 
         # Try to detect new threads from queries
         try:
-            from ..inference import get_client, Message
+            from gaius.client import get_grpc_client
             import json
 
             # Get recent queries
@@ -849,7 +861,7 @@ class SessionManager:
                 return active
 
             # Use LLM to detect thread patterns
-            client = get_client()
+            client = await get_grpc_client()
 
             prompt = f"""Analyze these queries from a research session and identify any coherent research threads.
 
@@ -868,14 +880,19 @@ Existing threads (don't duplicate): {', '.join(t.topic for t in active)}
 Format as JSON array: [{{"topic": "...", "queries": [...], "current_focus": "...", "next_steps": "..."}}]
 Return empty array [] if no clear threads detected."""
 
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400,
-                temperature=0.4,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 400,
+                    "temperature": 0.4,
+                },
             )
 
             # Parse response
-            content = result.content.strip()
+            content = result.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -903,11 +920,12 @@ Return empty array [] if no clear threads detected."""
                     ]
                     thread.query_count = len(thread.queries)
 
-                    await self.update_thread(
-                        thread.id,
-                        current_focus=thread.current_focus,
-                        next_steps=thread.next_steps,
-                    )
+                    if thread.id is not None:
+                        await self.update_thread(
+                            thread.id,
+                            current_focus=thread.current_focus,
+                            next_steps=thread.next_steps,
+                        )
 
                     new_threads.append(thread)
                     existing_topics.add(topic.lower())
@@ -921,7 +939,7 @@ Return empty array [] if no clear threads detected."""
     async def _generate_handoff_summary(self, session: Session) -> str:
         """Generate LLM summary for session handoff."""
         try:
-            from ..inference import get_client, Message
+            from gaius.client import get_grpc_client
 
             # Build context
             topics = ", ".join(session.key_topics) if session.key_topics else "various topics"
@@ -954,14 +972,19 @@ Open threads:
 Write 2-3 sentences summarizing what was explored and what's unfinished.
 Be specific about the topics, not generic. Write in second person ("You were exploring...")."""
 
-            client = get_client()
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=150,
-                temperature=0.5,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 150,
+                    "temperature": 0.5,
+                },
             )
 
-            return result.content.strip()
+            return result.get("content", "").strip()
 
         except Exception as e:
             logger.warning(f"Handoff generation failed: {e}")

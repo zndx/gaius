@@ -47,11 +47,21 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 - list_flows: List available Metaflow pipelines
 - query_lineage: Query lineage graph for a KB entry
 
+**Cloudera Documentation Sync**
+- sync_cloudera_docs: Download and convert Cloudera PDF docs to markdown KB
+- list_cloudera_sources: List available Cloudera product documentation sources
+- cloudera_sync_status: Get current sync status and document counts
+
 **FMEA (Failure Mode and Effects Analysis)**
 - fmea_catalog: List failure modes with base RPN scores
 - fmea_calculate_rpn: Calculate RPN for a failure mode with context
 - fmea_get_controls: Get preventive/detective/mitigative controls from KB heuristics
 - fmea_map_health_check: Map health check to failure mode ID
+
+**ThetaAgent (Neuromorphic Situational Awareness)**
+- theta_sitrep: Generate situational report for time horizon
+- theta_consolidate: Run NVAR-mediated consolidation cycle
+- theta_consolidation_stats: Get consolidation statistics
 
 **Development**
 - reload_modules: Hot-reload Python modules without restart
@@ -86,7 +96,7 @@ try:
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
-    FastMCP = None
+    FastMCP = None  # type: ignore[assignment] - Placeholder when mcp not installed
 
 # KB root (relative to cwd or absolute)
 KB_ROOT = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
@@ -168,11 +178,15 @@ async def _ensure_geometry_computed() -> tuple[list[float] | None, object]:
         gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
 
         # Run geometry in thread pool to avoid blocking event loop
+        if grid_data.raw_embeddings is None:
+            return _mcp_curvatures, _mcp_tda_features
+
+        embeddings = grid_data.raw_embeddings
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
             geom_features = await loop.run_in_executor(
                 pool,
-                lambda: asyncio.run(gc.compute_features(grid_data.raw_embeddings, grid_coords))
+                lambda: asyncio.run(gc.compute_features(embeddings, grid_coords))
             )
 
         if geom_features is not None:
@@ -389,6 +403,64 @@ def create_server() -> "FastMCP":
             "total": len(result["entries"]),
         }, indent=2)
 
+    # --- RASE Objective Verification ---
+
+    @server.tool()
+    async def verify_objective(
+        objective_path: str,
+        document_path: str = "",
+    ) -> str:
+        """Verify an objective against KB state.
+
+        Loads an objective from the KB and verifies it using intrinsic
+        verification (the KB itself serves as the oracle).
+
+        Args:
+            objective_path: Path to objective file (e.g., "current/objectives/rsv.md")
+            document_path: Optional specific document to verify (defaults to objective itself)
+
+        Returns:
+            JSON with verdict, accuracy, reward, and constraint results
+        """
+        from .rase.domains.kb import Objective, KBOracle
+
+        kb_root = str(get_kb_root())
+
+        try:
+            # Load objective
+            objective = Objective.from_file(objective_path, kb_root=kb_root)
+        except FileNotFoundError:
+            return json.dumps({"error": f"Objective not found: {objective_path}"})
+        except ValueError as e:
+            return json.dumps({"error": f"Invalid objective: {e}"})
+
+        # Create oracle and verify
+        oracle = KBOracle(kb_root=kb_root)
+
+        doc_path = document_path if document_path else None
+        result = await oracle.verify_objective(objective, document_path=doc_path)
+
+        # Build response
+        return json.dumps({
+            "objective": objective.name,
+            "description": objective.description,
+            "verdict": result.verdict.value,
+            "accuracy": result.accuracy,
+            "reward": result.to_reward(),
+            "constraints": [
+                {
+                    "name": cr.constraint_name,
+                    "satisfied": cr.satisfied,
+                    "message": cr.message,
+                }
+                for cr in result.constraint_results
+            ],
+            "gates": {
+                "total": len(result.constraint_results),
+                "passed": sum(1 for cr in result.constraint_results if cr.satisfied),
+            },
+        }, indent=2)
+
     # --- KB Sync Operations ---
 
     @server.tool()
@@ -487,6 +559,145 @@ def create_server() -> "FastMCP":
         db_url = get_database_url()
         result = await verify_sync(target, str(kb_root), db_url, sample_size)
         return json.dumps(result, indent=2)
+
+    # --- HuggingFace Dataset Discovery ---
+
+    @server.tool()
+    async def list_hf_datasets(limit: int = 20) -> str:
+        """List recent datasets from HuggingFace Hub.
+
+        Fetches the most recently created datasets for discovery and triage.
+        Creates a zettelkasten note with dataset summaries.
+
+        Args:
+            limit: Maximum number of datasets to return (default: 20)
+        """
+        from datetime import datetime
+
+        from .integrations import list_recent_datasets
+
+        try:
+            datasets = list_recent_datasets(limit=limit)
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        # Generate zettelkasten note content
+        today = datetime.now().strftime("%Y-%m-%d")
+        lines = [
+            f"# HuggingFace Dataset Discovery - {today}",
+            "",
+            f"Fetched {len(datasets)} recent datasets from HuggingFace Hub.",
+            "",
+            "## Recent Datasets",
+            "",
+        ]
+        for ds in datasets:
+            lines.append(ds.to_markdown())
+            lines.append("")
+
+        content = "\n".join(lines)
+
+        # Save to scratch directory
+        kb_root = get_kb_root()
+        scratch_dir = kb_root / "scratch" / today
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%H%M%S")
+        filename = f"{timestamp}_hf_datasets.md"
+        file_path = scratch_dir / filename
+        file_path.write_text(content)
+
+        return json.dumps({
+            "datasets_count": len(datasets),
+            "saved_to": str(file_path.relative_to(kb_root)),
+            "datasets": [
+                {
+                    "id": ds.id,
+                    "downloads": ds.downloads,
+                    "likes": ds.likes,
+                    "created_at": ds.created_at.isoformat() if ds.created_at else None,
+                    "tags": ds.tags[:5],
+                }
+                for ds in datasets
+            ],
+        }, indent=2)
+
+    @server.tool()
+    async def add_external_dataset(dataset_id: str, notes: str = "") -> str:
+        """Add an external HuggingFace dataset to the KB registry.
+
+        Fetches full metadata and creates a KB entry in current/datasets/external/.
+
+        Args:
+            dataset_id: HuggingFace dataset ID (e.g., "facebook/research-plan-gen")
+            notes: Optional notes to include in the KB entry
+        """
+        from .integrations import get_dataset_info
+
+        try:
+            info = get_dataset_info(dataset_id)
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        # Determine path: current/datasets/external/<org>/<name>.md
+        if "/" in dataset_id:
+            org, name = dataset_id.split("/", 1)
+        else:
+            org = "community"
+            name = dataset_id
+
+        kb_root = get_kb_root()
+        external_dir = kb_root / "current" / "datasets" / "external" / org
+        external_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = external_dir / f"{name}.md"
+
+        if file_path.exists():
+            return json.dumps({
+                "error": f"Dataset already exists in KB",
+                "path": str(file_path.relative_to(kb_root)),
+            }, indent=2)
+
+        # Generate KB entry
+        content = info.to_kb_entry(notes=notes)
+        file_path.write_text(content)
+
+        return json.dumps({
+            "dataset_id": dataset_id,
+            "saved_to": str(file_path.relative_to(kb_root)),
+            "downloads": info.downloads,
+            "likes": info.likes,
+            "description": info.description[:200] if info.description else "",
+        }, indent=2)
+
+    @server.tool()
+    async def get_hf_dataset_info(dataset_id: str) -> str:
+        """Get detailed information about a HuggingFace dataset.
+
+        Fetches full metadata including description, tags, and statistics.
+
+        Args:
+            dataset_id: HuggingFace dataset ID (e.g., "facebook/research-plan-gen")
+        """
+        from .integrations import get_dataset_info
+
+        try:
+            info = get_dataset_info(dataset_id)
+        except RuntimeError as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        return json.dumps({
+            "dataset_id": info.id,
+            "author": info.author,
+            "description": info.description,
+            "downloads": info.downloads,
+            "likes": info.likes,
+            "private": info.private,
+            "created_at": info.created_at.isoformat() if info.created_at else None,
+            "last_modified": info.last_modified.isoformat() if info.last_modified else None,
+            "tags": info.tags,
+            "url": f"https://huggingface.co/datasets/{info.id}",
+        }, indent=2)
 
     # --- Flow Operations (Metaflow pipelines) ---
 
@@ -636,6 +847,388 @@ def create_server() -> "FastMCP":
         except Exception as e:
             return json.dumps({"error": str(e)})
 
+    @server.tool()
+    async def lineage_cypher(cypher: str, limit: int = 100) -> str:
+        """Execute a Cypher query on the lineage graph.
+
+        Enables code agents to write and execute graph queries for:
+        - Tracing KB resource provenance to original sources
+        - Understanding process dependencies
+        - Impact analysis for content changes
+        - Finding stale content by graph traversal
+
+        The graph follows OpenLineage standard with these elements:
+
+        Vertex Labels:
+        - Dataset: {dataset_id, namespace, name} - Data sources/sinks
+        - Job: {job_id, namespace, name} - Processing definitions
+        - Run: {run_id, state, event_time, job_namespace, job_name} - Executions
+
+        Edge Labels:
+        - INPUT_TO: Dataset consumed by Run
+        - OUTPUTS: Run produced Dataset
+        - EXECUTES: Job spawned Run
+        - PARENT: Run is child of another Run
+
+        Example queries:
+
+        # Count vertices by label
+        MATCH (n) RETURN labels(n)[0] as label, count(n) as cnt
+
+        # Find KB files from arxiv source
+        MATCH (s:Dataset)-[:INPUT_TO]->(:Run)-[:OUTPUTS]->(kb:Dataset)
+        WHERE s.namespace = 'gaius.source' AND s.name STARTS WITH 'arxiv:'
+        RETURN s.name as source, kb.name as kb_path
+
+        # Trace upstream sources for a KB file
+        MATCH path = (src:Dataset)-[:INPUT_TO|OUTPUTS*1..5]->(target:Dataset)
+        WHERE target.namespace = 'gaius.kb'
+          AND target.name CONTAINS 'attention_is_all_you_need'
+        RETURN src.namespace, src.name
+
+        Args:
+            cypher: Cypher query string (read-only - MATCH only)
+            limit: Max rows to return (safety limit, default 100)
+        """
+        import re
+
+        # Security: only allow read queries
+        cypher_upper = cypher.upper().strip()
+        disallowed = ["CREATE", "DELETE", "REMOVE", "SET", "MERGE", "DROP", "DETACH"]
+        for keyword in disallowed:
+            if re.search(rf'\b{keyword}\b', cypher_upper):
+                return json.dumps({
+                    "error": f"Write operations not allowed. Found: {keyword}",
+                    "hint": "Only MATCH/RETURN queries are permitted",
+                })
+
+        try:
+            import asyncpg
+            from gaius.core.config import get_config
+
+            config = get_config()
+            conn = await asyncpg.connect(config.database.url)
+
+            try:
+                # Set up AGE
+                await conn.execute("SET search_path = ag_catalog, public")
+
+                # Wrap cypher in SELECT FROM cypher()
+                # AGE requires declaring return types, so we use agtype
+                # Count columns in RETURN clause to determine result shape
+                return_match = re.search(r'\bRETURN\s+(.+?)(?:\s+ORDER\s|\s+LIMIT\s|$)', cypher, re.IGNORECASE | re.DOTALL)
+                if not return_match:
+                    return json.dumps({
+                        "error": "Query must have a RETURN clause",
+                        "hint": "Example: MATCH (n) RETURN n.name, n.namespace",
+                    })
+
+                return_clause = return_match.group(1).strip()
+                # Count commas to estimate column count (rough heuristic)
+                # This won't be perfect but AGE allows extra columns
+                col_count = return_clause.count(',') + 1
+
+                # Build column declarations
+                col_decls = ", ".join([f"c{i} agtype" for i in range(col_count)])
+
+                # Inject LIMIT if not present
+                if "LIMIT" not in cypher_upper:
+                    cypher = f"{cypher.rstrip().rstrip(';')} LIMIT {limit}"
+
+                # Execute via AGE cypher() function
+                age_query = f"""
+                    SELECT * FROM cypher('gaius_hx', $cypher$
+                        {cypher}
+                    $cypher$) AS ({col_decls});
+                """
+
+                rows = await conn.fetch(age_query)
+
+                # Parse results
+                results = []
+                for row in rows:
+                    row_data = {}
+                    for i, val in enumerate(row.values()):
+                        if val is not None:
+                            # AGE returns JSON strings for agtype
+                            try:
+                                import json as json_mod
+                                parsed = json_mod.loads(str(val))
+                                row_data[f"c{i}"] = parsed
+                            except (json.JSONDecodeError, TypeError):
+                                row_data[f"c{i}"] = str(val)
+                        else:
+                            row_data[f"c{i}"] = None
+                    results.append(row_data)
+
+                return json.dumps({
+                    "query": cypher,
+                    "row_count": len(results),
+                    "results": results,
+                }, indent=2)
+
+            finally:
+                await conn.close()
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "hint": "Check Cypher syntax. AGE uses openCypher with some limitations.",
+            }, indent=2)
+
+    # --- Cloudera Documentation Sync ---
+
+    @server.tool()
+    async def sync_cloudera_docs(
+        product: str = "all",
+        num_gpus: int = 4,
+    ) -> str:
+        """Sync Cloudera documentation archives to KB.
+
+        Downloads PDF archives from docs.cloudera.com, converts them to
+        markdown using docling (GPU-accelerated PDF parsing), and stores
+        in the KB under current/cloudera/docs/{product}/{version}/.
+
+        This is a long-running operation. For large archives like CSA
+        (~500 PDFs), expect 30-60 minutes depending on GPU availability.
+
+        Args:
+            product: Product to sync (csa, csa-operator, or "all" for all archive products)
+            num_gpus: Number of GPUs to use for parallel processing (default: 4)
+        """
+        import asyncio
+        import hashlib
+        from pathlib import Path
+        from datetime import datetime
+
+        try:
+            from gaius.flows.cloudera_docs.sources import PRODUCT_SOURCES, SourceType
+            from gaius.flows.cloudera_docs.flow import download_archive, extract_doc_files
+            from gaius.flows.cloudera_docs.parallel import ParallelDocProcessor
+
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+            kb_prefix_path = kb_root / "current" / "cloudera" / "docs"
+
+            # Determine which sources to sync
+            if product.lower() == "all":
+                sources = [s for s in PRODUCT_SOURCES.values() if s.source_type == SourceType.ARCHIVE]
+            else:
+                source = PRODUCT_SOURCES.get(product.lower())
+                if not source:
+                    available = [n for n, s in PRODUCT_SOURCES.items() if s.source_type == SourceType.ARCHIVE]
+                    return json.dumps({
+                        "error": f"Unknown product: {product}",
+                        "available_archive_products": available,
+                    }, indent=2)
+                if source.source_type != SourceType.ARCHIVE:
+                    return json.dumps({
+                        "error": f"Product {product} uses HTML source, not archive",
+                        "source_type": source.source_type.value,
+                    }, indent=2)
+                sources = [source]
+
+            results = {}
+            start_time = datetime.now()
+
+            for source in sources:
+                source_start = datetime.now()
+
+                # Skip sources without archive URL
+                if source.archive_url is None:
+                    results[source.name] = {
+                        "status": "no_archive_url",
+                        "error": "Source has no archive_url configured",
+                    }
+                    continue
+
+                # Download archive
+                try:
+                    archive_bytes = download_archive(source.archive_url)
+                    archive_hash = hashlib.sha256(archive_bytes).hexdigest()[:16]
+                except Exception as e:
+                    results[source.name] = {
+                        "status": "download_failed",
+                        "error": str(e),
+                    }
+                    continue
+
+                # Extract PDFs
+                doc_files = extract_doc_files(archive_bytes)
+                if not doc_files:
+                    results[source.name] = {"status": "no_pdfs"}
+                    continue
+
+                # Process documents with parallel GPU processor
+                processor = ParallelDocProcessor(
+                    workload_id=f"cloudera-docs-{source.name}-sync",
+                    product_name=source.name,
+                    num_gpus=num_gpus,
+                    preemptible=False,
+                )
+
+                # Use high-numbered GPUs (avoid reasoning model on 0-3)
+                gpu_offset = 4
+                gpus = list(range(gpu_offset, gpu_offset + num_gpus))
+
+                def _local_gpu_allocation() -> tuple[bool, list[int]]:
+                    return True, gpus
+                # Monkey-patch the GPU allocation method for this processor instance
+                processor.request_gpu_allocation = _local_gpu_allocation  # type: ignore[method-assign] - Runtime monkey-patch for local GPU control
+
+                result = processor.process_documents(
+                    doc_files=doc_files,
+                    kb_prefix_path=str(kb_prefix_path),
+                    archive_name=source.name,
+                    archive_hash=archive_hash,
+                    exclude_check=source.should_exclude,
+                )
+
+                elapsed = (datetime.now() - source_start).total_seconds()
+                results[source.name] = {
+                    "status": "completed",
+                    "archive_url": source.archive_url,
+                    "archive_hash": archive_hash,
+                    "total_pdfs": len(doc_files),
+                    "completed": result["completed"],
+                    "failed": result["failed"],
+                    "skipped": result.get("skipped", 0),
+                    "elapsed_s": elapsed,
+                    "kb_prefix": str(kb_prefix_path / source.name),
+                }
+
+            total_elapsed = (datetime.now() - start_time).total_seconds()
+
+            return json.dumps({
+                "success": True,
+                "products_synced": list(results.keys()),
+                "total_elapsed_s": total_elapsed,
+                "results": results,
+            }, indent=2)
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }, indent=2)
+
+    @server.tool()
+    async def list_cloudera_sources() -> str:
+        """List available Cloudera documentation sources.
+
+        Shows all configured product sources with their types,
+        versions, and archive URLs.
+        """
+        try:
+            from gaius.flows.cloudera_docs.sources import PRODUCT_SOURCES
+
+            sources = []
+            for name, source in PRODUCT_SOURCES.items():
+                sources.append({
+                    "name": name,
+                    "display_name": source.display_name,
+                    "version": source.version,
+                    "source_type": source.source_type.value,
+                    "archive_url": source.archive_url,
+                    "kb_prefix": source.kb_prefix,
+                    "domain": source.domain,
+                })
+
+            return json.dumps({
+                "sources": sources,
+                "total": len(sources),
+                "archive_count": sum(1 for s in sources if s["source_type"] == "archive"),
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @server.tool()
+    async def cloudera_sync_status() -> str:
+        """Get status of Cloudera docs sync.
+
+        Shows which products have been synced and document counts.
+        """
+        import subprocess
+        from pathlib import Path
+
+        try:
+            kb_root = Path(os.getenv("GAIUS_KB_ROOT", "build/dev"))
+            docs_path = kb_root / "current" / "cloudera" / "docs"
+
+            if not docs_path.exists():
+                return json.dumps({
+                    "synced": False,
+                    "message": "No Cloudera docs synced yet",
+                    "kb_path": str(docs_path),
+                })
+
+            # Count docs by product
+            products = {}
+            for product_dir in docs_path.iterdir():
+                if product_dir.is_dir():
+                    result = subprocess.run(
+                        ["find", str(product_dir), "-name", "*.md", "-type", "f"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    doc_count = len([l for l in result.stdout.strip().split("\n") if l])
+                    products[product_dir.name] = doc_count
+
+            total_docs = sum(products.values())
+
+            return json.dumps({
+                "synced": True,
+                "kb_path": str(docs_path),
+                "total_documents": total_docs,
+                "products": products,
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @server.tool()
+    async def cloudera_sync_progress() -> str:
+        """Get real-time progress of running Cloudera docs sync.
+
+        Returns live progress including:
+        - Percentage complete
+        - Documents completed/failed/remaining
+        - Rate (docs/sec) and ETA
+        - Recent files processed
+
+        Use this to monitor ongoing sync operations. For CLI display
+        with Rich progress bars, run:
+            uv run python -c "from gaius.flows.cloudera_docs.progress import watch_progress_rich; watch_progress_rich()"
+        """
+        try:
+            from gaius.flows.cloudera_docs.progress import (
+                get_sync_progress,
+                format_progress_human,
+            )
+
+            progress = get_sync_progress()
+            if progress is None:
+                return json.dumps({
+                    "running": False,
+                    "message": "No sync in progress",
+                    "hint": "Use sync_cloudera_docs() to start a sync",
+                }, indent=2)
+
+            # Include both structured data and human-readable format
+            progress["human_display"] = format_progress_human(progress)
+
+            return json.dumps({
+                "running": progress.get("status") == "running",
+                **progress,
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     # --- Inference Operations ---
 
     @server.tool()
@@ -652,22 +1245,27 @@ def create_server() -> "FastMCP":
             max_tokens: Maximum tokens to generate
         """
         try:
-            from .inference import get_client, Message
+            from .client import get_grpc_client
 
-            client = get_client()
-            result = await client.complete(
-                messages=[Message(role="user", content=question)],
-                technique=technique or None,
-                max_tokens=max_tokens,
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": question,
+                    "agent": "instruct",
+                    "technique": technique or "",
+                    "max_tokens": max_tokens,
+                },
             )
 
             return json.dumps(
                 {
-                    "response": result.content,
-                    "model": result.model,
-                    "technique": result.technique,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
+                    "response": result.get("content", ""),
+                    "model": result.get("model", ""),
+                    "technique": technique or "",
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
                 },
                 indent=2,
             )
@@ -722,7 +1320,8 @@ def create_server() -> "FastMCP":
             save_to_kb: Whether to save the result to the KB
         """
         try:
-            from .inference import get_client, get_search, Message
+            from .client import get_grpc_client
+            from .inference import get_search
 
             # Search for information
             search = get_search()
@@ -736,8 +1335,8 @@ def create_server() -> "FastMCP":
                 f"- [{r['title']}]({r['source']}): {r['summary']}" for r in results
             )
 
-            # Synthesize with local LLM
-            client = get_client()
+            # Synthesize with local LLM via gRPC
+            client = await get_grpc_client()
             synthesis_prompt = f"""Topic: {topic}
 Domain: {domain or 'general'}
 
@@ -751,17 +1350,20 @@ Create a structured markdown note with:
 
 Be concise but thorough."""
 
-            synthesis = await client.complete(
-                messages=[
-                    Message(
-                        role="system",
-                        content=f"You are a research assistant specializing in {domain or 'general topics'}.",
-                    ),
-                    Message(role="user", content=synthesis_prompt),
-                ],
-                technique="cot_reflection",  # Use reflection for better synthesis
-                max_tokens=2048,
+            synthesis = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": synthesis_prompt,
+                    "system_prompt": f"You are a research assistant specializing in {domain or 'general topics'}.",
+                    "agent": "instruct",
+                    "technique": "cot_reflection",
+                    "max_tokens": 2048,
+                },
             )
+
+            # Extract content from gRPC response
+            synthesis_content = synthesis.get("content", "")
 
             # Create KB entry if requested
             kb_path = None
@@ -778,7 +1380,7 @@ Domain: {domain or 'general'}
 
 ---
 
-{synthesis.content}
+{synthesis_content}
 
 ---
 
@@ -794,7 +1396,7 @@ Domain: {domain or 'general'}
                 {
                     "topic": topic,
                     "domain": domain,
-                    "synthesis": synthesis.content,
+                    "synthesis": synthesis_content,
                     "sources": results,
                     "kb_path": kb_path,
                 },
@@ -854,7 +1456,7 @@ Domain: {domain or 'general'}
             from .models import get_model_for_task, TaskType
 
             task_type = TaskType[task.upper()]
-            model = get_model_for_task(task_type)
+            model = get_model_for_task(task_type)  # Raises if no model
 
             return json.dumps(
                 {
@@ -1154,7 +1756,7 @@ Domain: {domain or 'general'}
 
             # Get KB root from config
             try:
-                from .config import get_config
+                from .core.config import get_config
 
                 config = get_config()
                 pending_path = Path(config.kb.root) / ".pending_model_add.json"
@@ -1187,7 +1789,7 @@ Domain: {domain or 'general'}
 
             # Get KB root from config
             try:
-                from .config import get_config
+                from .core.config import get_config
 
                 config = get_config()
                 pending_path = Path(config.kb.root) / ".pending_model_add.json"
@@ -1234,40 +1836,46 @@ Domain: {domain or 'general'}
             max_tokens: Maximum tokens to generate
         """
         try:
-            from .inference import get_client, Message
+            from .client import get_grpc_client
             from .models import get_model_for_task, TaskType
 
             # Get preferred reasoning model (may not be deployed)
             model_spec = get_model_for_task(TaskType.REASONING)
-            client = get_client()
-
-            messages = []
-            if system_prompt:
-                messages.append(Message(role="system", content=system_prompt))
-            messages.append(Message(role="user", content=question))
+            client = await get_grpc_client()
 
             # Try with preferred model, fallback to default on error
             try:
-                result = await client.complete(
-                    messages=messages,
-                    model=model_spec.model_id if model_spec else None,
-                    temperature=model_spec.default_temperature if model_spec else 0.6,
-                    max_tokens=max_tokens,
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": question,
+                        "system_prompt": system_prompt or "",
+                        "agent": "reasoning",
+                        "temperature": model_spec.default_temperature if model_spec else 0.6,
+                        "max_tokens": max_tokens,
+                    },
                 )
             except Exception:
                 # Fallback: use default model (no override)
-                result = await client.complete(
-                    messages=messages,
-                    temperature=0.6,
-                    max_tokens=max_tokens,
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": question,
+                        "system_prompt": system_prompt or "",
+                        "agent": "instruct",
+                        "temperature": 0.6,
+                        "max_tokens": max_tokens,
+                    },
                 )
 
             return json.dumps(
                 {
-                    "response": result.content,
-                    "model": result.model,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
+                    "response": result.get("content", ""),
+                    "model": result.get("model", ""),
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
                 },
                 indent=2,
             )
@@ -1334,32 +1942,33 @@ Domain: {domain or 'general'}
     async def semantic_search(query: str, collection: str = "kb", limit: int = 10) -> str:
         """Perform semantic similarity search.
 
+        Uses ColNomic multi-vector embeddings with MaxSim late-interaction
+        scoring for high-quality semantic retrieval via the engine gRPC.
+
         Args:
             query: Search query
             collection: Collection to search (kb, research, etc.)
             limit: Maximum results
         """
         try:
-            from .search import get_vector_search
+            client = await _get_engine_client()
+            if client is None:
+                return json.dumps(
+                    {"error": "Engine not available. Start with: devenv processes up"},
+                    indent=2,
+                )
 
-            search = get_vector_search()
-            results = await search.search(query, collection=collection, limit=limit)
-
-            return json.dumps(
+            result = await client.call(
+                "Search",
+                "semantic",
                 {
-                    "results": [
-                        {
-                            "id": r.id,
-                            "content": r.content[:500],
-                            "score": r.score,
-                            "metadata": r.metadata,
-                        }
-                        for r in results
-                    ],
-                    "total": len(results),
+                    "query": query,
+                    "collection": collection,
+                    "limit": limit,
+                    "use_maxsim": True,
                 },
-                indent=2,
             )
+            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -1804,40 +2413,104 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- MetaAgent Operations ---
+
+    @server.tool()
+    async def metaagent_query(
+        query: str,
+        domains: str = "",
+        include_dot: bool = True,
+        include_markdown: bool = True,
+    ) -> str:
+        """Run multi-agent analytics query.
+
+        MetaAgent coordinates specialist agents to answer natural language
+        questions by correlating data from multiple sources:
+        - Lineage: AGE graph for data provenance (Cypher queries)
+        - Operations: Flow runs, agent performance (SQL on meta.flow_runs)
+        - Resources: GPU utilization, inference throughput (SQL on meta.*)
+        - Topology: Document clusters, semantic regions (SQL on meta.kb_topology)
+
+        Args:
+            query: Natural language question (e.g., "Why are arxiv flows slow?")
+            domains: Comma-separated filter (lineage,ops,resources,topology) - empty for all
+            include_dot: Generate GraphViz DOT output for visualization
+            include_markdown: Generate Markdown tables for evidence
+
+        Returns:
+            JSON with answer, evidence, DOT graph, and agent insights
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps(
+                    {"error": "Gaius engine not running. Start with: devenv up -d"},
+                    indent=2,
+                )
+
+            # Parse domains
+            domain_list = [d.strip() for d in domains.split(",") if d.strip()] if domains else []
+
+            # Call engine gRPC
+            result = await client.call(
+                "Gaius",
+                "MetaAgentQuery",
+                {
+                    "query": query,
+                    "domains": domain_list,
+                    "include_dot": include_dot,
+                    "include_markdown": include_markdown,
+                },
+            )
+
+            # Format response
+            return json.dumps(
+                {
+                    "success": result.get("success", False),
+                    "answer": result.get("answer", ""),
+                    "dot_graph": result.get("dot_graph", ""),
+                    "markdown_tables": result.get("markdown_tables", []),
+                    "queries_executed": result.get("queries_executed", []),
+                    "agents_used": result.get("agents_used", 0),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "error": result.get("error", ""),
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- Scheduler Operations ---
 
     @server.tool()
     async def scheduler_status() -> str:
         """Get scheduler status including endpoints, queue, and metrics.
 
-        Returns comprehensive status of the inference scheduler.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        Returns comprehensive status of the inference scheduler via gRPC.
+
+        Engine Federation Architecture:
+        All scheduler operations go through the engine gRPC service.
         """
         try:
-            # Try engine proxy first
             client = await _get_engine_client()
-            if client:
-                status = await client.call("Scheduler", "status", {})
-                return json.dumps(status, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fall back to direct access
-            import warnings
-            warnings.warn(
-                "LEGACY_FALLBACK: scheduler_status using direct scheduler access instead of engine. "
-                "Start gaius-engine for proper resource management.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning("LEGACY_FALLBACK: scheduler_status bypassing engine - tech debt")
-
-            from .inference.scheduler import get_scheduler_service
-
-            service = get_scheduler_service()
-            status = service.get_status()
-
+            status = await client.call("Scheduler", "status", {})
             return json.dumps(status, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def scheduler_submit(
@@ -2022,21 +2695,11 @@ Domain: {domain or 'general'}
                 roles=role_list,
             )
 
-            # Format results
-            output = {
-                "domain": domain,
-                "agents": {},
-                "summary": {
-                    "total": len(raw_results),
-                    "completed": sum(1 for r in raw_results.values() if r.get("status") == "completed"),
-                    "failed": sum(1 for r in raw_results.values() if r.get("status") == "failed"),
-                },
-                "saved_to": saved_path,
-            }
-
+            # Build agents dict first for type safety
+            agents_dict: dict[str, dict[str, object]] = {}
             for role_name, result in raw_results.items():
                 content = result.get("content", "")
-                output["agents"][role_name] = {
+                agents_dict[role_name] = {
                     "status": result.get("status", "unknown"),
                     "content": content[:500] + "..." if len(content) > 500 else content,
                     "model": result.get("model", ""),
@@ -2044,6 +2707,18 @@ Domain: {domain or 'general'}
                     "latency_ms": result.get("latency_ms", 0),
                     "error": result.get("error"),
                 }
+
+            # Format results
+            output: dict[str, object] = {
+                "domain": domain,
+                "agents": agents_dict,
+                "summary": {
+                    "total": len(raw_results),
+                    "completed": sum(1 for r in raw_results.values() if r.get("status") == "completed"),
+                    "failed": sum(1 for r in raw_results.values() if r.get("status") == "failed"),
+                },
+                "saved_to": saved_path,
+            }
 
             return json.dumps(output, indent=2)
         except Exception as e:
@@ -2089,34 +2764,32 @@ Domain: {domain or 'general'}
     async def orchestrator_status() -> str:
         """Get GPU orchestrator status including all vLLM processes and GPU health.
 
-        Returns comprehensive status of GPU resources, process health, and scheduling metrics.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        Returns comprehensive status of GPU resources, process health, and scheduling metrics via gRPC.
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service, which
+        is co-located with GPUs and may be federated across multiple nodes.
         """
         try:
-            # Try engine proxy first
             client = await _get_engine_client()
-            if client:
-                status = await client.call("Orchestrator", "status", {})
-                return json.dumps(status, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fall back to direct access
-            import warnings
-            warnings.warn(
-                "LEGACY_FALLBACK: orchestrator_status using direct orchestrator instead of engine. "
-                "Start gaius-engine for proper resource management.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning("LEGACY_FALLBACK: orchestrator_status bypassing engine - tech debt")
-
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-            status = orchestrator.get_status()
-
+            status = await client.call("Orchestrator", "status", {})
             return json.dumps(status, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_clean_start(endpoints: str = "reasoning") -> str:
@@ -2125,30 +2798,35 @@ Domain: {domain or 'general'}
         This is the recommended way to start Gaius for overnight evolution runs.
         Cleans up orphaned vLLM processes, frees GPU memory, then starts endpoints.
 
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
+
         Args:
             endpoints: Comma-separated endpoint names to start (default: reasoning)
         """
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
-                results = await orch.clean_start(endpoint_list or ["reasoning"])
-                return json.dumps(results, indent=2, default=str)
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_clean_start bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
+            orch = await get_orchestrator_proxy()
             endpoint_list = [e.strip() for e in endpoints.split(",") if e.strip()]
-            results = await orchestrator.clean_start(endpoint_list or None)
-
+            results = await orch.clean_start(endpoint_list or ["reasoning"])
             return json.dumps(results, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_start(endpoint: str = "") -> str:
@@ -2156,71 +2834,60 @@ Domain: {domain or 'general'}
 
         Uses engine's ensure_endpoint for proper resource management.
 
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
+
         Args:
             endpoint: Endpoint name to start (empty string starts all configured endpoints)
         """
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-                if endpoint:
-                    result = await orch.ensure_endpoint(endpoint)
-                    return json.dumps(
-                        {
-                            "endpoint": endpoint,
-                            "started": result.get("healthy", False),
-                            "status": result.get("status", "unknown"),
-                            "port": result.get("port"),
-                            "gpu_ids": result.get("gpu_ids", []),
-                            "message": result.get("message", ""),
-                        },
-                        indent=2,
-                    )
-                else:
-                    # Start all returns status for all endpoints
-                    success = await orch.start_endpoint("")
-                    return json.dumps(
-                        {"action": "start_all", "success": success},
-                        indent=2,
-                    )
-
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_start bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
+            orch = await get_orchestrator_proxy()
 
             if endpoint:
-                success = await orchestrator.start_endpoint(endpoint)
+                result = await orch.ensure_endpoint(endpoint)
                 return json.dumps(
                     {
                         "endpoint": endpoint,
-                        "started": success,
-                        "status": orchestrator.get_endpoint_status(endpoint).status.value
-                        if orchestrator.get_endpoint_status(endpoint) else "unknown",
+                        "started": result.get("healthy", False),
+                        "status": result.get("status", "unknown"),
+                        "port": result.get("port"),
+                        "gpu_ids": result.get("gpu_ids", []),
+                        "message": result.get("message", ""),
                     },
                     indent=2,
                 )
             else:
-                results = await orchestrator.start_all()
+                # Start all returns status for all endpoints
+                success = await orch.start_endpoint("")
                 return json.dumps(
-                    {
-                        "action": "start_all",
-                        "results": results,
-                        "successful": sum(1 for v in results.values() if v),
-                        "total": len(results),
-                    },
+                    {"action": "start_all", "success": success},
                     indent=2,
                 )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_stop(endpoint: str = "") -> str:
         """Stop vLLM endpoint(s).
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
 
         Args:
             endpoint: Endpoint name to stop (empty string stops all)
@@ -2228,52 +2895,43 @@ Domain: {domain or 'general'}
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-                if endpoint:
-                    success = await orch.stop_endpoint(endpoint)
-                    return json.dumps(
-                        {"endpoint": endpoint, "stopped": success},
-                        indent=2,
-                    )
-                else:
-                    success = await orch.stop_endpoint("")
-                    return json.dumps(
-                        {"action": "stop_all", "stopped": success},
-                        indent=2,
-                    )
-
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_stop bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
+            orch = await get_orchestrator_proxy()
 
             if endpoint:
-                success = await orchestrator.stop_endpoint(endpoint)
+                success = await orch.stop_endpoint(endpoint)
                 return json.dumps(
                     {"endpoint": endpoint, "stopped": success},
                     indent=2,
                 )
             else:
-                results = await orchestrator.stop_all()
+                success = await orch.stop_endpoint("")
                 return json.dumps(
-                    {
-                        "action": "stop_all",
-                        "results": results,
-                        "stopped": sum(1 for v in results.values() if v),
-                        "total": len(results),
-                    },
+                    {"action": "stop_all", "stopped": success},
                     indent=2,
                 )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_restart(endpoint: str) -> str:
         """Restart a specific vLLM endpoint.
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
 
         Args:
             endpoint: Endpoint name to restart
@@ -2281,45 +2939,42 @@ Domain: {domain or 'general'}
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                success = await orch.restart_endpoint(endpoint)
-                # Get status after restart
-                status = await orch.get_endpoint_status(endpoint)
-                return json.dumps(
-                    {
-                        "endpoint": endpoint,
-                        "restarted": success,
-                        "status": status.get("status", "unknown") if status else "unknown",
-                        "port": status.get("port") if status else None,
-                    },
-                    indent=2,
-                )
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_restart bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-            success = await orchestrator.restart_endpoint(endpoint)
-
-            proc = orchestrator.get_endpoint_status(endpoint)
+            orch = await get_orchestrator_proxy()
+            success = await orch.restart_endpoint(endpoint)
+            # Get status after restart
+            status = await orch.get_endpoint_status(endpoint)
             return json.dumps(
                 {
                     "endpoint": endpoint,
                     "restarted": success,
-                    "status": proc.status.value if proc else "unknown",
-                    "pid": proc.pid if proc else None,
+                    "status": status.get("status", "unknown") if status else "unknown",
+                    "port": status.get("port") if status else None,
                 },
                 indent=2,
             )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def orchestrator_logs(endpoint: str, lines: int = 50) -> str:
         """Get recent stdout/stderr logs from a vLLM endpoint.
+
+        Engine Federation Architecture:
+        All orchestrator operations go through the engine gRPC service.
 
         Args:
             endpoint: Endpoint name
@@ -2328,67 +2983,63 @@ Domain: {domain or 'general'}
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                logs = await orch.get_logs_async(endpoint, lines=lines)
-                return json.dumps(
-                    {
-                        "endpoint": endpoint,
-                        "lines": len(logs) if logs else 0,
-                        "logs": logs or [],
-                    },
-                    indent=2,
-                )
+            if not use_engine_proxy():
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: orchestrator_logs bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-            logs = orchestrator.get_logs(endpoint, lines=lines)
-
+            orch = await get_orchestrator_proxy()
+            logs = await orch.get_logs_async(endpoint, lines=lines)
             return json.dumps(
                 {
                     "endpoint": endpoint,
-                    "lines": len(logs),
-                    "logs": logs,
+                    "lines": len(logs) if logs else 0,
+                    "logs": logs or [],
                 },
                 indent=2,
             )
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     @server.tool()
     async def gpu_health() -> str:
         """Get detailed GPU health metrics (VRAM, temp, power, utilization).
 
-        Uses pynvml for real-time GPU monitoring.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        Uses pynvml for real-time GPU monitoring via gRPC engine.
+
+        Engine Federation Architecture:
+        GPU health monitoring goes through the engine, which is co-located
+        with the GPUs and may be federated across multiple nodes.
         """
         try:
-            # Try engine proxy first
             client = await _get_engine_client()
-            if client:
-                health = await client.call("Health", "gpu_detailed", {})
-                return json.dumps(health, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }, indent=2)
 
-            # Fall back to direct access
-            logger.warning("LEGACY_FALLBACK: gpu_health bypassing engine - tech debt")
-            from .inference.health import get_health_monitor
-
-            monitor = get_health_monitor()
-
-            # Try to reinitialize if not available (e.g., pynvml installed after startup)
-            if not monitor.available:
-                if monitor.reinitialize():
-                    pass  # Successfully reinitialized
-
-            summary = monitor.get_summary()
-
-            return json.dumps(summary, indent=2, default=str)
+            health = await client.call("Health", "gpu_detailed", {})
+            return json.dumps(health, indent=2, default=str)
         except Exception as e:
-            return json.dumps({"error": str(e)}, indent=2)
+            return json.dumps({
+                "error": str(e),
+                "guru_meditation": "#GR.00000002.CALLF",
+                "remediation": ["Check engine logs: journalctl -u gaius-engine -f"],
+            }, indent=2)
 
     # --- FMEA Operations ---
     # Failure Mode and Effects Analysis for RPN-based risk assessment
@@ -2794,6 +3445,228 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- ThetaAgent Operations ---
+    # Neuromorphic situational awareness and consolidation
+    # All calls route through gRPC to gaius-engine
+
+    @server.tool()
+    async def theta_sitrep(horizon: str = "day") -> str:
+        """Generate situational report for time horizon.
+
+        ThetaAgent provides /sitrep as the single pane of glass for daily
+        situational awareness, synthesizing objectives, thoughts, agenda,
+        and evolving Gaius capabilities.
+
+        Args:
+            horizon: Temporal horizon (day, week, quarter, open)
+        """
+        try:
+            client = await _get_engine_client()
+            if client:
+                result = await client.call("ThetaAgent", "sitrep", {"horizon": horizon})
+                return json.dumps(result, indent=2, default=str)
+
+            # Fallback to direct access if engine not available
+            from .agents.theta import ThetaAgent
+
+            agent = ThetaAgent(kb_root=get_kb_root())
+            sitrep = await agent.sitrep(horizon=horizon)
+
+            return json.dumps(sitrep.to_dict(), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def theta_consolidate(
+        temporal_slice: str = "",
+        max_candidates: int = 10,
+    ) -> str:
+        """Run a consolidation cycle for cross-temporal linking.
+
+        Uses NVAR-mediated theta dynamics to detect drift between temporal
+        slices, then applies BERTSubs subsumption inference to discover
+        relationships. Selected candidates (via Knowledge Gradient policy)
+        are reified as wikilinks and action:search links in KB documents.
+
+        Requires DeepOnto with functional JVM for BERTSubs inference.
+        Will fail-fast if DeepOnto is unavailable.
+
+        Args:
+            temporal_slice: Slice ID (e.g., "2025-W52"). If empty, uses current week.
+            max_candidates: Maximum candidates to evaluate per cycle.
+        """
+        try:
+            client = await _get_engine_client()
+            if client:
+                result = await client.call("ThetaAgent", "consolidate", {
+                    "temporal_slice": temporal_slice,
+                    "max_candidates": max_candidates,
+                    "research_mode": True,
+                })
+                return json.dumps(result, indent=2, default=str)
+
+            # Fallback to direct access if engine not available
+            from .agents.theta import ThetaAgent
+
+            agent = ThetaAgent(kb_root=get_kb_root(), research_mode=True)
+            result = await agent.run_consolidation(
+                temporal_slice=temporal_slice or None,
+                max_candidates=max_candidates,
+            )
+
+            return json.dumps(result.to_dict(), indent=2)
+        except Exception as e:
+            # Include Guru Meditation code for DeepOnto errors
+            error_msg = str(e)
+            if "DEEPONTO_UNAVAILABLE" in error_msg:
+                return json.dumps({
+                    "error": error_msg,
+                    "guru_meditation": "#THETA.00000001.DEEPONTO_UNAVAILABLE",
+                    "remediation": "uv add deeponto jpype1 && ensure Java 11+ installed",
+                }, indent=2)
+            return json.dumps({"error": error_msg}, indent=2)
+
+    @server.tool()
+    async def theta_consolidation_stats() -> str:
+        """Get ThetaAgent consolidation statistics.
+
+        Returns NVAR dynamics state, Knowledge Gradient policy stats,
+        effectiveness tracker trends, and subsumption inferencer status.
+        """
+        try:
+            client = await _get_engine_client()
+            if client:
+                result = await client.call("ThetaAgent", "consolidation_stats", {})
+                return json.dumps(result, indent=2, default=str)
+
+            # Fallback to direct access if engine not available
+            from .agents.theta import ThetaAgent
+
+            agent = ThetaAgent(kb_root=get_kb_root())
+            stats = agent.get_consolidation_stats()
+
+            return json.dumps(stats, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- CLT (Cross-Layer Transcoders) ---
+    # Interpretable sparse feature extraction and circuit tracing
+    # All calls route through gRPC to gaius-engine (NO FALLBACKS)
+
+    @server.tool()
+    async def clt_status() -> str:
+        """Get CLT model availability and status.
+
+        Returns whether circuit-tracer is available, list of supported models,
+        and currently loaded model (if any).
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#CLT.00000002.ENGINE_UNAVAILABLE",
+                    "remediation": "Start gaius-engine: devenv processes up",
+                }, indent=2)
+
+            result = await client.call("CLT", "status", {})
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def clt_extract(
+        text: str,
+        model_name: str = "qwen3-1.7b",
+        layer_indices: str = "",
+        top_k: int = 115,
+        device: str = "cuda",
+    ) -> str:
+        """Extract sparse features from text using Cross-Layer Transcoders.
+
+        Uses BluelightAI's CLT for Qwen3 to extract interpretable sparse features.
+        Returns ~115 active features per layer from a 20,480-dimensional feature space.
+
+        Args:
+            text: Input text to analyze
+            model_name: CLT model name (default: qwen3-1.7b)
+            layer_indices: Comma-separated layer indices (empty = all layers)
+            top_k: Top-k features per position (default: 115)
+            device: Device to use (cuda, cpu)
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#CLT.00000002.ENGINE_UNAVAILABLE",
+                    "remediation": "Start gaius-engine: devenv processes up",
+                }, indent=2)
+
+            # Parse layer indices
+            parsed_layers = []
+            if layer_indices:
+                parsed_layers = [int(x.strip()) for x in layer_indices.split(",")]
+
+            result = await client.call("CLT", "extract", {
+                "text": text,
+                "model_name": model_name,
+                "layer_indices": parsed_layers,
+                "top_k": top_k,
+                "device": device,
+            })
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def clt_attribute(
+        text: str,
+        model_name: str = "qwen3-1.7b",
+        target_positions: str = "",
+        threshold: float = 0.01,
+        device: str = "cuda",
+    ) -> str:
+        """Compute attribution graph showing sparse feature influence paths.
+
+        Traces which sparse features influence output at target positions
+        using A_{s->t} = a_s * ||w_{s->t}|| attribution weights.
+
+        Returns edges representing cross-layer feature influence and a
+        GraphViz DOT representation for visualization.
+
+        Args:
+            text: Input text to analyze
+            model_name: CLT model name (default: qwen3-1.7b)
+            target_positions: Comma-separated token positions (empty = last position)
+            threshold: Minimum weight to include edge (default: 0.01)
+            device: Device to use (cuda, cpu)
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#CLT.00000002.ENGINE_UNAVAILABLE",
+                    "remediation": "Start gaius-engine: devenv processes up",
+                }, indent=2)
+
+            # Parse target positions
+            parsed_positions = []
+            if target_positions:
+                parsed_positions = [int(x.strip()) for x in target_positions.split(",")]
+
+            result = await client.call("CLT", "attribute", {
+                "text": text,
+                "model_name": model_name,
+                "target_positions": parsed_positions,
+                "threshold": threshold,
+                "device": device,
+            })
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- Session Operations ---
     # Session lifecycle and research thread management
 
@@ -3045,7 +3918,7 @@ Domain: {domain or 'general'}
             method: TDA method (persistent_homology, mapper, etc.)
         """
         try:
-            from .tda import compute_persistence, TopologyResult
+            from .core.tda import compute_persistence, TopologyResult  # type: ignore[attr-defined] - TODO: implement compute_persistence
 
             if data.startswith("["):
                 vectors = json.loads(data)
@@ -3137,8 +4010,7 @@ Domain: {domain or 'general'}
         """Get background evolution daemon status.
 
         Returns status of the Agent0-style self-improvement daemon,
-        including cycles completed, improvement metrics, and next agent.
-        Uses gaius-engine if available (GAIUS_ALLOW_FALLBACKS=true), otherwise direct access.
+        including cycles completed, improvement metrics, and next agent via gRPC.
         """
         try:
             # Try engine proxy first
@@ -3476,6 +4348,103 @@ Domain: {domain or 'general'}
             return json.dumps({"error": str(e)}, indent=2)
 
     @server.tool()
+    async def run_clt_swarm(
+        query: str,
+        domain: str = "",
+        num_agents: int = 7,
+    ) -> str:
+        """Run swarm analysis with CLT-based interpretable collaboration.
+
+        Uses Cross-Layer Transcoders (CLT) for interpretable agent communication:
+        - Agents share sparse features (~115 active per layer) instead of text
+        - Visible consensus (which features agents agree on)
+        - Feature overlap shows how aligned agents are
+
+        Provides interpretability not available with dense embedding collaboration.
+
+        Args:
+            query: The query or topic to analyze
+            domain: Domain context (pension, kudu, etc.)
+            num_agents: Number of specialist agents
+        """
+        try:
+            from .agents.swarm import get_clt_swarm_manager
+            from .agents.roles import SWARM_ROLES
+
+            # Select subset of roles if requested
+            roles = list(SWARM_ROLES.keys())[:num_agents]
+
+            manager = get_clt_swarm_manager(roles=roles)
+            result = await manager.run_round(domain=domain or query, context=query)
+
+            # Format output with CLT-specific fields
+            perspectives = []
+            for response in result.responses:
+                # Get top features for this agent
+                agent_feats = result.agent_features.get(response.role.value, [])
+                top_feature_ids = [f[0] for f in agent_feats[:5]]
+
+                perspectives.append({
+                    "agent": response.name,
+                    "role": response.role.value,
+                    "analysis": response.content[:500] if response.succeeded else None,
+                    "tokens": response.tokens,
+                    "succeeded": response.succeeded,
+                    "top_features": top_feature_ids,
+                    "error": response.error,
+                })
+
+            # Format consensus features
+            top_consensus = sorted(
+                result.consensus_features.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]
+
+            # Format feature overlap
+            overlap_formatted = {
+                f"{a1}↔{a2}": round(sim, 3)
+                for (a1, a2), sim in result.feature_overlap.items()
+            }
+
+            return json.dumps(
+                {
+                    "query": query,
+                    "domain": domain,
+                    "synthesis": result.consensus,
+                    "perspectives": perspectives,
+                    "success_rate": round(result.success_rate, 3),
+                    "tokens_used": result.total_tokens,
+                    "latency_ms": result.total_latency_ms,
+                    "clt_collaboration": True,
+                    "consensus_features": [
+                        {"feature_idx": f, "score": round(s, 4)}
+                        for f, s in top_consensus
+                    ],
+                    "agent_feature_overlap": overlap_formatted,
+                },
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def clt_memory_stats() -> str:
+        """Get CLT latent memory statistics.
+
+        Returns info about stored CLT thoughts including feature counts.
+        """
+        try:
+            from .agents.latent import get_clt_memory
+
+            memory = get_clt_memory()
+            stats = await memory.get_clt_stats()
+
+            return json.dumps(stats, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
     async def clear_latent_memory(domain: str = "") -> str:
         """Clear latent working memory.
 
@@ -3764,6 +4733,219 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- RASE Calibration ---
+
+    @server.tool()
+    async def calibration_status(agent_id: str = "") -> str:
+        """Get calibration status for an agent or all agents.
+
+        Shows calibration health including drift detection, score correlation,
+        and whether recalibration is needed.
+
+        Args:
+            agent_id: Specific agent (empty for all agents)
+        """
+        try:
+            # Query calibration_health view
+            query = """
+                SELECT * FROM calibration_health
+            """
+            if agent_id:
+                query += f" WHERE agent_id = '{agent_id}'"
+
+            from .storage.database import _get_pool
+
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query)
+
+            results = []
+            for row in rows:
+                results.append({
+                    "agent_id": row["agent_id"],
+                    "total_calibrations": row["total_calibrations"],
+                    "drift_count": row["drift_count"],
+                    "avg_delta": round(row["avg_delta"], 3) if row["avg_delta"] else 0,
+                    "max_abs_delta": round(row["max_abs_delta"], 3) if row["max_abs_delta"] else 0,
+                    "score_correlation": round(row["score_correlation"], 3) if row["score_correlation"] else None,
+                    "calibration_status": row["calibration_status"],
+                    "last_calibration": row["last_calibration"].isoformat() if row["last_calibration"] else None,
+                })
+
+            return json.dumps(
+                {"agents": results, "total": len(results)},
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def trigger_calibration(
+        agent_id: str,
+        objective_name: str = "research-synthesis-verification",
+        provider: str = "cerebras",
+    ) -> str:
+        """Trigger a calibration cycle for an agent.
+
+        Runs verification with both local and frontier model to compare scores.
+        Records results in the calibration database for drift analysis.
+
+        Args:
+            agent_id: Agent to calibrate
+            objective_name: Objective to use for verification
+            provider: Frontier model provider (cerebras, xai)
+        """
+        # CalibrationOracle.run_calibration_cycle not yet implemented.
+        # The oracle has run_calibration(held_out_tasks, intrinsic_scores) which requires
+        # pre-computed intrinsic scores. A higher-level orchestration method is needed.
+        # See: src/gaius/agents/evolution/calibration.py
+        return json.dumps(
+            {
+                "error": "run_calibration_cycle not implemented",
+                "agent_id": agent_id,
+                "objective": objective_name,
+                "provider": provider,
+                "hint": "Use CalibrationOracle.run_calibration() with held_out_tasks and intrinsic_scores",
+                "guru_meditation": "#CAL.00000001.CYCLE_NOT_IMPL",
+            },
+            indent=2,
+        )
+
+    @server.tool()
+    async def calibration_history(agent_id: str = "", limit: int = 20) -> str:
+        """Get calibration history for an agent.
+
+        Shows recent calibration runs with scores and drift status.
+
+        Args:
+            agent_id: Specific agent (empty for all)
+            limit: Maximum records to return
+        """
+        try:
+            query = """
+                SELECT
+                    id, agent_id, version_id, objective_name,
+                    provider, model_id,
+                    local_score, calibration_score, delta,
+                    drift_detected, drift_magnitude,
+                    created_at, latency_ms
+                FROM evolution_calibrations
+            """
+            if agent_id:
+                query += f" WHERE agent_id = '{agent_id}'"
+            query += f" ORDER BY created_at DESC LIMIT {limit}"
+
+            from .storage.database import _get_pool
+
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query)
+
+            results = []
+            for row in rows:
+                results.append({
+                    "id": row["id"],
+                    "agent_id": row["agent_id"],
+                    "objective": row["objective_name"],
+                    "provider": row["provider"],
+                    "local_score": round(row["local_score"], 3),
+                    "calibration_score": round(row["calibration_score"], 3),
+                    "delta": round(row["delta"], 3),
+                    "drift_detected": row["drift_detected"],
+                    "created_at": row["created_at"].isoformat(),
+                })
+
+            return json.dumps({"calibrations": results}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def list_objectives() -> str:
+        """List available RASE objectives in the KB.
+
+        Returns all objectives with their gates and priority.
+        """
+        try:
+            from pathlib import Path
+            from .rase.domains.kb import Objective
+
+            kb_root = Path(KB_ROOT)
+            objectives_dir = kb_root / "current" / "objectives"
+
+            objectives = []
+            for obj_file in objectives_dir.glob("*.md"):
+                if obj_file.name.startswith("."):
+                    continue
+                try:
+                    rel_path = obj_file.relative_to(kb_root)
+                    obj = Objective.from_file(str(rel_path), kb_root=str(kb_root))
+                    objectives.append({
+                        "name": obj.name,
+                        "description": obj.frontmatter.description,
+                        "priority": obj.frontmatter.priority,
+                        "gates": len(obj.gates),
+                        "gate_names": [g.name for g in obj.gates],
+                        "path": str(rel_path),
+                    })
+                except Exception:
+                    pass
+
+            return json.dumps(
+                {"objectives": objectives, "total": len(objectives)},
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def verification_history(
+        objective_name: str = "",
+        limit: int = 20,
+    ) -> str:
+        """Get verification run history.
+
+        Shows recent verification runs with verdicts and accuracy.
+
+        Args:
+            objective_name: Filter by objective (empty for all)
+            limit: Maximum records to return
+        """
+        try:
+            query = """
+                SELECT
+                    run_id, objective_name, domain,
+                    document_path, verdict, accuracy, reward,
+                    gates_total, gates_passed,
+                    thread_id, started_at, duration_ms
+                FROM objective_verifications
+            """
+            if objective_name:
+                query += f" WHERE objective_name = '{objective_name}'"
+            query += f" ORDER BY started_at DESC LIMIT {limit}"
+
+            from .storage.database import _get_pool
+
+            pool = await _get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query)
+
+            results = []
+            for row in rows:
+                results.append({
+                    "run_id": row["run_id"],
+                    "objective": row["objective_name"],
+                    "document": row["document_path"],
+                    "verdict": row["verdict"],
+                    "accuracy": round(row["accuracy"], 3),
+                    "reward": round(row["reward"], 3),
+                    "gates": f"{row['gates_passed']}/{row['gates_total']}",
+                    "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                })
+
+            return json.dumps({"verifications": results}, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- Development Tools ---
 
     @server.tool()
@@ -3901,6 +5083,12 @@ Domain: {domain or 'general'}
                 return json.dumps({
                     "error": "No grid state found",
                     "hint": "Run /init in the TUI to create initial state",
+                })
+
+            if tda_features is None:
+                return json.dumps({
+                    "error": "No TDA features computed for grid state",
+                    "hint": "Grid state exists but TDA analysis failed",
                 })
 
             return json.dumps(
@@ -4054,6 +5242,330 @@ Domain: {domain or 'general'}
             cli = GaiusCLI()
             result = await cli._mlops_history()
             return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- HealthObserver Tools ---
+    # Control the HealthObserver daemon for autonomous health monitoring
+    # These tools call the engine via gRPC - HealthObserver runs in the engine daemon
+
+    @server.tool()
+    async def health_observer_status() -> str:
+        """Get HealthObserver daemon status.
+
+        Returns daemon state, metrics, and active incidents.
+        Useful for understanding current system health monitoring.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "status")
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_start() -> str:
+        """Start the HealthObserver daemon (idempotent).
+
+        Begins continuous health monitoring with ACP escalation
+        for complex issues. Safe to call if already running.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "start")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_stop() -> str:
+        """Stop the HealthObserver daemon gracefully.
+
+        Stops background monitoring. Active incidents remain tracked
+        but no new health checks will run.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "stop")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_incidents(status: str = "active") -> str:
+        """List health incidents (active, resolved, or all).
+
+        Args:
+            status: Filter by status ("active", "resolved", "all")
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "incidents", {"status": status})
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_check() -> str:
+        """Force an immediate health check.
+
+        Runs a full health check bypassing the poll interval.
+        Returns the health report with any new incidents.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("HealthObserver", "check")
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def health_observer_incident_detail(fingerprint: str) -> str:
+        """Get full incident details with healing history.
+
+        Args:
+            fingerprint: Incident fingerprint (e.g., "GPU_001:reasoning")
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "HealthObserver", "incident_detail", {"fingerprint": fingerprint}
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Prospects/Stewardship Tools ---
+    # Capital stewardship: SEC filings analysis via FMP + Cerebras GLM + XAI Grok
+
+    @server.tool()
+    async def prospects_status(profile: str = "zndx", domain: str = "prospecting") -> str:
+        """Get current prospects status (cached, $0).
+
+        Shows prospect candidates, strategy positions, and pending filings.
+
+        Args:
+            profile: Profile context (e.g., "zndx", "home")
+            domain: Domain context (e.g., "prospecting", "retirement")
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "Prospects", "status", {"profile": profile, "domain": domain}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prospects_check(profile: str = "zndx", domain: str = "prospecting", force: bool = False) -> str:
+        """Check for new SEC filings (~$0).
+
+        Daily triage to determine if a full update is recommended.
+        Uses FMP API to check for new filings since last analysis.
+
+        Args:
+            profile: Profile context
+            domain: Domain context
+            force: Force check even if recently checked
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "Prospects", "check", {"profile": profile, "domain": domain, "force": force}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prospects_update(
+        profile: str = "zndx",
+        domain: str = "prospecting",
+        symbols: str = "",
+        force: bool = False,
+        filings_per_symbol: int = 0,
+    ) -> str:
+        """Run full LLM analysis (~$0.60/prospect).
+
+        Analyzes SEC filings with Cerebras GLM 4.7, then synthesizes
+        investment thesis with XAI Grok. Creates KB artifacts:
+        - current/prospects/<symbol>/synthesis.md
+        - current/prospects/<symbol>/agenda.md
+        - current/prospects/<symbol>/filings/*.md
+
+        Args:
+            profile: Profile context
+            domain: Domain context
+            symbols: Comma-separated symbols to analyze (empty = all pending)
+            force: Force update even if no new filings
+            filings_per_symbol: Max filings per symbol (0 = default 20)
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+
+            # Parse symbols
+            symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()] if symbols else []
+
+            # Collect streaming events
+            events = []
+            async for event in client.stream(
+                "Prospects", "update",
+                {
+                    "profile": profile,
+                    "domain": domain,
+                    "symbols": symbol_list,
+                    "force": force,
+                    "filings_per_symbol": filings_per_symbol,
+                }
+            ):
+                events.append(event)
+
+            # Return final event with event count
+            final_event = events[-1] if events else {}
+            return json.dumps({
+                "events_count": len(events),
+                **final_event,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- X Bookmarks Tools ---
+    # Sync X (Twitter) bookmarks to Gaius KB via the engine
+
+    @server.tool()
+    async def x_bookmarks_get_auth_url() -> str:
+        """Get OAuth 2.0 authorization URL for X API access.
+
+        Returns the URL to visit to authorize Gaius to access your X bookmarks.
+        Also returns the state and verifier needed to complete the flow.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "get_auth_url")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_complete_auth(code: str) -> str:
+        """Complete OAuth 2.0 flow with authorization code.
+
+        After visiting the auth URL and authorizing, enter the code
+        you received. The PKCE verifier is automatically retrieved
+        from the database (stored when get_auth_url was called).
+
+        Args:
+            code: Authorization code from X callback
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "complete_auth", {"code": code, "verifier": ""}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_auth_status() -> str:
+        """Check X API authentication status.
+
+        Returns whether you're authenticated, username, and token expiry.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "auth_status")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_trigger_sync(full_sync: bool = False, folder_id: str = "") -> str:
+        """Trigger X bookmarks sync.
+
+        Starts a sync of your X bookmarks to the KB.
+
+        Args:
+            full_sync: If True, sync all bookmarks. If False, only new ones.
+            folder_id: Optional folder ID to sync specific folder only.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "trigger_sync",
+                {"full_sync": full_sync, "folder_id": folder_id}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_sync_status(user_id: str = "") -> str:
+        """Get X bookmarks sync status.
+
+        Returns current sync configuration, folder/bookmark counts,
+        and last sync information. The engine provides actionable guidance
+        (action_required, message) when re-authentication is needed.
+
+        Args:
+            user_id: Optional user ID to check status for specific user.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "sync_status", {"user_id": user_id}
+            )
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_service_status() -> str:
+        """Get X Bookmarks service status.
+
+        Returns overall service health, total syncs completed,
+        and queue status.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "service_status")
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def x_bookmarks_list_folders(user_id: str = "") -> str:
+        """List X bookmark folders.
+
+        Returns list of bookmark folders with counts.
+        Only returns folders that have been synced.
+
+        Args:
+            user_id: Optional user ID to list folders for specific user.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call(
+                "XBookmarks", "list_folders", {"user_id": user_id}
+            )
+            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 

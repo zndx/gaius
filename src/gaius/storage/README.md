@@ -70,7 +70,7 @@ All backends implement the `StorageBackend` protocol:
 
 ```python
 class StorageBackend(Protocol):
-    """Abstract storage backend."""
+    """Abstract storage backend interface."""
 
     config: StorageConfig
 
@@ -122,10 +122,10 @@ build/dev/                 # KB root (gitignored)
 
 ### Allowed Directories
 
-All KB operations are restricted to:
-- `archive/` - Quarterly archives
-- `current/` - Active content
-- `scratch/` - Daily zettelkasten
+All KB operations are restricted to designated directories for security:
+- `archive/` — Quarterly archives
+- `current/` — Active content
+- `scratch/` — Daily zettelkasten notes
 
 ## KB Operations
 
@@ -134,7 +134,7 @@ High-level operations used by MCP, CLI, and TUI:
 ### Search
 
 ```python
-from gaius.storage.kb_ops import search_kb, SearchResult
+from gaius.storage.kb_ops import search_kb
 
 results = await search_kb("persistent homology", max_results=10)
 for result in results:
@@ -157,10 +157,7 @@ path = await create_kb(
 )
 
 # Update
-await update_kb(
-    "current/topics/tda.md",
-    updated_content,
-)
+await update_kb("current/topics/tda.md", updated_content)
 ```
 
 ### List
@@ -186,17 +183,8 @@ from gaius.storage.database import (
     get_evolution_trend,
 )
 
-# Recent evolution cycles
 cycles = await get_recent_cycles(limit=10)
-for cycle in cycles:
-    print(f"{cycle.agent_id}: {cycle.improvement_percent:.1f}%")
-
-# Agent scores
 scores = await get_agent_scores()
-for score in scores:
-    print(f"{score.agent_id}: {score.avg_score:.3f}")
-
-# Trend over days
 trend = await get_evolution_trend(days=7)
 ```
 
@@ -208,16 +196,6 @@ from gaius.storage.database import get_daily_summary
 summary = await get_daily_summary("2025-12-13")
 print(f"Total evals: {summary.total_evals}")
 print(f"Average score: {summary.avg_score:.3f}")
-```
-
-### XAI Budget
-
-```python
-from gaius.storage.database import get_xai_budget_status
-
-status = await get_xai_budget_status()
-print(f"Daily used: {status.daily_used}/{status.daily_limit}")
-print(f"Weekly used: {status.weekly_used}/{status.weekly_limit}")
 ```
 
 ## Grid State Persistence
@@ -241,11 +219,9 @@ print(f"Coverage: {state.coverage:.1%}")
 
 # List history
 snapshots = await list_grid_snapshots(limit=10)
-for snap in snapshots:
-    print(f"{snap.created_at}: {snap.n_documents} docs")
 ```
 
-### Snapshot Structure
+### Snapshot Schema
 
 ```sql
 CREATE TABLE grid_snapshots (
@@ -255,14 +231,14 @@ CREATE TABLE grid_snapshots (
     n_documents INT,
     coverage FLOAT,
     method VARCHAR(32),  -- umap, pca
-    allocations JSONB,   -- 19x19 density matrix
+    allocations JSONB,   -- 19×19 density matrix
     tda_features JSONB   -- Betti numbers, entropy
 );
 ```
 
 ## MinIO Integration
 
-MinIO is the primary object storage backend for Gaius, providing S3-compatible storage for KB documents, HX data lake, and content sync:
+MinIO provides S3-compatible storage for KB documents:
 
 ```python
 from gaius.storage.minio import MinioStorage
@@ -274,10 +250,7 @@ storage = MinioStorage(
     bucket="gaius-kb",
 )
 
-# Upload
 await storage.write("current/topics/tda.md", content)
-
-# Download
 content = await storage.read("current/topics/tda.md")
 ```
 
@@ -304,7 +277,7 @@ storage = AgentStudioStorage(
 )
 ```
 
-Provides:
+Features:
 - Enterprise authentication
 - Audit logging
 - Version control integration
@@ -325,7 +298,6 @@ await engine.sync_all()
 # Incremental (changed files only)
 await engine.sync_incremental()
 
-# Status
 status = engine.get_status()
 print(f"Synced: {status.synced_count}")
 print(f"Pending: {status.pending_count}")
@@ -367,8 +339,106 @@ storage {
 }
 ```
 
+## Call Graph
+
+```
+# KB Read Path
+mcp_server.py:read_kb(path)
+  └─→ storage.kb_ops.read_kb(path)
+      └─→ get_storage_backend()                # singleton factory
+          └─→ StorageBackend.read(path)
+              ├─→ FilesystemStorage.read()     # local dev
+              ├─→ MinioStorage.read()          # S3-compatible
+              └─→ AgentStudioStorage.read()    # Cloudera
+
+# KB Write Path
+mcp_server.py:create_kb(path, content)
+  └─→ storage.kb_ops.create_kb(path, content)
+      └─→ get_storage_backend().write(path, content)
+          └─→ sync_engine.queue_embedding(path)
+              └─→ qdrant_client.upsert(embedding)
+
+# Search Path
+mcp_server.py:search_kb(query)
+  └─→ storage.kb_ops.search_kb(query)
+      ├─→ qdrant_client.search(query_embedding)  # vector search
+      └─→ storage.filesystem.glob(pattern)       # filename match
+
+# Grid State Persistence
+widgets.grid.MainGrid.snapshot()
+  └─→ storage.grid_state.save_grid_state(data, tda)
+      └─→ database.execute_insert(grid_snapshots)
+```
+
+## Data Flow
+
+```mermaid
+graph TB
+    INPUT["User Input<br/>(MCP tool, CLI command, TUI action)"]
+    KBOPS["kb_ops.py<br/>(search_kb, read_kb, create_kb, ...)"]
+    FS["Filesystem<br/>Storage"]
+    MINIO["MinIO<br/>Storage"]
+    STUDIO["Agent Studio<br/>Storage"]
+    SYNC["sync_engine.py<br/>(embedding generation, upsert)"]
+    QD["Qdrant<br/>Embeddings"]
+    PG["PostgreSQL<br/>State"]
+    S3["MinIO/S3<br/>KB Files"]
+
+    INPUT --> KBOPS
+    KBOPS --> FS
+    KBOPS --> MINIO
+    KBOPS --> STUDIO
+    FS --> SYNC
+    MINIO --> SYNC
+    STUDIO --> SYNC
+    SYNC --> QD
+    SYNC --> PG
+    SYNC --> S3
+```
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `get_storage_backend()` | factory.py | kb_ops, mcp_server, agents | Singleton factory |
+| `kb_ops` | StorageBackend, qdrant | mcp_server, agents, theta | `search_kb()`, `read_kb()`, `create_kb()` |
+| `database.py` | asyncpg | grid_state, evolution, health | Connection pool |
+| `grid_state.py` | database, qdrant | core.projection, widgets | `save_grid_state()`, `load_current_state()` |
+| `sync_engine.py` | StorageBackend, qdrant | workers, flows | `sync_all()`, `sync_incremental()` |
+
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Database README](../../db/README.md) - Schema documentation
-- [Core README](../core/README.md) - Grid projection
+- [Parent README](../README.md) — Module overview
+- [Database README](../../db/README.md) — Schema documentation
+- [Core README](../core/README.md) — Grid projection
+- [HX README](../hx/README.md) — Raw content data lake
+- [Agents README](../agents/README.md) — KB access for theta consolidation
+
+---
+
+<!-- GAI:META
+module: gaius.storage
+layer: L2-transport
+singleton: get_storage_backend
+key_types: [StorageBackend, FilesystemStorage, MinioStorage, AgentStudioStorage, KBDocument, WriteResult]
+key_funcs: [search_kb, read_kb, create_kb, update_kb, list_kb, save_grid_state, load_current_state]
+submodules: []
+depends: [core.config, qdrant_client, asyncpg, minio]
+dependents: [mcp_server, agents, flows, workers, widgets.grid]
+config_keys: [storage.backend, storage.root, storage.minio.endpoint, storage.database.url]
+env_vars: [GAIUS_KB_BACKEND, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET]
+grpc_services: []
+qdrant_collections: [gaius_embeddings]
+postgres_tables: [grid_snapshots]
+external_deps: [asyncpg, qdrant_client, minio]
+call_paths:
+  read: mcp.read_kb→kb_ops.read_kb→get_storage_backend→StorageBackend.read
+  write: mcp.create_kb→kb_ops.create_kb→StorageBackend.write→sync_engine.queue_embedding
+  search: mcp.search_kb→kb_ops.search_kb→qdrant.search+filesystem.glob
+  grid_snapshot: widgets.grid.snapshot→grid_state.save_grid_state→database.insert
+test_cmds:
+  read: 'uv run gaius-cli --cmd "/kb read current/topics/test.md"'
+  search: 'uv run gaius-cli --cmd "/kb search persistent homology"'
+guru_codes: [ST.00001.QDRANT_DOWN, ST.00002.MINIO_UNREACHABLE, ST.00003.PG_CONN_FAIL]
+fail_fast: true
+-->

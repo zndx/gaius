@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
@@ -119,7 +119,7 @@ class MergeResult:
 
     # Lineage
     parent_versions: list[str] = field(default_factory=list)  # Agent version IDs
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Error handling
     error: str | None = None

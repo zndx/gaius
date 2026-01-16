@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from collections import deque
 
 from ..backends import (
@@ -60,7 +60,7 @@ class InferenceJob:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     result: Optional[InferenceResponse] = None
-    callback: Optional[callable] = None
+    callback: Optional[Callable] = None
 
     @property
     def wait_time_ms(self) -> int:
@@ -330,7 +330,7 @@ class SchedulerService:
         self,
         request: InferenceRequest,
         priority: JobPriority = JobPriority.NORMAL,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable] = None,
     ) -> str:
         """Submit a job without waiting.
 
@@ -349,7 +349,7 @@ class SchedulerService:
         self,
         request: InferenceRequest,
         priority: JobPriority,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable] = None,
     ) -> InferenceJob:
         """Add job to queue."""
         async with self._queue_lock:
@@ -571,7 +571,7 @@ class SchedulerService:
             logger.debug("Using local model for evaluation")
             return await self.complete(
                 prompt=prompt,
-                agent_alias="fast",  # Use fast local model
+                agent_alias="instruct",  # Use instruct local model
                 priority=JobPriority.HIGH,
             )
 
@@ -679,9 +679,9 @@ class SchedulerService:
         CAPABILITY_TO_ENDPOINT = {
             "reasoning": "reasoning",      # Strong reasoning models
             "long_context": "reasoning",   # Same - needs context
-            "coding": "coding",            # Code generation
+            "coding": "instruct",          # Code generation via instruct
             "adversarial": "reasoning",    # Needs reasoning
-            "synthesis": "fast",           # Synthesis is simpler
+            "synthesis": "instruct",       # Synthesis via instruct
         }
 
         # Default to core swarm roles
@@ -700,7 +700,7 @@ class SchedulerService:
                 }
 
             # Determine endpoint from capabilities
-            endpoint = "fast"  # Default
+            endpoint = "instruct"  # Default
             for cap in role_def.model_capabilities:
                 if cap in CAPABILITY_TO_ENDPOINT:
                     endpoint = CAPABILITY_TO_ENDPOINT[cap]
@@ -743,6 +743,29 @@ class SchedulerService:
 
         # Convert to dict
         return {name: result for name, result in results_list}
+
+    async def run_swarm_clt(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Run CLT-enhanced swarm analysis.
+
+        DEPRECATED: This method bypasses the Yunikorn-style workload system.
+        Use gRPC SwarmStream with clt=True instead, which properly allocates
+        GPU resources via the orchestrator's begin_workload/complete_workload.
+
+        Raises:
+            RuntimeError: Always fails with guidance to use proper CLT path
+        """
+        raise RuntimeError(
+            "run_swarm_clt() is deprecated. CLT requires GPU allocation via workload system.\n"
+            "  Use: gRPC SwarmStream with clt=True\n"
+            "  Or:  CLI '/swarm clt <domain>'\n"
+            "  Guru Meditation: #CLT.00000002.DEPRECATED\n"
+            "  The workload system handles GPU allocation, eviction, and restoration."
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Status

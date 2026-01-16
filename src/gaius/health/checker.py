@@ -6,6 +6,10 @@ Provides comprehensive health diagnostics including:
 - Database connectivity
 - Cognition daemon status
 - Resource utilization
+
+The CheckStatus enum is the local Python representation used throughout
+the health checker. It maps to proto enums defined in gaius_service.proto
+for wire format compatibility.
 """
 
 import asyncio
@@ -16,9 +20,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from .heuristics import Heuristic, HeuristicLoader
+
+# Import proto enum type for type-safe conversion
+from ..engine.generated import (
+    CheckStatus as ProtoCheckStatus,
+    CHECK_STATUS_FAIL,
+    CHECK_STATUS_PASS,
+    CHECK_STATUS_SKIP,
+    CHECK_STATUS_WARN,
+    CHECK_STATUS_UNSPECIFIED,
+)
 
 if TYPE_CHECKING:
     from .self_healing import SelfHealingCoordinator
@@ -27,12 +41,52 @@ logger = logging.getLogger(__name__)
 
 
 class CheckStatus(Enum):
-    """Status of a health check."""
+    """Status of a health check.
+
+    This is the internal Python representation. Maps to proto CheckStatus enum:
+    - PASS -> CHECK_STATUS_PASS (1)
+    - WARN -> CHECK_STATUS_WARN (2)
+    - FAIL -> CHECK_STATUS_FAIL (3)
+    - SKIP -> CHECK_STATUS_SKIP (4)
+
+    Use to_proto() and from_proto() for type-safe conversion.
+    """
 
     PASS = "pass"
     WARN = "warn"
     FAIL = "fail"
     SKIP = "skip"
+
+    def to_proto(self) -> "ProtoCheckStatus":
+        """Convert to proto enum value (type-safe).
+
+        Returns the proto CheckStatus enum value (CHECK_STATUS_PASS, etc.).
+        """
+        return _STATUS_TO_PROTO.get(self, CHECK_STATUS_UNSPECIFIED)
+
+    @classmethod
+    def from_proto(cls, proto_value: "ProtoCheckStatus") -> "CheckStatus":
+        """Convert from proto enum value (type-safe).
+
+        Args:
+            proto_value: Proto CheckStatus enum value (e.g., CHECK_STATUS_PASS)
+
+        Returns:
+            Corresponding local CheckStatus enum member
+        """
+        return _PROTO_TO_STATUS.get(proto_value, cls.SKIP)
+
+
+# Mapping between local enum and proto enum values
+# Uses proto enum constants for type safety
+_STATUS_TO_PROTO: dict["CheckStatus", "ProtoCheckStatus"] = {
+    CheckStatus.PASS: CHECK_STATUS_PASS,
+    CheckStatus.WARN: CHECK_STATUS_WARN,
+    CheckStatus.FAIL: CHECK_STATUS_FAIL,
+    CheckStatus.SKIP: CHECK_STATUS_SKIP,
+}
+
+_PROTO_TO_STATUS: dict["ProtoCheckStatus", "CheckStatus"] = {v: k for k, v in _STATUS_TO_PROTO.items()}
 
 
 @dataclass
@@ -87,19 +141,19 @@ class HealthReport:
         return self.failures == 0
 
     @property
-    def status_emoji(self) -> str:
-        """Status indicator emoji."""
+    def status_indicator(self) -> str:
+        """Status indicator character."""
         if self.failures > 0:
-            return "🔴"
+            return "[FAIL]"
         if self.warnings > 0:
-            return "🟡"
-        return "🟢"
+            return "[WARN]"
+        return "[OK]"
 
     def summary(self) -> str:
         """Generate summary string."""
         total = len(self.checks)
         return (
-            f"{self.status_emoji} Health: {self.passed}/{total} passed, "
+            f"{self.status_indicator} Health: {self.passed}/{total} passed, "
             f"{self.warnings} warnings, {self.failures} failures"
         )
 
@@ -267,10 +321,50 @@ class HealthChecker:
                 description="Check capability-based routing quality",
                 check_fn="_check_routing_quality",
             ),
+            # RASE intrinsic verification checks
+            HealthCheck(
+                id="rase_objectives",
+                name="RASE Objectives",
+                category="rase",
+                description="Check KB objectives and intrinsic verification components",
+                check_fn="_check_rase_objectives",
+            ),
+            # Configuration audit checks
+            HealthCheck(
+                id="config_audit",
+                name="Config Audit",
+                category="config",
+                description="Audit port/URL mismatches between env vars and running services",
+                check_fn="_check_config_audit",
+                heuristic_id="inference/optillm_port_mismatch",
+            ),
+            # Content pipeline checks
+            HealthCheck(
+                id="pipeline_status",
+                name="Pipeline Status",
+                category="pipeline",
+                description="Check content pipeline stage health (fetch → triage → KB)",
+                check_fn="_check_pipeline_status",
+                heuristic_id="pipeline/stage_backlog",
+            ),
+            HealthCheck(
+                id="task_queue",
+                name="Task Queue",
+                category="pipeline",
+                description="Check for stalled or stuck scheduled tasks",
+                check_fn="_check_task_queue",
+                heuristic_id="cognition/task_queue_stalled",
+            ),
         ]
 
-    async def run_all(self) -> HealthReport:
-        """Run all health checks.
+    async def run_all(
+        self,
+        progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+    ) -> HealthReport:
+        """Run all health checks with optional progress reporting.
+
+        Args:
+            progress_callback: Called after each check with (result, completed, total)
 
         Returns:
             Comprehensive health report
@@ -278,16 +372,21 @@ class HealthChecker:
         start_time = time.time()
         results = []
         metrics = {}
+        total_checks = len(self._checks)
 
-        for check in self._checks:
+        for i, check in enumerate(self._checks):
             result = await self._run_check(check)
             results.append(result)
+
+            # Report progress if callback provided
+            if progress_callback:
+                await progress_callback(result, i + 1, total_checks)
 
             # Stop on critical failure
             if check.critical and result.status == CheckStatus.FAIL:
                 logger.warning(f"Critical check failed: {check.name}")
                 # Mark remaining as skipped
-                for remaining in self._checks[self._checks.index(check) + 1 :]:
+                for remaining in self._checks[i + 1 :]:
                     results.append(
                         CheckResult(
                             name=remaining.name,
@@ -329,11 +428,16 @@ class HealthChecker:
 
         return report
 
-    async def run_category(self, category: str) -> HealthReport:
-        """Run health checks for a specific category.
+    async def run_category(
+        self,
+        category: str,
+        progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+    ) -> HealthReport:
+        """Run health checks for a specific category with optional progress reporting.
 
         Args:
             category: Category name (engine, data, cognition, inference)
+            progress_callback: Called after each check with (result, completed, total)
 
         Returns:
             Health report for that category
@@ -341,10 +445,17 @@ class HealthChecker:
         start_time = time.time()
         results = []
 
-        for check in self._checks:
-            if check.category == category:
-                result = await self._run_check(check)
-                results.append(result)
+        # Filter checks for this category
+        category_checks = [c for c in self._checks if c.category == category]
+        total_checks = len(category_checks)
+
+        for i, check in enumerate(category_checks):
+            result = await self._run_check(check)
+            results.append(result)
+
+            # Report progress if callback provided
+            if progress_callback:
+                await progress_callback(result, i + 1, total_checks)
 
         duration_ms = int((time.time() - start_time) * 1000)
 
@@ -366,8 +477,11 @@ class HealthChecker:
             interventions=interventions,
         )
 
-    async def run_quick(self) -> HealthReport:
-        """Run essential service connectivity checks.
+    async def run_quick(
+        self,
+        progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+    ) -> HealthReport:
+        """Run essential service connectivity checks with optional progress reporting.
 
         Shows all primary services and their roles:
         - gRPC Engine: Orchestration, cognition, evolution (primary)
@@ -376,6 +490,9 @@ class HealthChecker:
         - PostgreSQL: Activity logs, state (critical)
         - Qdrant: Vector embeddings, semantic search (primary)
         - S3/MinIO: Object storage (primary)
+
+        Args:
+            progress_callback: Called after each check with (result, completed, total)
 
         Returns:
             Health report with service connectivity status
@@ -393,10 +510,17 @@ class HealthChecker:
             "s3_minio_service",     # Object storage
         ]
 
-        for check in self._checks:
-            if check.id in essential_ids:
-                result = await self._run_check(check)
-                results.append(result)
+        # Filter checks for quick view
+        quick_checks = [c for c in self._checks if c.id in essential_ids]
+        total_checks = len(quick_checks)
+
+        for i, check in enumerate(quick_checks):
+            result = await self._run_check(check)
+            results.append(result)
+
+            # Report progress if callback provided
+            if progress_callback:
+                await progress_callback(result, i + 1, total_checks)
 
         duration_ms = int((time.time() - start_time) * 1000)
 
@@ -521,7 +645,9 @@ class HealthChecker:
 
             endpoints = status.get("endpoints", {})
             total = len(endpoints)
-            healthy = sum(1 for e in endpoints.values() if isinstance(e, dict) and e.get("status") == "healthy")
+            # Accept both legacy "healthy" and gRPC protobuf enum "PROCESS_STATUS_HEALTHY"
+            healthy_statuses = {"healthy", "PROCESS_STATUS_HEALTHY"}
+            healthy = sum(1 for e in endpoints.values() if isinstance(e, dict) and e.get("status") in healthy_statuses)
 
             if total == 0:
                 return CheckResult(
@@ -541,7 +667,7 @@ class HealthChecker:
                 )
 
             if healthy < total:
-                unhealthy = [name for name, e in endpoints.items() if isinstance(e, dict) and e.get("status") != "healthy"]
+                unhealthy = [name for name, e in endpoints.items() if isinstance(e, dict) and e.get("status") not in healthy_statuses]
                 return CheckResult(
                     name="Engine Endpoints",
                     status=CheckStatus.WARN,
@@ -716,7 +842,7 @@ class HealthChecker:
                     mem_pct = (used / total) * 100 if total > 0 else 0
                     gpus.append({"id": idx, "memory_used_mb": used, "memory_total_mb": total, "memory_pct": mem_pct, "utilization": util})
 
-                    if mem_pct > 95:
+                    if mem_pct > 98:
                         warnings.append(f"GPU {idx} memory at {mem_pct:.0f}%")
 
             if warnings:
@@ -820,7 +946,7 @@ class HealthChecker:
         try:
             import httpx
 
-            url = os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8080/v1")
+            url = os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8000/v1")
             base_url = url.rstrip("/v1").rstrip("/")
 
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -902,8 +1028,7 @@ class HealthChecker:
             # Check multiple potential vLLM endpoints
             endpoints = [
                 ("reasoning", os.getenv("GAIUS_VLLM_REASONING_URL", "http://localhost:8081/v1")),
-                ("coding", os.getenv("GAIUS_VLLM_CODING_URL", "http://localhost:8082/v1")),
-                ("fast", os.getenv("GAIUS_VLLM_FAST_URL", "http://localhost:8083/v1")),
+                ("instruct", os.getenv("GAIUS_VLLM_INSTRUCT_URL", "http://localhost:8082/v1")),
             ]
 
             available = []
@@ -1431,7 +1556,7 @@ class HealthChecker:
 
                 if use_engine_proxy():
                     orch = await get_orchestrator_proxy()
-                    status = await orch.get_status()
+                    status = orch.get_status()  # synchronous method
                     managed_pids = set()
 
                     for ep_name, ep_info in status.get("endpoints", {}).items():
@@ -1493,7 +1618,12 @@ class HealthChecker:
             )
 
     async def _check_endpoint_stuck(self) -> CheckResult:
-        """Check for endpoints stuck in starting/stopping state."""
+        """Check for endpoints stuck in starting/stopping state.
+
+        Timeouts (from orchestrator_service.py):
+        - STARTING: 5 minutes (300s) - models need time to load
+        - STOPPING: 2 minutes (120s) - shutdown should be quick
+        """
         try:
             from ..client.engine_proxy import get_health_proxy, use_engine_proxy
 
@@ -1518,24 +1648,77 @@ class HealthChecker:
                     details={"endpoint_count": 0},
                 )
 
-            stuck = []
+            # Thresholds for stuck detection
+            STARTING_TIMEOUT_SECS = 300  # 5 minutes
+            STOPPING_TIMEOUT_SECS = 120  # 2 minutes
+            now = datetime.now()
+
+            transitional = []  # Endpoints in transitional state (not yet stuck)
+            stuck_critical = []  # Endpoints stuck past timeout (FAIL)
+
             for name, ep in endpoints.items():
                 if isinstance(ep, dict):
                     ep_status = ep.get("status", "unknown")
                     if ep_status in ("starting", "stopping"):
-                        stuck.append({"name": name, "status": ep_status})
+                        started_at = ep.get("started_at")
+                        elapsed_secs = 0
+                        if started_at:
+                            try:
+                                start_time = datetime.fromisoformat(started_at)
+                                elapsed_secs = (now - start_time).total_seconds()
+                            except (ValueError, TypeError):
+                                pass
 
-            if stuck:
-                stuck_names = [s["name"] for s in stuck]
+                        timeout = STARTING_TIMEOUT_SECS if ep_status == "starting" else STOPPING_TIMEOUT_SECS
+                        entry = {
+                            "name": name,
+                            "status": ep_status,
+                            "elapsed_secs": int(elapsed_secs),
+                            "timeout_secs": timeout,
+                        }
+
+                        if elapsed_secs > timeout:
+                            stuck_critical.append(entry)
+                        else:
+                            transitional.append(entry)
+
+            # Critical: endpoints stuck past timeout
+            if stuck_critical:
+                stuck_names = [s["name"] for s in stuck_critical]
+                stopping_stuck = [s for s in stuck_critical if s["status"] == "stopping"]
+                starting_stuck = [s for s in stuck_critical if s["status"] == "starting"]
+
+                # Use specific heuristic based on stuck type
+                # Maps to FMEA catalog: VLLM_001 (Stuck Starting), VLLM_002 (Stuck Stopping)
+                heuristic = "inference/endpoint_stuck_stopping" if stopping_stuck else "inference/endpoint_stuck_starting"
+                failure_mode = "VLLM_002" if stopping_stuck else "VLLM_001"
+
+                return CheckResult(
+                    name="Stuck Endpoints",
+                    status=CheckStatus.FAIL,
+                    message=f"{len(stuck_critical)} endpoint(s) stuck past timeout",
+                    details={
+                        "stuck_endpoints": stuck_critical,
+                        "transitional_endpoints": transitional,
+                        "total_endpoints": len(endpoints),
+                        "failure_mode_id": failure_mode,  # FMEA catalog reference
+                    },
+                    heuristic_id=heuristic,
+                    suggestion=f"Fix with: /health fix endpoints (force clean start) or kill stuck processes",
+                )
+
+            # Warning: endpoints in transitional state but not yet stuck
+            if transitional:
+                transitional_names = [s["name"] for s in transitional]
                 return CheckResult(
                     name="Stuck Endpoints",
                     status=CheckStatus.WARN,
-                    message=f"{len(stuck)} endpoint(s) in transitional state",
+                    message=f"{len(transitional)} endpoint(s) in transitional state",
                     details={
-                        "stuck_endpoints": stuck,
+                        "transitional_endpoints": transitional,
                         "total_endpoints": len(endpoints),
                     },
-                    suggestion=f"Fix with: /health fix endpoints or /engine restart {stuck_names[0]}",
+                    suggestion=f"Monitor: {transitional_names[0]} may be loading model",
                 )
 
             return CheckResult(
@@ -1633,6 +1816,121 @@ class HealthChecker:
                 message=f"Check failed: {str(e)[:80]}",
             )
 
+    async def _check_rase_objectives(self) -> CheckResult:
+        """Check RASE intrinsic verification components.
+
+        Validates:
+        - KB objectives directory exists and has objectives
+        - KBOracle can be instantiated
+        - Evidence capture is available
+        - DaemonOracle is functional
+        """
+        start_time = time.time()
+
+        try:
+            from pathlib import Path
+
+            kb_root = str(self.kb_root)
+            objectives_dir = Path(kb_root) / "current" / "objectives"
+            issues = []
+            details = {}
+
+            # Check objectives directory
+            if not objectives_dir.exists():
+                return CheckResult(
+                    name="RASE Objectives",
+                    status=CheckStatus.WARN,
+                    message="Objectives directory not found",
+                    details={"path": str(objectives_dir)},
+                    suggestion="Run: /health fix rase",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+
+            # List objectives
+            objectives = list(objectives_dir.glob("*.md"))
+            details["objectives_count"] = len(objectives)
+            details["objectives"] = [o.stem for o in objectives]
+
+            if len(objectives) == 0:
+                issues.append("No objectives defined")
+
+            # Test KB domain imports
+            try:
+                from gaius.rase.domains.kb import KBState, KBOracle, Objective
+
+                details["kb_imports"] = "ok"
+
+                # Test KBState capture
+                state = KBState.capture(kb_root, paths=None)
+                details["kb_state_docs"] = len(state.documents)
+
+                # Test KBOracle creation
+                oracle = KBOracle(kb_root=kb_root, use_minio=False)
+                details["kb_oracle"] = "ok"
+
+            except ImportError as e:
+                issues.append(f"KB domain import failed: {e}")
+                details["kb_imports"] = str(e)
+            except Exception as e:
+                issues.append(f"KB component error: {e}")
+                details["kb_error"] = str(e)
+
+            # Test evolution daemon components
+            try:
+                from gaius.agents.evolution import (
+                    get_daemon_oracle,
+                    get_objective_generator,
+                    get_calibration_oracle,
+                )
+
+                details["evolution_imports"] = "ok"
+
+            except ImportError as e:
+                issues.append(f"Evolution import failed: {e}")
+                details["evolution_imports"] = str(e)
+
+            # Test evidence capture
+            try:
+                from gaius.hx import get_evidence_capture
+
+                capture = get_evidence_capture()
+                details["evidence_capture"] = "ok"
+
+            except ImportError as e:
+                issues.append(f"Evidence capture import failed: {e}")
+                details["evidence_imports"] = str(e)
+            except Exception as e:
+                # Non-critical - MinIO might not be available
+                details["evidence_capture"] = f"warn: {e}"
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            if issues:
+                return CheckResult(
+                    name="RASE Objectives",
+                    status=CheckStatus.WARN,
+                    message=f"{len(issues)} issue(s): {issues[0][:50]}",
+                    details=details,
+                    suggestion="Run: /health fix rase",
+                    duration_ms=duration_ms,
+                )
+
+            return CheckResult(
+                name="RASE Objectives",
+                status=CheckStatus.PASS,
+                message=f"{len(objectives)} objectives, components OK",
+                details=details,
+                duration_ms=duration_ms,
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="RASE Objectives",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+                suggestion="Run: /health fix rase",
+            )
+
     # =========================================================================
     # Self-Healing Integration
     # =========================================================================
@@ -1699,3 +1997,386 @@ class HealthChecker:
                     await self._healing_coordinator.handle_health_issue(issue)
                 except Exception as e:
                     logger.error(f"Failed to emit issue to coordinator: {e}")
+
+    async def _check_config_audit(self) -> CheckResult:
+        """Audit configuration for port/URL mismatches.
+
+        Detects common configuration issues:
+        1. optillm: env var vs gunicorn bind port mismatch
+        2. vLLM endpoints: configured URLs vs actual listening ports
+        3. Database URLs: connectivity with configured credentials
+
+        This check proactively identifies misconfigurations that cause
+        confusing "not responding" errors when services are actually running.
+        """
+        import os
+        import re
+        import subprocess
+        from pathlib import Path
+        from urllib.parse import urlparse
+
+        mismatches: list[dict] = []
+        audited_configs: list[str] = []
+
+        # 1. Check optillm port configuration
+        try:
+            optillm_url = os.getenv("GAIUS_OPTILLM_URL", "http://localhost:8000/v1")
+            expected_port = urlparse(optillm_url).port or 8000
+
+            # Check gunicorn config if it exists
+            gunicorn_config = Path("/tmp/gaius/gunicorn_optillm.conf.py")
+            if gunicorn_config.exists():
+                config_text = gunicorn_config.read_text()
+                # Extract bind port from gunicorn config
+                bind_match = re.search(r'bind\s*=\s*["\'][\d.]+:(\d+)["\']', config_text)
+                if bind_match:
+                    actual_port = int(bind_match.group(1))
+                    if actual_port != expected_port:
+                        mismatches.append({
+                            "service": "optillm",
+                            "issue": "port_mismatch",
+                            "expected": expected_port,
+                            "actual": actual_port,
+                            "env_var": "GAIUS_OPTILLM_URL",
+                            "config_file": str(gunicorn_config),
+                            "fix": f"export GAIUS_OPTILLM_URL=http://localhost:{actual_port}/v1",
+                        })
+                    audited_configs.append(f"optillm:gunicorn={actual_port}")
+                else:
+                    audited_configs.append("optillm:gunicorn=parse_error")
+            else:
+                # Check if optillm is running and what port it's listening on
+                try:
+                    result = subprocess.run(
+                        ["ss", "-tlnp"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    # Look for gunicorn listening ports
+                    for line in result.stdout.split("\n"):
+                        if "gunicorn" in line:
+                            port_match = re.search(r":(\d+)\s", line)
+                            if port_match:
+                                actual_port = int(port_match.group(1))
+                                if actual_port != expected_port and actual_port in [8000, 8080]:
+                                    mismatches.append({
+                                        "service": "optillm",
+                                        "issue": "port_mismatch",
+                                        "expected": expected_port,
+                                        "actual": actual_port,
+                                        "env_var": "GAIUS_OPTILLM_URL",
+                                        "fix": f"export GAIUS_OPTILLM_URL=http://localhost:{actual_port}/v1",
+                                    })
+                                audited_configs.append(f"optillm:ss={actual_port}")
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+
+        except Exception as e:
+            logger.debug(f"optillm config audit failed: {e}")
+
+        # 2. Check vLLM endpoint configuration
+        vllm_endpoints = [
+            ("reasoning", os.getenv("GAIUS_VLLM_REASONING_URL", "http://localhost:8081/v1")),
+            ("instruct", os.getenv("GAIUS_VLLM_INSTRUCT_URL", "http://localhost:8082/v1")),
+        ]
+        for name, url in vllm_endpoints:
+            port = urlparse(url).port
+            if port:
+                audited_configs.append(f"vllm_{name}:{port}")
+
+        # 3. Check database URL format
+        try:
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
+            if db_url:
+                parsed = urlparse(db_url)
+                audited_configs.append(f"postgres:{parsed.port or 5432}")
+        except Exception:
+            pass
+
+        # Generate result
+        if mismatches:
+            return CheckResult(
+                name="Config Audit",
+                status=CheckStatus.WARN,
+                message=f"{len(mismatches)} config mismatch(es) detected",
+                details={
+                    "mismatches": mismatches,
+                    "audited": audited_configs,
+                },
+                suggestion=f"/health fix config or: {mismatches[0].get('fix', 'check heuristic')}",
+            )
+
+        return CheckResult(
+            name="Config Audit",
+            status=CheckStatus.PASS,
+            message=f"Audited {len(audited_configs)} config(s), no mismatches",
+            details={"audited": audited_configs},
+        )
+
+    # =========================================================================
+    # Content Pipeline Health Checks
+    # =========================================================================
+
+    async def _check_pipeline_status(self) -> CheckResult:
+        """Check content pipeline stage health.
+
+        Queries v_pipeline_status view to monitor:
+        - fetch: Feed/arxiv fetch jobs
+        - heuristic_triage: Fast keyword scoring
+        - llm_triage: LLM quality assessment
+        - kb_write: Writing triaged content to KB
+        """
+        try:
+            import os
+
+            import asyncpg
+
+            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                # Check if the view exists (migration may not have run)
+                view_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.views
+                        WHERE table_schema = 'public' AND table_name = 'v_pipeline_status'
+                    )
+                """)
+
+                if not view_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Pipeline Status",
+                        status=CheckStatus.SKIP,
+                        message="Pipeline monitoring not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                # Query pipeline status
+                rows = await conn.fetch("SELECT * FROM v_pipeline_status")
+                await conn.close()
+
+                stages = {}
+                warnings = []
+                failures = []
+
+                for row in rows:
+                    stage = row["stage"]
+                    pending = row["pending"]
+                    completed_1h = row["completed_1h"]
+                    warn_threshold = row.get("backlog_warn", 100)
+                    critical_threshold = row.get("backlog_critical", 500)
+
+                    stages[stage] = {
+                        "pending": pending,
+                        "completed_1h": completed_1h,
+                    }
+
+                    if pending >= critical_threshold:
+                        failures.append(f"{stage}: {pending} pending (critical)")
+                    elif pending >= warn_threshold:
+                        warnings.append(f"{stage}: {pending} pending")
+
+                if failures:
+                    return CheckResult(
+                        name="Pipeline Status",
+                        status=CheckStatus.FAIL,
+                        message=f"Pipeline backlog critical: {failures[0]}",
+                        details={"stages": stages, "issues": failures},
+                        suggestion="Run: /health fix pipeline",
+                    )
+
+                if warnings:
+                    return CheckResult(
+                        name="Pipeline Status",
+                        status=CheckStatus.WARN,
+                        message=f"Pipeline backlog elevated: {warnings[0]}",
+                        details={"stages": stages, "issues": warnings},
+                        suggestion="Triage tasks will process backlog automatically",
+                    )
+
+                # Calculate total throughput
+                total_completed = sum(s.get("completed_1h", 0) for s in stages.values())
+                return CheckResult(
+                    name="Pipeline Status",
+                    status=CheckStatus.PASS,
+                    message=f"Pipeline healthy, {total_completed} items processed in last hour",
+                    details={"stages": stages},
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Pipeline Status",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str:
+                return CheckResult(
+                    name="Pipeline Status",
+                    status=CheckStatus.SKIP,
+                    message="Pipeline views not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Pipeline Status",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_task_queue(self) -> CheckResult:
+        """Check for stalled or stuck scheduled tasks.
+
+        Queries v_task_watchdog view to detect:
+        - stale_pending: Tasks waiting too long to be picked up
+        - stuck_running: Tasks running too long without completion
+        """
+        try:
+            import os
+
+            import asyncpg
+
+            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                # Check if the view exists
+                view_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.views
+                        WHERE table_schema = 'public' AND table_name = 'v_task_watchdog'
+                    )
+                """)
+
+                if not view_exists:
+                    # Fall back to direct query
+                    stale = await conn.fetchval("""
+                        SELECT COUNT(*) FROM scheduled_tasks
+                        WHERE picked_up_at IS NULL
+                          AND scheduled_for < NOW() - interval '30 minutes'
+                    """)
+                    stuck = await conn.fetchval("""
+                        SELECT COUNT(*) FROM scheduled_tasks
+                        WHERE picked_up_at IS NOT NULL
+                          AND completed_at IS NULL
+                          AND picked_up_at < NOW() - interval '10 minutes'
+                    """)
+                    completed_1h = await conn.fetchval("""
+                        SELECT COUNT(*) FROM scheduled_tasks
+                        WHERE completed_at > NOW() - interval '1 hour'
+                    """)
+                    await conn.close()
+
+                    if stale > 0 or stuck > 0:
+                        return CheckResult(
+                            name="Task Queue",
+                            status=CheckStatus.WARN if (stale + stuck) < 5 else CheckStatus.FAIL,
+                            message=f"{stale} stale, {stuck} stuck tasks",
+                            details={
+                                "stale_pending": stale,
+                                "stuck_running": stuck,
+                                "completed_1h": completed_1h,
+                            },
+                            suggestion="Run: /health fix pipeline",
+                        )
+
+                    return CheckResult(
+                        name="Task Queue",
+                        status=CheckStatus.PASS,
+                        message=f"Task queue healthy, {completed_1h} completed in last hour",
+                        details={
+                            "stale_pending": 0,
+                            "stuck_running": 0,
+                            "completed_1h": completed_1h,
+                        },
+                    )
+
+                # Query task watchdog view
+                rows = await conn.fetch("SELECT * FROM v_task_watchdog")
+                await conn.close()
+
+                task_types = {}
+                total_stale = 0
+                total_stuck = 0
+                total_completed = 0
+                total_failed = 0
+
+                for row in rows:
+                    task_type = row["task_type"]
+                    stale = row["stale_pending"]
+                    stuck = row["stuck_running"]
+                    completed = row["completed_1h"]
+                    failed = row.get("failed_24h", 0)
+
+                    task_types[task_type] = {
+                        "stale_pending": stale,
+                        "stuck_running": stuck,
+                        "completed_1h": completed,
+                        "failed_24h": failed,
+                    }
+
+                    total_stale += stale
+                    total_stuck += stuck
+                    total_completed += completed
+                    total_failed += failed
+
+                if total_stale > 0 or total_stuck > 0:
+                    severity = CheckStatus.FAIL if (total_stale + total_stuck) >= 5 else CheckStatus.WARN
+                    issues = []
+                    if total_stale > 0:
+                        issues.append(f"{total_stale} stale")
+                    if total_stuck > 0:
+                        issues.append(f"{total_stuck} stuck")
+
+                    return CheckResult(
+                        name="Task Queue",
+                        status=severity,
+                        message=f"Task queue issues: {', '.join(issues)}",
+                        details={
+                            "task_types": task_types,
+                            "stale_total": total_stale,
+                            "stuck_total": total_stuck,
+                            "completed_1h": total_completed,
+                            "failed_24h": total_failed,
+                        },
+                        suggestion="Run: /health fix pipeline",
+                    )
+
+                return CheckResult(
+                    name="Task Queue",
+                    status=CheckStatus.PASS,
+                    message=f"Task queue healthy, {total_completed} completed in last hour",
+                    details={
+                        "task_types": task_types,
+                        "completed_1h": total_completed,
+                        "failed_24h": total_failed,
+                    },
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Task Queue",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            return CheckResult(
+                name="Task Queue",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )

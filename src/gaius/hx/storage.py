@@ -157,7 +157,9 @@ def _ensure_minio_bucket(storage: StorageConfig) -> None:
         else:
             logger.debug(f"MinIO bucket exists: {storage.bucket}")
 
-        # Ensure prefix directory exists
+        # Ensure prefix directory exists (if configured)
+        if storage.prefix is None:
+            return
         prefix_path = f"{storage.bucket}/{storage.prefix.rstrip('/')}"
         if not fs.exists(prefix_path):
             logger.info(f"Creating MinIO prefix: {prefix_path}")

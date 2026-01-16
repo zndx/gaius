@@ -9,7 +9,9 @@ from .grpc_client import (
     GrpcClientConfig,
     GrpcEngineClient,
     call_grpc,
+    configure_grpc_client,
     get_grpc_client,
+    reset_grpc_client,
 )
 from .engine_proxy import (
     CompletionResult,
@@ -19,6 +21,7 @@ from .engine_proxy import (
     OrchestratorProxy,
     SchedulerProxy,
     TDAProxy,
+    get_client,
     get_evolution_proxy,
     get_grid_proxy,
     get_health_proxy,
@@ -53,8 +56,11 @@ __all__ = [
     "GrpcClientConfig",
     "GrpcEngineClient",
     "call_grpc",
+    "configure_grpc_client",
     "get_grpc_client",
+    "get_client",
     "get_engine_client",
+    "reset_grpc_client",
     # Proxies
     "CompletionResult",
     "EvolutionProxy",

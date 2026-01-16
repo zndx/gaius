@@ -8,6 +8,7 @@ from gaius.workers.fetchers.arxiv import ArxivFetcher
 from gaius.workers.fetchers.biorxiv import BiorxivFetcher
 from gaius.workers.fetchers.brave import BraveFetcher
 from gaius.workers.fetchers.docs import DocsFetcher
+from gaius.workers.fetchers.hackernews import HNFetcher
 from gaius.workers.fetchers.philevents import PhilEventsFetcher
 from gaius.workers.fetchers.rss import RSSFetcher
 
@@ -16,6 +17,7 @@ __all__ = [
     "BiorxivFetcher",
     "BraveFetcher",
     "DocsFetcher",
+    "HNFetcher",
     "PhilEventsFetcher",
     "RSSFetcher",
 ]

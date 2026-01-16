@@ -24,7 +24,12 @@ async def get_gpu_memory_free() -> dict[int, float]:
 
 
 def _get_gpu_memory_free_sync() -> dict[int, float]:
-    """Synchronous implementation of GPU memory query."""
+    """Synchronous implementation of GPU memory query.
+
+    Raises:
+        RuntimeError: If pynvml is not available or GPU query fails.
+            GPU monitoring is mandatory for this system.
+    """
     try:
         import pynvml
 
@@ -44,12 +49,18 @@ def _get_gpu_memory_free_sync() -> dict[int, float]:
 
         return result
 
-    except ImportError:
-        logger.warning("pynvml not available, cannot query GPU memory")
-        return {}
+    except ImportError as e:
+        raise RuntimeError(
+            f"GPU monitoring unavailable: pynvml import failed ({e}).\n"
+            "Guru Meditation: #GPU.00000001.PYNVML_MISSING\n"
+            "Ensure nvidia-ml-py is installed: uv sync --extra gpu"
+        ) from e
     except Exception as e:
-        logger.warning(f"Failed to query GPU memory: {e}")
-        return {}
+        raise RuntimeError(
+            f"GPU memory query failed: {e}\n"
+            "Guru Meditation: #GPU.00000002.MEMORYFAIL\n"
+            "Check: nvidia-smi works from terminal"
+        ) from e
 
 
 async def get_gpu_utilization() -> dict[int, float]:
@@ -64,7 +75,12 @@ async def get_gpu_utilization() -> dict[int, float]:
 
 
 def _get_gpu_utilization_sync() -> dict[int, float]:
-    """Synchronous implementation of GPU utilization query."""
+    """Synchronous implementation of GPU utilization query.
+
+    Raises:
+        RuntimeError: If pynvml is not available or GPU query fails.
+            GPU monitoring is mandatory for this system.
+    """
     try:
         import pynvml
 
@@ -82,12 +98,18 @@ def _get_gpu_utilization_sync() -> dict[int, float]:
 
         return result
 
-    except ImportError:
-        logger.warning("pynvml not available, cannot query GPU utilization")
-        return {}
+    except ImportError as e:
+        raise RuntimeError(
+            f"GPU monitoring unavailable: pynvml import failed ({e}).\n"
+            "Guru Meditation: #GPU.00000001.PYNVML_MISSING\n"
+            "Ensure nvidia-ml-py is installed: uv sync --extra gpu"
+        ) from e
     except Exception as e:
-        logger.warning(f"Failed to query GPU utilization: {e}")
-        return {}
+        raise RuntimeError(
+            f"GPU utilization query failed: {e}\n"
+            "Guru Meditation: #GPU.00000003.UTILFAIL\n"
+            "Check: nvidia-smi works from terminal"
+        ) from e
 
 
 async def get_gpu_info() -> dict[int, dict[str, Any]]:
@@ -102,7 +124,12 @@ async def get_gpu_info() -> dict[int, dict[str, Any]]:
 
 
 def _get_gpu_info_sync() -> dict[int, dict[str, Any]]:
-    """Synchronous implementation of comprehensive GPU query."""
+    """Synchronous implementation of comprehensive GPU query.
+
+    Raises:
+        RuntimeError: If pynvml is not available or GPU query fails.
+            GPU monitoring is mandatory for this system.
+    """
     try:
         import pynvml
 
@@ -127,9 +154,15 @@ def _get_gpu_info_sync() -> dict[int, dict[str, Any]]:
 
         return result
 
-    except ImportError:
-        logger.warning("pynvml not available, cannot query GPU info")
-        return {}
+    except ImportError as e:
+        raise RuntimeError(
+            f"GPU monitoring unavailable: pynvml import failed ({e}).\n"
+            "Guru Meditation: #GPU.00000001.PYNVML_MISSING\n"
+            "Ensure nvidia-ml-py is installed: uv sync --extra gpu"
+        ) from e
     except Exception as e:
-        logger.warning(f"Failed to query GPU info: {e}")
-        return {}
+        raise RuntimeError(
+            f"GPU info query failed: {e}\n"
+            "Guru Meditation: #GPU.00000004.INFOFAIL\n"
+            "Check: nvidia-smi works from terminal"
+        ) from e

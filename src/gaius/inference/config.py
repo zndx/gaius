@@ -68,7 +68,7 @@ class InferenceConfig:
 
     # vLLM settings (direct local inference)
     # Default to orchestrator endpoint (8080) which supports meta-cognitive routing
-    # Other endpoints: reasoning=8081, coding=8082, fast=8083
+    # Other endpoints: reasoning=8081, instruct=8082
     vllm_url: str = "http://localhost:8080/v1"
 
     # XAI settings (outsider model for evaluation)
@@ -92,9 +92,6 @@ class InferenceConfig:
     offline_mode: bool = False  # If True, never use remote APIs
     timeout: float = 60.0  # Request timeout in seconds
     max_tokens: int = 2048  # Default max tokens
-
-    # Security enforcement - gRPC gateway (secure by default)
-    allow_fallbacks: bool = False  # If True, allow direct HTTP when gRPC unavailable (dev/debug)
 
     @classmethod
     def from_env(cls) -> "InferenceConfig":
@@ -133,8 +130,6 @@ class InferenceConfig:
             offline_mode=os.getenv("GAIUS_OFFLINE", "").lower() in ("1", "true", "yes"),
             timeout=float(os.getenv("GAIUS_TIMEOUT", "60")),
             max_tokens=int(os.getenv("GAIUS_MAX_TOKENS", "2048")),
-            # Security enforcement - secure by default
-            allow_fallbacks=os.getenv("GAIUS_ALLOW_FALLBACKS", "").lower() in ("1", "true", "yes"),
         )
 
     @staticmethod
@@ -142,10 +137,9 @@ class InferenceConfig:
         """Discover an available vLLM endpoint.
 
         Checks configured endpoints in order of preference:
-        1. fast (Mistral-7B) - lightweight, quick responses
+        1. instruct (Devstral-24B) - general instruction following
         2. orchestrator (Orchestrator-8B) - meta-cognitive routing
-        3. coding (Qwen2.5-Coder-32B) - structured tasks
-        4. reasoning (DeepSeek-R1-32B) - complex reasoning
+        3. reasoning (DeepSeek-R1-32B) - complex reasoning
 
         Returns first responding endpoint, or default if none available.
         """
@@ -153,9 +147,8 @@ class InferenceConfig:
 
         # Endpoint preference order (ports from agents.conf)
         endpoints = [
-            ("fast", "http://localhost:8083/v1"),
+            ("instruct", "http://localhost:8082/v1"),
             ("orchestrator", "http://localhost:8080/v1"),
-            ("coding", "http://localhost:8082/v1"),
             ("reasoning", "http://localhost:8081/v1"),
         ]
 
@@ -202,5 +195,4 @@ class InferenceConfig:
             offline_mode=self.offline_mode,
             timeout=self.timeout,
             max_tokens=self.max_tokens,
-            allow_fallbacks=self.allow_fallbacks,
         )

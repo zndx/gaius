@@ -17,11 +17,6 @@ from .config import InferenceConfig, InferenceBackend, OptillmTechnique
 
 logger = logging.getLogger(__name__)
 
-# Security boundary marker for direct HTTP access (fallback mode)
-_DIRECT_HTTP_WARNING = (
-    "FALLBACK: Using direct HTTP to %s - bypasses gRPC auth/authz. "
-    "This is enabled via GAIUS_ALLOW_FALLBACKS=true (dev/debug mode)."
-)
 
 try:
     from openai import AsyncOpenAI
@@ -253,75 +248,23 @@ class InferenceClient:
         max_tokens = max_tokens or self.config.max_tokens
 
         # ═══════════════════════════════════════════════════════════════════
-        # gRPC-first: Try engine gateway for auth/authz enforcement
+        # gRPC-only: All inference routes through the engine gateway
         # ═══════════════════════════════════════════════════════════════════
-        if self._is_grpc_available():
-            result = await self._complete_via_grpc(
-                messages, max_tokens, temperature, model
-            )
-            if result:
-                return result
-            logger.debug("gRPC available but completion failed, trying direct HTTP")
-
-        # Secure by default: fail unless fallbacks explicitly allowed
-        if not self.config.allow_fallbacks:
+        if not self._is_grpc_available():
             raise RuntimeError(
-                "gRPC engine unavailable and fallbacks disabled (secure by default). "
-                "Either start the engine (gaius-engine) or enable fallbacks for "
-                "development/debugging: GAIUS_ALLOW_FALLBACKS=true"
+                "gRPC engine unavailable. Start the engine with: gaius-engine\n"
+                "  See: /health fix engine"
             )
 
-        # Warn about direct HTTP fallback (security boundary crossed)
-        logger.warning(_DIRECT_HTTP_WARNING % "optillm/vLLM")
+        result = await self._complete_via_grpc(
+            messages, max_tokens, temperature, model
+        )
+        if result:
+            return result
 
-        # ═══════════════════════════════════════════════════════════════════
-        # Direct HTTP fallback (dev only - no auth/authz)
-        # ═══════════════════════════════════════════════════════════════════
-        openai_messages = [{"role": m.role, "content": m.content} for m in messages]
-
-        # Try primary client (optillm by default)
-        primary_client, primary_backend = self._get_primary_client()
-        last_error = None
-
-        if primary_client:
-            try:
-                response = await primary_client.chat.completions.create(
-                    model=model_name,
-                    messages=openai_messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-                return self._parse_response(response, technique, backend=primary_backend)
-            except Exception as e:
-                logger.warning(f"Primary backend ({primary_backend}) failed: {e}")
-                last_error = e
-
-        # Try fallback chain: vLLM → XAI → OpenAI
-        for backend_name, client in self._get_fallback_chain():
-            if backend_name == primary_backend:
-                continue  # Skip if already tried
-
-            try:
-                # Discover vLLM model if needed (different model may be loaded)
-                if backend_name == "vllm":
-                    await self._discover_vllm_model()
-
-                # Use appropriate model for backend
-                fallback_model = self._get_model_for_backend(backend_name)
-                response = await client.chat.completions.create(
-                    model=fallback_model,
-                    messages=openai_messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-                logger.info(f"Fallback to {backend_name} succeeded")
-                return self._parse_response(response, technique=None, backend=backend_name)
-            except Exception as e:
-                logger.warning(f"Fallback backend ({backend_name}) failed: {e}")
-                last_error = e
-                continue
-
-        raise RuntimeError(f"All inference backends failed. Last error: {last_error}")
+        raise RuntimeError(
+            "gRPC engine available but inference failed. Check engine logs."
+        )
 
     def _get_model_for_backend(self, backend: str) -> str:
         """Get appropriate model name for a backend."""
@@ -421,10 +364,11 @@ class InferenceClient:
 
         openai_messages = [{"role": m.role, "content": m.content} for m in messages]
 
-        if not self._primary_client:
+        primary_client, _ = self._get_primary_client()
+        if not primary_client:
             raise RuntimeError("No inference client available")
 
-        stream = await self._primary_client.chat.completions.create(
+        stream = await primary_client.chat.completions.create(
             model=model,
             messages=openai_messages,
             max_tokens=max_tokens,

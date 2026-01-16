@@ -34,7 +34,7 @@ dependencies = [
     "stemming>=1.0.1",
     # ColPali multimodal embeddings for colnomic-embed-multimodal-7b
     # Using forked repo with fixes for ColNomic support
-    "colpali-engine @ git+ssh://git@github.com/zndx/oss-colpali.git",
+    "colpali-engine @ git+https://github.com/zndx/oss-colpali.git",
     "pyiceberg[pyiceberg-core,s3fs,sql-postgres]>=0.10.0",
     "pystemmer>=3.0.0",
     "qdrant-client>=1.12.1",
@@ -51,6 +51,20 @@ dependencies = [
     "metaflow>=2.12.0", # Workflow orchestration with cards
     "kaleido>=1.2.0",
     "pydantic>=2.12.5",
+    "ty>=0.0.5",
+    "dspy>=3.0.4",
+    "shap>=0.49.1",
+    "reservoirpy>=0.4.1",
+    # Cross-Layer Transcoders (CLT) for interpretable sparse features
+    # Uses BluelightAI's circuit-tracer library with Qwen3 CLTs
+    "circuit-tracer @ git+https://github.com/safety-research/circuit-tracer.git",
+    "transformer-lens>=2.0.0", # Required for CLT model internals
+    "datasets>=2.14.6",
+    "agent-client-protocol>=0.7.0",
+    "qrcode>=8.0", # Terminal QR codes for OAuth URLs on mobile devices
+    "google-api-python-client>=2.187.0",
+    "hf-mem>=0.1.1",
+    "vulture>=2.14",
 ]
 
 [project.optional-dependencies]
@@ -186,6 +200,22 @@ gaius-worker = "gaius.workers.cli:main"
 gaius-engine = "gaius.engine:main"
 gaius-dataset = "gaius.datasets.nifi_som.cli:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+timeout = 60
+# Exclude infrastructure-dependent tests from default run
+# These require optillm/vLLM endpoints or other devenv services
+addopts = "--ignore=tests/test_optillm_vllm.py --ignore=tests/test_inference.py --ignore=tests/test_artifacts.py"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "engine: tests requiring gRPC engine running",
+    "inference: tests requiring LLM inference (llama.cpp or vLLM)",
+    "db: tests requiring PostgreSQL database",
+    "gpu: tests requiring GPU hardware (nvidia-smi, pynvml)",
+    "nifi: tests requiring Apache NiFi",
+]
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
@@ -194,9 +224,16 @@ packages = ["src/gaius"]
 
 [dependency-groups]
 dev = [
+    "grpc-stubs>=1.53.0.6",
+    "mypy-protobuf>=4.0.0",
+    "protobuf>=6.32.1",
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.8.0",
     "textual-dev>=1.8.0",
+    "types-protobuf>=6.32.1.20251210",
+    "types-aioboto3>=15.0.0",  # Type stubs for aioboto3
 ]
 
 # UV configuration
@@ -207,3 +244,26 @@ dev = [
 override-dependencies = [
     "peft>=0.18.0",
 ]
+
+# ty type checker configuration
+# Strategy: Zero errors, warnings acceptable for third-party libs without stubs
+[tool.ty.src]
+# Exclude generated code, BDD step files (dynamic imports), scripts
+exclude = [
+    "src/gaius/engine/generated/",  # Auto-generated protobuf/gRPC
+    "features/steps/",               # Behave step files with dynamic imports
+    "scripts/",                      # Experimental scripts
+    "*.py",                          # Root-level files
+]
+
+[tool.ty.environment]
+# Custom type stubs for third-party libraries (metaflow, behave)
+# Note: We only stub libraries where we can accurately model the API.
+# For complex libraries (ortools, gtda, langchain), unresolved-import
+# warnings are preferable to incorrect stubs that create false errors.
+extra-paths = ["typings"]
+
+# Downgrade unresolved-import to warning for third-party libs without stubs
+# This allows CI to gate on errors while tracking stub gaps as warnings
+[tool.ty.rules]
+unresolved-import = "warn"

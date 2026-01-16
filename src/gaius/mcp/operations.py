@@ -8,8 +8,54 @@ Used by internal agents and components that need structured data.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+async def mcp_call(operation: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Call an MCP operation by name.
+
+    This is a generic dispatcher that routes to specific operation handlers.
+    Uses the gRPC client's call(service, action, params) pattern internally.
+
+    Args:
+        operation: Operation name in format "service_action" (e.g., "orchestrator_start")
+        params: Optional parameters for the operation
+
+    Returns:
+        Dict with operation result or error
+    """
+    params = params or {}
+
+    try:
+        from ..client.grpc_client import get_grpc_client
+
+        client = await get_grpc_client()
+
+        # Map underscore-separated operation names to service/action pairs
+        # e.g., "orchestrator_start" -> ("Orchestrator", "start")
+        if operation == "orchestrator_start":
+            return await client.call("Orchestrator", "start", params)
+
+        elif operation == "orchestrator_stop":
+            return await client.call("Orchestrator", "stop", params)
+
+        elif operation == "orchestrator_status":
+            return await client.call("Orchestrator", "status", params)
+
+        elif operation == "scheduler_status":
+            return await client.call("Scheduler", "status", params)
+
+        elif operation == "gpu_health":
+            return await client.call("GPU", "status", params)
+
+        else:
+            return {"error": f"Unknown operation: {operation}"}
+
+    except Exception as e:
+        logger.error(f"mcp_call({operation}) failed: {e}")
+        return {"error": str(e)}
 
 
 async def ask_reasoning(
@@ -31,39 +77,45 @@ async def ask_reasoning(
         Dict with keys: content, model, input_tokens, output_tokens
     """
     try:
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
         from ..models import get_model_for_task, TaskType
 
         # Get preferred reasoning model (may not be deployed)
         model_spec = get_model_for_task(TaskType.REASONING)
-        client = get_client()
-
-        messages = []
-        if system_prompt:
-            messages.append(Message(role="system", content=system_prompt))
-        messages.append(Message(role="user", content=question))
+        client = await get_grpc_client()
 
         # Try with preferred model, fallback to default on error
         try:
-            result = await client.complete(
-                messages=messages,
-                model=model_spec.model_id if model_spec else None,
-                temperature=model_spec.default_temperature if model_spec else 0.6,
-                max_tokens=max_tokens,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": question,
+                    "system_prompt": system_prompt or "",
+                    "agent": "reasoning" if model_spec else "instruct",
+                    "temperature": model_spec.default_temperature if model_spec else 0.6,
+                    "max_tokens": max_tokens,
+                },
             )
         except Exception:
             # Fallback: use default model (no override)
-            result = await client.complete(
-                messages=messages,
-                temperature=0.6,
-                max_tokens=max_tokens,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": question,
+                    "system_prompt": system_prompt or "",
+                    "agent": "instruct",
+                    "temperature": 0.6,
+                    "max_tokens": max_tokens,
+                },
             )
 
         return {
-            "content": result.content,
-            "model": result.model,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
+            "content": result.get("content", ""),
+            "model": result.get("model", ""),
+            "input_tokens": result.get("input_tokens", 0),
+            "output_tokens": result.get("output_tokens", 0),
         }
     except Exception as e:
         logger.warning(f"ask_reasoning failed: {e}")

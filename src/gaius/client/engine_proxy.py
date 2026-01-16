@@ -68,7 +68,7 @@ class OrchestratorProxy:
         """Stop the orchestrator."""
         self._running = False
 
-    async def ensure_endpoint(self, endpoint: str) -> dict:
+    async def ensure_endpoint(self, endpoint: str, timeout: float = 120.0) -> dict:
         """Ensure endpoint is running, starting if needed and resources available.
 
         This is the primary method for agent-first architecture. CLI and agents
@@ -76,6 +76,7 @@ class OrchestratorProxy:
 
         Args:
             endpoint: Endpoint/agent name
+            timeout: Request timeout in seconds (default 120s for vLLM startup)
 
         Returns:
             Dict with:
@@ -86,21 +87,22 @@ class OrchestratorProxy:
                 - message: str - Error message if not healthy
         """
         result = await self._client.call(
-            "Orchestrator", "ensure", {"endpoint": endpoint}
+            "Orchestrator", "ensure", {"endpoint": endpoint}, timeout=timeout
         )
         return result
 
-    async def start_endpoint(self, endpoint: str) -> bool:
+    async def start_endpoint(self, endpoint: str, timeout: float = 120.0) -> bool:
         """Start a vLLM endpoint.
 
         Args:
             endpoint: Endpoint/agent name
+            timeout: Request timeout in seconds (default 120s for vLLM startup)
 
         Returns:
             True if started successfully
         """
         result = await self._client.call(
-            "Orchestrator", "start", {"endpoint": endpoint}
+            "Orchestrator", "start", {"endpoint": endpoint}, timeout=timeout
         )
         return result.get("status") == "healthy"
 
@@ -310,7 +312,7 @@ class SchedulerProxy:
     async def complete(
         self,
         prompt: str,
-        agent: str = "fast",
+        agent: str = "instruct",
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
@@ -388,6 +390,7 @@ class SchedulerProxy:
         context: str = "",
         roles: list[str] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        clt: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream swarm analysis with real-time progress updates.
 
@@ -401,6 +404,7 @@ class SchedulerProxy:
             context: Additional context
             roles: Agent roles to include (default: all core roles)
             on_event: Optional callback for each event
+            clt: Use CLT-enhanced swarm with interpretable features
 
         Yields:
             SwarmEvent dicts with:
@@ -410,12 +414,12 @@ class SchedulerProxy:
                 - agent: Agent name (for AGENT_* events)
                 - progress: 0.0-1.0 overall progress
                 - message: Human-readable status message
-                - data: JSON payload (results on COMPLETED)
+                - data: JSON payload (results on COMPLETED, includes _clt if clt=True)
         """
         from .grpc_client import get_grpc_client
 
         client = await get_grpc_client()
-        async for event in client.swarm_stream(domain, context, roles):
+        async for event in client.swarm_stream(domain, context, roles, clt=clt):
             if on_event:
                 on_event(event)
             yield event
@@ -478,6 +482,65 @@ class SchedulerProxy:
             elif event_type == "FAILED":
                 # Return empty results on failure
                 logger.error(f"Swarm failed: {event.get('message', 'unknown error')}")
+                return {}, ""
+
+        return results, saved_path
+
+    async def run_swarm_clt(
+        self,
+        domain: str,
+        context: str = "",
+        roles: list[str] | None = None,
+        on_progress: Callable[[str, float], None] | None = None,
+    ) -> tuple[dict[str, dict[str, Any]], str]:
+        """Run CLT-enhanced swarm analysis via engine.
+
+        Uses Cross-Layer Transcoders for interpretable agent collaboration.
+        All CLT processing happens in the engine.
+
+        Args:
+            domain: Domain to analyze
+            context: Additional context
+            roles: Agent roles to include (default: all core roles)
+            on_progress: Optional callback (message, progress_0_to_1)
+
+        Returns:
+            Tuple of (results dict with _clt data, saved KB path)
+        """
+        import json
+
+        results: dict[str, dict[str, Any]] = {}
+        saved_path = ""
+
+        # Use streaming internally for graceful backend handling
+        async for event in self.run_swarm_stream(domain, context, roles, clt=True):
+            event_type = event.get("type", "")
+
+            if on_progress:
+                on_progress(event.get("message", ""), event.get("progress", 0.0))
+
+            if event_type == "AGENT_COMPLETED":
+                agent = event.get("agent", "")
+                if agent and event.get("data"):
+                    try:
+                        results[agent] = json.loads(event["data"])
+                    except json.JSONDecodeError:
+                        pass
+
+            elif event_type == "COMPLETED":
+                if event.get("data"):
+                    try:
+                        final_data = json.loads(event["data"])
+                        results = final_data.get("results", results)
+                        saved_path = final_data.get("saved_path", "")
+                        # Include CLT data
+                        if "_clt" in final_data:
+                            results["_clt"] = final_data["_clt"]
+                    except json.JSONDecodeError:
+                        pass
+
+            elif event_type == "FAILED":
+                logger.error(f"CLT swarm failed: {event.get('message', 'unknown error')}")
                 return {}, ""
 
         return results, saved_path
@@ -1203,6 +1266,10 @@ def begin_workload_sync(
 ) -> WorkloadAllocation:
     """Synchronous wrapper for begin_workload (for use in thread pools).
 
+    NOTE: This function creates a fresh gRPC connection to avoid event loop
+    conflicts when called from a thread pool (the main TUI may have a gRPC
+    client in a different event loop).
+
     Requests GPU resources from the engine, potentially triggering
     preemption of lower-priority idle endpoints.
 
@@ -1232,15 +1299,25 @@ def begin_workload_sync(
         )
 
     async def _begin():
-        proxy = await get_workload_proxy()
-        return await proxy.begin_workload(
-            workload_id=workload_id,
-            workload_type=workload_type,
-            required_capabilities=required_capabilities,
-            priority=priority,
-            estimated_duration_s=estimated_duration_s,
-            estimated_memory_mb=estimated_memory_mb,
-        )
+        # Create a fresh client for this sync call to avoid event loop conflicts
+        from .grpc_client import GrpcEngineClient, GrpcClientConfig
+
+        # Use config from environment (GrpcClientConfig.from_env())
+        client = GrpcEngineClient()
+        await client.connect()
+
+        try:
+            proxy = WorkloadProxy(client)
+            return await proxy.begin_workload(
+                workload_id=workload_id,
+                workload_type=workload_type,
+                required_capabilities=required_capabilities,
+                priority=priority,
+                estimated_duration_s=estimated_duration_s,
+                estimated_memory_mb=estimated_memory_mb,
+            )
+        finally:
+            await client.close()
 
     try:
         loop = asyncio.new_event_loop()
@@ -1255,6 +1332,9 @@ def complete_workload_sync(workload_id: str) -> None:
 
     Marks a workload complete and triggers restoration of evicted endpoints.
 
+    NOTE: This function creates a fresh gRPC connection to avoid event loop
+    conflicts when called from a thread pool.
+
     Args:
         workload_id: Workload to complete
     """
@@ -1264,8 +1344,18 @@ def complete_workload_sync(workload_id: str) -> None:
         return
 
     async def _complete():
-        proxy = await get_workload_proxy()
-        await proxy.complete_workload(workload_id)
+        # Create a fresh client for this sync call to avoid event loop conflicts
+        from .grpc_client import GrpcEngineClient
+
+        # Use config from environment (GrpcClientConfig.from_env())
+        client = GrpcEngineClient()
+        await client.connect()
+
+        try:
+            proxy = WorkloadProxy(client)
+            await proxy.complete_workload(workload_id)
+        finally:
+            await client.close()
 
     try:
         loop = asyncio.new_event_loop()

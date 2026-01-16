@@ -213,16 +213,16 @@ class EvolutionEngine:
             from .evaluation import get_held_out_manager
 
             manager = get_held_out_manager()
-            held_out = await manager.sample(agent_id=agent_id, count=count)
+            held_out = await manager.get_sample(size=count)
 
             for i, query in enumerate(held_out):
                 items.append(TaskItem(
                     id=f"held_out_{i}",
-                    prompt=query.get("prompt", query.get("input_prompt", "")),
-                    domain=query.get("domain", ""),
-                    category=query.get("category", ""),
-                    expected_output=query.get("expected_output"),
-                    context=query.get("context", ""),
+                    prompt=query.input_prompt,
+                    domain=query.domain,
+                    category=query.category,
+                    expected_output=query.expected_output,
+                    context=query.context or "",
                 ))
 
         except Exception as e:
@@ -338,6 +338,7 @@ class EvolutionEngine:
             Trajectory with output and score
         """
         await self._ensure_initialized()
+        assert self._runner is not None  # Guaranteed by _ensure_initialized
 
         # Run agent
         result = await self._runner.invoke(config, item.prompt)
@@ -468,6 +469,7 @@ class EvolutionEngine:
             CycleResult with outcome
         """
         await self._ensure_initialized()
+        assert self._version_manager is not None  # Guaranteed by _ensure_initialized
         started_at = datetime.now()
         start_time = time.perf_counter()
 
@@ -595,6 +597,7 @@ class EvolutionEngine:
             Health status dict
         """
         await self._ensure_initialized()
+        assert self._runner is not None  # Guaranteed by _ensure_initialized
 
         runner_healthy = await self._runner.health_check()
         vm_healthy = self._version_manager is not None

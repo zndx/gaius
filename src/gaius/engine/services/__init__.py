@@ -1,4 +1,4 @@
-"""Engine services (orchestrator, scheduler, evolution, health, cognition)."""
+"""Engine services (orchestrator, scheduler, evolution, health, cognition, CLT)."""
 
 from .orchestrator_service import (
     CleanupResult,
@@ -40,6 +40,56 @@ from .dataset_service import (
     ProgressEvent,
     ProgressEventType,
 )
+# CLT service is lazy-loaded to avoid heavy transformer_lens import at startup
+# Use: from gaius.engine.services.clt_service import CLTService
+# Or just access gaius.engine.services.CLTService (uses __getattr__ below)
+from .topology_service import (
+    AgentPosition,
+    DriftMetrics,
+    SemanticAttractor,
+    SwarmSnapshot,
+    TopologyService,
+)
+from .ngrc import (
+    NGRCConfig,
+    NGRCPredictor,
+    NGRCPrediction,
+    NGRCState,
+    predict_future_state,
+    train_ngrc_for_domain,
+)
+from .health_observer_service import (
+    HealthIncident,
+    HealthObserverService,
+    ObserverConfig,
+)
+from .x_bookmarks_service import (
+    XBookmark,
+    XBookmarksConfig,
+    XBookmarksService,
+    XSyncRun,
+)
+from .prospects_service import (
+    CandidateInfo,
+    ProspectsConfig,
+    ProspectsError,
+    ProspectsService,
+    StrategyInfo,
+)
+from .fmp_client import (
+    CompanyProfile,
+    FMPClient,
+    FMPClientConfig,
+    FMPClientError,
+    InstitutionalHolder,
+    SECFiling,
+)
+from .prospects_analysis import (
+    AnalysisError,
+    FilingAnalysis,
+    PositionSynthesis,
+    ProspectsAnalyzer,
+)
 
 __all__ = [
     # Orchestrator
@@ -76,4 +126,76 @@ __all__ = [
     "GenerationError",
     "ProgressEvent",
     "ProgressEventType",
+    # CLT
+    "AgentCLTState",
+    "CLTProjectionBridge",
+    "CLTService",
+    "SwarmCLTResult",
+    # Topology
+    "AgentPosition",
+    "DriftMetrics",
+    "SemanticAttractor",
+    "SwarmSnapshot",
+    "TopologyService",
+    # NG-RC
+    "NGRCConfig",
+    "NGRCPredictor",
+    "NGRCPrediction",
+    "NGRCState",
+    "predict_future_state",
+    "train_ngrc_for_domain",
+    # Health Observer
+    "HealthIncident",
+    "HealthObserverService",
+    "ObserverConfig",
+    # X Bookmarks
+    "XBookmark",
+    "XBookmarksConfig",
+    "XBookmarksService",
+    "XSyncRun",
+    # Prospects/Stewardship
+    "CandidateInfo",
+    "ProspectsConfig",
+    "ProspectsError",
+    "ProspectsService",
+    "StrategyInfo",
+    # FMP Client
+    "CompanyProfile",
+    "FMPClient",
+    "FMPClientConfig",
+    "FMPClientError",
+    "InstitutionalHolder",
+    "SECFiling",
+    # Prospects Analysis
+    "AnalysisError",
+    "FilingAnalysis",
+    "PositionSynthesis",
+    "ProspectsAnalyzer",
+    # CLT (lazy-loaded)
+    "AgentCLTState",
+    "CLTProjectionBridge",
+    "CLTService",
+    "SwarmCLTResult",
 ]
+
+
+# Lazy loading for CLT service (avoids heavy transformer_lens import at startup)
+_CLT_NAMES = {"AgentCLTState", "CLTProjectionBridge", "CLTService", "SwarmCLTResult"}
+
+
+def __getattr__(name: str):
+    """Lazy-load CLT service components on first access."""
+    if name in _CLT_NAMES:
+        from .clt_service import (
+            AgentCLTState,
+            CLTProjectionBridge,
+            CLTService,
+            SwarmCLTResult,
+        )
+        return {
+            "AgentCLTState": AgentCLTState,
+            "CLTProjectionBridge": CLTProjectionBridge,
+            "CLTService": CLTService,
+            "SwarmCLTResult": SwarmCLTResult,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

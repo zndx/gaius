@@ -126,7 +126,7 @@ class PreemptionManager:
 
         # Notify callbacks
         for callback in self._callbacks:
-            asyncio.create_task(callback(event))
+            asyncio.ensure_future(callback(event))
 
     def on_preemption(
         self,
@@ -179,7 +179,7 @@ class PreemptionManager:
         self.clear()
 
         try:
-            task = asyncio.create_task(coro)
+            task = asyncio.ensure_future(coro)
             preempt_task = asyncio.create_task(self._preempt_event.wait())
 
             # Build task set

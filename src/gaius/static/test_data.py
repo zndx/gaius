@@ -2,15 +2,20 @@
 
 import random
 from datetime import datetime, timedelta
+from typing import Any
 
 # Seed for reproducible test data
 random.seed(42)
 
-# Grid state
-GRID_DATA = {
-    "black": {(3, 3), (15, 15), (10, 10), (4, 16), (16, 4)},
-    "white": {(4, 4), (14, 14), (9, 9), (3, 15), (15, 3)},
-    "alloc": [[random.randint(0, 100) for _ in range(19)] for _ in range(19)],
+# Grid state - typed separately for proper type inference
+_black_stones: set[tuple[int, int]] = {(3, 3), (15, 15), (10, 10), (4, 16), (16, 4)}
+_white_stones: set[tuple[int, int]] = {(4, 4), (14, 14), (9, 9), (3, 15), (15, 3)}
+_allocations: list[list[int]] = [[random.randint(0, 100) for _ in range(19)] for _ in range(19)]
+
+GRID_DATA: dict[str, Any] = {
+    "black": _black_stones,
+    "white": _white_stones,
+    "alloc": _allocations,
 }
 
 # Agent state with positions and last utterances
@@ -165,7 +170,8 @@ def get_minigrid_data(cursor_x: int, cursor_y: int) -> dict:
     # Right mini-grid: Embedding neighborhood
     right_grid = [[0.0] * 9 for _ in range(9)]
     for agent in AGENT_DATA:
-        ax, ay = agent["pos"]
+        pos: tuple[int, int] = agent["pos"]  # type: ignore[assignment] - AGENT_DATA has pos as tuple
+        ax, ay = pos
         # Map agent position relative to cursor into 9x9
         rx = 4 + (ax - cursor_x) // 2
         ry = 4 + (ay - cursor_y) // 2

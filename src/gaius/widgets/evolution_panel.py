@@ -192,7 +192,7 @@ class EvolutionPanel(Widget):
         # Line 1: Status and cycles
         line1 = Text()
         if error:
-            line1.append("⚠ ERROR", style="bold red")
+            line1.append("[!] ERROR", style="bold red")
         elif loading or running is None:
             line1.append("◌ CHECKING...", style="bold yellow")
         elif running:
@@ -208,9 +208,9 @@ class EvolutionPanel(Widget):
         line2 = Text()
         mode = status.get("mode", "daemon")
         if mode == "orchestrated":
-            line2.append("🧠 ", style="bold magenta")
+            line2.append("[ORCH] ", style="bold magenta")
         elif parallel and parallel_endpoints > 0:
-            line2.append(f"⚡ {parallel_endpoints}x ", style="bold magenta")
+            line2.append(f"[PAR] {parallel_endpoints}x ", style="bold magenta")
 
         # Show next agent or last decision for orchestrated
         if mode == "orchestrated":
@@ -263,11 +263,11 @@ class EvolutionPanel(Widget):
 
             # Success indicator
             if cycle.preempted:
-                line.append(" ⏸ ", style="yellow")
+                line.append(" = ", style="yellow")
             elif cycle.success:
-                line.append(" ✓ ", style="green")
+                line.append(" + ", style="green")
             else:
-                line.append(" ✗ ", style="red")
+                line.append(" - ", style="red")
 
             # Improvement
             if cycle.success and cycle.improvement > 0:
@@ -335,11 +335,11 @@ class EvolutionPanel(Widget):
         """Render overall trend indicator."""
         lines = []
 
-        trend_emoji = {
-            "improving": "📈",
-            "stable": "➡️",
-            "declining": "📉",
-            "unknown": "❓",
+        trend_indicator = {
+            "improving": "[+]",
+            "stable": "[-]",
+            "declining": "[v]",
+            "unknown": "[?]",
         }
         trend_colors = {
             "improving": "green",
@@ -348,11 +348,11 @@ class EvolutionPanel(Widget):
             "unknown": "dim",
         }
 
-        emoji = trend_emoji.get(self._trend, "❓")
+        indicator = trend_indicator.get(self._trend, "[?]")
         color = trend_colors.get(self._trend, "dim")
 
         line = Text()
-        line.append(f"{emoji} Trend: ", style="dim")
+        line.append(f"{indicator} Trend: ", style="dim")
         line.append(self._trend.upper(), style=f"bold {color}")
         if self._trend_confidence > 0:
             line.append(f" ({self._trend_confidence:.0%})", style="dim")

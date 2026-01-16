@@ -547,7 +547,7 @@ class DailyEvaluator:
 
         # Call inference
         try:
-            from ..inference.scheduler import get_scheduler_service, Job, JobPriority
+            from ...inference.scheduler import get_scheduler_service, Job, JobPriority
 
             scheduler = get_scheduler_service()
 
@@ -561,7 +561,7 @@ class DailyEvaluator:
             job = Job(
                 messages=messages,
                 model=config.get("model", ""),
-                max_tokens=config.get("max_tokens", 1024),
+                estimated_tokens=config.get("max_tokens", 1024),
                 priority=JobPriority.LOW,  # Don't preempt interactive work
             )
             result = await scheduler.submit(job)
@@ -783,17 +783,17 @@ class ReportGenerator:
                 lines.append("")
 
         # Trend indicator
-        trend_emoji = {
-            "improving": "📈",
-            "stable": "➡️",
-            "declining": "📉",
-            "unknown": "❓",
+        trend_indicator = {
+            "improving": "[+]",
+            "stable": "[-]",
+            "declining": "[v]",
+            "unknown": "[?]",
         }
 
         lines.extend([
             "## Trend Analysis",
             "",
-            f"{trend_emoji.get(summary.trend_direction, '❓')} **{summary.trend_direction.title()}**",
+            f"{trend_indicator.get(summary.trend_direction, '[?]')} **{summary.trend_direction.title()}**",
             "",
             f"Based on 7-day held-out score trajectory with {summary.trend_confidence:.0%} confidence.",
             "",

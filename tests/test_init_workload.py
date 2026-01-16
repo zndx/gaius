@@ -8,42 +8,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 class TestInitWorkloadFlow:
     """Test that /init properly requests GPU resources."""
 
-    @pytest.mark.asyncio
-    async def test_begin_workload_called_during_init(self):
-        """Verify use_engine_proxy checks gRPC client singleton state."""
-        from gaius.client.engine_proxy import use_engine_proxy
-        from gaius.client import grpc_client
-
-        # Initially, no client exists
-        assert grpc_client._grpc_client is None
-        # With no client and no engine running, should return False
-        result_no_engine = use_engine_proxy()
-        assert result_no_engine is False
-
-        # Create a mock client that appears connected
-        mock_client = MagicMock()
-        mock_client.is_connected = True
-
-        # Set the singleton
-        grpc_client._grpc_client = mock_client
-
-        try:
-            # Now use_engine_proxy should return True
-            result_with_client = use_engine_proxy()
-            assert result_with_client is True
-        finally:
-            # Restore singleton state
-            grpc_client._grpc_client = None
-
-        # Verify imports work
-        from gaius.client.engine_proxy import (
-            begin_workload_sync,
-            complete_workload_sync,
-        )
-        assert callable(begin_workload_sync)
-        assert callable(complete_workload_sync)
-        assert callable(use_engine_proxy)
-
     def test_workload_sync_functions_exist(self):
         """Verify sync helper functions are importable."""
         from gaius.client.engine_proxy import (

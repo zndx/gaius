@@ -23,9 +23,10 @@ from behave import given, when, then
 # @given("the KB root is configured") - defined in test_fixtures.py
 
 
-@given("the KB root is configured with current/ and scratch/ directories")
-def step_kb_configured_with_dirs(context):
-    """Ensure KB directories exist including projects subdir."""
+# Note: step 'the KB root is configured with current/ and scratch/ directories'
+# is defined in model_library_steps.py - removed duplicate to avoid AmbiguousStep
+def _step_kb_configured_with_dirs_impl(context):
+    """Ensure KB directories exist including projects subdir (impl only)."""
     from features.steps.test_fixtures import step_kb_root_configured
     step_kb_root_configured(context)
     kb_root = context.kb_root

@@ -251,52 +251,6 @@ def step_mcp_error_mentions(context, text):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Engine Proxy Environment Steps
-# ─────────────────────────────────────────────────────────────────────
-
-@given('GAIUS_ALLOW_FALLBACKS is set to "{value}"')
-def step_set_fallbacks(context, value):
-    """Set fallbacks environment variable."""
-    # Backup current value for restoration
-    context._env_backup_fallbacks = os.environ.get("GAIUS_ALLOW_FALLBACKS")
-    os.environ["GAIUS_ALLOW_FALLBACKS"] = value
-
-    # Reset engine client cache in MCP server
-    try:
-        import gaius.mcp_server as mcp
-        mcp._engine_client = None
-        mcp._engine_connected = False
-    except (ImportError, AttributeError):
-        pass
-
-    # Reset engine client cache in CLI if present
-    if hasattr(context, 'cli') and context.cli is not None:
-        if hasattr(context.cli, '_engine_client'):
-            context.cli._engine_client = None
-
-    # Reset global aeron_client cache
-    try:
-        from gaius.client import aeron_client
-        aeron_client._client = None
-    except (ImportError, AttributeError):
-        pass
-
-
-@given("GAIUS_ALLOW_FALLBACKS is not set")
-def step_unset_fallbacks(context):
-    """Unset fallbacks environment variable."""
-    context._env_backup_fallbacks = os.environ.get("GAIUS_ALLOW_FALLBACKS")
-    os.environ.pop("GAIUS_ALLOW_FALLBACKS", None)
-
-    try:
-        import gaius.mcp_server as mcp
-        mcp._engine_client = None
-        mcp._engine_connected = False
-    except (ImportError, AttributeError):
-        pass
-
-
-# ─────────────────────────────────────────────────────────────────────
 # KB Test Fixture Steps
 # ─────────────────────────────────────────────────────────────────────
 

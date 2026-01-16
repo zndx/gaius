@@ -213,7 +213,7 @@ class ModelAddOrchestrator:
     async def _consult_orchestrator(self, state: WorkflowState) -> ToolCall | None:
         """Consult orchestrator model for next action.
 
-        Uses engine client if available, falls back to router for backwards compatibility.
+        Engine Federation Architecture: uses engine scheduler for inference.
         """
         # Format state as prompt
         prompt = self._format_state_prompt(state)
@@ -221,47 +221,28 @@ class ModelAddOrchestrator:
         try:
             from ...client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
-            # Try engine client first (preferred)
-            if use_engine_proxy():
-                scheduler = await get_scheduler_proxy()
-
-                # Format as single prompt (scheduler uses prompt, not messages)
-                full_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\n{prompt}"
-
-                result = await scheduler.complete(
-                    prompt=full_prompt,
-                    agent=self.orchestrator_endpoint,
-                    max_tokens=1000,
-                    temperature=0.3,
+            if not use_engine_proxy():
+                # Engine not available - fail-fast
+                logger.error(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "Model add orchestrator requires engine gRPC. "
+                    "Start engine: devenv up gaius-engine"
                 )
+                return self._fallback_next_action(state)
 
-                response = result.content if result else ""
-            else:
-                # Fallback to router (legacy mode)
-                logger.warning("LEGACY_FALLBACK: _consult_orchestrator using router instead of scheduler - tech debt")
-                from ...inference.router import get_endpoint_router
+            scheduler = await get_scheduler_proxy()
 
-                router = get_endpoint_router()
+            # Format as single prompt (scheduler uses prompt, not messages)
+            full_prompt = f"{ORCHESTRATOR_SYSTEM_PROMPT}\n\n{prompt}"
 
-                messages = [
-                    {"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ]
+            result = await scheduler.complete(
+                prompt=full_prompt,
+                agent=self.orchestrator_endpoint,
+                max_tokens=1000,
+                temperature=0.3,
+            )
 
-                result = await router.complete(
-                    messages=messages,
-                    endpoint=self.orchestrator_endpoint,
-                    max_tokens=1000,
-                    temperature=0.3,
-                )
-
-                # Check for error response
-                if hasattr(result, "raw_response") and isinstance(result.raw_response, dict):
-                    if "error" in result.raw_response:
-                        logger.warning(f"Orchestrator returned error: {result.raw_response['error']}")
-                        return self._fallback_next_action(state)
-
-                response = result.content if hasattr(result, "content") else str(result)
+            response = result.content if result else ""
 
             # Check for empty response
             if not response or not response.strip():
@@ -584,10 +565,10 @@ class ModelAddOrchestrator:
             gpus = []
             for gpu in monitor.get_all_gpu_health():
                 gpus.append({
-                    "index": gpu.index,
+                    "index": gpu.gpu_id,
                     "utilization": gpu.gpu_utilization_percent,
-                    "memory_used_mb": gpu.memory_used_mb,
-                    "memory_total_mb": gpu.memory_total_mb,
+                    "memory_used_mb": int(gpu.vram_used_gb * 1024),
+                    "memory_total_mb": int(gpu.vram_total_gb * 1024),
                     "temperature": gpu.temperature_c,
                 })
             result = {"gpus": gpus, "count": len(gpus)}
@@ -618,12 +599,20 @@ class ModelAddOrchestrator:
                 result = {"error": str(e), "gpus": [], "count": 0}
 
         # Store hardware context for use during validation/critique
-        if result.get("gpus"):
+        # Extract gpus list with proper typing for type checker
+        gpus_list: list[dict[str, object]] = result.get("gpus", [])  # type: ignore[assignment] - Runtime dict has list of GPU dicts
+        if gpus_list:
+            # Sum memory safely - values could be None or missing
+            total_vram = 0
+            for g in gpus_list:
+                mem = g.get("memory_total_mb")
+                if isinstance(mem, int):
+                    total_vram += mem
             state.hardware_context = {
                 "gpu_count": result["count"],
-                "gpus": result["gpus"],
-                "total_vram_mb": sum(g.get("memory_total_mb", 0) for g in result["gpus"]),
-                "gpu_model": result["gpus"][0].get("name", "unknown") if result["gpus"] else "unknown",
+                "gpus": gpus_list,
+                "total_vram_mb": total_vram,
+                "gpu_model": str(gpus_list[0].get("name", "unknown")) if gpus_list else "unknown",
             }
 
         return result
@@ -889,7 +878,7 @@ model_id: {state.model_id}
 
 ## Feasibility
 
-**Status**: ❌ Cannot run locally
+**Status**: [FAIL] Cannot run locally
 **Reason**: {feasibility.get('reason', 'Unknown')}
 
 ## Links
@@ -954,7 +943,13 @@ model_id: {state.model_id}
             cerebras_client = CerebrasClient()
 
             # Get GPU cost for comparison (use best instance if found)
-            gpu_cost = best_instance_info.get("cost_per_hour") if best_instance_info else None
+            gpu_cost_raw = best_instance_info.get("cost_per_hour") if best_instance_info else None
+            gpu_cost: float | None = None
+            if gpu_cost_raw is not None and isinstance(gpu_cost_raw, (int, float, str)):
+                try:
+                    gpu_cost = float(gpu_cost_raw)
+                except (ValueError, TypeError):
+                    pass
 
             cerebras_section = cerebras_client.format_options_markdown(
                 state.model_id,
@@ -1146,7 +1141,7 @@ model_id: {state.model_id}
 
         # Get KB root from config
         try:
-            from ...config import get_config
+            from ...core.config import get_config
             config = get_config()
             pending_path = Path(config.kb.root) / ".pending_model_add.json"
         except Exception:
@@ -1173,7 +1168,7 @@ model_id: {state.model_id}
         reason = args.get("reason", "Local model unavailable")
 
         # Prompt user via console
-        print(f"\n⚠️  Local coding model failed: {reason}")
+        print(f"\n[!] Local coding model failed: {reason}")
         print("   XAI API key is available as fallback.")
         print("   This will use the XAI Grok API for code generation.")
         print()

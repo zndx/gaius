@@ -2,11 +2,10 @@
 
 The engine server:
 1. Loads configuration from HOCON
-2. Starts gRPC server (PRIMARY transport)
-3. Starts Aeron IPC bridge (optional/legacy)
-4. Routes requests to services
-5. Broadcasts events and health metrics
-6. Provides Unix socket fallback for debugging
+2. Starts gRPC server (the only transport)
+3. Initializes backend services (vLLM, optillm, cognition, etc.)
+4. Broadcasts events and health metrics
+5. Runs autonomous services (evolution, health observer)
 """
 
 # Configure parallelism BEFORE any imports
@@ -28,22 +27,15 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import EngineConfig, load_config
-from .transport.aeron_bridge import AeronBridge, AeronMessage, create_bridge
+from .daemon_registry import DaemonRegistry
 from .transport.protocol import (
     Request,
     Response,
-    Event,
-    EventType,
     HealthMetrics,
     Service,
-    deserialize_request,
-    serialize_response,
-    serialize_event,
-    serialize_health_metrics,
-    start_span_from_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,20 +53,13 @@ class GaiusEngine:
 
     def __init__(self, config: EngineConfig):
         self.config = config
-        self._bridge: Optional[AeronBridge] = None
         self._running = False
         self._health_task: Optional[asyncio.Task] = None
         self._request_task: Optional[asyncio.Task] = None
         self._start_time: Optional[datetime] = None
 
-        # gRPC server (PRIMARY transport)
+        # gRPC server (only transport)
         self._grpc_server = None
-
-        # Unix socket server (fallback for debugging/CLI)
-        self._socket_server: Optional[asyncio.Server] = None
-        self._socket_path = os.environ.get(
-            "GAIUS_ENGINE_SOCKET", "/tmp/gaius-engine.sock"
-        )
 
         # Backend router for inference (manages optillm and vLLM)
         self._backend_router = None
@@ -86,7 +71,7 @@ class GaiusEngine:
         self._evolution_daemon = None
 
         # Service handlers (to be implemented in later phases)
-        self._handlers: dict[Service, callable] = {
+        self._handlers: dict[Service, Callable] = {
             Service.ORCHESTRATOR: self._handle_orchestrator,
             Service.SCHEDULER: self._handle_scheduler,
             Service.EVOLUTION: self._handle_evolution,
@@ -105,6 +90,111 @@ class GaiusEngine:
         # Dataset service (NiFi SoM/ToM generation)
         self._dataset_service = None
 
+        # Reconciliation service (FSM-based state observation)
+        self._reconciliation_service = None
+
+        # Topology service (temporal dynamics tracking)
+        self._topology_service = None
+
+        # Health observer service (autonomous monitoring, FMEA, ACP)
+        self._health_observer_service = None
+
+        # X Bookmarks service (sync X/Twitter bookmarks to KB)
+        self._x_bookmarks_service = None
+
+        # Prospects/Stewardship service (FMP-based financial intelligence)
+        self._prospects_service = None
+
+        # Ambient computing workload service
+        self._ambient_service = None
+
+        # Health service (basic metrics)
+        self._health_service = None
+
+        # Agenda tracker for workload-centric incident tracking
+        self._agenda_tracker = None
+
+        # Daemon registry for lifecycle management
+        self._daemon_registry: Optional[DaemonRegistry] = None
+
+        # Shared database pool for services requiring direct DB access
+        self._db_pool = None
+
+        # ACP security config (validated on startup)
+        self._acp_security_config = None
+
+    async def _validate_acp_prerequisites(self) -> None:
+        """FAIL-FAST: Verify ACP configuration exists and is valid.
+
+        ACP (Agent Client Protocol) is REQUIRED for self-healing escalation.
+        If escalation is enabled but config is missing, we fail early so the
+        operator knows there's no escalation path for incidents.
+
+        This follows the FAIL-FAST principle: surface configuration issues
+        at startup, not at 3am when an incident needs escalation.
+
+        Raises:
+            RuntimeError: If ACP is enabled but config is missing/invalid
+        """
+        from pathlib import Path
+
+        # Check if we have acp.conf in standard locations
+        config_path = None
+        candidates = [
+            Path.home() / ".config/gaius/acp.conf",
+            Path.home() / ".gaius/acp.conf",
+            Path.cwd() / "config/acp.conf",
+            Path.cwd() / ".gaius/acp.conf",
+        ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                config_path = candidate
+                break
+
+        if config_path is None:
+            # ACP config not found - log warning but continue
+            # (ACP is valuable but not strictly required for engine operation)
+            logger.warning(
+                "ACP security config not found.\n"
+                "  Escalation to Claude Code will be unavailable.\n"
+                "  Create config at: ~/.config/gaius/acp.conf\n"
+                "  Guru: #ACP.00000011.NOCONFIG"
+            )
+            return
+
+        # Validate ACP config
+        try:
+            from ..acp.security import load_security_config
+
+            self._acp_security_config = load_security_config(config_path)
+
+            if not self._acp_security_config.allowed_repos:
+                logger.warning(
+                    f"ACP config at {config_path} has no allowed_repos.\n"
+                    "  No GitHub repositories are configured for issue creation.\n"
+                    "  Add 'acp.github.allowed_repos = [\"owner/repo\"]' to config.\n"
+                    "  Guru: #ACP.00000012.NOREPOS"
+                )
+            else:
+                logger.info(
+                    f"ACP config validated: {len(self._acp_security_config.allowed_repos)} "
+                    f"allowed repos, require_private={self._acp_security_config.require_private}"
+                )
+
+        except ImportError:
+            logger.warning(
+                "ACP module not available (pyhocon not installed).\n"
+                "  Install with: uv sync --extra acp\n"
+                "  Escalation to Claude Code will be unavailable."
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to validate ACP config: {e}\n"
+                "  Escalation to Claude Code may be unavailable.\n"
+                "  Guru: #ACP.00000013.CONFIGFAIL"
+            )
+
     async def start(self) -> None:
         """Start the engine daemon.
 
@@ -112,21 +202,24 @@ class GaiusEngine:
         TUI/MCP clients to connect immediately and receive real-time
         initialization progress during the ~240s vLLM preload phase.
 
-        New order:
+        Phases:
         1. Create InitController (for bidirectional streaming)
         2. Start gRPC server EARLY (clients can connect immediately)
         3. Initialize telemetry
         4. Initialize backends (broadcasts progress)
         5. Initialize orchestrator (broadcasts progress)
         6. Preload endpoints (broadcasts progress)
-        7. Start other transports (Aeron, socket)
-        8. Start background services
-        9. Mark initialization complete
+        7. Start background services
+        8. Mark initialization complete
         """
         from .init_controller import get_init_controller, InitPhase
 
         logger.info("Starting Gaius Engine...")
         self._start_time = datetime.now()
+
+        # 0. Validate ACP prerequisites FIRST (FAIL-FAST)
+        # This ensures escalation paths are available before any daemons start
+        await self._validate_acp_prerequisites()
 
         # 1. Create init controller for bidirectional streaming
         self._init_controller = get_init_controller()
@@ -135,6 +228,13 @@ class GaiusEngine:
         # 2. Start gRPC server EARLY so clients can connect immediately
         #    InitController is available, other services will be added as they're ready
         await self._start_grpc_server_early()
+
+        # 2.5 Start X Bookmarks service EARLY (no GPU deps, needed for InitPanel status)
+        #     This runs before the ~240s vLLM preload so XB status is available immediately
+        await self._init_x_bookmarks_service()
+
+        # 2.6 Start Prospects/Stewardship service EARLY (no GPU deps, lightweight status)
+        await self._init_prospects_service()
 
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
         await self._init_telemetry()
@@ -158,30 +258,10 @@ class GaiusEngine:
             await self._init_controller.start_phase(InitPhase.PRELOAD, "Starting endpoint preload")
             await self._autonomous_clean_start_with_progress()
 
-        # 7. Start other transports
-        await self._init_controller.start_phase(InitPhase.AERON, "Starting Aeron bridge")
-        try:
-            self._bridge = create_bridge(self.config.aeron)
-            await self._bridge.start()
-
-            # Subscribe to request stream
-            await self._bridge.subscribe(
-                self.config.aeron.request_stream, self._on_request
-            )
-            logger.info(f"Aeron bridge started on streams: requests={self.config.aeron.request_stream}")
-        except Exception as e:
-            logger.warning(f"Aeron bridge not started: {e}")
-            self._bridge = None
-
-        # Start Unix socket server (fallback for debugging/CLI)
-        await self._init_controller.start_phase(InitPhase.SOCKET, "Starting socket server")
-        await self._start_socket_server()
-
         self._running = True
 
-        # 8. Start background tasks
+        # 7. Start background tasks
         self._health_task = asyncio.create_task(self._health_broadcast_loop())
-        self._request_task = asyncio.create_task(self._request_loop())
 
         # Autonomous startup: start evolution daemon if configured
         if self.config.startup.auto_start_evolution and self.config.evolution.enabled:
@@ -200,8 +280,21 @@ class GaiusEngine:
         # Always start dataset service (lightweight, fail-fast by design)
         await self._init_dataset_service()
 
+        # Initialize ambient computing workload service
+        await self._init_ambient_service()
+
+        # NOTE: X Bookmarks service is initialized EARLY (after gRPC starts, before PRELOAD)
+        # to ensure XB status is available during the ~240s vLLM preload phase
+
+        # 8. Initialize and start daemons via DaemonRegistry
+        # This provides dependency-ordered startup with FAIL-FAST semantics
+        await self._init_daemon_registry()
+
         # 9. Mark initialization complete
         await self._init_controller.complete_init()
+
+        # 10. Auto-resume ambient workload if it was running before restart
+        await self._maybe_resume_ambient()
 
         logger.info(
             f"Gaius Engine started with {len(self.config.agents)} agents configured"
@@ -230,6 +323,12 @@ class GaiusEngine:
         """Initialize orchestrator service for endpoint management."""
         from .services.orchestrator_service import OrchestratorService
 
+        if self._backend_router is None:
+            raise RuntimeError(
+                "Backend router not initialized before orchestrator.\n"
+                "  Guru Meditation: #ENGINE.00000001.INIT_ORDER"
+            )
+
         self._orchestrator_service = OrchestratorService(
             config=self.config,
             resource_manager=self._resource_manager,
@@ -241,6 +340,8 @@ class GaiusEngine:
     async def _autonomous_clean_start(self) -> None:
         """Perform autonomous clean start: cleanup stale processes and preload endpoints."""
         logger.info("Performing autonomous clean start...")
+
+        assert self._orchestrator_service is not None  # Guaranteed by _init_orchestrator
 
         # Step 1: Cleanup stale vLLM processes
         cleanup_result = await self._orchestrator_service.cleanup_stale_processes()
@@ -276,8 +377,12 @@ class GaiusEngine:
 
         logger.info("Performing autonomous clean start with progress...")
 
+        assert self._orchestrator_service is not None  # Guaranteed by _init_orchestrator
+        # Capture narrowed type for nested function
+        orchestrator = self._orchestrator_service
+
         # Step 1: Cleanup stale vLLM processes
-        cleanup_result = await self._orchestrator_service.cleanup_stale_processes()
+        cleanup_result = await orchestrator.cleanup_stale_processes()
         if cleanup_result.processes_killed > 0:
             logger.info(
                 f"Cleaned up {cleanup_result.processes_killed} stale processes: {cleanup_result.pids_killed}"
@@ -302,7 +407,7 @@ class GaiusEngine:
 
             try:
                 # Start the endpoint
-                status = await self._orchestrator_service.start_endpoint(endpoint_alias)
+                status = await orchestrator.start_endpoint(endpoint_alias)
                 logger.info(
                     f"  {endpoint_alias}: {status.status} (port={status.port}, GPUs={status.gpu_ids})"
                 )
@@ -399,11 +504,7 @@ class GaiusEngine:
             )
 
             # Create and start daemon
-            self._evolution_daemon = EvolutionDaemon(
-                config=evo_config,
-                get_gpu_utilization=self._orchestrator_service.get_gpu_utilization,
-                is_gpu_idle=self._orchestrator_service.is_gpu_idle,
-            )
+            self._evolution_daemon = EvolutionDaemon(config=evo_config)
             await self._evolution_daemon.start()
             logger.info("Evolution daemon started")
 
@@ -417,7 +518,36 @@ class GaiusEngine:
 
         The cognition daemon polls scheduled_tasks for cognition_cycle,
         engine_audit, and delta_check tasks inserted by pg_cron.
+
+        Creates a shared database pool FIRST, then passes it to both
+        CognitionService and TopologyService.
         """
+        # Create shared database pool BEFORE services that need it
+        # This is critical - CognitionService needs db_pool to consume pg_cron tasks
+        # Store on instance so HealthObserverService can also use it
+        try:
+            import asyncpg
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+            self._db_pool = await asyncpg.create_pool(
+                database_url,
+                min_size=2,
+                max_size=10,
+            )
+            logger.info(f"Created shared database pool (min=2, max=10)")
+        except Exception as db_err:
+            # This is a critical failure - pg_cron tasks won't be consumed
+            logger.error(
+                f"Failed to create database pool: {db_err}\n"
+                "  Guru Meditation: #COG.00000001.NOPOOL\n"
+                "  Cognition and Topology services will not function properly.\n"
+                "  Try: /health fix postgres"
+            )
+
+        # Start CognitionService with db_pool
         try:
             from .services.cognition_service import CognitionService, CognitionConfig
 
@@ -431,13 +561,23 @@ class GaiusEngine:
                 poll_interval_seconds=30.0,
             )
 
-            # Create and start service
+            # Wire up GPU idle check to orchestrator if available
+            def get_gpu_idle() -> bool:
+                if self._orchestrator_service:
+                    return self._orchestrator_service.is_gpu_idle()
+                return True  # Default to idle if orchestrator not available
+
+            # Create and start service WITH db_pool
             self._cognition_service = CognitionService(
                 config,
-                get_gpu_idle=lambda: True,  # TODO: wire up to health service
+                get_gpu_idle=get_gpu_idle,
+                db_pool=self._db_pool,  # Critical: pass db_pool for pg_cron task consumption
             )
             await self._cognition_service.start()
-            logger.info("Cognition daemon started")
+            logger.info(
+                f"Cognition daemon started "
+                f"(db_pool={'connected' if self._db_pool else 'MISSING'})"
+            )
 
             # Update gRPC service registry (cognition starts after gRPC)
             if self._grpc_server:
@@ -447,6 +587,18 @@ class GaiusEngine:
             logger.warning(f"Cognition service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to start cognition daemon: {e}")
+
+        # Create topology service (reuses the shared database pool)
+        try:
+            from .services.topology_service import TopologyService
+
+            self._topology_service = TopologyService(db_pool=self._db_pool)
+            logger.info("Topology service initialized (sharing db_pool)")
+
+            if self._grpc_server:
+                self._grpc_server.update_service("topology_service", self._topology_service)
+        except Exception as e:
+            logger.warning(f"Failed to initialize topology service: {e}")
 
     async def _autonomous_start_flow_scheduler(self) -> None:
         """Start the flow scheduler daemon automatically.
@@ -523,6 +675,531 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to initialize dataset service: {e}")
 
+    async def _init_x_bookmarks_service(self) -> None:
+        """Initialize X Bookmarks sync service.
+
+        The XBookmarksService manages X (Twitter) bookmark synchronization:
+        - OAuth 2.0 PKCE flow for authentication
+        - Rate-limited API request queue (respects X API limits)
+        - Bookmark fetching with pagination
+        - Sync to Iceberg HX and KB markdown
+        """
+        try:
+            from .services.x_bookmarks_service import XBookmarksService, XBookmarksConfig
+            import asyncpg
+
+            logger.info("Initializing X Bookmarks service...")
+
+            # Get database pool from config
+            db_url = os.environ.get(
+                "DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            # Create database pool
+            pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
+
+            # Create service config
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = XBookmarksConfig(
+                kb_root=kb_root,
+                queue_poll_interval_s=60,  # Check queue every minute
+            )
+
+            # Create and start service
+            self._x_bookmarks_service = XBookmarksService(
+                pool=pool,
+                config=config,
+            )
+
+            # Wire XBookmarksService to InitController for real-time XB event push
+            # This enables the TUI's InitPanel to update immediately when auth completes
+            if self._init_controller:
+                def xb_event_callback(event_type: str, data: dict) -> None:
+                    """Forward XB events to InitController for broadcast."""
+                    import asyncio
+                    logger.info(f"XB callback invoked: {event_type} with data: {data}")
+                    try:
+                        # Use create_task for async broadcast from sync callback
+                        loop = asyncio.get_running_loop()
+                        task = loop.create_task(
+                            self._init_controller.broadcast_xb_event(event_type, data)
+                        )
+                        logger.info(f"Created broadcast task for {event_type}: {task}")
+                    except RuntimeError as e:
+                        # No running loop - we're called from sync context
+                        logger.error(f"No running event loop for XB event: {e}")
+                    except Exception as e:
+                        logger.warning(f"Failed to broadcast XB event: {e}", exc_info=True)
+
+                self._x_bookmarks_service.set_event_callback(xb_event_callback)
+                logger.info("XBookmarksService wired to InitController for real-time events")
+
+            await self._x_bookmarks_service.start()
+            logger.info("X Bookmarks service started")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "x_bookmarks_service", self._x_bookmarks_service
+                )
+                logger.info("X Bookmarks service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"X Bookmarks service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize X Bookmarks service: {e}")
+
+    async def _init_prospects_service(self) -> None:
+        """Initialize Prospects/Stewardship service.
+
+        The ProspectsService manages FMP-based financial intelligence:
+        - Daily SEC filing checks ($0 cost via pg_cron)
+        - Status queries (cached data, no LLM)
+        - Full billable analysis (Cerebras + Grok)
+        - KB artifact generation (Obsidian .base files)
+
+        Runs via Metaflow flows triggered by gRPC RPCs.
+        """
+        try:
+            from .services.prospects_service import ProspectsService, ProspectsConfig
+            import asyncpg
+
+            logger.info("Initializing Prospects/Stewardship service...")
+
+            # Get database pool from config
+            db_url = os.environ.get(
+                "DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            # Create database pool
+            pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
+
+            # Create service config - profile/domain resolved from database at runtime
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = ProspectsConfig(
+                kb_root=kb_root,
+                # Empty strings = resolve from database at runtime
+                default_profile="",
+                default_domain="",
+            )
+
+            # Create and start service
+            self._prospects_service = ProspectsService(
+                pool=pool,
+                config=config,
+            )
+
+            await self._prospects_service.start()
+            logger.info("Prospects/Stewardship service started")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "prospects_service", self._prospects_service
+                )
+                logger.info("Prospects/Stewardship service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"Prospects/Stewardship service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Prospects/Stewardship service: {e}")
+
+    async def _init_ambient_service(self) -> None:
+        """Initialize the Ambient Computing Workload service.
+
+        The AmbientWorkloadService manages ambient computing workload cycles:
+        - Maintains baseline endpoint mix (orchestrator, instruct)
+        - Executes standard tasks on each endpoint
+        - Evicts baseline for reasoning tasks
+        - Restores baseline after reasoning completes
+        """
+        try:
+            from .services.ambient_service import AmbientWorkloadService
+
+            logger.info("Initializing Ambient Workload service...")
+
+            # Requires orchestrator and backend_router
+            if not self._orchestrator_service:
+                logger.warning("Ambient service skipped: orchestrator not available")
+                return
+
+            if not self._backend_router:
+                logger.warning("Ambient service skipped: backend_router not available")
+                return
+
+            self._ambient_service = AmbientWorkloadService(
+                config=self.config,
+                orchestrator=self._orchestrator_service,
+                backend_router=self._backend_router,
+                db_pool=self._db_pool,  # Enable state persistence for auto-resume
+            )
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "ambient_service", self._ambient_service
+                )
+                logger.info("Ambient Workload service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"Ambient Workload service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Ambient Workload service: {e}")
+
+    async def _maybe_resume_ambient(self) -> None:
+        """Auto-resume ambient workload if it was running before restart.
+
+        Called during engine startup AFTER endpoints are ready. Uses
+        persisted state from ambient_daemon_state table to determine
+        if the daemon should be auto-resumed.
+
+        Controlled by startup.auto_resume_ambient config (default: True).
+        """
+        # Check config flag
+        if not self.config.startup.auto_resume_ambient:
+            logger.info("Ambient auto-resume disabled in config")
+            return
+
+        # Check if ambient service is available
+        if not self._ambient_service:
+            logger.debug("Ambient service not initialized, skipping resume check")
+            return
+
+        try:
+            result = await self._ambient_service.resume_from_persisted_state()
+            status = result.get("status", "unknown")
+
+            if status == "resumed":
+                logger.info(
+                    f"Ambient workload auto-resumed: "
+                    f"cycle {result.get('cycles_completed', 0)}, "
+                    f"{result.get('total_tasks', 0)} tasks completed previously"
+                )
+            elif status == "not_running":
+                logger.debug(f"Ambient workload not resumed: {result.get('message', 'was not running')}")
+            else:
+                logger.warning(f"Ambient workload resume failed: {result.get('message', 'unknown error')}")
+
+        except Exception as e:
+            logger.warning(f"Failed to check ambient resume state: {e}")
+
+    async def _init_daemon_registry(self) -> None:
+        """Initialize daemon registry and start all daemons with FAIL-FAST semantics.
+
+        The DaemonRegistry provides:
+        - Dependency-ordered startup (topological sort)
+        - FAIL-FAST on CRITICAL daemon failures (engine enters DEGRADED mode)
+        - Continuous health monitoring via HealthObserver integration
+
+        Daemon dependency order:
+            health_observer (CRITICAL, no deps) - must start first
+            cognition (CRITICAL, after health_observer)
+            reconciliation (REQUIRED, after health_observer)
+
+        CRITICAL failures put engine in DEGRADED mode (doesn't exit) so ACP-Claude
+        can investigate accumulated error states.
+        """
+        from .services.base_daemon import EngineState
+
+        logger.info("Initializing daemon registry...")
+
+        # Create daemon registry with 30s timeout per daemon
+        self._daemon_registry = DaemonRegistry(startup_timeout=30.0)
+
+        # Initialize daemons (creates instances but doesn't start them)
+        # Each daemon's start() will be called by the registry in dependency order
+
+        # 1. Initialize HealthObserver (CRITICAL, no dependencies)
+        await self._create_health_observer_daemon()
+
+        # 2. Initialize Cognition (CRITICAL, depends on health_observer)
+        await self._create_cognition_daemon()
+
+        # 3. Initialize Reconciliation (REQUIRED, depends on health_observer)
+        await self._create_reconciliation_daemon()
+
+        # Register daemons with dependency ordering
+        if self._health_observer_service:
+            self._daemon_registry.register(self._health_observer_service, after=[])
+
+        if self._cognition_service:
+            self._daemon_registry.register(
+                self._cognition_service, after=["health_observer"]
+            )
+
+        if self._reconciliation_service:
+            self._daemon_registry.register(
+                self._reconciliation_service, after=["health_observer"]
+            )
+
+        # Wire cross-references between daemons BEFORE starting
+        # This enables escalation from Reconciliation → HealthObserver → ACP
+        if self._reconciliation_service and self._health_observer_service:
+            self._reconciliation_service.set_health_observer(self._health_observer_service)
+            logger.info("Wired Reconciliation → HealthObserver escalation path")
+
+        # Create and wire AgendaTracker for workload-centric incident tracking
+        await self._create_agenda_tracker()
+
+        # Start all daemons in topological order
+        results = await self._daemon_registry.start_all()
+
+        # Log startup results
+        for result in results:
+            if result.success:
+                logger.info(f"  {result.daemon_name}: started in {result.duration_ms}ms")
+            else:
+                logger.error(
+                    f"  {result.daemon_name}: FAILED - {result.error} "
+                    f"(Guru: {result.guru_code})"
+                )
+
+        # Check final engine state
+        status = self._daemon_registry.get_status()
+        if status.engine_state == EngineState.DEGRADED:
+            logger.error(
+                f"Engine in DEGRADED mode - CRITICAL daemons failed: "
+                f"{status.critical_failures}\n"
+                "  ACP-Claude should investigate. Error states preserved for analysis."
+            )
+
+        # Wire daemon registry to HealthObserver for continuous monitoring
+        if self._health_observer_service:
+            self._health_observer_service.set_daemon_registry(self._daemon_registry)
+
+        # Update gRPC with daemon registry for status reporting
+        if self._grpc_server:
+            self._grpc_server.update_service("daemon_registry", self._daemon_registry)
+
+    async def _create_health_observer_daemon(self) -> None:
+        """Create HealthObserver daemon instance (doesn't start it)."""
+        try:
+            from .services.health_observer_service import (
+                HealthObserverService,
+                ObserverConfig,
+            )
+            from .services.health_service import HealthService
+
+            logger.info("Creating HealthObserver daemon...")
+
+            # Create health service for basic metrics first
+            self._health_service = HealthService()
+            self._health_service.set_services(
+                orchestrator=self._orchestrator_service,
+            )
+            await self._health_service.start()
+
+            # Create observer config from engine config
+            observer_config = ObserverConfig(
+                enabled=True,
+                poll_interval=30.0,
+                escalate_to_acp=True,
+                kb_root=os.environ.get("GAIUS_KB_ROOT", "build/dev"),
+            )
+
+            # Create observer service (NOT started yet - registry will start it)
+            self._health_observer_service = HealthObserverService(
+                config=observer_config,
+                orchestrator_service=self._orchestrator_service,
+                health_service=self._health_service,
+            )
+
+            # Pass db_pool for internal pipeline health checks
+            if self._db_pool:
+                self._health_observer_service.set_services(db_pool=self._db_pool)
+                logger.info("HealthObserver connected to shared db_pool for pipeline monitoring")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "health_observer_service", self._health_observer_service
+                )
+                self._grpc_server.update_service("health_service", self._health_service)
+
+        except ImportError as e:
+            logger.warning(f"HealthObserver not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create HealthObserver: {e}")
+
+    async def _create_cognition_daemon(self) -> None:
+        """Create Cognition daemon instance (doesn't start it).
+
+        Called during _init_daemon_registry. The cognition service
+        was already initialized in _autonomous_start_cognition if
+        auto_start_cognition was enabled - we just need to ensure
+        it's available for registration.
+        """
+        # Cognition service may already be initialized from _autonomous_start_cognition
+        # If so, we just use it. If not, it won't be registered.
+        if self._cognition_service:
+            logger.info("Cognition daemon already initialized, registering with registry")
+        else:
+            logger.info("Cognition daemon not initialized (auto_start_cognition disabled)")
+
+    async def _create_reconciliation_daemon(self) -> None:
+        """Create Reconciliation daemon instance (doesn't start it)."""
+        try:
+            from .resources import ReconciliationService
+
+            logger.info("Creating Reconciliation daemon...")
+
+            # Create service with resource manager and config
+            # Remediation ENABLED by default - self-healing is the point
+            self._reconciliation_service = ReconciliationService(
+                resource_manager=self._resource_manager,
+                config=self.config,
+                observe_interval_seconds=10.0,  # Check every 10 seconds
+                remediate=True,  # Auto-remediate drift (orphans, unhealthy)
+                orchestrator_service=self._orchestrator_service,  # For restarts
+            )
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "reconciliation_service", self._reconciliation_service
+                )
+
+        except ImportError as e:
+            logger.warning(f"Reconciliation service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create Reconciliation daemon: {e}")
+
+    async def _create_agenda_tracker(self) -> None:
+        """Create and wire AgendaTracker for workload-centric incident tracking.
+
+        The AgendaTracker bridges:
+        - OrchestratorService (workload begin/complete lifecycle)
+        - ReconciliationService (endpoint state transitions)
+        - HealthObserverService (incident escalation)
+
+        It tracks Agenda incidents where:
+        - Agenda (scheduled capability phases) is the unit of health
+        - Makespan fulfillment is the success metric
+        - Positive control is required for resolution
+        """
+        try:
+            from .services.agenda_tracker import AgendaTracker
+
+            logger.info("Creating AgendaTracker...")
+
+            # Create tracker with database pool for persistence
+            self._agenda_tracker = AgendaTracker(
+                db_pool=self._db_pool,
+                baseline_endpoints=["orchestrator", "instruct"],
+            )
+
+            # Wire to OrchestratorService
+            if self._orchestrator_service:
+                self._orchestrator_service.set_agenda_tracker(self._agenda_tracker)
+                logger.info("Wired AgendaTracker → OrchestratorService")
+
+            # Wire to ReconciliationService for endpoint transition callbacks
+            if self._reconciliation_service:
+                self._reconciliation_service.set_agenda_tracker(self._agenda_tracker)
+                logger.info("Wired AgendaTracker ← ReconciliationService")
+
+            # Wire to AmbientWorkloadService for phase event tracking
+            if self._ambient_service:
+                self._ambient_service.set_agenda_tracker(self._agenda_tracker)
+                logger.info("Wired AgendaTracker → AmbientWorkloadService")
+
+            # Start the tracker (restores from DB, starts persistence loop)
+            await self._agenda_tracker.start()
+
+            # Wire to HealthObserverService for incident escalation
+            if self._health_observer_service:
+                # AgendaTracker notifies HealthObserver when control degrades
+                self._agenda_tracker.on_control_degraded(self._on_agenda_control_degraded)
+                logger.info("Wired AgendaTracker → HealthObserverService callbacks")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service("agenda_tracker", self._agenda_tracker)
+
+            logger.info(
+                f"AgendaTracker started with "
+                f"{len(self._agenda_tracker.get_active_operations())} active operations"
+            )
+
+        except ImportError as e:
+            logger.warning(f"AgendaTracker not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create AgendaTracker: {e}")
+
+    async def _on_agenda_control_degraded(self, operation) -> None:
+        """Callback when an operation's control mode degrades from POSITIVE.
+
+        This indicates that an endpoint transition was not orchestrated (e.g.,
+        failure recovery or restart recovery), which may require investigation.
+
+        Args:
+            operation: AgendaOperation with degraded control mode
+        """
+        from .incidents import ControlMode
+
+        logger.warning(
+            f"Operation {operation.workload_id} control degraded to {operation.control_mode.value}"
+        )
+
+        # Escalate to HealthObserver if control mode is particularly bad
+        if self._health_observer_service and operation.control_mode == ControlMode.RESTART_RECOVERY:
+            await self._escalate_operation_to_health_observer(operation)
+
+    async def _escalate_operation_to_health_observer(self, operation) -> None:
+        """Escalate an operation with degraded control to HealthObserver.
+
+        Creates a synthetic health incident so ACP can investigate why
+        the operation required restart/failure recovery instead of
+        positive orchestrated control.
+
+        Args:
+            operation: AgendaOperation with degraded control mode
+        """
+        if not self._health_observer_service:
+            return
+
+        try:
+            from .services.health_observer_service import HealthIncident
+            from uuid import uuid4
+
+            # Create a synthetic health incident for the degraded operation
+            fingerprint = f"CONTROL_DEGRADED:{operation.workload_id}"
+
+            health_incident = HealthIncident(
+                incident_id=uuid4(),
+                fingerprint=fingerprint,
+                endpoint=operation.phases[0].name if operation.phases else "unknown",
+                failure_mode_id="CONTROL_DEGRADED",
+                rpn_score=200,  # Moderate severity
+                rpn_severity=6,
+                rpn_occurrence=5,
+                rpn_detection=5,
+                current_tier=1,  # Start at Tier 1 (local remediation)
+                attempts=0,
+            )
+
+            # Add operation context to the incident
+            health_incident.context = {
+                "workload_id": operation.workload_id,
+                "workload_type": operation.workload_type.value if hasattr(operation.workload_type, 'value') else str(operation.workload_type),
+                "control_mode": operation.control_mode.value,
+                "endpoint_transitions": len(operation.endpoint_transitions),
+            }
+
+            # Register with HealthObserver
+            self._health_observer_service._active_incidents[fingerprint] = health_incident
+            self._health_observer_service._incidents_created += 1
+
+            logger.info(
+                f"Escalated degraded operation {operation.workload_id} to HealthObserver "
+                f"(control={operation.control_mode.value})"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to escalate operation to HealthObserver: {e}")
+
     async def _start_grpc_server(self) -> None:
         """Start the gRPC server (PRIMARY transport).
 
@@ -554,6 +1231,7 @@ class GaiusEngine:
                 backend_router=self._backend_router,
                 orchestrator_service=self._orchestrator_service,
                 cognition_service=self._cognition_service,
+                topology_service=self._topology_service,
                 config=self.config,
                 start_time=self._start_time.timestamp() if self._start_time else None,
                 get_health_metrics=self._collect_health_metrics,
@@ -610,28 +1288,26 @@ class GaiusEngine:
             except asyncio.CancelledError:
                 pass
 
-        if self._request_task:
-            self._request_task.cancel()
-            try:
-                await self._request_task
-            except asyncio.CancelledError:
-                pass
+        # Stop all daemons via registry (in reverse dependency order)
+        if self._daemon_registry:
+            logger.info("Stopping all daemons via registry...")
+            await self._daemon_registry.stop_all()
 
-        # Stop evolution daemon
+        # Stop evolution daemon (not yet in registry)
         if self._evolution_daemon:
             try:
                 await self._evolution_daemon.stop()
             except Exception as e:
                 logger.warning(f"Error stopping evolution daemon: {e}")
 
-        # Stop flow scheduler service
+        # Stop flow scheduler service (not yet in registry)
         if self._flow_scheduler_service:
             try:
                 await self._flow_scheduler_service.stop()
             except Exception as e:
                 logger.warning(f"Error stopping flow scheduler: {e}")
 
-        # Stop dataset service
+        # Stop dataset service (not yet in registry)
         if self._dataset_service:
             try:
                 await self._dataset_service.stop()
@@ -642,16 +1318,9 @@ class GaiusEngine:
         if self._orchestrator_service:
             await self._orchestrator_service.stop()
 
-        # Stop gRPC server (PRIMARY transport)
+        # Stop gRPC server
         if self._grpc_server:
             await self._grpc_server.stop()
-
-        # Stop Aeron bridge
-        if self._bridge:
-            await self._bridge.stop()
-
-        # Stop socket server
-        await self._stop_socket_server()
 
         # Stop backend router (stops optillm and vLLM)
         if self._backend_router:
@@ -699,200 +1368,77 @@ class GaiusEngine:
         except Exception as e:
             logger.warning(f"Failed to initialize OpenTelemetry: {e}")
 
-    async def _start_socket_server(self) -> None:
-        """Start Unix socket server for CLI/debugging fallback.
-
-        Only enabled when GAIUS_ALLOW_FALLBACKS=true environment variable is set.
-        This is a debugging/development feature.
-        """
-        # Check feature flag - fallbacks disabled by default
-        if os.environ.get("GAIUS_ALLOW_FALLBACKS", "").lower() != "true":
-            logger.debug(
-                "Unix socket fallback disabled (set GAIUS_ALLOW_FALLBACKS=true to enable)"
-            )
-            return
-
-        # Remove stale socket file
-        socket_path = Path(self._socket_path)
-        if socket_path.exists():
-            socket_path.unlink()
-
-        self._socket_server = await asyncio.start_unix_server(
-            self._handle_socket_client,
-            path=self._socket_path,
-        )
-        logger.info(f"Unix socket server listening on {self._socket_path}")
-
-    async def _stop_socket_server(self) -> None:
-        """Stop Unix socket server and cleanup."""
-        if self._socket_server:
-            self._socket_server.close()
-            await self._socket_server.wait_closed()
-
-        # Remove socket file
-        socket_path = Path(self._socket_path)
-        if socket_path.exists():
-            socket_path.unlink()
-
-    async def _handle_socket_client(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        """Handle a connected socket client."""
-        peer = writer.get_extra_info("peername")
-        logger.debug(f"Socket client connected: {peer}")
-
-        try:
-            while self._running:
-                # Read length-prefixed message
-                length_bytes = await reader.readexactly(4)
-                length = int.from_bytes(length_bytes, "big")
-
-                if length > 1024 * 1024:  # 1MB limit
-                    logger.warning(f"Message too large: {length}")
-                    break
-
-                # Read message data
-                data = await reader.readexactly(length)
-
-                # Process request
-                try:
-                    request = deserialize_request(data)
-                    logger.debug(
-                        f"Socket request: {request.service.name}.{request.action}"
-                    )
-
-                    # Route to handler
-                    handler = self._handlers.get(request.service)
-                    if handler:
-                        response = await handler(request)
-                    else:
-                        response = Response.failure(
-                            request.id,
-                            code=404,
-                            message=f"Unknown service: {request.service.name}",
-                        )
-
-                    # Send response (length-prefixed)
-                    response_data = serialize_response(response)
-                    writer.write(len(response_data).to_bytes(4, "big"))
-                    writer.write(response_data)
-                    await writer.drain()
-
-                except Exception as e:
-                    logger.error(f"Socket request error: {e}")
-                    # Try to send error response
-                    try:
-                        response = Response.failure(
-                            request_id="unknown",
-                            code=500,
-                            message=str(e),
-                        )
-                        response_data = serialize_response(response)
-                        writer.write(len(response_data).to_bytes(4, "big"))
-                        writer.write(response_data)
-                        await writer.drain()
-                    except Exception:
-                        pass
-
-        except asyncio.IncompleteReadError:
-            logger.debug(f"Socket client disconnected: {peer}")
-        except Exception as e:
-            logger.error(f"Socket client error: {e}")
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-    def _on_request(self, msg: AeronMessage) -> None:
-        """Handle incoming request (callback from bridge)."""
-        asyncio.create_task(self._process_request(msg))
-
-    async def _process_request(self, msg: AeronMessage) -> None:
-        """Process a single request and send response."""
-        try:
-            request = deserialize_request(msg.data)
-            logger.debug(f"Received request: {request.service.name}.{request.action}")
-
-            # Start OpenTelemetry span if available
-            span = start_span_from_request(request)
-
-            try:
-                # Route to handler
-                handler = self._handlers.get(request.service)
-                if handler:
-                    response = await handler(request)
-                else:
-                    response = Response.failure(
-                        request.id,
-                        code=404,
-                        message=f"Unknown service: {request.service.name}",
-                    )
-
-            finally:
-                if span:
-                    span.__exit__(None, None, None)
-
-            # Send response
-            response_data = serialize_response(response)
-            await self._bridge.publish(
-                self.config.aeron.response_stream, response_data
-            )
-
-        except Exception as e:
-            logger.exception(f"Error processing request: {e}")
-            # Try to send error response
-            try:
-                response = Response.failure(
-                    request_id=getattr(msg, "id", "unknown"),
-                    code=500,
-                    message=str(e),
-                )
-                await self._bridge.publish(
-                    self.config.aeron.response_stream,
-                    serialize_response(response),
-                )
-            except Exception:
-                pass
-
-    async def _request_loop(self) -> None:
-        """Main loop for processing requests (using async iterator)."""
-        # The _on_request callback handles requests via subscription
-        # This loop is for any additional processing needed
-        while self._running:
-            await asyncio.sleep(0.1)
-
     async def _health_broadcast_loop(self) -> None:
-        """Broadcast health metrics at configured interval."""
+        """Internal health metrics collection loop.
+
+        Note: Health metrics are now exposed via gRPC HealthObserver service.
+        This loop maintains internal state for gRPC queries.
+        """
         interval = self.config.health_interval_ms / 1000.0
 
         while self._running:
             try:
-                metrics = await self._collect_health_metrics()
-                data = serialize_health_metrics(metrics)
-                await self._bridge.publish(self.config.aeron.health_stream, data)
+                await self._collect_health_metrics()
             except Exception as e:
-                logger.debug(f"Health broadcast error: {e}")
+                logger.debug(f"Health collection error: {e}")
 
             await asyncio.sleep(interval)
 
     async def _collect_health_metrics(self) -> HealthMetrics:
-        """Collect current health metrics."""
-        # Placeholder implementation - will be expanded in later phases
-        return HealthMetrics.create(
-            gpus=[],  # TODO: Collect from GPUOrchestrator
-            endpoints=[],  # TODO: Collect from vLLM controller
-            queue_depth=0,  # TODO: Collect from scheduler
-            evolution_running=False,  # TODO: Collect from evolution daemon
-            evolution_agent="",
-        )
+        """Collect current health metrics from HealthService."""
+        gpus = []
+        endpoints = []
+        queue_depth = 0
+        evolution_running = False
+        evolution_agent = ""
 
-    async def broadcast_event(self, event: Event) -> None:
-        """Broadcast an event to all subscribers."""
-        if self._bridge:
-            data = serialize_event(event)
-            await self._bridge.publish(self.config.aeron.event_stream, data)
+        # Collect GPU metrics from HealthService
+        if self._health_service:
+            try:
+                gpu_health = self._health_service.get_gpu_health()
+                for gpu_id, gpu_data in gpu_health.items():
+                    gpus.append({
+                        "id": gpu_id,
+                        "utilization": gpu_data.get("utilization_pct", 0.0) / 100.0,
+                        "memory_used_gb": gpu_data.get("memory_used_mb", 0) / 1024.0,
+                        "memory_total_gb": gpu_data.get("memory_total_mb", 0) / 1024.0,
+                        "temperature_c": gpu_data.get("temperature_c", 0),
+                        "power_watts": gpu_data.get("power_watts", 0),
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to collect GPU metrics: {e}")
+
+        # Collect endpoint metrics from OrchestratorService
+        if self._orchestrator_service:
+            try:
+                status = self._orchestrator_service.get_status()
+                for name, ep_data in status.get("endpoints", {}).items():
+                    endpoints.append({
+                        "name": name,
+                        "model": ep_data.get("model", ""),
+                        "healthy": ep_data.get("status") in ("healthy", "PROCESS_STATUS_HEALTHY"),
+                        "requests_served": ep_data.get("requests_served", 0),
+                        "avg_latency_ms": ep_data.get("avg_latency_ms", 0.0),
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to collect endpoint metrics: {e}")
+
+        # Collect evolution daemon status
+        if self._evolution_daemon:
+            try:
+                evo_status = self._evolution_daemon.get_status()
+                evolution_running = evo_status.get("running", False)
+                evolution_agent = evo_status.get("current_agent", "")
+            except Exception as e:
+                logger.debug(f"Failed to collect evolution status: {e}")
+
+        return HealthMetrics.create(
+            gpus=gpus,
+            endpoints=endpoints,
+            queue_depth=queue_depth,
+            evolution_running=evolution_running,
+            evolution_agent=evolution_agent,
+        )
 
     # =========================================================================
     # Service Handlers - delegate to service implementations
@@ -939,7 +1485,7 @@ class GaiusEngine:
 
             elif action == "ensure":
                 # Agent-first: ensure endpoint is available, starting if needed
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -963,7 +1509,7 @@ class GaiusEngine:
                 )
 
             elif action == "start":
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -983,7 +1529,7 @@ class GaiusEngine:
                 )
 
             elif action == "stop":
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -997,7 +1543,7 @@ class GaiusEngine:
                 )
 
             elif action == "restart":
-                endpoint = request.payload.get("endpoint", "")
+                endpoint = request.params.get("endpoint", "")
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1017,8 +1563,8 @@ class GaiusEngine:
                 )
 
             elif action == "logs":
-                endpoint = request.payload.get("endpoint", "")
-                lines = request.payload.get("lines", 50)
+                endpoint = request.params.get("endpoint", "")
+                lines = request.params.get("lines", 50)
                 if not endpoint:
                     return Response.failure(
                         request.id,
@@ -1032,7 +1578,7 @@ class GaiusEngine:
                 )
 
             elif action == "clean_start":
-                endpoints = request.payload.get("endpoints", ["reasoning"])
+                endpoints = request.params.get("endpoints", ["reasoning"])
                 result = await self._orchestrator_service.clean_start(endpoints)
                 return Response.success(request.id, result)
 
@@ -1045,9 +1591,62 @@ class GaiusEngine:
                 )
 
             elif action == "reconcile":
-                # State reconciliation - compare desired vs actual and fix
-                result = await self._orchestrator_service.reconcile_state()
-                return Response.success(request.id, result)
+                # State reconciliation using FSM-based service
+                if self._reconciliation_service:
+                    results = await self._reconciliation_service.observe_once()
+                    # Convert results to dict format
+                    result = {
+                        "endpoints": {
+                            name: {
+                                "expected": r.expected_state.value,
+                                "actual": r.actual_state.value,
+                                "drifted": r.is_drifted,
+                            }
+                            for name, r in results.items()
+                        },
+                        "drift_detected": any(r.is_drifted for r in results.values()),
+                    }
+                    return Response.success(request.id, result)
+                else:
+                    # Fallback to legacy reconciliation
+                    result = await self._orchestrator_service.reconcile_state()
+                    return Response.success(request.id, result)
+
+            elif action == "reconcile_status":
+                # Get reconciliation service status
+                if self._reconciliation_service:
+                    status = self._reconciliation_service.get_status()
+                    return Response.success(request.id, status)
+                else:
+                    return Response.failure(
+                        request.id,
+                        code=503,
+                        message="Reconciliation service not initialized",
+                    )
+
+            elif action == "enable_remediation":
+                # Enable or disable automatic remediation
+                if self._reconciliation_service:
+                    enable = request.params.get("enable", True)
+                    self._reconciliation_service.enable_remediation(enable)
+                    # Also set the orchestrator service for UNHEALTHY remediation
+                    if enable and self._orchestrator_service:
+                        self._reconciliation_service.set_orchestrator_service(
+                            self._orchestrator_service
+                        )
+                    return Response.success(
+                        request.id,
+                        {
+                            "remediation_enabled": enable,
+                            "message": f"Remediation {'enabled' if enable else 'disabled'}",
+                        },
+                    )
+                else:
+                    return Response.failure(
+                        request.id,
+                        code=503,
+                        message="Reconciliation service not initialized",
+                    )
 
             elif action == "discover":
                 # Discover what's actually running (diagnostic)
@@ -1090,12 +1689,12 @@ class GaiusEngine:
                     request.id, code=503, message="Backend router not initialized"
                 )
 
-            prompt = request.payload.get("prompt", "")
-            agent = request.payload.get("agent", "fast")
-            system_prompt = request.payload.get("system_prompt")
-            temperature = request.payload.get("temperature", 0.7)
-            max_tokens = request.payload.get("max_tokens", 2048)
-            technique = request.payload.get("technique")
+            prompt = request.params.get("prompt", "")
+            agent = request.params.get("agent", "instruct")
+            system_prompt = request.params.get("system_prompt")
+            temperature = request.params.get("temperature", 0.7)
+            max_tokens = request.params.get("max_tokens", 2048)
+            technique = request.params.get("technique")
 
             try:
                 response = await self._backend_router.complete(
@@ -1126,8 +1725,8 @@ class GaiusEngine:
                 )
         elif action == "submit":
             # Async job submission (queued)
-            prompt = request.payload.get("prompt", "")
-            model = request.payload.get("model", "")
+            prompt = request.params.get("prompt", "")
+            model = request.params.get("model", "")
             return Response.success(
                 request.id,
                 {
@@ -1137,13 +1736,24 @@ class GaiusEngine:
                 },
             )
         elif action == "get_result":
-            job_id = request.payload.get("job_id", "")
+            job_id = request.params.get("job_id", "")
             return Response.success(
                 request.id,
                 {
                     "job_id": job_id,
                     "status": "pending",
                     "result": None,
+                },
+            )
+        elif action == "budget":
+            # XAI budget status
+            return Response.success(
+                request.id,
+                {
+                    "daily_used": 0,
+                    "daily_limit": 50,
+                    "weekly_used": 0,
+                    "weekly_limit": 200,
                 },
             )
         else:
@@ -1173,7 +1783,7 @@ class GaiusEngine:
                 },
             )
         elif action == "trigger":
-            agent_id = request.payload.get("agent_id", "")
+            agent_id = request.params.get("agent_id", "")
             return Response.success(
                 request.id,
                 {
@@ -1207,7 +1817,7 @@ class GaiusEngine:
             )
         elif action == "project":
             # Project embeddings to grid
-            embeddings = request.payload.get("embeddings", [])
+            embeddings = request.params.get("embeddings", [])
             return Response.success(
                 request.id,
                 {
@@ -1236,7 +1846,7 @@ class GaiusEngine:
                 },
             )
         elif action == "compute":
-            embeddings = request.payload.get("embeddings", [])
+            embeddings = request.params.get("embeddings", [])
             return Response.success(
                 request.id,
                 {
@@ -1326,8 +1936,8 @@ class GaiusEngine:
                     request.id, code=503, message="Cognition service not initialized"
                 )
 
-            task_type = request.payload.get("task_type", "cognition_cycle")
-            payload = request.payload.get("payload", {})
+            task_type = request.params.get("task_type", "cognition_cycle")
+            payload = request.params.get("payload", {})
 
             try:
                 result = await self._cognition_service.trigger(task_type, payload)
@@ -1343,10 +1953,11 @@ class GaiusEngine:
 
             # Initialize cognition service if needed
             if not self._cognition_service:
+                # Get max_cycles_per_hour from config if available
+                cognition_cfg = getattr(self.config, "cognition", None)
+                max_cycles = getattr(cognition_cfg, "max_cycles_per_hour", 4) if cognition_cfg else 4
                 config = CognitionConfig(
-                    max_cycles_per_hour=self.config.cognition.max_cycles_per_hour
-                    if hasattr(self.config, "cognition")
-                    else 4,
+                    max_cycles_per_hour=max_cycles,
                     poll_interval_seconds=30.0,
                 )
                 self._cognition_service = CognitionService(
@@ -1369,7 +1980,7 @@ class GaiusEngine:
             if not self._cognition_service:
                 return Response.success(request.id, {"tasks": []})
 
-            limit = request.payload.get("limit", 10)
+            limit = request.params.get("limit", 10)
             tasks = await self._cognition_service.get_pending_tasks(limit)
             return Response.success(request.id, {"tasks": tasks})
 
@@ -1377,32 +1988,20 @@ class GaiusEngine:
             if not self._cognition_service:
                 return Response.success(request.id, {"tasks": []})
 
-            limit = request.payload.get("limit", 10)
+            limit = request.params.get("limit", 10)
             tasks = await self._cognition_service.get_recent_completed(limit)
             return Response.success(request.id, {"tasks": tasks})
 
         elif action == "recent_thoughts":
-            # Get recent thoughts from the cognition agent
-            limit = request.payload.get("limit", 10)
+            # Get recent thoughts from the cognition service (engine-native)
+            cognition = self._cognition_service
+            if not cognition:
+                return Response.success(request.id, {"thoughts": []})
+
+            limit = request.params.get("limit", 10)
             try:
-                from ..agents.cognition import get_cognition_agent
-
-                agent = get_cognition_agent()
-                thoughts = await agent.get_active_thoughts(limit=limit)
-
-                thought_list = []
-                for t in thoughts:
-                    thought_list.append({
-                        "type": t.thought_type.value if hasattr(t.thought_type, "value") else str(t.thought_type),
-                        "title": t.title,
-                        "summary": t.summary or (t.content[:100] if t.content else ""),
-                        "salience": t.salience,
-                        "generation": t.generation,
-                        "timestamp": t.created_at.isoformat() if t.created_at else None,
-                        "note_path": t.note_path,
-                    })
-
-                return Response.success(request.id, {"thoughts": thought_list})
+                thoughts = await cognition.get_recent_thoughts(limit=limit)
+                return Response.success(request.id, {"thoughts": thoughts})
 
             except Exception as e:
                 logger.debug(f"Failed to get recent thoughts: {e}")
@@ -1418,8 +2017,9 @@ class GaiusEngine:
                 "thoughts_today": 0,
             }
 
-            if self._cognition_service:
-                status = self._cognition_service.get_status()
+            cognition_svc = self._cognition_service
+            if cognition_svc:
+                status = cognition_svc.get_status()
                 activity["cognition_running"] = status.get("running", False)
                 activity["cycles_completed"] = status.get("cycles_completed", 0)
                 activity["last_cycle_at"] = status.get("last_cycle_at")
@@ -1429,15 +2029,12 @@ class GaiusEngine:
                     else None
                 )
 
-            # Try to get thought count for today
-            try:
-                from ..agents.cognition import get_cognition_agent
-
-                agent = get_cognition_agent()
-                thoughts = await agent.get_active_thoughts(limit=100)
-                activity["thoughts_today"] = len(thoughts)
-            except Exception:
-                pass
+                # Try to get thought count for today (engine-native)
+                try:
+                    thoughts = await cognition_svc.get_recent_thoughts(limit=100)
+                    activity["thoughts_today"] = len(thoughts)
+                except Exception:
+                    pass
 
             return Response.success(request.id, activity)
 

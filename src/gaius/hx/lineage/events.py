@@ -128,6 +128,62 @@ class Dataset:
             name=thought_id,
         )
 
+    @classmethod
+    def from_fmp(
+        cls,
+        endpoint: str,
+        symbol: str | None = None,
+        exchange_id: str | None = None,
+    ) -> Dataset:
+        """Create Dataset for an FMP API exchange.
+
+        Args:
+            endpoint: FMP endpoint type (sec-filings, institutional-holder, etc.)
+            symbol: Stock symbol if applicable.
+            exchange_id: Exchange record ID for specific record reference.
+
+        Returns:
+            Dataset with namespace gaius.fmp.
+        """
+        if exchange_id:
+            name = f"{endpoint}:{symbol or 'unknown'}:{exchange_id}"
+        elif symbol:
+            name = f"{endpoint}:{symbol}"
+        else:
+            name = endpoint
+        return cls(
+            namespace="gaius.fmp",
+            name=name,
+        )
+
+    @classmethod
+    def from_exchange(
+        cls,
+        provider: str,
+        request_hash: str | None = None,
+        exchange_id: str | None = None,
+    ) -> Dataset:
+        """Create Dataset for a generic API exchange record.
+
+        Args:
+            provider: API provider (xai, cerebras, bytez, brave, fmp).
+            request_hash: Request hash for deduplication reference.
+            exchange_id: Exchange record ID.
+
+        Returns:
+            Dataset with namespace gaius.exchange.
+        """
+        if exchange_id:
+            name = f"{provider}:{exchange_id}"
+        elif request_hash:
+            name = f"{provider}:{request_hash[:16]}"  # Truncated for readability
+        else:
+            name = provider
+        return cls(
+            namespace="gaius.exchange",
+            name=name,
+        )
+
 
 @dataclass
 class JobFacets:
@@ -207,6 +263,30 @@ class Job:
         return cls(
             namespace="gaius.agent",
             name=agent_type,
+        )
+
+    @classmethod
+    def fmp_fetch(cls, endpoint: str) -> Job:
+        """Create Job for FMP API fetching.
+
+        Args:
+            endpoint: FMP endpoint type (sec-filings, holdings, profile, etc.)
+        """
+        return cls(
+            namespace="gaius.fetch.fmp",
+            name=endpoint,
+        )
+
+    @classmethod
+    def prospects(cls, operation: str) -> Job:
+        """Create Job for prospects/stewardship operations.
+
+        Args:
+            operation: Operation type (check, update, analyze, synthesize).
+        """
+        return cls(
+            namespace="gaius.prospects",
+            name=operation,
         )
 
 

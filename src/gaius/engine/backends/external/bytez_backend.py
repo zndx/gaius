@@ -3,7 +3,7 @@
 Uses the Bytez SDK for subscription-based inference with:
 - Unlimited tokens (subscription model)
 - Limited to 2 concurrent requests
-- Vendor whitelist: mistralai, allenai only
+- GPU seat-aware model selection (1 seat = 0.5B models)
 """
 
 import asyncio
@@ -31,10 +31,12 @@ class BytezBackend(ExternalBackend):
         BYTEZ_API_KEY: API key for Bytez
     """
 
+    # Mistral-7B-Instruct for quality analysis
+    # (requires 4 GPU seats - upgrade Bytez credits if needed)
     DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
 
     # Allowed vendors for model selection
-    ALLOWED_VENDORS = {"mistralai", "allenai"}
+    ALLOWED_VENDORS = {"mistralai", "allenai", "Qwen"}
 
     # Maximum concurrent requests
     MAX_CONCURRENT = 2
@@ -245,6 +247,8 @@ class BytezBackend(ExternalBackend):
         """
         try:
             model = sdk.model(model_id)
+            # Note: scaleUp parameter only works for models that need more seats
+            # than available. We use Qwen2-0.5B which only needs 1 seat.
             result = model.run(messages)
 
             # Handle different output formats from Bytez SDK

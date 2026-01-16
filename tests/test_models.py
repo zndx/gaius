@@ -65,25 +65,23 @@ class TestModelRegistry:
 
     def test_get_model_for_task(self):
         """Can get models for different task types."""
+        # These raise RuntimeError if no model registered - no None checks needed
         reasoning_model = get_model_for_task(TaskType.REASONING)
-        assert reasoning_model is not None
         assert ModelCapability.REASONING in reasoning_model.capabilities
 
         coding_model = get_model_for_task(TaskType.CODING)
-        assert coding_model is not None
+        assert coding_model.model_id  # Just verify we got a model
 
         text_embed = get_model_for_task(TaskType.TEXT_EMBEDDING)
-        assert text_embed is not None
         assert ModelCapability.TEXT_EMBEDDING in text_embed.capabilities
 
         vision_embed = get_model_for_task(TaskType.VISION_EMBEDDING)
-        assert vision_embed is not None
         assert ModelCapability.VISION_EMBEDDING in vision_embed.capabilities
 
     def test_model_spec_properties(self):
         """ModelSpec has correct properties."""
         registry = get_model_registry()
-        spec = registry.get_for_task(TaskType.REASONING)
+        spec = registry.get_for_task(TaskType.REASONING)  # Raises if not found
 
         assert spec.model_id is not None
         assert spec.provider in ["huggingface", "xai", "openai", "vllm"]

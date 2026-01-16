@@ -59,7 +59,7 @@ import logging
 import json
 
 try:
-    from ortools.sat.python import cp_model
+    from ortools.sat.python import cp_model  # type: ignore[import-not-found] - Optional dep for advanced scheduling
     ORTOOLS_AVAILABLE = True
 except ImportError:
     ORTOOLS_AVAILABLE = False
@@ -179,13 +179,24 @@ class InferenceScheduler:
         self._load_endpoints()
 
     def _load_endpoints(self) -> None:
-        """Load endpoint configuration."""
+        """Load endpoint configuration.
+
+        Fail-open behavior: If config loading fails, configure default endpoints
+        pointing to standard vLLM ports so inference can still work.
+        """
         try:
             from ..core.config import get_config
 
             config = get_config()
+            if config._raw is None:
+                self._configure_default_endpoints("config._raw is None")
+                return
             inference = config._raw.get("gaius", {}).get("inference", {})
             endpoints_raw = inference.get("endpoints", {})
+
+            if not endpoints_raw:
+                self._configure_default_endpoints("no endpoints in config")
+                return
 
             for name, ep in endpoints_raw.items():
                 if isinstance(ep, dict):
@@ -196,14 +207,45 @@ class InferenceScheduler:
                         models_available=ep.get("models", []),
                         current_model=ep.get("models", [None])[0] if ep.get("models") else None,
                     )
-        except Exception:
-            # LEGACY_FALLBACK: Single default endpoint when config loading fails
-            # In agent-first mode, engine manages endpoints; this is a last resort
-            logger.warning("LEGACY_FALLBACK: Using default endpoint - prefer engine proxy")
-            self._endpoints["default"] = EndpointState(
-                name="default",
-                url="http://localhost:8080/v1",  # orchestrator endpoint
+        except Exception as e:
+            # Fail-open: configure default endpoints when config unavailable
+            logger.warning(
+                f"Failed to load endpoint configuration (#EP.00000001.NOCONFIG): {e}. "
+                "Using default endpoints (fail-open behavior)."
             )
+            self._configure_default_endpoints(str(e))
+
+    def _configure_default_endpoints(self, reason: str) -> None:
+        """Configure default endpoints for fail-open behavior.
+
+        When config loading fails, provide sensible defaults so inference
+        can still work with the standard vLLM deployment.
+        """
+        logger.info(f"Configuring default endpoints (reason: {reason})")
+
+        # Default endpoints matching agents.conf standard ports
+        # instruct = Devstral-24B on port 8082
+        self._endpoints["instruct"] = EndpointState(
+            name="instruct",
+            url="http://localhost:8082/v1",
+            gpus=[0, 1, 2, 3],
+            models_available=["mistralai/Devstral-Small-2-24B-Instruct-2512"],
+            current_model="mistralai/Devstral-Small-2-24B-Instruct-2512",
+        )
+
+        # reasoning = QwQ-32B on port 8081
+        self._endpoints["reasoning"] = EndpointState(
+            name="reasoning",
+            url="http://localhost:8081/v1",
+            gpus=[0, 1, 2, 3],
+            models_available=["Qwen/QwQ-32B"],
+            current_model="Qwen/QwQ-32B",
+        )
+
+        logger.info(
+            f"Default endpoints configured: {list(self._endpoints.keys())}. "
+            "These may not match actual deployment - prefer gRPC engine."
+        )
 
     def _estimate_duration(self, job: Job, endpoint: EndpointState) -> int:
         """Estimate job duration in milliseconds."""
@@ -584,7 +626,7 @@ class SchedulerService:
             # Try HOCON config first, fall back to env/defaults
             api_key = "sk-optillm"
             optillm_url = "http://localhost:8088/v1"  # optillm proxy when running
-            model = "mistralai/Mistral-7B-Instruct-v0.3"
+            model = "mistralai/Devstral-Small-2-24B-Instruct-2512"  # Devstral-24B default
 
             try:
                 from ..core.config import get_config
@@ -1056,8 +1098,8 @@ class SchedulerService:
     async def _init_orchestrator_components(self) -> None:
         """Initialize GPU orchestrator, health monitor, recovery manager, and persistence.
 
-        Prefers engine client (agent-first architecture) when available.
-        Falls back to legacy orchestrator for standalone mode.
+        Engine Federation Architecture: GPU orchestration is delegated to the engine.
+        The scheduler itself only handles job queuing and client-side routing.
         """
         try:
             from ..client.engine_proxy import use_engine_proxy
@@ -1067,14 +1109,20 @@ class SchedulerService:
                 logger.info("Using engine for GPU orchestration (agent-first mode)")
                 self._orchestrator = None  # Engine handles this
             else:
-                # Fallback to legacy standalone orchestrator
-                logger.warning("LEGACY_FALLBACK: InferenceScheduler using legacy orchestrator - tech debt")
-                from .orchestrator import get_orchestrator
-                self._orchestrator = get_orchestrator()
-                await self._orchestrator.start()
-                logger.info("GPU orchestrator initialized (standalone mode)")
+                # Engine Federation Architecture: no fallback to local orchestrator
+                logger.warning(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "GPU orchestration requires engine gRPC service. "
+                    "Scheduler will operate in limited mode (no GPU management). "
+                    "Start engine: devenv up gaius-engine"
+                )
+                self._orchestrator = None
         except Exception as e:
-            logger.warning(f"GPU orchestrator not available: {e}")
+            logger.warning(
+                f"GPU orchestrator check failed (#GR.00000002.CALLF): {e}. "
+                "Operating without GPU orchestration."
+            )
+            self._orchestrator = None
 
         try:
             from .health import get_health_monitor

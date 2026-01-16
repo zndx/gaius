@@ -217,8 +217,12 @@ class SituationalAwareness:
             report.activity_today = await tracker.get_today()
             report.activity_yesterday = await tracker.get_yesterday()
             report.activity_week = await tracker.get_this_week()
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get activity summaries: {e}\n"
+                "Guru Meditation: #SA.00000001.ACTIVITY\n"
+                "Check: Activity tracker initialization"
+            ) from e
 
         # Get KB stats
         report.kb_total_entries = await self._count_kb_entries()
@@ -288,8 +292,12 @@ class SituationalAwareness:
                         first_line = content.split("\n")[0].strip()
                         if first_line.startswith("#"):
                             title = first_line.lstrip("#").strip()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"Failed to read KB entry {md_file}: {e}\n"
+                            "Guru Meditation: #SA.00000002.KBREAD\n"
+                            "Check: File permissions and encoding"
+                        ) from e
 
                     entries.append(
                         RecentEntry(
@@ -302,8 +310,12 @@ class SituationalAwareness:
             # Sort by recency
             entries.sort(key=lambda e: e.created_at, reverse=True)
 
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to scan KB for recent entries: {e}\n"
+                "Guru Meditation: #SA.00000003.KBSCAN\n"
+                "Check: KB path exists and is accessible"
+            ) from e
 
         return entries
 
@@ -317,8 +329,12 @@ class SituationalAwareness:
 
         try:
             return sum(1 for _ in kb_path.rglob("*.md"))
-        except Exception:
-            return 0
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to count KB entries: {e}\n"
+                "Guru Meditation: #SA.00000004.KBCOUNT\n"
+                "Check: KB path permissions"
+            ) from e
 
     async def _count_vector_store(self) -> int:
         """Count vectors in Qdrant."""
@@ -332,10 +348,14 @@ class SituationalAwareness:
             )
 
             info = client.get_collection(config.vector_store.collection)
-            return info.points_count
+            return info.points_count or 0
 
-        except Exception:
-            return 0
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to count vectors in Qdrant: {e}\n"
+                "Guru Meditation: #SA.00000005.QDRANT\n"
+                "Check: /health qdrant"
+            ) from e
 
     def _extract_topics(self, titles: list[str]) -> list[str]:
         """Extract key topics from titles using simple frequency."""
@@ -383,38 +403,42 @@ class SituationalAwareness:
         # Try LLM synthesis if available and we have data
         if report.emphasis and report.emphasis.notable_entries:
             try:
-                from ..inference import get_client, Message
+                from gaius.client import get_grpc_client
 
-                client = get_client()
+                client = await get_grpc_client()
 
                 # Build context from recent entries
                 entry_list = "\n".join(
                     f"- {e.title}" for e in report.emphasis.notable_entries[:5]
                 )
 
-                result = await client.complete(
-                    [
-                        Message(
-                            role="user",
-                            content=f"""Based on these recent KB entries, provide 2-3 brief insights (one sentence each):
+                result = await client.call(
+                    service="Scheduler",
+                    action="complete",
+                    params={
+                        "prompt": f"""Based on these recent KB entries, provide 2-3 brief insights (one sentence each):
 
 {entry_list}
 
 Focus on patterns, connections, or areas needing attention.""",
-                        )
-                    ],
-                    max_tokens=200,
-                    temperature=0.5,
+                        "agent": "instruct",
+                        "max_tokens": 200,
+                        "temperature": 0.5,
+                    },
                 )
 
                 # Parse response into insights
-                for line in result.content.split("\n"):
+                for line in result.get("content", "").split("\n"):
                     line = line.strip().lstrip("-•*").strip()
                     if line and len(line) > 10:
                         insights.append(line)
 
-            except Exception:
-                pass
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to generate LLM insights: {e}\n"
+                    "Guru Meditation: #SA.00000006.LLMINSIGHT\n"
+                    "Check: /health endpoints"
+                ) from e
 
         return insights[:5]
 

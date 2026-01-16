@@ -21,7 +21,7 @@ Usage:
 import functools
 import time
 import uuid
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 from gaius.core.telemetry import get_tracer
 
@@ -116,7 +116,9 @@ def traced_step(func: F) -> F:
                     span.record_exception(e)
                 raise
 
-    return wrapper  # type: ignore
+    # Cast is safe: wrapper preserves func's signature via @wraps;
+    # type checker can't verify decorators preserve signatures
+    return cast(F, wrapper)
 
 
 class TracedFlow:
@@ -196,7 +198,12 @@ class TracedFlow:
 
         This ID should be passed to NiFi as a FlowFile attribute
         for end-to-end traceability.
+
+        Note: Uses lazy initialization because Metaflow doesn't call __init__
+        the normal Python way - it serializes/deserializes between steps.
         """
+        if not hasattr(self, "correlation_id") or self.correlation_id is None:
+            self.correlation_id = str(uuid.uuid4())
         return self.correlation_id
 
 

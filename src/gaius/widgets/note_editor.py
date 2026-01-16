@@ -13,23 +13,37 @@ from textual.message import Message
 from textual.binding import Binding
 from textual import events
 
+# File extensions editable in NoteEditor (KB text files)
+EDITABLE_EXTENSIONS = {".md", ".owl", ".json", ".yaml", ".yml", ".ttl", ".txt", ".toml"}
+
 
 class VimTextArea(TextArea):
-    """TextArea that sends ESC to parent for vim-style mode switching."""
+    """TextArea that sends ESC to parent and handles vim-style scrolling."""
 
     class EscapePressed(Message):
         """Sent when ESC is pressed in the TextArea."""
         pass
 
-    def _on_key(self, event: events.Key) -> None:
-        """Intercept ESC before TextArea handles it."""
+    async def _on_key(self, event: events.Key) -> None:
+        """Intercept ESC and vim scroll keys before TextArea handles them."""
         if event.key == "escape":
             self.post_message(self.EscapePressed())
             event.prevent_default()
             event.stop()
             return
+        # Vim-style page scrolling (works in insert mode too)
+        if event.key == "ctrl+f":
+            self.scroll_page_down()
+            event.prevent_default()
+            event.stop()
+            return
+        if event.key == "ctrl+b":
+            self.scroll_page_up()
+            event.prevent_default()
+            event.stop()
+            return
         # Let TextArea handle other keys normally
-        super()._on_key(event)
+        await super()._on_key(event)
 
 
 class NoteEditor(Widget, can_focus=True):
@@ -46,6 +60,13 @@ class NoteEditor(Widget, can_focus=True):
     - o: Open line below
     - O: Open line above
     - :q or :wq: Close editor (auto-saves, so w is no-op)
+    - :<number>: Go to line number (e.g., :42 goes to line 42)
+
+    Navigation (both modes):
+    - Arrow keys: Scroll viewport (browser-style)
+    - Ctrl-F/Ctrl-B: Page down/up (vim-style)
+    - G (shift-g): Jump to end of document
+    - hjkl, g: Pass through to main grid/panels (normal mode)
     """
 
     DEFAULT_CSS = """
@@ -338,9 +359,22 @@ class NoteEditor(Widget, can_focus=True):
             parts = cmd_stripped.split(maxsplit=1)
             name = parts[1].strip() if len(parts) > 1 else None
             self._rename_to_scratch(name)
+        elif cmd_stripped.isdigit():
+            # :123 - go to line 123 (vim-style)
+            self._goto_line(int(cmd_stripped))
 
         self._in_command_mode = False
         self.command_buffer = ""
+
+    def _goto_line(self, line_num: int) -> None:
+        """Navigate to a specific line number (1-indexed, vim-style)."""
+        if not self._editor:
+            return
+        # Convert to 0-indexed, clamp to valid range
+        target_row = max(0, min(line_num - 1, self._editor.document.line_count - 1))
+        self._editor.cursor_location = (target_row, 0)
+        # Scroll to make the line visible
+        self._editor.scroll_cursor_visible()
 
     def on_key(self, event: events.Key) -> None:
         """Handle key presses for vim-style navigation."""
@@ -414,32 +448,47 @@ class NoteEditor(Widget, can_focus=True):
             self._enter_command_mode()
             event.prevent_default()
             event.stop()
-        # Navigation in normal mode (hjkl)
-        elif event.character == "h" and self._editor:
-            row, col = self._editor.cursor_location
-            if col > 0:
-                self._editor.cursor_location = (row, col - 1)
+        # hjkl passes through to main grid for cursor movement
+        # Arrow keys scroll viewport (browser-style navigation)
+        elif event.key == "down" and self._editor:
+            self._editor.scroll_relative(y=1)
             event.prevent_default()
             event.stop()
-        elif event.character == "j" and self._editor:
-            row, col = self._editor.cursor_location
-            if row < self._editor.document.line_count - 1:
-                self._editor.cursor_location = (row + 1, col)
+        elif event.key == "up" and self._editor:
+            self._editor.scroll_relative(y=-1)
             event.prevent_default()
             event.stop()
-        elif event.character == "k" and self._editor:
-            row, col = self._editor.cursor_location
-            if row > 0:
-                self._editor.cursor_location = (row - 1, col)
+        elif event.key == "right" and self._editor:
+            self._editor.scroll_relative(x=3)
             event.prevent_default()
             event.stop()
-        elif event.character == "l" and self._editor:
-            row, col = self._editor.cursor_location
-            line = self._editor.document.get_line(row)
-            if col < len(line) - 1:
-                self._editor.cursor_location = (row, col + 1)
+        elif event.key == "left" and self._editor:
+            self._editor.scroll_relative(x=-3)
             event.prevent_default()
             event.stop()
+        elif event.key == "pagedown" and self._editor:
+            self._editor.scroll_page_down()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "pageup" and self._editor:
+            self._editor.scroll_page_up()
+            event.prevent_default()
+            event.stop()
+        # Vim-style page scrolling
+        elif event.key == "ctrl+f" and self._editor:
+            self._editor.scroll_page_down()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "ctrl+b" and self._editor:
+            self._editor.scroll_page_up()
+            event.prevent_default()
+            event.stop()
+        # G (shift-g) - jump to end of document
+        elif event.character == "G" and self._editor:
+            self._editor.scroll_end()
+            event.prevent_default()
+            event.stop()
+        # 'g' passes through to main app for panel cycling
 
     def new_note(self) -> str:
         """Create a new Zettelkasten note with timestamp filename."""
@@ -505,3 +554,33 @@ class NoteEditor(Widget, can_focus=True):
         """Focus the editor (enters normal mode)."""
         self.focus()
         self._update_mode_display()
+
+    def show_content(self, title: str, content: str, extension: str = ".md") -> str:
+        """Display content in editor, creating scratch file automatically.
+
+        Used for command output that should be editable. Creates a timestamped
+        scratch file and opens it in the editor.
+
+        Args:
+            title: Base name for scratch file (will be sanitized)
+            content: Text content to display
+            extension: File extension (default .md)
+
+        Returns:
+            Path to created scratch file
+        """
+        safe_title = re.sub(r'[^\w\-]', '_', title)[:30]
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H%M%S")  # HHMMSS format to match CLI pattern
+        filename = f"{timestamp}_{safe_title}{extension}"
+
+        filepath = self.scratch_dir / today / filename
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(content)
+
+        self.open_note(str(filepath))
+        self.remove_class("hidden")
+
+        self.post_message(self.NoteCreated(str(filepath)))
+        return str(filepath)

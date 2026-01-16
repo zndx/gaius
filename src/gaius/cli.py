@@ -36,10 +36,13 @@ except ImportError:
 import argparse
 import asyncio
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
+
+logger = logging.getLogger(__name__)
 
 from .core.state import AppState, ViewMode, OverlayMode, IsoMode
 from .static import (
@@ -123,7 +126,7 @@ class GaiusCLI:
         self.state.white_stones = GRID_DATA["white"]
         self.state.allocations = GRID_DATA["alloc"]
         self.state.h1_cycles = DEATH_LOOPS
-        self.state.tda_entropy = TDA_METRICS["entropy"]
+        self.state.tda_entropy = cast(float, TDA_METRICS["entropy"])
 
         for agent in AGENT_DATA:
             self.state.agent_positions.append((
@@ -192,6 +195,8 @@ class GaiusCLI:
                     result["data"] = self._run_async(self._cmd_submit(args))
                 elif command == "swarm":
                     result["data"] = self._run_async(self._cmd_swarm(args))
+                elif command == "meta":
+                    result["data"] = self._run_async(self._cmd_meta(args))
                 # GPU Orchestrator commands
                 elif command == "gpu" or command == "orch":
                     result["data"] = self._run_async(self._cmd_gpu(args))
@@ -236,8 +241,8 @@ class GaiusCLI:
                 # Self-healing - tiered recovery system
                 elif command == "heal":
                     result["data"] = self._run_async(self._cmd_heal(args))
-                # Model registry commands
-                elif command == "model" or command == "models":
+                # Model registry commands (local model specs)
+                elif command == "model":
                     result["data"] = self._cmd_model(args)
                 # Execute via Engine's CommandService (unified entry point)
                 elif command == "exec":
@@ -245,6 +250,9 @@ class GaiusCLI:
                 # AIOps - infrastructure health management with KB reports
                 elif command == "aiops":
                     result["data"] = self._run_async(self._cmd_aiops(args))
+                # Observe - observability dashboard (CLI mirror of TUI ObservePanel)
+                elif command == "observe" or command == "obs":
+                    result["data"] = self._run_async(self._cmd_observe(args))
                 # MLOps - model lifecycle management with KB reports
                 elif command == "mlops":
                     result["data"] = self._run_async(self._cmd_mlops(args))
@@ -257,6 +265,38 @@ class GaiusCLI:
                 # Fetch paper shortcut (alias for /flow run docling)
                 elif command == "fetch":
                     result["data"] = self._run_async(self._cmd_fetch(args))
+                # Docs sync - Cloudera documentation ETL
+                elif command == "docs-sync":
+                    result["data"] = self._cmd_docs_sync(args)
+                # SITREP - ThetaAgent situational awareness
+                elif command == "sitrep":
+                    result["data"] = self._run_async(self._cmd_sitrep(args))
+                elif command == "consolidate":
+                    result["data"] = self._run_async(self._cmd_consolidate(args))
+                # CLT - Cross-Layer Transcoders for circuit tracing
+                elif command == "clt":
+                    result["data"] = self._run_async(self._cmd_clt(args))
+                # Topology - temporal dynamics tracking
+                elif command == "topology" or command == "topo" or command == "drift":
+                    result["data"] = self._run_async(self._cmd_topology(args))
+                # NG-RC - forward dynamics prediction
+                elif command == "ngrc" or command == "predict":
+                    result["data"] = self._run_async(self._cmd_ngrc(args))
+                # X Bookmarks - sync X/Twitter bookmarks to KB
+                elif command == "x-bookmarks" or command == "xb":
+                    result["data"] = self._run_async(self._cmd_x_bookmarks(args))
+                # Ambient Computing - invisible workloads for baseline GPU activity
+                elif command == "ambient":
+                    result["data"] = self._run_async(self._cmd_ambient(args))
+                # Datasets - HuggingFace dataset discovery and KB management
+                elif command == "datasets" or command == "ds":
+                    result["data"] = self._run_async(self._cmd_datasets(args))
+                # Models - HuggingFace model discovery and KB management
+                elif command == "models" or command == "m":
+                    result["data"] = self._run_async(self._cmd_models(args))
+                # Prospects - FMP-based prospect intelligence
+                elif command == "prospects" or command == "pro":
+                    result["data"] = self._run_async(self._cmd_prospects(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -298,10 +338,99 @@ class GaiusCLI:
         return {"position": self._coord_string(x, y), "x": x, "y": y}
 
     def _cmd_domain(self, args: str) -> dict:
-        """Set or get domain."""
+        """Set or get domain within current profile.
+
+        Usage:
+            /domain           - Show current domain, list available
+            /domain csa       - Set domain (profile unchanged)
+            /domain open      - Clear domain constraint
+
+        Domains are profile-scoped focus areas. Setting a domain:
+        - Filters searches to domain-specific KB paths
+        - Loads domain_text for agent prompting context
+        - Persists to database for session continuity
+        """
+        import asyncio
+
+        try:
+            from gaius.storage.profile_ops import (
+                list_domains,
+                set_active_domain,
+                get_profile_context,
+            )
+        except ImportError:
+            # Fall back to simple in-memory domain if DB not available
+            if args:
+                domain = args.strip().lower()
+                self.state.domain = None if domain == "open" else domain
+            return {"domain": self.state.domain, "profile": self.config.profile}
+
+        profile = self.config.profile
+
         if args:
-            self.state.domain = args
-        return {"domain": self.state.domain}
+            domain = args.strip().lower()
+
+            # "open" clears the domain constraint
+            if domain == "open":
+                self.state.domain = None
+                try:
+                    asyncio.get_event_loop().run_until_complete(
+                        set_active_domain(profile, None)
+                    )
+                except Exception:
+                    pass
+                return {
+                    "domain": None,
+                    "profile": profile,
+                    "message": "Domain constraint cleared",
+                }
+
+            # Set the new domain
+            self.state.domain = domain
+            try:
+                asyncio.get_event_loop().run_until_complete(
+                    set_active_domain(profile, domain)
+                )
+                # Get the domain context for display
+                context = asyncio.get_event_loop().run_until_complete(
+                    get_profile_context(profile, domain)
+                )
+                return {
+                    "domain": domain,
+                    "profile": profile,
+                    "domain_text": context.domain_text if context else None,
+                    "kb_prefixes": context.domain_prefixes if context else [],
+                }
+            except Exception as e:
+                return {
+                    "domain": domain,
+                    "profile": profile,
+                    "warning": f"Domain set locally but DB update failed: {e}",
+                }
+        else:
+            # List available domains for current profile
+            try:
+                domains = asyncio.get_event_loop().run_until_complete(
+                    list_domains(profile)
+                )
+                available = [
+                    {
+                        "name": d.name,
+                        "display_name": d.display_name,
+                        "is_active": d.is_active,
+                    }
+                    for d in domains
+                ]
+                return {
+                    "domain": self.state.domain,
+                    "profile": profile,
+                    "available_domains": available,
+                }
+            except Exception:
+                return {
+                    "domain": self.state.domain,
+                    "profile": profile,
+                }
 
     def _cmd_overlay(self, args: str) -> dict:
         """Set or cycle overlay mode."""
@@ -677,17 +806,27 @@ class GaiusCLI:
         )
 
         # Check if grids have any non-zero values
-        def grid_has_data(grid: list[list[float]]) -> bool:
+        from .core.minigrids import MiniGridData
+
+        def grid_has_data(grid_or_data: list | MiniGridData) -> bool:  # type: ignore[type-arg] - list is unparameterized for brevity, contains int values
+            # Extract grid if MiniGridData, otherwise use as-is
+            grid = grid_or_data.grid if isinstance(grid_or_data, MiniGridData) else grid_or_data
             return any(v > 0 for row in grid for v in row)
+
+        def extract_grid(grid_or_data: list | MiniGridData) -> list:  # type: ignore[type-arg] - list is unparameterized for brevity, returns list[list[int]]
+            return grid_or_data.grid if isinstance(grid_or_data, MiniGridData) else grid_or_data
+
+        embed_data = data.get("right", [])
+        iso_data = data.get("top", [])
 
         return {
             "position": self._coord_string(cx, cy),
             "x": cx,
             "y": cy,
-            "embed_grid": data.get("right", []),
-            "embed_has_data": grid_has_data(data.get("right", [])),
-            "iso_grid": data.get("top", []),
-            "iso_has_data": grid_has_data(data.get("top", [])),
+            "embed_grid": extract_grid(embed_data),
+            "embed_has_data": grid_has_data(embed_data),
+            "iso_grid": extract_grid(iso_data),
+            "iso_has_data": grid_has_data(iso_data),
             "grid_data_status": grid_data_status,
             "curvatures_available": curvatures is not None,
         }
@@ -1017,19 +1156,16 @@ class GaiusCLI:
                 gc = GeometryComputer(k_neighbors=min(15, len(grid_data.raw_embeddings) - 1))
 
                 # Run geometry computation
+                coro = gc.compute_features(grid_data.raw_embeddings, grid_coords)
                 try:
                     loop = asyncio.get_running_loop()
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(
-                            asyncio.run,
-                            gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                        )
+                        # Wrap in lambda to satisfy type checker
+                        future = pool.submit(lambda: asyncio.run(coro))
                         geom_features = future.result(timeout=60)
                 except RuntimeError:
-                    geom_features = asyncio.run(
-                        gc.compute_features(grid_data.raw_embeddings, grid_coords)
-                    )
+                    geom_features = asyncio.run(coro)
 
                 # Map curvatures to grid
                 if geom_features and geom_features.curvatures is not None:
@@ -1163,8 +1299,10 @@ class GaiusCLI:
                 "engine [cmd]": "Engine connection (status, reconnect, test)",
                 # Unified command routing (thin client)
                 "exec <cmd> [args]": "Execute via Engine's CommandService",
+                # ThetaAgent situational awareness
+                "sitrep [horizon]": "Situational report (day, week, quarter, open)",
             },
-            "tagline": "/ask away! Use /ask for general queries, /watch for telemetry, /search for research.",
+            "tagline": "/sitrep to start your day! Use /ask for queries, /thoughts for cognition.",
         }
 
     # --- Model Registry Commands ---
@@ -1682,16 +1820,16 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
         import httpx
         import os
 
-        # Try engine-managed coding endpoint (agent-first)
+        # Try engine-managed instruct endpoint (agent-first)
         try:
             from .client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
             if use_engine_proxy():
                 orch = await get_orchestrator_proxy()
-                result = await orch.ensure_endpoint("coding")
+                result = await orch.ensure_endpoint("instruct")
                 if result.get("healthy"):
-                    port = result.get("port", 8083)
-                    model_id = result.get("model", "coding")
+                    port = result.get("port", 8082)
+                    model_id = result.get("model", "instruct")
                     return (model_id, f"http://localhost:{port}/v1")
         except Exception:
             pass
@@ -1848,20 +1986,22 @@ Downloads: {api.get('downloads', 0):,}
         import subprocess
         from pathlib import Path
 
-        result = {
+        result: dict[str, bool | list[str] | str | None] = {
             "syntax": False,
             "imports": False,
             "serve_cmd": False,
             "warnings": [],
             "variable_name": None,
         }
+        warnings: list[str] = []  # Separate list for type narrowing
 
         # 1. Syntax check
         try:
             tree = ast.parse(code)
             result["syntax"] = True
         except SyntaxError as e:
-            result["warnings"].append(f"Syntax error at line {e.lineno}: {e.msg}")
+            warnings.append(f"Syntax error at line {e.lineno}: {e.msg}")
+            result["warnings"] = warnings
             return result
 
         # 2. Find variable name
@@ -1874,7 +2014,8 @@ Downloads: {api.get('downloads', 0):,}
                             result["variable_name"] = node.targets[0].id
 
         if not result["variable_name"]:
-            result["warnings"].append("No ModelSpec() assignment found")
+            warnings.append("No ModelSpec() assignment found")
+            result["warnings"] = warnings
             return result
 
         # 3. Import test in subprocess (isolated)
@@ -1914,18 +2055,19 @@ for name, obj in list(locals().items()):
             if proc.returncode != 0 and proc.stderr:
                 # Truncate long error messages
                 err = proc.stderr[:500]
-                result["warnings"].append(f"Import error: {err}")
+                warnings.append(f"Import error: {err}")
 
             if "SERVE_CMD_ERR" in proc.stdout:
                 err_match = proc.stdout.split("SERVE_CMD_ERR:")
                 if len(err_match) > 1:
-                    result["warnings"].append(f"serve_command error: {err_match[1].strip()}")
+                    warnings.append(f"serve_command error: {err_match[1].strip()}")
 
         except subprocess.TimeoutExpired:
-            result["warnings"].append("Validation timed out (15s)")
+            warnings.append("Validation timed out (15s)")
         except Exception as e:
-            result["warnings"].append(f"Validation failed: {e}")
+            warnings.append(f"Validation failed: {e}")
 
+        result["warnings"] = warnings
         return result
 
     async def _cmd_model_add_confirm(self) -> dict:
@@ -2184,7 +2326,7 @@ for name, obj in list(locals().items()):
         try:
             result = await scheduler.complete(
                 prompt=prompt,
-                agent="fast",  # Use fast agent (always available)
+                agent="instruct",  # Use instruct agent (always available)
                 system_prompt=system_prompt,
                 technique=technique,
                 temperature=temperature,
@@ -2268,32 +2410,35 @@ When discussing technical topics, be precise and cite sources when possible."""
 
             return response_data
 
-        # Fallback to engine inference client
+        # Fallback to engine inference client via gRPC
         try:
-            from .inference import get_engine_client, Message
+            from .client import get_grpc_client
 
-            client = await get_engine_client()
+            client = await get_grpc_client()
 
-            result = await client.complete(
-                messages=[
-                    Message(role="system", content=system),
-                    Message(role="user", content=query),
-                ],
-                technique="cot_reflection",
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": query,
+                    "system_prompt": system,
+                    "agent": "instruct",
+                    "technique": "cot_reflection",
+                },
             )
 
             response_data = {
                 "mode": "reasoning",
                 "query": query,
-                "response": result.content,
-                "model": result.model,
-                "technique": result.technique or "cot_reflection",
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "response": result.get("content", ""),
+                "model": result.get("model", ""),
+                "technique": "cot_reflection",
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "backend": "engine",
             }
 
             if save_to_kb:
-                saved_path = await self._save_to_kb(query, result.content, "reasoning")
+                saved_path = await self._save_to_kb(query, result.get("content", ""), "reasoning")
                 response_data["saved_to"] = str(saved_path)
 
             return response_data
@@ -2324,8 +2469,8 @@ When discussing technical topics, be precise and cite sources when possible."""
         if not kb_results and not web_results:
             # Fall back to web search only
             try:
-                from .inference.search import get_web_search
-                web_search = get_web_search()
+                from .inference import get_search
+                web_search = get_search()
                 web_hits = await web_search.search(query, count=5)
                 web_results = [
                     {"title": r.title, "snippet": r.snippet, "url": r.url}
@@ -2372,24 +2517,29 @@ Answer:"""
                 "backend": engine_result.get("backend", "engine"),
             }
 
-        # Fallback to engine inference client
+        # Fallback to engine inference client via gRPC
         try:
-            from .inference import get_engine_client, Message
+            from .client import get_grpc_client
 
-            client = await get_engine_client()
+            client = await get_grpc_client()
 
-            result = await client.complete(
-                messages=[Message(role="user", content=prompt)],
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                },
             )
 
             return {
                 "mode": "search",
                 "query": query,
-                "response": result.content,
-                "model": result.model,
+                "response": result.get("content", ""),
+                "model": result.get("model", ""),
                 "kb_sources": len(kb_results),
                 "web_sources": len(web_results),
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "backend": "engine",
             }
 
@@ -2492,7 +2642,7 @@ Answer:"""
                 diagnostics.append({
                     "component": "gaius-engine",
                     "status": "not connected",
-                    "suggestion": "Set GAIUS_ALLOW_FALLBACKS=true and start engine",
+                    "suggestion": "Start engine with: gaius-engine",
                 })
         except Exception as e:
             diagnostics.append({
@@ -2508,7 +2658,7 @@ Answer:"""
             kb_status = {
                 "component": "kb_search",
                 "index_size": kb_search.index_size,
-                "kb_path": str(kb_search.kb_path),
+                "kb_path": str(kb_search.kb_root),
             }
             if kb_search.index_size == 0:
                 kb_status["status"] = "empty"
@@ -2571,8 +2721,8 @@ Answer:"""
 
         # Check web search
         try:
-            from .inference.search import get_web_search
-            web_search = get_web_search()
+            from .inference import get_search
+            web_search = get_search()
             has_api_key = bool(os.environ.get("BRAVE_API_KEY"))
             diagnostics.append({
                 "component": "web_search",
@@ -2635,31 +2785,36 @@ Respond with:
 
             return response_data
 
-        # Fallback to engine inference client
+        # Fallback to engine inference client via gRPC
         try:
-            from .inference import get_engine_client, Message
+            from .client import get_grpc_client
 
-            client = await get_engine_client()
+            client = await get_grpc_client()
 
-            result = await client.complete(
-                messages=[Message(role="user", content=prompt)],
-                technique="cot_reflection",
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "technique": "cot_reflection",
+                },
             )
 
             response_data = {
                 "mode": "platform",
                 "query": query,
                 "diagnostics": diagnostics,
-                "response": result.content,
-                "model": result.model,
-                "tokens": f"{result.input_tokens}+{result.output_tokens}",
+                "response": result.get("content", ""),
+                "model": result.get("model", ""),
+                "tokens": f"{result.get('input_tokens', 0)}+{result.get('output_tokens', 0)}",
                 "backend": "engine",
             }
 
             if save_to_kb:
                 saved_path = await self._save_to_kb(
                     f"Platform: {query[:50]}",
-                    f"## Diagnostics\n```json\n{diag_text}\n```\n\n## Remediation\n{result.content}",
+                    f"## Diagnostics\n```json\n{diag_text}\n```\n\n## Remediation\n{result.get('content', '')}",
                     "platform_heuristic"
                 )
                 response_data["saved_to"] = str(saved_path)
@@ -3201,7 +3356,10 @@ Respond with:
     async def _cmd_swarm(self, args: str) -> dict:
         """Run a swarm analysis.
 
-        Usage: /swarm <domain> [context...]
+        Usage:
+            /swarm <domain> [context...]     - Standard swarm via engine
+            /swarm clt <domain> [context...] - CLT-based interpretable swarm
+            /swarm latent <domain> [context...] - Latent swarm (Nomic embeddings)
 
         Routes through gRPC engine for proper capability-based model resolution.
         Results are automatically saved to KB at current/agents/swarm/{date}/{timestamp}_{domain}.md
@@ -3209,6 +3367,16 @@ Respond with:
         if not args:
             args = self.state.domain or "open"
 
+        # Check for subcommands
+        parts = args.split(maxsplit=2)
+        subcommand = parts[0].lower() if parts else ""
+
+        if subcommand == "clt":
+            return await self._cmd_swarm_clt(args[4:].strip() if len(args) > 4 else "")
+        elif subcommand == "latent":
+            return await self._cmd_swarm_latent(args[7:].strip() if len(args) > 7 else "")
+
+        # Standard swarm via engine
         try:
             from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
@@ -3232,7 +3400,78 @@ Respond with:
             )
 
             # Format results (engine returns dicts, not JobResult objects)
-            output = {
+            agents_output: dict[str, dict[str, object]] = {}
+            for role_name, result in results.items():
+                content = result.get("content", "")
+                agents_output[role_name] = {
+                    "status": result.get("status", "unknown"),
+                    "preview": content[:200] + "..." if len(content) > 200 else content,
+                    "endpoint": result.get("endpoint", ""),
+                    "latency_ms": result.get("latency_ms", 0),
+                }
+
+            return {
+                "domain": domain,
+                "agents": agents_output,
+                "summary": {
+                    "total": len(results),
+                    "completed": sum(1 for r in results.values() if r.get("status") == "completed"),
+                    "failed": sum(1 for r in results.values() if r.get("status") == "failed"),
+                    "total_tokens": sum(
+                        r.get("input_tokens", 0) + r.get("output_tokens", 0)
+                        for r in results.values()
+                    ),
+                    "total_latency_ms": sum(r.get("latency_ms", 0) for r in results.values()),
+                },
+                "saved_to": saved_path,
+            }
+
+        except ImportError as e:
+            raise RuntimeError(f"Engine proxy not available: {e}")
+
+    async def _cmd_swarm_clt(self, args: str) -> dict:
+        """Run CLT-based interpretable swarm analysis.
+
+        Usage: /swarm clt <domain> [context...]
+
+        Uses Cross-Layer Transcoders for interpretable agent collaboration:
+        - Agents share sparse features (~115 active per layer)
+        - Visible consensus (which features agents agree on)
+        - Feature overlap shows agent alignment
+
+        All CLT processing happens in the engine (no client-side fallback).
+        """
+        if not args:
+            args = self.state.domain or "open"
+
+        try:
+            from .client.engine_proxy import get_scheduler_proxy, use_engine_proxy
+
+            if not use_engine_proxy():
+                raise RuntimeError(
+                    "Gaius engine not running. Start with: devenv up -d\n"
+                    "CLT swarm requires the engine for GPU-accelerated feature extraction."
+                )
+
+            scheduler = await get_scheduler_proxy()
+
+            # Parse domain and context
+            parts = args.split(maxsplit=1)
+            domain = parts[0]
+            context = parts[1] if len(parts) > 1 else ""
+
+            # Use engine's CLT swarm - all processing happens server-side
+            results, saved_path = await scheduler.run_swarm_clt(
+                domain=domain,
+                context=context,
+            )
+
+            # Extract CLT-specific data from results
+            clt_data = results.pop("_clt", {})
+
+            # Format output
+            output: dict[str, object] = {
+                "mode": "clt",
                 "domain": domain,
                 "agents": {},
                 "summary": {
@@ -3248,19 +3487,181 @@ Respond with:
                 "saved_to": saved_path,
             }
 
+            # Per-agent results - use local variable for type safety
+            agents_dict: dict[str, dict[str, object]] = {}
             for role_name, result in results.items():
                 content = result.get("content", "")
-                output["agents"][role_name] = {
+                agent_clt = clt_data.get("agent_features", {}).get(role_name, [])
+                # Engine returns {"idx": ..., "activation": ...}, not "feature_idx"
+                top_features = [f["idx"] for f in agent_clt[:5]] if agent_clt else []
+
+                agents_dict[role_name] = {
                     "status": result.get("status", "unknown"),
                     "preview": content[:200] + "..." if len(content) > 200 else content,
                     "endpoint": result.get("endpoint", ""),
                     "latency_ms": result.get("latency_ms", 0),
+                    "top_features": top_features,
                 }
+            output["agents"] = agents_dict
+
+            # CLT-specific outputs from engine
+            if clt_data:
+                output["consensus_features"] = clt_data.get("consensus_features", [])
+                output["feature_overlap"] = clt_data.get("feature_overlap", {})
+
+                # Update state with agent positions (for grid visualization)
+                positions = clt_data.get("positions", [])
+                if positions:
+                    self.state.agent_positions = [
+                        (p["name"], p["x"], p["y"], p.get("color", "white"))
+                        for p in positions
+                    ]
+                    output["positions"] = positions
+
+                # Update state with agent traces
+                traces = clt_data.get("traces", {})
+                if traces:
+                    self.state.agent_traces = {
+                        name: [(pos["x"], pos["y"]) for pos in trace_positions]
+                        for name, trace_positions in traces.items()
+                    }
+                    output["traces"] = traces
 
             return output
 
         except ImportError as e:
             raise RuntimeError(f"Engine proxy not available: {e}")
+        except Exception as e:
+            raise RuntimeError(f"CLT swarm failed: {e}")
+
+    async def _cmd_swarm_latent(self, args: str) -> dict:
+        """Run latent swarm with Nomic embeddings.
+
+        Usage: /swarm latent <domain> [context...]
+
+        Uses Nomic embeddings for latent collaboration (70-90% token reduction).
+        """
+        if not args:
+            args = self.state.domain or "open"
+
+        try:
+            from .agents.swarm import get_latent_swarm_manager
+
+            # Parse domain and context
+            parts = args.split(maxsplit=1)
+            domain = parts[0]
+            context = parts[1] if len(parts) > 1 else ""
+
+            manager = get_latent_swarm_manager()
+            result = await manager.run_round(domain=domain, context=context)
+
+            # Build agents dict first for type safety
+            agents_dict: dict[str, dict[str, object]] = {}
+            for response in result.responses:
+                agents_dict[response.role.value] = {
+                    "name": response.name,
+                    "succeeded": response.succeeded,
+                    "preview": response.content[:200] + "..." if len(response.content) > 200 else response.content,
+                    "tokens": response.tokens,
+                    "error": response.error,
+                }
+
+            # Format output
+            output: dict[str, object] = {
+                "mode": "latent",
+                "domain": domain,
+                "agents": agents_dict,
+                "summary": {
+                    "total": len(result.responses),
+                    "succeeded": sum(1 for r in result.responses if r.succeeded),
+                    "failed": sum(1 for r in result.responses if not r.succeeded),
+                    "total_tokens": result.total_tokens,
+                    "total_latency_ms": result.total_latency_ms,
+                    "success_rate": round(result.success_rate, 3),
+                },
+                "consensus": result.consensus,
+            }
+
+            return output
+
+        except Exception as e:
+            raise RuntimeError(f"Latent swarm failed: {e}")
+
+    async def _cmd_meta(self, args: str) -> dict:
+        """MetaAgent: Multi-agent analytics query.
+
+        Usage: /meta <question>
+
+        Coordinates specialist agents to answer natural language questions
+        by correlating data from multiple sources:
+        - Lineage: AGE graph for data provenance (Cypher)
+        - Operations: Flow runs, agent performance (SQL)
+        - Resources: GPU utilization, inference throughput (SQL)
+        - Topology: Document clusters, semantic regions (SQL)
+
+        Examples:
+            /meta Why are arxiv flows slow?
+            /meta What sources feed into the CSA docs?
+            /meta Which agents have the best performance?
+        """
+        if not args:
+            return {
+                "error": "Usage: /meta <question>",
+                "examples": [
+                    "/meta Why are arxiv flows slow?",
+                    "/meta What sources feed into the CSA docs?",
+                    "/meta Which agents have the best performance?",
+                ],
+            }
+
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            if not client:
+                raise RuntimeError("Gaius engine not running. Start with: devenv up -d")
+
+            result = await client.call(
+                "Gaius",
+                "MetaAgentQuery",
+                {
+                    "query": args,
+                    "include_dot": True,
+                    "include_markdown": True,
+                },
+            )
+
+            # Format output
+            output = {
+                "question": args,
+                "success": result.get("success", False),
+                "answer": result.get("answer", "No answer generated"),
+                "agents_used": result.get("agents_used", 0),
+                "duration_ms": result.get("duration_ms", 0),
+            }
+
+            # Include queries if available
+            queries = result.get("queries_executed", [])
+            if queries:
+                output["queries_executed"] = queries
+
+            # Include markdown tables if available
+            tables = result.get("markdown_tables", [])
+            if tables:
+                output["evidence_tables"] = len(tables)
+
+            # Include DOT graph size
+            dot_graph = result.get("dot_graph", "")
+            if dot_graph:
+                output["dot_graph_bytes"] = len(dot_graph)
+
+            if result.get("error"):
+                output["error"] = result["error"]
+
+            return output
+
+        except Exception as e:
+            raise RuntimeError(f"MetaAgent query failed: {e}")
 
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.
@@ -3357,75 +3758,16 @@ Respond with:
                 else:
                     return {"error": f"Unknown gpu command: {subcmd}"}
 
-            # Fallback to legacy orchestrator
-            logger.warning("LEGACY_FALLBACK: /gpu command bypassing engine - tech debt")
-            from .inference.orchestrator import get_orchestrator
-
-            orchestrator = get_orchestrator()
-
-            if subcmd == "status":
-                return orchestrator.get_status()
-
-            elif subcmd == "start":
-                if subargs:
-                    success = await orchestrator.start_endpoint(subargs)
-                    proc = orchestrator.get_endpoint_status(subargs)
-                    return {
-                        "endpoint": subargs,
-                        "started": success,
-                        "status": proc.status.value if proc else "unknown",
-                        "pid": proc.pid if proc else None,
-                    }
-                else:
-                    results = await orchestrator.start_all()
-                    return {
-                        "action": "start_all",
-                        "results": results,
-                        "successful": sum(1 for v in results.values() if v),
-                    }
-
-            elif subcmd == "stop":
-                if subargs:
-                    success = await orchestrator.stop_endpoint(subargs)
-                    return {"endpoint": subargs, "stopped": success}
-                else:
-                    results = await orchestrator.stop_all()
-                    return {
-                        "action": "stop_all",
-                        "results": results,
-                        "stopped": sum(1 for v in results.values() if v),
-                    }
-
-            elif subcmd == "restart":
-                if not subargs:
-                    return {"error": "restart requires an endpoint name"}
-                success = await orchestrator.restart_endpoint(subargs)
-                proc = orchestrator.get_endpoint_status(subargs)
-                return {
-                    "endpoint": subargs,
-                    "restarted": success,
-                    "status": proc.status.value if proc else "unknown",
-                    "pid": proc.pid if proc else None,
-                }
-
-            elif subcmd == "logs":
-                if not subargs:
-                    return {"error": "logs requires an endpoint name"}
-                logs = orchestrator.get_logs(subargs, lines=50)
-                return {
-                    "endpoint": subargs,
-                    "lines": len(logs),
-                    "logs": logs,
-                }
-
-            elif subcmd == "health":
-                from .inference.health import get_health_monitor
-
-                monitor = get_health_monitor()
-                return monitor.get_summary()
-
-            else:
-                return {"error": f"Unknown gpu command: {subcmd}"}
+            # Engine not available - fail-fast with actionable remediation
+            return {
+                "error": "Engine not available - cannot execute GPU operations",
+                "guru_meditation": "#GR.00000001.ENGINEOFF",
+                "note": "Engine Federation Architecture: GPU operations require engine gRPC",
+                "remediation": [
+                    "Start the engine: devenv up gaius-engine",
+                    "Or: uv run python -m gaius.engine",
+                ],
+            }
 
         except ImportError as e:
             raise RuntimeError(f"GPU orchestrator not available: {e}")
@@ -3443,14 +3785,20 @@ Respond with:
         import subprocess
         import os
 
-        result = {
+        processes_found = 0
+        processes_killed = 0
+        pids_killed: list[dict] = []
+        errors: list[str] = []
+        gpu_memory_before: list[str] = []
+        gpu_memory_after: list[str] = []
+        result: dict = {
             "action": "deep-cleanup",
-            "processes_found": 0,
-            "processes_killed": 0,
-            "pids_killed": [],
-            "errors": [],
-            "gpu_memory_before": [],
-            "gpu_memory_after": [],
+            "processes_found": processes_found,
+            "processes_killed": processes_killed,
+            "pids_killed": pids_killed,
+            "errors": errors,
+            "gpu_memory_before": gpu_memory_before,
+            "gpu_memory_after": gpu_memory_after,
         }
 
         # Get GPU memory before cleanup
@@ -3462,7 +3810,7 @@ Respond with:
                 timeout=10,
             )
             if nvidia_result.returncode == 0:
-                result["gpu_memory_before"] = nvidia_result.stdout.strip().split("\n")
+                gpu_memory_before.extend(nvidia_result.stdout.strip().split("\n"))
         except Exception:
             pass
 
@@ -3512,17 +3860,17 @@ Respond with:
                         try:
                             pid = int(parts[0])
                             proc_name = parts[1] if len(parts) > 1 else "unknown"
-                            result["processes_found"] += 1
+                            processes_found += 1
 
                             os.kill(pid, 9)  # SIGKILL
-                            result["processes_killed"] += 1
-                            result["pids_killed"].append({"pid": pid, "name": proc_name})
+                            processes_killed += 1
+                            pids_killed.append({"pid": pid, "name": proc_name})
                         except (ValueError, ProcessLookupError):
                             pass
                         except PermissionError:
-                            result["errors"].append(f"Permission denied: {pid}")
+                            errors.append(f"Permission denied: {pid}")
         except Exception as e:
-            result["errors"].append(f"nvidia-smi failed: {e}")
+            errors.append(f"nvidia-smi failed: {e}")
 
         # Wait for GPU memory to be freed
         import asyncio
@@ -3541,8 +3889,8 @@ Respond with:
                     try:
                         pid = int(pid_str.strip())
                         os.kill(pid, 9)
-                        result["processes_killed"] += 1
-                        result["pids_killed"].append({"pid": pid, "name": "second-pass"})
+                        processes_killed += 1
+                        pids_killed.append({"pid": pid, "name": "second-pass"})
                     except (ValueError, ProcessLookupError, PermissionError):
                         pass
         except Exception:
@@ -3559,7 +3907,7 @@ Respond with:
                 timeout=10,
             )
             if nvidia_result.returncode == 0:
-                result["gpu_memory_after"] = nvidia_result.stdout.strip().split("\n")
+                gpu_memory_after.extend(nvidia_result.stdout.strip().split("\n"))
         except Exception:
             pass
 
@@ -3576,6 +3924,10 @@ Respond with:
             result["remaining_processes"] = remaining
         except Exception:
             result["gpus_clear"] = None
+
+        # Update result with final counts
+        result["processes_found"] = processes_found
+        result["processes_killed"] = processes_killed
 
         return result
 
@@ -3839,7 +4191,6 @@ Respond with:
             #   endpoint: Optional endpoint to use for orchestration (default: orchestrator)
             #             Use 'fast' or 'reasoning' if orchestrator endpoint not available.
             #             If no endpoint specified and none running, uses fallback heuristics.
-            from .inference.orchestrator import get_orchestrator
             from .agents.evolution.orchestrated import get_orchestrated_evolution
 
             endpoint_to_use = subargs.strip() if subargs else "orchestrator"
@@ -3905,27 +4256,39 @@ Respond with:
 
         elif subcmd == "start":
             # Clean start: cleanup GPU, start reasoning endpoint, start daemon
-            from .inference.orchestrator import get_orchestrator
+            # Engine Federation Architecture: use engine gRPC for GPU operations
+            from .client.engine_proxy import use_engine_proxy, get_orchestrator_proxy
             from .agents.evolution import get_evolution_daemon
 
-            orchestrator = get_orchestrator()
+            if not use_engine_proxy():
+                return {
+                    "action": "start",
+                    "success": False,
+                    "error": "Engine not available (#GR.00000001.ENGINEOFF)",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or: uv run python -m gaius.engine",
+                    ],
+                }
 
             # Parse optional endpoint list
             endpoints = ["reasoning"]
             if subargs:
                 endpoints = [e.strip() for e in subargs.split(",")]
 
-            # Phase 1: Clean start GPU
+            # Phase 1: Clean start GPU via engine gRPC
             print("Phase 1: Cleaning up stale processes...", file=sys.stderr)
-            clean_result = await orchestrator.clean_start(endpoints)
+            proxy = await get_orchestrator_proxy()
+            clean_result = await proxy.clean_start(endpoints)
 
-            if not clean_result["success"]:
+            if not clean_result.get("success"):
                 return {
                     "action": "start",
                     "success": False,
                     "error": "Failed to start GPU endpoints",
-                    "cleanup": clean_result["cleanup"],
-                    "startup": clean_result["startup"],
+                    "cleanup": clean_result.get("cleanup", {}),
+                    "startup": clean_result.get("startup", {}),
                 }
 
             # Phase 2: Start evolution daemon
@@ -3936,8 +4299,8 @@ Respond with:
             return {
                 "action": "start",
                 "success": True,
-                "gpu_cleanup": clean_result["cleanup"],
-                "gpu_startup": clean_result["startup"],
+                "gpu_cleanup": clean_result.get("cleanup", {}),
+                "gpu_startup": clean_result.get("startup", {}),
                 "daemon_running": daemon.running,
                 "message": "Evolution running. Use '/evolve status' to monitor.",
             }
@@ -4284,67 +4647,42 @@ Respond with:
         return status
 
     async def _watch_traces(self, filter_arg: str, otel_available: bool) -> dict:
-        """Watch recent traces with optional filtering."""
+        """Watch recent traces with optional filtering.
+
+        Raises:
+            NotImplementedError: Trace streaming is not yet implemented.
+        """
         if not otel_available:
-            return {
-                "traces": [],
-                "error": "OpenTelemetry not available",
-                "suggestion": "Install with: uv sync --extra telemetry",
-            }
+            raise RuntimeError(
+                "OpenTelemetry not available.\n"
+                "Guru Meditation: #OTEL.00000001.NOTAVAIL\n"
+                "Install with: uv sync --extra telemetry"
+            )
 
-        # Parse filter
-        filters = self._parse_watch_filter(filter_arg)
-
-        # For now, return traces from our in-memory buffer
-        # In a full implementation, this would query the OTel collector
-        traces = []
-
-        # Check if we have reasoning traces in state
-        if hasattr(self.state, 'reasoning_traces'):
-            for t in self.state.reasoning_traces[-20:]:
-                trace_entry = {
-                    "timestamp": t.timestamp.isoformat() if hasattr(t, 'timestamp') else None,
-                    "operation": t.operation if hasattr(t, 'operation') else "unknown",
-                    "query": t.query[:50] if hasattr(t, 'query') else "",
-                    "tokens": t.tokens if hasattr(t, 'tokens') else 0,
-                    "sources": t.sources if hasattr(t, 'sources') else 0,
-                    "duration_ms": t.duration_ms if hasattr(t, 'duration_ms') else 0,
-                }
-
-                # Apply filters
-                if self._matches_filter(trace_entry, filters):
-                    traces.append(trace_entry)
-
-        # Also try to get traces from engine
-        engine_client = await self._get_engine_client_cached()
-        if engine_client:
-            try:
-                # Query engine for recent operations
-                # This is a placeholder - real impl would use OTel collector API
-                pass
-            except Exception:
-                pass
-
-        return {
-            "traces": traces,
-            "count": len(traces),
-            "filter": filters if filters else "none",
-        }
+        raise NotImplementedError(
+            "Trace streaming not yet implemented.\n"
+            "Guru Meditation: #OTEL.00000003.TRACES_NYI\n"
+            "Requires: OTel Collector API integration"
+        )
 
     async def _watch_spans(self, filter_arg: str, otel_available: bool) -> dict:
-        """Watch recent spans with optional filtering."""
+        """Watch recent spans with optional filtering.
+
+        Raises:
+            NotImplementedError: Span streaming is not yet implemented.
+        """
         if not otel_available:
-            return {"spans": [], "error": "OpenTelemetry not available"}
+            raise RuntimeError(
+                "OpenTelemetry not available.\n"
+                "Guru Meditation: #OTEL.00000001.NOTAVAIL\n"
+                "Install with: uv sync --extra telemetry"
+            )
 
-        filters = self._parse_watch_filter(filter_arg)
-
-        # Placeholder - real impl would query OTel collector
-        return {
-            "spans": [],
-            "count": 0,
-            "filter": filters if filters else "none",
-            "note": "Span streaming requires OTel collector API access",
-        }
+        raise NotImplementedError(
+            "Span streaming not yet implemented.\n"
+            "Guru Meditation: #OTEL.00000002.SPANS_NYI\n"
+            "Requires: OTel Collector API integration"
+        )
 
     async def _watch_metrics(self, metric_name: str, otel_available: bool) -> dict:
         """Watch specific metrics."""
@@ -4354,13 +4692,16 @@ Respond with:
         # Get common metrics
         metrics = {}
 
-        # Try to get GPU metrics
+        # Try to get GPU metrics via engine gRPC
         try:
-            from .inference.orchestrator import get_orchestrator
-            orch = get_orchestrator()
-            status = orch.get_status()
-            metrics["gpu_utilization"] = status.get("gpu_utilization", [])
-            metrics["endpoints_healthy"] = status.get("healthy_endpoints", 0)
+            from .client.engine_proxy import use_engine_proxy, get_orchestrator_proxy
+            if use_engine_proxy():
+                proxy = await get_orchestrator_proxy()
+                status = await proxy._get_status_async()
+                metrics["gpu_utilization"] = status.get("gpu_utilization", [])
+                endpoints = status.get("endpoints", [])
+                healthy = sum(1 for e in endpoints if e.get("status") == "healthy")
+                metrics["endpoints_healthy"] = healthy
         except Exception:
             pass
 
@@ -4392,8 +4733,9 @@ Respond with:
         root_logger = logging.getLogger()
         for handler in root_logger.handlers:
             if hasattr(handler, 'buffer'):
-                # Memory handler
-                for record in handler.buffer[-50:]:
+                # Memory handler - buffer is list[logging.LogRecord] but handler type is generic
+                buffer: list[logging.LogRecord] = handler.buffer  # type: ignore[attr-defined] - MemoryHandler.buffer exists but handler type is generic
+                for record in buffer[-50:]:
                     log_entry = {
                         "timestamp": record.created,
                         "level": record.levelname,
@@ -4769,15 +5111,40 @@ Respond with:
         """Set or get active profile.
 
         Usage:
-            /profile              - Show current profile
-            /profile cloudera     - Switch to cloudera profile
+            /profile              - Show current profile, list available
+            /profile cloudera     - Switch to cloudera profile (resets domain to 'open')
             /profile weathership  - Switch to weathership profile
+
+        Switching profiles:
+        - Loads profile-specific configuration
+        - Resets domain to 'open' (no domain constraint)
+        - Executes profile startup commands
+        - Loads profile_text for agent prompting context
         """
+        import asyncio
+
         if args:
             profile_name = args.strip().lower()
             try:
                 from .core.config import load_config
                 self.config = load_config(profile=profile_name)
+
+                # Reset domain to "open" when switching profiles
+                self.state.domain = None
+
+                # Try to reset domain in database
+                try:
+                    from gaius.storage.profile_ops import set_active_domain, get_profile_context
+                    asyncio.get_event_loop().run_until_complete(
+                        set_active_domain(profile_name, None)
+                    )
+                    # Get profile context for display
+                    context = asyncio.get_event_loop().run_until_complete(
+                        get_profile_context(profile_name, None)
+                    )
+                    profile_text = context.profile_text if context else None
+                except Exception:
+                    profile_text = None
 
                 # Execute startup commands for the new profile
                 startup_results = []
@@ -4790,16 +5157,231 @@ Respond with:
 
                 return {
                     "profile": self.config.profile,
+                    "domain": None,  # Reset to open
                     "switched": True,
+                    "profile_text": profile_text,
                     "startup_commands": startup_results,
                 }
             except Exception as e:
                 raise ValueError(f"Failed to load profile '{profile_name}': {e}")
         else:
+            # Show current profile and list available
+            try:
+                from gaius.storage.profile_ops import list_profiles, get_profile_context
+
+                profiles = asyncio.get_event_loop().run_until_complete(list_profiles())
+                available = [
+                    {
+                        "name": p.name,
+                        "description": p.description,
+                        "active": p.name == self.config.profile,
+                    }
+                    for p in profiles
+                ]
+
+                # Get current profile context
+                context = asyncio.get_event_loop().run_until_complete(
+                    get_profile_context(self.config.profile, self.state.domain)
+                )
+
+                return {
+                    "profile": self.config.profile,
+                    "domain": self.state.domain,
+                    "profile_text": context.profile_text if context else None,
+                    "available_profiles": available,
+                    "startup_commands": list(self.config.startup.commands),
+                }
+            except Exception:
+                return {
+                    "profile": self.config.profile,
+                    "domain": self.state.domain,
+                    "startup_commands": list(self.config.startup.commands),
+                }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Docs Sync - Cloudera Documentation ETL
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _cmd_docs_sync(self, args: str) -> dict:
+        """Sync Cloudera documentation from docs.cloudera.com to KB.
+
+        Usage:
+            /docs-sync                   - Show sync status for all products
+            /docs-sync status            - Show sync status for all products
+            /docs-sync csa               - Sync CSA (Cloudera Streaming Analytics) docs
+            /docs-sync csa-operator      - Sync CSA Operator docs
+            /docs-sync all               - Sync all configured products
+            /docs-sync csa --progress    - Sync with live Rich progress bar
+            /docs-sync progress          - Live progress bar (updates continuously)
+            /docs-sync progress --once   - Single progress snapshot
+
+        Downloads ZIP archives, extracts HTML pages, converts to markdown
+        using docling, and saves to KB with version metadata.
+
+        Products with ARCHIVE sources (ZIP downloads):
+        - csa: Cloudera Streaming Analytics (Flink, SSB)
+        - csa-operator: CSA Kubernetes Operator
+
+        Products with HTML sources (crawling, not yet implemented):
+        - kudu, impala, cfm, cdp
+        """
+        from pathlib import Path
+
+        args_str = args.strip() if args else ""
+
+        # Parse --progress flag
+        show_progress = "--progress" in args_str
+        args_lower = args_str.replace("--progress", "").strip().lower()
+
+        # Status subcommand
+        if not args_lower or args_lower == "status":
+            from gaius.flows.cloudera_docs.sources import list_sources, SourceType
+
+            sources = list_sources()
+            products = []
+            for s in sources:
+                products.append({
+                    "name": s.name,
+                    "display_name": s.display_name,
+                    "domain": s.domain,
+                    "version": s.version,
+                    "source_type": s.source_type.value,
+                    "kb_prefix": s.kb_prefix,
+                    "archive_url": s.archive_url,
+                    "syncable": s.source_type == SourceType.ARCHIVE and s.archive_url is not None,
+                })
+
             return {
-                "profile": self.config.profile,
-                "startup_commands": list(self.config.startup.commands),
+                "status": "ok",
+                "products": products,
+                "syncable_count": sum(1 for p in products if p["syncable"]),
             }
+
+        # Progress subcommand - live updating progress display (default behavior)
+        # Use "progress --once" for a single snapshot
+        if args_lower in ("progress", "watch") or args_lower.startswith("progress"):
+            from gaius.flows.cloudera_docs.progress import (
+                get_sync_progress,
+                watch_progress_rich,
+            )
+
+            # Check for --once flag for single snapshot
+            once_mode = "--once" in args_str
+
+            # JSON format always returns single snapshot
+            if self.format != "text":
+                progress = get_sync_progress()
+                if progress is None:
+                    return {"status": "idle", "message": "No sync in progress"}
+                return {"status": "ok", "progress": progress}
+
+            # Text format: continuous updates by default
+            if once_mode:
+                from gaius.flows.cloudera_docs.progress import format_progress_human
+                progress = get_sync_progress()
+                if progress is None:
+                    return {"status": "idle", "message": "No sync in progress"}
+                print(format_progress_human(progress), file=self.output)
+                return {}
+
+            # Default: live Rich progress bar until sync completes
+            watch_progress_rich()
+            return {}
+
+        # Sync all products
+        if args_lower == "all":
+            from gaius.flows.cloudera_docs.flow import sync_all_products
+
+            kb_root = Path(self.config.kb.root)
+            results = sync_all_products(kb_root=kb_root)
+
+            return {
+                "synced": len(results),
+                "results": [
+                    {
+                        "product": r.product,
+                        "success": r.success,
+                        "pages_extracted": r.pages_extracted,
+                        "pages_skipped": r.pages_skipped,
+                        "kb_prefix": r.kb_prefix,
+                        "version": r.version,
+                        "duration_seconds": r.duration_seconds,
+                        "error": r.error,
+                    }
+                    for r in results
+                ],
+            }
+
+        # Sync specific product
+        from gaius.flows.cloudera_docs.sources import get_source, list_sources, SourceType
+        from gaius.flows.cloudera_docs.flow import sync_product_smart
+
+        source = get_source(args_lower)
+        if not source:
+            available = [s.name for s in list_sources()]
+            raise ValueError(
+                f"Unknown product: {args_lower}\n"
+                f"Available: {', '.join(available)}"
+            )
+
+        if source.source_type != SourceType.ARCHIVE:
+            raise ValueError(
+                f"Product '{args_lower}' uses {source.source_type.value} source type.\n"
+                f"Only ARCHIVE sources are currently supported."
+            )
+
+        if not source.archive_url:
+            raise ValueError(f"Product '{args_lower}' has no archive_url configured.")
+
+        kb_root = Path(self.config.kb.root)
+
+        # If --progress flag and text format, run with Rich progress display
+        if show_progress and self.format == "text":
+            import threading
+            from gaius.flows.cloudera_docs.progress import watch_progress_rich
+
+            sync_result: list = []
+            sync_error: list = []
+
+            def run_sync() -> None:
+                try:
+                    res = sync_product_smart(source, kb_root)
+                    sync_result.append(res)
+                except Exception as e:
+                    sync_error.append(e)
+
+            # Start sync in background thread
+            sync_thread = threading.Thread(target=run_sync, daemon=True)
+            sync_thread.start()
+
+            # Show Rich progress (blocks until sync completes)
+            watch_progress_rich()
+
+            # Wait for sync to finish
+            sync_thread.join()
+
+            if sync_error:
+                raise sync_error[0]
+
+            if not sync_result:
+                return {"error": "Sync did not produce a result"}
+
+            result = sync_result[0]
+        else:
+            # Use smart sync which auto-selects parallel mode for PDF-heavy archives
+            result = sync_product_smart(source, kb_root)
+
+        return {
+            "product": result.product,
+            "success": result.success,
+            "pages_extracted": result.pages_extracted,
+            "pages_skipped": result.pages_skipped,
+            "archive_hash": result.archive_hash[:16] if result.archive_hash else None,
+            "kb_prefix": result.kb_prefix,
+            "version": result.version,
+            "duration_seconds": result.duration_seconds,
+            "error": result.error,
+        }
 
     # ─────────────────────────────────────────────────────────────────────
     # Project Notes with Bidirectional Linking
@@ -4949,10 +5531,20 @@ Respond with:
             parts = args_lower.split()
             thought_id = parts[1] if len(parts) > 1 else None
 
+            # Type guard: database access requires full GaiusConfig
+            if not hasattr(self.config, "database"):
+                return {"error": "Database config not available", "mode": "chain"}
+
+            # Extract database URL with type narrowing
+            db_url = getattr(self.config, "database", None)
+            if db_url is None or not hasattr(db_url, "url"):
+                return {"error": "Database URL not configured", "mode": "chain"}
+            database_url: str = db_url.url  # type: ignore[attr-defined] - hasattr guard above verifies url exists
+
             try:
                 import asyncpg
 
-                conn = await asyncpg.connect(self.config.database.url)
+                conn = await asyncpg.connect(database_url)
                 try:
                     if not thought_id:
                         thought_id = await conn.fetchval(
@@ -5032,34 +5624,81 @@ Respond with:
             except Exception as e:
                 return {"error": str(e), "mode": "recent", "thoughts": []}
 
-        # Default: trigger full cognition cycle
+        # /thoughts test-cycle - directly call engine gRPC to test cognition logic
+        if args_lower.startswith("test-cycle"):
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    return {"error": "gRPC client not available", "mode": "test-cycle"}
+
+                # Call TriggerCognition via gRPC (may take 60-90s)
+                result = await client.call(
+                    "Cognition",
+                    "trigger",
+                    {"max_thoughts": 3, "trigger_reason": "cli_test"},
+                    timeout=120.0,
+                )
+
+                return {
+                    "mode": "test-cycle",
+                    "success": result.get("success", False),
+                    "thoughts_generated": result.get("thoughts_generated", 0),
+                    "patterns_detected": result.get("patterns_detected", 0),
+                    "connections_found": result.get("connections_found", 0),
+                    "curiosities_generated": result.get("curiosities_generated", 0),
+                    "duration_ms": result.get("duration_ms", 0),
+                    "error": result.get("error"),
+                    "note": "This tests the engine-level cognition logic via gRPC",
+                }
+            except Exception as e:
+                return {"error": str(e), "mode": "test-cycle"}
+
+        # Default: trigger full cognition cycle via Engine gRPC
+        # (L5 agents must not call inference directly - all cognition goes through Engine)
         depth = "deep" if args_lower == "deep" else "moderate"
+        max_thoughts = 10 if depth == "deep" else 5
 
         try:
-            result = await trigger_cognition(
-                reason="cli_thoughts",
-                max_thoughts=5 if depth != "deep" else 10,
-                profile=self.config.profile,
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            if not client:
+                raise RuntimeError(
+                    "Engine not available.\n"
+                    "Guru Meditation: #COG.00000017.NOENGINE\n"
+                    "Check: devenv processes up"
+                )
+
+            # Call TriggerCognition via gRPC (may take 60-90s)
+            result = await client.call(
+                "Cognition",
+                "trigger",
+                {"max_thoughts": max_thoughts, "trigger_reason": "cli_thoughts"},
+                timeout=120.0,
             )
 
-            return {
+            # Fail-fast: check for gRPC errors
+            if not result.get("success", False):
+                error_msg = result.get("error", "Cognition cycle failed (unknown reason)")
+                raise RuntimeError(error_msg)
+
+            # gRPC TriggerCognition returns counts and kb_path
+            response = {
                 "mode": "cognition",
-                "thoughts_generated": len(result.thoughts) if hasattr(result, 'thoughts') else 0,
-                "patterns_detected": result.patterns_detected,
-                "connections_found": result.connections_found,
-                "self_observations": result.self_observations,
-                "engine_audits": result.engine_audits,
-                "thoughts": [
-                    {
-                        "title": t.title,
-                        "content": t.content[:150] + "..." if len(t.content) > 150 else t.content,
-                        "type": t.thought_type.value,
-                        "generation": t.generation,
-                        "note_path": t.note_path,
-                    }
-                    for t in (result.thoughts if hasattr(result, 'thoughts') else [])
-                ][:5],  # Preview first 5
+                "thoughts_generated": result.get("thoughts_generated", 0),
+                "patterns_detected": result.get("patterns_detected", 0),
+                "connections_found": result.get("connections_found", 0),
+                "self_observations": result.get("self_observations", 0),
+                "engine_audits": result.get("engine_audits", 0),
+                "duration_ms": result.get("duration_ms", 0),
+                "tokens_out": result.get("tokens_out", 0),
             }
+            # Include kb_path if available (path to zettelkasten file)
+            if result.get("kb_path"):
+                response["kb_path"] = result["kb_path"]
+            return response
         except Exception as e:
             return {
                 "error": str(e),
@@ -5078,15 +5717,22 @@ Respond with:
         and suggest interventions.
 
         Usage:
-            /health           - Run full health check
-            /health quick     - Run critical checks only
-            /health engine    - Check engine/gRPC health
-            /health data      - Check database/KB health
-            /health cognition - Check cognition daemon
-            /health inference - Check inference endpoints
+            /health                    - Run full health check
+            /health quick              - Run critical checks only
+            /health engine             - Check engine/gRPC health
+            /health data               - Check database/KB health
+            /health cognition          - Check cognition daemon
+            /health inference          - Check inference endpoints
             /health diagnose <service> - Deep diagnostics for a service
-            /health fix [service]      - Fix unhealthy services
+            /health fix [service]      - Fix unhealthy services (via engine gRPC)
+            /health fix <issue#>       - Re-run ACP investigation for GitHub issue
             /health fix --dry-run      - Show fix plan without executing
+            /health close <issue#>     - Verify resolution and close GitHub issue
+            /health observer           - Show HealthObserver daemon status
+            /health observer start     - Start the observer daemon
+            /health observer stop      - Stop the observer daemon
+            /health observer check     - Force immediate health check
+            /health observer incidents - List active incidents
             /health watch <cmd>        - Execute command and watch for fallbacks/stubs
             /health history [endpoint] - Show healing event history
             /health sequence <id>      - Show detailed healing sequence
@@ -5105,6 +5751,15 @@ Respond with:
         args_parts = args.strip().split() if args else []
         subcmd = args_parts[0].lower() if args_parts else ""
         subargs = args_parts[1:] if len(args_parts) > 1 else []
+
+        # Fast path for /health fix --stop (no checker needed)
+        if subcmd == "fix" and "--stop" in subargs:
+            return {
+                "stop_requested": True,
+                "note": "CLI runs are stateless - each invocation is a separate process.",
+                "hint": "If running in TUI, use `/health fix --stop` there to cancel.",
+                "alternative": "To stop ACP sessions, close the terminal running the command.",
+            }
 
         kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
         checker = HealthChecker(kb_root)
@@ -5125,6 +5780,14 @@ Respond with:
         # Handle fix subcommand
         if subcmd == "fix":
             return await self._health_fix(checker, subargs)
+
+        # Handle close subcommand - verify and close GitHub issue via ACP
+        if subcmd == "close":
+            return await self._health_close(subargs)
+
+        # Handle observer subcommand - direct gRPC access to HealthObserverService
+        if subcmd == "observer":
+            return await self._health_observer(subargs)
 
         # Handle watch subcommand
         if subcmd == "watch":
@@ -5190,7 +5853,7 @@ Respond with:
         import os
 
         now = datetime.now()
-        status_icon = "✅" if report.healthy else "❌"
+        status_icon = "[OK]" if report.healthy else "[FAIL]"
 
         md_report = f"""# Health Report {status_icon}
 
@@ -5215,11 +5878,11 @@ Respond with:
 |-------|--------|----------|---------|
 """
         for check in report.checks:
-            status_emoji = {"pass": "✓", "warn": "⚠", "fail": "✗", "skip": "○"}.get(
-                check.status.value, "?"
+            status_indicator = {"pass": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skip": "[SKIP]"}.get(
+                check.status.value, "[?]"
             )
             msg = check.message[:60] + "..." if len(check.message) > 60 else check.message
-            md_report += f"| {check.name} | {status_emoji} {check.status.value} | {check.duration_ms}ms | {msg} |\n"
+            md_report += f"| {check.name} | {status_indicator} {check.status.value} | {check.duration_ms}ms | {msg} |\n"
 
         # Add details for non-passing checks
         issues = [c for c in report.checks if c.status.value in ("warn", "fail")]
@@ -5255,16 +5918,54 @@ Respond with:
                 for ep, state in healing_info["endpoint_states"].items():
                     md_report += f"- {ep}: tier {state.get('tier', '?')}, attempts {state.get('attempts', '?')}\n"
 
+        # Add HealthObserver active incidents (all non-resolved)
+        active_incidents = []
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if engine_client:
+                # Fetch all incidents, then filter out resolved ones client-side
+                incidents_result = await engine_client.call(
+                    "HealthObserver", "incidents", {"status": "all"}, timeout=5.0
+                )
+                all_incidents = incidents_result.get("incidents", [])
+                active_incidents = [i for i in all_incidents if i.get("status") != "resolved"]
+        except Exception as e:
+            # Continue without incidents - record via OTel for observability
+            try:
+                from .core.telemetry import get_tracer
+                tracer = get_tracer()
+                with tracer.start_as_current_span("health.fetch_incidents.error") as span:
+                    span.set_attribute("error.type", type(e).__name__)
+                    span.set_attribute("error.message", str(e))
+                    span.record_exception(e)
+            except Exception:
+                pass  # Don't fail on telemetry errors
+
+        if active_incidents:
+            md_report += "\n## Active Incidents\n\n"
+            md_report += "| Fingerprint | Endpoint | RPN | Tier | Attempts | Created |\n"
+            md_report += "|-------------|----------|-----|------|----------|----------|\n"
+            for inc in active_incidents:
+                fp = inc.get("fingerprint", "?")
+                ep = inc.get("endpoint", "?")
+                rpn = inc.get("rpn_score", "?")
+                tier = inc.get("current_tier", "?")
+                attempts = inc.get("attempts", "?")
+                created = inc.get("created_at", "?")[:19] if inc.get("created_at") else "?"
+                md_report += f"| {fp} | {ep} | {rpn} | {tier} | {attempts} | {created} |\n"
+            md_report += "\n"
+            md_report += "Use `/health observer incidents` for full details.\n"
+
         # Add action links
         md_report += "\n## Actions\n\n"
         for check in report.checks:
             if check.status.value == "fail":
                 # Add relevant fix actions
                 if "endpoint" in check.name.lower():
-                    md_report += f"- [[action:/health fix]] - Fix unhealthy services\n"
+                    md_report += f"- [action:/health fix] - Fix unhealthy services\n"
                     break
-        md_report += "- [[action:/health history]] - View healing history\n"
-        md_report += "- [[action:/health stats]] - View healing statistics\n"
+        md_report += "- [action:/health history] - View healing history\n"
+        md_report += "- [action:/health stats] - View healing statistics\n"
 
         md_report += f"""
 ---
@@ -5299,6 +6000,7 @@ Respond with:
             "interventions": report.interventions,
             "metrics": report.metrics if report.metrics else None,
             "self_healing": healing_info,
+            "active_incidents": active_incidents if active_incidents else None,
             "message": f"Report saved to {filepath}",
         }
 
@@ -5391,116 +6093,1853 @@ Respond with:
         }
 
     async def _health_fix(self, checker, args: list[str]) -> dict:
-        """Fix unhealthy services.
+        """Fix unhealthy services via engine HealthObserverService or ACP.
+
+        Supports two modes:
+        1. Service-based: /health fix <service> - Fix specific service
+        2. Issue-based: /health fix <issue#> - Re-run ACP investigation for GitHub issue
+
+        Engine Federation Architecture:
+        - All remediation goes through the engine's HealthObserverService via gRPC
+        - Fail-fast: if engine unavailable, error with actionable remediation hints
+        - The HealthObserver provides FMEA-based incident tracking and ACP escalation
 
         Args:
-            checker: HealthChecker instance
-            args: Arguments like ['engine'] or ['--dry-run', 'engine']
+            checker: HealthChecker instance (unused - kept for interface compatibility)
+            args: Arguments like ['--dry-run'], ['endpoints'], ['42'], or ['--stop']
         """
-        from .health.remediation import RemediationExecutor, RemediationPlan
-        from .health.service_fixes import get_strategy, list_services
-
         # Parse flags
         dry_run = "--dry-run" in args
-        force = "--force" in args
+        stop_requested = "--stop" in args
+        close_after = "--close" in args
         args = [a for a in args if not a.startswith("--")]
         service = args[0] if args else None
 
-        # List available services if requested
-        if service == "list" or service == "--list":
+        # Handle --stop: signal cancellation
+        if stop_requested:
+            # CLI is non-interactive, so we can only signal - not cancel in-process
+            # Check if there's a TUI session we might be able to signal
             return {
-                "available_services": list_services(),
-                "usage": "/health fix <service> [--dry-run] [--force]",
+                "stop_requested": True,
+                "note": "CLI runs are stateless - each invocation is a separate process.",
+                "hint": "If running in TUI, use `/health fix --stop` there to cancel.",
+                "alternative": "To stop ACP sessions, close the terminal running the command.",
             }
 
-        # Get strategy for service (or all services if none specified)
+        # Check if target is a number (GitHub issue number for ACP remediation)
+        if service and service.isdigit():
+            issue_number = int(service)
+            return await self._health_fix_issue(issue_number, dry_run)
+
+        # Specific service fix goes through orchestrator for endpoints
         if service:
-            strategy = get_strategy(service)
-            if not strategy:
+            if service in ("endpoints", "inference"):
+                # Endpoint issues go through orchestrator
+                try:
+                    from .client.grpc_client import get_grpc_client
+
+                    client = await get_grpc_client()
+                    status = await client.call("Orchestrator", "status", {}, timeout=10.0)
+                    endpoints = status.get("endpoints", {})
+
+                    if dry_run:
+                        unhealthy = [
+                            name for name, info in endpoints.items()
+                            if info.get("status") not in ("healthy", "stopped")
+                        ]
+                        return {
+                            "dry_run": True,
+                            "service": service,
+                            "would_restart": unhealthy,
+                            "note": "Run without --dry-run to restart endpoints",
+                        }
+
+                    # Restart unhealthy endpoints
+                    restarted = []
+                    for name, info in endpoints.items():
+                        ep_status = info.get("status", "")
+                        if ep_status in ("unhealthy", "failed", "error"):
+                            await client.call(
+                                "Orchestrator", "restart", {"endpoint": name}, timeout=60.0
+                            )
+                            restarted.append(name)
+
+                    return {
+                        "service": service,
+                        "restarted": restarted,
+                        "note": "Endpoints restarted via OrchestratorService",
+                    }
+
+                except Exception as e:
+                    return {
+                        "error": f"Engine not available: {e}",
+                        "guru_meditation": "#GR.00000001.ENGINEOFF",
+                        "remediation": "Start the engine: devenv up gaius-engine",
+                    }
+
+            elif service in ("evolution", "evolve"):
+                # Evolution daemon control
+                try:
+                    from .client.grpc_client import get_grpc_client
+
+                    client = await get_grpc_client()
+
+                    if dry_run:
+                        status = await client.call("Evolution", "status", {}, timeout=10.0)
+                        return {
+                            "dry_run": True,
+                            "service": service,
+                            "currently_running": status.get("running", False),
+                            "note": "Run without --dry-run to start evolution daemon",
+                        }
+
+                    result = await client.call("Evolution", "start", {}, timeout=30.0)
+                    return {
+                        "service": service,
+                        "started": result.get("running", False),
+                        "note": "Evolution daemon started via EvolutionService",
+                    }
+
+                except Exception as e:
+                    return {
+                        "error": f"Engine not available: {e}",
+                        "guru_meditation": "#GR.00000001.ENGINEOFF",
+                        "remediation": "Start the engine: devenv up gaius-engine",
+                    }
+
+            elif service in ("pipeline", "triage", "content"):
+                # Pipeline fix - schedule triage tasks and reset stuck tasks
+                try:
+                    import json
+                    import os
+
+                    import asyncpg
+
+                    db_url = os.environ.get(
+                        "GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius"
+                    )
+                    conn = await asyncpg.connect(db_url)
+
+                    try:
+                        if dry_run:
+                            # Show what would be fixed
+                            stale = await conn.fetchval("""
+                                SELECT COUNT(*) FROM scheduled_tasks
+                                WHERE picked_up_at IS NULL
+                                  AND scheduled_for < NOW() - interval '30 minutes'
+                            """)
+                            stuck = await conn.fetchval("""
+                                SELECT COUNT(*) FROM scheduled_tasks
+                                WHERE picked_up_at IS NOT NULL
+                                  AND completed_at IS NULL
+                                  AND picked_up_at < NOW() - interval '10 minutes'
+                            """)
+                            needs_heuristic = await conn.fetchval("""
+                                SELECT COUNT(*) FROM content_items
+                                WHERE heuristic_score IS NULL
+                            """)
+                            needs_llm = await conn.fetchval("""
+                                SELECT COUNT(*) FROM content_items
+                                WHERE heuristic_score >= 30
+                                  AND llm_quality_score IS NULL
+                                  AND NOT COALESCE(summary_excluded, false)
+                            """)
+                            needs_kb = await conn.fetchval("""
+                                SELECT COUNT(*) FROM content_items
+                                WHERE llm_quality_score >= 50
+                                  AND processed_at IS NULL
+                                  AND NOT COALESCE(summary_excluded, false)
+                            """)
+                            await conn.close()
+
+                            return {
+                                "dry_run": True,
+                                "service": service,
+                                "would_reset": {
+                                    "stale_pending": stale,
+                                    "stuck_running": stuck,
+                                },
+                                "would_schedule": {
+                                    "heuristic_triage": needs_heuristic,
+                                    "llm_triage": needs_llm,
+                                    "content_processing": needs_kb,
+                                },
+                                "note": "Run without --dry-run to schedule triage tasks",
+                            }
+
+                        # Reset stuck tasks
+                        stuck_result = await conn.execute("""
+                            UPDATE scheduled_tasks
+                            SET picked_up_at = NULL,
+                                error = 'reset by /health fix pipeline'
+                            WHERE picked_up_at IS NOT NULL
+                              AND completed_at IS NULL
+                              AND picked_up_at < NOW() - interval '10 minutes'
+                        """)
+                        stuck_count = int(stuck_result.split()[-1]) if stuck_result else 0
+
+                        # Schedule triage tasks if backlog exists
+                        scheduled = []
+
+                        needs_heuristic = await conn.fetchval("""
+                            SELECT COUNT(*) FROM content_items WHERE heuristic_score IS NULL
+                        """)
+                        if needs_heuristic > 0:
+                            await conn.execute("""
+                                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                VALUES ('heuristic_triage', $1, 'health_fix', NOW())
+                            """, json.dumps({"limit": min(needs_heuristic, 200)}))
+                            scheduled.append(f"heuristic_triage ({needs_heuristic} pending)")
+
+                        needs_llm = await conn.fetchval("""
+                            SELECT COUNT(*) FROM content_items
+                            WHERE heuristic_score >= 30
+                              AND llm_quality_score IS NULL
+                              AND NOT COALESCE(summary_excluded, false)
+                        """)
+                        if needs_llm > 0:
+                            await conn.execute("""
+                                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                VALUES ('llm_triage', $1, 'health_fix', NOW())
+                            """, json.dumps({"limit": min(needs_llm, 100)}))
+                            scheduled.append(f"llm_triage ({needs_llm} pending)")
+
+                        needs_kb = await conn.fetchval("""
+                            SELECT COUNT(*) FROM content_items
+                            WHERE llm_quality_score >= 50
+                              AND processed_at IS NULL
+                              AND NOT COALESCE(summary_excluded, false)
+                        """)
+                        if needs_kb > 0:
+                            await conn.execute("""
+                                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                VALUES ('content_processing', $1, 'health_fix', NOW())
+                            """, json.dumps({"limit": min(needs_kb, 50)}))
+                            scheduled.append(f"content_processing ({needs_kb} pending)")
+
+                        await conn.close()
+
+                        return {
+                            "service": service,
+                            "stuck_tasks_reset": stuck_count,
+                            "tasks_scheduled": scheduled,
+                            "note": "Pipeline triage tasks scheduled for processing",
+                        }
+
+                    finally:
+                        if not conn.is_closed():
+                            await conn.close()
+
+                except Exception as e:
+                    return {
+                        "error": f"Pipeline fix failed: {e}",
+                        "guru_meditation": "#PIPE.00000001.STALLED",
+                        "remediation": "Check PostgreSQL connection: pg_isready -p 5438",
+                    }
+
+            else:
                 return {
                     "error": f"Unknown service: {service}",
-                    "available_services": list_services(),
-                    "usage": "/health fix <service>",
+                    "available_services": ["endpoints", "evolution", "pipeline"],
+                    "usage": "/health fix [endpoints|evolution|pipeline|<issue#>] [--dry-run]",
+                    "note": "Use '/health fix' without args for full HealthObserver remediation, or '/health fix 42' for ACP investigation of GitHub issue #42",
                 }
-            strategies = [(service, strategy)]
-        else:
-            # Fix all unhealthy services
-            report = await checker.run_quick()
-            strategies = []
 
-            # Map failed checks to services
-            check_to_service = {
-                "grpc connection": "engine",
-                "optillm": None,  # Can't fix optillm, it's managed externally
-                "vllm": None,  # Same
-                "database": "postgres",
-                "qdrant": "qdrant",
-                "s3/minio": "minio",
-            }
+        # Full health fix via HealthObserverService with sanity check workflow
+        #
+        # Sanity Check Workflow (per user requirement):
+        # 1. Run full health check across entire operational surface
+        # 2. For each active incident, check if corresponding health check is now passing
+        # 3. Auto-resolve incidents where health checks pass
+        # 4. For remaining incidents, escalate to ACP
+        try:
+            from .client.grpc_client import get_grpc_client
 
-            for check in report.checks:
-                if check.status.value in ("fail", "warn"):
-                    for pattern, svc in check_to_service.items():
-                        if pattern in check.name.lower() and svc:
-                            strat = get_strategy(svc)
-                            if strat:
-                                strategies.append((svc, strat))
-                                break
+            client = await get_grpc_client()
 
-            if not strategies:
+            if dry_run:
+                # For dry-run, just get status and show what would be fixed
+                status = await client.call(
+                    "HealthObserver", "status", {}, timeout=10.0
+                )
+                incidents = status.get("incidents", [])
+
+                # Get active (non-resolved) incidents using Fail Open principle
+                active_incidents = [
+                    inc for inc in incidents
+                    if inc.get("status") not in ("resolved",)
+                ]
+
                 return {
-                    "message": "No fixable issues found",
-                    "healthy": report.healthy,
-                    "summary": report.summary(),
+                    "dry_run": True,
+                    "observer_running": status.get("running", False),
+                    "poll_count": status.get("poll_count", 0),
+                    "sanity_check_workflow": [
+                        "1. Run full health check across operational surface",
+                        "2. Check each incident against current health status",
+                        "3. Auto-resolve incidents where health checks now pass",
+                        "4. Escalate remaining incidents to ACP",
+                    ],
+                    "would_check": [
+                        {
+                            "fingerprint": inc.get("fingerprint"),
+                            "endpoint": inc.get("endpoint"),
+                            "failure_mode": inc.get("failure_mode_id"),
+                            "status": inc.get("status"),
+                            "tier": inc.get("current_tier"),
+                            "attempts": inc.get("attempts"),
+                        }
+                        for inc in active_incidents
+                    ],
+                    "note": "Run without --dry-run to execute sanity check and remediation",
                 }
 
-        # Create remediation plans
-        executor = RemediationExecutor()
-        results = []
+            # Step 1: Force a health check to get current operational surface state
+            check_result = await client.call(
+                "HealthObserver", "check", {}, timeout=120.0
+            )
 
-        for svc_name, strategy in strategies:
-            # Create plan from strategy
-            actions = strategy.create_fix_actions()
-            plan = RemediationPlan(service=svc_name, actions=actions)
+            # Step 2: Get all incidents (using Fail Open - fetch all, filter out resolved)
+            incidents_result = await client.call(
+                "HealthObserver", "incidents", {"status": "all"}, timeout=10.0
+            )
+            all_incidents = incidents_result.get("incidents", [])
+            active_incidents = [
+                inc for inc in all_incidents
+                if inc.get("status") not in ("resolved",)
+            ]
 
-            # Execute plan
-            result = await executor.execute(plan, dry_run=dry_run, force=force)
+            # Step 3: The observer's check already evaluates incidents against
+            # current health status using the FMEA registry. Incidents where
+            # health checks pass will transition to "recovering" status.
+            # We report what happened.
 
-            results.append({
-                "service": svc_name,
-                "success": result.success,
-                "dry_run": result.dry_run,
-                "actions": [
-                    {
-                        "name": ar.action.name,
-                        "success": ar.success,
-                        "output": ar.output[:500] if ar.output else None,
-                        "error": ar.error[:500] if ar.error else None,
-                        "duration_ms": ar.duration_ms,
-                    }
-                    for ar in result.action_results
-                ],
-                "summary": result.summary,
-            })
+            # Count state transitions from this check cycle
+            resolved_this_cycle = 0
+            recovering_this_cycle = 0
+            still_active = 0
 
-        # If not dry run, re-run health check to verify
-        if not dry_run:
-            verification = await checker.run_quick()
-            verification_summary = {
-                "healthy": verification.healthy,
-                "summary": verification.summary(),
-                "passed": verification.passed,
-                "failures": verification.failures,
+            for inc in active_incidents:
+                status = inc.get("status", "unknown")
+                if status == "resolved":
+                    resolved_this_cycle += 1
+                elif status == "recovering":
+                    recovering_this_cycle += 1
+                else:
+                    still_active += 1
+
+            # Step 4: Process incidents with GitHub issues via ACP
+            # This is the key demo feature: iterate ALL incidents with GitHub issues
+            # and have ACP-Claude add diagnostic comments for situational awareness
+            incidents_with_issues = [
+                inc for inc in active_incidents
+                if inc.get("github_issue")
+            ]
+
+            acp_results = []
+            if incidents_with_issues:
+                # Process each incident via ACP for NOC situational awareness
+                acp_results = await self._health_fix_all_via_acp(
+                    incidents_with_issues, dry_run=False, close_after=close_after
+                )
+
+            # If --close, clean up any orphaned issues (race condition recovery)
+            orphan_results = {}
+            if close_after:
+                orphan_results = await self._close_orphaned_issues(client)
+
+            result = {
+                "sanity_check": True,
+                "healthy": check_result.get("healthy", False),
+                "summary": check_result.get("summary", ""),
+                "passed": check_result.get("passed", []),
+                "warnings": check_result.get("warnings", []),
+                "failures": check_result.get("failures", []),
+                "incidents": {
+                    "total_active": len(active_incidents),
+                    "recovering": recovering_this_cycle,
+                    "resolved": resolved_this_cycle,
+                    "still_active": still_active,
+                    "with_github_issues": len(incidents_with_issues),
+                },
+                "acp_processed": len(acp_results),
+                "acp_results": acp_results,
+                "interventions": check_result.get("interventions", []),
+                "note": f"Sanity check complete. {len(acp_results)} incidents processed via ACP for GitHub situational awareness.",
             }
-        else:
-            verification_summary = None
+
+            # Add --close specific results
+            if close_after:
+                result["close_mode"] = True
+                result["orphaned_issues_closed"] = orphan_results.get("closed_count", 0)
+                if orphan_results.get("details"):
+                    result["orphan_details"] = orphan_results["details"]
+
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            if "UNAVAILABLE" in error_msg or "failed to connect" in error_msg.lower():
+                return {
+                    "error": "Engine not available - cannot perform health fix",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": [
+                        "Start the engine: devenv up gaius-engine",
+                        "Or restart all services: devenv up",
+                    ],
+                    "note": "Health remediation requires the engine to be running",
+                }
+            else:
+                return {
+                    "error": f"HealthObserver error: {error_msg}",
+                    "guru_meditation": "#HO.00000001.CHECKFAIL",
+                    "remediation": "Check engine logs: journalctl -u gaius-engine -n 50",
+                }
+
+    async def _health_fix_issue(self, issue_number: int, dry_run: bool = False) -> dict:
+        """Re-run ACP investigation for a GitHub issue.
+
+        Flow:
+        1. Look up incident by GitHub issue number
+        2. Send comprehensive prompt to ACP-Claude
+        3. Create zettelkasten note with results (best effort)
+        4. Add comment to GitHub issue (ALWAYS try, even if local note fails)
+
+        Args:
+            issue_number: GitHub issue number (e.g., 42)
+            dry_run: If True, show what would happen without running ACP
+
+        Returns:
+            Dict with ACP results, KB note path, and GitHub comment status
+        """
+        from datetime import datetime
+        from pathlib import Path
+        import subprocess
+
+        from .health.observe import get_health_observer
+
+        observer = get_health_observer()
+
+        # Step 1: Look up incident by issue number
+        incident = await observer.get_incident_by_issue(issue_number)
+        if not incident:
+            return {
+                "error": f"No incident found for GitHub issue #{issue_number}",
+                "guru_meditation": "#HF.00000001.NOINCIDENT",
+                "remediation": f"Check issue exists: gh issue view {issue_number}",
+            }
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "issue_number": issue_number,
+                "incident_fingerprint": incident.get("fingerprint"),
+                "failure_mode": incident.get("failure_mode_id"),
+                "endpoint": incident.get("endpoint"),
+                "github_repo": incident.get("github_repo"),
+                "would_run_acp": True,
+                "note": "Run without --dry-run to trigger ACP investigation",
+            }
+
+        # Step 2: Build ACP prompt
+        prompt = self._build_fix_issue_prompt(issue_number, incident)
+
+        # Step 3: Run ACP session - MUST succeed (fail-fast if ACP unavailable)
+        from .acp import GaiusACPClient, ACPConfig, ACPConnectionError
+
+        # Use generous timeouts - ACP sessions with Claude Code can take
+        # significant time for complex health investigations
+        config = ACPConfig(
+            include_gaius_mcp=True,
+            connection_timeout=120.0,  # 2 min for Claude Code + MCP startup
+            prompt_timeout=None,  # No timeout - let Claude Code run to completion
+        )
+
+        try:
+            async with GaiusACPClient(config) as client:
+                # No timeout - let Claude Code run to completion
+                acp_response = await client.prompt(prompt)
+        except ACPConnectionError as e:
+            # ACP connection failure is a critical Ops Error - fail-fast
+            # Record in OTel for observability
+            from .core.telemetry import get_tracer
+            tracer = get_tracer()
+            with tracer.start_as_current_span("health_fix_issue.acp_error") as span:
+                span.set_attribute("issue_number", issue_number)
+                span.set_attribute("guru_meditation", "#HF.00000002.ACPFAIL")
+                span.set_attribute("error.type", "ACPConnectionError")
+                span.record_exception(e)
+
+            return {
+                "error": f"ACP connection failed for issue #{issue_number}",
+                "guru_meditation": "#HF.00000002.ACPFAIL",
+                "acp_error": str(e),
+                "remediation": "Check Claude Code installation and ACP adapter availability",
+            }
+        except Exception as e:
+            # Any other ACP failure is also critical Ops Error
+            from .core.telemetry import get_tracer
+            tracer = get_tracer()
+            with tracer.start_as_current_span("health_fix_issue.acp_error") as span:
+                span.set_attribute("issue_number", issue_number)
+                span.set_attribute("guru_meditation", "#HF.00000003.ACPSESSION")
+                span.set_attribute("error.type", type(e).__name__)
+                span.record_exception(e)
+
+            return {
+                "error": f"ACP session failed for issue #{issue_number}",
+                "guru_meditation": "#HF.00000003.ACPSESSION",
+                "acp_error": str(e),
+                "remediation": "Review ACP logs and try again",
+            }
+
+        # Step 4: Create KB note (best effort - don't fail if local FS is compromised)
+        kb_note_path = None
+        try:
+            kb_note_path = self._create_health_fix_note(
+                issue_number, incident, acp_response, acp_error=None
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create KB note for issue #{issue_number}: {e}")
+            # Continue - GitHub comment is the critical deliverable
+
+        # Step 5: Comment on GitHub issue - this is the primary deliverable
+        comment_result = self._add_github_issue_comment(
+            issue_number, incident, acp_response, acp_error=None, kb_note_path=kb_note_path
+        )
 
         return {
-            "dry_run": dry_run,
-            "services_fixed": len(results),
-            "results": results,
-            "verification": verification_summary,
+            "issue_number": issue_number,
+            "incident_fingerprint": incident.get("fingerprint"),
+            "acp_success": True,
+            "kb_note": kb_note_path,
+            "github_comment": comment_result,
         }
+
+    async def _health_fix_all_via_acp(
+        self, incidents: list[dict], dry_run: bool = False, close_after: bool = False
+    ) -> list[dict]:
+        """Process ALL incidents with GitHub issues via ACP for situational awareness.
+
+        This is the key feature for the Crusoe.ai demo: iterate all active incidents
+        that have GitHub issues and have ACP-Claude add diagnostic comments for
+        NOC engineers reviewing incidents at 2am.
+
+        Flow for each incident:
+        1. Get current system state via gRPC
+        2. Build ACP prompt with system context
+        3. Send to ACP (Claude Code) for diagnosis
+        4. Add NOC-friendly GitHub comment (ALWAYS - this is the primary deliverable)
+        5. Create KB note for audit trail
+        6. If --close: resolve incident via gRPC and close GitHub issue
+
+        Args:
+            incidents: List of incident dicts (must have github_issue field)
+            dry_run: If True, show what would happen without running ACP
+            close_after: If True, resolve incident and close GitHub issue after each fix
+
+        Returns:
+            List of result dicts, one per incident
+        """
+        from datetime import datetime
+
+        results = []
+
+        # Get current system state once (shared context for all incidents)
+        system_state = await self._get_system_state_for_acp()
+
+        for incident in incidents:
+            issue_number = incident.get("github_issue")
+            if not issue_number:
+                continue
+
+            fingerprint = incident.get("fingerprint", "unknown")
+
+            if dry_run:
+                results.append({
+                    "fingerprint": fingerprint,
+                    "issue_number": issue_number,
+                    "dry_run": True,
+                    "would_run_acp": True,
+                })
+                continue
+
+            # Build NOC-friendly ACP prompt
+            prompt = self._build_noc_diagnosis_prompt(incident, system_state)
+
+            # Run ACP session with backoff
+            try:
+                from .acp import GaiusACPClient, ACPConfig, ACPConnectionError
+
+                config = ACPConfig(
+                    include_gaius_mcp=True,
+                    connection_timeout=120.0,
+                    prompt_timeout=None,  # Let Claude Code run to completion
+                )
+
+                async with GaiusACPClient(config) as client:
+                    # Use backoff wrapper for rate limit handling
+                    acp_response, error = await self._attempt_acp_with_backoff(
+                        client, prompt, max_attempts=3, base_delay=60
+                    )
+
+                    # Handle rate limit exhaustion
+                    if error:
+                        repo = incident.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+                        logger.error(f"Rate limit exhausted for {fingerprint}: {error}")
+
+                        # Post Guru Meditation error comment (with deduplication)
+                        comment_result = self._add_guru_error_comment(
+                            issue_number, repo, error, incident
+                        )
+
+                        results.append({
+                            "fingerprint": fingerprint,
+                            "issue_number": issue_number,
+                            "acp_success": False,
+                            "rate_limit_exhausted": True,
+                            "error": error,
+                            "error_comment": comment_result,
+                        })
+
+                        # Stop processing remaining incidents
+                        results.append({
+                            "stopped": True,
+                            "reason": "Rate limit exhausted - remaining incidents skipped",
+                        })
+                        break
+
+                # Success path - response is guaranteed non-None here (error case breaks above)
+                assert acp_response is not None  # Type narrowing for mypy/ty
+
+                # Create KB note (best effort)
+                kb_note_path = None
+                try:
+                    kb_note_path = self._create_health_fix_note(
+                        issue_number, incident, acp_response, acp_error=None
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create KB note for issue #{issue_number}: {e}")
+
+                # Add NOC-friendly GitHub comment (ALWAYS - primary deliverable)
+                comment_result = self._add_noc_github_comment(
+                    issue_number, incident, acp_response, system_state, kb_note_path
+                )
+
+                result_entry = {
+                    "fingerprint": fingerprint,
+                    "issue_number": issue_number,
+                    "acp_success": True,
+                    "kb_note": kb_note_path,
+                    "github_comment": comment_result,
+                }
+
+                # If --close: resolve incident via gRPC and close GitHub issue
+                if close_after:
+                    # 1. Resolve incident in observer
+                    resolve_result = await self._resolve_incident_via_grpc(fingerprint)
+                    result_entry["incident_resolved"] = resolve_result.get("resolved", False)
+                    result_entry["was_active"] = resolve_result.get("was_active", False)
+
+                    # 2. Close GitHub issue
+                    repo = incident.get("github_repo") or os.environ.get(
+                        "GAIUS_ACP_REPO", "zndx/gaius-acp"
+                    )
+                    close_result = self._close_github_issue_with_resolution(
+                        issue_number, repo, fingerprint, acp_response, kb_note_path
+                    )
+                    result_entry["issue_closed"] = close_result.get("success", False)
+                    if close_result.get("error"):
+                        result_entry["close_error"] = close_result["error"]
+
+                results.append(result_entry)
+
+            except Exception as e:
+                logger.error(f"ACP failed for incident {fingerprint}: {e}")
+                results.append({
+                    "fingerprint": fingerprint,
+                    "issue_number": issue_number,
+                    "acp_success": False,
+                    "error": str(e),
+                })
+
+        return results
+
+    async def _resolve_incident_via_grpc(self, fingerprint: str) -> dict:
+        """Resolve incident via engine gRPC HealthObserverService.
+
+        Called by /health fix --close after successful ACP investigation.
+
+        Args:
+            fingerprint: Incident fingerprint (e.g., "GPU_001:reasoning")
+
+        Returns:
+            Dict with resolution status
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call(
+                "HealthObserver", "resolve_incident", {"fingerprint": fingerprint}, timeout=30.0
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Failed to resolve incident {fingerprint} via gRPC: {e}")
+            return {
+                "resolved": False,
+                "fingerprint": fingerprint,
+                "error": str(e),
+            }
+
+    def _close_github_issue_with_resolution(
+        self,
+        issue_number: int,
+        repo: str,
+        fingerprint: str,
+        acp_response: str,
+        kb_note_path: str | None,
+    ) -> dict:
+        """Close GitHub issue with resolution comment.
+
+        Called by /health fix --close after resolving the incident.
+
+        Args:
+            issue_number: GitHub issue number
+            repo: GitHub repo (e.g., "zndx/gaius-acp")
+            fingerprint: Incident fingerprint
+            acp_response: ACP diagnostic response
+            kb_note_path: Path to KB note (if created)
+
+        Returns:
+            Dict with close status
+        """
+        import subprocess
+        from datetime import datetime
+
+        # Check if already closed
+        if self._is_github_issue_closed(issue_number, repo):
+            return {"success": True, "already_closed": True}
+
+        # Build resolution comment
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        kb_link = f"\n\n**KB Note**: `{kb_note_path}`" if kb_note_path else ""
+
+        body = f"""## Incident Resolved
+
+**Fingerprint**: `{fingerprint}`
+**Resolved at**: {timestamp}
+
+### ACP Diagnostic Summary
+
+{acp_response[:1500]}{'...' if len(acp_response) > 1500 else ''}{kb_link}
+
+---
+*Closed by `/health fix --close`*
+"""
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "close", str(issue_number), "--repo", repo, "--comment", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info(f"Closed GitHub issue #{issue_number} for {fingerprint}")
+                return {"success": True}
+            else:
+                logger.error(f"Failed to close issue #{issue_number}: {result.stderr}")
+                return {"success": False, "error": result.stderr}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "gh command timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _is_github_issue_closed(self, issue_number: int, repo: str) -> bool:
+        """Check if GitHub issue is already closed.
+
+        Args:
+            issue_number: GitHub issue number
+            repo: GitHub repo (e.g., "zndx/gaius-acp")
+
+        Returns:
+            True if issue is closed, False otherwise
+        """
+        import json
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "view", str(issue_number), "--repo", repo, "--json", "state"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                return data.get("state") == "CLOSED"
+        except Exception as e:
+            logger.warning(f"Failed to check issue #{issue_number} state: {e}")
+        return False
+
+    async def _close_orphaned_issues(self, client) -> dict:
+        """Find and close GitHub issues with no active incident.
+
+        Handles race condition where incident was resolved but issue wasn't closed.
+
+        Args:
+            client: gRPC client instance
+
+        Returns:
+            Dict with closed count and details
+        """
+        import subprocess
+
+        try:
+            # Get orphaned issues from HealthObserver
+            result = await client.call(
+                "HealthObserver", "get_orphaned_issues", {}, timeout=30.0
+            )
+            orphans = result.get("orphans", [])
+
+            if not orphans:
+                return {"closed_count": 0, "details": []}
+
+            closed_count = 0
+            details = []
+
+            for orphan in orphans:
+                issue_number = orphan.get("issue_number")
+                repo = orphan.get("repo", os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp"))
+                fingerprint = orphan.get("fingerprint", "unknown")
+
+                # Check if already closed
+                if self._is_github_issue_closed(issue_number, repo):
+                    details.append({
+                        "issue_number": issue_number,
+                        "fingerprint": fingerprint,
+                        "already_closed": True,
+                    })
+                    continue
+
+                # Close with explanatory comment
+                body = f"""## Issue Resolved (Race Condition Recovery)
+
+This incident was already resolved in the HealthObserver.
+
+The GitHub issue remained open, likely due to a race condition during prior resolution.
+
+**Fingerprint**: `{fingerprint}`
+
+---
+*Closed by `/health fix --close` (race condition recovery)*
+"""
+                try:
+                    close_result = subprocess.run(
+                        ["gh", "issue", "close", str(issue_number), "--repo", repo, "--comment", body],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if close_result.returncode == 0:
+                        closed_count += 1
+                        details.append({
+                            "issue_number": issue_number,
+                            "fingerprint": fingerprint,
+                            "closed": True,
+                        })
+                        logger.info(f"Closed orphaned issue #{issue_number} (fingerprint: {fingerprint})")
+                    else:
+                        details.append({
+                            "issue_number": issue_number,
+                            "fingerprint": fingerprint,
+                            "closed": False,
+                            "error": close_result.stderr,
+                        })
+                except Exception as e:
+                    details.append({
+                        "issue_number": issue_number,
+                        "fingerprint": fingerprint,
+                        "closed": False,
+                        "error": str(e),
+                    })
+
+            return {"closed_count": closed_count, "details": details}
+
+        except Exception as e:
+            logger.error(f"Failed to close orphaned issues: {e}")
+            return {"closed_count": 0, "error": str(e)}
+
+    async def _get_system_state_for_acp(self) -> dict:
+        """Get current system state to include in ACP prompts.
+
+        Gathers endpoint health, GPU status, and preload config
+        for context when diagnosing incidents.
+
+        Returns:
+            Dict with system state information
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            # Get orchestrator status (endpoints)
+            orch_status = await client.call("Orchestrator", "status", {}, timeout=10.0)
+            endpoints = orch_status.get("endpoints", [])
+
+            # Get GPU health via MCP tool (same as /gpu health)
+            try:
+                gpu_health_result = await client.call("GpuHealth", "get", {}, timeout=10.0)
+                gpus = gpu_health_result.get("gpus", [])
+            except Exception:
+                gpus = []  # GPU health not available, continue without it
+
+            # Get preload config to identify obsolete endpoints
+            preload_config = os.environ.get("GAIUS_PRELOAD_ENDPOINTS", "instruct")
+            preload_endpoints = [e.strip() for e in preload_config.split(",")]
+
+            return {
+                "endpoints": [
+                    {
+                        "name": ep.get("name", "unknown"),
+                        "status": ep.get("status", "unknown"),
+                        "port": ep.get("port", 0),
+                    }
+                    for ep in endpoints
+                ],
+                "gpus": [
+                    {
+                        "index": g.get("index", 0),
+                        "name": g.get("name", "unknown"),
+                        "memory_used_mb": g.get("memory_used_mb", 0),
+                        "memory_total_mb": g.get("memory_total_mb", 0),
+                        "utilization": g.get("utilization_percent", 0),
+                    }
+                    for g in gpus
+                ],
+                "preload_endpoints": preload_endpoints,
+                "total_gpus": orch_status.get("total_gpus", 0),
+                "available_gpus": orch_status.get("available_gpus", 0),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get system state: {e}")
+            return {"error": str(e)}
+
+    def _build_noc_diagnosis_prompt(self, incident: dict, system_state: dict) -> str:
+        """Build ACP prompt for NOC-friendly incident diagnosis.
+
+        This prompt instructs Claude Code to:
+        1. Analyze current system state
+        2. Diagnose if incident is still relevant or obsolete
+        3. Add a GitHub comment with findings (the key deliverable)
+
+        Args:
+            incident: Incident dict from HealthObserver
+            system_state: Current system state from _get_system_state_for_acp
+
+        Returns:
+            Comprehensive prompt for ACP diagnosis
+        """
+        from datetime import datetime
+
+        fingerprint = incident.get("fingerprint", "unknown")
+        failure_mode = incident.get("failure_mode_id", "unknown")
+        endpoint = incident.get("endpoint", "unknown")
+        issue_number = incident.get("github_issue", 0)
+        github_repo = incident.get("github_repo", "zndx/gaius-acp")
+        created_at = incident.get("created_at", "unknown")
+        rpn_score = incident.get("rpn_score", 0)
+
+        # Format system state for the prompt
+        endpoint_lines = []
+        for ep in system_state.get("endpoints", []):
+            status_icon = "[OK]" if "HEALTHY" in str(ep.get("status", "")).upper() else "[X]"
+            endpoint_lines.append(f"  {status_icon} {ep['name']}: {ep['status']} (port {ep['port']})")
+
+        gpu_lines = []
+        for gpu in system_state.get("gpus", []):
+            mem_pct = (gpu["memory_used_mb"] / gpu["memory_total_mb"] * 100) if gpu["memory_total_mb"] else 0
+            gpu_lines.append(f"  GPU {gpu['index']}: {mem_pct:.0f}% memory, {gpu['utilization']}% utilization")
+
+        preload = ", ".join(system_state.get("preload_endpoints", []))
+
+        return f"""# ACP Diagnostic Investigation - GitHub Issue #{issue_number}
+
+You are investigating a health incident that has been escalated to GitHub.
+Your task is to diagnose the issue and **add a comment to the GitHub issue**
+with your findings. This comment will be read by NOC engineers at 2am.
+
+## Incident Details
+
+| Field | Value |
+|-------|-------|
+| **GitHub Issue** | #{issue_number} in {github_repo} |
+| **Fingerprint** | `{fingerprint}` |
+| **Failure Mode** | {failure_mode} |
+| **Endpoint** | {endpoint} |
+| **RPN Score** | {rpn_score} |
+| **Created** | {created_at} |
+
+## Current System State
+
+**Endpoints:**
+{chr(10).join(endpoint_lines) if endpoint_lines else "  No endpoints available"}
+
+**GPUs:**
+{chr(10).join(gpu_lines) if gpu_lines else "  No GPU info available"}
+
+**Preload Configuration:** {preload}
+**Available GPUs:** {system_state.get('available_gpus', 0)}/{system_state.get('total_gpus', 0)}
+
+## Your Tasks
+
+1. **Analyze** the incident against current system state:
+   - Is the endpoint `{endpoint}` in the current preload configuration?
+   - Is the system currently healthy?
+   - Is this incident obsolete (config has changed)?
+
+2. **Diagnose** the root cause:
+   - If endpoint not in preload: This incident is OBSOLETE (architecture change)
+   - If endpoint unhealthy: Attempt remediation with `/health fix endpoints`
+   - If GPU issues: Check for memory pressure or utilization problems
+
+3. **Add GitHub Comment** with your findings:
+   Use this command to add a NOC-friendly comment:
+   ```bash
+   gh issue comment {issue_number} --repo {github_repo} --body "## ACP Diagnostic Report - $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+   ### System State
+   [Current endpoint and GPU status]
+
+   ### Incident Analysis
+   **Fingerprint**: `{fingerprint}`
+   **Original Issue**: [What was the problem]
+
+   [Your analysis of whether this is still an issue]
+
+   ### Recommendation
+   [What should the NOC engineer do - e.g., close as obsolete, investigate further, etc.]
+
+   ---
+   Generated by Gaius ACP"
+   ```
+
+4. **Do NOT close the issue** - leave it open with your comment for human review.
+
+Be thorough but concise. A NOC engineer will read this at 2am.
+"""
+
+    def _add_noc_github_comment(
+        self,
+        issue_number: int,
+        incident: dict,
+        acp_response: str,
+        system_state: dict,
+        kb_note_path: str | None,
+    ) -> dict:
+        """Add NOC-friendly comment to GitHub issue with ACP findings.
+
+        This creates a structured, scannable comment format designed for
+        NOC engineers reviewing incidents at 2am.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details
+            acp_response: Response from ACP investigation
+            system_state: Current system state
+            kb_note_path: Path to KB note (if created)
+
+        Returns:
+            Dict with success status and any error
+        """
+        import subprocess
+        from datetime import datetime
+
+        repo = incident.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        fingerprint = incident.get("fingerprint", "unknown")
+        endpoint = incident.get("endpoint", "unknown")
+
+        # Build endpoint status table
+        endpoint_status = []
+        for ep in system_state.get("endpoints", []):
+            status = ep.get("status", "unknown")
+            icon = "[OK]" if "HEALTHY" in str(status).upper() else "[X]"
+            endpoint_status.append(f"- **{ep['name']}**: {icon} {status} (port {ep['port']})")
+
+        # Build GPU summary
+        gpus = system_state.get("gpus", [])
+        gpu_summary = f"{system_state.get('available_gpus', 0)}/{system_state.get('total_gpus', 0)} GPUs available"
+
+        # Check if endpoint is in preload config (obsolete detection)
+        preload_endpoints = system_state.get("preload_endpoints", [])
+        is_obsolete = endpoint not in preload_endpoints and endpoint != "unknown"
+
+        # Truncate ACP response if needed
+        acp_truncated = (
+            acp_response[:2000] + "\n...\n*[truncated - see KB note for full response]*"
+            if len(acp_response) > 2000
+            else acp_response
+        )
+
+        # Build the NOC-friendly comment
+        body = f"""## ACP Diagnostic Report - {timestamp}
+
+### System State
+{chr(10).join(endpoint_status) if endpoint_status else "- No endpoints available"}
+- **GPU Memory**: {gpu_summary}
+- **Preload Config**: {', '.join(preload_endpoints)}
+
+### Incident Analysis
+**Fingerprint**: `{fingerprint}`
+**Endpoint**: `{endpoint}`
+**Obsolete**: {'YES - endpoint not in current preload config' if is_obsolete else 'NO - endpoint still configured'}
+
+### ACP Investigation Summary
+
+{acp_truncated}
+
+### Recommendation
+{'This incident refers to endpoint `' + endpoint + '` which is no longer in the preload configuration. Consider closing this issue as **resolved-by-architecture-change**.' if is_obsolete else 'Review ACP findings above and take appropriate action.'}
+
+---
+Generated by `/health fix` | {f'KB Note: `{kb_note_path}`' if kb_note_path else 'No KB note created'}
+"""
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {
+                "success": result.returncode == 0,
+                "error": result.stderr if result.returncode != 0 else None,
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "gh CLI not found - install with: brew install gh",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": "GitHub API timeout after 30s",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _attempt_acp_with_backoff(
+        self,
+        acp_client,  # GaiusACPClient - forward ref causes issues
+        prompt: str,
+        max_attempts: int = 3,
+        base_delay: int = 60,
+    ) -> tuple[str | None, str | None]:
+        """Attempt ACP prompt with exponential backoff on rate limit.
+
+        Detects rate limit errors mid-stream and retries with delays:
+        - Attempt 1: 60s wait
+        - Attempt 2: 120s wait
+        - Attempt 3: 240s wait (then give up)
+
+        Args:
+            acp_client: Connected ACP client
+            prompt: The prompt to send
+            max_attempts: Maximum retry attempts (default 3)
+            base_delay: Initial delay in seconds (default 60)
+
+        Returns:
+            (response, error) - response if success, error message if exhausted
+        """
+        import asyncio
+        from .acp import ACPConnectionError
+
+        delays = [base_delay * (2 ** i) for i in range(max_attempts)]  # 60, 120, 240
+
+        for attempt, delay in enumerate(delays, 1):
+            acp_client.reset_rate_limit_state()
+
+            try:
+                response = await acp_client.prompt(prompt)
+
+                # Check if rate limit was detected mid-stream
+                if acp_client.is_rate_limited():
+                    error_msg = acp_client.get_rate_limit_message() or "Rate limit exceeded"
+
+                    if attempt < max_attempts:
+                        logger.warning(f"Rate limit hit (attempt {attempt}/{max_attempts}), waiting {delay}s")
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        return None, error_msg
+
+                return response, None
+
+            except ACPConnectionError as e:
+                if attempt < max_attempts:
+                    await asyncio.sleep(delay)
+                    continue
+                return None, str(e)
+
+        return None, "Max retry attempts exhausted"
+
+    def _has_guru_error_comment(self, issue_number: int, repo: str) -> bool:
+        """Check if GitHub issue already has a Guru Meditation error comment.
+
+        Searches for: #ACP.00000006.RATELIMIT
+        Fails open (returns False) if check fails.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{repo}/issues/{issue_number}/comments", "--jq", ".[].body"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                return "#ACP.00000006.RATELIMIT" in result.stdout
+        except Exception:
+            pass  # Fail open
+
+        return False
+
+    def _add_guru_error_comment(
+        self,
+        issue_number: int,
+        repo: str,
+        error_message: str,
+        incident: dict,
+    ) -> dict:
+        """Add Guru Meditation error comment to GitHub issue.
+
+        Only posts if no existing error comment found (deduplication).
+        """
+        import subprocess
+        from datetime import datetime
+
+        # Check for existing error comment
+        if self._has_guru_error_comment(issue_number, repo):
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "Error comment already exists",
+            }
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        fingerprint = incident.get("fingerprint", "unknown")
+
+        body = f"""## Guru Meditation #ACP.00000006.RATELIMIT
+
+**Timestamp**: {timestamp}
+**Incident**: `{fingerprint}`
+
+### Error
+
+```
+{error_message[:500]}
+```
+
+### What Happened
+
+ACP hit a rate limit from the underlying model (Mistral) while investigating this incident.
+Retried 3 times with exponential backoff (60s, 120s, 240s) before giving up.
+
+### Remediation
+
+1. **Wait** - Rate limits typically reset within 15-60 minutes
+2. **Manual investigation** - Run `/health fix {issue_number}` later
+3. **Check quota** - Verify Mistral API quota at https://console.mistral.ai
+
+---
+🤖 Non-agentic error report from `/health fix`
+"""
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {
+                "success": result.returncode == 0,
+                "error": result.stderr if result.returncode != 0 else None,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _health_close(self, args: list[str]) -> dict:
+        """Close a GitHub issue after ACP verification.
+
+        Flow:
+        1. Look up incident by GitHub issue number
+        2. Run quick health check via ACP
+        3. If healthy, close GitHub issue with summary comment
+        4. Create closing note in KB
+
+        Args:
+            args: Arguments like ['42'] (issue number)
+
+        Returns:
+            Dict with closure status
+        """
+        if not args or not args[0].isdigit():
+            return {
+                "error": "Usage: /health close <issue#>",
+                "example": "/health close 42",
+            }
+
+        issue_number = int(args[0])
+
+        from .health.observe import get_health_observer
+
+        observer = get_health_observer()
+        incident = await observer.get_incident_by_issue(issue_number)
+
+        if not incident:
+            return {
+                "error": f"No incident found for GitHub issue #{issue_number}",
+                "guru_meditation": "#HF.00000001.NOINCIDENT",
+            }
+
+        # Build verification prompt
+        prompt = self._build_close_issue_prompt(issue_number, incident)
+
+        # Run ACP session
+        try:
+            from .acp import GaiusACPClient, ACPConfig
+
+            # Use generous timeouts for close verification
+            config = ACPConfig(
+                include_gaius_mcp=True,
+                connection_timeout=120.0,  # 2 min for Claude Code + MCP startup
+                prompt_timeout=None,  # No timeout - let Claude Code run to completion
+            )
+            async with GaiusACPClient(config) as client:
+                response = await client.prompt(prompt)
+
+            # Check if ACP says system is healthy
+            is_healthy = any(word in response.lower() for word in ["healthy", "resolved", "ok", "passed"])
+            should_close = is_healthy and "not healthy" not in response.lower() and "unhealthy" not in response.lower()
+
+            # Create closing note
+            kb_note = self._create_health_close_note(issue_number, incident, response)
+
+            if should_close:
+                # Close the issue via gh CLI (same pattern as _add_github_issue_comment)
+                close_result = self._close_github_issue(issue_number, incident, response, kb_note)
+            else:
+                close_result = {"success": False, "reason": "ACP verification indicates system not healthy"}
+
+            return {
+                "issue_number": issue_number,
+                "incident_fingerprint": incident.get("fingerprint"),
+                "acp_verified": True,
+                "kb_note": kb_note,
+                "issue_closed": close_result.get("success", False),
+                "close_result": close_result,
+                "note": "Issue closed" if close_result.get("success") else "Issue remains open - see KB note",
+            }
+
+        except Exception as e:
+            return {
+                "error": f"ACP session failed: {e}",
+                "issue_number": issue_number,
+                "note": "Could not verify resolution - issue remains open",
+            }
+
+    def _build_fix_issue_prompt(self, issue_number: int, incident: dict) -> str:
+        """Build prompt for ACP remediation attempt.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details from observer
+
+        Returns:
+            Comprehensive prompt for ACP-Claude investigation
+        """
+        fingerprint = incident.get("fingerprint", "unknown")
+        failure_mode = incident.get("failure_mode_id", "unknown")
+        endpoint = incident.get("endpoint", "unknown")
+        github_url = incident.get("github_issue_url", "")
+
+        return f"""# Health Fix Attempt for Issue #{issue_number}
+
+You are investigating a health incident that was previously escalated to GitHub.
+
+## Incident Details
+- **GitHub Issue:** #{issue_number} {github_url}
+- **Fingerprint:** `{fingerprint}`
+- **Failure Mode:** {failure_mode}
+- **Endpoint:** {endpoint}
+
+## Your Tasks
+
+1. **Run diagnostics** to understand current system state:
+   ```bash
+   uv run gaius-cli --cmd "/health gpu" --format json
+   uv run gaius-cli --cmd "/gpu status" --format json
+   ```
+
+2. **Check if issue is already resolved**:
+   - If the system is now healthy, note what may have fixed it
+   - Check endpoint status, GPU health, and inference metrics
+
+3. **Attempt remediation** if still unhealthy:
+   - Use `/health fix endpoints` for endpoint issues
+   - Use orchestrator restart if needed: `uv run gaius-cli --cmd "/orchestrator restart reasoning"`
+   - Check logs: `journalctl -u gaius-engine -n 50`
+
+4. **Report your findings** clearly:
+   - Current health status
+   - What you tried
+   - Whether remediation succeeded
+   - Any recommendations for preventing recurrence
+
+Be thorough but concise. Your response will be added as a comment to GitHub issue #{issue_number}.
+"""
+
+    def _build_close_issue_prompt(self, issue_number: int, incident: dict) -> str:
+        """Build prompt for issue closure verification.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details from observer
+
+        Returns:
+            Brief prompt for ACP-Claude to verify health status
+        """
+        fingerprint = incident.get("fingerprint", "unknown")
+        endpoint = incident.get("endpoint", "unknown")
+
+        return f"""# Verify Health for Issue #{issue_number}
+
+Quick verification of system health before closing this issue.
+
+**Incident:** `{fingerprint}`
+**Endpoint:** `{endpoint}`
+
+## Task
+
+Run health diagnostics and report if the system is healthy:
+
+1. Use the Gaius MCP tools to check health:
+   - `mcp__gaius__health_observer_status` - Check observer daemon
+   - `mcp__gaius__gpu_health` - Check GPU status
+   - `mcp__gaius__orchestrator_status` - Check endpoints
+
+2. Report your findings clearly:
+   - Is the system **HEALTHY** or **NOT HEALTHY**?
+   - What specific checks passed/failed?
+
+**IMPORTANT:** Do NOT try to close the issue yourself - just report the health status.
+The issue will be closed automatically if you confirm the system is healthy.
+
+Be brief and clear about the health verdict.
+"""
+
+    def _create_health_fix_note(
+        self,
+        issue_number: int,
+        incident: dict,
+        acp_response: str | None,
+        acp_error: str | None,
+    ) -> str:
+        """Create zettelkasten note for health fix attempt.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details
+            acp_response: Response from ACP (if successful)
+            acp_error: Error message (if failed)
+
+        Returns:
+            Relative path to created note
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+
+        kb_base = Path(os.environ.get("GAIUS_KB_PATH", "build/dev"))
+        save_dir = kb_base / "scratch" / date_str
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{time_str}_health_fix_{issue_number}.md"
+        filepath = save_dir / filename
+
+        status = "Success" if acp_response and not acp_error else "Failed"
+
+        content = f"""---
+title: "Health Fix Attempt - Issue #{issue_number}"
+created: {now.isoformat()}
+type: health-fix
+github_issue: {issue_number}
+fingerprint: "{incident.get('fingerprint', 'unknown')}"
+status: "{status}"
+---
+
+# Health Fix Attempt - Issue #{issue_number}
+
+*Generated: {now.strftime("%Y-%m-%d %H:%M:%S")}*
+
+## Incident Context
+
+| Field | Value |
+|-------|-------|
+| Fingerprint | `{incident.get('fingerprint', 'unknown')}` |
+| Failure Mode | {incident.get('failure_mode_id', 'unknown')} |
+| Endpoint | {incident.get('endpoint', 'unknown')} |
+| GitHub Issue | #{issue_number} |
+
+## ACP Response
+
+{acp_response if acp_response else f"*Error: {acp_error}*"}
+
+---
+**Related:** [[current/heuristics/gaius/|Health Heuristics]]
+"""
+
+        filepath.write_text(content)
+        return f"scratch/{date_str}/{filename}"
+
+    def _create_health_close_note(
+        self,
+        issue_number: int,
+        incident: dict,
+        acp_response: str,
+    ) -> str:
+        """Create zettelkasten note for issue closure.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details
+            acp_response: Response from ACP verification
+
+        Returns:
+            Relative path to created note
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+
+        kb_base = Path(os.environ.get("GAIUS_KB_PATH", "build/dev"))
+        save_dir = kb_base / "scratch" / date_str
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{time_str}_health_close_{issue_number}.md"
+        filepath = save_dir / filename
+
+        content = f"""---
+title: "Health Issue Closed - Issue #{issue_number}"
+created: {now.isoformat()}
+type: health-close
+github_issue: {issue_number}
+fingerprint: "{incident.get('fingerprint', 'unknown')}"
+---
+
+# Health Issue Closed - Issue #{issue_number}
+
+*Closed: {now.strftime("%Y-%m-%d %H:%M:%S")}*
+
+## Incident Summary
+
+| Field | Value |
+|-------|-------|
+| Fingerprint | `{incident.get('fingerprint', 'unknown')}` |
+| Failure Mode | {incident.get('failure_mode_id', 'unknown')} |
+| Endpoint | {incident.get('endpoint', 'unknown')} |
+| GitHub Issue | #{issue_number} |
+
+## Resolution Verification
+
+{acp_response}
+
+---
+**Related:** [[current/heuristics/gaius/|Health Heuristics]]
+"""
+
+        filepath.write_text(content)
+        return f"scratch/{date_str}/{filename}"
+
+    def _add_github_issue_comment(
+        self,
+        issue_number: int,
+        incident: dict,
+        acp_response: str | None,
+        acp_error: str | None,
+        kb_note_path: str | None,
+    ) -> dict:
+        """Add comment to GitHub issue with investigation results.
+
+        This is the critical step - we ALWAYS try to comment on the issue
+        even if other steps (like KB note creation) failed. This ensures
+        the investigation results are captured somewhere visible.
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details
+            acp_response: Response from ACP (if successful)
+            acp_error: Error message (if failed)
+            kb_note_path: Path to KB note (if created)
+
+        Returns:
+            Dict with success status and any error
+        """
+        import subprocess
+        from datetime import datetime
+
+        # Get repo from incident or fallback to config
+        repo = incident.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+
+        # Build comment body
+        status = "Investigation Complete" if acp_response else "Investigation Failed"
+        status_icon = "[OK]" if acp_response else "[X]"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        body_parts = [
+            f"## {status_icon} {status}",
+            f"*{timestamp}*",
+            "",
+        ]
+
+        if acp_response:
+            # Truncate if too long for GitHub comment (max ~65K, use 3K for safety)
+            response_truncated = (
+                acp_response[:3000] + "...\n\n*[truncated - see KB note for full response]*"
+                if len(acp_response) > 3000
+                else acp_response
+            )
+            body_parts.extend([
+                "### ACP Investigation Results",
+                "",
+                response_truncated,
+            ])
+        else:
+            body_parts.extend([
+                "### Error",
+                f"ACP session failed: {acp_error}",
+            ])
+
+        if kb_note_path:
+            body_parts.extend([
+                "",
+                f"Full details: `{kb_note_path}`",
+            ])
+
+        body_parts.extend([
+            "",
+            "---",
+            "*Generated by `/health fix` command*",
+        ])
+
+        body = "\n".join(body_parts)
+
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "comment", str(issue_number), "--repo", repo, "--body", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {
+                "success": result.returncode == 0,
+                "error": result.stderr if result.returncode != 0 else None,
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "gh CLI not found - install with: brew install gh",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": "GitHub API timeout after 30s",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _close_github_issue(
+        self,
+        issue_number: int,
+        incident: dict,
+        acp_response: str,
+        kb_note_path: str | None,
+    ) -> dict:
+        """Close a GitHub issue with a resolution comment.
+
+        Uses gh CLI directly (same pattern as _add_github_issue_comment).
+
+        Args:
+            issue_number: GitHub issue number
+            incident: Incident details
+            acp_response: ACP's health verification response
+            kb_note_path: Path to KB note (if created)
+
+        Returns:
+            Dict with success status and any error
+        """
+        import subprocess
+        from datetime import datetime
+
+        repo = incident.get("github_repo") or os.environ.get("GAIUS_ACP_REPO", "zndx/gaius-acp")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Build closing comment
+        body_parts = [
+            "## ✅ Issue Resolved",
+            f"*Closed: {timestamp}*",
+            "",
+            "### Health Verification",
+            "",
+            acp_response[:2000] if len(acp_response) > 2000 else acp_response,
+        ]
+
+        if kb_note_path:
+            body_parts.extend([
+                "",
+                f"Full details: `{kb_note_path}`",
+            ])
+
+        body_parts.extend([
+            "",
+            "---",
+            "*Closed by `/health close` command*",
+        ])
+
+        body = "\n".join(body_parts)
+
+        try:
+            # Close the issue with a comment
+            result = subprocess.run(
+                ["gh", "issue", "close", str(issue_number), "--repo", repo, "--comment", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return {
+                "success": result.returncode == 0,
+                "error": result.stderr if result.returncode != 0 else None,
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "gh CLI not found - install with: brew install gh",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": "GitHub API timeout after 30s",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _health_observer(self, args: list[str]) -> dict:
+        """Control and query the HealthObserver daemon via engine gRPC.
+
+        The HealthObserver runs inside the engine, providing:
+        - FMEA-based incident detection and RPN scoring
+        - Tiered self-healing (Tier 0-2 with ACP escalation)
+        - Incident tracking and GitHub issue creation
+
+        Args:
+            args: Subcommand args like ['start'], ['stop'], ['check'], ['incidents']
+        """
+        from .client.grpc_client import get_grpc_client
+
+        action = args[0].lower() if args else "status"
+
+        try:
+            client = await get_grpc_client()
+
+            if action == "status":
+                result = await client.call("HealthObserver", "status", {}, timeout=10.0)
+                return {
+                    "running": result.get("running", False),
+                    "enabled": result.get("enabled", True),
+                    "poll_count": result.get("poll_count", 0),
+                    "last_poll_at": result.get("last_poll_at"),
+                    "poll_interval": result.get("poll_interval", 30),
+                    "escalate_to_acp": result.get("escalate_to_acp", True),
+                    "metrics": {
+                        "incidents_created": result.get("incidents_created", 0),
+                        "incidents_resolved": result.get("incidents_resolved", 0),
+                        "acp_escalations": result.get("acp_escalations", 0),
+                    },
+                    "active_incidents": result.get("active_incident_count", 0),
+                    "incidents": result.get("incidents", []),
+                }
+
+            elif action == "start":
+                result = await client.call("HealthObserver", "start", {}, timeout=10.0)
+                return {
+                    "started": result.get("status") == "started",
+                    "poll_interval": result.get("poll_interval", 30),
+                    "escalate_to_acp": result.get("escalate_to_acp", True),
+                }
+
+            elif action == "stop":
+                result = await client.call("HealthObserver", "stop", {}, timeout=10.0)
+                return {
+                    "stopped": True,
+                    "active_incidents_preserved": result.get("active_incidents", 0),
+                }
+
+            elif action == "check":
+                result = await client.call("HealthObserver", "check", {}, timeout=120.0)
+                return {
+                    "healthy": result.get("healthy", False),
+                    "summary": result.get("summary", ""),
+                    "passed": result.get("passed", 0),
+                    "warnings": result.get("warnings", 0),
+                    "failures": result.get("failures", 0),
+                    "checks": result.get("checks", []),  # Individual check details
+                    "active_incidents": result.get("active_incidents", 0),
+                    "interventions": result.get("interventions", []),
+                }
+
+            elif action == "incidents":
+                status_filter = args[1] if len(args) > 1 else "active"
+                result = await client.call(
+                    "HealthObserver", "incidents", {"status": status_filter}, timeout=10.0
+                )
+                return {
+                    "filter": status_filter,
+                    "count": result.get("count", 0),
+                    "incidents": result.get("incidents", []),
+                }
+
+            else:
+                return {
+                    "error": f"Unknown observer action: {action}",
+                    "available_actions": ["status", "start", "stop", "check", "incidents"],
+                    "usage": "/health observer [status|start|stop|check|incidents [filter]]",
+                }
+
+        except Exception as e:
+            error_msg = str(e)
+            if "UNAVAILABLE" in error_msg or "failed to connect" in error_msg.lower():
+                return {
+                    "error": "Engine not available",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": "Start the engine: devenv up gaius-engine",
+                }
+            else:
+                return {
+                    "error": f"HealthObserver error: {error_msg}",
+                    "guru_meditation": "#HO.00000002.GRPCFAIL",
+                }
 
     async def _health_watch(self, watch_cmd: str | None) -> dict:
         """Execute a command while watching for fallbacks and stubs.
@@ -6102,7 +8541,7 @@ Generated: {now.isoformat()}
 |-----|------|-----------|-------------|--------|
 """
         for gpu in gpu_health:
-            status_icon = "✓" if gpu.get("healthy", True) else "⚠"
+            status_icon = "[OK]" if gpu.get("healthy", True) else "[WARN]"
             report += f"| {gpu.get('index', '?')} | {gpu.get('temp', '?')}°C | {gpu.get('vram_used', '?'):.1f}/{gpu.get('vram_total', '?'):.1f}GB | {gpu.get('util', '?')}% | {status_icon} |\n"
 
         report += f"""
@@ -6125,12 +8564,12 @@ Generated: {now.isoformat()}
             for ep in unhealthy_endpoints:
                 ep_name = ep.get('name', 'unknown')
                 if ep.get("status") in ("UNHEALTHY", "unhealthy"):
-                    report += f"- [[action:/health fix {ep_name}]] - Restart unhealthy endpoint\n"
+                    report += f"- [action:/health fix {ep_name}] - Restart unhealthy endpoint\n"
                 elif ep.get("status") in ("FAILED", "failed"):
-                    report += f"- [[action:/gpu restart {ep_name}]] - Force restart failed endpoint\n"
+                    report += f"- [action:/gpu restart {ep_name}] - Force restart failed endpoint\n"
 
             for approval in pending_approvals:
-                report += f"- [[action:/aiops approve {approval.get('id', '?')}]] - {approval.get('description', 'Pending action')}\n"
+                report += f"- [action:/aiops approve {approval.get('id', '?')}] - {approval.get('description', 'Pending action')}\n"
 
         report += f"""
 ## Recent Events
@@ -6210,19 +8649,18 @@ Generated: {now.isoformat()}
         endpoints = []
         try:
             # Try to get status from engine via gRPC
-            from .engine.client import get_engine_client
-            client = get_engine_client()
+            from .client import get_grpc_client
+            client = await get_grpc_client()
 
-            if client and await client.ping():
-                status = await client.orchestrator_status()
-                for ep in status.get("endpoints", []):
-                    endpoints.append({
-                        "name": ep.get("agent_alias", ep.get("name", "?")),
-                        "status": ep.get("status", "UNKNOWN"),
-                        "pid": ep.get("pid"),
-                        "uptime": ep.get("uptime_seconds", "N/A"),
-                        "gpu_ids": ep.get("gpu_ids", []),
-                    })
+            status = await client.call("Orchestrator", "status", {})
+            for ep in status.get("endpoints", []):
+                endpoints.append({
+                    "name": ep.get("agent_alias", ep.get("name", "?")),
+                    "status": ep.get("status", "UNKNOWN"),
+                    "pid": ep.get("pid"),
+                    "uptime": ep.get("uptime_seconds", "N/A"),
+                    "gpu_ids": ep.get("gpu_ids", []),
+                })
         except Exception as e:
             # Fallback: check vLLM processes directly
             try:
@@ -6388,6 +8826,72 @@ Generated: {now.isoformat()}
             "events": events,
         }
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Observe - Observability Dashboard (CLI mirror of TUI ObservePanel)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _cmd_observe(self, args: str) -> dict:
+        """Observability dashboard - system metrics and status.
+
+        Fetches metrics from Prometheus and engine state via gRPC,
+        providing a CLI-equivalent view to the TUI ObservePanel.
+
+        Usage:
+            /observe              - Full metrics dashboard
+            /observe quick        - Key metrics only (latency, errors, compute)
+            /observe endpoints    - Endpoint status details
+            /observe sparklines   - Include time-series data
+
+        Examples:
+            /observe                    # Standard dashboard view
+            /observe quick              # Quick health check
+            /observe sparklines         # With historical data
+        """
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "full"
+
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: devenv tasks run restart:clean",
+            }
+
+        include_sparklines = "sparklines" in parts
+
+        try:
+            result = await client.call("Observe", "status", {
+                "include_sparklines": include_sparklines,
+                "sparkline_points": 20,
+            })
+        except Exception as e:
+            return {
+                "error": f"ObserveStatus RPC failed: {e}",
+                "suggestion": "Check engine health with /health engine",
+            }
+
+        if subcmd == "quick":
+            # Filter to key metrics only
+            key_metrics = {"latency_p95", "error_rate", "gpu_flops_utilization", "active_incidents"}
+            result["metrics"] = [
+                m for m in result.get("metrics", [])
+                if m.get("name") in key_metrics
+            ]
+            result["view"] = "quick"
+        elif subcmd == "endpoints":
+            # Focus on endpoint details only
+            return {
+                "view": "endpoints",
+                "endpoints": result.get("endpoints", []),
+                "healthy_endpoints": result.get("healthy_endpoints", 0),
+                "unhealthy_endpoints": result.get("unhealthy_endpoints", 0),
+            }
+        else:
+            result["view"] = "full"
+
+        return result
+
     async def _cmd_mlops(self, args: str) -> dict:
         """MLOps: Model lifecycle management with KB reports.
 
@@ -6461,10 +8965,10 @@ Generated: {now.isoformat()}
         report += "\n## Available Actions\n\n"
         for agent in agent_versions:
             agent_id = agent.get('agent_id', 'unknown')
-            report += f"- [[action:/evolve trigger {agent_id}]] - Trigger evolution for {agent_id}\n"
+            report += f"- [action:/evolve trigger {agent_id}] - Trigger evolution for {agent_id}\n"
 
         if evolution_status.get('daemon_running') == 'stopped':
-            report += "- [[action:/evolve start]] - Start evolution daemon\n"
+            report += "- [action:/evolve start] - Start evolution daemon\n"
 
         report += f"""
 ## Recent Events
@@ -6556,19 +9060,18 @@ Generated: {now.isoformat()}
         }
 
         try:
-            # Try to get status from engine
-            from .engine.client import get_engine_client
-            client = get_engine_client()
+            # Try to get status from engine via gRPC
+            from .client import get_grpc_client
+            client = await get_grpc_client()
 
-            if client and await client.ping():
-                evo_status = await client.evolution_status()
-                status.update({
-                    "daemon_running": "running" if evo_status.get("daemon_running") else "stopped",
-                    "total_cycles": evo_status.get("cycles_completed", 0),
-                    "last_cycle": evo_status.get("last_cycle_time", "N/A"),
-                    "next_agent": evo_status.get("next_agent", "N/A"),
-                    "gpu_idle": "yes" if evo_status.get("gpu_idle") else "no",
-                })
+            evo_status = await client.call("Evolution", "status", {})
+            status.update({
+                "daemon_running": "running" if evo_status.get("daemon_running") else "stopped",
+                "total_cycles": evo_status.get("cycles_completed", 0),
+                "last_cycle": evo_status.get("last_cycle_time", "N/A"),
+                "next_agent": evo_status.get("next_agent", "N/A"),
+                "gpu_idle": "yes" if evo_status.get("gpu_idle") else "no",
+            })
         except Exception:
             pass
 
@@ -6827,7 +9330,7 @@ Generated: {now.isoformat()}
                     for p in pending:
                         fm_id = p['failure_mode_id'] or 'N/A'
                         rpn = p['rpn_score'] or 'N/A'
-                        report += f"- [[action:/fmea approve {p['id']}]] - {p['description']} (RPN={rpn})\n"
+                        report += f"- [action:/fmea approve {p['id']}] - {p['description']} (RPN={rpn})\n"
 
                 report += "\n## RPN Thresholds\n\n"
                 report += "| RPN Range | Tier | Action |\n"
@@ -7383,6 +9886,2436 @@ Generated: {now.isoformat()}
         # Delegate to /flow run docling with args
         flow_args = f"run docling {args}"
         return await self._cmd_flow(flow_args)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SITREP - ThetaAgent Situational Awareness
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_sitrep(self, args: str) -> dict:
+        """Generate situational awareness report.
+
+        ThetaAgent synthesizes objectives, thoughts, agendas, health, and evolution
+        into a daily briefing. The single pane of glass for starting your day.
+
+        Grounded in Attention Schema Theory (AST) and theta wave dynamics.
+
+        Usage:
+            /sitrep              - Today's situation report (day horizon)
+            /sitrep day          - Same as /sitrep (explicit)
+            /sitrep week         - Week view with rolling agenda synthesis
+            /sitrep quarter      - Quarterly view with strategic progress
+            /sitrep open         - Open threads and research continuity
+
+        Time Horizons:
+            day      - Tactical, immediate (~8 actions)
+            week     - Sprint, deliverables (~40 actions)
+            quarter  - Strategic, goals (~100 actions)
+            open     - Emergent, unbounded
+
+        Examples:
+            /sitrep               # Start your day with this
+            /sitrep week          # Sprint planning view
+            /sitrep quarter       # Quarterly review
+        """
+        try:
+            from .agents.theta import ThetaAgent, Horizon
+        except ImportError as e:
+            return {
+                "error": f"ThetaAgent module not available: {e}",
+                "suggestion": "Ensure agents/theta module is installed",
+            }
+
+        # Parse horizon argument
+        args_lower = args.strip().lower() if args else ""
+        horizon_str = args_lower.split()[0] if args_lower else "day"
+
+        try:
+            horizon = Horizon(horizon_str)
+        except ValueError:
+            return {
+                "error": f"Unknown horizon: {horizon_str}",
+                "valid_horizons": ["day", "week", "quarter", "open"],
+                "help": self._cmd_sitrep.__doc__,
+            }
+
+        try:
+            # Get KB root from config
+            kb_root = self._get_kb_root()
+
+            # Create ThetaAgent and generate report
+            agent = ThetaAgent(profile=self.config.profile, kb_root=kb_root)
+            report = await agent.sitrep(horizon)
+
+            # Return both structured data and formatted output
+            result = report.to_dict()
+
+            # Include formatted ASCII for text output mode
+            if self.format != "json":
+                result["formatted"] = report.to_ascii()
+
+            return result
+
+        except Exception as e:
+            return {
+                "error": str(e),
+                "horizon": horizon_str,
+                "suggestion": "/health diagnose for system status",
+            }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CONSOLIDATE - ThetaAgent Cross-Temporal Linking
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_consolidate(self, args: str) -> dict:
+        """Run NVAR-mediated consolidation for cross-temporal linking.
+
+        Uses theta dynamics (NVAR) to detect drift between temporal slices,
+        then applies BERTSubs subsumption inference to discover relationships.
+        Selected candidates (via Knowledge Gradient policy) are reified as
+        wikilinks and action:search links in KB documents.
+
+        Requires DeepOnto with functional JVM for BERTSubs inference.
+        Will fail-fast if DeepOnto is unavailable.
+
+        Usage:
+            /consolidate                 - Run for current week
+            /consolidate 2025-W52        - Run for specific week slice
+            /consolidate --max 20        - Evaluate up to 20 candidates
+            /consolidate stats           - Show consolidation statistics
+
+        Grounded in:
+            - NVAR (Next Generation Reservoir Computing)
+            - Knowledge Gradient (Powell & Ryzhov, 2012)
+            - BERTSubs (Chen et al., 2023)
+
+        Examples:
+            /consolidate                 # Daily consolidation run
+            /consolidate stats           # Check KG policy stats
+        """
+        try:
+            from .agents.theta import ThetaAgent
+            from .agents.theta.subsumption import DeepOntoNotAvailableError
+        except ImportError as e:
+            return {
+                "error": f"ThetaAgent module not available: {e}",
+                "suggestion": "Ensure agents/theta module is installed",
+            }
+
+        args_parts = args.strip().split() if args else []
+
+        # Check for subcommands
+        if args_parts and args_parts[0] == "stats":
+            return await self._cmd_consolidate_stats()
+
+        # Parse arguments
+        temporal_slice = None
+        max_candidates = 10
+
+        i = 0
+        while i < len(args_parts):
+            if args_parts[i] == "--max" and i + 1 < len(args_parts):
+                try:
+                    max_candidates = int(args_parts[i + 1])
+                except ValueError:
+                    return {
+                        "error": f"Invalid max candidates: {args_parts[i + 1]}",
+                        "usage": "/consolidate --max <number>",
+                    }
+                i += 2
+            elif not args_parts[i].startswith("--"):
+                temporal_slice = args_parts[i]
+                i += 1
+            else:
+                i += 1
+
+        try:
+            # Route through gRPC (engine-centric architecture) - FAIL-FAST
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /consolidate.\n"
+                    "  Guru Meditation: #THETA.00000001.ENGINE_REQUIRED\n"
+                    "  Try: devenv processes up"
+                )
+            result = await engine_client.call(
+                "Gaius",
+                "ThetaConsolidate",
+                {
+                    "temporal_slice": temporal_slice or "",
+                    "max_candidates": max_candidates,
+                    "research_mode": True,  # Bypass KG cost threshold during research
+                },
+                timeout=120.0,  # Consolidation can take time
+            )
+
+            # Add formatted summary for text output
+            if self.format != "json":
+                slice_id = result.get("slice_id", "unknown")
+                lines = [
+                    f"Consolidation Cycle: {slice_id}",
+                    f"─" * 40,
+                ]
+
+                urgency = result.get("urgency")
+                drift = result.get("drift")
+                if urgency is not None and drift is not None:
+                    lines.extend([
+                        f"  Urgency: {urgency:.3f}",
+                        f"  Drift:   {drift:.3f}",
+                    ])
+                else:
+                    lines.append("  Signal:  Insufficient history (need k+1 slices)")
+
+                lines.extend([
+                    f"  Candidates evaluated: {result.get('candidates_evaluated', 0)}",
+                    f"  Candidates selected:  {result.get('candidates_selected', 0)}",
+                    f"  Documents augmented:  {result.get('documents_augmented', 0)}",
+                ])
+
+                error = result.get("error")
+                if error:
+                    lines.append(f"  Error: {error}")
+
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except DeepOntoNotAvailableError as e:
+            return {
+                "error": str(e),
+                "guru_meditation": "#THETA.00000001.DEEPONTO_UNAVAILABLE",
+                "remediation": "uv add deeponto jpype1 && ensure Java 11+ installed",
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "suggestion": "/health diagnose for system status",
+            }
+
+    async def _cmd_consolidate_stats(self) -> dict:
+        """Get consolidation statistics via gRPC."""
+        try:
+            # Route through gRPC (engine-centric architecture) - FAIL-FAST
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /consolidate stats.\n"
+                    "  Guru Meditation: #THETA.00000001.ENGINE_REQUIRED\n"
+                    "  Try: devenv processes up"
+                )
+            stats = await engine_client.call(
+                "Gaius",
+                "ThetaConsolidationStats",
+                {},
+                timeout=30.0,
+            )
+
+            if self.format != "json":
+                # Handle both gRPC response and direct dict
+                dynamics = stats.get("dynamics", {})
+                kg_policy = stats.get("kg_policy", {})
+                belief_state = kg_policy.get("belief_state", {})
+                effectiveness = stats.get("effectiveness", {})
+                trend_info = effectiveness.get("trend", {})
+                subsumption = stats.get("subsumption", {})
+
+                current_best = belief_state.get("current_best", 0)
+                lines = [
+                    "Consolidation Statistics",
+                    "─" * 40,
+                    "",
+                    "NVAR Dynamics:",
+                    f"  k (delay):      {dynamics.get('k', 'N/A')}",
+                    f"  Order:          {dynamics.get('polynomial_order', 'N/A')}",
+                    f"  Slices:         {dynamics.get('slice_count', 'N/A')}",
+                    "",
+                    "Knowledge Gradient Policy:",
+                    f"  Research mode:  {kg_policy.get('research_mode', 'N/A')}",
+                    f"  Cost:           {kg_policy.get('measurement_cost', 'N/A')}",
+                    f"  Measurements:   {belief_state.get('n_measurements', 'N/A')}",
+                    f"  Current best:   {current_best:.3f}" if isinstance(current_best, (int, float)) else f"  Current best:   {current_best}",
+                    "",
+                    "Effectiveness Tracker:",
+                    f"  History length: {effectiveness.get('history_length', 'N/A')}",
+                    f"  Trend:          {trend_info.get('trend', 'N/A')}",
+                    "",
+                    "Subsumption Inferencer:",
+                    f"  Threshold:      {subsumption.get('confidence_threshold', 'N/A')}",
+                    f"  Template:       {subsumption.get('template_type', 'N/A')}",
+                    f"  Classifier:     {'loaded' if subsumption.get('classifier_loaded') else 'not loaded'}",
+                ]
+                stats["formatted"] = "\n".join(lines)
+
+            return stats
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ─────────────────────────────────────────────────────────────────────
+    # CLT - Cross-Layer Transcoders (Circuit Tracing)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_clt(self, args: str) -> dict:
+        """Cross-Layer Transcoder operations for interpretable feature extraction.
+
+        Uses BluelightAI's CLT for Qwen3 to extract sparse features and
+        compute attribution graphs for circuit tracing.
+
+        Usage:
+            /clt status              - Check CLT model availability
+            /clt extract <text>      - Extract sparse features from text
+            /clt attribute <text>    - Compute attribution graph for text
+
+        Options for extract/attribute:
+            --model <name>       - Model name (default: qwen3-1.7b)
+            --layers <0,1,2>     - Comma-separated layer indices (default: all)
+            --top-k <n>          - Top-k features per position (default: 115)
+            --threshold <f>      - Min edge weight for attribution (default: 0.01)
+            --device <dev>       - Device (cuda, cpu) (default: cuda)
+
+        Examples:
+            /clt status
+            /clt extract "The cat sat on the mat"
+            /clt attribute "Hello world" --threshold 0.05
+        """
+        args_parts = args.strip().split() if args else []
+
+        if not args_parts or args_parts[0] == "help":
+            return {
+                "help": self._cmd_clt.__doc__,
+                "commands": ["status", "extract", "attribute"],
+            }
+
+        subcommand = args_parts[0]
+
+        if subcommand == "status":
+            return await self._cmd_clt_status()
+        elif subcommand == "extract":
+            return await self._cmd_clt_extract(args_parts[1:])
+        elif subcommand == "attribute":
+            return await self._cmd_clt_attribute(args_parts[1:])
+        else:
+            return {
+                "error": f"Unknown CLT subcommand: {subcommand}",
+                "valid_subcommands": ["status", "extract", "attribute"],
+                "help": self._cmd_clt.__doc__,
+            }
+
+    async def _cmd_clt_status(self) -> dict:
+        """Get CLT model availability and status."""
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /clt.\n"
+                    "  Guru Meditation: #CLT.00000002.ENGINE_UNAVAILABLE\n"
+                    "  Try: devenv processes up"
+                )
+
+            status = await engine_client.call("CLT", "status", {}, timeout=30.0)
+
+            if self.format != "json":
+                available = "Yes" if status.get("available") else "No"
+                models = ", ".join(status.get("models", [])) or "None"
+                loaded = status.get("loaded_model") or "None"
+                features = status.get("features_per_layer", 0)
+                sparsity = status.get("l0_sparsity", 0)
+
+                lines = [
+                    "CLT Status",
+                    "─" * 40,
+                    f"  Available:          {available}",
+                    f"  Models:             {models}",
+                    f"  Loaded:             {loaded}",
+                    f"  Features/Layer:     {features:,}",
+                    f"  L0 Sparsity:        {sparsity}",
+                ]
+                if status.get("error"):
+                    lines.append(f"\n  Error: {status['error']}")
+                status["formatted"] = "\n".join(lines)
+
+            return status
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _cmd_clt_extract(self, args: list) -> dict:
+        """Extract sparse features from text."""
+        # Parse arguments
+        text = ""
+        model_name = "qwen3-1.7b"
+        layer_indices: list[int] = []
+        top_k = 115
+        device = "cuda"
+
+        i = 0
+        text_parts = []
+        while i < len(args):
+            if args[i] == "--model" and i + 1 < len(args):
+                model_name = args[i + 1]
+                i += 2
+            elif args[i] == "--layers" and i + 1 < len(args):
+                try:
+                    layer_indices = [int(x.strip()) for x in args[i + 1].split(",")]
+                except ValueError:
+                    return {"error": f"Invalid layer indices: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--top-k" and i + 1 < len(args):
+                try:
+                    top_k = int(args[i + 1])
+                except ValueError:
+                    return {"error": f"Invalid top-k: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--device" and i + 1 < len(args):
+                device = args[i + 1]
+                i += 2
+            elif not args[i].startswith("--"):
+                text_parts.append(args[i])
+                i += 1
+            else:
+                i += 1
+
+        text = " ".join(text_parts)
+        if not text:
+            return {
+                "error": "No text provided",
+                "usage": "/clt extract <text> [--model <name>] [--layers <0,1,2>] [--top-k <n>]",
+            }
+
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /clt extract.\n"
+                    "  Guru Meditation: #CLT.00000002.ENGINE_UNAVAILABLE\n"
+                    "  Try: devenv processes up"
+                )
+
+            result = await engine_client.call(
+                "CLT",
+                "extract",
+                {
+                    "text": text,
+                    "model_name": model_name,
+                    "layer_indices": layer_indices,
+                    "top_k": top_k,
+                    "device": device,
+                },
+                timeout=120.0,  # CLT inference can take time
+            )
+
+            if self.format != "json":
+                features = result.get("features", [])
+                lines = [
+                    "CLT Feature Extraction",
+                    "─" * 40,
+                    f"  Text:     \"{text[:50]}...\"" if len(text) > 50 else f"  Text:     \"{text}\"",
+                    f"  Positions: {result.get('total_positions', 0)}",
+                    f"  Features:  {len(features)}",
+                    f"  Sparsity:  {result.get('sparsity', 0):.6f}",
+                    "",
+                    f"Top 10 Features (of {len(features)}):",
+                ]
+
+                # Sort by activation and show top 10
+                sorted_features = sorted(features, key=lambda f: f["activation"], reverse=True)[:10]
+                for f in sorted_features:
+                    lines.append(
+                        f"  L{f['layer_idx']:02d} P{f['position']:02d} F{f['feature_idx']:05d}: {f['activation']:.4f}"
+                    )
+
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _cmd_clt_attribute(self, args: list) -> dict:
+        """Compute attribution graph for text."""
+        # Parse arguments
+        text = ""
+        model_name = "qwen3-1.7b"
+        target_positions: list[int] = []
+        threshold = 0.01
+        device = "cuda"
+
+        i = 0
+        text_parts = []
+        while i < len(args):
+            if args[i] == "--model" and i + 1 < len(args):
+                model_name = args[i + 1]
+                i += 2
+            elif args[i] == "--positions" and i + 1 < len(args):
+                try:
+                    target_positions = [int(x.strip()) for x in args[i + 1].split(",")]
+                except ValueError:
+                    return {"error": f"Invalid positions: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--threshold" and i + 1 < len(args):
+                try:
+                    threshold = float(args[i + 1])
+                except ValueError:
+                    return {"error": f"Invalid threshold: {args[i + 1]}"}
+                i += 2
+            elif args[i] == "--device" and i + 1 < len(args):
+                device = args[i + 1]
+                i += 2
+            elif not args[i].startswith("--"):
+                text_parts.append(args[i])
+                i += 1
+            else:
+                i += 1
+
+        text = " ".join(text_parts)
+        if not text:
+            return {
+                "error": "No text provided",
+                "usage": "/clt attribute <text> [--positions <0,1>] [--threshold <f>]",
+            }
+
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /clt attribute.\n"
+                    "  Guru Meditation: #CLT.00000002.ENGINE_UNAVAILABLE\n"
+                    "  Try: devenv processes up"
+                )
+
+            result = await engine_client.call(
+                "CLT",
+                "attribute",
+                {
+                    "text": text,
+                    "model_name": model_name,
+                    "target_positions": target_positions,
+                    "threshold": threshold,
+                    "device": device,
+                },
+                timeout=120.0,
+            )
+
+            if self.format != "json":
+                edges = result.get("edges", [])
+                lines = [
+                    "CLT Attribution Graph",
+                    "─" * 40,
+                    f"  Text:      \"{text[:50]}...\"" if len(text) > 50 else f"  Text:      \"{text}\"",
+                    f"  Positions: {result.get('target_positions', [])}",
+                    f"  Edges:     {len(edges)}",
+                    f"  Threshold: {threshold}",
+                    "",
+                ]
+
+                # Show top edges by weight
+                sorted_edges = sorted(edges, key=lambda e: e["weight"], reverse=True)[:15]
+                if sorted_edges:
+                    lines.append(f"Top 15 Attribution Edges (of {len(edges)}):")
+                    for e in sorted_edges:
+                        lines.append(
+                            f"  L{e['source_layer']:02d}:F{e['source_feature']:05d} → "
+                            f"L{e['target_layer']:02d}:F{e['target_feature']:05d} = {e['weight']:.4f}"
+                        )
+
+                # Include DOT graph if available
+                dot_graph = result.get("dot_graph", "")
+                if dot_graph and len(dot_graph) < 2000:
+                    lines.extend(["", "DOT Graph:", dot_graph])
+
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    # =========================================================================
+    # Topology Commands - Temporal Dynamics Tracking
+    # =========================================================================
+
+    async def _cmd_topology(self, args: str) -> dict:
+        """Handle /topology commands for temporal dynamics tracking.
+
+        Subcommands:
+            /topology                    - Show topology status
+            /topology drift <domain>     - Show drift metrics for domain
+            /topology history <domain>   - Show snapshot history
+            /topology well-depth <domain> - Show well depth (entrenchment)
+            /topology attractors <domain> - List semantic attractors
+
+        Examples:
+            /topology drift pension
+            /topology well-depth kudu
+            /topology history pension --hours 24
+        """
+        if not args:
+            return await self._cmd_topology_status()
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "drift":
+            return await self._cmd_topology_drift(subargs)
+        elif subcommand == "history":
+            return await self._cmd_topology_history(subargs)
+        elif subcommand == "well-depth" or subcommand == "depth":
+            return await self._cmd_topology_well_depth(subargs)
+        elif subcommand == "attractors":
+            return await self._cmd_topology_attractors(subargs)
+        elif subcommand == "status":
+            return await self._cmd_topology_status()
+        elif subcommand == "help":
+            return self._cmd_topology_help()
+        else:
+            return {
+                "error": f"Unknown topology subcommand: {subcommand}",
+                "usage": "/topology [drift|history|well-depth|attractors] <domain>",
+            }
+
+    def _cmd_topology_help(self) -> dict:
+        """Return topology command help."""
+        help_text = """
+Topology Commands - Temporal Dynamics Tracking
+
+The topology system tracks how semantic positions evolve over time,
+enabling drift detection, well-depth measurement, and NG-RC integration.
+
+Subcommands:
+    /topology                    - Show topology service status
+    /topology drift <domain>     - Show drift metrics (dx/dt)
+    /topology history <domain>   - Show snapshot history
+    /topology well-depth <domain> - Show entrenchment (1/variance)
+    /topology attractors <domain> - List named semantic attractors
+
+Key Concepts:
+    Drift: Rate of change in consensus position (dx/dt)
+    Well Depth: 1/variance - how entrenched/stable conclusions are
+    Attractors: Named stable states that can drift over time
+
+Examples:
+    /topology drift pension
+    /topology well-depth kudu --hours 24
+    /topology attractors pension
+"""
+        return {"help": help_text.strip(), "formatted": help_text.strip()}
+
+    async def _cmd_topology_status(self) -> dict:
+        """Show topology service status."""
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Get snapshot counts by domain
+                    snapshots = await conn.fetch("""
+                        SELECT domain, COUNT(*) as count,
+                               MIN(captured_at) as first,
+                               MAX(captured_at) as last
+                        FROM meta.swarm_snapshots
+                        GROUP BY domain
+                        ORDER BY count DESC
+                    """)
+
+                    # Get drift calculation count
+                    drift_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM meta.topology_drift
+                    """)
+
+                    # Get attractor count
+                    attractor_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM meta.semantic_attractors
+                        WHERE is_active = TRUE
+                    """)
+
+                    # Get NG-RC model count
+                    ngrc_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM meta.ngrc_models
+                        WHERE is_active = TRUE
+                    """)
+
+            domains_list = [
+                {
+                    "name": row["domain"],
+                    "snapshots": row["count"],
+                    "first": row["first"].isoformat() if row["first"] else None,
+                    "last": row["last"].isoformat() if row["last"] else None,
+                }
+                for row in snapshots
+            ]
+            result: dict = {
+                "status": "healthy",
+                "domains": domains_list,
+                "drift_calculations": drift_count,
+                "active_attractors": attractor_count,
+                "active_ngrc_models": ngrc_count,
+            }
+
+            if self.format != "json":
+                lines = [
+                    "Topology Service Status",
+                    "─" * 40,
+                    f"  Drift Calculations: {drift_count}",
+                    f"  Active Attractors:  {attractor_count}",
+                    f"  NG-RC Models:       {ngrc_count}",
+                    "",
+                    "Domains with Snapshots:",
+                ]
+                for d in domains_list:
+                    lines.append(f"  {d['name']}: {d['snapshots']} snapshots")
+                    if d["last"]:
+                        lines.append(f"    Last: {d['last']}")
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get topology status: {e}"}
+
+    async def _cmd_topology_drift(self, args: list) -> dict:
+        """Show drift metrics for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology drift <domain> [--hours N]",
+            }
+
+        domain = args[0]
+        hours = 24
+
+        # Parse --hours flag
+        for i, arg in enumerate(args):
+            if arg == "--hours" and i + 1 < len(args):
+                try:
+                    hours = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                metrics = await topology.compute_drift(domain, hours=hours)
+
+            result = {
+                "domain": metrics.domain,
+                "computed_at": metrics.computed_at.isoformat(),
+                "time_window_hours": metrics.time_window_hours,
+                "n_snapshots": metrics.n_snapshots,
+                "drift_magnitude": metrics.drift_magnitude,
+                "drift_direction": metrics.drift_direction,
+                "well_depth": metrics.well_depth,
+                "lyapunov_exponent": metrics.lyapunov_exponent,
+                "mean_variance": metrics.mean_variance,
+                "variance_trend": metrics.variance_trend,
+                "kb_growth_rate": metrics.kb_growth_rate,
+                "is_bifurcation": metrics.is_bifurcation,
+            }
+
+            if self.format != "json":
+                # Stability interpretation
+                if metrics.lyapunov_exponent < -0.1:
+                    stability = "Stable (convergent)"
+                elif metrics.lyapunov_exponent > 0.1:
+                    stability = "Chaotic (divergent)"
+                else:
+                    stability = "Edge of chaos"
+
+                # Well depth interpretation
+                if metrics.well_depth > 100:
+                    entrenchment = "Deep well (potentially stuck)"
+                elif metrics.well_depth > 10:
+                    entrenchment = "Moderate entrenchment"
+                else:
+                    entrenchment = "Shallow well (flexible)"
+
+                lines = [
+                    f"Drift Metrics: {domain}",
+                    "─" * 40,
+                    f"  Time Window:       {hours} hours",
+                    f"  Snapshots:         {metrics.n_snapshots}",
+                    "",
+                    "Dynamics:",
+                    f"  Drift Magnitude:   {metrics.drift_magnitude:.4f}",
+                    f"  Drift Direction:   ({metrics.drift_direction[0]:.2f}, {metrics.drift_direction[1]:.2f})",
+                    f"  Lyapunov Exponent: {metrics.lyapunov_exponent:.4f} ({stability})",
+                    "",
+                    "Entrenchment:",
+                    f"  Well Depth:        {metrics.well_depth:.2f} ({entrenchment})",
+                    f"  Mean Variance:     {metrics.mean_variance:.4f}",
+                    f"  Variance Trend:    {metrics.variance_trend:+.4f}",
+                    "",
+                    "KB Dynamics:",
+                    f"  Growth Rate:       {metrics.kb_growth_rate:.2f} docs/hour",
+                    f"  Bifurcation:       {'Yes' if metrics.is_bifurcation else 'No'}",
+                ]
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to compute drift: {e}"}
+
+    async def _cmd_topology_well_depth(self, args: list) -> dict:
+        """Show well depth (entrenchment) for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology well-depth <domain> [--hours N]",
+            }
+
+        domain = args[0]
+        hours = 24
+
+        for i, arg in enumerate(args):
+            if arg == "--hours" and i + 1 < len(args):
+                try:
+                    hours = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                metrics = await topology.compute_drift(domain, hours=hours)
+
+            # Focus on well depth
+            result = {
+                "domain": domain,
+                "well_depth": metrics.well_depth,
+                "mean_variance": metrics.mean_variance,
+                "variance_trend": metrics.variance_trend,
+                "interpretation": self._interpret_well_depth(metrics.well_depth),
+            }
+
+            if self.format != "json":
+                lines = [
+                    f"Well Depth Analysis: {domain}",
+                    "─" * 40,
+                    f"  Well Depth:     {metrics.well_depth:.2f}",
+                    f"  Mean Variance:  {metrics.mean_variance:.4f}",
+                    f"  Variance Trend: {metrics.variance_trend:+.4f}",
+                    "",
+                    f"  Interpretation: {result['interpretation']}",
+                    "",
+                    "What this means:",
+                    "  - High well depth = entrenched, stable conclusions",
+                    "  - Low well depth = flexible, exploratory state",
+                    "  - KB growth prevents getting stuck in wells",
+                ]
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to compute well depth: {e}"}
+
+    def _interpret_well_depth(self, depth: float) -> str:
+        """Interpret well depth value."""
+        if depth > 1000:
+            return "Extremely deep - risk of ossification"
+        elif depth > 100:
+            return "Deep well - stable but potentially stuck"
+        elif depth > 10:
+            return "Moderate entrenchment - balanced state"
+        elif depth > 1:
+            return "Shallow well - flexible and adaptive"
+        else:
+            return "No well - chaotic/exploratory"
+
+    async def _cmd_topology_history(self, args: list) -> dict:
+        """Show snapshot history for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology history <domain> [--limit N]",
+            }
+
+        domain = args[0]
+        limit = 20
+
+        for i, arg in enumerate(args):
+            if arg == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                snapshots = await topology.get_snapshot_history(domain, limit=limit)
+
+            result = {
+                "domain": domain,
+                "count": len(snapshots),
+                "snapshots": [
+                    {
+                        "captured_at": s.captured_at.isoformat(),
+                        "n_agents": s.n_agents,
+                        "grid_position": (s.consensus_grid_x, s.consensus_grid_y),
+                        "variance": s.consensus_variance,
+                        "h0": s.h0_count,
+                        "h1": s.h1_count,
+                        "entropy": s.position_entropy,
+                    }
+                    for s in snapshots
+                ],
+            }
+
+            if self.format != "json":
+                lines = [
+                    f"Snapshot History: {domain}",
+                    "─" * 60,
+                ]
+                for s in snapshots[:15]:  # Show top 15
+                    lines.append(
+                        f"  {s.captured_at.strftime('%Y-%m-%d %H:%M')} | "
+                        f"({s.consensus_grid_x:2d},{s.consensus_grid_y:2d}) | "
+                        f"{s.n_agents} agents | "
+                        f"var={s.consensus_variance:.3f}"
+                    )
+                if len(snapshots) > 15:
+                    lines.append(f"  ... and {len(snapshots) - 15} more")
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get history: {e}"}
+
+    async def _cmd_topology_attractors(self, args: list) -> dict:
+        """List semantic attractors for a domain."""
+        if not args:
+            return {
+                "error": "Domain required",
+                "usage": "/topology attractors <domain>",
+            }
+
+        domain = args[0]
+
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            from .engine.services.topology_service import TopologyService
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                topology = TopologyService(db_pool=pool)
+                attractors = await topology.get_attractors(domain)
+
+            result = {
+                "domain": domain,
+                "count": len(attractors),
+                "attractors": [
+                    {
+                        "name": a.name,
+                        "grid_position": (a.current_grid_x, a.current_grid_y),
+                        "well_depth": a.mean_well_depth,
+                        "total_drift": a.total_drift_distance,
+                        "first_observed": a.first_observed.isoformat() if a.first_observed else None,
+                        "last_observed": a.last_observed.isoformat() if a.last_observed else None,
+                    }
+                    for a in attractors
+                ],
+            }
+
+            if self.format != "json":
+                lines = [
+                    f"Semantic Attractors: {domain}",
+                    "─" * 50,
+                ]
+                if not attractors:
+                    lines.append("  No attractors registered")
+                    lines.append("  Use swarm runs to generate attractors")
+                else:
+                    for a in attractors:
+                        lines.append(f"  {a.name}")
+                        lines.append(f"    Position: ({a.current_grid_x}, {a.current_grid_y})")
+                        lines.append(f"    Well Depth: {a.mean_well_depth:.2f}")
+                        lines.append(f"    Total Drift: {a.total_drift_distance:.4f}")
+                result["formatted"] = "\n".join(lines)
+
+            return result
+
+        except Exception as e:
+            return {"error": f"Failed to get attractors: {e}"}
+
+    # =========================================================================
+    # NG-RC Commands - Forward Dynamics Prediction
+    # =========================================================================
+
+    async def _cmd_ngrc(self, args: str) -> dict:
+        """Handle /ngrc commands for forward dynamics prediction.
+
+        Subcommands:
+            /ngrc                        - Show NG-RC model status
+            /ngrc train <domain>         - Train model on domain data
+            /ngrc predict <domain> [n]   - Predict n steps ahead
+            /ngrc model <domain>         - Show model details
+
+        Examples:
+            /ngrc train pension
+            /ngrc predict pension 10
+            /ngrc model kudu
+        """
+        if not args:
+            return await self._cmd_ngrc_status()
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "train":
+            return await self._cmd_ngrc_train(subargs)
+        elif subcommand == "predict":
+            return await self._cmd_ngrc_predict(subargs)
+        elif subcommand == "model":
+            return await self._cmd_ngrc_model(subargs)
+        elif subcommand == "status":
+            return await self._cmd_ngrc_status()
+        elif subcommand == "help":
+            return self._cmd_ngrc_help()
+        else:
+            return {
+                "error": f"Unknown ngrc subcommand: {subcommand}",
+                "usage": "/ngrc [train|predict|model] <domain>",
+            }
+
+    def _cmd_ngrc_help(self) -> dict:
+        """Return NG-RC command help."""
+        help_text = """
+NG-RC Commands - Forward Dynamics Prediction
+
+NG-RC (Next-Generation Reservoir Computing) learns the flow field
+dx/dt = f(x) from swarm trajectory data, enabling prediction of
+future semantic positions without LLM inference.
+
+Subcommands:
+    /ngrc                        - Show model status for all domains
+    /ngrc train <domain>         - Train model on domain snapshots
+    /ngrc predict <domain> [n]   - Predict n steps ahead (default: 10)
+    /ngrc model <domain>         - Show trained model details
+
+Key Concepts:
+    Flow Field: dx/dt = f(x, KB(t)) - semantic velocity at each point
+    Forecast Horizon: Reliable prediction steps before error grows
+    KB Growth: Model may need retraining after significant KB growth
+
+Training Requirements:
+    - Minimum 50 swarm snapshots for the domain
+    - More data → better generalization
+
+Examples:
+    /ngrc train pension
+    /ngrc predict pension 10
+    /ngrc model kudu
+"""
+        return {"help": help_text.strip(), "formatted": help_text.strip()}
+
+    async def _cmd_ngrc_status(self) -> dict:
+        """Show NG-RC model status for all domains."""
+        try:
+            import asyncpg
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Get active models
+                    models = await conn.fetch("""
+                        SELECT domain, reservoir_size, spectral_radius,
+                               validation_mse, forecast_horizon_steps,
+                               n_training_snapshots, training_time_span_hours,
+                               trained_at, is_active
+                        FROM meta.ngrc_models
+                        WHERE is_active = TRUE
+                        ORDER BY trained_at DESC
+                    """)
+
+                    # Get snapshot counts by domain for training eligibility
+                    snapshots = await conn.fetch("""
+                        SELECT domain, COUNT(*) as count
+                        FROM meta.swarm_snapshots
+                        GROUP BY domain
+                    """)
+
+                    snapshot_counts = {r['domain']: r['count'] for r in snapshots}
+
+                    result = {
+                        "models": [
+                            {
+                                "domain": m['domain'],
+                                "validation_mse": m['validation_mse'],
+                                "forecast_horizon": m['forecast_horizon_steps'],
+                                "n_training_snapshots": m['n_training_snapshots'],
+                                "training_hours": m['training_time_span_hours'],
+                                "trained_at": m['trained_at'].isoformat() if m['trained_at'] else None,
+                            }
+                            for m in models
+                        ],
+                        "trainable_domains": [
+                            {"domain": d, "snapshots": c}
+                            for d, c in snapshot_counts.items()
+                            if c >= 50 and d not in [m['domain'] for m in models]
+                        ],
+                        "insufficient_data": [
+                            {"domain": d, "snapshots": c, "needed": 50}
+                            for d, c in snapshot_counts.items()
+                            if c < 50
+                        ],
+                    }
+
+                    # Format for text output
+                    lines = ["NG-RC Model Status", "=" * 40]
+
+                    if result["models"]:
+                        lines.append("\nActive Models:")
+                        for m in result["models"]:
+                            lines.append(f"\n  {m['domain']}:")
+                            lines.append(f"    MSE: {m['validation_mse']:.6f}")
+                            lines.append(f"    Forecast Horizon: {m['forecast_horizon']} steps")
+                            lines.append(f"    Training Samples: {m['n_training_snapshots']}")
+                            lines.append(f"    Trained: {m['trained_at']}")
+                    else:
+                        lines.append("\n  No trained models")
+
+                    if result["trainable_domains"]:
+                        lines.append("\n\nDomains Ready for Training:")
+                        for d in result["trainable_domains"]:
+                            lines.append(f"  {d['domain']}: {d['snapshots']} snapshots")
+
+                    if result["insufficient_data"]:
+                        lines.append("\n\nDomains Needing More Data:")
+                        for d in result["insufficient_data"]:
+                            lines.append(f"  {d['domain']}: {d['snapshots']}/{d['needed']} snapshots")
+
+                    result["formatted"] = "\n".join(lines)
+                    return result
+
+        except Exception as e:
+            return {"error": f"Failed to get NG-RC status: {e}"}
+
+    async def _cmd_ngrc_train(self, args: list) -> dict:
+        """Train NG-RC model for a domain."""
+        if not args:
+            return {"error": "Domain required: /ngrc train <domain>"}
+
+        domain = args[0]
+        min_snapshots = 50
+        if len(args) > 1:
+            try:
+                min_snapshots = int(args[1])
+            except ValueError:
+                pass
+
+        try:
+            import asyncpg
+            from gaius.engine.services.ngrc import NGRCPredictor
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            import numpy as np
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Get training data
+                    rows = await conn.fetch("""
+                        SELECT consensus_embedding, captured_at, kb_document_count
+                        FROM meta.swarm_snapshots
+                        WHERE domain = $1
+                          AND consensus_embedding IS NOT NULL
+                        ORDER BY captured_at ASC
+                    """, domain)
+
+                    if len(rows) < min_snapshots:
+                        return {
+                            "error": f"Insufficient data: {len(rows)} snapshots, need {min_snapshots}",
+                            "domain": domain,
+                        }
+
+                    # Extract embeddings and timestamps
+                    embeddings = np.array([r['consensus_embedding'] for r in rows])
+                    timestamps = [r['captured_at'] for r in rows]
+                    kb_count = rows[-1]['kb_document_count'] or 0
+
+                    # Train model
+                    predictor = NGRCPredictor()
+                    metrics = predictor.fit(
+                        embeddings,
+                        timestamps=timestamps,
+                        kb_document_count=kb_count,
+                    )
+
+                    # Persist model
+                    model_weights = predictor.serialize()
+
+                    # Deactivate old models
+                    await conn.execute("""
+                        UPDATE meta.ngrc_models
+                        SET is_active = FALSE
+                        WHERE domain = $1 AND is_active = TRUE
+                    """, domain)
+
+                    # Insert new model
+                    model_id = await conn.fetchval("""
+                        INSERT INTO meta.ngrc_models (
+                            domain, model_weights, reservoir_size, spectral_radius,
+                            validation_mse, forecast_horizon_steps,
+                            n_training_snapshots, training_time_span_hours, is_active
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+                        RETURNING id
+                    """,
+                        domain,
+                        model_weights,
+                        0,  # NG-RC doesn't use reservoir
+                        0.0,
+                        metrics["validation_mse"],
+                        metrics["forecast_horizon"],
+                        metrics["n_samples"],
+                        metrics["time_span_hours"],
+                    )
+
+                    result = {
+                        "domain": domain,
+                        "model_id": model_id,
+                        "n_samples": metrics["n_samples"],
+                        "n_features": metrics["n_features"],
+                        "validation_mse": metrics["validation_mse"],
+                        "forecast_horizon": metrics["forecast_horizon"],
+                        "time_span_hours": metrics["time_span_hours"],
+                    }
+
+                    # Format output
+                    lines = [
+                        f"NG-RC Model Trained for '{domain}'",
+                        "=" * 40,
+                        f"  Training Samples: {metrics['n_samples']}",
+                        f"  Feature Count: {metrics['n_features']}",
+                        f"  Validation MSE: {metrics['validation_mse']:.6f}",
+                        f"  Forecast Horizon: {metrics['forecast_horizon']} steps",
+                        f"  Time Span: {metrics['time_span_hours']:.1f} hours",
+                        f"  Model ID: {model_id}",
+                    ]
+                    result["formatted"] = "\n".join(lines)
+
+                    return result
+
+        except Exception as e:
+            import traceback
+            return {
+                "error": f"Training failed: {e}",
+                "traceback": traceback.format_exc(),
+            }
+
+    async def _cmd_ngrc_predict(self, args: list) -> dict:
+        """Predict future states using NG-RC model."""
+        if not args:
+            return {"error": "Domain required: /ngrc predict <domain> [steps]"}
+
+        domain = args[0]
+        n_steps = 10
+        if len(args) > 1:
+            try:
+                n_steps = int(args[1])
+            except ValueError:
+                pass
+
+        try:
+            import asyncpg
+            from gaius.engine.services.ngrc import NGRCPredictor
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            import numpy as np
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    # Load model
+                    row = await conn.fetchrow("""
+                        SELECT model_weights, forecast_horizon_steps
+                        FROM meta.ngrc_models
+                        WHERE domain = $1 AND is_active = TRUE
+                    """, domain)
+
+                    if not row:
+                        return {
+                            "error": f"No trained model for domain '{domain}'",
+                            "hint": f"Train with: /ngrc train {domain}",
+                        }
+
+                    predictor = NGRCPredictor()
+                    predictor.load(row['model_weights'])
+
+                    # Get latest snapshot as starting point
+                    latest = await conn.fetchrow("""
+                        SELECT consensus_embedding, consensus_grid_x, consensus_grid_y
+                        FROM meta.swarm_snapshots
+                        WHERE domain = $1 AND consensus_embedding IS NOT NULL
+                        ORDER BY captured_at DESC
+                        LIMIT 1
+                    """, domain)
+
+                    if not latest:
+                        return {"error": f"No snapshots found for domain '{domain}'"}
+
+                    current_embedding = np.array(latest['consensus_embedding'])
+                    current_grid = (latest['consensus_grid_x'], latest['consensus_grid_y'])
+
+                    # Predict
+                    prediction = predictor.predict(current_embedding, n_steps=n_steps)
+
+                    result = {
+                        "domain": domain,
+                        "n_steps": n_steps,
+                        "reliable_steps": prediction.reliable_steps,
+                        "model_horizon": row['forecast_horizon_steps'],
+                        "start_position": current_grid,
+                        "trajectory": prediction.grid_trajectory,
+                        "end_position": prediction.grid_trajectory[-1] if prediction.grid_trajectory else current_grid,
+                    }
+
+                    # Format output
+                    lines = [
+                        f"NG-RC Prediction for '{domain}'",
+                        "=" * 40,
+                        f"  Starting Position: {current_grid}",
+                        f"  Predicted Steps: {n_steps}",
+                        f"  Reliable Steps: {prediction.reliable_steps}",
+                        "",
+                        "  Trajectory:",
+                    ]
+
+                    for i, pos in enumerate(prediction.grid_trajectory[:20]):  # Limit display
+                        reliability = "✓" if i < prediction.reliable_steps else "?"
+                        lines.append(f"    Step {i}: ({pos[0]}, {pos[1]}) {reliability}")
+
+                    if len(prediction.grid_trajectory) > 20:
+                        lines.append(f"    ... ({len(prediction.grid_trajectory) - 20} more steps)")
+
+                    result["formatted"] = "\n".join(lines)
+                    return result
+
+        except Exception as e:
+            import traceback
+            return {
+                "error": f"Prediction failed: {e}",
+                "traceback": traceback.format_exc(),
+            }
+
+    async def _cmd_ngrc_model(self, args: list) -> dict:
+        """Show NG-RC model details for a domain."""
+        if not args:
+            return {"error": "Domain required: /ngrc model <domain>"}
+
+        domain = args[0]
+
+        try:
+            import asyncpg
+            from gaius.engine.services.ngrc import NGRCPredictor
+
+            database_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+            )
+
+            async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow("""
+                        SELECT id, domain, validation_mse, forecast_horizon_steps,
+                               n_training_snapshots, training_time_span_hours,
+                               trained_at, model_weights
+                        FROM meta.ngrc_models
+                        WHERE domain = $1 AND is_active = TRUE
+                    """, domain)
+
+                    if not row:
+                        return {
+                            "error": f"No trained model for domain '{domain}'",
+                            "hint": f"Train with: /ngrc train {domain}",
+                        }
+
+                    # Load model to get internal state
+                    predictor = NGRCPredictor()
+                    predictor.load(row['model_weights'])
+                    state = predictor._state
+
+                    # Check if retraining needed
+                    current_kb_count = await conn.fetchval("""
+                        SELECT kb_document_count
+                        FROM meta.swarm_snapshots
+                        WHERE domain = $1
+                        ORDER BY captured_at DESC
+                        LIMIT 1
+                    """, domain)
+
+                    needs_retrain = predictor.needs_retraining(current_kb_count or 0)
+
+                    result = {
+                        "domain": domain,
+                        "model_id": row['id'],
+                        "validation_mse": row['validation_mse'],
+                        "forecast_horizon": row['forecast_horizon_steps'],
+                        "n_training_snapshots": row['n_training_snapshots'],
+                        "training_hours": row['training_time_span_hours'],
+                        "trained_at": row['trained_at'].isoformat() if row['trained_at'] else None,
+                        "embed_dim": state.embed_dim,
+                        "n_delays": state.n_delays,
+                        "poly_degree": state.poly_degree,
+                        "kb_count_at_training": state.kb_document_count,
+                        "current_kb_count": current_kb_count,
+                        "needs_retrain": needs_retrain,
+                    }
+
+                    # Format output
+                    lines = [
+                        f"NG-RC Model for '{domain}'",
+                        "=" * 40,
+                        "",
+                        "Performance:",
+                        f"  Validation MSE: {row['validation_mse']:.6f}",
+                        f"  Forecast Horizon: {row['forecast_horizon_steps']} steps",
+                        "",
+                        "Training:",
+                        f"  Samples: {row['n_training_snapshots']}",
+                        f"  Time Span: {row['training_time_span_hours']:.1f} hours",
+                        f"  Trained At: {row['trained_at']}",
+                        "",
+                        "Architecture:",
+                        f"  Embedding Dim: {state.embed_dim}",
+                        f"  Time Delays: {state.n_delays}",
+                        f"  Polynomial Degree: {state.poly_degree}",
+                        "",
+                        "KB State:",
+                        f"  At Training: {state.kb_document_count} docs",
+                        f"  Current: {current_kb_count} docs",
+                        f"  Needs Retrain: {'Yes' if needs_retrain else 'No'}",
+                    ]
+
+                    result["formatted"] = "\n".join(lines)
+                    return result
+
+        except Exception as e:
+            return {"error": f"Failed to get model details: {e}"}
+
+    # =========================================================================
+    # X Bookmarks - Sync X/Twitter bookmarks to KB
+    # =========================================================================
+
+    async def _cmd_x_bookmarks(self, args: str) -> dict:
+        """Handle /x-bookmarks commands for X/Twitter bookmark sync.
+
+        Subcommands:
+            /x-bookmarks                 - Show service status
+            /x-bookmarks auth            - Start OAuth authentication
+            /x-bookmarks auth complete   - Complete OAuth with callback code
+            /x-bookmarks sync            - Trigger bookmark sync
+            /x-bookmarks status          - Show sync status
+
+        Examples:
+            /x-bookmarks auth
+            /x-bookmarks sync
+            /x-bookmarks status
+        """
+        if not args:
+            return await self._cmd_x_bookmarks_service_status()
+
+        parts = args.split()
+        subcommand = parts[0].lower()
+        subargs = parts[1:]
+
+        if subcommand == "auth":
+            if subargs and subargs[0] == "complete":
+                # /x-bookmarks auth complete <code>
+                if len(subargs) < 2:
+                    return {"error": "Missing authorization code", "usage": "/x-bookmarks auth complete <code>"}
+                return await self._cmd_x_bookmarks_complete_auth(subargs[1])
+            else:
+                # /x-bookmarks auth - start auth flow
+                return await self._cmd_x_bookmarks_auth()
+        elif subcommand == "sync":
+            return await self._cmd_x_bookmarks_sync()
+        elif subcommand == "status":
+            return await self._cmd_x_bookmarks_sync_status()
+        elif subcommand == "folders":
+            return await self._cmd_x_bookmarks_folders()
+        elif subcommand == "service" or subcommand == "svc":
+            return await self._cmd_x_bookmarks_service_status()
+        elif subcommand == "help":
+            return self._cmd_x_bookmarks_help()
+        elif subcommand == "queue":
+            return await self._cmd_x_bookmarks_queue_status()
+        elif subcommand == "test-event":
+            # Debug: emit a test event to trace the XB event propagation chain
+            event_type = subargs[0] if subargs else "XB_AUTH_COMPLETED"
+            return await self._cmd_x_bookmarks_test_event(event_type)
+        else:
+            return {
+                "error": f"Unknown x-bookmarks subcommand: {subcommand}",
+                "usage": "/x-bookmarks [auth|sync|status|folders|queue|test-event]",
+            }
+
+    def _cmd_x_bookmarks_help(self) -> dict:
+        """Return X Bookmarks command help."""
+        help_text = """
+X Bookmarks Commands - Sync X/Twitter Bookmarks to KB
+
+Syncs your X (Twitter) bookmarks to the Knowledge Base,
+storing tweet content as markdown files and raw data in Iceberg.
+
+Subcommands:
+    /x-bookmarks                 - Show service status
+    /x-bookmarks auth            - Start OAuth authentication
+    /x-bookmarks auth complete   - Complete OAuth with callback code
+    /x-bookmarks sync            - Trigger bookmark sync
+    /x-bookmarks status          - Show sync status
+    /x-bookmarks folders         - List bookmark folders
+
+Authentication Flow:
+    1. Run /x-bookmarks auth to get authorization URL
+    2. Open URL in browser, authorize Gaius
+    3. Copy the code from callback URL
+    4. Run /x-bookmarks auth complete <code>
+
+Rate Limits (Basic API tier):
+    - 15 requests per 15 minutes
+    - Syncs are queued and processed automatically
+
+Examples:
+    /x-bookmarks auth
+    /x-bookmarks sync
+    /x-bookmarks status
+"""
+        return {"help": help_text.strip(), "formatted": help_text.strip()}
+
+    async def _cmd_x_bookmarks_auth(self) -> dict:
+        """Start OAuth authentication flow."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "get_auth_url", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            auth_url = result.get("auth_url", "")
+            state = result.get("state", "")
+
+            # Extract redirect_uri from auth_url for display
+            import urllib.parse
+            parsed = urllib.parse.urlparse(auth_url)
+            params = urllib.parse.parse_qs(parsed.query)
+            redirect_uri = params.get('redirect_uri', [''])[0]
+
+            # Check if using localhost (which won't work for remote browser)
+            is_localhost = "localhost" in redirect_uri or "127.0.0.1" in redirect_uri
+
+            lines = [
+                "X Bookmarks OAuth Authentication",
+                "",
+                "1. Open this URL in your browser:",
+                "",
+                f"   {auth_url}",
+                "",
+                "2. Log in to X and authorize Gaius",
+                "",
+            ]
+
+            if is_localhost:
+                lines.extend([
+                    "3. After clicking 'Authorize', X will redirect to localhost.",
+                    "   The page will fail to load, but that's OK!",
+                    "",
+                    "   Look at your browser's address bar - it will show:",
+                    "   http://localhost:8765/callback?code=XXXXX&state=YYYYY",
+                    "",
+                    "   Copy the value after 'code=' (up to the & or end of URL).",
+                    "",
+                ])
+            else:
+                lines.extend([
+                    "3. After authorization, copy the code from the callback page.",
+                    "",
+                ])
+
+            lines.extend([
+                "4. Complete authentication:",
+                "",
+                "   /x-bookmarks auth complete <YOUR_CODE>",
+                "",
+                "Note: Authorization expires in 10 minutes.",
+                f"Callback: {redirect_uri}",
+            ])
+
+            if is_localhost:
+                lines.extend([
+                    "",
+                    "Tip: To use a proper callback, set X_REDIRECT_URI to a",
+                    "hosted page that can display the code (e.g., GitHub Pages).",
+                ])
+
+            lines.extend([
+                "",
+                "Troubleshooting:",
+                "- 'You weren't able to give access': Your X app needs OAuth 2.0",
+                "  configured in the Developer Portal. Go to:",
+                "  https://developer.x.com/en/portal/dashboard",
+                "  -> Your App -> Settings -> User Authentication -> Set up",
+                "  Enable OAuth 2.0 with 'Read' permissions.",
+                f"  Add this callback URL: {redirect_uri}",
+                "",
+                "- 'bookmark.read' requires X API Pro tier or higher.",
+            ])
+
+            return {
+                "auth_url": auth_url,
+                "state": state,
+                "formatted": "\n".join(lines),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to start authentication: {e}"}
+
+    async def _cmd_x_bookmarks_complete_auth(self, code: str) -> dict:
+        """Complete OAuth authentication with authorization code."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "complete_auth", {"code": code})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            success = result.get("success", False)
+            username = result.get("username", "")
+            user_id = result.get("user_id", "")
+
+            if success:
+                lines = [
+                    "Authentication Successful",
+                    "",
+                    f"User: @{username}" if username else "",
+                    f"User ID: {user_id}" if user_id else "",
+                    "",
+                    "You can now sync bookmarks with:",
+                    "",
+                    "   /x-bookmarks sync",
+                ]
+                return {
+                    "success": True,
+                    "username": username,
+                    "user_id": user_id,
+                    "formatted": "\n".join(line for line in lines if line or line == ""),
+                }
+            else:
+                # Check both error and message fields (gRPC may use either)
+                error = result.get("error") or result.get("message") or "Unknown error"
+                return {"error": f"Authentication failed: {error}"}
+
+        except Exception as e:
+            return {"error": f"Failed to complete authentication: {e}"}
+
+    async def _cmd_x_bookmarks_sync(self) -> dict:
+        """Trigger bookmark sync."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "trigger_sync", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            started = result.get("started", False)
+            message = result.get("message", "")
+            queued = result.get("queued_requests", 0)
+
+            if started:
+                lines = [
+                    "Bookmark Sync Started",
+                    "",
+                    f"Message: {message}" if message else "Sync initiated",
+                    f"Queued requests: {queued}" if queued else "",
+                    "",
+                    "Check status with: /x-bookmarks status",
+                ]
+                return {
+                    "started": True,
+                    "message": message,
+                    "queued_requests": queued,
+                    "formatted": "\n".join(line for line in lines if line or line == ""),
+                }
+            else:
+                return {
+                    "started": False,
+                    "message": message or "Sync not started",
+                    "formatted": f"Sync not started: {message}",
+                }
+
+        except Exception as e:
+            return {"error": f"Failed to trigger sync: {e}"}
+
+    async def _cmd_x_bookmarks_sync_status(self) -> dict:
+        """Show sync status."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "sync_status", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            configured = result.get("configured", False)
+            username = result.get("username", "")
+            user_id = result.get("user_id", "")
+            token_status = result.get("token_status", "")
+            folder_count = result.get("folder_count", 0)
+            bookmark_count = result.get("bookmark_count", 0)
+            queued_requests = result.get("queued_requests", 0)
+            last_sync_at = result.get("last_sync_at", "")
+            last_run_status = result.get("last_run_status", "")
+            action_required = result.get("action_required", "")
+            action_message = result.get("message", "")
+
+            lines = [
+                "X Bookmarks Sync Status",
+                "",
+                f"Configured: {'Yes' if configured else 'No'}",
+            ]
+
+            if configured:
+                lines.extend([
+                    f"User: @{username}" if username else "",
+                    f"User ID: {user_id}" if user_id else "",
+                    f"Token: {token_status}" if token_status else "",
+                    "",
+                    f"Folders: {folder_count}",
+                    f"Bookmarks: {bookmark_count}",
+                    f"Queued requests: {queued_requests}",
+                    "",
+                    f"Last sync: {last_sync_at}" if last_sync_at else "Last sync: Never",
+                    f"Status: {last_run_status}" if last_run_status else "",
+                ])
+                # Add actionable guidance when there's an issue
+                if action_message:
+                    lines.extend(["", action_message])
+            else:
+                lines.extend([
+                    "",
+                    "To configure, run:",
+                    "",
+                    "   /x-bookmarks auth",
+                ])
+
+            return {
+                "configured": configured,
+                "username": username,
+                "user_id": user_id,
+                "token_status": token_status,
+                "folder_count": folder_count,
+                "bookmark_count": bookmark_count,
+                "queued_requests": queued_requests,
+                "last_sync_at": last_sync_at,
+                "last_run_status": last_run_status,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get sync status: {e}"}
+
+    async def _cmd_x_bookmarks_service_status(self) -> dict:
+        """Show service status."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "service_status", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            running = result.get("running", False)
+            total_syncs = result.get("total_syncs", 0)
+            total_bookmarks = result.get("total_bookmarks", 0)
+            last_sync_at = result.get("last_sync_at", "")
+            queue_poll_interval = result.get("queue_poll_interval_s", 0)
+
+            lines = [
+                "X Bookmarks Service Status",
+                "",
+                f"Running: {'Yes' if running else 'No'}",
+                f"Queue poll interval: {queue_poll_interval}s" if queue_poll_interval else "",
+                "",
+                f"Total syncs: {total_syncs}",
+                f"Total bookmarks: {total_bookmarks}",
+                f"Last sync: {last_sync_at}" if last_sync_at else "Last sync: Never",
+                "",
+                "Commands:",
+                "   /x-bookmarks auth    - Start OAuth flow",
+                "   /x-bookmarks sync    - Trigger sync",
+                "   /x-bookmarks status  - Show sync status",
+            ]
+
+            return {
+                "running": running,
+                "total_syncs": total_syncs,
+                "total_bookmarks": total_bookmarks,
+                "last_sync_at": last_sync_at,
+                "queue_poll_interval_s": queue_poll_interval,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get service status: {e}"}
+
+    async def _cmd_x_bookmarks_queue_status(self) -> dict:
+        """Show queue depth and cooldown timer status."""
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "queue_status", {})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            queue_depth = result.get("queue_depth", 0)
+            cooldown_end_iso = result.get("cooldown_end_iso", "")
+            cooldown_seconds = result.get("cooldown_seconds", 0)
+            can_request = result.get("can_request", True)
+
+            lines = [
+                "X Bookmarks Queue Status",
+                "",
+                f"Queue depth: {queue_depth}",
+            ]
+
+            if can_request:
+                lines.append("Rate limit: OK (can request)")
+            else:
+                mins, secs = divmod(cooldown_seconds, 60)
+                lines.extend([
+                    f"Rate limit: In cooldown",
+                    f"Cooldown remaining: {mins}m {secs}s",
+                    f"Cooldown ends: {cooldown_end_iso}" if cooldown_end_iso else "",
+                ])
+
+            return {
+                "queue_depth": queue_depth,
+                "cooldown_end_iso": cooldown_end_iso,
+                "cooldown_seconds": cooldown_seconds,
+                "can_request": can_request,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to get queue status: {e}"}
+
+    async def _cmd_x_bookmarks_test_event(self, event_type: str = "XB_AUTH_COMPLETED") -> dict:
+        """Emit a test XB event for debugging the event propagation chain.
+
+        This fires a simulated XB event that flows through the complete chain:
+        XBookmarksService -> InitController -> InitStream -> InitPanel
+
+        With OTel tracing enabled, the full propagation can be observed.
+        """
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "emit_test_event", {"event_type": event_type})
+
+            if "error" in result:
+                return {"error": result["error"]}
+
+            success = result.get("success", False)
+            emitted_type = result.get("event_type", event_type)
+            message = result.get("message", "")
+
+            lines = [
+                "XB Test Event Emitted",
+                "",
+                f"Event type: {emitted_type}",
+                f"Success: {success}",
+                f"Message: {message}" if message else "",
+                "",
+                "With OTel tracing enabled, check console for spans:",
+                "  - xb.auth_event.trigger",
+                "  - xb.auth_event.emit",
+                "  - xb.auth_event.broadcast",
+                "  - xb.auth_event.panel_update (in TUI process)",
+            ]
+
+            return {
+                "success": success,
+                "event_type": emitted_type,
+                "message": message,
+                "formatted": "\n".join(line for line in lines if line or line == ""),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to emit test event: {e}"}
+
+    async def _cmd_x_bookmarks_folders(self) -> dict:
+        """List X bookmark folders."""
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call("XBookmarks", "list_folders")
+
+            folders_available = result.get("folders_available", False)
+            folders = result.get("folders", [])
+            message = result.get("message", "")
+
+            if not folders_available:
+                lines = [
+                    "X Bookmarks Folders - Not Available",
+                    "",
+                    message or "Folder access not available for your API tier.",
+                    "",
+                    "The X Bookmarks sync feature requires access to the folders endpoint.",
+                    "This may require a higher API tier or specific app permissions.",
+                ]
+                return {
+                    "folders_available": False,
+                    "message": message,
+                    "formatted": "\n".join(lines),
+                }
+
+            if not folders:
+                lines = [
+                    "X Bookmarks Folders",
+                    "",
+                    "No folders found. Run /x-bookmarks sync to fetch folders.",
+                ]
+                return {
+                    "folders_available": True,
+                    "folders": [],
+                    "formatted": "\n".join(lines),
+                }
+
+            lines = [
+                "X Bookmarks Folders",
+                "",
+                f"Found {len(folders)} folder(s):",
+                "",
+            ]
+
+            for folder in folders:
+                name = folder.get("name", "Unknown")
+                count = folder.get("bookmark_count", 0)
+                kb_path = folder.get("kb_path", "")
+                lines.append(f"  {name}")
+                lines.append(f"    Bookmarks: {count}")
+                lines.append(f"    KB Path: {kb_path}")
+                lines.append("")
+
+            return {
+                "folders_available": True,
+                "folders": folders,
+                "formatted": "\n".join(lines),
+            }
+
+        except Exception as e:
+            return {"error": f"Failed to list folders: {e}"}
+
+    # =========================================================================
+    # Ambient Computing Commands
+    # =========================================================================
+
+    async def _cmd_ambient(self, args: str) -> dict:
+        """Ambient Computing workload operations.
+
+        Usage:
+            /ambient                         - Show status (if no --cycle) or start
+            /ambient start                   - Start continuous cycling daemon
+            /ambient start --cycle 4         - Run exactly 4 cycles then stop
+            /ambient start --baseline-only   - Skip reasoning phases
+            /ambient --cycle 4               - Same as start --cycle 4 (start implied)
+            /ambient stop                    - Stop daemon gracefully
+            /ambient status                  - Show daemon status
+            /ambient cycle                   - (Legacy) Run single cycle
+            /ambient buffer                  - Export buffer to zettelkasten file
+
+        Ambient Computing provides invisible, self-sustaining workloads that:
+        - Maintain baseline endpoints (orchestrator, instruct)
+        - Exercise GPU resources with standard tasks
+        - Evict baseline for reasoning when needed
+        - Restore baseline after reasoning completes
+        - Fetch content and summarize (HN newcomments via Firebase)
+        """
+        parts = args.split() if args else []
+
+        # Parse --cycle N option
+        max_cycles = None
+        if "--cycle" in parts:
+            idx = parts.index("--cycle")
+            if idx + 1 < len(parts):
+                try:
+                    max_cycles = int(parts[idx + 1])
+                    parts = [p for i, p in enumerate(parts) if i not in (idx, idx + 1)]
+                except ValueError:
+                    return {
+                        "error": f"Invalid --cycle value: {parts[idx + 1]}",
+                        "usage": "/ambient --cycle 4",
+                    }
+
+        baseline_only = "--baseline-only" in parts or "--skip-reasoning" in parts
+        parts = [p for p in parts if p not in ("--baseline-only", "--skip-reasoning")]
+
+        # Determine subcommand - if --cycle given, default to start
+        if max_cycles:
+            subcmd = parts[0].lower() if parts else "start"
+        else:
+            subcmd = parts[0].lower() if parts else "status"
+
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            if not client.is_connected:
+                return {
+                    "error": "Engine not connected",
+                    "guru_meditation": "#GR.00000001.ENGINEOFF",
+                    "remediation": "Start engine: devenv processes up gaius-engine",
+                }
+
+            if subcmd == "start" or max_cycles:
+                # Fire-and-forget start
+                result = await client.call("Ambient", "start", {
+                    "baseline_only": baseline_only,
+                    "max_cycles": max_cycles or 0,
+                })
+
+                return {
+                    "command": "ambient",
+                    "action": "start",
+                    "success": result.get("success", False),
+                    "message": result.get("message", ""),
+                    "max_cycles": result.get("max_cycles"),
+                    "baseline_only": baseline_only,
+                }
+
+            elif subcmd == "stop":
+                # Stop daemon and return summary
+                result = await client.call("Ambient", "stop", {})
+
+                return {
+                    "command": "ambient",
+                    "action": "stop",
+                    "success": result.get("success", False),
+                    "message": result.get("message", ""),
+                    "cycles_completed": result.get("cycles_completed", 0),
+                }
+
+            elif subcmd == "status":
+                result = await client.call("Ambient", "status", {})
+                return {
+                    "command": "ambient",
+                    "action": "status",
+                    "daemon_running": result.get("daemon_running", False),
+                    "current_cycle": result.get("current_cycle", 0),
+                    "max_cycles": result.get("max_cycles", 0),
+                    "current_phase": result.get("current_phase", "IDLE"),
+                    "cycles_completed": result.get("cycles_completed", 0),
+                    "baseline_endpoints": result.get("baseline_endpoints", []),
+                    "reasoning_endpoint": result.get("reasoning_endpoint"),
+                    "daemon_started_at": result.get("daemon_started_at"),
+                    "daemon_stopped_at": result.get("daemon_stopped_at"),
+                }
+
+            elif subcmd in ("test", "cycle"):
+                # Legacy: single-shot cycle with streaming
+                print(
+                    f"Running ambient {'baseline-only ' if baseline_only else ''}cycle...",
+                    file=sys.stderr,
+                )
+
+                # Stream the cycle events for real-time progress
+                events = []
+                async for event in client.ambient_cycle_stream(
+                    skip_reasoning=baseline_only,
+                    baseline_task_count=1,
+                ):
+                    phase = event.get("phase", "UNKNOWN")
+                    endpoint = event.get("endpoint", "")
+                    message = event.get("message", "")
+                    success = event.get("success", True)
+                    latency = event.get("latency_ms", 0)
+
+                    # Print progress
+                    status_icon = "✓" if success else "✗"
+                    if endpoint:
+                        print(
+                            f"  {status_icon} [{phase}] {endpoint}: {message} ({latency}ms)",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(f"  {status_icon} [{phase}] {message}", file=sys.stderr)
+
+                    events.append(event)
+
+                    # Check for terminal phase
+                    if phase in ("AMBIENT_PHASE_COMPLETE", "AMBIENT_PHASE_ERROR"):
+                        break
+
+                # Summarize results
+                successful_events = [e for e in events if e.get("success", False)]
+                failed_events = [e for e in events if not e.get("success", True)]
+
+                return {
+                    "command": "ambient",
+                    "action": "cycle",
+                    "cycle_completed": len(failed_events) == 0,
+                    "skip_reasoning": baseline_only,
+                    "total_events": len(events),
+                    "successful": len(successful_events),
+                    "failed": len(failed_events),
+                    "events": events,
+                }
+
+            elif subcmd == "buffer":
+                # Export buffer to zettelkasten file
+                result = await client.call("Ambient", "buffer_export", {
+                    "kb_root": "build/dev",
+                })
+
+                if result.get("error"):
+                    return {
+                        "command": "ambient",
+                        "action": "buffer",
+                        "error": result.get("error"),
+                    }
+
+                # Read file content for display
+                path = result.get("path", "")
+                content = ""
+                if path:
+                    from pathlib import Path
+                    full_path = Path("build/dev") / path
+                    if full_path.exists():
+                        content = full_path.read_text()
+
+                return {
+                    "command": "ambient",
+                    "action": "buffer",
+                    "path": path,
+                    "entry_count": result.get("entry_count", 0),
+                    "total_bytes": result.get("total_bytes", 0),
+                    "content": content,
+                }
+
+            else:
+                return {
+                    "error": f"Unknown ambient command: {subcmd}",
+                    "usage": "/ambient [start|stop|status|cycle|buffer] [--cycle N] [--baseline-only]",
+                }
+
+        except Exception as e:
+            return {"error": f"Ambient command failed: {e}"}
+
+    # =========================================================================
+    # Datasets - HuggingFace Dataset Discovery (Engine-only, no fallbacks)
+    # =========================================================================
+
+    async def _cmd_datasets(self, args: str) -> dict:
+        """HuggingFace dataset discovery and KB management via Engine gRPC.
+
+        All operations go through the Gaius Engine. No local fallbacks.
+
+        Usage:
+            /datasets                    - List datasets in KB (internal + external)
+            /datasets kb                 - Same as above
+            /datasets list [N]           - Fetch N recent datasets from HuggingFace (default: 20)
+            /datasets add <id> [notes]   - Add dataset to KB external registry
+            /datasets info <id>          - Get detailed info for a specific dataset
+
+        Examples:
+            /datasets                        # List KB datasets
+            /datasets list 50                # Latest 50 from HuggingFace
+            /datasets add facebook/research-plan-gen
+            /datasets info facebook/research-plan-gen
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split(maxsplit=2) if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        client = await get_grpc_client()
+
+        # Subcommand: add
+        if subcmd == "add":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /datasets add <dataset_id> [notes]",
+                    "example": "/datasets add facebook/research-plan-gen",
+                }
+            dataset_id = parts[1]
+            notes = parts[2] if len(parts) > 2 else ""
+            result = await client.call("Datasets", "add", {"dataset_id": dataset_id, "notes": notes})
+            return {"command": "datasets", "action": "add", **result}
+
+        # Subcommand: info
+        if subcmd == "info":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /datasets info <dataset_id>",
+                    "example": "/datasets info facebook/research-plan-gen",
+                }
+            dataset_id = parts[1]
+            result = await client.call("Datasets", "info", {"dataset_id": dataset_id})
+            return {"command": "datasets", "action": "info", **result}
+
+        # Subcommand: list (fetch from HuggingFace)
+        if subcmd == "list":
+            limit = 20
+            if len(parts) > 1 and parts[1].isdigit():
+                limit = int(parts[1])
+            result = await client.call("Datasets", "list", {"limit": limit})
+            return {"command": "datasets", "action": "list_hf", **result}
+
+        # Default / kb: list datasets in KB
+        if subcmd in ("", "kb"):
+            result = await client.call("Datasets", "list_kb", {})
+            return {"command": "datasets", "action": "list_kb", **result}
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown datasets subcommand: {subcmd}",
+            "usage": "/datasets [kb|list|add|info] ...",
+        }
+
+    async def _cmd_models(self, args: str) -> dict:
+        """HuggingFace model discovery and KB management via Engine gRPC.
+
+        All operations go through the Gaius Engine. No local fallbacks.
+
+        Usage:
+            /models                    - List models in KB (internal + external)
+            /models kb                 - Same as above
+            /models list [N] [filter]  - Fetch N recent models from HuggingFace (default: 20)
+            /models add <id> [notes]   - Add model to KB external registry
+            /models info <id>          - Get detailed info for a specific model
+
+        Examples:
+            /models                            # List KB models
+            /models list 50                    # Latest 50 from HuggingFace
+            /models list 20 text-generation    # Latest 20 text-generation models
+            /models add meta-llama/Llama-3.3-70B-Instruct
+            /models info meta-llama/Llama-3.3-70B-Instruct
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split(maxsplit=2) if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        client = await get_grpc_client()
+
+        # Subcommand: add
+        if subcmd == "add":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /models add <model_id> [notes]",
+                    "example": "/models add meta-llama/Llama-3.3-70B-Instruct",
+                }
+            model_id = parts[1]
+            notes = parts[2] if len(parts) > 2 else ""
+            result = await client.call("Models", "add", {"model_id": model_id, "notes": notes})
+            return {"command": "models", "action": "add", **result}
+
+        # Subcommand: info
+        if subcmd == "info":
+            if len(parts) < 2:
+                return {
+                    "error": "Usage: /models info <model_id>",
+                    "example": "/models info meta-llama/Llama-3.3-70B-Instruct",
+                }
+            model_id = parts[1]
+            result = await client.call("Models", "info", {"model_id": model_id})
+            return {"command": "models", "action": "info", **result}
+
+        # Subcommand: list (fetch from HuggingFace)
+        if subcmd == "list":
+            limit = 20
+            filter_str = ""
+            if len(parts) > 1:
+                # Could be limit or filter
+                if parts[1].isdigit():
+                    limit = int(parts[1])
+                    if len(parts) > 2:
+                        filter_str = parts[2]
+                else:
+                    filter_str = parts[1]
+            result = await client.call("Models", "list", {"limit": limit, "filter": filter_str})
+            return {"command": "models", "action": "list_hf", **result}
+
+        # Default / kb: list models in KB
+        if subcmd in ("", "kb"):
+            result = await client.call("Models", "list_kb", {})
+            return {"command": "models", "action": "list_kb", **result}
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown models subcommand: {subcmd}",
+            "usage": "/models [kb|list|add|info] ...",
+        }
+
+    async def _cmd_prospects(self, args: str) -> dict:
+        """Prospects/Stewardship - FMP-based prospect intelligence via Engine gRPC.
+
+        All operations go through the Gaius Engine. No local fallbacks.
+
+        Usage:
+            /prospects                   - Show current status (cached, $0)
+            /prospects status            - Same as above
+            /prospects check [--force]   - Check for new SEC filings (~$0)
+            /prospects update [symbol] [--limit N]  - Run full LLM analysis
+            /prospects help              - Show help
+
+        Options:
+            --force, -f      Force operation even if recent
+            --limit N, -l N  Max filings per symbol (for stepwise testing)
+
+        Cost Tiers:
+            - Status: $0 (cached data)
+            - Check: ~$0 (FMP API, local decision)
+            - Update: ~$0.60/prospect (Cerebras + Grok LLM analysis)
+
+        Examples:
+            /prospects                     # Show status
+            /prospects check               # Check for new filings
+            /prospects check --force       # Force check even if recent
+            /prospects update              # Analyze all pending (20/symbol)
+            /prospects update AAPL         # Analyze single symbol
+            /prospects update --limit 2    # Stepwise: 2 filings/symbol
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        client = await get_grpc_client()
+
+        # Default / status: show current status
+        if subcmd in ("", "status"):
+            result = await client.call("Prospects", "status", {})
+            return {
+                "command": "prospects",
+                "action": "status",
+                **result,
+            }
+
+        # Check: daily check for new filings
+        if subcmd == "check":
+            force = "--force" in parts or "-f" in parts
+            result = await client.call("Prospects", "check", {"force": force})
+            return {
+                "command": "prospects",
+                "action": "check",
+                **result,
+            }
+
+        # Update: full LLM analysis (streaming)
+        if subcmd == "update":
+            symbols = []
+            force = False
+            filings_per_symbol = 0  # 0 = default (20)
+            i = 1
+            while i < len(parts):
+                part = parts[i]
+                if part in ("--force", "-f"):
+                    force = True
+                elif part in ("--limit", "-l") and i + 1 < len(parts):
+                    try:
+                        filings_per_symbol = int(parts[i + 1])
+                        i += 1
+                    except ValueError:
+                        pass
+                else:
+                    symbols.append(part.upper())
+                i += 1
+
+            # For streaming, collect events and return final result
+            events = []
+            async for event in client.stream(
+                "Prospects", "update",
+                {"symbols": symbols, "force": force, "filings_per_symbol": filings_per_symbol}
+            ):
+                events.append(event)
+                # Log progress to stderr for visibility
+                if event.get("progress"):
+                    sys.stderr.write(
+                        f"\r  {event.get('message', '')} ({event.get('progress', 0)*100:.0f}%)"
+                    )
+                    sys.stderr.flush()
+
+            sys.stderr.write("\n")
+
+            # Extract final results from events
+            final_event = events[-1] if events else {}
+            return {
+                "command": "prospects",
+                "action": "update",
+                "symbols": symbols,
+                "events_count": len(events),
+                **final_event,
+            }
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "prospects",
+                "help": self._cmd_prospects.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown prospects subcommand: {subcmd}",
+            "usage": "/prospects [status|check|update|help] ...",
+        }
 
 
 def main():

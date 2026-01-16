@@ -1,6 +1,6 @@
 # Gaius Health
 
-Health monitoring, diagnostics, and self-healing for the Gaius platform. Includes FMEA (Failure Mode and Effects Analysis) for quantitative risk-based remediation.
+Health monitoring, diagnostics, and self-healing for the Gaius platform. Implements FMEA (Failure Mode and Effects Analysis) for quantitative risk-based remediation.
 
 ## Architecture
 
@@ -8,8 +8,8 @@ Health monitoring, diagnostics, and self-healing for the Gaius platform. Include
 graph TB
     subgraph "Detection Layer"
         HC[Health Checker]
-        HEUR[Heuristics<br/>KB-based rules]
-        WATCH[Watcher<br/>Continuous monitoring]
+        HEUR[Heuristics<br/>KB Rules]
+        WATCH[Watcher<br/>Continuous]
     end
 
     subgraph "Analysis Layer"
@@ -21,7 +21,7 @@ graph TB
     subgraph "Remediation Layer"
         SH[Self-Healing<br/>Coordinator]
         T0[Tier 0<br/>Procedural]
-        T1[Tier 1<br/>Local Agent]
+        T1[Tier 1<br/>Agent-Assisted]
         T2[Tier 2<br/>Approval Required]
     end
 
@@ -57,7 +57,7 @@ health/
 ├── watcher.py          # Continuous health monitoring
 ├── self_healing.py     # Tiered self-healing coordinator
 ├── remediation.py      # Remediation action definitions
-├── service_fixes.py    # Service-specific fixes
+├── service_fixes.py    # Service-specific fix strategies
 └── fmea/
     ├── __init__.py
     ├── models.py       # RPNScore, FailureMode, ActionPolicy
@@ -68,87 +68,77 @@ health/
 
 ## FMEA (Failure Mode and Effects Analysis)
 
-### Core Concept
+FMEA replaces simple severity classification with quantitative risk assessment using Risk Priority Numbers (Stamatis, 2003).
 
-FMEA replaces simple severity classification (low/medium/high/critical) with quantitative risk assessment using Risk Priority Numbers:
+### Risk Priority Number
 
-$$RPN = S \times O \times D$$
+$$\text{RPN} = S \times O \times D$$
 
-Where:
-- **S (Severity)**: Impact on system availability (1-10)
-- **O (Occurrence)**: Probability of recurrence (1-10)
-- **D (Detection)**: Ability to detect before impact (1-10, lower is better)
+where:
+- **S (Severity)**: Impact on system availability (1–10)
+- **O (Occurrence)**: Probability of recurrence (1–10)
+- **D (Detection)**: Ability to detect before impact (1–10, lower is better)
 
-Maximum RPN = 1000 (10 × 10 × 10)
+Maximum RPN = 1000 (10 × 10 × 10).
 
-### RPN Thresholds
+### Action Thresholds
 
 | RPN Range | Tier | Action |
 |-----------|------|--------|
-| 1-100 | Tier 0 | Auto-remediate immediately |
-| 101-200 | Tier 1 | Auto-remediate with agent validation |
-| 201-400 | Tier 2 | Require user approval |
-| 401-1000 | Manual | Human intervention required |
+| 1–100 | Tier 0 | Automatic procedural remediation |
+| 101–200 | Tier 1 | Agent-assisted remediation |
+| 201–400 | Tier 2 | Requires user approval |
+| 401–1000 | Manual | Human intervention required |
 
 ### Conservative Overrides
 
-- **Detection D >= 8**: Always requires approval (poor observability)
-- **SafetyLevel.DESTRUCTIVE**: Always requires approval
-- **Multiple correlated failures**: Escalate to next tier
+Certain conditions always escalate to higher tiers:
+- Detection $D \geq 8$: Poor observability requires approval
+- `SafetyLevel.DESTRUCTIVE`: Data-modifying actions require approval
+- Multiple correlated failures: Escalate to next tier
 
 ### Failure Mode Catalog
 
 34 failure modes across 7 categories:
 
-```
-GPU (6 modes)
-├── GPU_001: Memory Exhaustion (S=8, O=6, D=4, RPN=192)
-├── GPU_002: Temperature Critical (S=9, O=3, D=2, RPN=54)
-├── GPU_003: Hardware Error (S=10, O=2, D=3, RPN=60)
-├── GPU_004: Driver Crash (S=8, O=3, D=4, RPN=96)
-├── GPU_005: Memory Fragmentation (S=7, O=5, D=4, RPN=140)
-└── GPU_006: Power Throttling (S=5, O=4, D=3, RPN=60)
+**GPU (6 modes)**:
+| ID | Failure Mode | S | O | D | RPN |
+|----|--------------|---|---|---|-----|
+| GPU_001 | Memory Exhaustion | 8 | 6 | 4 | 192 |
+| GPU_002 | Temperature Critical | 9 | 3 | 2 | 54 |
+| GPU_003 | Hardware Error | 10 | 2 | 3 | 60 |
+| GPU_004 | Driver Crash | 8 | 3 | 4 | 96 |
+| GPU_005 | Memory Fragmentation | 7 | 5 | 4 | 140 |
+| GPU_006 | Power Throttling | 5 | 4 | 3 | 60 |
 
-vLLM Endpoint (6 modes)
-├── VLLM_001: Stuck Starting (S=6, O=5, D=5, RPN=150)
-├── VLLM_002: Stuck Stopping (S=4, O=4, D=4, RPN=64)
-├── VLLM_003: Health Check Failure (S=7, O=6, D=3, RPN=126)
-├── VLLM_004: Orphan Process (S=5, O=5, D=4, RPN=100)
-├── VLLM_005: OOM Crash (S=8, O=5, D=3, RPN=120)
-└── VLLM_006: KV-Cache Exhaustion (S=5, O=6, D=5, RPN=150)
+**vLLM Endpoint (6 modes)**:
+| ID | Failure Mode | S | O | D | RPN |
+|----|--------------|---|---|---|-----|
+| VLLM_001 | Stuck Starting | 6 | 5 | 5 | 150 |
+| VLLM_002 | Stuck Stopping | 4 | 4 | 4 | 64 |
+| VLLM_003 | Health Check Failure | 7 | 6 | 3 | 126 |
+| VLLM_004 | Orphan Process | 5 | 5 | 4 | 100 |
+| VLLM_005 | OOM Crash | 8 | 5 | 3 | 120 |
+| VLLM_006 | KV-Cache Exhaustion | 5 | 6 | 5 | 150 |
 
-Model Quality (5 modes)
-├── MQ_001: Hallucination Increase (S=7, O=4, D=6, RPN=168)
-├── MQ_002: Latency Degradation (S=4, O=5, D=3, RPN=60)
-├── MQ_003: Output Quality Drift (S=5, O=6, D=7, RPN=210)
-├── MQ_004: Semantic Drift (S=6, O=4, D=8, RPN=192)
-└── MQ_005: Context Exhaustion (S=6, O=5, D=4, RPN=120)
+**Model Quality (5 modes)**:
+| ID | Failure Mode | S | O | D | RPN |
+|----|--------------|---|---|---|-----|
+| MQ_001 | Hallucination Increase | 7 | 4 | 6 | 168 |
+| MQ_002 | Latency Degradation | 4 | 5 | 3 | 60 |
+| MQ_003 | Output Quality Drift | 5 | 6 | 7 | 210 |
+| MQ_004 | Semantic Drift | 6 | 4 | 8 | 192 |
+| MQ_005 | Context Exhaustion | 6 | 5 | 4 | 120 |
 
-Evolution System (5 modes)
-├── EV_001: Training Divergence (S=8, O=4, D=3, RPN=96)
-├── EV_002: Held-out Score Drop (S=6, O=5, D=4, RPN=120)
-├── EV_003: Version Conflict (S=5, O=3, D=5, RPN=75)
-├── EV_004: Optimization Loop (S=4, O=3, D=6, RPN=72)
-└── EV_005: Data Staleness (S=7, O=6, D=5, RPN=210)
+**Emergent Behavior (4 modes)**:
+| ID | Failure Mode | S | O | D | RPN |
+|----|--------------|---|---|---|-----|
+| EB_001 | Swarm Consensus Failure | 6 | 4 | 6 | 144 |
+| EB_002 | Cognition Loop | 5 | 4 | 7 | 140 |
+| EB_003 | Embedding Drift | 6 | 5 | 8 | 240 |
+| EB_004 | Self-Observation Bias | 6 | 5 | 9 | 270 |
 
-Emergent Behavior (4 modes)
-├── EB_001: Swarm Consensus Failure (S=6, O=4, D=6, RPN=144)
-├── EB_002: Cognition Loop (S=5, O=4, D=7, RPN=140)
-├── EB_003: Embedding Drift (S=6, O=5, D=8, RPN=240)
-└── EB_004: Self-Observation Bias (S=6, O=5, D=9, RPN=270)
-
-Resource Contention (4 modes)
-├── RC_001: Scheduler Queue Starvation (S=6, O=4, D=4, RPN=96)
-├── RC_002: Batch Fairness Violation (S=4, O=5, D=5, RPN=100)
-├── RC_003: XAI Budget Exhausted (S=5, O=5, D=2, RPN=50)
-└── RC_004: DB Connection Pool (S=7, O=4, D=3, RPN=84)
-
-Infrastructure (4 modes)
-├── INFRA_001: gRPC Connection (S=8, O=3, D=2, RPN=48)
-├── INFRA_002: PostgreSQL (S=8, O=3, D=2, RPN=48)
-├── INFRA_003: Qdrant (S=7, O=3, D=2, RPN=42)
-└── INFRA_004: MinIO (S=6, O=3, D=2, RPN=36)
-```
+Note: Emergent behavior modes have high Detection scores (poor observability), reflecting the difficulty of detecting these failure modes automatically.
 
 ## Self-Healing System
 
@@ -183,28 +173,26 @@ sequenceDiagram
 
 ### Tier 0: Procedural Restart
 
-Code-only remediation, no agent involvement:
+Code-only remediation without agent involvement:
 
 ```python
 async def tier0_restart(self, issue: HealthIssue) -> HealingResult:
     """Simple restart sequence."""
     await self.orchestrator.stop_endpoint(issue.endpoint)
-    await asyncio.sleep(5)  # Cool-down
+    await asyncio.sleep(5)  # Cool-down period
     await self.orchestrator.start_endpoint(issue.endpoint)
     return HealingResult(success=True, tier=0, action="restart")
 ```
 
-### Tier 1: Local Agent Intervention
+### Tier 1: Agent-Assisted
 
 Uses healthy endpoints to diagnose and remediate:
 
 ```python
 async def tier1_agent(self, issue: HealthIssue) -> HealingResult:
     """Agent-assisted recovery."""
-    # Use reasoning endpoint to analyze issue
     diagnosis = await self.inference.analyze(issue.to_dict())
 
-    # Apply recommended fix
     if diagnosis.action == "clear_cache":
         await self.clear_kv_cache(issue.endpoint)
     elif diagnosis.action == "rollback":
@@ -233,65 +221,19 @@ async def tier2_escalate(self, issue: HealthIssue, rpn: RPNScore) -> HealingResu
     )
 ```
 
-## Health Checks
-
-### Check Categories
-
-| Category | Checks | Purpose |
-|----------|--------|---------|
-| Infrastructure | grpc_connection, postgresql, qdrant, minio | Core service connectivity |
-| GPU | gpu_memory, gpu_temperature | Hardware health |
-| Endpoints | endpoints, stuck_endpoints, stale_processes | vLLM/optillm health |
-| Evolution | evolution_daemon, cognition_daemon | Background services |
-| Resources | disk_space, scheduler_queue, xai_budget | Resource limits |
-
-### Example Check
-
-```python
-async def check_gpu_memory(self) -> CheckResult:
-    """Check GPU memory utilization."""
-    try:
-        import pynvml
-        pynvml.nvmlInit()
-
-        results = []
-        for i in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            utilization = info.used / info.total
-
-            if utilization > 0.95:
-                return CheckResult(
-                    name="gpu_memory",
-                    status=CheckStatus.FAIL,
-                    message=f"GPU {i} memory critical: {utilization:.1%}",
-                    details={"gpu_id": i, "utilization": utilization},
-                )
-
-        return CheckResult(
-            name="gpu_memory",
-            status=CheckStatus.PASS,
-            message="GPU memory OK",
-        )
-    except Exception as e:
-        return CheckResult(
-            name="gpu_memory",
-            status=CheckStatus.SKIP,
-            message=f"Cannot check GPU: {e}",
-        )
-```
-
 ## Adaptive Learning
 
 ### S/O/D Score Updates
 
-The adaptive learner adjusts base scores based on remediation outcomes:
+The adaptive learner adjusts base scores based on remediation outcomes using exponential moving average:
+
+$$S_{\text{new}} = (1 - \alpha) \cdot S_{\text{current}} + \alpha \cdot S_{\text{target}}$$
+
+where $\alpha = 0.2$ (learning rate).
 
 ```python
 class AdaptiveLearner:
-    """Update S/O/D scores based on actual outcomes."""
-
-    LEARNING_RATE = 0.2  # EMA alpha
+    LEARNING_RATE = 0.2
 
     async def update_from_outcome(
         self,
@@ -311,18 +253,18 @@ class AdaptiveLearner:
         elif outcome.lead_time_seconds > 300:
             new_d = max(1, rpn_score.detection - 1)
 
-        # Update Severity based on actual impact
-        if outcome.downtime_seconds > 600:
-            new_s = min(10, rpn_score.severity + 1)
-
         await self._save_adjustment(failure_mode_id, new_s, new_o, new_d)
 ```
 
-### Exponential Moving Average
+## Health Check Categories
 
-$$S_{new} = (1 - \alpha) \cdot S_{current} + \alpha \cdot S_{target}$$
-
-With $\alpha = 0.2$, scores adjust gradually based on observed outcomes.
+| Category | Checks | Purpose |
+|----------|--------|---------|
+| Infrastructure | grpc_connection, postgresql, qdrant, minio | Core service connectivity |
+| GPU | gpu_memory, gpu_temperature | Hardware health |
+| Endpoints | endpoints, stuck_endpoints, stale_processes | vLLM/optillm health |
+| Evolution | evolution_daemon, cognition_daemon | Background services |
+| Resources | disk_space, scheduler_queue, xai_budget | Resource limits |
 
 ## CLI Commands
 
@@ -383,20 +325,217 @@ CREATE TABLE fmea_outcomes (
     duration_ms INT,
     downtime_seconds INT
 );
-
--- Runtime adjustments (learned)
-CREATE TABLE fmea_adjustments (
-    failure_mode_id VARCHAR(32) REFERENCES fmea_catalog,
-    endpoint VARCHAR(64),
-    adjusted_severity INT,
-    adjusted_occurrence INT,
-    adjusted_detection INT,
-    sample_count INT DEFAULT 0
-);
 ```
+
+## References
+
+- Stamatis, D. H. (2003). *Failure Mode and Effect Analysis: FMEA from Theory to Execution*. ASQ Quality Press.
+
+## Call Graph
+
+```
+# Health Check Path
+mcp_server.py:aiops_report()
+  └─→ health.checker.HealthChecker.run_all()
+      ├─→ check_grpc_connection()
+      ├─→ check_postgresql()
+      ├─→ check_qdrant()
+      ├─→ check_gpu_memory()
+      ├─→ check_endpoints()
+      └─→ check_evolution_daemon()
+
+# FMEA Calculation Path
+health.checker.HealthChecker.diagnose()
+  └─→ fmea.engine.FMEAEngine.calculate_rpn()
+      ├─→ fmea.loader.map_check_to_failure_mode()
+      ├─→ fmea.catalog.get_base_scores(failure_mode_id)
+      └─→ fmea.learning.AdaptiveLearner.get_adjustments()
+          └─→ RPN = S × O × D
+
+# Self-Healing Path
+health.watcher.HealthWatcher.on_issue()
+  └─→ health.self_healing.SelfHealer.heal()
+      ├─→ fmea.engine.calculate_rpn(issue)
+      ├─→ [RPN < 100] tier0_restart(issue)
+      ├─→ [RPN 100-200] tier1_agent(issue)
+      └─→ [RPN > 200] tier2_escalate(issue)
+          └─→ database.insert(fmea_approvals)
+
+# Fix Strategy Path
+cli.py:/health fix <service>
+  └─→ health.service_fixes.apply_fix(service)
+      └─→ SERVICE_STRATEGIES[service].execute()
+          └─→ multi-step remediation with verification
+```
+
+## Data Flow
+
+```mermaid
+flowchart TB
+    DETECT["Detection Sources<br/>Scheduled Checks | Continuous Watcher | User Reports"]
+    HC["HealthChecker<br/>run_all() → list[HealthIssue]"]
+    FMEA["FMEA Engine<br/>calculate_rpn() → RPNScore(severity, occurrence, detection)"]
+    T0["Tier 0<br/>Procedural<br/>(RPN<100)"]
+    T1["Tier 1<br/>Agent-Assisted<br/>(RPN 100-200)"]
+    T2["Tier 2<br/>Approval<br/>(RPN>200)"]
+    LEARN["Adaptive Learner<br/>update S/O/D from outcomes → PostgreSQL"]
+
+    DETECT --> HC
+    HC --> FMEA
+    FMEA --> T0
+    FMEA --> T1
+    FMEA --> T2
+    T0 --> LEARN
+    T1 --> LEARN
+    T2 --> LEARN
+```
+
+## ACP Escalation (Claude Code Integration)
+
+When the self-healing system encounters issues beyond its capability, it can
+escalate to Claude Code via the Agent Client Protocol (ACP). This enables
+**meta-level maintenance**—Claude Code evolves the `/health fix` framework
+itself rather than just fixing individual issues.
+
+### HealthObserver Daemon
+
+The `HealthObserver` daemon (`observe.py`) provides continuous health monitoring
+with ACP escalation:
+
+```python
+from gaius.health.observe import HealthObserver
+
+observer = HealthObserver()
+await observer.start()  # Begins continuous monitoring
+```
+
+**Features**:
+- Configurable poll interval (default 60s)
+- FMEA/RPN-based incident prioritization
+- Automatic escalation when RPN exceeds threshold
+- Incident tracking with healing history
+- GitHub issue integration via ACP
+
+### ACP Escalation Flow
+
+```mermaid
+sequenceDiagram
+    participant HO as HealthObserver
+    participant FMEA as FMEA Engine
+    participant SH as Self-Healer
+    participant ACP as ACP Client
+    participant CC as Claude Code
+
+    HO->>FMEA: Detect issue, calculate RPN
+    FMEA-->>HO: RPN > 300 (high risk)
+
+    alt Self-healing attempted
+        HO->>SH: Try local fix
+        SH-->>HO: Failed after 3 attempts
+    end
+
+    HO->>ACP: Escalate incident
+    ACP->>CC: Connect via claude-code-acp
+
+    CC->>CC: Analyze with MCP tools
+    CC->>CC: Identify framework gap
+
+    alt Gap found
+        CC->>CC: Implement FixStrategy
+        CC->>CC: Add KB heuristic
+        CC->>CC: Commit to acp-claude/health-fix
+    end
+
+    CC-->>ACP: Resolution report
+    ACP-->>HO: Mark incident resolved
+```
+
+### Escalation Triggers
+
+| Condition | Threshold | Action |
+|-----------|-----------|--------|
+| High RPN score | RPN > 300 | Escalate to ACP |
+| Repeated failures | 3+ failed attempts | Escalate to ACP |
+| Unknown failure mode | No matching FMEA | Escalate to ACP |
+| Manual request | User `/health escalate` | Escalate to ACP |
+
+### ACP Workflow Modes
+
+| Mode | Purpose |
+|------|---------|
+| `OBSERVE` | Diagnose issue, identify framework gaps |
+| `INTERVENE` | Implement fixes, create heuristics |
+| `REPORT` | Generate coverage analysis |
+
+### Security
+
+ACP escalation enforces mandatory security checks:
+- GitHub repo must be in HOCON allowlist
+- Repo must have private visibility
+- Content is sanitized before issue creation
+- All changes go to `acp-claude/health-fix` branch
+
+See [ACP README](../acp/README.md) for full security documentation.
+
+## Integration Points
+
+| Component | Uses | Used By | Integration |
+|-----------|------|---------|-------------|
+| `HealthChecker` | client, database, pynvml | watcher, mcp_server | `run_all()`, `diagnose()` |
+| `FMEAEngine` | fmea.catalog, fmea.learning | checker, self_healing | `calculate_rpn()` |
+| `SelfHealer` | orchestrator, inference, database | watcher | `heal()` |
+| `AdaptiveLearner` | database | fmea.engine | `update_from_outcome()` |
+| `SERVICE_STRATEGIES` | various services | cli, mcp_server | `/health fix <service>` |
+| `HealthObserver` | health, acp, database | mcp_server | `start()`, `stop()` |
+| `GaiusACPClient` | claude-code-acp | HealthObserver | `prompt()` |
 
 ## See Also
 
-- [Parent README](../README.md) - Module overview
-- [Engine README](../engine/README.md) - Orchestrator integration
-- [FMEA Implementation Notes](../../../../docs/notes/2025-12-13/210000_fmea_implementation.md)
+- [Parent README](../README.md) — Module overview
+- [Engine README](../engine/README.md) — Orchestrator integration
+- [Client README](../client/README.md) — Health proxy
+- [Observability README](../observability/README.md) — Metrics for health
+
+---
+
+<!-- GAI:META
+module: gaius.health
+layer: L5-orchestration
+key_types: [HealthChecker, HealthIssue, FMEAEngine, RPNScore, FailureMode, SelfHealer, HealingResult, AdaptiveLearner, HealthObserver, HealthIncident]
+key_funcs: [run_all_checks, diagnose, calculate_rpn, heal, apply_fix, get_agenda_tracker]
+submodules: [fmea]
+depends: [client, storage.database, engine.orchestrator, engine.services.agenda_tracker, pynvml, acp]
+dependents: [mcp_server, engine.services.health_service, cli]
+config_keys: [health.check_interval, health.fmea.learning_rate, health.self_healing.enabled]
+env_vars: []
+grpc_services: []
+postgres_tables: [fmea_catalog, fmea_occurrences, fmea_outcomes, fmea_approvals, healing_events, health_observer_state]
+external_deps: [pynvml, asyncpg]
+call_paths:
+  check: mcp.aiops_report→HealthChecker.run_all→[checks]→list[HealthIssue]
+  fmea: HealthChecker.diagnose→FMEAEngine.calculate_rpn→RPNScore
+  heal: HealthWatcher.on_issue→SelfHealer.heal→tier0|tier1|tier2
+  fix: cli./health_fix→service_fixes.apply_fix→FixStrategy.execute
+  observe_check_scheduled: HealthObserver._process_failures→agenda_tracker.is_endpoint_in_scheduled_transition→skip_if_scheduled
+  observe_recovery: HealthObserver._check_recoveries→detect_spontaneous_recovery→move_to_recovering
+  acp_escalate: HealthObserver._tier2_remediate_acp→GaiusACPClient.prompt→healing_events.record_acp_*
+test_cmds:
+  health: 'uv run gaius-cli --cmd "/health" --format json'
+  fmea: 'uv run gaius-cli --cmd "/fmea" --format json'
+  observer: 'uv run gaius-cli --cmd "/health observer" --format json'
+guru_codes: [HL.00001.GRPC_DOWN, HL.00002.GPU_OOM, HL.00003.STUCK_ENDPOINT]
+fail_fast: true
+cross_module_calls:
+  - from: observe.HealthObserver._process_failures
+    to: engine.services.agenda_tracker.AgendaTracker.is_endpoint_in_scheduled_transition
+    purpose: Skip incident creation for endpoints in scheduled makespan operations
+  - from: observe.HealthObserver._tier2_remediate_acp
+    to: acp.GaiusACPClient.prompt
+    purpose: Escalate complex issues to Claude Code for meta-level framework evolution
+  - from: observe.HealthObserver._check_recoveries
+    to: healing_events.HealingEventRecorder.complete_sequence
+    purpose: Record incident resolution in audit trail
+  - from: healing_events.HealingEventRecorder.record_acp_escalation_*
+    to: storage.database.get_pool
+    purpose: Persist verbose ACP escalation history to healing_events table
+-->

@@ -1,0 +1,142 @@
+// RASE Types for Engine Federation
+//
+// Minimal proto definitions for TraceableId and VerificationResult,
+// enabling RASE artifacts to be transmitted over gRPC between engines.
+//
+// These types support:
+// 1. Distributed verification across Engine Federation
+// 2. Atropos rollout worker communication
+// 3. Training sample collection with full provenance
+
+syntax = "proto3";
+
+package gaius.rase;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/zndx/gaius/proto/rase";
+
+// IdScheme identifies the source domain of a TraceableId
+enum IdScheme {
+  ID_SCHEME_UNKNOWN = 0;
+  ID_SCHEME_BDD = 1;        // BDD feature/scenario
+  ID_SCHEME_NIFI = 2;       // NiFi component
+  ID_SCHEME_METABASE = 3;   // Metabase artifact
+  ID_SCHEME_TUI = 4;        // TUI state
+  ID_SCHEME_RASE = 5;       // RASE-generated
+  ID_SCHEME_ATROPOS = 6;    // Atropos training artifact
+}
+
+// TraceableId - The traceability spine
+// Mirrors SysML v2 human id <'scheme:path'>
+message TraceableId {
+  IdScheme scheme = 1;
+  string path = 2;
+  string version = 3;  // Optional version/revision
+
+  // Derived URI for logging/debugging (e.g., "nifi://root/processors/abc123")
+  string uri = 4;
+}
+
+// VerdictKind - Outcome of verification
+enum VerdictKind {
+  VERDICT_UNKNOWN = 0;
+  VERDICT_PASS = 1;
+  VERDICT_FAIL = 2;
+  VERDICT_INCONCLUSIVE = 3;
+  VERDICT_ERROR = 4;
+}
+
+// ConstraintResultProto - Individual constraint evaluation
+message ConstraintResult {
+  string constraint_name = 1;
+  bool satisfied = 2;
+  string message = 3;
+
+  // Structured details (JSON-encoded for flexibility)
+  string details_json = 4;
+
+  // Nested results for composite constraints
+  repeated ConstraintResult sub_results = 5;
+}
+
+// VerificationResult - Complete verification outcome
+message VerificationResult {
+  TraceableId id = 1;
+  TraceableId case_id = 2;
+  VerdictKind verdict = 3;
+
+  // Accuracy for partial credit (0.0 - 1.0)
+  float accuracy = 4;
+
+  // Detailed constraint results
+  repeated ConstraintResult constraint_results = 5;
+
+  // Failed requirement IDs
+  repeated TraceableId failed_requirements = 6;
+
+  // Timing
+  google.protobuf.Timestamp timestamp = 7;
+  int32 duration_ms = 8;
+
+  // Evidence links
+  TraceableId state_before_id = 9;
+  TraceableId state_after_id = 10;
+  TraceableId trace_id = 11;
+
+  // Error details if verdict is ERROR
+  string error_message = 12;
+}
+
+// DigitalThread - Links requirement -> verification -> result -> reward
+message DigitalThread {
+  TraceableId requirement_id = 1;
+  TraceableId verification_case_id = 2;
+  TraceableId verification_result_id = 3;
+
+  // State snapshots
+  TraceableId api_state_before = 4;
+  TraceableId api_state_after = 5;
+
+  // UI trace (if UI verification)
+  repeated TraceableId ui_screenshots = 6;
+
+  // RLVR reward
+  float reward_outcome = 7;
+
+  // Timestamp of thread creation
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// --- Atropos Training Types ---
+
+// TrainingExample - A single training example for Atropos
+message TrainingExample {
+  TraceableId id = 1;
+
+  // Input scenario
+  string scenario_text = 2;
+
+  // Output trajectory
+  string agent_output = 3;
+
+  // Verification result
+  VerificationResult verification = 4;
+
+  // Digital thread for full provenance
+  DigitalThread thread = 5;
+
+  // Curriculum metadata
+  int32 difficulty_level = 6;
+  string domain = 7;  // "nifi", "metabase", etc.
+}
+
+// TrainingBatch - Collection of examples for batch training
+message TrainingBatch {
+  string batch_id = 1;
+  repeated TrainingExample examples = 2;
+
+  // Batch metadata
+  google.protobuf.Timestamp created_at = 3;
+  string source_engine_id = 4;  // Which engine generated this batch
+}

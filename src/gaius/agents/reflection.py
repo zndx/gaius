@@ -84,16 +84,16 @@ class Insight:
 
     def to_markdown(self) -> str:
         """Format as markdown."""
-        emoji = {
-            InsightType.SYNTHESIS: "🧩",
-            InsightType.GAP: "🕳️",
-            InsightType.QUESTION: "❓",
-            InsightType.EVOLUTION: "📈",
-            InsightType.CONFIDENCE: "🎯",
-            InsightType.RECOMMENDATION: "💡",
-        }.get(self.insight_type, "•")
+        indicator = {
+            InsightType.SYNTHESIS: "[SYNTH]",
+            InsightType.GAP: "[GAP]",
+            InsightType.QUESTION: "[?]",
+            InsightType.EVOLUTION: "[EVOL]",
+            InsightType.CONFIDENCE: "[CONF]",
+            InsightType.RECOMMENDATION: "[REC]",
+        }.get(self.insight_type, "[*]")
 
-        lines = [f"### {emoji} {self.title}"]
+        lines = [f"### {indicator} {self.title}"]
         lines.append(self.content)
 
         if self.related_entries:
@@ -270,7 +270,7 @@ class ReflectionAgent:
         Returns:
             Brief reflection paragraph
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Get relevant KB entries
         entries = await self._get_relevant_entries(topic)
@@ -295,13 +295,18 @@ Write 2-3 sentences that:
 Be direct and insightful."""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=150,
-                temperature=0.6,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 150,
+                    "temperature": 0.6,
+                },
             )
-            return response.content.strip()
+            return response.get("content", "").strip()
 
         except Exception as e:
             logger.warning(f"Quick thought failed: {e}")
@@ -321,7 +326,7 @@ Be direct and insightful."""
         Returns:
             Comparison result with shared patterns, unique aspects, connections
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         # Get entries from each domain
         entries1 = await self._get_domain_entries(domain1)
@@ -362,16 +367,21 @@ Format as JSON:
 }}"""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=600,
-                temperature=0.6,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 600,
+                    "temperature": 0.6,
+                },
             )
 
             import json
 
-            content = response.content.strip()
+            content = response.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -380,7 +390,7 @@ Format as JSON:
             result = json.loads(content)
             result["domain1"] = domain1
             result["domain2"] = domain2
-            result["model"] = response.model
+            result["model"] = response.get("model", "")
 
             return result
 
@@ -400,7 +410,7 @@ Format as JSON:
         Returns:
             Calibration with high/medium/low confidence areas
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         entries = await self._get_relevant_entries(topic, limit=20)
 
@@ -439,16 +449,21 @@ Format as JSON:
 }}"""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=500,
-                temperature=0.4,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 500,
+                    "temperature": 0.4,
+                },
             )
 
             import json
 
-            content = response.content.strip()
+            content = response.get("content", "").strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -457,7 +472,7 @@ Format as JSON:
             result = json.loads(content)
             result["topic"] = topic
             result["entry_count"] = len(entries)
-            result["model"] = response.model
+            result["model"] = response.get("model", "")
 
             return result
 
@@ -524,7 +539,7 @@ Format as JSON:
         depth: ReflectionDepth,
     ) -> dict[str, Any]:
         """Generate synthesis from context."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         entries = context.get("entries", [])
         if not entries:
@@ -564,17 +579,22 @@ Focus on:
 Be specific and insightful, not generic."""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=400 if depth == ReflectionDepth.DEEP else 200,
-                temperature=0.6,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 400 if depth == ReflectionDepth.DEEP else 200,
+                    "temperature": 0.6,
+                },
             )
 
             return {
-                "synthesis": response.content.strip(),
-                "model": response.model,
-                "tokens": response.usage.get("total_tokens", 0) if hasattr(response, "usage") else 0,
+                "synthesis": response.get("content", "").strip(),
+                "model": response.get("model", ""),
+                "tokens": response.get("input_tokens", 0) + response.get("output_tokens", 0),
             }
 
         except Exception as e:
@@ -587,7 +607,7 @@ Be specific and insightful, not generic."""
         synthesis: str,
     ) -> list[str]:
         """Generate questions worth exploring."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         domains = ", ".join(context.get("domains", [])) or "general"
 
@@ -607,15 +627,20 @@ Generate questions that:
 Return only the questions, one per line."""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=200,
-                temperature=0.7,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 200,
+                    "temperature": 0.7,
+                },
             )
 
             questions = []
-            for line in response.content.strip().split("\n"):
+            for line in response.get("content", "").strip().split("\n"):
                 line = line.strip()
                 if line and not line.startswith("#"):
                     # Clean up numbering
@@ -636,7 +661,7 @@ Return only the questions, one per line."""
         synthesis: str,
     ) -> str:
         """Assess confidence in current understanding."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         entry_count = len(context.get("entries", []))
         domains = context.get("domains", [])
@@ -657,14 +682,19 @@ Write 2-3 sentences about:
 Be specific and honest about limitations."""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=150,
-                temperature=0.4,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 150,
+                    "temperature": 0.4,
+                },
             )
 
-            return response.content.strip()
+            return response.get("content", "").strip()
 
         except Exception as e:
             logger.warning(f"Confidence assessment failed: {e}")
@@ -676,7 +706,7 @@ Be specific and honest about limitations."""
         result: ReflectionResult,
     ) -> list[str]:
         """Generate actionable recommendations."""
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         prompt = f"""Based on this reflection, suggest 2-3 actionable next steps.
 
@@ -694,15 +724,20 @@ Suggest concrete actions like:
 Return only the recommendations, one per line."""
 
         try:
-            client = get_client()
-            response = await client.complete(
-                [Message(role="user", content=prompt)],
-                max_tokens=150,
-                temperature=0.5,
+            client = await get_grpc_client()
+            response = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": 150,
+                    "temperature": 0.5,
+                },
             )
 
             recommendations = []
-            for line in response.content.strip().split("\n"):
+            for line in response.get("content", "").strip().split("\n"):
                 line = line.strip()
                 if line and not line.startswith("#"):
                     if line[0] in "-•*":

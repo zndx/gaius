@@ -26,6 +26,59 @@ from gaius.hx.tables import RAW_CONTENT_SCHEMA, create_raw_content_table
 from gaius.hx.writer import IcebergContentStore
 from gaius.hx.reader import IcebergContentReader
 from gaius.hx.exchange import ExchangeCapture, ExchangeRecord, get_exchange_capture
+from gaius.hx.evidence import EvidenceCapture, EvidenceRecord, get_evidence_capture
+from gaius.hx.bookmarks_tables import (
+    create_bookmarks_table,
+    get_bookmarks_table,
+    get_bookmarks_schema,
+    write_x_bookmarks_to_iceberg,
+)
+from gaius.hx.hf_tables import (
+    create_hf_datasets_table,
+    get_hf_datasets_table,
+    get_hf_datasets_schema,
+    build_hf_datasets_arrow_table,
+    hf_dataset_to_record,
+    create_hf_models_table,
+    get_hf_models_table,
+    get_hf_models_schema,
+    build_hf_models_arrow_table,
+    hf_model_to_record,
+    HFCapture,
+    get_hf_capture,
+)
+from gaius.hx.fmp import (
+    FMPExchangeCapture,
+    FMPExchangeRecord,
+    FMPEndpoint,
+    get_fmp_capture,
+)
+from gaius.hx.fmp_tables import (
+    create_fmp_exchange_table,
+    get_fmp_exchange_table,
+    get_fmp_exchange_schema,
+)
+from gaius.hx.edgar import (
+    EdgarFiling,
+    EdgarFilingSync,
+    SyncResult,
+    get_edgar_sync,
+    compute_content_hash,
+    normalize_accession_number,
+    # Legacy aliases
+    EdgarExchangeCapture,
+    EdgarExchangeRecord,
+    get_edgar_capture,
+)
+from gaius.hx.edgar_tables import (
+    create_edgar_filings_table,
+    get_edgar_filings_table,
+    get_edgar_filings_schema,
+    # Legacy aliases
+    create_edgar_exchange_table,
+    get_edgar_exchange_table,
+    get_edgar_exchange_schema,
+)
 
 __all__ = [
     # Config
@@ -47,4 +100,53 @@ __all__ = [
     "ExchangeCapture",
     "ExchangeRecord",
     "get_exchange_capture",
+    # Evidence Capture (RASE)
+    "EvidenceCapture",
+    "EvidenceRecord",
+    "get_evidence_capture",
+    # Bookmarks (multi-source)
+    "create_bookmarks_table",
+    "get_bookmarks_table",
+    "get_bookmarks_schema",
+    "write_x_bookmarks_to_iceberg",
+    # HuggingFace datasets
+    "create_hf_datasets_table",
+    "get_hf_datasets_table",
+    "get_hf_datasets_schema",
+    "build_hf_datasets_arrow_table",
+    "hf_dataset_to_record",
+    # HuggingFace models
+    "create_hf_models_table",
+    "get_hf_models_table",
+    "get_hf_models_schema",
+    "build_hf_models_arrow_table",
+    "hf_model_to_record",
+    # HuggingFace capture (two-phase fetch)
+    "HFCapture",
+    "get_hf_capture",
+    # FMP (Financial Modeling Prep) exchange capture
+    "FMPExchangeCapture",
+    "FMPExchangeRecord",
+    "FMPEndpoint",
+    "get_fmp_capture",
+    "create_fmp_exchange_table",
+    "get_fmp_exchange_table",
+    "get_fmp_exchange_schema",
+    # SEC EDGAR filing sync
+    "EdgarFiling",
+    "EdgarFilingSync",
+    "SyncResult",
+    "get_edgar_sync",
+    "compute_content_hash",
+    "normalize_accession_number",
+    "create_edgar_filings_table",
+    "get_edgar_filings_table",
+    "get_edgar_filings_schema",
+    # Legacy aliases
+    "EdgarExchangeCapture",
+    "EdgarExchangeRecord",
+    "get_edgar_capture",
+    "create_edgar_exchange_table",
+    "get_edgar_exchange_table",
+    "get_edgar_exchange_schema",
 ]

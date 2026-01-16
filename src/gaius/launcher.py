@@ -58,7 +58,7 @@ class SplashWidget(Static):
     def _tick(self) -> None:
         self.spinner_frame = (self.spinner_frame + 1) % len(SPINNER_FRAMES)
 
-    def render(self) -> Text:
+    def render(self) -> Text | Align:
         spinner = SPINNER_FRAMES[self.spinner_frame]
         logo_width = max(len(line) for line in GAIUS_LOGO.split('\n'))
 
@@ -123,7 +123,7 @@ class LauncherApp(App):
 
             splash.status = "Loading widgets..."
             from .widgets.grid import MainGrid
-            from .widgets.content import ContentPanel
+            from .widgets.info_panel import InfoPanel
 
             splash.status = "Loading telemetry..."
             from .core.telemetry import init_from_config as init_telemetry

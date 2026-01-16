@@ -509,7 +509,7 @@ class TriagePipeline:
         rows = await self.db.pool.fetch(query)
         return [ContentItem.from_row(dict(row)) for row in rows]
 
-    async def _save_heuristic_score(self, item_id: str, score: int):
+    async def _save_heuristic_score(self, item_id: int | None, score: int):
         """Save heuristic score to content item."""
         await self.db.pool.execute(
             """
@@ -521,7 +521,7 @@ class TriagePipeline:
             score,
         )
 
-    async def _save_llm_score(self, item_id: str, score: int):
+    async def _save_llm_score(self, item_id: int | None, score: int):
         """Save LLM quality score to content item."""
         await self.db.pool.execute(
             """
@@ -533,7 +533,7 @@ class TriagePipeline:
             score,
         )
 
-    async def _get_heuristic_score(self, item_id: str) -> int:
+    async def _get_heuristic_score(self, item_id: int | None) -> int:
         """Get heuristic score for an item."""
         row = await self.db.pool.fetchrow(
             "SELECT heuristic_score FROM content_items WHERE id = $1",
@@ -541,7 +541,7 @@ class TriagePipeline:
         )
         return row["heuristic_score"] if row else 0
 
-    async def _mark_summary_excluded(self, item_id: str, reason: str):
+    async def _mark_summary_excluded(self, item_id: int | None, reason: str):
         """Mark item as excluded from summary."""
         await self.db.pool.execute(
             """
@@ -556,7 +556,7 @@ class TriagePipeline:
 
     async def _create_assessment_record(
         self,
-        item_id: str,
+        item_id: int | None,
         assessment_type: str,
         score: int,
         details: dict,

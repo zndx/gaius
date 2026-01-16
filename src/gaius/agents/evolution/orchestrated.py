@@ -290,10 +290,10 @@ Be concise and decisive. The system should make steady progress without human in
 
             for gpu in monitor.get_all_gpu_health():
                 gpu_health.append({
-                    "index": gpu.index,
+                    "index": gpu.gpu_id,
                     "utilization": gpu.gpu_utilization_percent,
-                    "memory_used": gpu.memory_used_mb,
-                    "memory_total": gpu.memory_total_mb,
+                    "memory_used": gpu.vram_used_gb * 1024,  # Convert GB to MB
+                    "memory_total": gpu.vram_total_gb * 1024,  # Convert GB to MB
                     "temperature": gpu.temperature_c,
                 })
         except Exception as e:
@@ -302,7 +302,7 @@ Be concise and decisive. The system should make steady progress without human in
         try:
             from ...client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
+            # Engine Federation Architecture: endpoint status via engine gRPC
             if use_engine_proxy():
                 orch = await get_orchestrator_proxy()
                 status = await orch._get_status_async()
@@ -310,14 +310,11 @@ Be concise and decisive. The system should make steady progress without human in
                 for name, info in status.get("endpoints", {}).items():
                     endpoints_running[name] = info.get("status") == "healthy"
             else:
-                # Fallback to legacy
-                logger.warning("LEGACY_FALLBACK: _observe_system endpoint status bypassing engine - tech debt")
-                from ...inference.orchestrator import get_orchestrator
-                orch = get_orchestrator()
-                status = orch.get_status()
-
-                for name, info in status.get("endpoints", {}).items():
-                    endpoints_running[name] = info.get("status") == "healthy"
+                # Engine not available - cannot get authoritative endpoint status
+                logger.warning(
+                    "Engine not available (#GR.00000001.ENGINEOFF). "
+                    "Cannot get endpoint status. Start engine: devenv up gaius-engine"
+                )
         except Exception as e:
             logger.debug(f"Failed to get endpoint status: {e}")
 
@@ -343,8 +340,9 @@ Be concise and decisive. The system should make steady progress without human in
         agent_active_versions = {}
 
         try:
-            from ..swarm import SWARM_ROLES
-            available_agents = list(SWARM_ROLES.keys())
+            from ..roles import SWARM_ROLES
+            # Convert AgentRole enum keys to their string values
+            available_agents = [role.value.lower() for role in SWARM_ROLES.keys()]
         except Exception:
             available_agents = ["leader", "risk", "critic", "opportunity", "domain"]
 
@@ -352,9 +350,9 @@ Be concise and decisive. The system should make steady progress without human in
             from .collector import get_training_collector
             collector = get_training_collector()
 
-            for agent in available_agents:
-                examples = await collector.collect_examples(agent, max_examples=100)
-                agent_example_counts[agent] = len(examples)
+            for agent_id in available_agents:
+                examples = await collector.collect_examples(agent_id, max_examples=100)
+                agent_example_counts[agent_id] = len(examples)
         except Exception as e:
             logger.debug(f"Failed to get example counts: {e}")
 
@@ -363,9 +361,9 @@ Be concise and decisive. The system should make steady progress without human in
             from ...models.versioning import get_version_manager
             manager = get_version_manager()
 
-            for agent in available_agents:
-                version = await manager.get_active_version(agent)
-                agent_active_versions[agent] = version is not None
+            for agent_id in available_agents:
+                version = await manager.get_active_version(agent_id)
+                agent_active_versions[agent_id] = version is not None
         except Exception as e:
             logger.debug(f"Failed to check agent versions: {e}")
 
@@ -610,7 +608,10 @@ Be concise and decisive. The system should make steady progress without human in
 
         try:
             if decision.action == OrchestratorAction.OPTIMIZE_AGENT:
-                result = await self._execute_optimize(decision.target)
+                if decision.target is None:
+                    result = {"success": False, "error": "No target agent specified"}
+                else:
+                    result = await self._execute_optimize(decision.target)
 
             elif decision.action == OrchestratorAction.SKIP_AGENT:
                 result = {"success": True, "skipped": decision.target}
@@ -621,7 +622,10 @@ Be concise and decisive. The system should make steady progress without human in
                 result = {"success": True, "waited": wait_seconds}
 
             elif decision.action == OrchestratorAction.RESTART_ENDPOINT:
-                result = await self._execute_restart_endpoint(decision.target)
+                if decision.target is None:
+                    result = {"success": False, "error": "No target endpoint specified"}
+                else:
+                    result = await self._execute_restart_endpoint(decision.target)
 
             elif decision.action == OrchestratorAction.DIAGNOSE:
                 result = await self._execute_diagnose()
@@ -631,7 +635,10 @@ Be concise and decisive. The system should make steady progress without human in
                 result = {"success": True, "shutdown": True}
 
             elif decision.action == OrchestratorAction.COLLECT_EXAMPLES:
-                result = await self._execute_collect_examples(decision.target)
+                if decision.target is None:
+                    result = {"success": False, "error": "No target agent specified"}
+                else:
+                    result = await self._execute_collect_examples(decision.target)
 
             elif decision.action == OrchestratorAction.ADJUST_STRATEGY:
                 # Strategy adjustment is handled by the orchestrator's reasoning
@@ -679,26 +686,24 @@ Be concise and decisive. The system should make steady progress without human in
         }
 
     async def _execute_restart_endpoint(self, endpoint: str) -> dict:
-        """Restart a vLLM endpoint via engine."""
+        """Restart a vLLM endpoint via engine.
+
+        Engine Federation Architecture: endpoint restarts go through engine gRPC.
+        """
         try:
             from ...client.engine_proxy import get_orchestrator_proxy, use_engine_proxy
 
-            # Use engine client (agent-first architecture)
-            if use_engine_proxy():
-                orch = await get_orchestrator_proxy()
-                success = await orch.restart_endpoint(endpoint)
-                return {"success": success, "restarted": endpoint}
+            if not use_engine_proxy():
+                # Engine not available - fail-fast
+                return {
+                    "success": False,
+                    "error": "Engine not available (#GR.00000001.ENGINEOFF)",
+                    "remediation": "Start engine: devenv up gaius-engine",
+                }
 
-            # Fallback to legacy
-            logger.warning("LEGACY_FALLBACK: _execute_restart_endpoint bypassing engine - tech debt")
-            from ...inference.orchestrator import get_orchestrator
-
-            orch = get_orchestrator()
-            await orch.stop_endpoint(endpoint)
-            await asyncio.sleep(5)
-            await orch.start_endpoint(endpoint)
-
-            return {"success": True, "restarted": endpoint}
+            orch = await get_orchestrator_proxy()
+            success = await orch.restart_endpoint(endpoint)
+            return {"success": success, "restarted": endpoint}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -712,10 +717,10 @@ Be concise and decisive. The system should make steady progress without human in
             monitor = get_health_monitor()
 
             for gpu in monitor.get_all_gpu_health():
-                if gpu.memory_used_mb / gpu.memory_total_mb > 0.95:
-                    issues.append(f"GPU {gpu.index} memory critical")
+                if gpu.vram_percent > 95:
+                    issues.append(f"GPU {gpu.gpu_id} memory critical")
                 if gpu.temperature_c > 85:
-                    issues.append(f"GPU {gpu.index} temperature high")
+                    issues.append(f"GPU {gpu.gpu_id} temperature high")
         except Exception as e:
             issues.append(f"GPU health check failed: {e}")
 
@@ -741,44 +746,24 @@ Be concise and decisive. The system should make steady progress without human in
         """Collect more training examples for an agent.
 
         This is used when an agent doesn't have enough examples for optimization.
-        It synthesizes examples by running the agent on held-out queries.
+        Uses the existing collector to gather examples from various sources
+        (swarm runs, cognition thoughts, research outputs).
         """
         try:
             from .collector import get_training_collector
 
             collector = get_training_collector()
 
-            # Try to collect examples from various sources
-            collected = 0
-
-            # 1. Run agent on held-out queries to generate examples
-            try:
-                from ...models.held_out import get_held_out_pool
-
-                pool = get_held_out_pool()
-                queries = pool.sample(5)  # Get 5 random held-out queries
-
-                for query in queries:
-                    try:
-                        # Generate an example by running the agent
-                        example = await collector.generate_example(
-                            agent_id,
-                            query.input_prompt,
-                            context=query.context,
-                        )
-                        if example:
-                            await collector.save_example(agent_id, example)
-                            collected += 1
-                    except Exception as e:
-                        logger.debug(f"Failed to generate example: {e}")
-
-            except Exception as e:
-                logger.debug(f"Held-out pool not available: {e}")
+            # Collect examples from existing high-quality interactions
+            examples = await collector.collect_examples(
+                agent_id=agent_id,
+                max_examples=10,
+            )
 
             return {
-                "success": collected > 0,
+                "success": len(examples) > 0,
                 "agent_id": agent_id,
-                "examples_collected": collected,
+                "examples_collected": len(examples),
             }
 
         except Exception as e:

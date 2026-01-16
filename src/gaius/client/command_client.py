@@ -20,7 +20,7 @@ from ..engine.generated import (
     ReindexRequest,
     ReindexResponse,
     ReindexProgress,
-    GaiusServiceStub,
+    GaiusServiceAsyncStub,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ class CommandClient:
             print(f"{status.phase.name}: {status.progress:.0%}")
     """
 
-    def __init__(self, channel: aio.Channel, stub: GaiusServiceStub):
+    def __init__(self, channel: aio.Channel, stub: GaiusServiceAsyncStub):
         self._channel = channel
         self._stub = stub
         self._client_id = "command-client"
@@ -229,7 +229,7 @@ class CommandClient:
 
     async def close(self) -> None:
         """Close the client connection."""
-        await self._channel.close()
+        await self._channel.close(grace=None)
 
 
 # Singleton instance
@@ -255,7 +255,7 @@ async def get_command_client(
     async with _client_lock:
         if _command_client is None:
             channel = aio.insecure_channel(f"{host}:{port}")
-            stub = GaiusServiceStub(channel)
+            stub = GaiusServiceAsyncStub(channel)
             _command_client = CommandClient(channel, stub)
             logger.info(f"Created CommandClient connected to {host}:{port}")
 

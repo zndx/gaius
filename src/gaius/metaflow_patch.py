@@ -33,12 +33,12 @@ def patch_service_provider():
         return
 
     try:
-        from metaflow.plugins.metadata_providers.service import (
+        from metaflow.plugins.metadata_providers.service import (  # type: ignore[import-untyped] - metaflow lacks type stubs
             ServiceMetadataProvider,
-            ServiceException,
         )
+        from metaflow.plugins.metadata_providers.service import ServiceException  # type: ignore[attr-defined] - ServiceException exists but not in stubs
         from metaflow.exception import MetaflowInternalError
-        from metaflow.metaflow_config import SERVICE_HEADERS, SERVICE_RETRY_COUNT
+        from metaflow.metaflow_config import SERVICE_HEADERS, SERVICE_RETRY_COUNT  # type: ignore[import-untyped] - metaflow lacks type stubs
     except ImportError:
         logger.warning("Could not import metaflow service provider, patch not applied")
         return
@@ -198,7 +198,7 @@ def patch_service_provider():
 def patch_heartbeat():
     """Patch MetadataHeartBeat._heartbeat to be more tolerant of 404s."""
     try:
-        from metaflow.metadata_provider.heartbeat import MetadataHeartBeat, HeartBeatException
+        from metaflow.metadata_provider.heartbeat import MetadataHeartBeat, HeartBeatException  # type: ignore[import-untyped] - metaflow lacks type stubs
     except ImportError:
         logger.warning("Could not import heartbeat module, patch not applied")
         return

@@ -55,6 +55,12 @@ class OptimizationObjective(Enum):
     SAFETY = "safety"  # Absence of harmful content
     CONSISTENCY = "consistency"  # Reproducibility across runs
 
+    # Technique-aware objectives (for full-stack optimization)
+    LATENCY = "latency"  # Response time (lower is better, normalized)
+    TOKEN_EFFICIENCY = "token_efficiency"  # Quality per token
+    GATE_PASS_RATE = "gate_pass_rate"  # Validation gate success rate
+    VERBALIZATION_RATIO = "verbalization_ratio"  # Ontology verbalization %
+
 
 @dataclass
 class TaskExample:
@@ -75,6 +81,10 @@ class CandidateConfig:
     temperature: float
     model: str
 
+    # optillm technique support (for full-stack optimization)
+    technique: str = ""  # optillm technique (cot_reflection, bon, moa, etc.)
+    technique_params: dict[str, Any] = field(default_factory=dict)  # e.g., {"n": 5} for BON
+
     # Single-objective scores (APO)
     scores: list[float] = field(default_factory=list)
     avg_score: float = 0.0
@@ -84,8 +94,13 @@ class CandidateConfig:
     is_pareto_optimal: bool = False
     pareto_rank: int = 0  # 0 = Pareto front, 1 = dominated by rank 0, etc.
 
+    # Performance metrics (for Pareto optimization)
+    latency_ms: int = 0
+    tokens_used: int = 0
+    token_efficiency: float = 0.0  # quality / tokens
+
     # Metadata
-    generation_method: str = ""  # "mutation", "crossover", "bootstrap"
+    generation_method: str = ""  # "mutation", "crossover", "bootstrap", "technique"
     parent_configs: list[str] = field(default_factory=list)
     generation: int = 0  # Which generation this was created in
 
@@ -158,7 +173,7 @@ def compute_pareto_ranks(candidates: list[CandidateConfig]) -> None:
         rank += 1
 
 
-def crowding_distance(candidates: list[CandidateConfig], objectives: list[OptimizationObjective]) -> dict[str, float]:
+def crowding_distance(candidates: list[CandidateConfig], objectives: list[OptimizationObjective]) -> dict[int, float]:
     """Compute crowding distance for diversity preservation.
 
     Used to select among Pareto-equivalent solutions.
@@ -233,9 +248,18 @@ class OptimizationResult:
     iteration: int = 0
     notes: str = ""
 
-    def best_for_objective(self, objective: OptimizationObjective) -> CandidateConfig | None:
-        """Get the Pareto-optimal config best for a specific objective."""
+    def best_for_objective(self, objective: OptimizationObjective) -> CandidateConfig:
+        """Get the Pareto-optimal config best for a specific objective.
+
+        Raises:
+            RuntimeError: If no config available for the objective
+        """
         if not self.pareto_front:
+            if self.best_config is None:
+                raise RuntimeError(
+                    f"No config available for objective {objective.name}\n"
+                    f"  Guru Meditation: #OPT.00000001.NOCONFIG"
+                )
             return self.best_config
 
         best = None
@@ -246,6 +270,11 @@ class OptimizationResult:
                 best_score = score
                 best = config
 
+        if best is None:
+            raise RuntimeError(
+                f"No config in pareto_front for objective {objective.name}\n"
+                f"  Guru Meditation: #OPT.00000002.NOPARETOCONFIG"
+            )
         return best
 
 
@@ -423,6 +452,154 @@ class AgentOptimizer:
             iteration=iteration + 1,
         )
 
+    async def optimize_with_techniques(
+        self,
+        agent_id: str,
+        task_examples: list[TaskExample],
+        num_iterations: int = 5,
+        candidates_per_iter: int = 6,
+        objectives: list[OptimizationObjective] | None = None,
+    ) -> OptimizationResult:
+        """Full-stack GEPA optimization with joint technique search using Pareto.
+
+        Jointly optimizes:
+        - System prompt (via GEPA bootstrap)
+        - Temperature
+        - optillm technique (cot_reflection, bon, moa, etc.)
+        - Technique parameters (e.g., n=5 for BON)
+
+        Uses Pareto multi-objective optimization considering:
+        - Accuracy (primary quality metric)
+        - Latency (lower is better)
+        - Token efficiency (quality per ktok)
+
+        Args:
+            agent_id: Agent to optimize
+            task_examples: Examples to evaluate against
+            num_iterations: Number of optimization iterations
+            candidates_per_iter: Candidates generated per iteration
+            objectives: Objectives to optimize (default: accuracy, latency, token_efficiency)
+
+        Returns:
+            OptimizationResult with Pareto front of non-dominated configs
+        """
+        import time
+        start = time.perf_counter()
+
+        if objectives is None:
+            objectives = [
+                OptimizationObjective.ACCURACY,
+                OptimizationObjective.LATENCY,
+                OptimizationObjective.TOKEN_EFFICIENCY,
+            ]
+
+        # Get current config
+        from .versioning import get_version_manager, AgentConfig
+        manager = get_version_manager()
+
+        current_version = await manager.get_active_version(agent_id)
+        if current_version is None:
+            return OptimizationResult(
+                success=False,
+                notes=f"No active version found for agent {agent_id}",
+            )
+
+        baseline_config = CandidateConfig(
+            system_prompt=current_version.config.system_prompt,
+            temperature=current_version.config.temperature,
+            model=current_version.config.model,
+            technique=current_version.config.optillm_technique or "",
+            technique_params=current_version.config.technique_params or {},
+        )
+
+        # Evaluate baseline
+        baseline_scores = await self._evaluate_config(baseline_config, task_examples)
+        baseline_config.scores = baseline_scores
+        baseline_config.avg_score = sum(baseline_scores) / len(baseline_scores) if baseline_scores else 0.0
+
+        # Populate objective scores for baseline
+        baseline_config.objective_scores = {
+            OptimizationObjective.ACCURACY: baseline_config.avg_score,
+            OptimizationObjective.LATENCY: 1.0 - min(baseline_config.latency_ms / 60000, 1.0),
+            OptimizationObjective.TOKEN_EFFICIENCY: min(baseline_config.token_efficiency / 10.0, 1.0),
+        }
+
+        all_candidates = [baseline_config]
+        best = baseline_config
+        total_evals = len(task_examples)
+
+        for iteration in range(num_iterations):
+            # Generate diverse candidates (2 each: prompt, technique, hybrid)
+            prompt_candidates = await self._generate_gepa_candidates(
+                best, task_examples, max(1, candidates_per_iter // 3)
+            )
+            technique_candidates = await self._generate_technique_candidates(
+                best, max(1, candidates_per_iter // 3)
+            )
+            hybrid_candidates = await self._generate_hybrid_candidates(
+                best, task_examples, candidates_per_iter - len(prompt_candidates) - len(technique_candidates)
+            )
+
+            new_candidates = prompt_candidates + technique_candidates + hybrid_candidates
+
+            # Evaluate all candidates
+            for candidate in new_candidates:
+                scores = await self._evaluate_config(candidate, task_examples)
+                candidate.scores = scores
+                candidate.avg_score = sum(scores) / len(scores) if scores else 0.0
+                total_evals += len(task_examples)
+
+                # Populate objective scores for Pareto
+                candidate.objective_scores = {
+                    OptimizationObjective.ACCURACY: candidate.avg_score,
+                    OptimizationObjective.LATENCY: 1.0 - min(candidate.latency_ms / 60000, 1.0),
+                    OptimizationObjective.TOKEN_EFFICIENCY: min(candidate.token_efficiency / 10.0, 1.0),
+                }
+
+            all_candidates.extend(new_candidates)
+
+            # Compute Pareto front and ranks
+            pareto_front = compute_pareto_front(all_candidates)
+            compute_pareto_ranks(all_candidates)
+
+            # Select best from Pareto front for next iteration
+            # Prefer accuracy when ranks are equal
+            if pareto_front:
+                best = max(
+                    pareto_front,
+                    key=lambda c: c.objective_scores.get(OptimizationObjective.ACCURACY, 0.0)
+                )
+
+        latency_ms = int((time.perf_counter() - start) * 1000)
+
+        # Final Pareto front
+        pareto_front = compute_pareto_front(all_candidates)
+
+        # Calculate improvement from baseline
+        best_accuracy = max(
+            (c.objective_scores.get(OptimizationObjective.ACCURACY, 0.0) for c in pareto_front),
+            default=0.0
+        )
+        baseline_accuracy = baseline_config.objective_scores.get(OptimizationObjective.ACCURACY, 0.0)
+        improvement = ((best_accuracy - baseline_accuracy) / max(baseline_accuracy, 0.01)) * 100
+
+        return OptimizationResult(
+            success=len(pareto_front) > 0,
+            improvement_percent=improvement,
+            num_candidates=len(all_candidates),
+            best_candidate_score=best_accuracy,
+            baseline_score=baseline_accuracy,
+            best_config=best,
+            pareto_front=pareto_front,
+            total_evaluations=total_evals,
+            latency_ms=latency_ms,
+            strategy=OptimizationStrategy.GEPA,
+            generations=num_iterations,
+            objectives_evaluated=objectives,
+            baseline_objectives=baseline_config.objective_scores,
+            notes=f"Full-stack Pareto optimization: {len(pareto_front)} non-dominated solutions",
+        )
+
     async def _generate_apo_candidates(
         self,
         base_config: CandidateConfig,
@@ -432,10 +609,10 @@ class AgentOptimizer:
 
         Uses local reasoning model to propose prompt improvements.
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         candidates = []
-        client = get_client()
+        client = await get_grpc_client()
 
         # Generate prompt variations
         for i in range(num_candidates):
@@ -463,13 +640,18 @@ Requirements:
 
 Output ONLY the new system prompt, nothing else."""
 
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                temperature=0.8,  # Higher for diversity
-                max_tokens=2048,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "temperature": 0.8,  # Higher for diversity
+                    "max_tokens": 2048,
+                },
             )
 
-            new_prompt = result.content.strip()
+            new_prompt = result.get("content", "").strip()
             if new_prompt.startswith("```"):
                 new_prompt = new_prompt.split("```")[1].strip()
 
@@ -497,10 +679,10 @@ Output ONLY the new system prompt, nothing else."""
 
         Learns from examples to construct better prompts.
         """
-        from ..inference import get_client, Message
+        from gaius.client import get_grpc_client
 
         candidates = []
-        client = get_client()
+        client = await get_grpc_client()
 
         # Bootstrap: analyze successful patterns from examples
         example_analysis = []
@@ -560,13 +742,18 @@ Current system prompt:
 Add explicit criteria/guidelines to the system prompt based on patterns in the examples.
 Output ONLY the new system prompt."""
 
-            result = await client.complete(
-                [Message(role="user", content=prompt)],
-                temperature=0.7,
-                max_tokens=2048,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "temperature": 0.7,
+                    "max_tokens": 2048,
+                },
             )
 
-            new_prompt = result.content.strip()
+            new_prompt = result.get("content", "").strip()
             if new_prompt.startswith("```"):
                 new_prompt = new_prompt.split("```")[1].strip()
 
@@ -579,6 +766,100 @@ Output ONLY the new system prompt."""
             ))
 
         return candidates
+
+    # Technique configurations for optillm
+    TECHNIQUE_CONFIGS: list[tuple[str, dict[str, Any]]] = [
+        ("", {}),                      # Passthrough (no technique)
+        ("cot_reflection", {}),        # Chain-of-Thought with reflection
+        ("bon", {"n": 3}),             # Best of 3
+        ("bon", {"n": 5}),             # Best of 5
+        ("moa", {}),                   # Mixture of Agents
+        ("self_consistency", {}),      # Self-consistency
+        ("plansearch", {}),            # Plan-based search
+        ("re2", {}),                   # Re-reading
+    ]
+
+    async def _generate_technique_candidates(
+        self,
+        base_config: CandidateConfig,
+        num_candidates: int,
+    ) -> list[CandidateConfig]:
+        """Generate candidates exploring technique space.
+
+        Creates variations by changing the optillm technique while keeping
+        the prompt relatively stable. This enables full-stack optimization
+        that jointly explores prompt AND inference strategy.
+        """
+        candidates = []
+
+        for i in range(num_candidates):
+            tech, params = random.choice(self.TECHNIQUE_CONFIGS)
+
+            # Small temperature variation
+            temp_variation = base_config.temperature + random.uniform(-0.1, 0.1)
+            temp_variation = max(0.1, min(1.0, temp_variation))
+
+            candidates.append(CandidateConfig(
+                system_prompt=base_config.system_prompt,
+                temperature=temp_variation,
+                model=base_config.model,
+                technique=tech,
+                technique_params=params.copy(),
+                generation_method="technique_variation",
+                parent_configs=[f"technique_{tech or 'passthrough'}"],
+            ))
+
+        return candidates
+
+    async def _generate_hybrid_candidates(
+        self,
+        base_config: CandidateConfig,
+        examples: list[TaskExample],
+        num_candidates: int,
+    ) -> list[CandidateConfig]:
+        """Generate hybrid candidates that vary both prompt AND technique.
+
+        Combines GEPA prompt optimization with technique exploration
+        for true full-stack optimization.
+        """
+        candidates = []
+
+        # Generate some prompt variations
+        prompt_candidates = await self._generate_gepa_candidates(
+            base_config, examples, max(1, num_candidates // 2)
+        )
+
+        # Apply random techniques to each prompt variant
+        for prompt_candidate in prompt_candidates:
+            tech, params = random.choice(self.TECHNIQUE_CONFIGS)
+
+            candidates.append(CandidateConfig(
+                system_prompt=prompt_candidate.system_prompt,
+                temperature=prompt_candidate.temperature,
+                model=prompt_candidate.model,
+                technique=tech,
+                technique_params=params.copy(),
+                generation_method="hybrid_prompt_technique",
+                parent_configs=[
+                    prompt_candidate.generation_method,
+                    f"technique_{tech or 'passthrough'}",
+                ],
+            ))
+
+        # Fill remaining with pure technique variations
+        while len(candidates) < num_candidates:
+            tech, params = random.choice(self.TECHNIQUE_CONFIGS)
+            candidates.append(CandidateConfig(
+                system_prompt=base_config.system_prompt,
+                temperature=base_config.temperature + random.uniform(-0.1, 0.1),
+                model=base_config.model,
+                technique=tech,
+                technique_params=params.copy(),
+                generation_method="hybrid_technique_fill",
+                parent_configs=[f"technique_{tech or 'passthrough'}"],
+            ))
+
+        return candidates[:num_candidates]
 
     async def _evaluate_config(
         self,
@@ -593,24 +874,44 @@ Output ONLY the new system prompt."""
         Key change from previous version:
         - Empty outputs score 0.0 (not default 0.5)
         - Uses engine infrastructure instead of direct client
+        - Supports optillm technique routing via model name prefix
         """
+        import time
         from ..agents.evolution.runner import get_runner
         from ..models.versioning import AgentConfig
 
         runner = await get_runner()
         scores = []
+        total_latency = 0
+        total_tokens = 0
+
+        # Determine effective model name with technique prefix
+        effective_model = config.model
+        if config.technique:
+            effective_model = f"{config.technique}-{config.model}"
 
         # Create AgentConfig from CandidateConfig
         agent_config = AgentConfig(
             system_prompt=config.system_prompt,
             temperature=config.temperature,
-            model=config.model,
+            model=effective_model,
             max_tokens=1024,
+            optillm_technique=config.technique,
+            technique_params=config.technique_params,
         )
 
         for example in examples:
+            start = time.perf_counter()
+
             # Generate output with candidate config via engine
             result = await runner.invoke(agent_config, example.input_prompt)
+
+            latency = (time.perf_counter() - start) * 1000
+            total_latency += latency
+
+            # Estimate token usage (rough approximation)
+            if result.success and result.content:
+                total_tokens += len(result.content.split()) * 1.3  # ~1.3 tokens per word
 
             # CRITICAL: Empty output = score 0.0 (not 0.5)
             if not result.success or not result.content.strip():
@@ -622,6 +923,13 @@ Output ONLY the new system prompt."""
             # Score the output
             score = await self._score_output(output, example)
             scores.append(score)
+
+        # Store metrics for Pareto optimization
+        config.latency_ms = int(total_latency)
+        config.tokens_used = int(total_tokens)
+        if total_tokens > 0 and scores:
+            avg_score = sum(scores) / len(scores)
+            config.token_efficiency = avg_score / (total_tokens / 1000)  # quality per ktok
 
         return scores
 
@@ -765,24 +1073,27 @@ Output ONLY the new system prompt."""
             # No xAI API key, skip
             return config.avg_score
 
-        from ..inference import get_client, Message
-        client = get_client()
+        from gaius.client import get_grpc_client
+        client = await get_grpc_client()
 
         scores = []
         for example in examples[:3]:  # Limit frontier calls
             # Generate output
-            result = await client.complete(
-                [
-                    Message(role="system", content=config.system_prompt),
-                    Message(role="user", content=example.input_prompt),
-                ],
-                temperature=config.temperature,
-                max_tokens=1024,
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": example.input_prompt,
+                    "system_prompt": config.system_prompt,
+                    "agent": "instruct",
+                    "temperature": config.temperature,
+                    "max_tokens": 1024,
+                },
             )
 
             # Evaluate with frontier
             eval_result = await evaluator.evaluate(
-                agent_output=result.content,
+                agent_output=result.get("content", ""),
                 task_prompt=example.input_prompt,
                 context=example.context,
                 dimensions=[

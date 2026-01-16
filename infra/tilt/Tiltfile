@@ -29,9 +29,10 @@ DEVENV_MINIO_HOST = "devenv-minio"
 DEVENV_MINIO_PORT = "9010"
 
 # Metaflow configuration
+# Port mapping: Metaflow uses 9xxx range to avoid conflicts with Gaius vLLM (8080-8089)
 metaflow_config = {
     "METAFLOW_DEFAULT_METADATA": "service",
-    "METAFLOW_SERVICE_URL": "http://localhost:8080",
+    "METAFLOW_SERVICE_URL": "http://localhost:9080",  # Remapped from 8080
     "METAFLOW_SERVICE_INTERNAL_URL": "http://metaflow-service.default.svc.cluster.local:8080",
     "METAFLOW_DEFAULT_DATASTORE": "s3",
     "METAFLOW_DATASTORE_SYSROOT_S3": "s3://metaflow-artifacts/metaflow",
@@ -80,8 +81,8 @@ helm_remote(
 
 k8s_resource(
     'metaflow-service',
-    port_forwards=['8080:8080'],
-    links=[link('http://localhost:8080/ping', 'Metaflow Service Health')],
+    port_forwards=['9080:8080'],  # Remap to 9080 to avoid vLLM conflict
+    links=[link('http://localhost:9080/ping', 'Metaflow Service Health')],
     labels=['metaflow'],
     resource_deps=['devenv-postgres'],
 )
@@ -106,7 +107,7 @@ k8s_resource(
 
 k8s_resource(
     'metaflow-ui',
-    port_forwards=['8083:8083'],
+    port_forwards=['9083:8083'],  # Remap to 9083 to avoid vLLM conflict
     labels=['metaflow-ui'],
     resource_deps=['devenv-postgres', 'devenv-minio'],
 )
@@ -170,9 +171,10 @@ local_resource(
     sleep 1
 
     # Start external port-forwards for Metaflow UI
-    kubectl port-forward --address 0.0.0.0 svc/metaflow-ui 8083:8083 &
+    # Using 9xxx range to avoid conflicts with Gaius vLLM (8080-8089)
+    kubectl port-forward --address 0.0.0.0 svc/metaflow-ui 9083:8083 &
     kubectl port-forward --address 0.0.0.0 svc/metaflow-ui-static 3000:3000 &
-    kubectl port-forward --address 0.0.0.0 svc/metaflow-service 8080:8080 &
+    kubectl port-forward --address 0.0.0.0 svc/metaflow-service 9080:8080 &
 
     # Keep alive
     wait
@@ -191,17 +193,23 @@ if config.tilt_subcommand == 'up':
     print("  Gaius Metaflow Development Environment")
     print("========================================")
     print("")
-    print("Services:")
-    print("  Metaflow Service: http://localhost:8080")
+    print("Services (remapped to 9xxx to avoid vLLM conflicts):")
+    print("  Metaflow Service: http://localhost:9080")
     print("  Metaflow UI:      http://localhost:3000")
+    print("  Metaflow API:     http://localhost:9083")
     print("  Argo Workflows:   http://localhost:2746")
     print("")
     print("External Access (LAN):")
-    print("  Metaflow Service: http://<host-ip>:8080")
+    print("  Metaflow Service: http://<host-ip>:9080")
     print("  Metaflow UI:      http://<host-ip>:3000")
-    print("  API Backend:      http://<host-ip>:8083")
+    print("  API Backend:      http://<host-ip>:9083")
     print("")
     print("Devenv (host):")
     print("  PostgreSQL:       localhost:5438")
     print("  MinIO:            localhost:9010")
+    print("")
+    print("Port Allocation (no conflicts):")
+    print("  8000-8009: optillm proxy")
+    print("  8080-8089: Gaius vLLM endpoints")
+    print("  9080-9089: Metaflow/Tilt")
     print("")

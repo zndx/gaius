@@ -28,7 +28,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel, Field
 
-from gaius.rase.traceability import TraceableId, DigitalThread
+from gaius.rase.traceability import TraceableId, DigitalThread, IdScheme
 from gaius.rase.ssm import NiFiInstance, Constraint, ConstraintResult
 from gaius.rase.uom import TraceOfMarks, ScreenshotWithSoM
 from .requirements import ScenarioRequirement, StepRequirement
@@ -289,7 +289,7 @@ class NiFiOracle(Oracle):
         if trace is not None:
             # UI verification (checks trace + final state)
             case = UIVerificationCase(
-                id=TraceableId.generate(scheme="rase", prefix="verify"),
+                id=TraceableId.generate(scheme=IdScheme.RASE, prefix="verify"),
                 name=f"Verify_{scenario.name}",
                 objective=VerificationObjective(
                     requirement_ids=[scenario.id],
@@ -300,7 +300,7 @@ class NiFiOracle(Oracle):
         else:
             # API-only verification
             case = APIVerificationCase(
-                id=TraceableId.generate(scheme="rase", prefix="verify"),
+                id=TraceableId.generate(scheme=IdScheme.RASE, prefix="verify"),
                 name=f"Verify_{scenario.name}",
                 objective=VerificationObjective(
                     requirement_ids=[scenario.id],
@@ -324,7 +324,7 @@ class NiFiOracle(Oracle):
             result = constraint.evaluate(state_before)
             if not result.satisfied:
                 return ConstraintResult(
-                    constraint_id=step.id,
+                    constraint_name=str(step.id),
                     satisfied=False,
                     message=f"Precondition not met: {result.message}",
                 )
@@ -334,7 +334,7 @@ class NiFiOracle(Oracle):
             result = constraint.evaluate(state_after)
             if not result.satisfied:
                 return ConstraintResult(
-                    constraint_id=step.id,
+                    constraint_name=str(step.id),
                     satisfied=False,
                     message=f"Postcondition not met: {result.message}",
                 )
@@ -344,13 +344,13 @@ class NiFiOracle(Oracle):
             result = constraint.evaluate(state_before, state_after)
             if not result.satisfied:
                 return ConstraintResult(
-                    constraint_id=step.id,
+                    constraint_name=str(step.id),
                     satisfied=False,
                     message=f"Transition failed: {result.message}",
                 )
 
         return ConstraintResult(
-            constraint_id=step.id,
+            constraint_name=str(step.id),
             satisfied=True,
             message="Step verified successfully",
         )
@@ -482,7 +482,7 @@ class EnsembleOracle(Oracle):
 
         return VerificationResult(
             case_id=results[0].case_id if results else TraceableId.generate(
-                scheme="rase", prefix="ensemble"
+                scheme=IdScheme.RASE, prefix="ensemble"
             ),
             verdict=combined_verdict,
             accuracy=avg_accuracy,

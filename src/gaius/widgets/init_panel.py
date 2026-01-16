@@ -33,8 +33,11 @@ from rich.panel import Panel
 from rich.progress import Progress, BarColumn, TextColumn, TaskID
 from rich.text import Text
 
+from ..engine.generated.gaius_service_pb2 import InitEvent
+
 from textual.widget import Widget
 from textual.reactive import reactive
+from textual.message import Message
 
 from ..core.state import AppState, InitializationState, EndpointInitProgress
 
@@ -53,6 +56,16 @@ class InitPanel(Widget):
     Auto-hides when initialization completes.
     """
 
+    class XBAuthCompleted(Message):
+        """Posted when XB OAuth authentication completes.
+
+        This message bubbles up to the app to dismiss the QR code modal.
+        """
+
+        def __init__(self, username: str) -> None:
+            self.username = username
+            super().__init__()
+
     DEFAULT_CSS = """
     InitPanel {
         width: 40;
@@ -67,6 +80,9 @@ class InitPanel(Widget):
 
     # Reactive to trigger refresh when init state changes
     init_progress = reactive(0.0)
+
+    # Reactive for XB countdown timer (triggers refresh every second)
+    xb_countdown_seconds = reactive(0)
 
     # Poll interval for gRPC stream (seconds)
     POLL_INTERVAL = 0.5
@@ -116,7 +132,7 @@ class InitPanel(Widget):
 
         # Paused indicator
         if init_state.is_paused:
-            lines.append(Text("⏸ PAUSED (user request)", style="yellow"))
+            lines.append(Text("[=] PAUSED (user request)", style="yellow"))
 
         # Error message
         if init_state.error:
@@ -137,6 +153,52 @@ class InitPanel(Widget):
         else:
             lines.append(Text("  (awaiting endpoint list)", style="dim"))
 
+        # ── X Bookmarks Status Section (always show) ──
+        lines.append(Text(""))
+        lines.append(Text("X Bookmarks", style="bold cyan"))
+        lines.append(Text("-" * 36, style="dim"))
+
+        # Auth status: shows authenticated user or auth needed
+        auth_line = Text()
+        auth_line.append("  Auth: ", style="dim")
+        if init_state.xb_authenticated and init_state.xb_username:
+            # Show username - TOKEN_EXPIRING is just a warning, token still works
+            if init_state.xb_action_required == "TOKEN_EXPIRED":
+                # Token actually expired - reauth required
+                auth_line.append("reauth needed", style="yellow")
+            elif init_state.xb_action_required == "TOKEN_EXPIRING":
+                # Token expiring soon - show username with warning
+                auth_line.append(f"@{init_state.xb_username}", style="yellow")
+            else:
+                # Token is healthy
+                auth_line.append(f"@{init_state.xb_username}", style="green")
+        elif init_state.xb_action_required:
+            # Not authenticated - show specific action needed
+            action_display = {
+                "NOT_AUTHENTICATED": "auth needed",
+                "TOKEN_EXPIRED": "reauth needed",
+            }.get(init_state.xb_action_required, init_state.xb_action_required.lower())
+            auth_line.append(action_display, style="yellow")
+        else:
+            auth_line.append("auth needed", style="yellow")
+        lines.append(auth_line)
+
+        # Queue depth (only show if items pending)
+        if init_state.xb_queue_depth > 0:
+            queue_line = Text()
+            queue_line.append("  Queue: ", style="dim")
+            queue_line.append(f"{init_state.xb_queue_depth}", style="white")
+            queue_line.append(" pending", style="dim")
+            lines.append(queue_line)
+
+        # Cooldown timer (only show if active)
+        if init_state.xb_cooldown_end and self.xb_countdown_seconds > 0:
+            mins, secs = divmod(self.xb_countdown_seconds, 60)
+            timer_line = Text()
+            timer_line.append("  Cooldown: ", style="dim")
+            timer_line.append(f"{mins:02d}:{secs:02d}", style="yellow")
+            lines.append(timer_line)
+
         # Padding
         while len(lines) < 15:
             lines.append(Text(""))
@@ -148,6 +210,10 @@ class InitPanel(Widget):
             conn_line.append("● ", style="bold green")
             conn_line.append("gRPC: ", style="cyan")
             conn_line.append("connected", style="green")
+        elif init_state.phase == "reconnecting":
+            conn_line.append("◌ ", style="yellow")
+            conn_line.append("gRPC: ", style="yellow")
+            conn_line.append("reconnecting", style="yellow")
         else:
             conn_line.append("○ ", style="dim")
             conn_line.append("gRPC: ", style="dim")
@@ -165,6 +231,9 @@ class InitPanel(Widget):
         if init_state.is_ready:
             border_style = "green"
             title = "[bold green]✓[/bold green] [bold]Init[/bold]"
+        elif init_state.phase == "reconnecting":
+            border_style = "yellow"
+            title = "[bold yellow]◌[/bold yellow] [bold]Init[/bold]"
         elif init_state.error:
             border_style = "red"
             title = "[bold red]✗[/bold red] [bold]Init[/bold]"
@@ -198,6 +267,15 @@ class InitPanel(Widget):
 
         return bar
 
+    def _friendly_endpoint_name(self, name: str) -> str:
+        """Convert internal endpoint name to user-friendly display name.
+
+        Strips internal prefixes like 'cap_' that are implementation details.
+        """
+        if name.startswith("cap_"):
+            return name[4:]  # Remove "cap_" prefix
+        return name
+
     def _render_endpoint(self, name: str, ep: EndpointInitProgress) -> Text:
         """Render a single endpoint status line."""
         line = Text()
@@ -213,8 +291,9 @@ class InitPanel(Widget):
         icon, style = status_icons.get(ep.status, ("? ", "dim"))
         line.append(icon, style=style)
 
-        # Name (truncated)
-        name_display = name[:12].ljust(12)
+        # Name (truncated) - use friendly name for display
+        friendly_name = self._friendly_endpoint_name(name)
+        name_display = friendly_name[:12].ljust(12)
         line.append(name_display, style="white")
 
         # Mini progress bar or status
@@ -255,13 +334,35 @@ class InitPanel(Widget):
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        """Start the gRPC stream when mounted."""
+        """Start the gRPC stream and countdown timer when mounted."""
         self._stream_task = asyncio.create_task(self._connect_init_stream())
+        # Start 1-second countdown timer for XB cooldown display
+        self.set_interval(1.0, self._tick_xb_countdown)
 
     def on_unmount(self) -> None:
         """Clean up the stream task."""
         if self._stream_task:
             self._stream_task.cancel()
+
+    def _tick_xb_countdown(self) -> None:
+        """Decrement XB countdown timer and refresh display.
+
+        Called every second by set_interval. Calculates remaining time
+        from xb_cooldown_end and updates the reactive countdown value.
+        """
+        from datetime import datetime, timezone
+
+        init_state = self.state.initialization_state
+        if init_state.xb_cooldown_end:
+            now = datetime.now(timezone.utc)
+            remaining = (init_state.xb_cooldown_end - now).total_seconds()
+            if remaining > 0:
+                self.xb_countdown_seconds = int(remaining)
+            else:
+                # Cooldown expired
+                self.xb_countdown_seconds = 0
+                init_state.xb_cooldown_end = None
+                init_state.xb_can_request = True
 
     async def _connect_init_stream(self) -> None:
         """Connect to engine InitStream and update state."""
@@ -294,16 +395,13 @@ class InitPanel(Widget):
 
             client = await get_grpc_client()
 
-            # Subscribe to init stream
+            # Subscribe to init stream - keep listening for XB events even after READY
             async for event in client.init_stream():
                 self._update_from_event(event)
-                self.init_progress = self.state.initialization_state.overall_progress
+                self.init_progress = self.state.initialization_state.overall_progress  # type: ignore[misc] - Reactive property assignment
                 self.refresh()
-
-                # If ready, we can stop streaming (but panel stays visible for 'g' cycling)
-                if self.state.initialization_state.is_ready:
-                    logger.debug("InitPanel: received READY, stream complete")
-                    break
+                # Don't break on READY - we need to keep listening for XB events
+                # The stream stays open until panel is unmounted
 
         except Exception as e:
             logger.debug(f"InitStream error: {e}")
@@ -313,15 +411,17 @@ class InitPanel(Widget):
     async def _poll_init_status(self) -> None:
         """Fallback: poll for init status if streaming fails.
 
-        Continues polling even after init completes to keep endpoint
-        status in sync with ThinkPanel.
+        Polls forever to handle dynamic connection state changes (engine
+        restarts, network reconnections). Uses exponential backoff during
+        failures to avoid spamming logs.
         """
         logger.debug("InitPanel falling back to polling mode")
 
-        max_retries = 5
         consecutive_failures = 0
+        base_retry_interval = 5.0
+        max_retry_interval = 30.0
 
-        while True:  # Keep polling to stay in sync
+        while True:  # Poll forever - connection may come and go
             try:
                 from ..client.engine_proxy import get_health_proxy
 
@@ -331,6 +431,12 @@ class InitPanel(Widget):
                 # Update state from health check
                 init_state = self.state.initialization_state
                 init_state.connected = True
+                init_state.error = None  # Clear any previous error
+
+                # Log reconnection if we were previously disconnected
+                if consecutive_failures > 0:
+                    logger.info(f"InitPanel: reconnected after {consecutive_failures} failures")
+
                 consecutive_failures = 0  # Reset on success
 
                 # Populate endpoints from health status
@@ -371,31 +477,86 @@ class InitPanel(Widget):
                     init_state.phase = "waiting"
                     init_state.message = "No healthy endpoints"
 
+                # Fetch XB queue status for cooldown timer
+                await self._fetch_xb_queue_status(init_state)
+
                 self.refresh()
+
+                # Poll every 5 seconds when healthy, 2 seconds during init
+                poll_interval = 5.0 if init_state.is_ready else 2.0
+                await asyncio.sleep(poll_interval)
+
+            except asyncio.CancelledError:
+                logger.debug("InitPanel polling cancelled")
+                return
 
             except Exception as e:
                 consecutive_failures += 1
-                self.state.initialization_state.connected = False
-                self.state.initialization_state.error = str(e)[:40]
+                init_state = self.state.initialization_state
+                init_state.connected = False
+                init_state.phase = "reconnecting"
+
+                # Show retry attempt in message
+                init_state.message = f"Reconnecting... (attempt {consecutive_failures})"
+                init_state.error = str(e)[:40]
+
+                # Only log first failure and then periodically
+                if consecutive_failures == 1:
+                    logger.debug(f"InitPanel: gRPC connection lost: {e}")
+                elif consecutive_failures % 10 == 0:
+                    logger.debug(f"InitPanel: still reconnecting after {consecutive_failures} attempts")
+
                 self.refresh()
 
-                # Stop polling after too many consecutive failures
-                if consecutive_failures >= max_retries:
-                    logger.debug(f"InitPanel: stopping polling after {max_retries} failures")
-                    self.state.initialization_state.phase = "disconnected"
-                    self.state.initialization_state.message = "Engine unavailable"
-                    self.refresh()
-                    return
+                # Exponential backoff with cap
+                retry_interval = min(
+                    base_retry_interval * (1.5 ** min(consecutive_failures - 1, 5)),
+                    max_retry_interval
+                )
+                await asyncio.sleep(retry_interval)
 
-            # Poll every 5 seconds (slower than during init since we're in steady state)
-            poll_interval = 5.0 if self.state.initialization_state.is_ready else 2.0
-            await asyncio.sleep(poll_interval)
+    async def _fetch_xb_queue_status(self, init_state: InitializationState) -> None:
+        """Fetch XB queue and auth status from engine.
+
+        Non-fatal: if fetch fails, we just don't update the status.
+        Fetches both queue status (for cooldown) and auth status (for auth state).
+        """
+        try:
+            from datetime import datetime
+            from ..client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            # Fetch queue status for cooldown timer
+            queue_status = await client.call("XBookmarks", "queue_status", {})
+
+            init_state.xb_queue_depth = queue_status.get("queue_depth", 0)
+            init_state.xb_can_request = queue_status.get("can_request", True)
+
+            cooldown_end_iso = queue_status.get("cooldown_end_iso", "")
+            if cooldown_end_iso:
+                init_state.xb_cooldown_end = datetime.fromisoformat(cooldown_end_iso)
+            else:
+                init_state.xb_cooldown_end = None
+
+            # Fetch auth status to show actual auth state
+            auth_status = await client.call("XBookmarks", "auth_status", {})
+
+            init_state.xb_authenticated = auth_status.get("authenticated", False)
+            init_state.xb_username = auth_status.get("username", "")
+            init_state.xb_action_required = auth_status.get("action_required", "")
+
+        except Exception as e:
+            # Non-fatal: just log and continue
+            logger.debug(f"XB status fetch failed (non-fatal): {e}")
 
     def _update_from_event(self, event: dict) -> None:
         """Update initialization state from an InitEvent."""
         init_state = self.state.initialization_state
         init_state.connected = True
 
+        # Use proto enum for type comparison when available, fall back to string
+        event_type_enum = event.get("type_enum")
         event_type = event.get("type", "")
         init_state.phase = event.get("phase", init_state.phase)
         init_state.overall_progress = event.get("progress", init_state.overall_progress)
@@ -458,6 +619,110 @@ class InitPanel(Widget):
                 if endpoint not in init_state.endpoints:
                     init_state.endpoints[endpoint] = EndpointInitProgress(name=endpoint)
                 init_state.endpoints[endpoint].status = "cancelled"
+
+        # ── X Bookmarks Events (real-time push from engine) ──
+        # Use proto enum for comparison when available
+        # These events are traced with OTel for end-to-end visibility
+        elif event_type_enum == InitEvent.Type.XB_AUTH_COMPLETED:
+            self._handle_xb_auth_completed(init_state, data)
+
+        elif event_type_enum == InitEvent.Type.XB_AUTH_FAILED:
+            self._handle_xb_auth_failed(init_state, data)
+
+        elif event_type_enum == InitEvent.Type.XB_STATUS_CHANGED:
+            self._handle_xb_status_changed(init_state, data)
+
+    def _handle_xb_auth_completed(
+        self, init_state: InitializationState, data: dict | None
+    ) -> None:
+        """Handle XB_AUTH_COMPLETED event with OTel tracing.
+
+        This is the final span in the XB auth event trace:
+          trigger -> emit -> broadcast -> panel_update
+        """
+        from gaius.core.telemetry import get_tracer, XBAuthAttrs
+
+        tracer = get_tracer()
+        with tracer.start_as_current_span("xb.auth_event.panel_update") as span:
+            span.set_attribute(XBAuthAttrs.EVENT_TYPE, "XB_AUTH_COMPLETED")
+
+            username = data.get("username", "") if data else ""
+            span.set_attribute(XBAuthAttrs.USERNAME, username)
+
+            # Update state
+            init_state.xb_authenticated = True
+            init_state.xb_username = username
+            init_state.xb_action_required = ""  # Clear any pending action
+
+            span.add_event("xb.panel.state_updated", {
+                "xb_authenticated": True,
+                "xb_username": username,
+            })
+
+            self.refresh()
+            span.add_event("xb.panel.refresh_triggered")
+
+            logger.info(f"XB auth completed: @{username}")
+
+            # Dismiss QR modal if showing (via app reference)
+            # Import here to avoid circular import at module level
+            from ..app import QRCodeModal
+            if isinstance(self.app.screen, QRCodeModal):
+                logger.info(f"Dismissing QR modal for @{username}")
+                self.app.screen.dismiss()
+                span.add_event("xb.qr_modal.dismissed")
+            else:
+                # Still post message for any other listeners
+                self.post_message(self.XBAuthCompleted(username))
+                span.add_event("xb.auth_completed.message_posted")
+
+    def _handle_xb_auth_failed(
+        self, init_state: InitializationState, data: dict | None
+    ) -> None:
+        """Handle XB_AUTH_FAILED event with OTel tracing."""
+        from gaius.core.telemetry import get_tracer, XBAuthAttrs
+
+        tracer = get_tracer()
+        with tracer.start_as_current_span("xb.auth_event.panel_update") as span:
+            span.set_attribute(XBAuthAttrs.EVENT_TYPE, "XB_AUTH_FAILED")
+
+            error_msg = data.get("error", "unknown") if data else "unknown"
+
+            # Update state
+            init_state.xb_authenticated = False
+            init_state.xb_action_required = "AUTH_FAILED"
+
+            span.add_event("xb.panel.state_updated", {
+                "xb_authenticated": False,
+                "error": error_msg,
+            })
+
+            self.refresh()
+            span.add_event("xb.panel.refresh_triggered")
+
+            logger.warning(f"XB auth failed: {error_msg}")
+
+    def _handle_xb_status_changed(
+        self, init_state: InitializationState, data: dict | None
+    ) -> None:
+        """Handle XB_STATUS_CHANGED event with OTel tracing."""
+        from gaius.core.telemetry import get_tracer, XBAuthAttrs
+
+        tracer = get_tracer()
+        with tracer.start_as_current_span("xb.auth_event.panel_update") as span:
+            span.set_attribute(XBAuthAttrs.EVENT_TYPE, "XB_STATUS_CHANGED")
+
+            if data:
+                init_state.xb_queue_depth = data.get("queue_depth", init_state.xb_queue_depth)
+                init_state.xb_can_request = data.get("can_request", init_state.xb_can_request)
+
+                span.add_event("xb.panel.state_updated", {
+                    "queue_depth": init_state.xb_queue_depth,
+                    "can_request": init_state.xb_can_request,
+                })
+
+            self.refresh()
+            span.add_event("xb.panel.refresh_triggered")
 
     def update_state(self, state: AppState) -> None:
         """Update the state reference and refresh."""

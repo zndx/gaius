@@ -13,6 +13,10 @@
   env.GRPC_ENABLE_FORK_SUPPORT = 0;
   env.GRPC_VERBOSITY = "ERROR";
 
+  # JVM memory for DeepOnto (BERTSubs subsumption inference)
+  # This must be set BEFORE importing deeponto.onto to avoid interactive prompt
+  env.JVM_MEMORY = "4g";
+
   # Library paths for Python C extensions and CUDA
   # Use project-local symlinks to NVIDIA drivers (avoids glibc conflicts with Nix)
   env.LD_LIBRARY_PATH = lib.concatStringsSep ":" [
@@ -62,8 +66,10 @@
     git
     gh
     graphviz
+    grpcurl
     imagemagick
     jq
+    llama-cpp
     metabase
     mdbook
     mdbook-d2
@@ -76,6 +82,7 @@
     presenterm
     qdrant
     tilt          # K8s development environment for Metaflow
+    tlaps         # TLA+ proof checker
     wrangler
     zlib  # Required for numpy C extensions
 
@@ -211,6 +218,20 @@
     maven.enable = true;
   };
 
+  # JavaScript/Node.js for claude-code-acp adapter
+  # Required for ACP integration with Claude Code
+  languages.javascript = {
+    enable = true;
+    npm = {
+      enable = true;
+      install.enable = true;  # Enable declarative npm package installation
+    };
+  };
+
+  languages.typescript = {
+    enable=true;
+  };
+
   tasks = {
     "docs:build".exec = "mdbook build docs";
     "docs:open".exec = "mdbook build docs --open";
@@ -218,6 +239,59 @@
     # Third-party build tasks
     "thirdparty:download".exec = "cd thirdparty && ./download-thirdparty.sh";
     "thirdparty:build".exec = "cd thirdparty && ./build-thirdparty.sh";
+
+    # Proto generation task - regenerates gRPC stubs and fixes imports
+    "proto:generate".exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  PROTO GENERATE - Regenerating gRPC Python stubs             ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      PROTO_DIR="src/gaius/engine/proto"
+      OUT_DIR="src/gaius/engine/generated"
+
+      echo "Source:  $PROTO_DIR/gaius_service.proto"
+      echo "Output:  $OUT_DIR/"
+      echo ""
+
+      # Generate Python stubs with type hints
+      # --pyi_out: protobuf message type stubs
+      # --mypy_grpc_out: gRPC service type stubs (requires mypy-protobuf)
+      python -m grpc_tools.protoc \
+        -I="$PROTO_DIR" \
+        --python_out="$OUT_DIR" \
+        --pyi_out="$OUT_DIR" \
+        --grpc_python_out="$OUT_DIR" \
+        --mypy_grpc_out="$OUT_DIR" \
+        "$PROTO_DIR/gaius_service.proto"
+
+      echo "✓ Proto stubs generated (including gRPC type stubs)"
+
+      # Fix absolute import to relative import in grpc files
+      # grpc_tools.protoc generates: import gaius_service_pb2 as gaius__service__pb2
+      # We need:                     from . import gaius_service_pb2 as gaius__service__pb2
+      sed -i 's/^import gaius_service_pb2/from . import gaius_service_pb2/' \
+        "$OUT_DIR/gaius_service_pb2_grpc.py"
+
+      # Also fix the .pyi stub file
+      sed -i 's/^import gaius_service_pb2/from . import gaius_service_pb2/' \
+        "$OUT_DIR/gaius_service_pb2_grpc.pyi"
+
+      echo "✓ Fixed relative imports in gaius_service_pb2_grpc.py and .pyi"
+
+      # Add async stub alias for grpc.aio compatibility
+      # The .pyi declares GaiusServiceAsyncStub for type checking, but we need the runtime alias
+      # With grpc.aio, the same stub class works with async channels
+      echo "" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+      echo "# Async stub alias - same class works with grpc.aio.Channel" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+      echo "# Type hints in .pyi declare this as a subclass for type checking" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+      echo "GaiusServiceAsyncStub = GaiusServiceStub" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
+
+      echo "✓ Added GaiusServiceAsyncStub alias for grpc.aio"
+      echo ""
+      echo "Done! Regenerated files:"
+      ls -la "$OUT_DIR"/gaius_service_pb2*.py "$OUT_DIR"/gaius_service_pb2*.pyi 2>/dev/null || ls -la "$OUT_DIR"/gaius_service_pb2*
+    '';
 
     # MCP server tasks
     "mcp:test".exec = ''
@@ -762,7 +836,7 @@
     process-compose = {
       depends_on.postgres.condition = "process_healthy";
       # Disabled by default - enable with: devenv processes up metabase
-      disabled = true;
+      disabled = false;
     };
   };
 
@@ -973,6 +1047,122 @@ BOOTSTRAP_EOF
   # ============================================================================
   # Tasks - Run with: devenv tasks run <task-name>
   # ============================================================================
+
+  # Clean restart of devenv - kills all stale processes and starts fresh
+  # Usage: devenv tasks run restart:clean
+  tasks."restart:clean" = {
+    exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  CLEAN RESTART - Full cleanup and fresh start                ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      START_TIME=$(date +%s)
+
+      # Step 1: Stop devenv processes
+      echo "Step 1/7: Stopping devenv processes..."
+      devenv processes down 2>/dev/null || true
+      sleep 2
+      echo "  ✓ devenv processes stopped"
+
+      # Step 2: Kill process-compose
+      echo "Step 2/7: Killing process-compose..."
+      pkill -9 -f process-compose 2>/dev/null || true
+      sleep 1
+      echo "  ✓ process-compose killed"
+
+      # Step 3: Kill stale service processes
+      echo "Step 3/7: Killing stale service processes..."
+      # MinIO
+      pkill -9 -f "minio server" 2>/dev/null && echo "  - Killed minio" || true
+      # Qdrant
+      pkill -9 -f "qdrant" 2>/dev/null && echo "  - Killed qdrant" || true
+      # Gaius engine
+      pkill -9 -f "gaius.engine" 2>/dev/null && echo "  - Killed gaius.engine" || true
+      # Gaius worker
+      pkill -9 -f "gaius.workers" 2>/dev/null && echo "  - Killed gaius.workers" || true
+      # Aeron media driver
+      pkill -9 -f "aeronmd" 2>/dev/null && echo "  - Killed aeronmd" || true
+      # NiFi
+      pkill -9 -f "nifi" 2>/dev/null && echo "  - Killed nifi" || true
+      # Prometheus
+      pkill -9 -f "prometheus.*gaius" 2>/dev/null && echo "  - Killed prometheus" || true
+      # OpenTelemetry collector
+      pkill -9 -f "otelcol" 2>/dev/null && echo "  - Killed otelcol" || true
+      # Metabase
+      pkill -9 -f "metabase" 2>/dev/null && echo "  - Killed metabase" || true
+      sleep 1
+      echo "  ✓ Stale services killed"
+
+      # Step 4: Free ports (in case processes didn't release them)
+      echo "Step 4/7: Freeing ports..."
+      fuser -k 9010/tcp 2>/dev/null && echo "  - Freed 9010 (minio)" || true
+      fuser -k 9011/tcp 2>/dev/null && echo "  - Freed 9011 (minio console)" || true
+      fuser -k 6339/tcp 2>/dev/null && echo "  - Freed 6339 (qdrant http)" || true
+      fuser -k 6340/tcp 2>/dev/null && echo "  - Freed 6340 (qdrant grpc)" || true
+      fuser -k 50051/tcp 2>/dev/null && echo "  - Freed 50051 (grpc)" || true
+      fuser -k 8450/tcp 2>/dev/null && echo "  - Freed 8450 (nifi)" || true
+      fuser -k 3100/tcp 2>/dev/null && echo "  - Freed 3100 (metabase)" || true
+      echo "  ✓ Ports freed"
+
+      # Step 5: Clean up stale sockets
+      echo "Step 5/7: Cleaning stale sockets..."
+      rm -rf /run/user/$(id -u)/devenv-*/ 2>/dev/null || true
+      echo "  ✓ Stale sockets removed"
+
+      # Step 6: Remove stale postgres lock
+      echo "Step 6/7: Removing stale postgres lock..."
+      POSTGRES_PID_FILE="${config.devenv.root}/.devenv/state/postgres/postmaster.pid"
+      if [ -f "$POSTGRES_PID_FILE" ]; then
+        rm -f "$POSTGRES_PID_FILE"
+        echo "  ✓ Postgres lock file removed"
+      else
+        echo "  ✓ No stale postgres lock"
+      fi
+
+      # Step 7: Start fresh
+      echo "Step 7/7: Starting devenv..."
+      devenv up -d
+      echo ""
+
+      # Wait for engine with retry loop
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  Waiting for gRPC engine on port 50051...                    ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      MAX_CYCLES=60
+      CYCLE=0
+      while [ $CYCLE -lt $MAX_CYCLES ]; do
+        CYCLE=$((CYCLE + 1))
+        ELAPSED=$(($(date +%s) - START_TIME))
+
+        if nc -zv localhost 50051 2>/dev/null; then
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║  ✓ ENGINE READY                                              ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          printf "║  Elapsed: %3ds | Cycles: %2d                                  ║\n" "$ELAPSED" "$CYCLE"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "You can now test with:"
+          echo "  uv run gaius-cli --cmd \"/health\" --format json"
+          exit 0
+        fi
+
+        printf "\r  Waiting... [%3ds elapsed, cycle %2d/%d]" "$ELAPSED" "$CYCLE" "$MAX_CYCLES"
+        sleep 2
+      done
+
+      echo ""
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  ✗ ENGINE FAILED TO START                                    ║"
+      echo "╠══════════════════════════════════════════════════════════════╣"
+      echo "║  Check logs: tail -f .devenv/processes.log                   ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      exit 1
+    '';
+  };
 
   # Clean up orphaned Kubernetes CNI IP allocations
   # Usage: devenv tasks run k8s:cleanup

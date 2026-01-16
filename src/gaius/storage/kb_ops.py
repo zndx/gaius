@@ -46,6 +46,14 @@ def _get_kb_root() -> Path:
     return Path(backend.config.root).resolve()
 
 
+def get_kb_root() -> Path:
+    """Get KB root path from config (resolved to absolute).
+
+    Public API for getting the KB root path.
+    """
+    return _get_kb_root()
+
+
 def _validate_path(path: str) -> tuple[bool, str]:
     """Validate KB path is within allowed directories.
 

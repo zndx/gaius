@@ -144,7 +144,7 @@ class VectorSearch:
             logger.debug(f"Loading embedding model {self.model_name}")
             self._model = SentenceTransformer(
                 self.model_name,
-                **kwargs,
+                **kwargs,  # type: ignore[arg-type] - kwargs has mixed types, but SentenceTransformer accepts them
             )
         return self._model
 
@@ -161,7 +161,8 @@ class VectorSearch:
     @property
     def embedding_dim(self) -> int:
         """Get embedding dimension from model."""
-        return self.model.get_sentence_embedding_dimension()
+        dim = self.model.get_sentence_embedding_dimension()
+        return dim if dim is not None else 768  # Default for common models
 
     def ensure_collection(self) -> None:
         """Ensure Qdrant collection exists with correct schema."""
@@ -247,8 +248,12 @@ class VectorSearch:
         # Ensure collection exists
         try:
             self.ensure_collection()
-        except Exception:
-            return []  # Qdrant not available
+        except Exception as e:
+            raise RuntimeError(
+                f"Qdrant collection unavailable: {e}\n"
+                "Guru Meditation: #VS.00000001.QDRANT\n"
+                "Check: /health qdrant"
+            ) from e
 
         # Check if collection has points
         info = self.client.get_collection(self.collection_name)
@@ -395,9 +400,9 @@ def get_vector_search(kb_root: Path | str | None = None) -> VectorSearch:
             from ...core.config import get_config
             config = get_config()
             vs_config = config.vector_store
-            # ColBERT model is now in colbert_model field
-            if vs_config.colbert_model:
-                model_name = vs_config.colbert_model
+            # ColNomic model is in colnomic_model field
+            if vs_config.colnomic_model:
+                model_name = vs_config.colnomic_model
         except Exception:
             pass  # Use defaults if config not available
 

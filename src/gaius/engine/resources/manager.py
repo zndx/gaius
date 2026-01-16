@@ -4,8 +4,8 @@ Manages GPU inventory, allocations, and scheduling for multi-GPU
 tensor-parallel configurations.
 
 Supports dynamic GPU swapping for transitioning between:
-- Default state: orchestrator + fast + embedding + coding (6 GPUs)
-- Reasoning state: orchestrator + reasoning (6 GPUs)
+- Default state: orchestrator(2) + instruct(4) = 6 GPUs
+- Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
 """
 
 import asyncio
@@ -403,21 +403,21 @@ class ResourceManager:
     def plan_swap_for_reasoning(self) -> SwapPlan:
         """Plan resource swap to enable 4-GPU reasoning model.
 
-        Default state: orchestrator(2) + fast(1) + embedding(1) + coding(2) = 6 GPUs
+        Default state: orchestrator(2) + instruct(4) = 6 GPUs
         Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
 
         Returns:
             SwapPlan with endpoints to stop/start
         """
         # Reasoning needs 4 GPUs; we keep orchestrator (2 GPUs)
-        # So we need to stop: coding (2) + fast (1) + embedding (1) = 4 GPUs
+        # So we need to stop: instruct (4 GPUs)
 
         endpoints_to_stop = []
         gpus_to_free = []
 
         # Check which endpoints are currently allocated
         for alias, alloc in self.allocations.items():
-            if alias in ("coding", "fast", "embedding"):
+            if alias == "instruct":
                 endpoints_to_stop.append(alias)
                 gpus_to_free.extend(alloc.gpu_ids)
 
@@ -438,7 +438,7 @@ class ResourceManager:
         """Plan restoration to default GPU state after reasoning completes.
 
         Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
-        Default state: orchestrator(2) + fast(1) + embedding(1) + coding(2) = 6 GPUs
+        Default state: orchestrator(2) + instruct(4) = 6 GPUs
 
         Returns:
             SwapPlan to restore default endpoints
@@ -452,22 +452,20 @@ class ResourceManager:
             gpus_to_free = list(self.allocations["reasoning"].gpu_ids)
 
         # Plan GPU allocation for default endpoints
-        # coding: 2 GPUs, fast: 1 GPU, embedding: 1 GPU
+        # instruct: 4 GPUs
         gpus_to_allocate = {}
         if len(gpus_to_free) >= 4:
             gpus_to_allocate = {
-                "coding": gpus_to_free[:2],
-                "fast": [gpus_to_free[2]],
-                "embedding": [gpus_to_free[3]],
+                "instruct": gpus_to_free[:4],
             }
 
         return SwapPlan(
             endpoints_to_stop=endpoints_to_stop,
-            endpoints_to_start=["coding", "fast", "embedding"],
+            endpoints_to_start=["instruct"],
             gpus_to_free=gpus_to_free,
             gpus_to_allocate=gpus_to_allocate,
             reason="Restore default endpoint configuration",
-            estimated_duration_s=120,  # 2 minutes for smaller models
+            estimated_duration_s=120,  # 2 minutes for instruct model
         )
 
     def can_execute_swap(self, plan: SwapPlan) -> tuple[bool, str]:
@@ -506,7 +504,7 @@ class ResourceManager:
         """Determine current GPU allocation mode.
 
         Returns:
-            "default" - fast/embedding/coding endpoints active
+            "default" - instruct endpoint active
             "reasoning" - reasoning endpoint active
             "mixed" - partial allocation
             "idle" - nothing allocated
@@ -515,7 +513,7 @@ class ResourceManager:
 
         if "reasoning" in active_endpoints:
             return "reasoning"
-        elif {"fast", "embedding", "coding"}.issubset(active_endpoints):
+        elif "instruct" in active_endpoints:
             return "default"
         elif active_endpoints:
             return "mixed"

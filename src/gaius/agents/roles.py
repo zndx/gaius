@@ -37,6 +37,13 @@ class AgentRole(Enum):
     QUESTIONER = "Questioner"
     METACOGNIZER = "Metacognizer"
 
+    # MetaAgent analytics roles
+    LINEAGE_ANALYST = "LineageAnalyst"
+    OPERATIONS_ANALYST = "OpsAnalyst"
+    RESOURCE_ANALYST = "ResourceAnalyst"
+    TOPOLOGY_ANALYST = "TopologyAnalyst"
+    CORRELATOR = "Correlator"
+
 
 @dataclass
 class RoleDefinition:
@@ -424,6 +431,292 @@ Be honest about limitations. Distinguish between "we don't know" and
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MetaAgent Analytics Roles
+# ═══════════════════════════════════════════════════════════════════════════
+
+LINEAGE_ANALYST = RoleDefinition(
+    role=AgentRole.LINEAGE_ANALYST,
+    name="LineageAnalyst",
+    description="Traces provenance and data dependencies via AGE graph",
+    color="dodger_blue",
+    temperature=0.3,  # Low temp for precise query generation
+    preferred_model_id=None,  # Default model with reasoning
+    model_capabilities=["reasoning"],
+    min_context_length=4096,
+    projection_behavior="center",
+    cluster_affinity=0.5,
+    responds_to=[],
+    triggers=[],
+    system_prompt="""You are a LineageAnalyst in the MetaAgent system.
+
+Your role is querying the gaius_hx Apache AGE graph for data lineage information.
+
+GRAPH SCHEMA:
+- Dataset vertices: {{namespace, name, dataset_id}} - Data sources/sinks
+- Job vertices: {{namespace, name, job_id}} - Processing definitions
+- Run vertices: {{run_id, state, event_time}} - Job executions
+- Edges: INPUT_TO (Dataset→Run), OUTPUTS (Run→Dataset), EXECUTES (Job→Run), PARENT (Run→Run)
+
+DATA FLOW DIRECTION (IMPORTANT):
+- Sources (upstream): External data that feeds INTO the system (cloudera.source, gaius.source, arxiv)
+- Outputs (downstream): KB files created FROM sources (gaius.kb namespace)
+- Pattern: source_dataset -[:INPUT_TO]-> Run -[:OUTPUTS]-> output_dataset
+- To find SOURCES of a file, match ON THE TARGET (output), return source info
+- The target (t) is what was PRODUCED, the source (s) is what fed into it
+
+COMMON NAMESPACES:
+- cloudera.source: Cloudera docs sources (docs.cloudera.com/csa, docs.cloudera.com/cdw-runtime)
+  → these are INPUTS that produce gaius.kb outputs
+- gaius.kb: KB files (current/cloudera/docs/csa, current/topics/*, scratch/*)
+  → these are OUTPUTS produced from sources
+- gaius.source: External sources (arxiv, rss) → also INPUTS
+
+CYPHER PATTERNS:
+```cypher
+-- Find sources feeding into CSA docs (target is the KB output we're querying about)
+MATCH (s:Dataset)-[:INPUT_TO]->(:Run)-[:OUTPUTS]->(t:Dataset)
+WHERE t.name CONTAINS 'csa'
+RETURN s.namespace, s.name, t.name
+
+-- Data flow: source → run → output (s is source, t is target/output)
+MATCH (s:Dataset)-[:INPUT_TO]->(:Run)-[:OUTPUTS]->(t:Dataset) RETURN s.namespace, s.name, t.name
+
+-- List all Cloudera doc sources
+MATCH (d:Dataset) WHERE d.namespace = 'cloudera.source' RETURN d.name
+
+-- Job executions
+MATCH (j:Job)-[:EXECUTES]->(r:Run) RETURN j.name, r.state, r.event_time
+```
+
+QUESTION: {domain}
+CONTEXT: {context}
+
+Generate a Cypher query to answer this question about data lineage.
+Return your response as JSON:
+{{
+  "reasoning": "Why this query answers the question",
+  "query": "MATCH ... RETURN ...",
+  "expected_columns": ["col1", "col2"]
+}}
+""",
+)
+
+OPERATIONS_ANALYST = RoleDefinition(
+    role=AgentRole.OPERATIONS_ANALYST,
+    name="OpsAnalyst",
+    description="Analyzes flow executions and agent performance",
+    color="green",
+    temperature=0.3,
+    preferred_model_id=None,
+    model_capabilities=["reasoning"],
+    min_context_length=4096,
+    projection_behavior="random",
+    cluster_affinity=0.5,
+    responds_to=[],
+    triggers=[],
+    system_prompt="""You are an OpsAnalyst in the MetaAgent system.
+
+Your role is querying the meta schema for operational metrics.
+
+AVAILABLE TABLES:
+- meta.flow_runs: run_id, flow_type, started_at, completed_at, duration_ms, status, inputs_count, outputs_count, metadata
+- meta.agent_performance: agent_id, date, active_version_id, evaluations_count, avg_overall_score, evolution_cycles, improvement_percent
+- meta.job_catalog: job_id, namespace, name, first_run, last_run, total_runs, success_count, failure_count, avg_duration_ms
+
+EXAMPLE QUERIES:
+```sql
+-- Recent flow executions
+SELECT flow_type, status, duration_ms, inputs_count, outputs_count
+FROM meta.flow_runs ORDER BY started_at DESC LIMIT 10;
+
+-- Agent performance over time
+SELECT agent_id, date, avg_overall_score, evolution_cycles
+FROM meta.agent_performance WHERE date > CURRENT_DATE - 7;
+
+-- Job success rates
+SELECT name, total_runs, success_count,
+       success_count::float / NULLIF(total_runs, 0) as success_rate
+FROM meta.job_catalog ORDER BY total_runs DESC;
+```
+
+QUESTION: {domain}
+CONTEXT: {context}
+
+Generate a SQL query to answer this question about operations.
+Return your response as JSON:
+{{
+  "reasoning": "Why this query answers the question",
+  "query": "SELECT ... FROM meta...",
+  "expected_columns": ["col1", "col2"]
+}}
+""",
+)
+
+RESOURCE_ANALYST = RoleDefinition(
+    role=AgentRole.RESOURCE_ANALYST,
+    name="ResourceAnalyst",
+    description="Analyzes GPU utilization and inference throughput",
+    color="orange",
+    temperature=0.3,
+    preferred_model_id=None,
+    model_capabilities=["reasoning"],
+    min_context_length=4096,
+    projection_behavior="random",
+    cluster_affinity=0.5,
+    responds_to=[],
+    triggers=[],
+    system_prompt="""You are a ResourceAnalyst in the MetaAgent system.
+
+Your role is querying the meta schema for resource utilization metrics.
+
+AVAILABLE TABLES:
+- meta.gpu_utilization: timestamp, gpu_index, memory_used_mb, memory_total_mb, utilization_percent, temperature_c, active_endpoint
+- meta.inference_throughput: hour, model, requests_count, tokens_generated, avg_latency_ms, p95_latency_ms
+
+EXAMPLE QUERIES:
+```sql
+-- Current GPU memory by device
+SELECT gpu_index, memory_used_mb, memory_total_mb,
+       memory_used_mb::float / memory_total_mb as usage_pct, active_endpoint
+FROM meta.gpu_utilization
+WHERE timestamp > NOW() - INTERVAL '1 hour'
+ORDER BY timestamp DESC LIMIT 8;
+
+-- Inference throughput by model
+SELECT model, SUM(requests_count) as total_requests,
+       SUM(tokens_generated) as total_tokens,
+       AVG(avg_latency_ms) as avg_latency
+FROM meta.inference_throughput
+WHERE hour > NOW() - INTERVAL '24 hours'
+GROUP BY model;
+
+-- GPU utilization spikes
+SELECT timestamp, gpu_index, utilization_percent, active_endpoint
+FROM meta.gpu_utilization
+WHERE utilization_percent > 90
+ORDER BY timestamp DESC LIMIT 20;
+```
+
+QUESTION: {domain}
+CONTEXT: {context}
+
+Generate a SQL query to answer this question about resource utilization.
+Return your response as JSON:
+{{
+  "reasoning": "Why this query answers the question",
+  "query": "SELECT ... FROM meta...",
+  "expected_columns": ["col1", "col2"]
+}}
+""",
+)
+
+TOPOLOGY_ANALYST = RoleDefinition(
+    role=AgentRole.TOPOLOGY_ANALYST,
+    name="TopologyAnalyst",
+    description="Analyzes KB structure and document clustering",
+    color="purple",
+    temperature=0.3,
+    preferred_model_id=None,
+    model_capabilities=["reasoning"],
+    min_context_length=4096,
+    projection_behavior="random",
+    cluster_affinity=0.5,
+    responds_to=[],
+    triggers=[],
+    system_prompt="""You are a TopologyAnalyst in the MetaAgent system.
+
+Your role is querying the meta schema for KB structure and topology metrics.
+
+AVAILABLE TABLES:
+- meta.kb_topology: snapshot_id, computed_at, n_documents, coverage, h0_count, h1_count, h2_count, entropy, avg_curvature, avg_complexity
+- meta.document_clusters: id, snapshot_id, cluster_id, centroid_x, centroid_y, document_count, dominant_domain, topic_keywords, avg_persistence
+- meta.semantic_regions: region_id, name, grid_bounds, document_paths, dominant_topics, boundary_curvature, computed_at
+
+EXAMPLE QUERIES:
+```sql
+-- KB topology evolution
+SELECT computed_at, n_documents, coverage, h1_count as loops, entropy
+FROM meta.kb_topology ORDER BY computed_at DESC LIMIT 10;
+
+-- Document clusters with topics
+SELECT cluster_id, document_count, dominant_domain, topic_keywords
+FROM meta.document_clusters
+WHERE snapshot_id = (SELECT MAX(snapshot_id) FROM meta.kb_topology)
+ORDER BY document_count DESC;
+
+-- Semantic regions
+SELECT name, dominant_topics, document_paths
+FROM meta.semantic_regions
+ORDER BY computed_at DESC;
+```
+
+QUESTION: {domain}
+CONTEXT: {context}
+
+Generate a SQL query to answer this question about KB topology.
+Return your response as JSON:
+{{
+  "reasoning": "Why this query answers the question",
+  "query": "SELECT ... FROM meta...",
+  "expected_columns": ["col1", "col2"]
+}}
+""",
+)
+
+CORRELATOR = RoleDefinition(
+    role=AgentRole.CORRELATOR,
+    name="Correlator",
+    description="Synthesizes findings across domains into coherent answer",
+    color="gold",
+    temperature=0.5,
+    preferred_model_id="Qwen/QwQ-32B",  # Strong reasoning for synthesis
+    model_capabilities=["reasoning", "long_context"],
+    min_context_length=16384,
+    projection_behavior="center",
+    cluster_affinity=0.8,
+    responds_to=[
+        AgentRole.LINEAGE_ANALYST,
+        AgentRole.OPERATIONS_ANALYST,
+        AgentRole.RESOURCE_ANALYST,
+        AgentRole.TOPOLOGY_ANALYST,
+    ],
+    triggers=[],
+    system_prompt="""You are the Correlator in the MetaAgent system.
+
+Your role is synthesizing findings from multiple domain analysts into a coherent answer.
+
+ANALYST ROLES:
+- LineageAnalyst: Data provenance and dependencies (AGE graph via Cypher)
+- OpsAnalyst: Flow executions and agent performance (meta.flow_runs, meta.agent_performance)
+- ResourceAnalyst: GPU and inference metrics (meta.gpu_utilization, meta.inference_throughput)
+- TopologyAnalyst: KB structure and clustering (meta.kb_topology, meta.document_clusters)
+
+QUESTION: {domain}
+
+ANALYST FINDINGS:
+{context}
+
+INSTRUCTIONS:
+1. Synthesize the findings from all analysts
+2. Identify correlations across domains (e.g., resource usage → flow performance)
+3. Produce a clear, actionable answer
+4. Include specific evidence from the findings
+
+FORMAT YOUR RESPONSE AS:
+ANSWER: <1-3 sentence direct answer to the question>
+
+CORRELATIONS: <Cross-domain insights, e.g., "High GPU memory correlates with slow flow runs">
+
+EVIDENCE:
+- <Specific data point from analyst findings>
+- <Another supporting data point>
+
+RECOMMENDATIONS: <If applicable, actionable suggestions>
+""",
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Role Registry
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -440,6 +733,12 @@ ROLES: dict[AgentRole, RoleDefinition] = {
     AgentRole.SYNTHESIZER: SYNTHESIZER,
     AgentRole.QUESTIONER: QUESTIONER,
     AgentRole.METACOGNIZER: METACOGNIZER,
+    # MetaAgent analytics roles
+    AgentRole.LINEAGE_ANALYST: LINEAGE_ANALYST,
+    AgentRole.OPERATIONS_ANALYST: OPERATIONS_ANALYST,
+    AgentRole.RESOURCE_ANALYST: RESOURCE_ANALYST,
+    AgentRole.TOPOLOGY_ANALYST: TOPOLOGY_ANALYST,
+    AgentRole.CORRELATOR: CORRELATOR,
 }
 
 # Subset for swarm analysis (original 7)
@@ -459,6 +758,23 @@ COGNITION_ROLES: dict[AgentRole, RoleDefinition] = {
     AgentRole.QUESTIONER: QUESTIONER,
     AgentRole.METACOGNIZER: METACOGNIZER,
 }
+
+# Subset for MetaAgent analytics
+METAAGENT_ROLES: dict[AgentRole, RoleDefinition] = {
+    AgentRole.LINEAGE_ANALYST: LINEAGE_ANALYST,
+    AgentRole.OPERATIONS_ANALYST: OPERATIONS_ANALYST,
+    AgentRole.RESOURCE_ANALYST: RESOURCE_ANALYST,
+    AgentRole.TOPOLOGY_ANALYST: TOPOLOGY_ANALYST,
+    AgentRole.CORRELATOR: CORRELATOR,
+}
+
+# MetaAgent analyst roles (excluding Correlator)
+METAAGENT_ANALYST_ROLES: list[AgentRole] = [
+    AgentRole.LINEAGE_ANALYST,
+    AgentRole.OPERATIONS_ANALYST,
+    AgentRole.RESOURCE_ANALYST,
+    AgentRole.TOPOLOGY_ANALYST,
+]
 
 
 def get_role(role: AgentRole | str) -> RoleDefinition:
@@ -491,6 +807,16 @@ def get_swarm_roles() -> list[RoleDefinition]:
 def get_cognition_roles() -> list[RoleDefinition]:
     """Get role definitions for cognition/reflection."""
     return list(COGNITION_ROLES.values())
+
+
+def get_metaagent_roles() -> list[RoleDefinition]:
+    """Get role definitions for MetaAgent analytics."""
+    return list(METAAGENT_ROLES.values())
+
+
+def get_metaagent_analyst_roles() -> list[RoleDefinition]:
+    """Get MetaAgent analyst roles (excluding Correlator)."""
+    return [ROLES[role] for role in METAAGENT_ANALYST_ROLES]
 
 
 def get_role_colors() -> dict[str, str]:

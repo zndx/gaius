@@ -28,9 +28,9 @@ class SoMAnnotator:
         self.font_size = font_size
         self.bg_color = bg_color
         self.text_color = text_color
-        self._font: Optional[ImageFont.FreeTypeFont] = None
+        self._font: ImageFont.FreeTypeFont | ImageFont.ImageFont | None = None
 
-    def _get_font(self) -> ImageFont.FreeTypeFont:
+    def _get_font(self) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         """Get or create the annotation font."""
         if self._font is None:
             try:
@@ -109,11 +109,11 @@ class SoMAnnotator:
 
     def _draw_marker(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         x: float,
         y: float,
         number: int,
-        font: ImageFont.FreeTypeFont,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ):
         """Draw a numbered marker at the specified position."""
         r = self.marker_radius
@@ -185,9 +185,9 @@ class TrajectoryAnnotator:
         self.path_color = path_color
         self.path_width = path_width
         self.show_arrows = show_arrows
-        self._font: Optional[ImageFont.FreeTypeFont] = None
+        self._font: ImageFont.FreeTypeFont | ImageFont.ImageFont | None = None
 
-    def _get_font(self) -> ImageFont.FreeTypeFont:
+    def _get_font(self) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         """Get or create the annotation font."""
         if self._font is None:
             try:
@@ -253,7 +253,7 @@ class TrajectoryAnnotator:
 
     def _draw_path_segment(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         start: tuple[float, float],
         end: tuple[float, float],
         segment_num: int,
@@ -269,7 +269,7 @@ class TrajectoryAnnotator:
 
     def _draw_arrow(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         start: tuple[float, float],
         end: tuple[float, float],
     ):
@@ -300,11 +300,11 @@ class TrajectoryAnnotator:
 
     def _draw_step_marker(
         self,
-        draw: ImageDraw.Draw,
+        draw: ImageDraw.ImageDraw,
         x: float,
         y: float,
         step_num: int,
-        font: ImageFont.FreeTypeFont,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ):
         """Draw a numbered step marker (circled number)."""
         r = self.STEP_MARKER_RADIUS

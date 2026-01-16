@@ -25,10 +25,13 @@ Usage:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Union
 import asyncio
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 
 @dataclass
@@ -100,15 +103,54 @@ class NomicEmbeddings:
         self._vision_processor = None
 
     def _get_device(self) -> str:
-        """Get device to use."""
+        """Get device to use.
+
+        Automatically selects GPU with most free memory to avoid OOM
+        when other models are loaded.
+        """
         if self._device:
             return self._device
 
         try:
             import torch
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            if not torch.cuda.is_available():
+                return "cpu"
+
+            # Find GPU with most free memory
+            best_gpu = self._find_free_gpu()
+            return f"cuda:{best_gpu}"
         except ImportError:
             return "cpu"
+
+    def _find_free_gpu(self) -> int:
+        """Find GPU with most free memory.
+
+        Queries nvidia-smi to avoid loading torch prematurely.
+        Falls back to GPU 0 if query fails.
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                best_gpu = 0
+                best_free = 0
+                for line in result.stdout.strip().split("\n"):
+                    parts = line.split(",")
+                    if len(parts) == 2:
+                        gpu_idx = int(parts[0].strip())
+                        free_mb = int(parts[1].strip())
+                        if free_mb > best_free:
+                            best_free = free_mb
+                            best_gpu = gpu_idx
+                return best_gpu
+        except Exception:
+            pass
+        return 0
 
     def _load_text_model(self):
         """Load text embedding model."""
@@ -199,8 +241,13 @@ class NomicEmbeddings:
             )
             return vector
 
-        # Fallback to raw transformers
+        # Fallback to raw transformers - tokenizer and model must be set
         import torch
+
+        if self._text_tokenizer is None or self._text_model is None:
+            raise RuntimeError(
+                "Text tokenizer/model not loaded. This indicates a bug in _load_text_model()."
+            )
 
         inputs = self._text_tokenizer(
             text,
@@ -274,8 +321,13 @@ class NomicEmbeddings:
             )
             return vectors
 
-        # Fallback: process in batches
+        # Fallback: process in batches - tokenizer and model must be set
         import torch
+
+        if self._text_tokenizer is None or self._text_model is None:
+            raise RuntimeError(
+                "Text tokenizer/model not loaded. This indicates a bug in _load_text_model()."
+            )
 
         all_vectors = []
         for i in range(0, len(texts), batch_size):
@@ -338,6 +390,11 @@ class NomicEmbeddings:
         import torch
 
         self._load_vision_model()
+
+        if self._vision_processor is None or self._vision_model is None:
+            raise RuntimeError(
+                "Vision model not loaded. This indicates a bug in _load_vision_model()."
+            )
 
         # Load image if path
         if isinstance(image, (str, Path)):
@@ -407,6 +464,11 @@ class NomicEmbeddings:
         import torch
 
         self._load_vision_model()
+
+        if self._vision_processor is None or self._vision_model is None:
+            raise RuntimeError(
+                "Vision model not loaded. This indicates a bug in _load_vision_model()."
+            )
 
         # Load all images
         pil_images = []

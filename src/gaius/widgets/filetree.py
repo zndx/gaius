@@ -2,12 +2,82 @@
 
 from pathlib import Path
 
+from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 from textual.message import Message
+from textual import events
 
 from ..core.state import AppState
+
+
+class VimTree(Tree):
+    """Tree widget with vim-style navigation keys."""
+
+    BINDINGS = [
+        Binding("G", "goto_last", "Go to last", show=False),
+        # 'g' passes through to main app for panel cycling
+    ]
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle vim-style page navigation.
+
+        BUG: ctrl+b requires two key presses to trigger, while ctrl+f works
+        on the first press. Tried both Binding with priority=True and this
+        on_key handler approach - same behavior. Need to investigate with
+        Textual maintainer (Will). See: https://github.com/Textualize/textual
+
+        TODO: File issue or ask in Discord about asymmetric ctrl+b behavior
+        """
+        if event.key == "ctrl+f":
+            self._page_down()
+            event.prevent_default()
+            event.stop()
+        elif event.key == "ctrl+b":
+            # BUG: This requires pressing ctrl+b twice to trigger
+            # First press seems to be consumed elsewhere
+            self._page_up()
+            event.prevent_default()
+            event.stop()
+
+    def _page_down(self) -> None:
+        """Scroll down by half a page of visible nodes."""
+        half_page = max(1, (self.size.height - 2) // 2)
+        for _ in range(half_page):
+            self.action_cursor_down()
+
+    def _page_up(self) -> None:
+        """Scroll up by half a page of visible nodes."""
+        half_page = max(1, (self.size.height - 2) // 2)
+        for _ in range(half_page):
+            self.action_cursor_up()
+
+    def action_goto_last(self) -> None:
+        """Jump to the absolute last leaf node, expanding folders as needed (G)."""
+        # Find the absolute last leaf, expanding collapsed folders along the way
+        def get_absolute_last_leaf(node: TreeNode) -> TreeNode:
+            """Recursively find the absolute last leaf, expanding as we go."""
+            if not node.children:
+                return node
+
+            # Expand the node to access children
+            if not node.is_expanded:
+                node.expand()
+
+            # Recurse into the last child
+            return get_absolute_last_leaf(node.children[-1])
+
+        if self.root.children:
+            last_node = get_absolute_last_leaf(self.root.children[-1])
+            # Schedule cursor move after tree refreshes from expansions
+            self.call_after_refresh(self._focus_node, last_node)
+
+    def _focus_node(self, node: TreeNode) -> None:
+        """Move cursor to node and ensure it's visible (called after refresh)."""
+        self.move_cursor(node)
+        self.scroll_to_node(node)
+        self.focus()
 
 
 class FileTreeSelection(Message):
@@ -67,11 +137,11 @@ class FileTree(Widget):
         self.state = state
         self._agents = agents or []
         self._kb_root = Path(kb_root)
-        self._tree: Tree | None = None
+        self._tree: VimTree | None = None
 
     def compose(self):
         """Compose the tree widget."""
-        self._tree = Tree("Gaius", id="kb-tree")
+        self._tree = VimTree("Gaius", id="kb-tree")
         self._tree.show_root = False  # Hide the root node for cleaner UX
         self._tree.root.expand()
         self._populate_tree()

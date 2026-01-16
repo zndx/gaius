@@ -107,6 +107,9 @@ class ThinkPanel(Widget):
         self.state = state
         self._engine_activity = EngineActivity()
         self._poll_task: Optional[asyncio.Task] = None
+        self._cognition_stream_task: Optional[asyncio.Task] = None
+        self._evolution_stream_task: Optional[asyncio.Task] = None
+        self._streaming_active: bool = False
 
     def render(self) -> RenderableType:
         """Render the think panel content."""
@@ -171,7 +174,7 @@ class ThinkPanel(Widget):
         # Update status
         if activity.update_error:
             err_line = Text()
-            err_line.append("⚠ ", style="bold red")
+            err_line.append("[!] ", style="bold red")
             err_line.append(activity.update_error[:32], style="red")
             lines.append(err_line)
 
@@ -327,14 +330,197 @@ class ThinkPanel(Widget):
             return f"{int(seconds / 86400)}d"
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Engine Polling
+    # Engine Polling / Streaming
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        """Set up periodic engine polling."""
+        """Set up engine activity updates.
+
+        Attempts streaming first (real-time updates), falls back to polling
+        if streaming is not available.
+        """
+        # Try to start streaming, fall back to polling
+        asyncio.create_task(self._start_streaming_or_polling())
+
+    async def _start_streaming_or_polling(self) -> None:
+        """Attempt to use gRPC streaming for real-time updates.
+
+        Fail-fast: If streaming is unavailable, shows error state with
+        actionable remediation instead of silently falling back to polling.
+        """
+        try:
+            from ..client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            if not client.is_connected:
+                # Fail-fast: Show error instead of silent polling fallback
+                logger.error("gRPC client not connected - engine unavailable")
+                self._engine_activity.engine_healthy = False
+                self._engine_activity.update_error = (
+                    "Engine not connected.\n"
+                    "Guru Meditation: #THINK.00000002.NOENGINE\n"
+                    "Try: devenv processes up gaius-engine"
+                )
+                self.refresh()
+                return
+
+            # Try to start streaming - if it works, we're good
+            # Start cognition stream
+            self._cognition_stream_task = asyncio.create_task(
+                self._consume_cognition_stream(client)
+            )
+            # Start evolution stream
+            self._evolution_stream_task = asyncio.create_task(
+                self._consume_evolution_stream(client)
+            )
+
+            self._streaming_active = True
+            self._engine_activity.engine_healthy = True
+            self._engine_activity.update_error = None
+            logger.info("ThinkPanel using gRPC streaming for real-time updates")
+
+            # Do initial poll to populate state immediately
+            await self._do_poll()
+
+        except Exception as e:
+            # Fail-fast: Show error instead of silent polling fallback
+            logger.error(f"Streaming setup failed: {e}")
+            self._engine_activity.engine_healthy = False
+            self._engine_activity.update_error = (
+                f"Engine streaming unavailable: {e}\n"
+                "Guru Meditation: #THINK.00000001.STREAMFAIL\n"
+                "Try: /health fix engine"
+            )
+            self.refresh()
+
+    def _start_polling(self) -> None:
+        """Fall back to polling mode."""
+        self._streaming_active = False
         self.set_interval(self.ENGINE_POLL_INTERVAL, self._poll_engine)
-        # Also do initial poll
         asyncio.create_task(self._do_poll())
+        logger.info(
+            f"ThinkPanel using polling mode (interval={self.ENGINE_POLL_INTERVAL}s)"
+        )
+
+    async def _consume_cognition_stream(self, client) -> None:
+        """Consume cognition events and update state.
+
+        Runs continuously until cancelled. Updates engine activity state
+        from incoming CognitionEvent messages.
+        """
+        try:
+            async for event in client.subscribe_cognition():
+                event_type = event.get("type", "")
+
+                if event_type == "ERROR":
+                    logger.debug(f"Cognition stream error: {event.get('error_message')}")
+                    # Don't break - stream may recover
+                    continue
+
+                # Update activity based on event type
+                if event_type == "CYCLE_START":
+                    self._engine_activity.cognition_running = True
+                    self._engine_activity.current_task = "thinking..."
+
+                elif event_type == "CYCLE_END":
+                    self._engine_activity.cognition_running = True
+                    self._engine_activity.cycles_completed += 1
+                    self._engine_activity.current_task = None
+                    self._engine_activity.last_cycle_at = datetime.now()
+
+                elif event_type in ("THOUGHT", "PATTERN", "CONNECTION", "CURIOSITY",
+                                   "SELF_OBSERVATION", "ENGINE_AUDIT"):
+                    # Add to thoughts list (most recent first)
+                    thought = {
+                        "timestamp": datetime.fromtimestamp(
+                            event.get("timestamp_ms", 0) / 1000
+                        ),
+                        "type": event.get("thought_type", event_type.lower()),
+                        "title": event.get("title", ""),
+                        "content": event.get("content", ""),
+                    }
+                    # Prepend and limit to 10
+                    self._engine_activity.thoughts = (
+                        [thought] + self._engine_activity.thoughts
+                    )[:10]
+
+                # Mark engine as healthy since we're receiving events
+                self._engine_activity.engine_healthy = True
+                self._engine_activity.update_error = None
+                self._engine_activity.last_update = datetime.now()
+                self.refresh()
+
+        except asyncio.CancelledError:
+            logger.debug("Cognition stream cancelled")
+        except Exception as e:
+            # Fail-fast: Show error instead of silent polling fallback
+            logger.error(f"Cognition stream failed: {e}")
+            self._streaming_active = False
+            self._engine_activity.engine_healthy = False
+            self._engine_activity.update_error = (
+                f"Cognition streaming failed: {e}\n"
+                "Guru Meditation: #THINK.00000003.COGFAIL\n"
+                "Try: /health fix engine"
+            )
+            self.refresh()
+
+    async def _consume_evolution_stream(self, client) -> None:
+        """Consume evolution events and update state.
+
+        Runs continuously until cancelled. Updates engine activity state
+        from incoming EvolutionEvent messages.
+        """
+        try:
+            async for event in client.subscribe_evolution():
+                event_type = event.get("type", "")
+
+                if event_type == "ERROR":
+                    logger.debug(f"Evolution stream error: {event.get('error_message')}")
+                    continue
+
+                # Update activity based on event type
+                if event_type == "CYCLE_START":
+                    self._engine_activity.evolution_running = True
+                    self._engine_activity.next_agent = event.get("agent_id", "")
+
+                elif event_type == "CYCLE_END":
+                    self._engine_activity.evolution_running = True
+                    self._engine_activity.evolution_cycles += 1
+                    self._engine_activity.next_agent = None
+
+                elif event_type in ("OPTIMIZATION_STEP", "EVALUATION"):
+                    self._engine_activity.evolution_running = True
+                    self._engine_activity.next_agent = event.get("agent_id", "")
+
+                elif event_type == "PROMOTION":
+                    # Agent was promoted - noteworthy event
+                    self._engine_activity.evolution_running = True
+
+                # Mark engine healthy
+                self._engine_activity.engine_healthy = True
+                self._engine_activity.last_update = datetime.now()
+                self.refresh()
+
+        except asyncio.CancelledError:
+            logger.debug("Evolution stream cancelled")
+        except Exception as e:
+            # Fail-fast: Show error instead of silent degradation
+            logger.error(f"Evolution stream failed: {e}")
+            self._engine_activity.engine_healthy = False
+            self._engine_activity.update_error = (
+                f"Evolution streaming failed: {e}\n"
+                "Guru Meditation: #THINK.00000004.EVOLFAIL\n"
+                "Try: /health fix engine"
+            )
+            self.refresh()
+
+    def on_unmount(self) -> None:
+        """Clean up streaming tasks on unmount."""
+        if self._cognition_stream_task:
+            self._cognition_stream_task.cancel()
+        if self._evolution_stream_task:
+            self._evolution_stream_task.cancel()
 
     async def _poll_engine(self) -> None:
         """Trigger engine poll from interval timer."""

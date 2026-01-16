@@ -32,6 +32,8 @@ class ModelCapability(Enum):
     VISION_LANGUAGE = auto()  # Multimodal understanding
     FUNCTION_CALLING = auto()  # Tool use
     LONG_CONTEXT = auto()  # Extended context window
+    LATENT_MAS_CLT = auto()  # Cross-Layer Transcoder for latent-space operations
+    THINKING = auto()  # Model produces thinking traces (extended reasoning)
 
 
 class TaskType(Enum):
@@ -54,6 +56,13 @@ class TaskType(Enum):
     SWARM_AGENT = "swarm_agent"
     ADVERSARIAL = "adversarial"
 
+    # Interpretability / Latent operations
+    CLT_TRACING = "clt_tracing"  # Circuit tracing with CLT
+
+    # Extended capabilities (on-demand scheduling)
+    THINKING = "thinking"  # Extended reasoning with thinking traces
+    INSTRUCT = "instruct"  # Long-context instruction following
+
 
 @dataclass
 class VLLMConfig:
@@ -65,6 +74,10 @@ class VLLMConfig:
     max_num_seqs: int = 256
     dtype: str = "auto"  # "auto", "float16", "bfloat16"
     trust_remote_code: bool = False
+
+    # Startup optimization
+    enforce_eager: bool = False  # Skip CUDA graph compilation for fast startup
+    swap_space: int = 0  # Swap space in GB for KV cache overflow
 
     # Tool/reasoning support
     tool_call_parser: str | None = None  # e.g., "glm45", "hermes"
@@ -89,6 +102,10 @@ class VLLMConfig:
             args.append(f"--max-model-len={self.max_model_len}")
         if self.trust_remote_code:
             args.append("--trust-remote-code")
+        if self.enforce_eager:
+            args.append("--enforce-eager")
+        if self.swap_space > 0:
+            args.append(f"--swap-space={self.swap_space}")
         if self.tool_call_parser:
             args.append(f"--tool-call-parser={self.tool_call_parser}")
         if self.reasoning_parser:
@@ -105,6 +122,46 @@ class VLLMConfig:
         if self.attention_backend:
             env["VLLM_ATTENTION_BACKEND"] = self.attention_backend
         return env
+
+
+@dataclass
+class LlamaCppConfig:
+    """llama.cpp server configuration for CPU inference in CI.
+
+    These models are used in GitHub Actions where GPU hardware is unavailable.
+    They run on CPU with small context windows for fast, deterministic testing.
+
+    The goal is pipeline correctness, not output quality.
+    """
+
+    # Model file (GGUF format)
+    gguf_file: str  # e.g., "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+    # HuggingFace repo for download
+    hf_repo: str  # e.g., "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+
+    # Server configuration
+    context_size: int = 512  # Small context for fast CI tests
+    n_predict: int = 64  # Short completions for speed
+    threads: int = 4  # Match GitHub runner vCPUs
+    port: int = 8080
+
+    def download_command(self, local_dir: str = "./models") -> str:
+        """Generate huggingface-cli download command."""
+        return (
+            f"huggingface-cli download {self.hf_repo} {self.gguf_file} "
+            f"--local-dir {local_dir}"
+        )
+
+    def serve_command(self, model_path: str) -> str:
+        """Generate llama-server command."""
+        return (
+            f"llama-server -m {model_path}/{self.gguf_file} "
+            f"--port {self.port} "
+            f"-c {self.context_size} "
+            f"-n {self.n_predict} "
+            f"-t {self.threads}"
+        )
 
 
 @dataclass
@@ -151,6 +208,9 @@ class ModelSpec:
 
     # vLLM configuration (for local models)
     vllm_config: VLLMConfig | None = None
+
+    # llama.cpp configuration (for CI testing with tiny models)
+    llamacpp_config: LlamaCppConfig | None = None
 
     # Cost/performance
     tokens_per_second: float | None = None  # Estimated throughput
@@ -253,6 +313,7 @@ QWQ_32B = ModelSpec(
     vllm_config=VLLMConfig(
         tensor_parallel_size=4,
         max_model_len=32768,
+        max_num_seqs=32,  # Reduced for 32B model on 4x 24GB GPUs
         trust_remote_code=True,
     ),
     description="QwQ reasoning model - excels at complex analysis and chain-of-thought",
@@ -496,6 +557,26 @@ GPT4O_MINI = ModelSpec(
 )
 
 
+# Cross-Layer Transcoder (CLT) for interpretable features
+# Uses BluelightAI's circuit-tracer with Qwen3
+CLT_QWEN3_1_7B = ModelSpec(
+    model_id="bluelightai/clt-qwen3-1.7b-base-20k",
+    name="CLT Qwen3 1.7B",
+    provider="clt",  # Custom provider for CLT models
+    capabilities=[ModelCapability.LATENT_MAS_CLT],
+    task_scores={
+        TaskType.CLT_TRACING: 1.0,
+    },
+    context_length=32768,
+    parameters_b=1.7,
+    memory_mb=6000,  # ~4GB base + ~2GB CLT transcoders
+    default_temperature=0.0,  # Deterministic for interpretability
+    default_max_tokens=1024,
+    description="Cross-Layer Transcoder for Qwen3-1.7B with 20K features per layer",
+    tags=["clt", "interpretability", "circuit-tracing", "latent-mas"],
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Registry
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -566,24 +647,240 @@ DEVSTRAL_SMALL_2_24B_INSTRUCT_2512 = ModelSpec(
         ModelCapability.LONG_CONTEXT,
     ],
     task_scores={
+        TaskType.INSTRUCT: 1.0,  # Primary use: long-context instruction following
         TaskType.CHAT: 0.85,
         TaskType.CODING: 0.95,
         TaskType.SWARM_AGENT: 0.80,
     },
     context_length=262144,
     parameters_b=24.0,
-    memory_mb=15000,  # ~15GB with TP=2 (fp8 quantized)
+    memory_mb=24000,  # ~24GB FP8 weights, distributed across 4 GPUs
     default_temperature=0.7,
     default_max_tokens=2048,
-    default_port=8085,
+    default_port=8091,
     vllm_config=VLLMConfig(
-        tensor_parallel_size=2,
-        max_model_len=65536,
-        trust_remote_code=False,
+        tensor_parallel_size=4,
+        max_model_len=262144,  # Full 256K context
+        max_num_seqs=32,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,  # Skip CUDA graph compilation
+        swap_space=8,
     ),
-    description="Devstral Small 2 24B Instruct 2512 - agentic LLM for software engineering tasks with vision capabilities",
-    tags=["vllm", "safetensors", "mistral3", "mistral-common", "fp8", "agentic", "coding", "vision"],
+    description="Devstral Small 2 24B Instruct - 256K context for multi-turn instruction following",
+    tags=["vllm", "fp8", "long-context", "instruct", "coding", "256k"],
 )
+
+# OLMo3-32B-Think - Extended reasoning with thinking traces
+OLMO3_32B_THINK = ModelSpec(
+    model_id="allenai/Olmo-3-32B-Think",
+    name="OLMo3-32B-Think",
+    provider="vllm",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.THINKING,
+    ],
+    task_scores={
+        TaskType.THINKING: 1.0,  # Primary use: extended reasoning
+        TaskType.REASONING: 0.95,
+        TaskType.EVALUATION: 0.85,
+        TaskType.SYNTHESIS: 0.80,
+    },
+    context_length=65536,
+    parameters_b=32.0,
+    memory_mb=64000,  # ~64GB BF16 weights, distributed across 4 GPUs
+    default_temperature=0.6,
+    default_max_tokens=4096,
+    default_port=8090,
+    vllm_config=VLLMConfig(
+        tensor_parallel_size=4,
+        max_model_len=65536,  # Full 64K native context
+        max_num_seqs=16,
+        dtype="bfloat16",
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,  # Skip CUDA graph compilation
+        swap_space=8,
+    ),
+    description="OLMo3-32B-Think - extended reasoning with thinking traces (64K context)",
+    tags=["vllm", "thinking", "reasoning", "64k", "olmo"],
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CI Test Models (llama.cpp on CPU)
+#
+# These tiny GGUF models enable real LLM inference in GitHub Actions without GPU.
+# They map to production model families to minimize message format differences.
+#
+# Selection criteria:
+# - Official models from original vendors (Qwen, AllenAI, THUDM)
+# - Same model family as production (Qwen2.5 for Qwen3, OLMo-2 for OLMo-3)
+# - Smallest available size for fast CI (~0.5B-1B parameters)
+# - Q4_K_M quantization for balance of speed and quality
+#
+# Reference: https://github.com/ggml-org/llama.cpp/tree/master/tools/server/tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# CI test model for Qwen family (QwQ-32B, Qwen3-8B, Qwen3-Coder)
+# Uses Qwen2.5-0.5B - official Qwen GGUF, same chat template
+CI_QWEN_TINY = ModelSpec(
+    model_id="ci-test/qwen-tiny",
+    name="CI-Qwen-Tiny",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.CODING,
+    ],
+    task_scores={
+        TaskType.REASONING: 0.10,  # Low scores - only used when CI mode enabled
+        TaskType.CODING: 0.10,
+        TaskType.CHAT: 0.10,
+    },
+    context_length=512,  # Small for fast tests
+    parameters_b=0.5,
+    memory_mb=400,  # Q4_K_M ~400MB
+    default_temperature=0.7,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        hf_repo="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    ),
+    description="Tiny Qwen for CI testing - maps to QwQ-32B, Qwen3-8B, Qwen3-Coder",
+    tags=["ci", "test", "qwen", "tiny", "llamacpp"],
+)
+
+# CI test model for OLMo family (OLMo3-32B-Think)
+# Uses OLMo-2-1B - official AllenAI GGUF
+CI_OLMO_TINY = ModelSpec(
+    model_id="ci-test/olmo-tiny",
+    name="CI-OLMo-Tiny",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.THINKING,
+    ],
+    task_scores={
+        TaskType.REASONING: 0.10,
+        TaskType.THINKING: 0.10,
+        TaskType.EVALUATION: 0.10,
+    },
+    context_length=512,
+    parameters_b=1.0,
+    memory_mb=600,  # Q2_K ~600MB
+    default_temperature=0.6,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="OLMo-2-0425-1B-Q4_K_M.gguf",
+        hf_repo="allenai/OLMo-2-0425-1B-GGUF",
+    ),
+    description="Tiny OLMo for CI testing - maps to OLMo3-32B-Think",
+    tags=["ci", "test", "olmo", "tiny", "llamacpp"],
+)
+
+# CI test model for GLM family (GLM-4.6V-Flash)
+# Uses glm-edge-4b - official THUDM GGUF, smallest available
+CI_GLM_SMALL = ModelSpec(
+    model_id="ci-test/glm-small",
+    name="CI-GLM-Small",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.REASONING,
+        ModelCapability.FUNCTION_CALLING,
+    ],
+    task_scores={
+        TaskType.CHAT: 0.10,
+        TaskType.REASONING: 0.10,
+        TaskType.SWARM_AGENT: 0.10,
+    },
+    context_length=512,
+    parameters_b=4.0,
+    memory_mb=2500,  # Larger but still fits CI runner
+    default_temperature=0.7,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="glm-edge-4b-chat-q4_k_m.gguf",
+        hf_repo="THUDM/glm-edge-4b-chat-gguf",
+    ),
+    description="Small GLM for CI testing - maps to GLM-4.6V-Flash",
+    tags=["ci", "test", "glm", "small", "llamacpp"],
+)
+
+# CI test model for Mistral family (Mistral-7B)
+# Uses Mistral-7B Q2_K - smallest quantization of smallest Mistral
+CI_MISTRAL_TINY = ModelSpec(
+    model_id="ci-test/mistral-tiny",
+    name="CI-Mistral-Tiny",
+    provider="llamacpp",
+    capabilities=[
+        ModelCapability.CHAT,
+        ModelCapability.CODING,
+        ModelCapability.FUNCTION_CALLING,
+    ],
+    task_scores={
+        TaskType.CHAT: 0.10,
+        TaskType.CODING: 0.10,
+        TaskType.SWARM_AGENT: 0.10,
+    },
+    context_length=512,
+    parameters_b=7.0,
+    memory_mb=2500,  # Q2_K ~2.5GB
+    default_temperature=0.7,
+    default_max_tokens=64,
+    llamacpp_config=LlamaCppConfig(
+        gguf_file="mistral-7b-instruct-v0.2.Q2_K.gguf",
+        hf_repo="TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+    ),
+    description="Tiny Mistral for CI testing - maps to Mistral-7B",
+    tags=["ci", "test", "mistral", "tiny", "llamacpp"],
+)
+
+
+# Mapping from production model IDs to CI test equivalents
+CI_MODEL_MAPPING: dict[str, str] = {
+    # Qwen family → CI_QWEN_TINY
+    "Qwen/QwQ-32B": "ci-test/qwen-tiny",
+    "Qwen/Qwen3-8B": "ci-test/qwen-tiny",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "ci-test/qwen-tiny",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B": "ci-test/qwen-tiny",
+    # OLMo family → CI_OLMO_TINY
+    "allenai/Olmo-3-32B-Think": "ci-test/olmo-tiny",
+    # GLM family → CI_GLM_SMALL
+    "zai-org/GLM-4.6V-Flash": "ci-test/glm-small",
+    # Mistral family → CI_MISTRAL_TINY
+    "mistralai/Mistral-7B-Instruct-v0.3": "ci-test/mistral-tiny",
+    "mistralai/Devstral-Small-2-24B-Instruct-2512": "ci-test/mistral-tiny",
+    # Orchestration → Use Qwen (closest to Llama-based NVIDIA model)
+    "nvidia/Orchestrator-8B": "ci-test/qwen-tiny",
+}
+
+
+def get_ci_model(production_model_id: str) -> ModelSpec | None:
+    """Get the CI test equivalent for a production model.
+
+    Args:
+        production_model_id: The production model's HuggingFace ID
+
+    Returns:
+        CI test ModelSpec if mapping exists, None otherwise
+
+    Usage:
+        # In test fixtures
+        if os.environ.get("GAIUS_CI_MODE"):
+            model = get_ci_model("Qwen/QwQ-32B") or CI_QWEN_TINY
+    """
+    ci_model_id = CI_MODEL_MAPPING.get(production_model_id)
+    if ci_model_id == "ci-test/qwen-tiny":
+        return CI_QWEN_TINY
+    elif ci_model_id == "ci-test/olmo-tiny":
+        return CI_OLMO_TINY
+    elif ci_model_id == "ci-test/glm-small":
+        return CI_GLM_SMALL
+    elif ci_model_id == "ci-test/mistral-tiny":
+        return CI_MISTRAL_TINY
+    return None
 
 
 class ModelRegistry:
@@ -609,12 +906,16 @@ class ModelRegistry:
             GLM_46V_FLASH,
             MISTRAL_7B,
             QWEN3_CODER,
+            # On-demand capabilities (thinking + instruct)
+            OLMO3_32B_THINK,
             # Embedding models
             NOMIC_EMBED_TEXT,
             NOMIC_EMBED_VISION,
             # API models
             GROK_2,
             GPT4O_MINI,
+            # CLT models (interpretability)
+            CLT_QWEN3_1_7B,
         ]
         for model in defaults:
             self.register(model)
@@ -649,7 +950,7 @@ class ModelRegistry:
         task: TaskType,
         require_local: bool = False,
         exclude_providers: list[str] | None = None,
-    ) -> ModelSpec | None:
+    ) -> ModelSpec:
         """Get the best model for a task.
 
         Args:
@@ -658,7 +959,10 @@ class ModelRegistry:
             exclude_providers: Providers to exclude
 
         Returns:
-            Best matching ModelSpec or None
+            Best matching ModelSpec
+
+        Raises:
+            RuntimeError: If no model is registered for the task
         """
         exclude = set(exclude_providers or [])
         if require_local:
@@ -671,7 +975,11 @@ class ModelRegistry:
             if model.provider not in exclude:
                 return model
 
-        return None
+        raise RuntimeError(
+            f"No model registered for task: {task.name}\n"
+            f"  Register a model with task_scores[{task.name}] > 0\n"
+            f"  Guru Meditation: #MOD.00000001.NOTASK"
+        )
 
     def get_all_for_task(self, task: TaskType) -> list[ModelSpec]:
         """Get all models that support a task, sorted by score."""
@@ -710,7 +1018,11 @@ def get_model_for_task(
     task: TaskType,
     require_local: bool = False,
     exclude_providers: list[str] | None = None,
-) -> ModelSpec | None:
-    """Convenience function to get best model for a task."""
+) -> ModelSpec:
+    """Convenience function to get best model for a task.
+
+    Raises:
+        RuntimeError: If no model is registered for the task
+    """
     registry = get_model_registry()
     return registry.get_for_task(task, require_local, exclude_providers)

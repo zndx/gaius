@@ -12,19 +12,53 @@ Thresholds:
 - RPN > 400: Manual intervention required
 """
 
-from .models import RPNScore, FailureMode, ActionPolicy, FMEAIncident, EscalationTier
+from .models import (
+    RPNScore,
+    FailureMode,
+    ActionPolicy,
+    FMEAIncident,
+    EscalationTier,
+    AnalysisOrder,
+    RCAClassification,
+    RCAObservation,
+    RCAResult,
+)
 from .engine import FMEAEngine
 from .loader import HEALTH_CHECK_TO_FMEA, map_health_check_to_failure_mode
 from .learning import AdaptiveLearner
+from .registry import (
+    FMEA_REGISTRY,
+    FMEAMapping,
+    get_fmea_by_id,
+    get_fmea_for_check,
+    get_fmea_for_heuristic,
+    get_heuristics_for_fmea,
+    incident_matches_check,
+)
 
 __all__ = [
+    # FMEA core
     "RPNScore",
     "FailureMode",
     "ActionPolicy",
     "FMEAIncident",
     "EscalationTier",
+    # RCA (Root Cause Analysis)
+    "AnalysisOrder",
+    "RCAClassification",
+    "RCAObservation",
+    "RCAResult",
+    # Engine and utilities
     "FMEAEngine",
     "AdaptiveLearner",
     "HEALTH_CHECK_TO_FMEA",
     "map_health_check_to_failure_mode",
+    # Registry (consolidated mapping)
+    "FMEA_REGISTRY",
+    "FMEAMapping",
+    "get_fmea_by_id",
+    "get_fmea_for_check",
+    "get_fmea_for_heuristic",
+    "get_heuristics_for_fmea",
+    "incident_matches_check",
 ]

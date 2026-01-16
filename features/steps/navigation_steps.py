@@ -129,13 +129,13 @@ def step_overlay_mode_is(context, mode):
     """Set the overlay mode."""
     from gaius.core.state import OverlayMode
 
+    # Updated to match current OverlayMode values (differential geometry design)
     mode_map = {
         "none": OverlayMode.NONE,
-        "risk": OverlayMode.RISK,
-        "h1": OverlayMode.H1,
-        "h2": OverlayMode.H2,
+        "topology": OverlayMode.TOPOLOGY,    # H0/H1/H2 (components, loops, voids)
+        "geometry": OverlayMode.GEOMETRY,    # Curvature (boundaries vs interiors)
+        "dynamics": OverlayMode.DYNAMICS,    # Gradient field + divergence
         "agents": OverlayMode.AGENTS,
-        "temporal": OverlayMode.TEMPORAL,
     }
     context.app.state.overlay_mode = mode_map[mode.lower()]
 

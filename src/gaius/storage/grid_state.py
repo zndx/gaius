@@ -25,11 +25,15 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..core.projection import GridData, GridPoint
-    from ..core.tda import TDAFeatures, BoundingBox
+    from ..core.tda import TDAFeatures, BoundingBox, PersistenceInterval
     from ..core.geometry import GeometricFeatures
 
 # Lazy import asyncpg
 _asyncpg = None
+
+# Database availability cache (check once, don't spam logs)
+_db_available: bool | None = None
+_db_check_error: str | None = None
 
 
 def _get_asyncpg():
@@ -39,6 +43,84 @@ def _get_asyncpg():
         import asyncpg
         _asyncpg = asyncpg
     return _asyncpg
+
+
+def is_database_available() -> bool:
+    """Check if database is available (cached result).
+
+    Returns cached result after first check to avoid spamming connection attempts.
+    Call reset_database_availability() to force re-check.
+    """
+    return _db_available is True
+
+
+def get_database_unavailable_reason() -> str | None:
+    """Get the reason database is unavailable, if any."""
+    return _db_check_error
+
+
+def reset_database_availability() -> None:
+    """Reset cached database availability to force re-check."""
+    global _db_available, _db_check_error
+    _db_available = None
+    _db_check_error = None
+
+
+async def check_database_availability() -> bool:
+    """Check if database is available and cache the result.
+
+    This should be called once at startup. Subsequent calls return cached result.
+    """
+    global _db_available, _db_check_error
+
+    if _db_available is not None:
+        return _db_available
+
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    try:
+        conn = await asyncpg.connect(url, timeout=5)
+        await conn.close()
+        _db_available = True
+        _db_check_error = None
+        logger.info("Database connection verified")
+        return True
+    except Exception as e:
+        _db_available = False
+        _db_check_error = str(e)
+        # Log once, not on every operation
+        logger.warning(
+            f"Database unavailable: {e}\n"
+            "Guru Meditation: #DB.00000001.CONNFAIL\n"
+            "Session persistence and fast state loading disabled.\n"
+            "Start PostgreSQL: devenv up postgres"
+        )
+        return False
+
+
+def check_database_availability_sync() -> bool:
+    """Synchronous check for database availability (cached result).
+
+    If not yet checked, performs a blocking check. Otherwise returns cached result.
+    """
+    global _db_available, _db_check_error
+
+    if _db_available is not None:
+        return _db_available
+
+    import asyncio
+
+    # Check if we're inside a running event loop
+    try:
+        asyncio.get_running_loop()
+        # Running inside event loop - can't do sync check, assume unavailable until async check
+        return False
+    except RuntimeError:
+        pass
+
+    # Not in event loop, can run async check
+    return asyncio.run(check_database_availability())
 
 
 def get_database_url() -> str:
@@ -886,7 +968,7 @@ def _dict_to_interval(d: dict) -> "PersistenceInterval":
         dimension=d["dimension"],
         birth=d["birth"],
         death=d["death"],
-        persistence=d.get("persistence", d["death"] - d["birth"]),
+        # persistence is a computed property, not a constructor parameter
     )
 
 
@@ -960,8 +1042,12 @@ async def load_current_state_fast(kb_root: str) -> CurrentState | None:
         kb_root: KB root directory
 
     Returns:
-        CurrentState if found, None otherwise
+        CurrentState if found, None otherwise (silently if DB unavailable)
     """
+    # Check if database is available (cached check, logs once)
+    if not await check_database_availability():
+        return None
+
     asyncpg = _get_asyncpg()
     url = get_database_url()
 
@@ -1013,7 +1099,8 @@ async def load_current_state_fast(kb_root: str) -> CurrentState | None:
             await conn.close()
 
     except Exception as e:
-        logger.warning(f"Load current state failed: {e}")
+        # Unexpected error after availability check passed - log it
+        logger.warning(f"Load current state failed unexpectedly: {e}")
         return None
 
 

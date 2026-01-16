@@ -40,6 +40,53 @@ def get_database_url() -> str:
 
 
 # =============================================================================
+# Connection Pool Management
+# =============================================================================
+
+# Global connection pool (singleton pattern)
+_pool: Any = None
+
+
+async def get_pool() -> Any:
+    """Get or create the global asyncpg connection pool.
+
+    Uses a singleton pattern to reuse the pool across calls.
+    Creates a pool with min_size=1, max_size=10.
+
+    Returns:
+        asyncpg.Pool instance
+
+    Raises:
+        RuntimeError: If pool creation fails
+    """
+    global _pool
+    if _pool is not None:
+        return _pool
+
+    asyncpg = _get_asyncpg()
+    url = get_database_url()
+
+    _pool = await asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=10,
+    )
+    return _pool
+
+
+# Alias for internal use (deprecated - use get_pool instead)
+_get_pool = get_pool
+
+
+async def close_pool() -> None:
+    """Close the global connection pool if open."""
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
+
+# =============================================================================
 # Data Classes
 # =============================================================================
 

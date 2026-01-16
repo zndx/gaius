@@ -10,6 +10,14 @@ Gaius renders knowledge bases and document collections as spatial layouts, using
 
 Named after Gaius Plinius Secundus (Pliny the Elder).
 
+## Philosophy
+
+The Gaius Project deliberately supports continuous agent collaboration at every level. Dynamic agent interaction spans all components: from knowledge base analysis with local SLM swarms, to operations-oriented agents powered by special purpose models (Orchestrator-8B, Magma-8B), to periodic content-informed reasoning and reflection.
+
+This extends to long-term codebase development itself, in collaboration with Claude Code. This is a deliberate departure from the traditional paradigm where software is developed to a point release, then packaged for end users. Gaius is intended to be cloned, not packaged—engineered to provide a foundation for agent collaboration in any knowledge domain, such that the codebase and model suite can be adaptively co-developed *in situ* through Rapid Agent Systems Engineering (RASE).
+
+Central to RASE is *intrinsic verifiability*: the operational environment itself serves as the verification oracle, enabling autonomous capability development without external labeling dependencies.
+
 ## Prerequisites
 
 - Python 3.12+
@@ -54,22 +62,7 @@ Gaius enforces a **secure-by-default** inference architecture. All inference req
 - Audit logging
 - Resource management and rate limiting
 
-**Direct HTTP access to optillm/vLLM is disabled by default.** The TUI and CLI will fail to start if the gRPC engine is unavailable.
-
-For development and debugging, fallbacks can be explicitly enabled:
-
-```bash
-# Enable direct HTTP fallbacks (dev/debug only)
-export GAIUS_ALLOW_FALLBACKS=true
-```
-
-When fallbacks are enabled, a warning is logged:
-```
-FALLBACK: Using direct HTTP to optillm/vLLM - bypasses gRPC auth/authz.
-This is enabled via GAIUS_ALLOW_FALLBACKS=true (dev/debug mode).
-```
-
-**Production deployments should never set `GAIUS_ALLOW_FALLBACKS=true`**. The gRPC engine provides the security boundary for enterprise operations.
+All clients (TUI, CLI, MCP) connect to the engine via gRPC. The engine must be running for any client to function.
 
 ## Usage
 
@@ -86,15 +79,62 @@ uv run gaius-cli --cmd "/state" --format json
 
 ## Key Bindings
 
+### Global Navigation
+
 | Key | Action |
 |-----|--------|
-| `hjkl` | Navigate grid |
+| `hjkl` | Navigate grid cursor |
+| `g` | Cycle center panels (Graph → Think → Evolve → Observe) |
 | `v` | Cycle view modes |
 | `o` | Cycle overlays |
-| `g` | Toggle center panel (Graph/Think) |
-| `[` `]` | Toggle side panels |
-| `/` | Command input |
-| `?` | Help |
+| `[` | Toggle left panel (FileTree) |
+| `]` | Toggle right panel (Info) |
+| `\` | Toggle both side panels |
+| `/` | Enter command mode |
+| `?` | Show help |
+| `q` | Quit |
+
+### FileTree (Left Panel)
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Navigate tree items |
+| `Enter` | Open selected file |
+| `Space` | Expand/collapse folder |
+| `G` | Jump to last item (expands folders to find deepest leaf) |
+| `Ctrl-F` | Page down (half page) |
+| `Ctrl-BB` | Page up (half page) — requires double-press, known bug |
+
+### Editor Panel (Normal Mode)
+
+Vim-style modal editing for KB files.
+
+| Key | Action |
+|-----|--------|
+| `i` | Insert at cursor |
+| `I` | Insert at line beginning |
+| `a` | Append after cursor |
+| `A` | Append at line end |
+| `o` | Open line below |
+| `O` | Open line above |
+| `ESC` | Exit insert mode → normal mode |
+| `:q` | Close editor |
+| `:wq` | Save and close (auto-saves, so same as :q) |
+| `:<number>` | Go to line number (e.g., `:42`) |
+| `:mv <path>` | Move file to path |
+| `:rename [name]` | Move to scratch with optional name |
+
+### Editor Panel (Navigation)
+
+Works in both normal and insert modes.
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` `←` `→` | Scroll viewport (browser-style) |
+| `Ctrl-F` | Page down |
+| `Ctrl-B` | Page up |
+| `G` | Jump to end of document |
+| `hjkl` | Pass through to main grid (normal mode only) |
 
 ## Commands
 
@@ -109,6 +149,13 @@ uv run gaius-cli --cmd "/state" --format json
 | `/activity` | View activity log |
 | `/tda` | Show topological features |
 | `/reindex` | Refresh embeddings |
+| `/ambient status` | Show ambient workload daemon status |
+| `/ambient start` | Start ambient background processing |
+| `/ambient stop` | Stop ambient background processing |
+| `/ambient buffer` | Export buffered content to zettelkasten note |
+| `/gpu status` | Show GPU endpoint status |
+| `/health` | Run health diagnostics |
+| `/health fix <svc>` | Auto-remediate unhealthy service |
 
 ## Layout
 

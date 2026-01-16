@@ -225,13 +225,34 @@ class ModelRouter:
         if "max_tokens" not in kwargs:
             kwargs["max_tokens"] = phase_config.max_tokens
 
-        # Get inference client and call
+        # Get inference client and call via gRPC
         try:
-            from . import get_client, Message
+            from gaius.client import get_grpc_client
 
-            client = get_client()
-            return await client.complete(
-                [Message(role="user", content=prompt)], **kwargs
+            client = await get_grpc_client()
+            result = await client.call(
+                service="Scheduler",
+                action="complete",
+                params={
+                    "prompt": prompt,
+                    "agent": "instruct",
+                    "max_tokens": kwargs.get("max_tokens", phase_config.max_tokens),
+                    "temperature": kwargs.get("temperature", 0.7),
+                },
+            )
+
+            # Return a response-like object for compatibility
+            from dataclasses import dataclass
+
+            @dataclass
+            class RouterResponse:
+                content: str
+                model: str
+                error: str = ""
+
+            return RouterResponse(
+                content=result.get("content", ""),
+                model=result.get("model", config.model),
             )
         except Exception as e:
             # Return error response
@@ -311,7 +332,7 @@ class EndpointRouterConfig:
 
     endpoints: dict[str, EndpointConfig] = field(default_factory=dict)
     model_routing: dict[str, str] = field(default_factory=dict)
-    default_endpoint: str = "coding"
+    default_endpoint: str = "instruct"
     failover_enabled: bool = True
 
 
@@ -354,6 +375,8 @@ class EndpointRouter:
             from ..core.config import get_config
 
             app_config = get_config()
+            if app_config._raw is None:
+                return EndpointRouterConfig()
             inference = app_config._raw.get("gaius", {}).get("inference", {})
 
             endpoints_raw = inference.get("endpoints", {})
@@ -392,13 +415,15 @@ class EndpointRouter:
         model_to_endpoint = {
             "orchestrator": "orchestrator",
             "nvidia/Orchestrator": "orchestrator",
-            "Mistral-7B": "fast",
-            "mistralai/Mistral": "fast",
+            "Devstral": "instruct",
+            "mistralai/Devstral": "instruct",
+            "Mistral-7B": "instruct",
+            "mistralai/Mistral": "instruct",
             "DeepSeek-R1": "reasoning",
             "deepseek-ai/DeepSeek-R1": "reasoning",
             "QwQ": "reasoning",
-            "Qwen2.5-Coder": "coding",
-            "Qwen/Qwen2.5-Coder": "coding",
+            "Qwen2.5-Coder": "instruct",
+            "Qwen/Qwen2.5-Coder": "instruct",
         }
 
         def get_endpoint_name(model_id: str) -> str:
@@ -666,97 +691,23 @@ class EndpointRouter:
                         f"Engine could not start {endpoint}: {result.get('message', result.get('status'))}"
                     )
                     return False
+            else:
+                # Engine proxy not enabled - cannot start endpoints without engine
+                logger.debug(f"Engine proxy not enabled, cannot start {endpoint}")
+                return False
 
         except (ConnectionError, ImportError) as e:
-            logger.debug(f"Engine client unavailable: {e}, falling back to legacy")
-        except Exception as e:
-            logger.debug(f"Engine client error: {e}, falling back to legacy")
-
-        # Fallback to legacy direct orchestrator (for backwards compatibility)
-        logger.warning("LEGACY_FALLBACK: _try_start_endpoint_on_demand bypassing engine - tech debt")
-        try:
-            from .orchestrator import get_orchestrator
-
-            orch = get_orchestrator()
-
-            # Check if endpoint config exists
-            if endpoint not in orch._endpoints_config:
-                logger.debug(f"Endpoint {endpoint} not in orchestrator config")
-                return False
-
-            config = orch._endpoints_config[endpoint]
-            required_gpus = config.tensor_parallel or 1
-
-            # Check for available GPUs using nvidia-smi directly
-            import subprocess
-
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True,
-                text=True,
-                timeout=5,
+            # Engine Federation Architecture: fail-fast when engine unavailable
+            logger.warning(
+                f"Engine not available for endpoint start (#GR.00000001.ENGINEOFF): {e}. "
+                "GPU orchestration requires the engine gRPC service."
             )
-
-            if result.returncode != 0:
-                return False
-
-            # Find GPUs with minimal memory usage (<1GB = likely idle)
-            idle_gpus = []
-            for line in result.stdout.strip().split("\n"):
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    gpu_id = int(parts[0].strip())
-                    mem_used = int(parts[1].strip())
-                    if mem_used < 1000:  # Less than 1GB used
-                        idle_gpus.append(gpu_id)
-
-            # Check for consecutive idle GPUs if tensor_parallel > 1
-            if required_gpus > 1:
-                idle_gpus.sort()
-                found_contiguous = False
-                for i in range(len(idle_gpus) - required_gpus + 1):
-                    if all(idle_gpus[i + j] == idle_gpus[i] + j for j in range(required_gpus)):
-                        found_contiguous = True
-                        break
-
-                if not found_contiguous:
-                    logger.info(
-                        f"Cannot start {endpoint}: need {required_gpus} consecutive GPUs, "
-                        f"found {len(idle_gpus)} idle GPUs (non-contiguous)"
-                    )
-                    return False
-            elif len(idle_gpus) < required_gpus:
-                logger.info(
-                    f"Cannot start {endpoint}: need {required_gpus} GPUs, "
-                    f"only {len(idle_gpus)} idle"
-                )
-                return False
-
-            # Start the endpoint
-            logger.info(f"Starting {endpoint} endpoint on-demand (legacy mode)")
-            success = await orch.start_endpoint(endpoint)
-
-            if success:
-                ep_config = orch._endpoints_config[endpoint]
-                new_endpoint = EndpointConfig(
-                    name=endpoint,
-                    url=ep_config.url,
-                    models=ep_config.models,
-                    gpus=list(range(required_gpus)),
-                    tensor_parallel=ep_config.tensor_parallel,
-                )
-                self.config.endpoints[endpoint] = new_endpoint
-                self._clients[endpoint] = AsyncOpenAI(
-                    api_key=new_endpoint.api_key,
-                    base_url=new_endpoint.url,
-                    timeout=60,
-                )
-                logger.info(f"Successfully started {endpoint} endpoint (legacy mode)")
-
-            return success
-
+            return False
         except Exception as e:
-            logger.debug(f"Failed to start {endpoint} on-demand: {e}")
+            logger.warning(
+                f"Engine call failed (#GR.00000002.CALLF): {e}. "
+                "Check engine health: /health"
+            )
             return False
 
     async def _failover_complete(
@@ -776,7 +727,7 @@ class EndpointRouter:
             self.config.endpoints[failed_endpoint].healthy = False
 
         # First, try to start the failed endpoint on-demand if it's a known endpoint
-        if failed_endpoint in ("orchestrator", "coding", "reasoning", "fast"):
+        if failed_endpoint in ("orchestrator", "instruct", "reasoning"):
             if await self._try_start_endpoint_on_demand(failed_endpoint):
                 # Endpoint started - retry the original request
                 try:

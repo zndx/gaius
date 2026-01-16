@@ -32,7 +32,10 @@ import functools
 import os
 import socket
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gaius.core.config import TelemetryConfig
 
 # Lazy imports to avoid dependency issues if OTel not installed
 _tracer = None
@@ -453,6 +456,33 @@ def record_swarm_round(agent_count: int, domain: str) -> None:
             "domain": domain,
         },
     )
+
+
+# =============================================================================
+# Semantic Attributes for XB Auth Event Tracing
+# =============================================================================
+
+
+class XBAuthAttrs:
+    """Semantic attributes for XB auth event tracing.
+
+    These follow OTel semantic conventions for custom attributes.
+    Used to trace the complete XB auth event propagation chain:
+      trigger -> emit -> broadcast -> panel_update
+    """
+
+    # Event information
+    EVENT_TYPE = "xb.event_type"  # XB_AUTH_COMPLETED, XB_AUTH_FAILED, etc.
+    IS_TEST = "xb.is_test"  # True if this is a simulated test event
+
+    # User information
+    USER_ID = "xb.user_id"  # X user ID
+    USERNAME = "xb.username"  # @handle
+
+    # Propagation context
+    SUBSCRIBER_COUNT = "xb.subscriber_count"  # Number of InitStream subscribers
+    TRACE_ID = "xb.trace_id"  # Links async spans across boundaries
+    SPAN_ID = "xb.span_id"  # Parent span for linking
 
 
 def flush_telemetry(timeout_ms: int = 5000) -> bool:

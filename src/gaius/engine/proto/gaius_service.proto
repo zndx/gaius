@@ -10,6 +10,85 @@ package gaius.engine;
 import "google/protobuf/empty.proto";
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Common Enums
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Status of a vLLM/inference endpoint process
+enum ProcessStatus {
+  PROCESS_STATUS_UNSPECIFIED = 0;
+  PROCESS_STATUS_STOPPED = 1;
+  PROCESS_STATUS_STARTING = 2;
+  PROCESS_STATUS_HEALTHY = 3;
+  PROCESS_STATUS_UNHEALTHY = 4;
+  PROCESS_STATUS_STOPPING = 5;
+  PROCESS_STATUS_FAILED = 6;
+  PROCESS_STATUS_PENDING = 7;  // Queued for startup, waiting for another endpoint to finish starting
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Health FSM - Authoritative State Definitions
+// All health-related code MUST use these enums, not string literals
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Check result status (point-in-time health observation)
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  CHECK_STATUS_PASS = 1;        // Check passed, no issue
+  CHECK_STATUS_WARN = 2;        // Warning level, non-blocking
+  CHECK_STATUS_FAIL = 3;        // Failure, triggers incident
+  CHECK_STATUS_SKIP = 4;        // Skipped (e.g., upstream dependency failed)
+}
+
+// Incident lifecycle status (FSM states)
+enum IncidentStatus {
+  INCIDENT_STATUS_UNSPECIFIED = 0;
+  INCIDENT_STATUS_ACTIVE = 1;          // Detected, awaiting remediation
+  INCIDENT_STATUS_HEALING = 2;         // Remediation in progress
+  INCIDENT_STATUS_RECOVERING = 3;      // Remediation succeeded, verifying stability
+  INCIDENT_STATUS_RESOLVED = 4;        // Incident closed successfully
+  INCIDENT_STATUS_MANUAL_REQUIRED = 5; // Escalated, requires human intervention
+}
+
+// Remediation tier (FMEA-driven escalation ladder)
+enum RemediationTier {
+  REMEDIATION_TIER_UNSPECIFIED = 0;
+  REMEDIATION_TIER_0 = 1;  // Automatic, no approval needed
+  REMEDIATION_TIER_1 = 2;  // Automatic with validation
+  REMEDIATION_TIER_2 = 3;  // Requires user approval
+  REMEDIATION_TIER_3 = 4;  // Manual intervention (ACP/GitHub escalation)
+}
+
+// Valid FSM transitions - codifies the state machine
+// Use for OTel tracing and audit logs
+enum IncidentTransition {
+  INCIDENT_TRANSITION_UNSPECIFIED = 0;
+
+  // Forward transitions
+  INCIDENT_TRANSITION_ACTIVE_TO_HEALING = 1;      // Remediation started
+  INCIDENT_TRANSITION_ACTIVE_TO_RECOVERING = 2;   // Spontaneous recovery
+  INCIDENT_TRANSITION_HEALING_TO_RECOVERING = 3;  // Remediation succeeded
+  INCIDENT_TRANSITION_HEALING_TO_MANUAL = 4;      // Escalated to tier 3
+  INCIDENT_TRANSITION_RECOVERING_TO_RESOLVED = 5; // Verification passed
+
+  // Regression (Fail Open - this is expected)
+  INCIDENT_TRANSITION_RECOVERING_TO_ACTIVE = 6;   // Verification failed, health regressed
+}
+
+// Maps FMEA failure mode IDs to KB heuristic paths
+// This fixes the matching gap that causes stuck incidents
+message FailureModeMapping {
+  string fmea_id = 1;           // e.g., "GPU_001"
+  string heuristic_path = 2;    // e.g., "inference/gpu_memory_exhausted"
+  string check_name_pattern = 3; // Regex for fallback matching
+  string endpoint_pattern = 4;   // Regex for endpoint matching
+}
+
+// Registry loaded from KB on startup
+message FailureModeRegistry {
+  repeated FailureModeMapping mappings = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Orchestrator Service Messages
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -30,7 +109,7 @@ message GPUAllocation {
 message EndpointInfo {
   string name = 1;
   string model = 2;
-  string status = 3;  // "running", "stopped", "starting", "error"
+  ProcessStatus status = 3;  // Endpoint process status
   repeated int32 gpu_ids = 4;
   int32 port = 5;
 }
@@ -129,6 +208,15 @@ message SchedulerStatusResponse {
   map<string, int32> jobs_by_priority = 4;
 }
 
+// XAI API budget status
+message XAIBudgetResponse {
+  int32 daily_used = 1;      // Requests used today
+  int32 daily_limit = 2;     // Daily request limit
+  int32 weekly_used = 3;     // Requests used this week
+  int32 weekly_limit = 4;    // Weekly request limit
+  string reset_at = 5;       // ISO timestamp when daily budget resets
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Swarm Streaming Messages
 // ═══════════════════════════════════════════════════════════════════════════
@@ -137,6 +225,7 @@ message SwarmStreamRequest {
   string domain = 1;            // Domain to analyze (e.g., "pension", "kudu")
   string context = 2;           // Additional context
   repeated string roles = 3;    // Agent roles (empty = all core roles)
+  bool clt = 4;                 // Use CLT-enhanced swarm with interpretable features
 }
 
 // Streaming events for swarm execution progress
@@ -239,6 +328,36 @@ message TriggerCognitionResponse {
   int32 curiosities_generated = 5;
   int32 duration_ms = 6;
   string error = 7;
+  int32 self_observations = 8;
+  string kb_path = 9;  // Path to zettelkasten file where thoughts were saved
+  int32 tokens_out = 10;  // Output tokens used by LLM for thought generation
+}
+
+// Self-observation - meta-cognition on recent thoughts
+message SelfObservationRequest {
+  int32 max_observations = 1;  // Default: 5
+}
+
+message SelfObservationResponse {
+  bool success = 1;
+  int32 observations_generated = 2;
+  int32 duration_ms = 3;
+  string error = 4;
+  repeated string observation_ids = 5;
+}
+
+// Engine audit - health analysis and anomaly detection
+message EngineAuditRequest {
+  bool include_metrics = 1;  // Include detailed metrics in response
+}
+
+message EngineAuditResponse {
+  bool success = 1;
+  int32 observations_recorded = 2;
+  int32 anomalies_found = 3;
+  int32 duration_ms = 4;
+  string error = 5;
+  repeated string anomaly_details = 6;
 }
 
 message CognitionActivityResponse {
@@ -248,6 +367,100 @@ message CognitionActivityResponse {
   string current_task = 4;
   int32 thoughts_today = 5;
   int32 active_thoughts = 6;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cognition Streaming Messages (TUI Real-time Updates)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to subscribe to cognition events
+message CognitionStreamRequest {
+  int32 buffer_size = 1;           // Max events to buffer (default: 100)
+  repeated string event_types = 2;  // Filter by types (empty = all)
+}
+
+// Streaming cognition event - pushed to TUI/MCP clients
+message CognitionEvent {
+  enum Type {
+    CYCLE_START = 0;       // Cognition cycle beginning
+    THOUGHT = 1;           // New thought generated
+    PATTERN = 2;           // Pattern detected
+    CONNECTION = 3;        // Connection found
+    CURIOSITY = 4;         // Curiosity generated
+    SELF_OBSERVATION = 5;  // Meta-cognition thought
+    ENGINE_AUDIT = 6;      // Engine audit completed
+    CYCLE_END = 7;         // Cognition cycle complete
+    ERROR = 8;             // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string thought_id = 3;           // UUID of thought (for THOUGHT events)
+  string thought_type = 4;         // "pattern", "connection", etc.
+  string title = 5;                // Thought title
+  string summary = 6;              // Brief summary (truncated for streaming)
+  float salience = 7;              // 0.0-1.0 importance score
+  int32 generation = 8;            // Thought generation number
+  string cycle_id = 9;             // UUID of current cycle
+  int32 thoughts_in_cycle = 10;    // Thoughts generated so far in this cycle
+  string error = 11;               // Error message if type=ERROR
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Evolution Streaming Messages (TUI Real-time Updates)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to subscribe to evolution events
+message EvolutionStreamRequest {
+  string agent_filter = 1;         // Filter by agent ID (empty = all agents)
+  int32 buffer_size = 2;           // Max events to buffer (default: 100)
+}
+
+// Streaming evolution event - pushed to TUI/MCP clients
+message EvolutionEvent {
+  enum Type {
+    CYCLE_START = 0;       // Evolution cycle beginning
+    EVALUATION_START = 1;  // Evaluating an agent version
+    EVALUATION_DONE = 2;   // Evaluation complete with score
+    PROMOTION = 3;         // Version promoted to active
+    ROLLBACK = 4;          // Rolled back to previous version
+    MERGE_START = 5;       // Model merge beginning
+    MERGE_DONE = 6;        // Model merge complete
+    TASK_IDEATION = 7;     // New task concepts generated
+    CALIBRATION = 8;       // Calibration cycle completed
+    CYCLE_END = 9;         // Evolution cycle complete
+    ERROR = 10;            // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string agent_id = 3;             // Agent being evolved
+  string version_id = 4;           // Version being evaluated/promoted
+  float score = 5;                 // Evaluation score (0.0-1.0)
+  float improvement_pct = 6;       // Improvement percentage
+  string details = 7;              // Human-readable details
+  int32 cycle_number = 8;          // Cycle number in current session
+  string merge_id = 9;             // Merge ID for MERGE_* events
+  string error = 10;               // Error message if type=ERROR
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Activity Streaming Messages (Unified Feed)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to subscribe to all activity (cognition + evolution + system)
+message ActivityStreamRequest {
+  int32 buffer_size = 1;           // Max events to buffer (default: 100)
+  repeated string domains = 2;     // Filter by domain (empty = all)
+}
+
+// Unified activity event
+message ActivityEvent {
+  string event_type = 1;           // "cognition", "evolution", "system", "kb"
+  int64 timestamp_ms = 2;
+  string source = 3;               // Service that generated event
+  string domain = 4;               // Domain context
+  string title = 5;                // Brief title
+  string summary = 6;              // Human-readable summary
+  bytes data = 7;                  // JSON payload with full details
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -327,6 +540,36 @@ message EmbedTextsResponse {
   repeated EmbeddingVector embeddings = 1;
   string model_used = 2;
   int32 latency_ms = 3;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Semantic Search Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+message SemanticSearchRequest {
+  string query = 1;                    // Search query text
+  string collection = 2;               // Collection name (default: "kb")
+  int32 limit = 3;                     // Max results (default: 10)
+  float min_score = 4;                 // Minimum score threshold
+  bool use_maxsim = 5;                 // Use MaxSim scoring (default: true)
+  string content_type = 6;             // Filter: "text", "image", or "" for all
+}
+
+message SearchResult {
+  string path = 1;                     // KB path
+  string title = 2;                    // Document title
+  float score = 3;                     // MaxSim similarity score
+  string snippet = 4;                  // Content preview (truncated)
+  string chunk_id = 5;                 // Chunk identifier for citation
+  string content_type = 6;             // "text" or "image"
+}
+
+message SemanticSearchResponse {
+  repeated SearchResult results = 1;
+  int32 total = 2;
+  string collection = 3;
+  string embedding_model = 4;          // "colnomic"
+  int32 latency_ms = 5;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -422,6 +665,10 @@ message InitEvent {
     HEALTH_OK = 9;          // Response to HEALTH command
     QUEUED = 10;            // Command queued (needs endpoint to execute)
     ERROR = 11;             // Error occurred
+    // X Bookmarks events (pushed to TUI for real-time auth status updates)
+    XB_AUTH_COMPLETED = 12; // X Bookmarks OAuth completed successfully
+    XB_AUTH_FAILED = 13;    // X Bookmarks OAuth failed
+    XB_STATUS_CHANGED = 14; // X Bookmarks sync/queue status changed
   }
   Type type = 1;
   int64 timestamp_ms = 2;   // Event timestamp
@@ -429,7 +676,7 @@ message InitEvent {
   float progress = 4;       // Progress 0.0-1.0
   string endpoint = 5;      // Related endpoint name
   string message = 6;       // Human-readable message
-  bytes data = 7;           // JSON for complex payloads (health data, etc.)
+  bytes data = 7;           // JSON for complex payloads (health data, XB auth info, etc.)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -872,6 +1119,913 @@ message LineageEdge {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ThetaAgent Messages (Neuromorphic Consolidation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Consolidation request - NVAR-mediated cross-temporal linking
+message ThetaConsolidateRequest {
+  string temporal_slice = 1;      // Slice ID (e.g., "2025-W52"). Empty = current week
+  int32 max_candidates = 2;       // Max subsumption candidates to evaluate (default: 10)
+  bool research_mode = 3;         // Bypass KG cost threshold (default: true)
+}
+
+// Consolidation response
+message ThetaConsolidateResponse {
+  bool success = 1;
+  string slice_id = 2;
+
+  // NVAR signal
+  float urgency = 3;              // Consolidation urgency [0, 1]
+  float drift = 4;                // Embedding drift from prediction
+
+  // Subsumption results
+  int32 candidates_evaluated = 5;
+  int32 candidates_selected = 6;
+  int32 documents_augmented = 7;
+
+  // Error handling
+  string error = 8;
+  string guru_meditation = 9;     // Guru code if DeepOnto unavailable
+}
+
+// Consolidation statistics request
+message ThetaConsolidationStatsRequest {}
+
+// Consolidation statistics
+message ThetaConsolidationStatsResponse {
+  // NVAR dynamics
+  int32 nvar_k = 1;               // Delay parameter
+  int32 nvar_order = 2;           // Polynomial order
+  int32 slice_count = 3;          // Number of temporal slices tracked
+  bool can_predict = 4;           // Has enough history for NVAR prediction
+
+  // Knowledge Gradient policy
+  bool research_mode = 5;
+  float measurement_cost = 6;
+  int32 n_measurements = 7;
+  float current_best_value = 8;
+
+  // Effectiveness tracker
+  int32 effectiveness_history_length = 9;
+  string effectiveness_trend = 10; // "improving", "stable", "declining", "unknown"
+  float mean_contribution = 11;
+
+  // Subsumption inferencer
+  float confidence_threshold = 12;
+  string template_type = 13;      // "IC", "PC", or "BC"
+  bool classifier_loaded = 14;
+}
+
+// SITREP request (situational awareness report)
+message ThetaSitrepRequest {
+  string horizon = 1;             // "day", "week", "quarter", "open"
+}
+
+// SITREP response
+message ThetaSitrepResponse {
+  bool success = 1;
+  string horizon = 2;
+  int64 generated_at_ms = 3;
+
+  // System health
+  bool healthy = 4;
+  string status_text = 5;
+  int32 gpu_count = 6;
+  int32 endpoint_count = 7;
+
+  // Summary counts
+  int32 priority_count = 8;
+  int32 thought_count = 9;
+  int32 objective_count = 10;
+  int32 project_count = 11;
+
+  // Serialized data
+  bytes report_json = 12;         // Full SituationReport as JSON
+  string ascii_format = 13;       // Human-readable ASCII output
+  string error = 14;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MetaAgent Messages (Multi-Agent Analytics)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// MetaAgent query request - natural language query across data domains
+message MetaAgentQueryRequest {
+  string query = 1;                   // Natural language question
+  bool include_dot = 2;               // Generate GraphViz DOT output
+  bool include_markdown = 3;          // Generate Markdown tables
+  repeated string domains = 4;        // Filter: lineage, ops, resources, topology
+  int32 max_agents = 5;               // Max parallel agents (default: 5)
+}
+
+// Streaming events during MetaAgent analysis
+message MetaAgentEvent {
+  enum Type {
+    AGENT_STARTED = 0;                // Agent began analysis
+    AGENT_QUERY = 1;                  // Agent generated query (Cypher or SQL)
+    AGENT_RESULT = 2;                 // Agent got query results
+    AGENT_COMPLETED = 3;              // Agent finished with insight
+    CORRELATION = 4;                  // Correlator synthesizing findings
+    COMPLETE = 5;                     // Final answer ready
+    ERROR = 6;                        // Error occurred
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  string agent = 3;                   // Role name (LineageAnalyst, OpsAnalyst, etc.)
+  string domain = 4;                  // Data domain being queried
+  string message = 5;                 // Human-readable status
+  bytes data = 6;                     // JSON: {query, results, insight}
+}
+
+// MetaAgent query response - aggregated results from all agents
+message MetaAgentQueryResponse {
+  bool success = 1;
+  string answer = 2;                  // Natural language answer
+  string dot_graph = 3;               // GraphViz DOT visualization
+  repeated string markdown_tables = 4; // Per-domain tables
+  map<string, bytes> agent_insights = 5; // Role -> JSON {query, results, insight}
+  repeated string queries_executed = 6; // All Cypher/SQL queries run
+  int32 agents_used = 7;              // Number of agents that contributed
+  int32 duration_ms = 8;              // Total duration
+  string error = 9;                   // Error message if failed
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLT Service Messages (Cross-Layer Transcoders)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to extract sparse features from text
+message CLTExtractRequest {
+  string text = 1;                      // Input text to analyze
+  repeated int32 layer_indices = 2;     // Which layers to extract from (empty = all)
+  int32 top_k = 3;                      // Top-k features per position (default: 115)
+  string model_name = 4;                // CLT model name (default: "qwen3-1.7b")
+  string device = 5;                    // Target device (default: "cuda")
+}
+
+// A sparse feature activation from CLT encoder
+message SparseFeature {
+  int32 layer_idx = 1;                  // Transformer layer index
+  int32 position = 2;                   // Token position in sequence
+  int32 feature_idx = 3;                // Feature index (0-20479)
+  float activation = 4;                 // Activation magnitude
+  string semantic_label = 5;            // Human-readable label (if available)
+}
+
+// Response with extracted sparse features
+message CLTExtractResponse {
+  bool success = 1;
+  repeated SparseFeature features = 2;  // Active sparse features
+  int32 total_positions = 3;            // Number of token positions processed
+  float sparsity = 4;                   // Actual sparsity ratio
+  string model_used = 5;                // CLT model that was used
+  int32 duration_ms = 6;
+  string error = 7;
+}
+
+// Request to compute attribution graph for text positions
+message CLTAttributeRequest {
+  string text = 1;                      // Input text
+  repeated int32 target_positions = 2;  // Token positions to trace (empty = last position)
+  float threshold = 3;                  // Minimum weight to include edge (default: 0.01)
+  string model_name = 4;                // CLT model name (default: "qwen3-1.7b")
+  string device = 5;                    // Target device (default: "cuda")
+}
+
+// An edge in the CLT attribution graph
+message CLTAttributionEdge {
+  int32 source_layer = 1;
+  int32 source_feature = 2;
+  int32 target_layer = 3;
+  int32 target_feature = 4;
+  float weight = 5;                     // Attribution weight: a_s * ||w_{s->t}||
+}
+
+// Response with attribution graph
+message CLTAttributeResponse {
+  bool success = 1;
+  repeated CLTAttributionEdge edges = 2;
+  string dot_graph = 3;                 // GraphViz DOT representation
+  int32 edge_count = 4;
+  string model_used = 5;
+  int32 duration_ms = 6;
+  string error = 7;
+}
+
+// Request for CLT model status
+message CLTStatusRequest {}
+
+// CLT model status response
+message CLTStatusResponse {
+  bool available = 1;                   // Is CLT capability available?
+  repeated string models = 2;           // Available model names
+  string loaded_model = 3;              // Currently loaded model (empty if none)
+  int32 features_per_layer = 4;         // Number of features per layer
+  int32 l0_sparsity = 5;                // Expected active features per position
+  float memory_used_mb = 6;             // GPU memory used by model
+  repeated int32 gpu_ids = 7;           // GPUs allocated
+  string error = 8;                     // Error message if not available
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HealthObserver Messages (Autonomous FMEA Monitoring + ACP Escalation)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Health observer status request
+message HealthObserverStatusRequest {}
+
+// Health observer status response
+message HealthObserverStatusResponse {
+  bool running = 1;                      // Is observer daemon running?
+  bool enabled = 2;                      // Is observer enabled in config?
+  int32 poll_count = 3;                  // Total health checks completed
+  string last_poll_at = 4;               // ISO timestamp of last poll
+  int32 active_incidents = 5;            // Number of active incidents
+  repeated HealthIncident incidents = 6; // Active incidents
+  HealthObserverMetrics metrics = 7;     // Aggregate metrics
+  HealthObserverConfig config = 8;       // Current configuration
+}
+
+// Health incident tracked by observer
+message HealthIncident {
+  string incident_id = 1;        // UUID
+  string fingerprint = 2;        // Deduplication key (failure_mode_id:endpoint)
+  string endpoint = 3;           // Affected endpoint
+  string failure_mode_id = 4;    // FMEA failure mode
+  int32 rpn_score = 5;           // Risk Priority Number (1-1000)
+  int32 rpn_severity = 6;        // Severity component (1-10)
+  int32 rpn_occurrence = 7;      // Occurrence component (1-10)
+  int32 rpn_detection = 8;       // Detection component (1-10)
+  int32 current_tier = 9;        // Escalation tier (0, 1, 2, or 3=manual)
+  string sequence_id = 10;       // Healing event sequence UUID
+  string created_at = 11;        // ISO timestamp
+  string last_check_at = 12;     // ISO timestamp
+  int32 attempts = 13;           // Number of remediation attempts
+  int32 github_issue = 14;       // Linked GitHub issue number (0 if none)
+  string status = 15;            // active, healing, recovering, resolved, manual_required
+}
+
+// Health observer metrics
+message HealthObserverMetrics {
+  int32 incidents_created = 1;   // Total incidents created
+  int32 incidents_resolved = 2;  // Total incidents resolved
+  int32 acp_escalations = 3;     // Total ACP escalations
+}
+
+// Health observer configuration
+message HealthObserverConfig {
+  float poll_interval = 1;       // Seconds between health checks
+  bool escalate_to_acp = 2;      // Whether ACP escalation is enabled
+  string github_repo = 3;        // GitHub repo for issue tracking
+}
+
+// Request to start/stop observer
+message HealthObserverControlRequest {
+  bool start = 1;                // True to start, false to stop
+}
+
+// Request to force an immediate health check
+message ForceHealthCheckRequest {}
+
+// Response for forced health check
+message ForceHealthCheckResponse {
+  bool healthy = 1;              // Overall health status
+  string summary = 2;            // Health summary text
+  int32 passed = 3;              // Number of passed checks
+  int32 warnings = 4;            // Number of warnings
+  int32 failures = 5;            // Number of failures
+  int32 new_incidents = 6;       // Incidents created from this check
+  repeated HealthCheckResult checks = 7;  // Individual check results
+}
+
+// Individual health check result
+message HealthCheckResult {
+  string name = 1;               // Check name (e.g., "gpu_0_health", "endpoint_fast")
+  string status = 2;             // PASS, WARN, or FAIL
+  string message = 3;            // Human-readable description
+  string heuristic_id = 4;       // FMEA heuristic (e.g., "GPU_001")
+  string details_json = 5;       // JSON-encoded details
+}
+
+// Request for incident details
+message GetIncidentDetailRequest {
+  string fingerprint = 1;        // Incident fingerprint
+}
+
+// Response with incident details
+message GetIncidentDetailResponse {
+  HealthIncident incident = 1;   // Incident details
+  bool found = 2;                // Whether incident was found
+  string healing_events_json = 3; // JSON array of healing events
+  string acp_history_json = 4;   // JSON array of ACP escalation events
+  string github_issue_detail_json = 5; // JSON object with GitHub issue details
+}
+
+// Request to list incidents
+message ListIncidentsRequest {
+  string status = 1;             // Filter by status (active, resolved, all)
+}
+
+// Response with list of incidents
+message ListIncidentsResponse {
+  repeated HealthIncident incidents = 1;
+}
+
+// Request to explicitly resolve an incident
+message ResolveIncidentRequest {
+  string fingerprint = 1;          // Incident fingerprint (e.g., "GPU_001:reasoning")
+}
+
+// Response for incident resolution
+message ResolveIncidentResponse {
+  bool resolved = 1;               // True if operation succeeded
+  string fingerprint = 2;          // The fingerprint that was resolved
+  bool was_active = 3;             // True if incident was in active tracking
+  string note = 4;                 // Additional info (e.g., "already resolved")
+}
+
+// Request to get orphaned GitHub issues
+message GetOrphanedIssuesRequest {}
+
+// Response with orphaned GitHub issues
+message GetOrphanedIssuesResponse {
+  repeated OrphanedGitHubIssue orphans = 1;
+}
+
+// Represents an orphaned GitHub issue (open issue with no active incident)
+message OrphanedGitHubIssue {
+  int32 issue_number = 1;          // GitHub issue number
+  string repo = 2;                 // Repository name
+  string fingerprint = 3;          // Incident fingerprint
+  string created_at = 4;           // ISO timestamp when issue was created
+  string issue_url = 5;            // Full GitHub issue URL
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// X Bookmarks Service Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to start OAuth flow
+message XBookmarksAuthRequest {}
+
+// OAuth flow response
+message XBookmarksAuthResponse {
+  string auth_url = 1;           // URL to open in browser
+  string state = 2;              // CSRF state parameter
+  string verifier = 3;           // PKCE verifier (must be passed to complete)
+}
+
+// Complete OAuth with callback code
+message XBookmarksCompleteAuthRequest {
+  string code = 1;               // Authorization code from callback
+  string verifier = 2;           // PKCE verifier from AuthResponse
+}
+
+// Complete OAuth using state parameter (for Engine Federation and Cloudflare Worker callbacks)
+message XBookmarksCompleteAuthByStateRequest {
+  string code = 1;               // Authorization code from callback
+  string state = 2;              // State parameter from OAuth flow (used to look up verifier)
+}
+
+// Auth completion response
+message XBookmarksCompleteAuthResponse {
+  bool success = 1;
+  string user_id = 2;            // X user ID
+  string username = 3;           // X @handle
+  repeated string scopes = 4;    // Granted scopes
+  string expires_at = 5;         // ISO timestamp
+  string error = 6;
+  string message = 7;            // Success/error message
+}
+
+// Auth status request
+message XBookmarksAuthStatusRequest {
+  string user_id = 1;            // Optional: specific user
+}
+
+// Auth status response
+message XBookmarksAuthStatusResponse {
+  bool authenticated = 1;
+  string user_id = 2;
+  string username = 3;
+  string expires_at = 4;
+  repeated string scopes = 5;
+  string error = 6;
+  string guru_code = 7;
+  string action_required = 8;     // "TOKEN_EXPIRED", "TOKEN_EXPIRING", "NOT_AUTHENTICATED", or empty
+  string guidance_message = 9;    // Human-readable guidance for next steps
+}
+
+// Trigger sync request
+message XBookmarksSyncRequest {
+  string user_id = 1;            // Optional: specific user
+  bool full_sync = 2;            // If true, sync all bookmarks. If false, only new ones.
+  string folder_id = 3;          // Optional: sync specific folder only
+}
+
+// Sync run result
+message XBookmarksSyncResponse {
+  bool started = 1;              // True if sync was started
+  int32 run_id = 2;              // Run ID if started
+  string message = 3;            // Status message or error
+  // Extended fields for detailed sync results
+  string status = 4;             // "completed", "failed", "partial", "queued"
+  int32 bookmarks_fetched = 5;   // Total from X API (or existing in DB)
+  int32 iceberg_written = 6;     // New rows written to raw.bookmarks
+  int32 queue_items = 7;         // KB sync work queue items created
+  string action_required = 8;    // TOKEN_EXPIRED, NOT_AUTHENTICATED, etc.
+  string guidance_message = 9;   // Human-readable guidance for next steps
+}
+
+// Sync status request
+message XBookmarksSyncStatusRequest {
+  string user_id = 1;            // Optional: specific user
+}
+
+// Sync status response
+message XBookmarksSyncStatusResponse {
+  bool configured = 1;
+  string user_id = 2;
+  string username = 3;
+  string token_status = 4;       // "valid", "expired", "expiring_soon", "none"
+  int32 folder_count = 5;
+  int32 bookmark_count = 6;
+  int32 queued_requests = 7;
+  string last_sync_at = 8;       // ISO timestamp
+  string last_run_status = 9;    // "completed", "failed", "running"
+  string action_required = 10;   // "TOKEN_EXPIRED", "TOKEN_EXPIRING", "SYNC_FAILED", "NOT_CONFIGURED", or empty
+  string guidance_message = 11;  // Human-readable guidance for next steps
+}
+
+// Service status request
+message XBookmarksServiceStatusRequest {}
+
+// Service status response
+message XBookmarksServiceStatusResponse {
+  bool running = 1;              // Is queue processor running?
+  int32 total_syncs = 2;         // Total syncs completed
+  int32 total_bookmarks = 3;     // Total bookmarks synced
+  string last_sync_at = 4;       // ISO timestamp
+  int32 queue_poll_interval_s = 5;
+}
+
+// Bookmark folder
+message XBookmarkFolder {
+  string id = 1;                 // Folder ID from X API
+  string name = 2;               // Folder name
+  string kb_path = 3;            // KB path (e.g., "current/bookmarks/folder_name")
+  int32 bookmark_count = 4;      // Number of bookmarks in folder
+}
+
+// List folders request
+message XBookmarksListFoldersRequest {
+  string user_id = 1;            // Optional: specific user
+}
+
+// List folders response
+message XBookmarksListFoldersResponse {
+  repeated XBookmarkFolder folders = 1;
+  bool folders_available = 2;    // False if API tier doesn't support folders
+  string message = 3;            // Status message or error
+}
+
+// Queue status request (for InitPanel cooldown timer)
+message XBookmarksQueueStatusRequest {}
+
+// Queue status response
+message XBookmarksQueueStatusResponse {
+  int32 queue_depth = 1;           // Total pending requests in work queue
+  string cooldown_end_iso = 2;     // ISO8601 timestamp when cooldown ends (empty if can request)
+  int32 cooldown_seconds = 3;      // Seconds remaining until next request allowed
+  bool can_request = 4;            // True if rate limit allows request now
+}
+
+// Emit test event request (for debugging XB event propagation chain with OTel tracing)
+message XBookmarksEmitTestEventRequest {
+  string event_type = 1;           // XB_AUTH_COMPLETED, XB_AUTH_FAILED, XB_STATUS_CHANGED (default: XB_AUTH_COMPLETED)
+}
+
+// Emit test event response
+message XBookmarksEmitTestEventResponse {
+  bool success = 1;
+  string event_type = 2;           // Event type that was emitted
+  string message = 3;              // Status message
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HuggingFace Dataset Discovery Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to list recent datasets from HuggingFace Hub
+message ListHFDatasetsRequest {
+  int32 limit = 1;  // Max datasets to return (default: 20)
+}
+
+// Dataset info summary
+message HFDatasetInfo {
+  string id = 1;                   // e.g., "facebook/research-plan-gen"
+  string author = 2;
+  string description = 3;
+  int64 downloads = 4;
+  int32 likes = 5;
+  bool private = 6;
+  string created_at = 7;           // ISO8601 timestamp
+  string last_modified = 8;        // ISO8601 timestamp
+  repeated string tags = 9;
+}
+
+// Response with list of datasets
+message ListHFDatasetsResponse {
+  repeated HFDatasetInfo datasets = 1;
+  int32 count = 2;
+  string saved_to = 3;             // Path to zettelkasten note created
+  string error = 4;
+}
+
+// Request to add an external dataset to KB
+message AddExternalDatasetRequest {
+  string dataset_id = 1;           // HuggingFace dataset ID
+  string notes = 2;                // Optional notes to include
+}
+
+// Response after adding dataset
+message AddExternalDatasetResponse {
+  bool success = 1;
+  string dataset_id = 2;
+  string saved_to = 3;             // KB path: current/datasets/external/org/name.md
+  int64 downloads = 4;
+  int32 likes = 5;
+  string description = 6;
+  string error = 7;
+}
+
+// Request for detailed dataset info
+message GetHFDatasetInfoRequest {
+  string dataset_id = 1;
+}
+
+// Response with full dataset info
+message GetHFDatasetInfoResponse {
+  HFDatasetInfo info = 1;
+  string url = 2;                  // HuggingFace URL
+  string error = 3;
+}
+
+// Request to list KB datasets
+message ListKBDatasetsRequest {}
+
+// KB dataset entry
+message KBDatasetEntry {
+  string id = 1;                   // Dataset ID or name
+  string type = 2;                 // "internal" or "external"
+  string path = 3;                 // KB path
+}
+
+// Response with KB datasets
+message ListKBDatasetsResponse {
+  repeated KBDatasetEntry internal = 1;
+  repeated KBDatasetEntry external = 2;
+  int32 internal_count = 3;
+  int32 external_count = 4;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HuggingFace Model Discovery Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request to list recent models from HuggingFace Hub
+message ListHFModelsRequest {
+  int32 limit = 1;                 // Max models to return (default: 20)
+  string filter = 2;               // Optional filter (e.g., "text-generation", "text2text-generation")
+}
+
+// Model info summary from HuggingFace
+message HFModelInfo {
+  string id = 1;                   // e.g., "meta-llama/Llama-3.1-8B-Instruct"
+  string author = 2;
+  string pipeline_tag = 3;         // e.g., "text-generation"
+  int64 downloads = 4;
+  int32 likes = 5;
+  bool private = 6;
+  string created_at = 7;           // ISO8601 timestamp
+  string last_modified = 8;        // ISO8601 timestamp
+  repeated string tags = 9;
+  bool gated = 10;                 // Requires accepting license
+  string library_name = 11;        // e.g., "transformers"
+}
+
+// Response with list of models
+message ListHFModelsResponse {
+  repeated HFModelInfo models = 1;
+  int32 count = 2;
+  string saved_to = 3;             // Path to zettelkasten note created
+  string error = 4;
+}
+
+// Request to add an external model reference to KB
+message AddExternalModelRequest {
+  string model_id = 1;             // HuggingFace model ID
+  string notes = 2;                // Optional notes to include
+}
+
+// Response after adding model reference
+message AddExternalModelResponse {
+  bool success = 1;
+  string model_id = 2;
+  string saved_to = 3;             // KB path: current/models/external/org/name.md
+  int64 downloads = 4;
+  int32 likes = 5;
+  string pipeline_tag = 6;
+  string error = 7;
+}
+
+// Request for detailed model info
+message GetHFModelInfoRequest {
+  string model_id = 1;
+}
+
+// Response with full model info
+message GetHFModelInfoResponse {
+  HFModelInfo info = 1;
+  string url = 2;                  // HuggingFace URL
+  string error = 3;
+}
+
+// Request to list KB models (internal = cached, external = references)
+message ListKBModelsRequest {}
+
+// KB model entry
+message KBModelEntry {
+  string id = 1;                   // Model ID or name
+  string type = 2;                 // "internal" (cached) or "external" (reference)
+  string path = 3;                 // KB path or cache path
+  int64 size_bytes = 4;            // Size on disk (for internal)
+  string pipeline_tag = 5;         // e.g., "text-generation"
+}
+
+// Response with KB models
+message ListKBModelsResponse {
+  repeated KBModelEntry internal = 1;   // Cached locally
+  repeated KBModelEntry external = 2;   // KB references
+  int32 internal_count = 3;
+  int32 external_count = 4;
+  int64 total_cache_bytes = 5;          // Total cache size
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Ambient Computing Workload Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Ambient cycle request - triggers multi-phase workload test
+message AmbientCycleRequest {
+  bool skip_reasoning = 1;        // Skip phase 3-4 (baseline only)
+  int32 baseline_task_count = 2;  // Tasks per baseline endpoint (default: 1)
+  string reasoning_prompt = 3;    // Custom reasoning prompt (or default)
+}
+
+// Phase enum for ambient cycle progress
+enum AmbientPhase {
+  AMBIENT_PHASE_UNSPECIFIED = 0;
+  AMBIENT_PHASE_BASELINE_HEALTH = 1;
+  AMBIENT_PHASE_BASELINE_WORKLOAD = 2;
+  AMBIENT_PHASE_REASONING_EVICTION = 3;
+  AMBIENT_PHASE_REASONING_WORKLOAD = 4;
+  AMBIENT_PHASE_BASELINE_RESTORATION = 5;
+  AMBIENT_PHASE_COMPLETE = 6;
+  AMBIENT_PHASE_ERROR = 7;
+  // New phases for content fetch and summarization
+  AMBIENT_PHASE_FETCH_CONTENT = 8;
+  AMBIENT_PHASE_SUMMARIZATION = 9;
+  AMBIENT_PHASE_BUFFER_ANALYSIS = 10;  // Bytez analysis of new content
+}
+
+// Streaming event for ambient cycle progress
+message AmbientPhaseEvent {
+  AmbientPhase phase = 1;
+  string message = 2;
+  float progress = 3;               // 0.0 - 1.0 within phase
+  map<string, string> metrics = 4;  // endpoint -> latency_ms, etc.
+  int64 timestamp_ms = 5;
+}
+
+// Final ambient cycle response
+message AmbientCycleResponse {
+  bool success = 1;
+  int32 phases_completed = 2;
+  int32 total_tasks = 3;
+  int32 successful_tasks = 4;
+  map<string, int32> endpoint_latencies = 5;  // endpoint -> avg_latency_ms
+  string error_message = 6;
+  int32 duration_ms = 7;
+}
+
+// Ambient status response
+message AmbientStatusResponse {
+  bool cycle_running = 1;
+  AmbientPhase current_phase = 2;
+  int32 cycles_completed = 3;
+  int64 last_cycle_timestamp_ms = 4;
+  repeated string baseline_endpoints = 5;
+  string reasoning_endpoint = 6;
+  AmbientCycleResponse last_result = 7;
+  // New fields for daemon mode
+  bool daemon_running = 8;          // Is continuous daemon running?
+  int32 max_cycles = 9;             // Target cycles (0 = infinite)
+  int32 current_cycle = 10;         // Current cycle number in daemon
+  int64 daemon_started_at_ms = 11;  // When daemon started (ms since epoch, 0 = never)
+  int64 daemon_stopped_at_ms = 12;  // When daemon stopped (ms since epoch, 0 = never/running)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Ambient Daemon Messages (Start/Stop continuous cycling)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Start ambient daemon request
+message AmbientStartRequest {
+  bool baseline_only = 1;           // Skip reasoning phases
+  int32 max_cycles = 2;             // 0 = infinite, N = run N cycles then stop
+}
+
+// Start ambient daemon response (fire-and-forget)
+message AmbientStartResponse {
+  bool success = 1;
+  string message = 2;
+  int32 max_cycles = 3;             // Echo back for confirmation
+}
+
+// Stop ambient daemon request
+message AmbientStopRequest {}
+
+// Stop ambient daemon response
+message AmbientStopResponse {
+  bool success = 1;
+  string message = 2;
+  int32 cycles_completed = 3;       // How many cycles ran before stop
+}
+
+// Subscribe to ambient events (for TUI InfoPanel)
+message AmbientSubscribeRequest {}
+
+// Note: Reuses AmbientPhaseEvent for streaming events
+
+// Export ambient buffer to zettelkasten file
+message AmbientBufferExportRequest {
+  string kb_root = 1;  // Optional, defaults to build/dev
+}
+
+message AmbientBufferExportResponse {
+  string path = 1;           // Relative path: scratch/2026-01-03/143025_buffer.md
+  int32 entry_count = 2;
+  int64 total_bytes = 3;
+  string error = 4;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Observability Dashboard Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Request for observability dashboard data
+message ObserveStatusRequest {
+  bool include_sparklines = 1;    // Include time-series data for sparklines
+  int32 sparkline_points = 2;     // Number of historical points (default: 20)
+}
+
+// Snapshot of a single metric
+message MetricSnapshot {
+  string name = 1;                // Internal metric ID (e.g., "latency_p95")
+  string display_name = 2;        // Human-readable name (e.g., "Latency p95")
+  double current_value = 3;       // Current metric value
+  string unit = 4;                // Unit suffix (e.g., "ms", "%", "cycles")
+  repeated double sparkline_data = 5;  // Historical values for sparkline rendering
+  string status = 6;              // "ok", "warning", "critical"
+}
+
+// Snapshot of an endpoint's status
+message EndpointSnapshot {
+  string name = 1;                // Endpoint name (e.g., "orchestrator", "reasoning")
+  string status = 2;              // "healthy", "starting", "unhealthy", "stopped", "pending"
+  repeated int32 gpus = 3;        // Allocated GPU IDs
+  string model = 4;               // Model name
+}
+
+// Response with full observability dashboard data
+message ObserveStatusResponse {
+  string timestamp = 1;           // ISO8601 timestamp
+  bool prometheus_available = 2;  // Whether Prometheus is reachable
+
+  // Metrics matching ObservePanel's OBSERVE_METRICS
+  repeated MetricSnapshot metrics = 3;
+
+  // Endpoint status from orchestrator
+  repeated EndpointSnapshot endpoints = 4;
+
+  // Summary counts
+  int32 healthy_endpoints = 5;
+  int32 unhealthy_endpoints = 6;
+  int32 active_incidents = 7;
+  int32 evolution_cycles = 8;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Prospects/Stewardship Messages
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Candidate summary for status response
+message CandidateSummary {
+  string symbol = 1;
+  string company_name = 2;
+  string exchange = 3;
+  string cik = 4;
+  string last_filing_date = 5;    // ISO date of most recent SEC filing
+  string last_filing_type = 6;    // 10-K, 10-Q, 8-K
+  int32 pending_filings = 7;      // Filings awaiting analysis
+}
+
+// Strategy summary for status response
+message StrategySummary {
+  string symbol = 1;
+  string category = 2;            // Free text: "growth", "income", "strategic"
+  float allocation_weight = 3;    // Current weight 0.0-1.0
+  float target_weight = 4;        // Target weight
+  float conviction = 5;           // 0.0-1.0
+  string last_analysis_at = 6;    // ISO timestamp
+  bool needs_update = 7;          // Local LLM flagged for attention
+}
+
+// Status request - lightweight check of prospect state
+message ProspectsStatusRequest {
+  string profile = 1;             // Profile context (e.g., "zndx", "home")
+  string domain = 2;              // Domain context (e.g., "prospecting", "retirement")
+  repeated string symbols = 3;    // Filter to specific symbols (empty = all)
+}
+
+// Full status response
+message ProspectsStatusResponse {
+  bool success = 1;
+  string profile = 2;
+  string domain = 3;
+  repeated CandidateSummary candidates = 4;
+  repeated StrategySummary strategies = 5;
+  int32 pending_filings = 6;      // Total filings awaiting analysis
+  string last_fmp_sync_at = 7;    // ISO timestamp
+  bool update_recommended = 8;    // Local LLM recommends full update
+  string update_reason = 9;       // Why update is recommended
+  string error = 10;
+}
+
+// Check request - lightweight daily check (local LLM only)
+message ProspectsCheckRequest {
+  string profile = 1;
+  string domain = 2;
+  bool force = 3;                 // Force check even if recently checked
+}
+
+message ProspectsCheckResponse {
+  bool success = 1;
+  bool update_recommended = 2;    // Should user run /prospects update?
+  string reason = 3;              // Why update recommended/not recommended
+  int32 new_filings_count = 4;    // New SEC filings found
+  repeated string symbols_with_new_filings = 5;
+  string checked_at = 6;          // ISO timestamp
+  int32 duration_ms = 7;
+  string error = 8;
+}
+
+// Update request - full billable analysis (Cerebras + Grok)
+message ProspectsUpdateRequest {
+  string profile = 1;
+  string domain = 2;
+  repeated string symbols = 3;    // Filter to specific symbols (empty = all)
+  bool force = 4;                 // Force update even if no new filings
+  int32 filings_per_symbol = 5;   // Max filings per symbol (0 = default 20, for stepwise testing)
+}
+
+// Streaming progress event during update
+message ProspectsUpdateEvent {
+  enum Type {
+    QUEUED = 0;                   // Request queued
+    FMP_SYNC_STARTED = 1;         // Syncing with FMP API
+    FMP_SYNC_COMPLETED = 2;       // FMP sync done
+    ANALYSIS_STARTED = 3;         // Starting Cerebras analysis
+    FILING_ANALYZED = 4;          // Individual filing analyzed
+    SYNTHESIS_STARTED = 5;        // XAI Grok synthesis
+    SYNTHESIS_COMPLETED = 6;      // Synthesis done
+    KB_WRITE_STARTED = 7;         // Writing KB documents
+    KB_WRITE_COMPLETED = 8;       // KB docs written
+    COMPLETED = 9;                // Full update complete
+    FAILED = 10;                  // Update failed
+  }
+  Type type = 1;
+  int64 timestamp_ms = 2;
+  float progress = 3;             // 0.0-1.0
+  string message = 4;             // Human-readable status
+  string symbol = 5;              // For FILING_ANALYZED events
+  string filing_type = 6;         // For FILING_ANALYZED events
+  bytes data = 7;                 // JSON payload for rich events
+  string sitrep_path = 8;         // Path to sitrep.md (only on COMPLETED)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -893,6 +2047,7 @@ service GaiusService {
   rpc Complete(CompleteRequest) returns (CompleteResponse);
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
   rpc GetJobResult(GetJobResultRequest) returns (GetJobResultResponse);
+  rpc XAIBudget(google.protobuf.Empty) returns (XAIBudgetResponse);  // XAI budget tracking
 
   // Streaming swarm analysis - returns progress events then final result
   // Handles backend wait internally, streaming QUEUED status while waiting
@@ -911,6 +2066,11 @@ service GaiusService {
   rpc EmbedTexts(EmbedTextsRequest) returns (EmbedTextsResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
+  // Semantic Search
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc SemanticSearch(SemanticSearchRequest) returns (SemanticSearchResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Evolution
   // ─────────────────────────────────────────────────────────────────────────
   rpc EvolutionStatus(google.protobuf.Empty) returns (EvolutionStatusResponse);
@@ -925,6 +2085,17 @@ service GaiusService {
   rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
+  rpc SelfObservation(SelfObservationRequest) returns (SelfObservationResponse);
+  rpc EngineAudit(EngineAuditRequest) returns (EngineAuditResponse);
+
+  // Cognition streaming - replaces TUI polling
+  rpc SubscribeCognition(CognitionStreamRequest) returns (stream CognitionEvent);
+
+  // Evolution streaming - replaces TUI polling
+  rpc SubscribeEvolution(EvolutionStreamRequest) returns (stream EvolutionEvent);
+
+  // Unified activity stream - all system activity
+  rpc SubscribeActivity(ActivityStreamRequest) returns (stream ActivityEvent);
 
   // ─────────────────────────────────────────────────────────────────────────
   // State (Thin Client Architecture)
@@ -974,6 +2145,26 @@ service GaiusService {
   rpc GetDatasetLineage(DatasetLineageRequest) returns (DatasetLineageResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
+  // ThetaAgent (Neuromorphic Consolidation)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ThetaSitrep(ThetaSitrepRequest) returns (ThetaSitrepResponse);
+  rpc ThetaConsolidate(ThetaConsolidateRequest) returns (ThetaConsolidateResponse);
+  rpc ThetaConsolidationStats(ThetaConsolidationStatsRequest) returns (ThetaConsolidationStatsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MetaAgent (Multi-Agent Analytics)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc MetaAgentQuery(MetaAgentQueryRequest) returns (MetaAgentQueryResponse);
+  rpc MetaAgentQueryStream(MetaAgentQueryRequest) returns (stream MetaAgentEvent);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CLT (Cross-Layer Transcoders)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc CLTExtract(CLTExtractRequest) returns (CLTExtractResponse);
+  rpc CLTAttribute(CLTAttributeRequest) returns (CLTAttributeResponse);
+  rpc CLTStatus(CLTStatusRequest) returns (CLTStatusResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
   // Streaming
   // ─────────────────────────────────────────────────────────────────────────
   rpc HealthStream(HealthStreamRequest) returns (stream HealthMetrics);
@@ -983,4 +2174,68 @@ service GaiusService {
   // during engine startup and receive real-time progress, while also sending
   // control commands (pause, cancel, health checks) back to the engine.
   rpc InitStream(stream InitCommand) returns (stream InitEvent);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HealthObserver (Autonomous FMEA Monitoring + ACP Escalation)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc HealthObserverStatus(HealthObserverStatusRequest) returns (HealthObserverStatusResponse);
+  rpc HealthObserverStart(google.protobuf.Empty) returns (HealthObserverStatusResponse);
+  rpc HealthObserverStop(google.protobuf.Empty) returns (HealthObserverStatusResponse);
+  rpc HealthObserverForceCheck(ForceHealthCheckRequest) returns (ForceHealthCheckResponse);
+  rpc HealthObserverListIncidents(ListIncidentsRequest) returns (ListIncidentsResponse);
+  rpc HealthObserverGetIncident(GetIncidentDetailRequest) returns (GetIncidentDetailResponse);
+  rpc HealthObserverResolveIncident(ResolveIncidentRequest) returns (ResolveIncidentResponse);
+  rpc HealthObserverGetOrphanedIssues(GetOrphanedIssuesRequest) returns (GetOrphanedIssuesResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Observability Dashboard
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ObserveStatus(ObserveStatusRequest) returns (ObserveStatusResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // X Bookmarks
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc XBookmarksGetAuthUrl(XBookmarksAuthRequest) returns (XBookmarksAuthResponse);
+  rpc XBookmarksCompleteAuth(XBookmarksCompleteAuthRequest) returns (XBookmarksCompleteAuthResponse);
+  rpc XBookmarksCompleteAuthByState(XBookmarksCompleteAuthByStateRequest) returns (XBookmarksCompleteAuthResponse);  // Engine Federation / Cloudflare Worker callback
+  rpc XBookmarksAuthStatus(XBookmarksAuthStatusRequest) returns (XBookmarksAuthStatusResponse);
+  rpc XBookmarksTriggerSync(XBookmarksSyncRequest) returns (XBookmarksSyncResponse);
+  rpc XBookmarksSyncStatus(XBookmarksSyncStatusRequest) returns (XBookmarksSyncStatusResponse);
+  rpc XBookmarksServiceStatus(XBookmarksServiceStatusRequest) returns (XBookmarksServiceStatusResponse);
+  rpc XBookmarksListFolders(XBookmarksListFoldersRequest) returns (XBookmarksListFoldersResponse);
+  rpc XBookmarksQueueStatus(XBookmarksQueueStatusRequest) returns (XBookmarksQueueStatusResponse);
+  rpc XBookmarksEmitTestEvent(XBookmarksEmitTestEventRequest) returns (XBookmarksEmitTestEventResponse);  // Debug: emit test event with OTel tracing
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HuggingFace Dataset Discovery
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ListHFDatasets(ListHFDatasetsRequest) returns (ListHFDatasetsResponse);
+  rpc AddExternalDataset(AddExternalDatasetRequest) returns (AddExternalDatasetResponse);
+  rpc GetHFDatasetInfo(GetHFDatasetInfoRequest) returns (GetHFDatasetInfoResponse);
+  rpc ListKBDatasets(ListKBDatasetsRequest) returns (ListKBDatasetsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // HuggingFace Model Discovery
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ListHFModels(ListHFModelsRequest) returns (ListHFModelsResponse);
+  rpc AddExternalModel(AddExternalModelRequest) returns (AddExternalModelResponse);
+  rpc GetHFModelInfo(GetHFModelInfoRequest) returns (GetHFModelInfoResponse);
+  rpc ListKBModels(ListKBModelsRequest) returns (ListKBModelsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Ambient Computing Workload
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc AmbientCycle(AmbientCycleRequest) returns (stream AmbientPhaseEvent);  // Streaming cycle with progress events (deprecated: use AmbientStart)
+  rpc AmbientStatus(google.protobuf.Empty) returns (AmbientStatusResponse);  // Current ambient status
+  rpc AmbientStart(AmbientStartRequest) returns (AmbientStartResponse);      // Start continuous ambient cycling daemon
+  rpc AmbientStop(AmbientStopRequest) returns (AmbientStopResponse);         // Stop ambient daemon gracefully
+  rpc AmbientSubscribe(AmbientSubscribeRequest) returns (stream AmbientPhaseEvent);  // Subscribe to ambient events (TUI)
+  rpc AmbientBufferExport(AmbientBufferExportRequest) returns (AmbientBufferExportResponse);  // Export buffer to zettelkasten file
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Prospects/Stewardship (Capital Stewardship System)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ProspectsStatus(ProspectsStatusRequest) returns (ProspectsStatusResponse);      // Lightweight status check
+  rpc ProspectsCheck(ProspectsCheckRequest) returns (ProspectsCheckResponse);         // Daily check with local LLM
+  rpc ProspectsUpdate(ProspectsUpdateRequest) returns (stream ProspectsUpdateEvent);  // Full billable analysis (streaming)
 }

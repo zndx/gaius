@@ -229,15 +229,23 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         """Download PDF from arXiv."""
         import httpx
 
+        if self.pdf_url is None:
+            raise RuntimeError(
+                f"PDF URL not resolved for {self.arxiv_id}.\n"
+                "  Guru Meditation: #DOCLING.00000001.NO_PDF_URL\n"
+                "  The arXiv page did not yield a PDF link."
+            )
+        pdf_url = self.pdf_url  # narrowed to str
+
         self.emit_event(EventNames.PDF_EXTRACTION_STARTED, {
             "arxiv_id": self.arxiv_id,
-            "pdf_url": self.pdf_url,
+            "pdf_url": pdf_url,
         })
 
-        print(f"Downloading PDF from {self.pdf_url}...")
+        print(f"Downloading PDF from {pdf_url}...")
 
         with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-            response = client.get(self.pdf_url)
+            response = client.get(pdf_url)
             response.raise_for_status()
 
         self.pdf_bytes = response.content
@@ -259,9 +267,17 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.archive_path_result = None
 
         if self.archive_pdf:
+            if self.arxiv_id is None:
+                raise RuntimeError(
+                    "arxiv_id not set in archive_step.\n"
+                    "  Guru Meditation: #DOCLING.00000002.NO_ARXIV_ID\n"
+                    "  The start step should have set this."
+                )
+            arxiv_id = self.arxiv_id  # narrowed to str
+
             # Generate archive path
             quarter = get_current_quarter()
-            pdf_filename = f"{self.arxiv_id.replace('/', '_')}.pdf"
+            pdf_filename = f"{arxiv_id.replace('/', '_')}.pdf"
             self.archive_path_result = f"current/archive/{quarter}/attachments/{pdf_filename}"
 
             # Save to KB
@@ -273,7 +289,7 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
                 f.write(self.pdf_bytes)
 
             self.emit_event("pdf.archived", {
-                "arxiv_id": self.arxiv_id,
+                "arxiv_id": arxiv_id,
                 "archive_path": self.archive_path_result,
             })
 
@@ -323,7 +339,8 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.next(self.score_relevance)
 
     @traced_step
-    @card(type="blank")
+    # Metaflow @card stubs don't include `type` kwarg - see GitHub #15
+    @card(type="blank")  # type: ignore[unknown-argument] - Metaflow stubs incomplete, type= is valid
     @step
     def score_relevance(self):
         """Score paper relevance using LLM with rubric."""
@@ -337,8 +354,16 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
             self.next(self.extract_topics)
             return
 
+        if self.arxiv_id is None:
+            raise RuntimeError(
+                "arxiv_id not set in score_paper step.\n"
+                "  Guru Meditation: #DOCLING.00000003.NO_ARXIV_ID\n"
+                "  The start step should have set this."
+            )
+        arxiv_id = self.arxiv_id  # narrowed to str
+
         self.emit_event(EventNames.SCORING_STARTED, {
-            "arxiv_id": self.arxiv_id,
+            "arxiv_id": arxiv_id,
             "rubric": self.scoring_rubric,
         })
 
@@ -358,7 +383,7 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
                     score_paper(
                         self.abstract,
                         rubric,
-                        arxiv_id=self.arxiv_id,
+                        arxiv_id=arxiv_id,
                         use_local=True,
                         use_remote=self.use_remote_scoring,
                     )
@@ -367,7 +392,7 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
                 loop.close()
 
             self.emit_event(EventNames.SCORING_COMPLETED, {
-                "arxiv_id": self.arxiv_id,
+                "arxiv_id": arxiv_id,
                 "overall_score": self.paper_score.overall_score,
                 "rubric": self.scoring_rubric,
                 "model_used": self.paper_score.model_used,
@@ -402,7 +427,8 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.next(self.extract_topics)
 
     @traced_step
-    @card(type="blank")
+    # Metaflow @card stubs don't include `type` kwarg - see GitHub #15
+    @card(type="blank")  # type: ignore[unknown-argument] - Metaflow stubs incomplete, type= is valid
     @step
     def extract_topics(self):
         """Extract topics from document using configured model."""
@@ -682,7 +708,8 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.next(self.end)
 
     @traced_step
-    @card(type="blank")
+    # Metaflow @card stubs don't include `type` kwarg - see GitHub #15
+    @card(type="blank")  # type: ignore[unknown-argument] - Metaflow stubs incomplete, type= is valid
     @step
     def end(self):
         """Emit final lineage and report results."""

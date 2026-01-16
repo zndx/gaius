@@ -801,8 +801,10 @@ def step_trigger_cognition(context: Context, depth: str):
             reason="pipeline_test",
         )
         # Convert CognitionResult to dict for consistent handling
+        from dataclasses import asdict
         return {
-            "thoughts": [t.model_dump() if hasattr(t, "model_dump") else vars(t)
+            "thoughts": [asdict(t) if hasattr(t, "__dataclass_fields__") else
+                        (t.model_dump() if hasattr(t, "model_dump") else {"title": str(t)})
                         for t in result.thoughts] if result.thoughts else [],
             "summary": result.summary if hasattr(result, "summary") else "",
             "thought_count": len(result.thoughts) if result.thoughts else 0,

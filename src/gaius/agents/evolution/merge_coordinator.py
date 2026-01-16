@@ -19,7 +19,7 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ...models.merging import (
@@ -59,7 +59,7 @@ class MergeCycleResult:
     # Metadata
     duration_ms: int = 0
     error: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -150,6 +150,7 @@ class MergeCoordinator:
             List of version info dicts
         """
         await self._ensure_initialized()
+        assert self._lineage_tracker is not None  # Guaranteed by _ensure_initialized
 
         candidates = await self._lineage_tracker.get_best_models_for_merging(
             agent_id=agent_id,
@@ -289,6 +290,7 @@ class MergeCoordinator:
                 f"using {merge_method.value}"
             )
 
+            assert self._merger is not None  # Guaranteed by _ensure_initialized
             merge_result = await self._merger.merge(merge_config)
 
             if not merge_result.success:

@@ -47,7 +47,7 @@ PROCESSOR_PURPOSES = {
 class InstructionGenerator:
     """Generate natural language task instructions."""
 
-    def __init__(self, templates: dict = None):
+    def __init__(self, templates: dict | None = None):
         self.templates = templates or INSTRUCTION_TEMPLATES
 
     def generate_click_instruction(
@@ -106,7 +106,7 @@ class InstructionGenerator:
         self,
         action: Action,
         processors: list[Processor],
-        connections: list = None,
+        connections: list | None = None,
     ) -> str:
         """Generate an instruction for a specific action.
 

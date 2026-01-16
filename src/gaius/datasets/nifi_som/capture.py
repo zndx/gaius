@@ -235,6 +235,12 @@ class NiFiInteractionCapture(NiFiScreenshotCapture):
 
     def _capture_frame(self) -> Image.Image:
         """Capture a single frame from the current page state."""
+        if self._driver is None:
+            raise RuntimeError(
+                "WebDriver not initialized.\n"
+                "  Guru Meditation: #CAPTURE.00000001.DRIVER_NOT_INIT\n"
+                "  Use async context manager: async with NiFiScreenshotCapture() as capture:"
+            )
         screenshot_bytes = self._driver.get_screenshot_as_png()
         return Image.open(io.BytesIO(screenshot_bytes))
 
@@ -244,6 +250,13 @@ class NiFiInteractionCapture(NiFiScreenshotCapture):
         Args:
             action: Dict with 'type', 'coordinates' (normalized 0-1)
         """
+        if self._driver is None:
+            raise RuntimeError(
+                "WebDriver not initialized.\n"
+                "  Guru Meditation: #CAPTURE.00000001.DRIVER_NOT_INIT\n"
+                "  Call start() before execute_action()."
+            )
+
         action_type = action.get("type", "click")
         coords = action.get("coordinates", (0.5, 0.5))
 
@@ -252,7 +265,8 @@ class NiFiInteractionCapture(NiFiScreenshotCapture):
         y = int(coords[1] * self.viewport_height)
 
         # Create action chain for complex actions
-        actions = ActionChains(self._driver)
+        driver = self._driver  # type narrowed to non-None
+        actions = ActionChains(driver)
 
         if action_type == "click":
             # Move to position relative to body, then click

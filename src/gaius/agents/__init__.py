@@ -23,6 +23,11 @@ from .swarm import (
     LatentSwarmManager,
     get_latent_swarm_manager,
     run_latent_swarm_round,
+    # CLT-enhanced swarm
+    CLTLatentSwarmManager,
+    CLTSwarmRoundResult,
+    get_clt_swarm_manager,
+    run_clt_swarm_round,
 )
 from .daily_summary import (
     DailySummaryAgent,
@@ -30,11 +35,23 @@ from .daily_summary import (
     get_daily_summary_agent,
     generate_daily_summary,
 )
+from .metaagent_swarm import (
+    MetaAgentManager,
+    MetaAgentResult,
+    MetaAgentEvent,
+    MetaAgentEventType,
+    AnalystInsight,
+)
 
 # Lazy imports for optional modules
 def get_latent_memory():
     """Get latent working memory singleton."""
     from .latent import get_latent_memory as _get
+    return _get()
+
+def get_clt_memory():
+    """Get CLT-enhanced latent memory singleton."""
+    from .latent import get_clt_memory as _get
     return _get()
 
 def get_evolution_daemon():
@@ -61,6 +78,12 @@ __all__ = [
     "get_latent_swarm_manager",
     "run_latent_swarm_round",
     "get_latent_memory",
+    # CLT-enhanced Swarm
+    "CLTLatentSwarmManager",
+    "CLTSwarmRoundResult",
+    "get_clt_swarm_manager",
+    "run_clt_swarm_round",
+    "get_clt_memory",
     # Evolution
     "get_evolution_daemon",
     # Daily Summary
@@ -68,4 +91,10 @@ __all__ = [
     "DailySummaryNote",
     "get_daily_summary_agent",
     "generate_daily_summary",
+    # MetaAgent
+    "MetaAgentManager",
+    "MetaAgentResult",
+    "MetaAgentEvent",
+    "MetaAgentEventType",
+    "AnalystInsight",
 ]

@@ -23,10 +23,10 @@ Usage:
 
 Backends:
 - XAI: Grok-3 frontier model (per-token)
-- Cerebras: zai-glm-4.6 fast inference with reasoning (per-token)
+- Cerebras: zai-glm-4.7 fast inference with reasoning (per-token)
 - Bytez: Subscription model (unlimited tokens, 2 concurrent)
 
-Cerebras models use their own ID format (e.g., llama-3.3-70b, zai-glm-4.6, qwen-3-32b).
+Cerebras models use their own ID format (e.g., llama-3.3-70b, zai-glm-4.7, qwen-3-32b).
 GLM is a reasoning model that outputs chain-of-thought in the 'reasoning' field.
 """
 

@@ -372,7 +372,7 @@ class ActivityTracker:
         today = date.today()
         start_date = today - timedelta(days=days - 1)
 
-        stats = {
+        stats: dict = {
             "period": {"days": days, "start": str(start_date), "end": str(today)},
             "totals": {"events": 0, "queries": 0, "swarm_runs": 0, "kb_entries": 0},
             "by_type": {},

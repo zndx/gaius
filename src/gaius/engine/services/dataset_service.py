@@ -611,10 +611,9 @@ class DatasetService:
         )
 
         # Generate examples
-        flow_def = {"name": job.config.flow_name, "steps": job.config.steps}
         examples = await generator.generate_from_flow(
-            flow_name=flow_def["name"],
-            steps=flow_def["steps"],
+            flow_name=job.config.flow_name,
+            steps=job.config.steps,
             capture_screenshot=True,
         )
 
@@ -741,7 +740,7 @@ class DatasetService:
         message: str,
         phase: str = "",
         example_id: str = "",
-        data: dict = None,
+        data: dict | None = None,
     ) -> None:
         """Emit a progress event to all subscribers."""
         event = ProgressEvent(

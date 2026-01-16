@@ -122,11 +122,11 @@ class CurriculumAgent:
         """Initialize curriculum agent."""
         self._inference_client = None
 
-    def _get_inference_client(self):
+    async def _get_inference_client(self):
         """Get or create inference client."""
         if self._inference_client is None:
-            from ...inference import get_client
-            self._inference_client = get_client()
+            from gaius.client import get_grpc_client
+            self._inference_client = await get_grpc_client()
         return self._inference_client
 
     async def propose_task(

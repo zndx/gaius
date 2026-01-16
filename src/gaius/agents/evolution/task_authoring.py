@@ -30,7 +30,7 @@ Usage:
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -73,7 +73,7 @@ class ReasoningTaskDraft:
     citations: Optional[str] = None
 
     # Metadata
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     author: str = "gaius"
     validation_scores: list[float] = field(default_factory=list)
     status: str = "draft"  # draft, validated, submitted
@@ -362,9 +362,10 @@ Requirements:
                     from ...models.versioning import get_version_manager
 
                     manager = get_version_manager()
-                    config = await manager.get_active_config("leader")
-                    if not config:
+                    version = await manager.get_active_version("leader")
+                    if not version:
                         continue
+                    config = version.config
 
                     trajectory = await engine.run_trajectory(config, item)
                     scores.append(trajectory.score)

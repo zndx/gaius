@@ -1,20 +1,18 @@
 """Observe Panel - Operational health monitoring dashboard.
 
 Displays real-time metrics from Prometheus and engine gRPC:
-- Sparklines for time series (latency, throughput)
-- Gauges for current state (GPU memory)
+- Sparklines for time series (throughput rates)
+- Gauges for current state (latency, GPU memory)
 - Status indicators for health
 
 Layout:
 ┌─ Observe ──────────────────────────────────┐
-│ Latency p95 ▁▂▃▂▁▂▄▅▃▂▁  142ms            │
-│ Infer/min   ▃▃▄▅▆▅▄▃▃▄▅  12.3             │
-│ Search/min  ▂▂▃▃▄▃▂▂▃▃▄  8.7              │
+│ Latency p95 ████░░░░░░░░ 142ms             │
+│ Infer/hr    ▃▃▄▅▆▅▄▃▃▄▅  1.2K              │
+│ Tokens/hr   ▂▂▃▃▄▃▂▂▃▃▄  45K               │
 │ Errors      0.2%                           │
 │─────────────────────────────────────────────│
-│ GPU 0 Mem   ████████░░░░  67%              │
-│ GPU 1 Mem   ██████░░░░░░  52%              │
-│ Endpoints   3 healthy                      │
+│ Compute     ████████░░░░  67%              │
 │ Evolution   847 cycles                     │
 └─────────────────────────────────────────────┘
 """

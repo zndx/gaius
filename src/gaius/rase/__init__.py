@@ -14,28 +14,30 @@ Four Coupled Models:
     3. UOM (UI Observation Model): Screenshots with SoM/ToM grounding
     4. VM (Verifier Model): Requirements + verification (RLVR oracle)
 
-Traceability Spine:
-    TraceableId links all artifacts in a digital thread from requirement
-    to training sample. Mirrors SysML v2's human id <'scheme:path'>.
-
-Package Structure:
+Package Structure (v2 - Domain-Based):
     gaius/rase/
+    ├── core/                 # Domain-agnostic abstractions
+    │   ├── state.py         # SystemState protocol, S TypeVar
+    │   ├── constraints.py   # Generic Constraint[S], composites
+    │   └── vm.py            # Generic Oracle[S], VerdictKind, rewards
+    ├── domains/              # Domain-specific implementations
+    │   ├── base.py          # DomainSpec, DomainRegistry
+    │   └── nifi/            # NiFi domain
+    │       ├── state.py     # NiFiInstance, Processor, etc.
+    │       ├── constraints.py  # NiFi constraints
+    │       └── oracle.py    # NiFiOracle
     ├── traceability.py      # TraceableId, DigitalThread
-    ├── ssm/                  # System State Model
-    │   ├── nifi.py          # NiFi as typed graph
-    │   └── constraints.py   # Declarative constraints
+    ├── ssm/                  # Legacy SSM (backward compat)
     ├── osm/                  # Operational Scenario Model
-    │   ├── scenario.py      # BDD scenarios, steps
-    │   └── registry.py      # Step registry (@given, @when, @then)
     ├── uom/                  # UI Observation Model
-    │   ├── marks.py         # SoM (Set-of-Mark)
-    │   └── traces.py        # ToM (Trace-of-Mark)
-    └── vm/                   # Verifier Model
-        ├── requirements.py  # Requirements with assume/require
-        ├── verification.py  # Verification cases
-        └── oracle.py        # RLVR oracle
+    └── vm/                   # Legacy VM (backward compat)
 
 Example:
+    # New style - use domains
+    from gaius.rase.core import SystemState, Constraint, Oracle
+    from gaius.rase.domains.nifi import NiFiInstance, ProcessorExists, NiFiOracle
+
+    # Legacy style - still works
     from gaius.rase import (
         TraceableId, DigitalThread,
         NiFiInstance, ProcessorGroup, Processor,
@@ -43,25 +45,33 @@ Example:
         ScreenshotWithSoM, TraceOfMarks,
         ScenarioRequirement, VerdictKind, NiFiOracle,
     )
-
-    # Create a scenario requirement
-    scenario_req = ScenarioRequirement.from_scenario(
-        scenario, feature_name="basic_flows"
-    )
-
-    # Verify against current state
-    oracle = NiFiOracle(nifi_client=client)
-    result, reward = await oracle.verify_and_reward(scenario_req)
-
-    # Create digital thread
-    thread = DigitalThread(
-        requirement_id=scenario_req.id,
-        verification_case_id=result.case_id,
-        verification_result_id=result.id,
-        reward_outcome=reward,
-    )
 """
 
+# --- Core Abstractions (new) ---
+from .core import (
+    SystemState,
+    S,
+    Constraint as GenericConstraint,
+    ConstraintResult,
+    CompositeConstraint,
+    AllOf as GenericAllOf,
+    AnyOf as GenericAnyOf,
+    Not as GenericNot,
+    TransitionConstraint as GenericTransitionConstraint,
+    Oracle as GenericOracle,
+    RewardStrategy,
+    BinaryReward,
+    GradedReward,
+    VerdictKind,
+    VerificationResult,
+    VerificationCase,
+    VerificationObjective,
+)
+
+# --- Domain Registry ---
+from .domains import DomainSpec, DomainRegistry
+
+# --- Traceability Spine ---
 from .traceability import (
     IdScheme,
     TraceableId,
@@ -69,32 +79,44 @@ from .traceability import (
     TraceabilityGraph,
 )
 
-from .ssm import (
-    # NiFi model
-    ProcessorRunState,
-    Processor,
-    ControllerService,
-    FlowConnection,
-    ProcessorGroup,
+# --- NiFi Domain (backward compatible re-exports) ---
+from .domains.nifi import (
+    # State model
     NiFiInstance,
-    SystemState,
+    Processor,
+    ProcessorGroup,
+    FlowConnection,
+    ControllerService,
+    ProcessorRunState,
+    ProcessorState,  # Backward compat alias
+    semantic_processor_match,
+    semantic_connection_match,
+    semantic_group_match,
     # Constraints
     Constraint,
-    ConstraintResult,
-    CompositeConstraint,
+    TransitionConstraint,
     GroupExists,
     ProcessorExists,
+    ConnectionExists,
     ProcessorHasType,
     ProcessorHasProperty,
-    ConnectionExists,
     FlowIsEquivalent,
     AllProcessorsRunning,
     NoBackpressure,
-    AllOf,
-    AnyOf,
-    Not,
+    ProcessorCreated,
+    ConnectionCreated,
+    # Oracle
+    NiFiOracle,
+    CurriculumNiFiOracle,
 )
 
+# Re-export composite constraints from NiFi domain (they work generically)
+from .core import AllOf, AnyOf, Not
+
+# Alias SystemState to NiFiInstance for legacy code
+# (was: SystemState = NiFiInstance in ssm/nifi.py)
+
+# --- OSM (Operational Scenario Model) ---
 from .osm import (
     # Core types
     StepType,
@@ -113,6 +135,7 @@ from .osm import (
     then,
 )
 
+# --- UOM (UI Observation Model) ---
 from .uom import (
     # SoM (Set-of-Mark)
     PixelCoord,
@@ -129,6 +152,7 @@ from .uom import (
     TraceRecorder,
 )
 
+# --- VM (Verifier Model) - Legacy imports for backward compat ---
 from .vm import (
     # Requirements
     Requirement,
@@ -136,41 +160,46 @@ from .vm import (
     ScenarioRequirement,
     FeatureRequirement,
     derive_requirements_from_scenario,
-    # Verification
-    VerdictKind,
-    VerificationObjective,
-    VerificationCase,
+    # Verification (use core versions where possible)
     APIVerificationCase,
     UIVerificationCase,
-    VerificationResult,
     VerificationRun,
     # Oracle
     Oracle,
-    NiFiOracle,
-    RewardStrategy,
-    BinaryReward,
-    GradedReward,
     compute_reward,
 )
 
 __all__ = [
+    # Core Abstractions
+    "SystemState",
+    "S",
+    "GenericConstraint",
+    "GenericOracle",
+    "GenericTransitionConstraint",
+    # Domain Registry
+    "DomainSpec",
+    "DomainRegistry",
     # Traceability
     "IdScheme",
     "TraceableId",
     "DigitalThread",
     "TraceabilityGraph",
-    # SSM - NiFi model
+    # SSM - NiFi model (from domains.nifi)
     "ProcessorRunState",
+    "ProcessorState",
     "Processor",
     "ControllerService",
     "FlowConnection",
     "ProcessorGroup",
     "NiFiInstance",
-    "SystemState",
-    # SSM - Constraints
+    "semantic_processor_match",
+    "semantic_connection_match",
+    "semantic_group_match",
+    # SSM - Constraints (from domains.nifi)
     "Constraint",
     "ConstraintResult",
     "CompositeConstraint",
+    "TransitionConstraint",
     "GroupExists",
     "ProcessorExists",
     "ProcessorHasType",
@@ -182,6 +211,8 @@ __all__ = [
     "AllOf",
     "AnyOf",
     "Not",
+    "ProcessorCreated",
+    "ConnectionCreated",
     # OSM - Scenarios
     "StepType",
     "StepUsage",
@@ -226,6 +257,7 @@ __all__ = [
     # VM - Oracle
     "Oracle",
     "NiFiOracle",
+    "CurriculumNiFiOracle",
     "RewardStrategy",
     "BinaryReward",
     "GradedReward",

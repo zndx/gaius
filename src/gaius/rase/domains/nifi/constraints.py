@@ -1,0 +1,516 @@
+"""NiFi-specific constraint definitions for RASE.
+
+These constraints are parameterized by NiFiInstance and implement
+the generic Constraint[S] interface from gaius.rase.core.
+
+Constraints are declarative predicates over NiFi system state, used in VM
+requirements to specify what conditions must hold.
+
+Maps to SysML v2 constraint definitions:
+    constraint def GroupExists {
+        in nifi : NiFiInstance;
+        in groupName : String;
+    }
+
+Design principles:
+1. Declarative: Describe what to check, not how
+2. Composable: Can combine with AllOf, AnyOf, Not from core
+3. Debuggable: Rich failure messages for diagnosis
+4. Serializable: Can persist constraint definitions
+5. Type-safe: Parameterized by NiFiInstance
+
+Constraints are used in two contexts:
+- assume constraints: Preconditions that must hold before a step
+- require constraints: Postconditions that must hold after a step
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any
+
+from pydantic import BaseModel
+
+from gaius.rase.core import (
+    Constraint as GenericConstraint,
+    ConstraintResult,
+    TransitionConstraint as GenericTransitionConstraint,
+)
+
+from .state import (
+    NiFiInstance,
+    ProcessorGroup,
+    ProcessorRunState,
+    semantic_group_match,
+)
+
+
+# Type alias for NiFi-specific constraints
+class Constraint(GenericConstraint[NiFiInstance], ABC):
+    """Base class for NiFi-specific constraints.
+
+    Inherits from the generic Constraint[S] parameterized with NiFiInstance.
+    All NiFi constraints must implement evaluate(state: NiFiInstance).
+    """
+
+    pass
+
+
+class TransitionConstraint(GenericTransitionConstraint[NiFiInstance], ABC):
+    """Base class for NiFi transition constraints.
+
+    Transition constraints compare before/after NiFiInstance states.
+    """
+
+    pass
+
+
+# --- Structural Constraints ---
+
+
+class GroupExists(Constraint):
+    """Constraint: A process group with the given name exists.
+
+    Maps to SysML v2:
+        constraint def GroupExists {
+            in nifi : NiFiInstance;
+            in groupName : String;
+        }
+    """
+
+    group_name: str
+    parent_path: str = ""  # Path to parent group (empty = root)
+
+    @property
+    def name(self) -> str:
+        if self.parent_path:
+            return f"GroupExists({self.parent_path}/{self.group_name})"
+        return f"GroupExists({self.group_name})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        # Navigate to parent
+        if self.parent_path:
+            parent = state.get_group(self.parent_path)
+            if parent is None:
+                return ConstraintResult.failure(
+                    self.name,
+                    f"Parent path not found: {self.parent_path}",
+                    {"parent_path": self.parent_path},
+                )
+        else:
+            parent = state.root
+
+        # Check for group
+        group = parent.get_child_group(self.group_name)
+        if group is not None:
+            return ConstraintResult.success(
+                self.name,
+                f"Group '{self.group_name}' exists with {len(group.processors)} processors",
+            )
+        else:
+            available = [g.name for g in parent.child_groups]
+            return ConstraintResult.failure(
+                self.name,
+                f"Group '{self.group_name}' not found",
+                {"available_groups": available},
+            )
+
+
+class ProcessorExists(Constraint):
+    """Constraint: A processor with the given name exists in the group."""
+
+    processor_name: str
+    group_path: str = ""  # Path to containing group
+
+    @property
+    def name(self) -> str:
+        if self.group_path:
+            return f"ProcessorExists({self.group_path}/{self.processor_name})"
+        return f"ProcessorExists({self.processor_name})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        group = state.get_group(self.group_path) if self.group_path else state.root
+        if group is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Group path not found: {self.group_path}",
+            )
+
+        proc = group.get_processor(self.processor_name)
+        if proc is not None:
+            return ConstraintResult.success(
+                self.name,
+                f"Processor '{self.processor_name}' exists (type: {proc.type_short_name})",
+            )
+        else:
+            available = [p.name for p in group.processors]
+            return ConstraintResult.failure(
+                self.name,
+                f"Processor '{self.processor_name}' not found",
+                {"available_processors": available},
+            )
+
+
+class ConnectionExists(Constraint):
+    """Constraint: A connection exists between source and destination."""
+
+    source_name: str
+    destination_name: str
+    group_path: str = ""
+    relationships: list[str] | None = None  # Optional: specific relationships
+
+    @property
+    def name(self) -> str:
+        conn_desc = f"{self.source_name}->{self.destination_name}"
+        if self.group_path:
+            return f"ConnectionExists({self.group_path}/{conn_desc})"
+        return f"ConnectionExists({conn_desc})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        group = state.get_group(self.group_path) if self.group_path else state.root
+        if group is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Group path not found: {self.group_path}",
+            )
+
+        conn = group.get_connection(self.source_name, self.destination_name)
+        if conn is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Connection {self.source_name}->{self.destination_name} not found",
+                {"available_connections": [c.semantic_key for c in group.connections]},
+            )
+
+        # Check relationships if specified
+        if self.relationships:
+            missing = set(self.relationships) - set(conn.selected_relationships)
+            if missing:
+                return ConstraintResult.failure(
+                    self.name,
+                    f"Connection missing relationships: {missing}",
+                    {
+                        "expected": self.relationships,
+                        "actual": conn.selected_relationships,
+                    },
+                )
+
+        return ConstraintResult.success(
+            self.name,
+            f"Connection exists with relationships: {conn.selected_relationships}",
+        )
+
+
+# --- Type and Configuration Constraints ---
+
+
+class ProcessorHasType(Constraint):
+    """Constraint: A processor has the expected NiFi type."""
+
+    processor_name: str
+    expected_type: str  # Full or short type name
+    group_path: str = ""
+
+    @property
+    def name(self) -> str:
+        return f"ProcessorHasType({self.processor_name}, {self.expected_type})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        group = state.get_group(self.group_path) if self.group_path else state.root
+        if group is None:
+            return ConstraintResult.failure(self.name, "Group not found")
+
+        proc = group.get_processor(self.processor_name)
+        if proc is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Processor '{self.processor_name}' not found",
+            )
+
+        # Match full type or short name
+        if proc.nifi_type == self.expected_type or proc.type_short_name == self.expected_type:
+            return ConstraintResult.success(self.name)
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                f"Type mismatch: expected {self.expected_type}, got {proc.nifi_type}",
+                {"expected": self.expected_type, "actual": proc.nifi_type},
+            )
+
+
+class ProcessorHasProperty(Constraint):
+    """Constraint: A processor has a property with expected value."""
+
+    processor_name: str
+    property_name: str
+    expected_value: Any
+    group_path: str = ""
+
+    @property
+    def name(self) -> str:
+        return f"ProcessorHasProperty({self.processor_name}.{self.property_name})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        group = state.get_group(self.group_path) if self.group_path else state.root
+        if group is None:
+            return ConstraintResult.failure(self.name, "Group not found")
+
+        proc = group.get_processor(self.processor_name)
+        if proc is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Processor '{self.processor_name}' not found",
+            )
+
+        actual = proc.properties.get(self.property_name)
+        if actual == self.expected_value:
+            return ConstraintResult.success(self.name)
+        elif actual is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Property '{self.property_name}' not set",
+                {"available_properties": list(proc.properties.keys())},
+            )
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                "Property value mismatch",
+                {"expected": self.expected_value, "actual": actual},
+            )
+
+
+# --- Semantic Equivalence Constraints ---
+
+
+class FlowIsEquivalent(Constraint):
+    """Constraint: Actual flow matches expected flow semantically.
+
+    This is the core verification constraint for BDD scenarios:
+    it checks that the flow created by the agent matches the
+    expected specification.
+
+    Maps to SysML v2:
+        constraint def FlowIsEquivalent {
+            in expected : ProcessorGroup;
+            in actual : ProcessorGroup;
+        }
+    """
+
+    expected: ProcessorGroup
+    group_path: str = ""  # Path to actual group in state
+    recursive: bool = True
+
+    @property
+    def name(self) -> str:
+        return f"FlowIsEquivalent({self.expected.name})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        actual = state.get_group(self.group_path) if self.group_path else state.root
+        if actual is None:
+            return ConstraintResult.failure(
+                self.name,
+                f"Actual group not found at path: {self.group_path}",
+            )
+
+        is_match, differences = semantic_group_match(
+            self.expected,
+            actual,
+            recursive=self.recursive,
+        )
+
+        if is_match:
+            return ConstraintResult.success(
+                self.name,
+                f"Flow matches with {len(actual.processors)} processors, "
+                f"{len(actual.connections)} connections",
+            )
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                f"Flow mismatch: {len(differences)} differences",
+                {"differences": differences},
+            )
+
+
+# --- Operational Constraints ---
+
+
+class AllProcessorsRunning(Constraint):
+    """Constraint: All processors in a group are in RUNNING state."""
+
+    group_path: str = ""
+    recursive: bool = True
+
+    @property
+    def name(self) -> str:
+        return f"AllProcessorsRunning({self.group_path or 'root'})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        group = state.get_group(self.group_path) if self.group_path else state.root
+        if group is None:
+            return ConstraintResult.failure(self.name, "Group not found")
+
+        all_procs = group.all_processors(recursive=self.recursive)
+        not_running = [
+            p.name for p in all_procs if p.run_state != ProcessorRunState.RUNNING
+        ]
+
+        if not not_running:
+            return ConstraintResult.success(
+                self.name,
+                f"All {len(all_procs)} processors running",
+            )
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                f"{len(not_running)} processors not running",
+                {"not_running": not_running},
+            )
+
+
+class NoBackpressure(Constraint):
+    """Constraint: No connections have backpressure."""
+
+    group_path: str = ""
+    recursive: bool = True
+
+    @property
+    def name(self) -> str:
+        return f"NoBackpressure({self.group_path or 'root'})"
+
+    def evaluate(self, state: NiFiInstance) -> ConstraintResult:
+        group = state.get_group(self.group_path) if self.group_path else state.root
+        if group is None:
+            return ConstraintResult.failure(self.name, "Group not found")
+
+        all_conns = group.all_connections(recursive=self.recursive)
+        backpressured = [c.semantic_key for c in all_conns if c.is_backpressured]
+
+        if not backpressured:
+            return ConstraintResult.success(self.name)
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                f"{len(backpressured)} connections have backpressure",
+                {"backpressured": backpressured},
+            )
+
+
+# --- Transition Constraints (for step verification) ---
+
+
+class ProcessorCreated(TransitionConstraint):
+    """Transition constraint: A processor was created by this step."""
+
+    processor_name: str
+    group_path: str = ""
+
+    @property
+    def name(self) -> str:
+        return f"ProcessorCreated({self.processor_name})"
+
+    def evaluate(
+        self,
+        before: NiFiInstance,
+        after: NiFiInstance,
+    ) -> ConstraintResult:
+        group_before = before.get_group(self.group_path) if self.group_path else before.root
+        group_after = after.get_group(self.group_path) if self.group_path else after.root
+
+        if group_after is None:
+            return ConstraintResult.failure(self.name, "Group not found after")
+
+        # Check it didn't exist before
+        existed_before = (
+            group_before is not None
+            and group_before.get_processor(self.processor_name) is not None
+        )
+
+        # Check it exists after
+        exists_after = group_after.get_processor(self.processor_name) is not None
+
+        if existed_before:
+            return ConstraintResult.failure(
+                self.name,
+                f"Processor '{self.processor_name}' already existed",
+            )
+        elif exists_after:
+            return ConstraintResult.success(
+                self.name,
+                f"Processor '{self.processor_name}' created",
+            )
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                f"Processor '{self.processor_name}' was not created",
+            )
+
+
+class ConnectionCreated(TransitionConstraint):
+    """Transition constraint: A connection was created by this step."""
+
+    source_name: str
+    destination_name: str
+    group_path: str = ""
+
+    @property
+    def name(self) -> str:
+        return f"ConnectionCreated({self.source_name}->{self.destination_name})"
+
+    def evaluate(
+        self,
+        before: NiFiInstance,
+        after: NiFiInstance,
+    ) -> ConstraintResult:
+        group_before = before.get_group(self.group_path) if self.group_path else before.root
+        group_after = after.get_group(self.group_path) if self.group_path else after.root
+
+        if group_after is None:
+            return ConstraintResult.failure(self.name, "Group not found after")
+
+        # Check it didn't exist before
+        existed_before = (
+            group_before is not None
+            and group_before.get_connection(self.source_name, self.destination_name)
+            is not None
+        )
+
+        # Check it exists after
+        exists_after = (
+            group_after.get_connection(self.source_name, self.destination_name) is not None
+        )
+
+        if existed_before:
+            return ConstraintResult.failure(
+                self.name,
+                "Connection already existed",
+            )
+        elif exists_after:
+            return ConstraintResult.success(self.name, "Connection created")
+        else:
+            return ConstraintResult.failure(
+                self.name,
+                "Connection was not created",
+            )
+
+
+__all__ = [
+    # Base classes
+    "Constraint",
+    "TransitionConstraint",
+    # Structural constraints
+    "GroupExists",
+    "ProcessorExists",
+    "ConnectionExists",
+    # Type/config constraints
+    "ProcessorHasType",
+    "ProcessorHasProperty",
+    # Semantic constraints
+    "FlowIsEquivalent",
+    # Operational constraints
+    "AllProcessorsRunning",
+    "NoBackpressure",
+    # Transition constraints
+    "ProcessorCreated",
+    "ConnectionCreated",
+]
