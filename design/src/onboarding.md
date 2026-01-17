@@ -552,26 +552,197 @@ stateDiagram-v2
 
 ### Interactive Prompts
 
-The Onboarding Agent guides users through setup:
+The Onboarding Agent guides users through perspective-based setup. The flow is designed to translate directly to BDD specifications.
+
+#### Feature: Profile Creation
+
+```gherkin
+Feature: User profile creation
+  As a new Gaius user
+  I want to create a profile representing my current perspective
+  So that Gaius can frame information appropriately for my context
+
+  Background:
+    Given the onboarding agent is initialized
+    And no profiles exist for this user
+
+  Scenario: Create first profile with common perspective
+    When the user starts onboarding
+    Then the agent should ask "What perspective are you working from right now?"
+    And present options including:
+      | Option       | Description                                      |
+      | work         | Professional context with employer resources     |
+      | home         | Personal projects and learning                   |
+      | side-project | Independent ventures, isolated from work         |
+      | research     | Academic exploration and study                   |
+      | leisure      | Hobbies, interests, and personal enrichment      |
+
+  Scenario: Create custom perspective
+    Given the user selects "other"
+    When the user enters "consulting-acme"
+    Then a new profile "consulting-acme" should be created
+    And the agent should ask about credential isolation preferences
+
+  Scenario: User has existing profiles
+    Given the user has profiles ["work", "home"]
+    When the user starts onboarding for a new profile
+    Then the agent should offer to clone settings from existing profiles
+    And highlight what will be isolated vs shared
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Welcome to Gaius Onboarding                                │
+│  Welcome to Gaius                                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  Let's configure your environment.                          │
+│  What perspective are you working from right now?           │
 │                                                             │
-│  What's your primary role?                                  │
+│  This isn't about your job title—it's about your current    │
+│  context. You can have many profiles and switch between     │
+│  them freely.                                               │
 │                                                             │
-│  > [1] Engineer - Software development focus                │
-│    [2] Researcher - Academic/R&D focus                      │
-│    [3] Operator - Production operations                     │
-│    [4] Analyst - Data analysis focus                        │
-│    [5] Custom - Define your own profile                     │
+│  > [1] work         - Professional, employer context        │
+│    [2] home         - Personal projects, learning           │
+│    [3] side-project - Independent ventures                  │
+│    [4] research     - Academic exploration                  │
+│    [5] leisure      - Hobbies and interests                 │
+│    [6] other        - Define a custom perspective           │
 │                                                             │
 │  Selection: _                                               │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
+```
+
+#### Feature: Domain Selection
+
+```gherkin
+Feature: Domain selection within profile
+  As a user with a selected profile
+  I want to specify domains I work with in this context
+  So that Gaius can surface relevant information and connections
+
+  Scenario: Select domains for work profile
+    Given the user has selected profile "work"
+    When the agent asks about domains
+    Then the user can select multiple domains
+    And each domain will be framed through the "work" lens
+
+  Scenario: Same domain, different profile framing
+    Given the user has profile "work" with domain "weather"
+    And the user has profile "leisure" with domain "weather"
+    When the user queries about "weather" in "work" profile
+    Then results should emphasize NWP models, GRIB data, verification
+    When the user queries about "weather" in "leisure" profile
+    Then results should emphasize surf reports, golden hour, storm chasing
+
+  Scenario: Domain-specific KB roots
+    Given the user selects domain "manufacturing"
+    When configuring KB sources
+    Then the agent should suggest domain-appropriate paths
+    And offer to sync domain-specific agent repositories
+```
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Profile: work                                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  What domains do you engage with in this context?           │
+│                                                             │
+│  Select all that apply. The same domain can appear in       │
+│  multiple profiles—Gaius will frame it differently based    │
+│  on your perspective.                                       │
+│                                                             │
+│  > [x] weather       - Your expertise area                  │
+│    [x] infrastructure - Systems you maintain                │
+│    [ ] finance       - Budget, planning                     │
+│    [ ] manufacturing - Production systems                   │
+│    [+] Add custom domain...                                 │
+│                                                             │
+│  Continue: [Enter]                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Feature: Credential Isolation
+
+```gherkin
+Feature: Profile credential isolation
+  As a user with multiple profiles
+  I want credentials isolated between contexts
+  So that work and personal resources don't cross-contaminate
+
+  Scenario: Configure work profile credentials
+    Given the user is configuring profile "work"
+    When adding GitHub integration
+    Then the agent should prompt for work-specific credentials
+    And store them isolated from other profiles
+
+  Scenario: Prevent credential leakage
+    Given the user has profile "work" with GitHub token A
+    And the user has profile "side-project" with GitHub token B
+    When operating in "work" profile
+    Then only token A should be available
+    And token B should not be accessible
+
+  Scenario: Shared vs isolated integrations
+    Given the user is configuring integrations
+    When the agent presents each integration
+    Then the user can mark it as "shared across profiles" or "profile-specific"
+    And shared integrations use a common credential store
+```
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Profile: work → Integrations                               │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Configure credentials for this profile.                    │
+│                                                             │
+│  These stay isolated—your work GitHub won't leak into       │
+│  personal projects.                                         │
+│                                                             │
+│  GitHub:                                                    │
+│    Token: [ghp_****] (work account)                         │
+│    Scope: profile-specific                                  │
+│                                                             │
+│  Cerebras API:                                              │
+│    Key: [csk-****]                                          │
+│    Scope: [shared / profile-specific]                       │
+│                                                             │
+│  [ ] I understand these credentials are isolated to "work"  │
+│                                                             │
+│  Continue: [Enter]                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Feature: Profile Switching
+
+```gherkin
+Feature: Runtime profile switching
+  As a user with multiple profiles
+  I want to switch perspectives without restarting
+  So that I can fluidly move between contexts throughout my day
+
+  Scenario: Switch profile via command
+    Given the user is in profile "work"
+    When the user executes "/profile leisure"
+    Then the active profile should change to "leisure"
+    And KB roots should update to leisure paths
+    And credentials should swap to leisure credentials
+    And the agent swarm should reframe its perspective
+
+  Scenario: Profile switch with unsaved state
+    Given the user has unsaved work in profile "work"
+    When the user attempts to switch to "home"
+    Then the agent should warn about unsaved state
+    And offer to save, discard, or cancel
+
+  Scenario: Quick profile indicator
+    Given the user is in profile "leisure"
+    Then the TUI status bar should show "leisure"
+    And the prompt should indicate current profile
 ```
 
 ### Verification
