@@ -16,7 +16,7 @@ Gaius onboarding provides a guided, agent-assisted setup experience that:
 ```mermaid
 flowchart TB
     subgraph User["New User"]
-        Profile[User Profile<br/>role, expertise]
+        Profile[User Profile<br/>work, home, side-project]
         Domain[Target Domain<br/>manufacturing, research, ops]
     end
 
@@ -153,13 +153,21 @@ gaius-cli --cmd "/onboarding --profile engineer --domain manufacturing"
 
 ### Profiles
 
+Profiles represent the user's current *perspective* or *context*—not their role. A single user may switch between profiles throughout the day.
+
 | Profile | Description | Default Integrations |
 |---------|-------------|---------------------|
-| `engineer` | Software development focus | GitHub, Cerebras, local inference |
-| `researcher` | Academic/R&D focus | arXiv, Semantic Scholar, HuggingFace |
-| `operator` | Production operations | Monitoring, alerting, runbooks |
-| `analyst` | Data analysis focus | SQL, visualization, reporting |
-| `executive` | High-level summaries | Dashboards, KPIs, briefs |
+| `work` | Professional/employer context | Corporate SSO, internal KBs, compliance-aware |
+| `home` | Personal projects and learning | Personal GitHub, local storage, relaxed policies |
+| `side-project` | Independent ventures | Separate credentials, isolated KBs |
+| `research` | Academic/exploration mode | arXiv, Semantic Scholar, citation tracking |
+| `consulting` | Client-facing work | Per-client credentials, data isolation |
+
+Profiles isolate:
+- **Credentials**: Different API keys, OAuth tokens per context
+- **Knowledge bases**: Separate KB roots and sync targets
+- **Inference routing**: Work may use enterprise endpoints; home uses personal quotas
+- **Privacy boundaries**: Prevent cross-contamination between contexts
 
 ### Domains
 
