@@ -619,6 +619,52 @@ agents.repositories = [
 
 ---
 
+## Collections
+
+Structural-temporal-semantic slices of KB content, realized by agent swarm trajectory.
+
+### The Three Dimensions
+
+| Dimension | Definition | Mechanism |
+|-----------|------------|-----------|
+| **Structural** | Where in KB/HX | Glob, regex, XPath-like patterns |
+| **Temporal** | When / duration | Time windows, anchors, generators |
+| **Semantic** | What concepts | Qdrant vectors + DeepOnto ontology |
+
+### Example Query
+
+> "Find patients who have pathology lab or tissue bank samples and had a phlebotomy within 6 days of a specific adverse event"
+
+Converted to:
+
+```yaml
+structural:
+  kb_patterns: ["patients/*/encounters/**", "labs/pathology/**"]
+  hx_tables: [patient_encounters, lab_results, adverse_events]
+
+temporal:
+  anchor: adverse_events.event_timestamp
+  window: { before: 6d, after: 0d }
+
+semantic:
+  required: [pathology_sample OR tissue_bank_sample, phlebotomy]
+  snomed_codes: ["108252007", "396550006"]
+```
+
+### Agent Swarm Realization
+
+Collections are realized through coordinated agent swarm traversal:
+- **Structural Agent**: Glob/regex KB paths, HX table queries
+- **Temporal Agent**: Time window generation, constraint filtering
+- **Semantic Agent**: Qdrant similarity + DeepOnto ontology reasoning
+- **Orchestrator**: Dimension intersection, trajectory recording
+
+Output: Parameterized Metaflow DAG + formal specification.
+
+**Full specification**: [Collections](./collections.md)
+
+---
+
 ## Additional Q1 Priorities
 
 ### KB Interoperability
