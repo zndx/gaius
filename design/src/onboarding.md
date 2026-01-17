@@ -66,7 +66,7 @@ devenv up
 | PostgreSQL | Metadata storage, state tracking |
 | MinIO | S3-compatible object storage for KB |
 | Qdrant | Vector database for embeddings |
-| Redis | Caching, pub/sub for agents |
+| Aeron | Low-latency agent IPC (in progress) |
 | Process Compose | Service orchestration |
 
 #### Environment Profiles
