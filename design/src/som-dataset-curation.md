@@ -57,6 +57,9 @@ flowchart TB
 
 The existing NiFi SoM pipeline (see [RASE Framework](./README.md)) captures:
 
+![NiFi SoM Example](./img/nifi-som-example.png)
+*Figure: NiFi canvas with Set-of-Mark annotations. Red numbered circles indicate interactable elements (processors, connections) that the agent can reference by mark ID. This example shows the ArxivDoclingFlow with 8 annotated marks.*
+
 - **Screenshots**: NiFi canvas at various states
 - **Marks**: Processors, connections, controller services annotated with bounding boxes
 - **Actions**: Create processor, configure property, start/stop, create connection
