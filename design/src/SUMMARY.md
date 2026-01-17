@@ -4,6 +4,7 @@
 - [2026 Q1 Roadmap](./roadmap-2026Q1.md)
 - [Onboarding](./onboarding.md)
 - [Collections](./collections.md)
+- [SoM Dataset Curation](./som-dataset-curation.md)
 - [KB Interoperability](./kb-interop.md)
   - [Iteration 1](./_kb-interop-01.md)
   - [Iteration 2](./_kb-interop-02.md)

@@ -665,6 +665,40 @@ Output: Parameterized Metaflow DAG + formal specification.
 
 ---
 
+## SoM Dataset Curation
+
+Expanding Magma-8B-style Set-of-Mark dataset generation beyond NiFi to include Metabase and Marquez.
+
+### Platform Coverage
+
+| Platform | UI Domain | SoM Focus |
+|----------|-----------|-----------|
+| **NiFi** | Flow orchestration | Processors, connections, configuration |
+| **Metabase** | BI & visualization | Query building, charts, dashboards |
+| **Marquez** | OpenLineage UI | Lineage graphs, impact analysis, run history |
+
+### Key Innovation: Lineage-Aware SoM
+
+Marks include **OpenLineage context**—upstream/downstream datasets, job dependencies, schema information. This enables:
+
+- **Cross-platform trajectories**: Trace from Metabase question → Marquez lineage → NiFi flow
+- **Impact analysis training**: Agent learns to navigate lineage for root cause / blast radius
+- **Lineage-connected verification**: RASE oracle validates against OpenLineage API
+
+```python
+@dataclass
+class LineageAwareMark(Mark):
+    bbox: BoundingBox
+    label: str
+    openlineage_ref: Optional[OpenLineageRef]
+    upstream_datasets: list[str]
+    downstream_datasets: list[str]
+```
+
+**Full specification**: [SoM Dataset Curation](./som-dataset-curation.md)
+
+---
+
 ## Additional Q1 Priorities
 
 ### KB Interoperability
