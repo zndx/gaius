@@ -593,6 +593,32 @@ Deep Agent: "I can see 47 documents here, primarily covering CNC operations
 
 ---
 
+## Onboarding System
+
+Agent-assisted setup experience with CLI/MCP/TUI parity.
+
+### Key Components
+
+- **DevEnv + Nixpkgs**: Reproducible development environment
+- **Onboarding Agent**: ACP-based guided setup via `/onboarding --profile <profile> --domain <domain>`
+- **Remote Agent Repos**: Load agents from public/private git repos (GitHub, GitLab, enterprise)
+- **External Integrations**: Cerebras, xAI Grok, Bytez inference APIs + FMP financial data
+- **Mistral-Vibe ACP Agent**: Multimodal document/visual understanding
+
+### Agent Repository Configuration
+
+```hocon
+agents.repositories = [
+  { url = "https://github.com/gaius-project/onboarding-agents", auth = "none" }
+  { url = "https://gitlab.enterprise.com/ai/agents", auth = "gitlab-oauth" }
+  { url = "https://agents.gaius.dev/premium", auth = "api-key", license = "enterprise" }
+]
+```
+
+**Full specification**: [Onboarding](./onboarding.md)
+
+---
+
 ## Additional Q1 Priorities
 
 ### KB Interoperability
