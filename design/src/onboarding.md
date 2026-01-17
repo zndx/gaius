@@ -21,7 +21,7 @@ flowchart TB
     end
 
     subgraph Onboarding["Onboarding Flow"]
-        Command[/onboarding<br/>--profile --domain]
+        Command["#47;onboarding<br/>--profile --domain"]
         Agent[Onboarding Agent<br/>via ACP]
         DevEnv[DevEnv Setup<br/>nixpkgs]
         Integrations[External Integrations<br/>APIs, credentials]
