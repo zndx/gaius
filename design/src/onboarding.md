@@ -169,6 +169,56 @@ Profiles isolate:
 - **Inference routing**: Work may use enterprise endpoints; home uses personal quotas
 - **Privacy boundaries**: Prevent cross-contamination between contexts
 
+### The Profile × Domain Matrix
+
+Gaius supports a rich way of relating to the global information landscape. A single domain takes on entirely different meaning depending on the user's current profile.
+
+**Example: `--domain weather`**
+
+| Profile | Context | Weather Domain Manifests As... |
+|---------|---------|-------------------------------|
+| `work` | Meteorologist | NWP models, GRIB data, forecast verification, research papers |
+| `home` | Greenhouse builder | Microclimate data, frost dates, solar angles, irrigation planning |
+| `family` | Vacation planner | 10-day forecasts, historical averages, best-time-to-visit guides |
+| `leisure` | Storm chaser | Convective outlooks, radar composites, supercell dynamics |
+| `leisure` | Photographer | Golden hour times, cloud formations, dramatic light conditions |
+| `leisure` | Surfer | Swell models, wind forecasts, tide charts, wave period data |
+
+The same person, the same domain, six completely different relationships to information. Gaius embraces this multiplicity—your professional expertise, personal projects, family life, and hobbies each deserve their own context, their own KB trajectory, their own way of seeing.
+
+```mermaid
+flowchart LR
+    subgraph Profiles["User Profiles"]
+        Work[work]
+        Home[home]
+        Family[family]
+        Leisure[leisure]
+    end
+
+    subgraph Domain["Domain: Weather"]
+        Weather((weather))
+    end
+
+    subgraph Realizations["Different Realizations"]
+        R1[NWP Models<br/>Research Papers]
+        R2[Microclimate<br/>Frost Dates]
+        R3[Vacation Forecasts<br/>Travel Guides]
+        R4[Storm Chasing<br/>Surf Reports<br/>Golden Hour]
+    end
+
+    Work --> Weather
+    Home --> Weather
+    Family --> Weather
+    Leisure --> Weather
+
+    Weather --> R1
+    Weather --> R2
+    Weather --> R3
+    Weather --> R4
+```
+
+This is not just about filtering—it's about *framing*. The agent swarm navigates the KB differently, surfaces different connections, speaks in different registers, all based on who you are *right now*.
+
 ### Domains
 
 | Domain | KB Sources | Specialized Agents |
