@@ -237,6 +237,362 @@ Reference: [NIST Post-Quantum Cryptography Standards](https://www.nist.gov/news-
 
 ---
 
+## Cloudflare Worker Authentication
+
+### Current State
+
+The Cloudflare Worker UI currently handles only X (Twitter) OAuth callbacks. Need to extend with:
+- **GitHub OAuth** - Developer identity
+- **Okta OIDC** - Enterprise identity
+- **Cloudflare Zero Trust** - Unified access control
+
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph IdPs["Identity Providers"]
+        GitHub[GitHub OAuth]
+        Okta[Okta OIDC]
+        X[X OAuth]
+    end
+
+    subgraph CF["Cloudflare Edge"]
+        Worker[CF Worker]
+        ZeroTrust[Zero Trust Access]
+        KV[Workers KV<br/>Session Store]
+    end
+
+    subgraph App["Gaius UI"]
+        SPA[Single Page App]
+        WebRTC[WebRTC Client]
+    end
+
+    GitHub --> |"OAuth 2.0"| Worker
+    Okta --> |"OIDC"| Worker
+    X --> |"OAuth 1.0a"| Worker
+
+    Worker --> ZeroTrust
+    Worker --> KV
+    ZeroTrust --> |"Policy Check"| Worker
+
+    Worker --> |"JWT/Session"| SPA
+    SPA --> WebRTC
+```
+
+### Implementation
+
+#### GitHub OAuth
+
+Using [cloudflare-worker-github-oauth-login](https://github.com/gr2m/cloudflare-worker-github-oauth-login):
+
+```typescript
+// Worker handles OAuth flow
+// 1. Redirect to GitHub login
+// 2. Receive callback with code
+// 3. Exchange code for access token
+// 4. Store session in Workers KV
+```
+
+Secrets required:
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+
+#### Okta OIDC
+
+Integration via [Cloudflare Zero Trust](https://developers.cloudflare.com/cloudflare-one/identity/idp-integration/okta/):
+
+- Sign-in redirect: `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`
+- SCIM provisioning for group sync
+- Risk score sharing for adaptive access
+
+#### Zero Trust Policy
+
+```
+Allow IF:
+  (identity.provider == "github" AND identity.groups contains "gaius-users")
+  OR
+  (identity.provider == "okta" AND identity.groups contains "engineering")
+```
+
+---
+
+## WebRTC Voice Chat
+
+### Overview
+
+Real-time voice interaction with authenticated users via Cloudflare's [Realtime Voice AI platform](https://blog.cloudflare.com/cloudflare-realtime-voice-ai/).
+
+```mermaid
+flowchart TB
+    subgraph Client["Browser Client"]
+        Mic[Microphone]
+        Speaker[Speaker]
+        WebRTC_C[WebRTC Client]
+    end
+
+    subgraph CF["Cloudflare Edge"]
+        SFU[Realtime SFU<br/>Opus → PCM]
+        Worker[AI Worker]
+        Gateway[AI Gateway]
+    end
+
+    subgraph Agents["Voice Agent Tiers"]
+        Fast[Fast Agent<br/>CF Native]
+        Slow[Slow Agent<br/>Tinybox]
+        Deep[Deep Agent<br/>xAI Grok]
+    end
+
+    Mic --> WebRTC_C
+    WebRTC_C --> |"WebRTC"| SFU
+    SFU --> |"PCM Stream"| Worker
+    Worker --> Gateway
+
+    Gateway --> Fast
+    Gateway --> Slow
+    Gateway --> Deep
+
+    Fast --> |"TTS"| SFU
+    Slow --> |"TTS"| SFU
+    Deep --> |"Native Voice"| SFU
+
+    SFU --> |"WebRTC"| WebRTC_C
+    WebRTC_C --> Speaker
+```
+
+### Multi-Level Voice Agents
+
+#### Tier 1: Fast (Cloudflare Native)
+
+**Latency**: < 200ms | **Use**: Immediate responses, conversation management
+
+- [Deepgram Flux](https://developers.cloudflare.com/workers-ai/models/whisper-large-v3-turbo/) for STT (first conversational speech recognition model for voice agents)
+- [MeloTTS](https://developers.cloudflare.com/workers-ai/models/) for TTS
+- [PipeCat smart-turn-v2](https://blog.cloudflare.com/cloudflare-realtime-voice-ai/) for turn detection
+- Runs in 330+ Cloudflare cities worldwide
+
+Responsibilities:
+- Acknowledge user input immediately
+- Handle simple queries directly
+- Orchestrate slower agents
+- Manage conversation flow and interruptions
+
+#### Tier 2: Slow (Tinybox)
+
+**Latency**: 1-5s | **Use**: Deep reasoning, KB synthesis
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Fast as Fast Agent
+    participant Slow as Tinybox
+    participant KB as Knowledge Base
+
+    User->>Fast: Complex question
+    Fast->>User: "Let me think about that..."
+    Fast->>Slow: Forward query + context
+
+    Slow->>KB: Query relevant docs
+    KB-->>Slow: Retrieved context
+    Slow->>Slow: Reason over context
+
+    loop Streaming Response
+        Slow-->>Fast: Partial transcript chunk
+        Fast->>Fast: Sample & quality-ramp
+        Fast->>User: Synthesized speech
+    end
+```
+
+Architecture:
+- **Listening mode**: Subscribes to conversation transcript
+- **Continuous buffer**: Updates with conversation context
+- **Reply interpretation**: Fast agent interprets Slow's text output
+- **Quality ramping**: Fast agent samples streaming text, naturally increases quality as more context arrives
+
+#### Tier 3: Deep (xAI Grok Voice)
+
+**Latency**: < 700ms | **Use**: High-quality reasoning with native voice
+
+Using [Grok Voice Agent API](https://x.ai/news/grok-voice-agent-api):
+
+- **Performance**: #1 on Big Bench Audio (92.3%), 5x faster than competitors
+- **Pricing**: $0.05/minute (half of OpenAI Realtime)
+- **Languages**: 100+ with automatic detection
+- **Voices**: Ara, Eve, Leo - expressive with domain terminology
+
+```typescript
+// xAI Grok as WebRTC participant
+const grokAgent = new GrokVoiceAgent({
+  voice: "leo",
+  personality: "professional, technical, helpful",
+  tools: [kbSearch, codeExecution, webSearch],
+  expressiveness: ["[thoughtful pause]", "[emphasis]"]
+});
+
+// Add as participant in WebRTC room
+webrtcRoom.addParticipant(grokAgent);
+```
+
+Capabilities:
+- Native audio processing (no STT→LLM→TTS pipeline)
+- Tool calling (CRM, calendar, KB search)
+- Real-time web search via X platform
+- Compatible with OpenAI Realtime API spec
+- [LiveKit plugin available](https://blog.livekit.io/xai-livekit-partnership-grok-voice-agent-api/)
+
+### Agent Orchestration
+
+```mermaid
+stateDiagram-v2
+    [*] --> Listening
+
+    Listening --> FastResponse: Simple query
+    Listening --> SlowThinking: Complex query
+    Listening --> DeepReasoning: High-stakes query
+
+    FastResponse --> Listening: Complete
+    FastResponse --> SlowThinking: Needs depth
+
+    SlowThinking --> FastSpeaking: Transcript ready
+    FastSpeaking --> Listening: Complete
+
+    DeepReasoning --> Listening: Grok responds directly
+
+    state SlowThinking {
+        [*] --> Buffering
+        Buffering --> Reasoning
+        Reasoning --> Streaming
+        Streaming --> [*]
+    }
+```
+
+---
+
+## Server-Side 3D Visualization
+
+### Concept
+
+Render UMAP projections as navigable 3D environments using Blender, stream as video over WebRTC.
+
+```mermaid
+flowchart LR
+    subgraph Data["Data Layer"]
+        Embeddings[768-D Embeddings]
+        UMAP[UMAP Projection]
+        Topology[TDA Features]
+    end
+
+    subgraph Render["Render Server"]
+        Blender[Blender<br/>EEVEE/Cycles]
+        Scene[3D Scene Graph]
+        Camera[Virtual Camera]
+    end
+
+    subgraph Stream["Streaming"]
+        Encode[H.264/VP9 Encode]
+        WebRTC_S[WebRTC Server]
+    end
+
+    subgraph Client["Browser"]
+        Video[Video Element]
+        Controls[Navigation Controls]
+    end
+
+    Embeddings --> UMAP
+    UMAP --> Scene
+    Topology --> Scene
+
+    Scene --> Blender
+    Camera --> Blender
+    Blender --> Encode
+    Encode --> WebRTC_S
+    WebRTC_S --> Video
+
+    Controls --> |"Camera commands"| Camera
+```
+
+### Why Server-Side Rendering?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Client WebGL | Low latency, interactive | Limited by device GPU |
+| Server Blender | Photorealistic, complex scenes | Latency, server cost |
+| Hybrid | Best of both | Complexity |
+
+For Gaius:
+- Complex topology visualizations exceed client GPU
+- Consistent rendering across devices
+- Can leverage CUDA/OptiX on render server
+
+### Architecture
+
+#### Scene Generation
+
+```python
+# Blender Python API
+import bpy
+from gaius.core.projection import UMAPProjector
+
+def generate_scene(embeddings, metadata):
+    # Project to 3D
+    coords_3d = UMAPProjector(n_components=3).fit_transform(embeddings)
+
+    # Create point cloud
+    for i, (coord, meta) in enumerate(zip(coords_3d, metadata)):
+        sphere = bpy.ops.mesh.primitive_uv_sphere_add(
+            radius=meta['importance'] * 0.1,
+            location=coord
+        )
+        # Color by cluster
+        material = create_material(meta['cluster'])
+        sphere.data.materials.append(material)
+
+    # Add topology features (persistent homology)
+    for cycle in topology.cycles:
+        draw_cycle(cycle)
+```
+
+#### Streaming Pipeline
+
+Using concepts from [3D Streaming Toolkit](https://3dstreamingtoolkit.github.io/docs-3dstk/):
+
+1. **Render**: Blender EEVEE (realtime) or Cycles (quality)
+2. **Encode**: NVENC hardware encoding (zero-latency)
+3. **Transport**: WebRTC with adaptive bitrate
+4. **Interact**: DataChannel for camera controls
+
+#### Camera Control Protocol
+
+```typescript
+interface CameraCommand {
+  type: 'orbit' | 'pan' | 'zoom' | 'focus';
+  params: {
+    target?: [number, number, number];  // Focus point
+    delta?: [number, number, number];   // Movement
+    duration?: number;                   // Animation time
+  };
+}
+
+// Client sends commands via WebRTC DataChannel
+dataChannel.send(JSON.stringify({
+  type: 'focus',
+  params: { target: selectedNode.position, duration: 0.5 }
+}));
+```
+
+### Integration with Voice
+
+Voice agents can control the 3D view:
+
+```
+User: "Show me the cluster of manufacturing documents"
+Fast Agent: "Focusing on the manufacturing cluster..."
+[Camera animates to manufacturing cluster centroid]
+Deep Agent: "I can see 47 documents here, primarily covering CNC operations
+             and quality control. The central node is your process manual..."
+```
+
+---
+
 ## Additional Q1 Priorities
 
 ### KB Interoperability
@@ -262,3 +618,23 @@ Reference: [NIST Post-Quantum Cryptography Standards](https://www.nist.gov/news-
 ### Government Standards
 - [DHS Post-Quantum Cryptography](https://www.dhs.gov/quantum)
 - [NIST PQC Project](https://www.nist.gov/news-events/news/2024/08/nist-releases-first-3-finalized-post-quantum-encryption-standards)
+
+### Cloudflare Voice AI
+- [Cloudflare Realtime Voice AI Platform](https://blog.cloudflare.com/cloudflare-realtime-voice-ai/)
+- [Deepgram Models on Workers AI](https://developers.cloudflare.com/workers-ai/models/)
+- [ElevenLabs + Cloudflare Integration](https://elevenlabs.io/agents/integrations/cloudflare-workers)
+
+### xAI Grok Voice
+- [Grok Voice Agent API](https://x.ai/news/grok-voice-agent-api)
+- [Grok Voice API Documentation](https://docs.x.ai/docs/guides/voice)
+- [LiveKit + xAI Partnership](https://blog.livekit.io/xai-livekit-partnership-grok-voice-agent-api/)
+
+### Authentication
+- [Cloudflare Zero Trust + Okta](https://developers.cloudflare.com/cloudflare-one/identity/idp-integration/okta/)
+- [GitHub OAuth for Cloudflare Workers](https://github.com/gr2m/cloudflare-worker-github-oauth-login)
+- [Cloudflare OAuth Provider Library](https://github.com/cloudflare/workers-oauth-provider)
+
+### 3D Streaming
+- [3D Streaming Toolkit](https://3dstreamingtoolkit.github.io/docs-3dstk/)
+- [Unity Render Streaming](https://docs.unity3d.com/Packages/com.unity.webrtc@2.4/manual/videostreaming.html)
+- [NVIDIA Omniverse WebRTC Streaming](https://medium.com/@BeingOttoman/scalable-streaming-nvidia-omniverse-applications-over-the-internet-using-webrtc-8946a574fef2)
