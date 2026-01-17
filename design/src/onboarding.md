@@ -666,49 +666,74 @@ Feature: Domain selection within profile
 
 #### Feature: Credential Isolation
 
+Credentials are managed via **Ansible Vault**, providing encryption-at-rest that integrates with [Multi-Authority CP-ABE](./roadmap-2026Q1.md#multi-authority-cp-abe--r-lwe) for fine-grained, attribute-based access control. This architecture enables encrypted fields and sections within individual KB documents—not just whole-file encryption.
+
 ```gherkin
-Feature: Profile credential isolation
+Feature: Profile credential isolation with Ansible Vault
   As a user with multiple profiles
-  I want credentials isolated between contexts
+  I want credentials encrypted and isolated between contexts
   So that work and personal resources don't cross-contaminate
+
+  Background:
+    Given Ansible Vault is configured for credential storage
+    And the user's vault password is cached for this session
 
   Scenario: Configure work profile credentials
     Given the user is configuring profile "work"
     When adding GitHub integration
     Then the agent should prompt for work-specific credentials
+    And encrypt them with Ansible Vault
     And store them isolated from other profiles
 
   Scenario: Prevent credential leakage
     Given the user has profile "work" with GitHub token A
     And the user has profile "side-project" with GitHub token B
     When operating in "work" profile
-    Then only token A should be available
-    And token B should not be accessible
+    Then only token A should be decryptable
+    And token B vault entry should not be accessible
 
   Scenario: Shared vs isolated integrations
     Given the user is configuring integrations
     When the agent presents each integration
     Then the user can mark it as "shared across profiles" or "profile-specific"
-    And shared integrations use a common credential store
+    And shared integrations use a common vault namespace
+    And profile-specific use isolated vault namespaces
+
+  Scenario: Encrypted fields in KB documents
+    Given a KB document with sensitive sections
+    When the document is stored
+    Then sensitive fields should be encrypted inline with Ansible Vault
+    And CP-ABE policy should control decryption access
+    And non-sensitive fields remain plaintext for search indexing
+
+  Scenario: Multi-authority credential access
+    Given credentials protected by CP-ABE policy
+    And the policy requires attributes from multiple authorities
+    When the user has matching attributes from all required authorities
+    Then the credential should be decryptable
+    When the user lacks attributes from any required authority
+    Then decryption should fail with "policy not satisfied"
 ```
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Profile: work → Integrations                               │
+│  Profile: work → Credentials (Ansible Vault)                │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  Configure credentials for this profile.                    │
-│                                                             │
-│  These stay isolated—your work GitHub won't leak into       │
-│  personal projects.                                         │
+│  Credentials are encrypted with Ansible Vault and isolated  │
+│  per profile. CP-ABE policies can further restrict access.  │
 │                                                             │
 │  GitHub:                                                    │
-│    Token: [ghp_****] (work account)                         │
+│    Token: [vault encrypted] (work account)                  │
 │    Scope: profile-specific                                  │
+│    Policy: (profile:work AND device:trusted)                │
 │                                                             │
 │  Cerebras API:                                              │
-│    Key: [csk-****]                                          │
+│    Key: [vault encrypted]                                   │
 │    Scope: [shared / profile-specific]                       │
+│    Policy: (role:developer)                                 │
+│                                                             │
+│  Vault password cached: yes (session)                       │
 │                                                             │
 │  [ ] I understand these credentials are isolated to "work"  │
 │                                                             │
@@ -716,6 +741,8 @@ Feature: Profile credential isolation
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**See also**: [Multi-Authority CP-ABE + R-LWE](./roadmap-2026Q1.md#multi-authority-cp-abe--r-lwe) for the cryptographic foundation enabling attribute-based access control across federated knowledge bases.
 
 #### Feature: Profile Switching
 
