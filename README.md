@@ -24,7 +24,10 @@ Central to RASE is *intrinsic verifiability*: the operational environment itself
 - [uv](https://github.com/astral-sh/uv) package manager
 - PostgreSQL 16
 - Qdrant vector database
-- Optional: vLLM + optillm for local inference
+
+**Platform-specific:**
+- **macOS (Apple Silicon)**: exo + MLX for local inference
+- **Linux (NVIDIA)**: vLLM + optillm for local inference
 
 ## Installation
 
@@ -39,16 +42,165 @@ devenv shell
 uv sync --extra search --extra tda --extra inference
 ```
 
+## Onboarding
+
+Gaius supports two platform configurations:
+
+| Platform | Local Inference | Heavy Workloads |
+|----------|-----------------|-----------------|
+| **MLX** (MacBook) | exo + MLX models | Cerebras, xAI, Bytez APIs |
+| **CUDA** (Tinybox) | vLLM + optillm | Local GPU cluster |
+
+### Step 1: Platform Detection
+
+Gaius auto-detects your platform, or you can set it explicitly:
+
+```bash
+# Auto-detect (default)
+unset GAIUS_PLATFORM
+
+# Force MLX mode (Apple Silicon)
+export GAIUS_PLATFORM=mlx
+
+# Force CUDA mode (NVIDIA GPUs)
+export GAIUS_PLATFORM=cuda
+```
+
+### Step 2: Local Inference Setup
+
+#### Apple Silicon (MLX Platform)
+
+Install [exo](https://github.com/exo-explore/exo) for local MLX inference:
+
+```bash
+# Clone and install exo
+git clone https://github.com/exo-explore/exo.git
+cd exo
+pip install -e .
+
+# Optimize GPU memory allocation (recommended)
+./configure_mlx.sh
+
+# Start exo (runs on http://localhost:52415)
+python -m exo
+```
+
+**Requirements:**
+- macOS 14.0 (Sonoma) or later
+- Apple Silicon (M1/M2/M3/M4)
+- Native ARM Python (`python -c "import platform; print(platform.processor())"` should print `arm`)
+
+**Verify exo is running:**
+```bash
+curl http://localhost:52415/v1/models
+```
+
+#### Linux (CUDA Platform)
+
+Use devenv to manage vLLM and optillm:
+
+```bash
+# Start all services (PostgreSQL, Qdrant, vLLM, optillm)
+devenv processes up
+
+# Or start individually
+devenv tasks run vllm:start
+devenv tasks run optillm:start
+```
+
+### Step 3: Remote API Keys
+
+For heavy workloads (reasoning, orchestration, thinking), Gaius uses external APIs. This preserves MacBook battery while providing access to frontier models.
+
+#### Cerebras (GLM-4.7 for orchestration + thinking)
+
+1. Go to [cloud.cerebras.ai](https://cloud.cerebras.ai) and create an account
+2. Click **API Keys** in the left sidebar
+3. Click **Generate API Key** and copy it immediately
+
+```bash
+export CEREBRAS_API_KEY="your-key-here"
+```
+
+**Why Cerebras?** Extremely fast inference speeds with GLM-4.7's interleaved thinking capability.
+
+#### xAI (Grok 4.1 for reasoning)
+
+1. Go to [console.x.ai](https://console.x.ai) and sign in (Google, X/Twitter, or email)
+2. Navigate to **API Keys** in the left sidebar
+3. Click **Create API Key**, configure permissions, and copy it
+
+```bash
+export XAI_API_KEY="xai-your-key-here"
+```
+
+**Why xAI?** Grok 4.1 Fast offers a **2 million token** context window with chain-of-thought reasoning.
+
+#### Bytez (Mistral 7B for fast-remote fallback)
+
+1. Go to [bytez.com/api](https://bytez.com/api) and create an account
+2. Copy your API key from the dashboard
+
+```bash
+export BYTEZ_API_KEY="your-key-here"
+```
+
+**Why Bytez?** Provides the same Mistral-7B-Instruct model used on CUDA, ensuring consistent behavior across platforms. Useful when local MLX is busy.
+
+### Step 4: Environment Configuration
+
+Create a `.env` file or add to your shell profile:
+
+```bash
+# Database (required)
+export DATABASE_URL="postgres://localhost:5438/zndx_gaius?sslmode=disable"
+
+# Platform (optional, auto-detected)
+export GAIUS_PLATFORM=mlx
+
+# Remote APIs (MLX platform)
+export CEREBRAS_API_KEY="your-cerebras-key"
+export XAI_API_KEY="xai-your-xai-key"
+export BYTEZ_API_KEY="your-bytez-key"
+
+# Local inference (optional overrides)
+export EXO_API_URL="http://localhost:52415/v1"  # Default exo endpoint
+```
+
+### Step 5: Verify Setup
+
+```bash
+# Check platform detection
+uv run gaius-cli --cmd "/state" --format json | jq '.platform'
+
+# Check endpoint status
+uv run gaius-cli --cmd "/gpu status" --format json
+
+# Run health diagnostics
+uv run gaius-cli --cmd "/health"
+```
+
+### MLX Agent Summary
+
+| Agent | Model | Backend | Purpose |
+|-------|-------|---------|---------|
+| `fast` | Ministral-3-3B | exo (local) | Quick responses |
+| `fast-remote` | Mistral-7B | Bytez | Fallback when local busy |
+| `instruct-local` | Ministral-3-8B | exo (local) | Moderate tasks |
+| `orchestrator` | GLM-4.7 | Cerebras | Request routing |
+| `reasoning` | Grok 4.1 Fast | xAI | Deep analysis (2M context) |
+| `thinking` | GLM-4.7 | Cerebras | Extended reasoning |
+| Swarm (7 agents) | Qwen3-1.7B | exo (local) | CLT-ready evolution |
+
 ## Configuration
 
-Uses HOCON configuration with environment variable overrides.
+Uses HOCON configuration with environment variable overrides. See `config/agents-mlx.conf` for MLX platform settings and `config/agents-cuda.conf` for CUDA.
 
 ```bash
 # Required
 export DATABASE_URL="postgres://localhost:5438/zndx_gaius?sslmode=disable"
 
-# Optional inference
-export OPTILLM_API_KEY="sk-optillm"
+# Optional
 export GAIUS_OFFLINE="false"
 ```
 

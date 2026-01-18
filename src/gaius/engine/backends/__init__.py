@@ -1,4 +1,4 @@
-"""Inference backend controllers (optillm, vLLM, embeddings, ColPali)."""
+"""Inference backend controllers (optillm, vLLM, exo/MLX, embeddings, ColPali)."""
 
 from .backend_router import (
     BackendRouter,
@@ -8,6 +8,13 @@ from .backend_router import (
 # ColPali and Embedding controllers are lazy-loaded to avoid heavy transformers import at startup
 # Use: from gaius.engine.backends.colpali_controller import ColPaliController
 # Or just access gaius.engine.backends.ColPaliController (uses __getattr__ below)
+from .exo_controller import (
+    ExoController,
+    ExoEndpointInfo,
+    ExoRequest,
+    ExoResponse,
+    ExoStatus,
+)
 from .optillm_controller import (
     OptillmController,
     OptillmRequest,
@@ -41,6 +48,12 @@ __all__ = [
     "EmbeddingResponse",
     "EmbeddingStatus",
     "get_embedding_controller",
+    # Exo/MLX (Apple Silicon)
+    "ExoController",
+    "ExoEndpointInfo",
+    "ExoRequest",
+    "ExoResponse",
+    "ExoStatus",
     # optillm
     "OptillmController",
     "OptillmRequest",

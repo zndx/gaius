@@ -93,6 +93,11 @@
     # Gaius Engine dependencies
     aeron-cpp      # Aeron C++ library and aeronmd media driver
     flatbuffers    # FlatBuffers compiler for schema generation
+  ] ++ lib.optionals stdenv.isDarwin [
+    # Apple Silicon / MLX support
+    darwin.apple_sdk.frameworks.Metal
+    darwin.apple_sdk.frameworks.MetalPerformanceShaders
+    darwin.apple_sdk.frameworks.Accelerate
   ];
 
   services.minio = {
@@ -297,6 +302,96 @@
     "mcp:test".exec = ''
       # Test that MCP server can start (useful for debugging)
       PYTHONPATH="" .devenv/state/venv/bin/python -c "from gaius.mcp_server import create_server; print('MCP server OK')"
+    '';
+
+    # ========================================================================
+    # Config Validation Tasks (for conftest policy checking)
+    # ========================================================================
+
+    # Serialize HOCON configs to JSON for conftest validation
+    # Output: build/config/*.json (gitignored)
+    "config:serialize".exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  CONFIG SERIALIZE - HOCON to JSON for conftest               ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      mkdir -p build/config
+
+      # Run the serialization script
+      if [ -f scripts/serialize_config.py ]; then
+        uv run python scripts/serialize_config.py
+        echo ""
+        echo "✓ Serialized configs to build/config/"
+        ls -la build/config/*.json 2>/dev/null || echo "  (no JSON files generated)"
+      else
+        echo "ERROR: scripts/serialize_config.py not found"
+        echo ""
+        echo "Create the serialization script first. See plan for details."
+        exit 1
+      fi
+    '';
+
+    # Validate configs with conftest policies
+    # Requires: config:serialize, policy/*.rego files
+    "config:validate".exec = ''
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  CONFIG VALIDATE - Conftest policy checking                  ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # First serialize the configs
+      devenv tasks run config:serialize
+
+      echo ""
+      echo "Running conftest policies..."
+      echo ""
+
+      # Check if policy directory exists
+      if [ ! -d policy ]; then
+        echo "WARNING: policy/ directory not found"
+        echo "Skipping conftest validation (no policies defined)"
+        exit 0
+      fi
+
+      # Add platform marker for OS-specific rules
+      PLATFORM_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+      PLATFORM_ARCH=$(uname -m)
+
+      # Create platform metadata file
+      cat > build/config/_platform.json << EOF
+      {
+        "_platform": {
+          "os": "$PLATFORM_OS",
+          "arch": "$PLATFORM_ARCH",
+          "is_darwin": $([ "$PLATFORM_OS" = "darwin" ] && echo "true" || echo "false"),
+          "is_linux": $([ "$PLATFORM_OS" = "linux" ] && echo "true" || echo "false")
+        }
+      }
+      EOF
+
+      # Merge platform info with each config and validate
+      for config_file in build/config/*.json; do
+        if [ "$config_file" = "build/config/_platform.json" ]; then
+          continue
+        fi
+
+        echo "Validating: $config_file"
+        config_name=$(basename "$config_file" .json)
+        merged_file="build/config/''${config_name}_merged.json"
+
+        # Merge platform info with config
+        jq -s '.[0] * .[1]' "$config_file" build/config/_platform.json > "$merged_file"
+
+        # Run conftest
+        conftest test "$merged_file" -p policy/ || true
+
+        # Clean up merged file
+        rm -f "$merged_file"
+      done
+
+      echo ""
+      echo "✓ Config validation complete"
     '';
 
     # GPU cleanup task - kills stale vLLM processes and frees GPU memory
@@ -1041,6 +1136,75 @@ BOOTSTRAP_EOF
     # Auto-start by default, depends on postgres
     process-compose = {
       depends_on.postgres.condition = "process_healthy";
+    };
+  };
+
+  # ============================================================================
+  # EXO - Distributed AI Inference for Apple Silicon (MLX)
+  # ============================================================================
+  #
+  # Exo provides OpenAI-compatible API at http://localhost:52415/v1
+  # Auto-discovers other exo nodes on the network for distributed inference.
+  # Only runs on Darwin (macOS) - disabled automatically on Linux.
+  #
+  # Access: http://localhost:52415/v1/models
+  # Docs: https://github.com/exo-explore/exo
+
+  processes.exo = lib.mkIf pkgs.stdenv.isDarwin {
+    exec = ''
+      if [ "''${DISABLE_EXO:-false}" == "true" ]; then
+        echo "Exo disabled (DISABLE_EXO=true)"
+        sleep infinity
+      fi
+
+      echo "╔══════════════════════════════════════════════════════════════╗"
+      echo "║  EXO - Distributed AI Inference (Apple Silicon / MLX)        ║"
+      echo "╚══════════════════════════════════════════════════════════════╝"
+      echo ""
+
+      # Check for exo binary
+      if ! command -v exo &> /dev/null; then
+        echo "ERROR: exo binary not found."
+        echo ""
+        echo "Install exo via:"
+        echo "  pip install exo"
+        echo "  # or"
+        echo "  brew install exo"
+        echo ""
+        echo "Guru Meditation: #MLX.00000001.NOBACKEND"
+        exit 1
+      fi
+
+      echo "Starting exo distributed inference..."
+      echo "  API:        http://localhost:52415/v1"
+      echo "  Discovery:  Auto (peers on same network)"
+      echo ""
+
+      # Exo uses auto-discovery by default
+      # Set EXO_MODEL to start with a specific model pre-loaded
+      if [ -n "''${EXO_MODEL:-}" ]; then
+        echo "  Model:      $EXO_MODEL (pre-loading)"
+        exec exo --model "$EXO_MODEL"
+      else
+        echo "  Model:      (loaded on first request)"
+        exec exo
+      fi
+    '';
+    process-compose = {
+      # No dependencies - exo is self-contained
+      availability.restart = "on_failure";
+      readiness_probe = {
+        http_get = {
+          host = "127.0.0.1";
+          port = 52415;
+          path = "/v1/models";
+        };
+        initial_delay_seconds = 30;
+        period_seconds = 10;
+        failure_threshold = 6;  # 60s total before marking unhealthy
+      };
+      # Disabled by default - enable with GAIUS_PLATFORM=mlx or manually
+      disabled = true;
     };
   };
 

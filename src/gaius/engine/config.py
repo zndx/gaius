@@ -125,6 +125,75 @@ class VllmConfig:
 
 
 @dataclass
+class MLXMemoryConfig:
+    """MLX unified memory configuration for Apple Silicon."""
+
+    total_gb: int = 32  # Auto-detected at runtime
+    reserved_gb: int = 8  # Reserved for system
+    max_concurrent_models: int = 3  # Memory-bound limit
+
+
+@dataclass
+class MLXSchedulingConfig:
+    """MLX resource scheduling configuration."""
+
+    prefer_sequential: bool = True  # Avoid memory pressure
+    swap_timeout: int = 30  # Model swap timeout
+    allow_hot_swap: bool = True  # Hot-swap models based on usage
+
+
+@dataclass
+class MLXConfig:
+    """MLX/exo backend configuration for Apple Silicon.
+
+    MLX uses unified memory instead of discrete GPUs, so resource
+    management differs from CUDA. Models are loaded into shared
+    memory and can be swapped based on usage patterns.
+    """
+
+    enabled: bool = True
+    base_url: str = "http://localhost:52415/v1"  # exo OpenAI-compatible API
+    memory: MLXMemoryConfig = field(default_factory=MLXMemoryConfig)
+    scheduling: MLXSchedulingConfig = field(default_factory=MLXSchedulingConfig)
+
+
+@dataclass
+class ExternalAPIConfig:
+    """External API backend configuration (Cerebras, xAI, etc.)."""
+
+    enabled: bool = True
+    api_key: Optional[str] = None
+    base_url: str = ""
+    timeout: int = 60
+
+
+@dataclass
+class PlatformConfig:
+    """Platform identification and feature flags.
+
+    GAIUS_PLATFORM determines which agent namespace is used:
+      - cuda (default): NVIDIA GPU inference via vLLM
+      - mlx: Apple Silicon inference via exo/MLX
+
+    TINYBOX_PASSTHROUGH allows testing MLX code paths on Tinybox
+    by routing through vLLM instead of exo.
+    """
+
+    id: str = "cuda"  # cuda | mlx
+    tinybox_passthrough: bool = False  # Test MLX routing on Tinybox
+
+    @property
+    def is_mlx(self) -> bool:
+        """Check if running on MLX platform."""
+        return self.id == "mlx"
+
+    @property
+    def is_cuda(self) -> bool:
+        """Check if running on CUDA platform."""
+        return self.id == "cuda"
+
+
+@dataclass
 class GPUInventory:
     """GPU resource inventory."""
 
@@ -225,15 +294,32 @@ class StartupConfig:
 class EngineConfig:
     """Complete engine configuration."""
 
+    # Platform identification (cuda | mlx)
+    platform: PlatformConfig = field(default_factory=PlatformConfig)
+
+    # Core engine settings
     grpc: GrpcConfig = field(default_factory=GrpcConfig)
     aeron: AeronConfig = field(default_factory=AeronConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     health_interval_ms: int = 1000
+
+    # Agent definitions (flattened from platform namespace)
     agents: dict[str, AgentConfig] = field(default_factory=dict)
+
+    # Backend configurations
     optillm: OptillmConfig = field(default_factory=OptillmConfig)
     vllm: VllmConfig = field(default_factory=VllmConfig)
+    mlx: MLXConfig = field(default_factory=MLXConfig)
+
+    # External API backends
+    cerebras: ExternalAPIConfig = field(default_factory=ExternalAPIConfig)
+    xai: ExternalAPIConfig = field(default_factory=ExternalAPIConfig)
+
+    # Resource management
     gpus: GPUInventory = field(default_factory=GPUInventory)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
+
+    # Daemons and services
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     flow_scheduler: FlowSchedulerConfig = field(default_factory=FlowSchedulerConfig)
     ambient_buffer: AmbientBufferConfig = field(default_factory=AmbientBufferConfig)
@@ -292,6 +378,13 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         except Exception:
             return default
 
+    # Parse platform config first (determines agent namespace)
+    platform = PlatformConfig(
+        id=get("gaius.platform.id", "cuda"),
+        tinybox_passthrough=get("gaius.platform.tinybox-passthrough", False),
+    )
+    logger.info(f"Platform: {platform.id} (passthrough={platform.tinybox_passthrough})")
+
     # Parse gRPC config
     grpc = GrpcConfig(
         enabled=get("gaius.engine.grpc.enabled", True),
@@ -318,9 +411,11 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         sampling_rate=get("gaius.engine.telemetry.sampling_rate", 0.01),
     )
 
-    # Parse agents
+    # Parse agents with platform namespace support
+    # Agents can be defined in:
+    #   - gaius.agents.{platform}.{agent} (preferred, platform-specific)
+    #   - gaius.agents.{agent} (legacy, backwards compatible)
     agents: dict[str, AgentConfig] = {}
-    agents_conf = get("gaius.agents", {})
 
     def safe_get(conf, key, default=None):
         """Safely get a value from ConfigTree, returning default on missing."""
@@ -329,44 +424,74 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         except Exception:
             return default
 
-    if hasattr(agents_conf, "items"):
-        for name, agent_conf in agents_conf.items():
-            if not hasattr(agent_conf, "get"):
-                continue
+    def parse_agent(name: str, agent_conf) -> Optional[AgentConfig]:
+        """Parse a single agent configuration."""
+        if not hasattr(agent_conf, "get"):
+            return None
 
-            # Parse resources
-            resources_conf = safe_get(agent_conf, "resources", {})
-            if hasattr(resources_conf, "get"):
-                resources = ResourceRequirements(
-                    gpus=safe_get(resources_conf, "gpus", 1),
-                    vram_gb=safe_get(resources_conf, "vram-gb", 16.0),
-                    context_length=safe_get(resources_conf, "context-length", 8192),
-                    rope_scaling=safe_get(resources_conf, "rope-scaling", "none"),
-                )
-            else:
-                resources = ResourceRequirements()
-
-            # Parse endpoint (optional)
-            endpoint = None
-            endpoint_conf = safe_get(agent_conf, "endpoint")
-            if endpoint_conf and hasattr(endpoint_conf, "get"):
-                endpoint = EndpointConfig(
-                    port=safe_get(endpoint_conf, "port", 8080),
-                    tensor_parallel=safe_get(endpoint_conf, "tensor-parallel", 1),
-                    max_num_seqs=safe_get(endpoint_conf, "max-num-seqs", 256),
-                    task=safe_get(endpoint_conf, "task", "generate"),
-                )
-
-            agents[name] = AgentConfig(
-                name=name,
-                alias=safe_get(agent_conf, "alias", name),
-                description=safe_get(agent_conf, "description", ""),
-                model=safe_get(agent_conf, "model", ""),
-                backend=safe_get(agent_conf, "backend", "vllm"),
-                optillm_technique=safe_get(agent_conf, "optillm-technique"),
-                resources=resources,
-                endpoint=endpoint,
+        # Parse resources (supports both gpus/vram-gb for CUDA and memory-gb for MLX)
+        resources_conf = safe_get(agent_conf, "resources", {})
+        if hasattr(resources_conf, "get"):
+            resources = ResourceRequirements(
+                gpus=safe_get(resources_conf, "gpus", 0 if platform.is_mlx else 1),
+                vram_gb=safe_get(resources_conf, "vram-gb", 16.0),
+                context_length=safe_get(resources_conf, "context-length", 8192),
+                rope_scaling=safe_get(resources_conf, "rope-scaling", "none"),
             )
+            # For MLX, also track memory-gb (unified memory)
+            memory_gb = safe_get(resources_conf, "memory-gb")
+            if memory_gb is not None and resources.gpus == 0:
+                # Store in vram_gb field for now (unified memory)
+                resources.vram_gb = float(memory_gb)
+        else:
+            resources = ResourceRequirements()
+
+        # Parse endpoint (optional)
+        endpoint = None
+        endpoint_conf = safe_get(agent_conf, "endpoint")
+        if endpoint_conf and hasattr(endpoint_conf, "get"):
+            endpoint = EndpointConfig(
+                port=safe_get(endpoint_conf, "port", 8080),
+                tensor_parallel=safe_get(endpoint_conf, "tensor-parallel", 1),
+                max_num_seqs=safe_get(endpoint_conf, "max-num-seqs", 256),
+                task=safe_get(endpoint_conf, "task", "generate"),
+            )
+
+        return AgentConfig(
+            name=name,
+            alias=safe_get(agent_conf, "alias", name),
+            description=safe_get(agent_conf, "description", ""),
+            model=safe_get(agent_conf, "model", ""),
+            backend=safe_get(agent_conf, "backend", "exo" if platform.is_mlx else "vllm"),
+            optillm_technique=safe_get(agent_conf, "optillm-technique"),
+            resources=resources,
+            endpoint=endpoint,
+        )
+
+    # First, try platform-specific namespace (gaius.agents.{platform}.*)
+    platform_agents_conf = get(f"gaius.agents.{platform.id}", {})
+    if hasattr(platform_agents_conf, "items"):
+        for name, agent_conf in platform_agents_conf.items():
+            agent = parse_agent(name, agent_conf)
+            if agent:
+                agents[name] = agent
+                logger.debug(f"Loaded agent '{name}' from gaius.agents.{platform.id}")
+
+    # Fallback: legacy flat namespace (gaius.agents.*)
+    # Only load if no platform-specific agents were found
+    if not agents:
+        legacy_agents_conf = get("gaius.agents", {})
+        if hasattr(legacy_agents_conf, "items"):
+            for name, agent_conf in legacy_agents_conf.items():
+                # Skip platform namespace keys (cuda, mlx)
+                if name in ("cuda", "mlx"):
+                    continue
+                agent = parse_agent(name, agent_conf)
+                if agent:
+                    agents[name] = agent
+                    logger.debug(f"Loaded agent '{name}' from legacy gaius.agents")
+
+    logger.info(f"Loaded {len(agents)} agents for platform '{platform.id}'")
 
     # Parse backends
     optillm_conf = get("gaius.inference.backends.optillm", {})
@@ -431,6 +556,97 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         else 32768,
         dtype=vllm_conf.get("dtype", "auto") if hasattr(vllm_conf, "get") else "auto",
         extra_args=vllm_conf.get("extra-args", []) if hasattr(vllm_conf, "get") else [],
+    )
+
+    # Parse MLX backend config (Apple Silicon)
+    mlx_conf = get("gaius.inference.backends.mlx", {})
+    mlx_memory_conf = (
+        mlx_conf.get("memory", {}) if hasattr(mlx_conf, "get") else {}
+    )
+    mlx_sched_conf = (
+        mlx_conf.get("scheduling", {}) if hasattr(mlx_conf, "get") else {}
+    )
+    # Also check gaius.resources.mlx for memory config
+    mlx_resources_conf = get("gaius.resources.mlx", {})
+    mlx_resources_memory = (
+        mlx_resources_conf.get("memory", {}) if hasattr(mlx_resources_conf, "get") else {}
+    )
+    mlx_resources_sched = (
+        mlx_resources_conf.get("scheduling", {}) if hasattr(mlx_resources_conf, "get") else {}
+    )
+
+    mlx = MLXConfig(
+        enabled=mlx_conf.get("enabled", True) if hasattr(mlx_conf, "get") else True,
+        base_url=mlx_conf.get("base-url", "http://localhost:52415/v1")
+        if hasattr(mlx_conf, "get")
+        else "http://localhost:52415/v1",
+        memory=MLXMemoryConfig(
+            total_gb=(
+                mlx_resources_memory.get("total-gb", 32)
+                if hasattr(mlx_resources_memory, "get")
+                else mlx_memory_conf.get("total-gb", 32)
+                if hasattr(mlx_memory_conf, "get")
+                else 32
+            ),
+            reserved_gb=(
+                mlx_resources_memory.get("reserved-gb", 8)
+                if hasattr(mlx_resources_memory, "get")
+                else mlx_memory_conf.get("reserved-gb", 8)
+                if hasattr(mlx_memory_conf, "get")
+                else 8
+            ),
+            max_concurrent_models=(
+                mlx_resources_memory.get("max-concurrent-models", 3)
+                if hasattr(mlx_resources_memory, "get")
+                else mlx_memory_conf.get("max-concurrent-models", 3)
+                if hasattr(mlx_memory_conf, "get")
+                else 3
+            ),
+        ),
+        scheduling=MLXSchedulingConfig(
+            prefer_sequential=(
+                mlx_resources_sched.get("prefer-sequential", True)
+                if hasattr(mlx_resources_sched, "get")
+                else mlx_sched_conf.get("prefer-sequential", True)
+                if hasattr(mlx_sched_conf, "get")
+                else True
+            ),
+            swap_timeout=(
+                mlx_resources_sched.get("swap-timeout", 30)
+                if hasattr(mlx_resources_sched, "get")
+                else mlx_sched_conf.get("swap-timeout", 30)
+                if hasattr(mlx_sched_conf, "get")
+                else 30
+            ),
+            allow_hot_swap=(
+                mlx_resources_sched.get("allow-hot-swap", True)
+                if hasattr(mlx_resources_sched, "get")
+                else mlx_sched_conf.get("allow-hot-swap", True)
+                if hasattr(mlx_sched_conf, "get")
+                else True
+            ),
+        ),
+    )
+
+    # Parse external API backends
+    cerebras_conf = get("gaius.inference.backends.cerebras", {})
+    cerebras = ExternalAPIConfig(
+        enabled=cerebras_conf.get("enabled", True) if hasattr(cerebras_conf, "get") else True,
+        api_key=cerebras_conf.get("api-key") if hasattr(cerebras_conf, "get") else None,
+        base_url=cerebras_conf.get("base-url", "https://api.cerebras.ai/v1")
+        if hasattr(cerebras_conf, "get")
+        else "https://api.cerebras.ai/v1",
+        timeout=cerebras_conf.get("timeout", 60) if hasattr(cerebras_conf, "get") else 60,
+    )
+
+    xai_conf = get("gaius.inference.backends.xai", {})
+    xai = ExternalAPIConfig(
+        enabled=xai_conf.get("enabled", True) if hasattr(xai_conf, "get") else True,
+        api_key=xai_conf.get("api-key") if hasattr(xai_conf, "get") else None,
+        base_url=xai_conf.get("base-url", "https://api.x.ai/v1")
+        if hasattr(xai_conf, "get")
+        else "https://api.x.ai/v1",
+        timeout=xai_conf.get("timeout", 60) if hasattr(xai_conf, "get") else 60,
     )
 
     # Parse GPU inventory
@@ -556,6 +772,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
     )
 
     return EngineConfig(
+        platform=platform,
         grpc=grpc,
         aeron=aeron,
         telemetry=telemetry,
@@ -563,6 +780,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         agents=agents,
         optillm=optillm,
         vllm=vllm,
+        mlx=mlx,
+        cerebras=cerebras,
+        xai=xai,
         gpus=gpus,
         scheduling=scheduling,
         evolution=evolution,

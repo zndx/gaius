@@ -1,7 +1,8 @@
 """Backend router for inference request routing.
 
 Routes inference requests to the appropriate backend:
-- vLLM: Local GPU inference via vLLM processes
+- vLLM: Local GPU inference via vLLM processes (CUDA)
+- exo: Local unified memory inference via exo/MLX (Apple Silicon)
 - optillm: Prompt optimization proxy (local)
 - external: Remote LLM APIs (Cerebras, XAI, Bytez) via ExternalInferenceRouter
 
@@ -10,11 +11,16 @@ All inference flows through this router, ensuring centralized:
 - Budget tracking (XAI/Cerebras per-token limits)
 - Metrics collection
 - Request routing based on agent configuration
+
+Platform Support:
+- CUDA (Linux/Tinybox): Uses vLLM for local inference
+- MLX (macOS/Apple Silicon): Uses exo for local inference
+- TINYBOX_PASSTHROUGH: Routes MLX requests to vLLM for testing
 """
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from ..config import AgentConfig, EngineConfig
 from ..metrics import EngineMetrics
@@ -22,6 +28,9 @@ from ..resources import ResourceManager
 from .optillm_controller import OptillmController, OptillmRequest, OptillmResponse, OptillmTechnique
 from .vllm_controller import VLLMController, VLLMProcess, VLLMRequest, VLLMResponse
 from .external.router import ExternalInferenceRouter, get_external_router
+
+if TYPE_CHECKING:
+    from .exo_controller import ExoController
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +87,11 @@ class InferenceResponse:
 class BackendRouter:
     """Routes inference requests to appropriate backends.
 
-    Uses agent configuration to determine whether to route to
-    vLLM (direct GPU inference) or optillm (prompt optimization proxy).
+    Uses agent configuration to determine whether to route to:
+    - vLLM: CUDA GPU inference (Linux/Tinybox)
+    - exo: MLX unified memory inference (macOS/Apple Silicon)
+    - optillm: Prompt optimization proxy
+    - external: Remote APIs (Cerebras, XAI, Bytez)
     """
 
     def __init__(
@@ -89,6 +101,7 @@ class BackendRouter:
         vllm_controller: Optional[VLLMController] = None,
         optillm_controller: Optional[OptillmController] = None,
         external_router: Optional[ExternalInferenceRouter] = None,
+        exo_controller: Optional["ExoController"] = None,
     ):
         """Initialize backend router.
 
@@ -98,6 +111,7 @@ class BackendRouter:
             vllm_controller: Optional pre-created vLLM controller
             optillm_controller: Optional pre-created optillm controller
             external_router: Optional pre-created external router for Cerebras/XAI/Bytez
+            exo_controller: Optional pre-created exo controller for MLX
         """
         self.config = config
         self.resource_manager = resource_manager
@@ -109,7 +123,16 @@ class BackendRouter:
         # External router for Cerebras/XAI/Bytez (lazy initialization via singleton)
         self._external = external_router
 
-        logger.info("BackendRouter initialized")
+        # Exo controller for MLX (lazy initialization)
+        self._exo = exo_controller
+
+        # Track platform for routing decisions
+        self.platform = config.platform
+
+        logger.info(
+            f"BackendRouter initialized: platform={self.platform.id}, "
+            f"passthrough={self.platform.tinybox_passthrough}"
+        )
 
     @property
     def external(self) -> ExternalInferenceRouter:
@@ -118,19 +141,46 @@ class BackendRouter:
             self._external = get_external_router()
         return self._external
 
+    @property
+    def exo(self) -> "ExoController":
+        """Get or create exo controller (lazy initialization).
+
+        Creates ExoController with vLLM passthrough support if on Tinybox.
+        """
+        if self._exo is None:
+            from .exo_controller import ExoController
+
+            # Pass vLLM controller for TINYBOX_PASSTHROUGH support
+            self._exo = ExoController(
+                self.config,
+                vllm_controller=self.vllm if self.platform.tinybox_passthrough else None,
+            )
+        return self._exo
+
     async def start(self) -> None:
         """Start the router and all backend controllers."""
         await self.vllm.start()
         await self.optillm.start()
+
+        # Start exo if on MLX platform or passthrough mode
+        if self.platform.is_mlx or self.platform.tinybox_passthrough:
+            await self.exo.start()
+
         logger.info("BackendRouter started")
 
     async def stop(self) -> None:
         """Stop the router and all backend controllers."""
         await self.vllm.stop()
         await self.optillm.stop()
+
+        # Stop exo if initialized
+        if self._exo:
+            await self._exo.stop()
+
         # Close external router if initialized
         if self._external:
             await self._external.close()
+
         logger.info("BackendRouter stopped")
 
     def get_agent_config(self, agent_alias: str) -> Optional[AgentConfig]:
@@ -179,8 +229,13 @@ class BackendRouter:
                 response = await self._route_to_optillm(request, agent_config)
             elif backend == "vllm":
                 response = await self._route_to_vllm(request, agent_config)
+            elif backend in ("mlx", "exo"):
+                response = await self._route_to_exo(request, agent_config)
             elif backend in ("external", "cerebras", "xai", "bytez"):
                 response = await self._route_to_external(request, agent_config, backend)
+            elif backend == "colpali":
+                # ColPali embedding backend - route to embedding controller
+                response = await self._route_to_vllm(request, agent_config)
             else:
                 response = InferenceResponse(
                     content="",
@@ -408,6 +463,52 @@ class BackendRouter:
             error=response.error,
         )
 
+    async def _route_to_exo(
+        self, request: InferenceRequest, agent_config: AgentConfig
+    ) -> InferenceResponse:
+        """Route request to exo/MLX backend.
+
+        For Apple Silicon (MLX) or TINYBOX_PASSTHROUGH mode.
+
+        Args:
+            request: The inference request
+            agent_config: Agent configuration
+
+        Returns:
+            InferenceResponse from exo (or vLLM passthrough)
+        """
+        from .exo_controller import ExoRequest
+
+        logger.info(
+            f"BackendRouter._route_to_exo: agent_alias={request.agent_alias}, "
+            f"model={agent_config.model}, passthrough={self.platform.tinybox_passthrough}"
+        )
+
+        # Create exo request
+        exo_request = ExoRequest(
+            messages=request.messages,
+            model=agent_config.model,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            agent_alias=request.agent_alias,
+        )
+
+        # Execute request (handles passthrough internally)
+        response = await self.exo.complete(exo_request)
+
+        # Determine backend label
+        backend_label = "exo:passthrough" if response.passthrough else "exo"
+
+        return InferenceResponse(
+            content=response.content,
+            model=response.model,
+            backend=backend_label,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_ms=response.latency_ms,
+            error=response.error,
+        )
+
     async def complete(
         self,
         prompt: str,
@@ -478,6 +579,14 @@ class BackendRouter:
             except Exception:
                 return False
 
+        elif backend in ("mlx", "exo"):
+            # Exo/MLX backend - check if healthy or in passthrough mode
+            return self.exo.endpoint.is_healthy
+
+        elif backend in ("external", "cerebras", "xai", "bytez"):
+            # External backends are always "ready" if configured
+            return True
+
         return False
 
     async def health_check(self) -> dict[str, Any]:
@@ -497,13 +606,28 @@ class BackendRouter:
                 "subscription_tier": self._external.subscription_tier_backends,
             }
 
+        # Get exo status if initialized
+        exo_status = {}
+        if self._exo:
+            exo_healthy = await self._exo.health_check()
+            exo_status = {
+                "healthy": exo_healthy,
+                "status": self._exo.endpoint.status.value,
+                "passthrough": self._exo.passthrough_enabled,
+            }
+
         return {
             "optillm": {
                 "healthy": optillm_healthy,
                 "enabled": self.optillm.is_enabled,
             },
             "vllm": self.vllm.get_status(),
+            "exo": exo_status,
             "external": external_status,
+            "platform": {
+                "id": self.platform.id,
+                "tinybox_passthrough": self.platform.tinybox_passthrough,
+            },
         }
 
     def get_status(self) -> dict[str, Any]:
@@ -520,10 +644,20 @@ class BackendRouter:
                 "budget": self._external.budget.to_dict() if self._external.budget else {},
             }
 
+        # Get exo status if initialized
+        exo_info = {}
+        if self._exo:
+            exo_info = self._exo.get_status()
+
         return {
             "optillm": self.optillm.get_status(),
             "vllm": self.vllm.get_status(),
+            "exo": exo_info,
             "external": external_info,
+            "platform": {
+                "id": self.platform.id,
+                "tinybox_passthrough": self.platform.tinybox_passthrough,
+            },
             "agents": {
                 alias: {
                     "model": config.model,
