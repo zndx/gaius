@@ -107,6 +107,27 @@ Optional:
 
 Install optional deps: `uv sync --extra tda` or `uv sync --extra swarm`
 
+## Database
+
+**IMPORTANT**: The PostgreSQL database name is `zndx_gaius`, NOT `gaius`.
+
+```bash
+# Correct database connection
+PGPASSWORD=gaius psql -h localhost -p 5438 -U gaius -d zndx_gaius
+
+# WRONG - will fail with "database does not exist"
+# psql -d gaius  # <-- DO NOT USE
+```
+
+Connection parameters:
+- Host: `localhost`
+- Port: `5438`
+- Database: `zndx_gaius`
+- User: `gaius`
+- Password: `gaius`
+
+Full connection URL: `postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable`
+
 ## Documentation
 
 mdbook documentation in `docs/`. Save work summaries and notes to `docs/notes/$(date --iso-8601)/` with zero-padded numeric prefixes.

@@ -318,10 +318,32 @@ def get_user(id: int) -> dict:  # Was: User, now dict - why?
 x = foo()  # type: ignore
 ```
 
+## Database Connection Constants
+
+**CRITICAL**: The PostgreSQL database name is `zndx_gaius`, NOT `gaius`.
+
+When auditing code or writing psql commands:
+- **Correct**: `-d zndx_gaius` or `postgres://...@localhost:5438/zndx_gaius`
+- **WRONG**: `-d gaius` (will fail with "database does not exist")
+
+Full connection: `postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable`
+
+### Audit for Incorrect Database References
+
+```bash
+# Find code using wrong database name (should return zero matches in src/)
+grep -rn "localhost:5432/gaius[^_]" src/
+grep -rn "localhost:5438/gaius[^_]" src/
+grep -rn '"/gaius"' src/
+```
+
+Any match indicates a bug that will cause "database does not exist" errors at runtime.
+
 ## Run the Audit Now
 
 1. Execute `ty check` and categorize all diagnostics
 2. Apply immediate fail-fast fixes for simple cases
 3. Add justification comments to existing type ignores
 4. Create GitHub issues in `internal` remote for non-trivial refactoring
-5. Produce the audit report
+5. Audit database connection strings for incorrect `gaius` vs `zndx_gaius`
+6. Produce the audit report

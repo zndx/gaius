@@ -247,3 +247,24 @@ When finding a violation, the fix pattern is:
 - `src/gaius/mcp_server.py` - MCP thin client
 - `src/gaius/client/grpc_client.py` - gRPC client wrapper
 - `src/gaius/engine/grpc/servicers/gaius_servicer.py` - Engine gRPC implementation
+
+## Database Connection Constants
+
+**CRITICAL**: The PostgreSQL database name is `zndx_gaius`, NOT `gaius`.
+
+When auditing code or writing psql commands:
+- **Correct**: `-d zndx_gaius` or `postgres://...@localhost:5438/zndx_gaius`
+- **WRONG**: `-d gaius` (will fail with "database does not exist")
+
+Full connection: `postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable`
+
+### Audit for Incorrect Database References
+
+```bash
+# Find code using wrong database name (should return zero matches in src/)
+grep -rn "localhost:5432/gaius[^_]" src/
+grep -rn "localhost:5438/gaius[^_]" src/
+grep -rn '"/gaius"' src/
+```
+
+Any match indicates a bug that will cause "database does not exist" errors at runtime.
