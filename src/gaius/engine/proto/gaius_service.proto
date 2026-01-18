@@ -1516,6 +1516,177 @@ message MetaAgentQueryResponse {
   string error = 9;                   // Error message if failed
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MetaAgent Service Messages (Metabase Sync & Weekly Audit)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// MetaAgent daemon status request
+message MetaAgentStatusRequest {}
+
+// MetaAgent daemon status response
+message MetaAgentStatusResponse {
+  bool running = 1;                   // Daemon is running
+  bool metabase_connected = 2;        // Metabase API accessible
+  string last_sync_at = 3;            // ISO timestamp of last sync
+  string last_audit_at = 4;           // ISO timestamp of last audit
+  string next_audit_at = 5;           // Scheduled next audit
+  PooledBudgetStatus budget = 6;      // Current budget status
+  int32 models_synced = 7;            // Total Metabase models managed
+  int32 dashboards_synced = 8;        // Total Metabase dashboards managed
+  string error = 9;
+}
+
+// Metabase sync request
+message MetabaseSyncRequest {
+  bool full_refresh = 1;              // Force re-create all models
+  repeated string tables = 2;         // Specific tables to sync (empty = all)
+  bool sync_dashboards = 3;           // Also sync dashboard definitions
+}
+
+// Metabase sync response
+message MetabaseSyncResponse {
+  bool success = 1;
+  int32 models_created = 2;
+  int32 models_updated = 3;
+  int32 models_failed = 4;
+  int32 dashboards_synced = 5;
+  int32 duration_ms = 6;
+  repeated string errors = 7;
+}
+
+// Weekly audit request
+message MetaAgentAuditRequest {
+  string scope = 1;                   // "full", "lineage", "operations", "topology"
+  bool use_remote_llm = 2;            // Use Grok/Cerebras (budget-permitting)
+  int32 lookback_days = 3;            // Days of history to analyze (default: 7)
+  bool dry_run = 4;                   // Don't persist results, just preview
+}
+
+// Audit finding
+message AuditFinding {
+  string category = 1;                // monitoring, quality, pipeline, mcp_introspection
+  string severity = 2;                // critical, high, medium, low
+  string title = 3;
+  string description = 4;
+  string suggested_action = 5;
+  bytes evidence = 6;                 // JSON evidence data
+}
+
+// Audit recommendation (for self-improvement loop)
+message AuditRecommendation {
+  string id = 1;
+  string audit_id = 2;
+  string category = 3;
+  string severity = 4;
+  string title = 5;
+  string description = 6;
+  string suggested_implementation = 7;
+  string status = 8;                  // pending, accepted, rejected, implemented, verified
+  string created_at = 9;
+}
+
+// Weekly audit response
+message MetaAgentAuditResponse {
+  bool success = 1;
+  string audit_id = 2;
+  string scope = 3;
+  string summary = 4;
+  repeated AuditFinding findings = 5;
+  repeated AuditRecommendation recommendations = 6;
+  string kb_path = 7;                 // Zettelkasten report path
+  int32 tokens_used = 8;
+  string provider = 9;                // cerebras, xai, local
+  int32 duration_ms = 10;
+  string error = 11;
+}
+
+// Pooled budget status
+message PooledBudgetStatus {
+  int32 weekly_limit = 1;
+  int32 weekly_used = 2;
+  int32 weekly_remaining = 3;
+  int32 grok_calls = 4;
+  int32 cerebras_calls = 5;
+  string week_start = 6;              // ISO date
+  string last_reset = 7;              // ISO timestamp
+  float usage_pct = 8;
+  string budget_health = 9;           // exhausted, low, moderate, healthy
+}
+
+// Get pooled budget request
+message GetPooledBudgetRequest {
+  string pool_id = 1;                 // Pool identifier (default: "weekly_audit")
+}
+
+// Get pooled budget response
+message GetPooledBudgetResponse {
+  bool success = 1;
+  PooledBudgetStatus budget = 2;
+  string error = 3;
+}
+
+// Quality assessment
+message QualityAssessment {
+  int32 id = 1;
+  string source_type = 2;             // kb, hx, exchange, reasoning_trace
+  string source_id = 3;
+  float coherence_score = 4;
+  float coverage_score = 5;
+  float novelty_score = 6;
+  float weighted_reward = 7;          // 0.4*coherence + 0.35*coverage + 0.25*novelty
+  bool is_textbook_quality = 8;       // weighted_reward >= 0.85
+  string evaluator_type = 9;          // local, cerebras, xai
+  string created_at = 10;
+}
+
+// Get quality summary request
+message GetQualitySummaryRequest {
+  string source_type = 1;             // Filter by type (empty = all)
+  int32 limit = 2;                    // Max results (default: 100)
+}
+
+// Get quality summary response
+message GetQualitySummaryResponse {
+  bool success = 1;
+  int32 total_assessments = 2;
+  int32 textbook_quality_count = 3;
+  float textbook_quality_pct = 4;
+  float avg_coherence = 5;
+  float avg_coverage = 6;
+  float avg_novelty = 7;
+  float avg_weighted_reward = 8;
+  repeated QualityAssessment recent = 9;
+  string error = 10;
+}
+
+// List recommendations request
+message ListRecommendationsRequest {
+  string status = 1;                  // Filter by status (empty = all)
+  string audit_id = 2;                // Filter by audit (empty = all)
+  int32 limit = 3;                    // Max results (default: 50)
+}
+
+// List recommendations response
+message ListRecommendationsResponse {
+  bool success = 1;
+  repeated AuditRecommendation recommendations = 2;
+  int32 total_count = 3;
+  string error = 4;
+}
+
+// Update recommendation status request
+message UpdateRecommendationRequest {
+  string recommendation_id = 1;
+  string new_status = 2;              // accepted, rejected, implemented, verified
+}
+
+// Update recommendation status response
+message UpdateRecommendationResponse {
+  bool success = 1;
+  AuditRecommendation recommendation = 2;
+  string error = 3;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CLT Service Messages (Cross-Layer Transcoders)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2443,6 +2614,15 @@ service GaiusService {
   // ─────────────────────────────────────────────────────────────────────────
   rpc MetaAgentQuery(MetaAgentQueryRequest) returns (MetaAgentQueryResponse);
   rpc MetaAgentQueryStream(MetaAgentQueryRequest) returns (stream MetaAgentEvent);
+
+  // MetaAgent Service (Metabase Sync & Weekly Audit)
+  rpc MetaAgentStatus(MetaAgentStatusRequest) returns (MetaAgentStatusResponse);           // Daemon status
+  rpc MetabaseSyncTrigger(MetabaseSyncRequest) returns (MetabaseSyncResponse);             // Manual sync trigger
+  rpc MetaAgentAuditTrigger(MetaAgentAuditRequest) returns (MetaAgentAuditResponse);       // Manual audit trigger
+  rpc GetPooledBudget(GetPooledBudgetRequest) returns (GetPooledBudgetResponse);           // Budget status
+  rpc GetQualitySummary(GetQualitySummaryRequest) returns (GetQualitySummaryResponse);     // Quality metrics
+  rpc ListRecommendations(ListRecommendationsRequest) returns (ListRecommendationsResponse); // Audit recommendations
+  rpc UpdateRecommendation(UpdateRecommendationRequest) returns (UpdateRecommendationResponse); // Update rec status
 
   // ─────────────────────────────────────────────────────────────────────────
   // CLT (Cross-Layer Transcoders)

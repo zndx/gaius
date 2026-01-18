@@ -1,4 +1,4 @@
-\restrict JSuDNI2khIOk1n1tW6W3WcYvLUSmO8sgJbEN60PG6ERNADOoNjMaP0c0qM1e0oB
+\restrict CbjSDoC4JeqeKqMard6L7gvnisVL4Qv9YeePD5XWhs8gSnG5dOuZ58BmT97uf79
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -212,6 +212,26 @@ CREATE TYPE public.source_type AS ENUM (
     'brave',
     'philevents'
 );
+
+
+--
+-- Name: check_reset_weekly_budget(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.check_reset_weekly_budget() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW.week_start != date_trunc('week', CURRENT_DATE)::DATE THEN
+        NEW.weekly_used := 0;
+        NEW.grok_calls := 0;
+        NEW.cerebras_calls := 0;
+        NEW.week_start := date_trunc('week', CURRENT_DATE)::DATE;
+        NEW.last_reset := NOW();
+    END IF;
+    RETURN NEW;
+END;
+$$;
 
 
 --
@@ -2039,6 +2059,61 @@ $$;
 
 
 --
+-- Name: x_get_auto_sync_status(character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_get_auto_sync_status(p_user_id character varying) RETURNS TABLE(active boolean, folders_total integer, folders_synced integer, folders_remaining integer, iterations integer, max_iterations integer, next_run_at timestamp with time zone, estimated_completion timestamp with time zone)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        s.is_active,
+        s.folders_total,
+        s.folders_synced,
+        s.folders_total - s.folders_synced,
+        s.sync_iterations,
+        s.max_iterations,
+        s.next_run_at,
+        CASE
+            WHEN s.folders_synced = 0 THEN NULL
+            ELSE NOW() + (
+                ((s.folders_total - s.folders_synced)::FLOAT /
+                 GREATEST(s.folders_synced::FLOAT / GREATEST(s.sync_iterations, 1), 1)) *
+                s.interval_minutes
+            ) * INTERVAL '1 minute'
+        END AS estimated_completion
+    FROM x_auto_sync_schedules s
+    WHERE s.user_id = p_user_id;
+END;
+$$;
+
+
+--
+-- Name: x_get_due_auto_syncs(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_get_due_auto_syncs() RETURNS TABLE(user_id character varying, folders_remaining integer, iterations integer)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        s.user_id,
+        s.folders_total - s.folders_synced AS folders_remaining,
+        s.sync_iterations
+    FROM x_auto_sync_schedules s
+    JOIN x_oauth_tokens t ON t.user_id = s.user_id
+    WHERE s.is_active = TRUE
+      AND s.next_run_at <= NOW()
+      AND t.expires_at > NOW()  -- Token still valid
+    ORDER BY s.next_run_at ASC
+    LIMIT 5;  -- Process up to 5 users at a time
+END;
+$$;
+
+
+--
 -- Name: x_get_next_request(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2059,6 +2134,22 @@ BEGIN
     ORDER BY r.priority DESC, r.queued_at
     LIMIT 1
     FOR UPDATE SKIP LOCKED;
+END;
+$$;
+
+
+--
+-- Name: x_is_auto_sync_active(character varying); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_is_auto_sync_active(p_user_id character varying) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN EXISTS (
+        SELECT 1 FROM x_auto_sync_schedules
+        WHERE user_id = p_user_id AND is_active = TRUE
+    );
 END;
 $$;
 
@@ -2148,6 +2239,43 @@ $$;
 
 
 --
+-- Name: x_start_auto_sync(character varying, integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_start_auto_sync(p_user_id character varying, p_folders_total integer DEFAULT 0, p_interval_minutes integer DEFAULT 16) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_next_run TIMESTAMPTZ;
+BEGIN
+    -- Schedule first continuation run after rate limit window
+    v_next_run := NOW() + (p_interval_minutes || ' minutes')::INTERVAL;
+
+    INSERT INTO x_auto_sync_schedules (
+        user_id, is_active, next_run_at, folders_total, interval_minutes, metadata
+    ) VALUES (
+        p_user_id, TRUE, v_next_run, p_folders_total, p_interval_minutes,
+        jsonb_build_object('started_at', NOW(), 'trigger', 'manual')
+    )
+    ON CONFLICT (user_id) DO UPDATE SET
+        is_active = TRUE,
+        next_run_at = v_next_run,
+        folders_total = COALESCE(NULLIF(p_folders_total, 0), x_auto_sync_schedules.folders_total),
+        folders_synced = 0,  -- Reset progress
+        sync_iterations = 0,
+        interval_minutes = p_interval_minutes,
+        updated_at = NOW(),
+        completed_at = NULL,
+        last_error = NULL,
+        metadata = jsonb_build_object('restarted_at', NOW(), 'trigger', 'manual');
+
+    RAISE NOTICE 'Started auto-sync for user %, next run at %', p_user_id, v_next_run;
+    RETURN TRUE;
+END;
+$$;
+
+
+--
 -- Name: x_start_sync_run(character varying); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2167,6 +2295,30 @@ $$;
 
 
 --
+-- Name: x_stop_auto_sync(character varying, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_stop_auto_sync(p_user_id character varying, p_reason text DEFAULT 'manual'::text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE x_auto_sync_schedules SET
+        is_active = FALSE,
+        completed_at = NOW(),
+        metadata = metadata || jsonb_build_object('stop_reason', p_reason, 'stopped_at', NOW())
+    WHERE user_id = p_user_id AND is_active = TRUE;
+
+    IF FOUND THEN
+        RAISE NOTICE 'Stopped auto-sync for user %, reason: %', p_user_id, p_reason;
+        RETURN TRUE;
+    END IF;
+
+    RETURN FALSE;
+END;
+$$;
+
+
+--
 -- Name: x_trigger_daily_sync(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2178,6 +2330,86 @@ BEGIN
     SELECT t.user_id, x_start_sync_run(t.user_id)
     FROM x_oauth_tokens t
     WHERE t.refresh_token IS NOT NULL;  -- Only users with valid tokens
+END;
+$$;
+
+
+--
+-- Name: x_trigger_due_auto_syncs(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_trigger_due_auto_syncs() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_count INTEGER := 0;
+    v_user RECORD;
+BEGIN
+    FOR v_user IN SELECT * FROM x_get_due_auto_syncs()
+    LOOP
+        -- Use pg_notify to alert the engine
+        PERFORM pg_notify(
+            'x_auto_sync_due',
+            json_build_object(
+                'user_id', v_user.user_id,
+                'folders_remaining', v_user.folders_remaining,
+                'iteration', v_user.iterations + 1
+            )::TEXT
+        );
+        v_count := v_count + 1;
+
+        RAISE NOTICE 'Triggered auto-sync for user %, iteration %',
+            v_user.user_id, v_user.iterations + 1;
+    END LOOP;
+
+    RETURN v_count;
+END;
+$$;
+
+
+--
+-- Name: x_update_auto_sync_progress(character varying, integer, integer, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.x_update_auto_sync_progress(p_user_id character varying, p_folders_synced_this_batch integer, p_folders_remaining integer, p_error text DEFAULT NULL::text) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_schedule RECORD;
+    v_next_run TIMESTAMPTZ;
+BEGIN
+    SELECT * INTO v_schedule FROM x_auto_sync_schedules WHERE user_id = p_user_id;
+
+    IF NOT FOUND OR NOT v_schedule.is_active THEN
+        RETURN FALSE;
+    END IF;
+
+    -- Update progress
+    UPDATE x_auto_sync_schedules SET
+        folders_synced = folders_synced + p_folders_synced_this_batch,
+        sync_iterations = sync_iterations + 1,
+        updated_at = NOW(),
+        last_error = p_error
+    WHERE user_id = p_user_id;
+
+    -- Check completion conditions
+    IF p_folders_remaining = 0 THEN
+        -- All done!
+        PERFORM x_stop_auto_sync(p_user_id, 'completed');
+        RETURN TRUE;
+    END IF;
+
+    IF v_schedule.sync_iterations + 1 >= v_schedule.max_iterations THEN
+        -- Hit iteration limit
+        PERFORM x_stop_auto_sync(p_user_id, 'max_iterations');
+        RETURN TRUE;
+    END IF;
+
+    -- Schedule next iteration
+    v_next_run := NOW() + (v_schedule.interval_minutes || ' minutes')::INTERVAL;
+    UPDATE x_auto_sync_schedules SET next_run_at = v_next_run WHERE user_id = p_user_id;
+
+    RETURN TRUE;
 END;
 $$;
 
@@ -2847,6 +3079,99 @@ COMMENT ON VIEW meta.ambient_cycle_metrics IS 'Hourly aggregate metrics from age
 
 
 --
+-- Name: audit_budget_pool; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.audit_budget_pool (
+    pool_id text NOT NULL,
+    weekly_limit integer DEFAULT 50 NOT NULL,
+    weekly_used integer DEFAULT 0 NOT NULL,
+    grok_calls integer DEFAULT 0 NOT NULL,
+    cerebras_calls integer DEFAULT 0 NOT NULL,
+    week_start date DEFAULT (date_trunc('week'::text, (CURRENT_DATE)::timestamp with time zone))::date NOT NULL,
+    last_reset timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE audit_budget_pool; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.audit_budget_pool IS 'Shared weekly budget pool for remote LLM calls (Grok + Cerebras)';
+
+
+--
+-- Name: COLUMN audit_budget_pool.pool_id; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.audit_budget_pool.pool_id IS 'Pool identifier (e.g., weekly_audit)';
+
+
+--
+-- Name: COLUMN audit_budget_pool.weekly_limit; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.audit_budget_pool.weekly_limit IS 'Maximum calls per week across all providers';
+
+
+--
+-- Name: COLUMN audit_budget_pool.weekly_used; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.audit_budget_pool.weekly_used IS 'Total calls used this week (Grok + Cerebras)';
+
+
+--
+-- Name: audit_recommendations; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.audit_recommendations (
+    id integer NOT NULL,
+    audit_id uuid,
+    category text NOT NULL,
+    severity text NOT NULL,
+    title text NOT NULL,
+    description text,
+    suggested_implementation text,
+    affected_component text,
+    status text DEFAULT 'pending'::text,
+    accepted_at timestamp with time zone,
+    implemented_at timestamp with time zone,
+    verified_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now(),
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE audit_recommendations; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.audit_recommendations IS 'Actionable recommendations from audits for Atropos RL';
+
+
+--
+-- Name: audit_recommendations_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.audit_recommendations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: audit_recommendations_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.audit_recommendations_id_seq OWNED BY meta.audit_recommendations.id;
+
+
+--
 -- Name: control_mode_health; Type: VIEW; Schema: meta; Owner: -
 --
 
@@ -3435,6 +3760,54 @@ COMMENT ON TABLE meta.lineage_sankey_agg IS 'Pre-aggregated lineage edges for Sa
 
 
 --
+-- Name: metaagent_audits; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.metaagent_audits (
+    id integer NOT NULL,
+    audit_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone,
+    scope text DEFAULT 'full'::text NOT NULL,
+    status text DEFAULT 'running'::text NOT NULL,
+    summary text,
+    findings jsonb DEFAULT '[]'::jsonb,
+    tokens_used integer DEFAULT 0,
+    provider text,
+    kb_path text,
+    duration_ms integer GENERATED ALWAYS AS (((EXTRACT(epoch FROM (completed_at - started_at)) * (1000)::numeric))::integer) STORED,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE metaagent_audits; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.metaagent_audits IS 'Weekly MetaAgent audit results with LLM analysis';
+
+
+--
+-- Name: metaagent_audits_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.metaagent_audits_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: metaagent_audits_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.metaagent_audits_id_seq OWNED BY meta.metaagent_audits.id;
+
+
+--
 -- Name: metaagent_queries; Type: TABLE; Schema: meta; Owner: -
 --
 
@@ -3458,6 +3831,97 @@ CREATE TABLE meta.metaagent_queries (
 --
 
 COMMENT ON TABLE meta.metaagent_queries IS 'MetaAgent query result cache for expensive analytics queries';
+
+
+--
+-- Name: metabase_models; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.metabase_models (
+    id integer NOT NULL,
+    card_id integer NOT NULL,
+    name text NOT NULL,
+    source_table text NOT NULL,
+    description text,
+    display_type text DEFAULT 'table'::text,
+    created_at timestamp with time zone DEFAULT now(),
+    last_synced_at timestamp with time zone,
+    sync_status text DEFAULT 'active'::text,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE metabase_models; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.metabase_models IS 'Registry of Metabase models synced from meta.* schema';
+
+
+--
+-- Name: metabase_models_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.metabase_models_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: metabase_models_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.metabase_models_id_seq OWNED BY meta.metabase_models.id;
+
+
+--
+-- Name: metabase_sync_runs; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.metabase_sync_runs (
+    id integer NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone,
+    status text DEFAULT 'running'::text NOT NULL,
+    full_refresh boolean DEFAULT false NOT NULL,
+    models_synced integer DEFAULT 0,
+    models_failed integer DEFAULT 0,
+    dashboards_synced integer DEFAULT 0,
+    dashboards_failed integer DEFAULT 0,
+    error_message text,
+    duration_ms integer GENERATED ALWAYS AS (((EXTRACT(epoch FROM (completed_at - started_at)) * (1000)::numeric))::integer) STORED
+);
+
+
+--
+-- Name: TABLE metabase_sync_runs; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.metabase_sync_runs IS 'History of Metabase model/dashboard sync operations';
+
+
+--
+-- Name: metabase_sync_runs_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.metabase_sync_runs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: metabase_sync_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.metabase_sync_runs_id_seq OWNED BY meta.metabase_sync_runs.id;
 
 
 --
@@ -3760,6 +4224,63 @@ CREATE SEQUENCE meta.prospect_strategies_id_seq
 --
 
 ALTER SEQUENCE meta.prospect_strategies_id_seq OWNED BY meta.prospect_strategies.id;
+
+
+--
+-- Name: quality_assessments; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.quality_assessments (
+    id integer NOT NULL,
+    source_type text NOT NULL,
+    source_id text NOT NULL,
+    coherence_score real,
+    coverage_score real,
+    novelty_score real,
+    weighted_reward real GENERATED ALWAYS AS (((((0.4)::double precision * COALESCE(coherence_score, (0)::real)) + ((0.35)::double precision * COALESCE(coverage_score, (0)::real))) + ((0.25)::double precision * COALESCE(novelty_score, (0)::real)))) STORED,
+    is_textbook_quality boolean GENERATED ALWAYS AS ((((((0.4)::double precision * COALESCE(coherence_score, (0)::real)) + ((0.35)::double precision * COALESCE(coverage_score, (0)::real))) + ((0.25)::double precision * COALESCE(novelty_score, (0)::real))) >= (0.85)::double precision)) STORED,
+    evaluator_type text NOT NULL,
+    evaluation_model text,
+    created_at timestamp with time zone DEFAULT now(),
+    metadata jsonb DEFAULT '{}'::jsonb,
+    CONSTRAINT quality_assessments_coherence_score_check CHECK (((coherence_score >= (0)::double precision) AND (coherence_score <= (1)::double precision))),
+    CONSTRAINT quality_assessments_coverage_score_check CHECK (((coverage_score >= (0)::double precision) AND (coverage_score <= (1)::double precision))),
+    CONSTRAINT quality_assessments_novelty_score_check CHECK (((novelty_score >= (0)::double precision) AND (novelty_score <= (1)::double precision)))
+);
+
+
+--
+-- Name: TABLE quality_assessments; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.quality_assessments IS 'Quality scores for synthetic data (textbook quality = weighted_reward >= 0.85)';
+
+
+--
+-- Name: COLUMN quality_assessments.weighted_reward; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.quality_assessments.weighted_reward IS '0.4*coherence + 0.35*coverage + 0.25*novelty';
+
+
+--
+-- Name: quality_assessments_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.quality_assessments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: quality_assessments_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.quality_assessments_id_seq OWNED BY meta.quality_assessments.id;
 
 
 --
@@ -4469,6 +4990,36 @@ COMMENT ON VIEW meta.v_autonomous_healing_summary IS 'Daily autonomous healing s
 
 
 --
+-- Name: v_budget_status; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_budget_status AS
+ SELECT pool_id,
+    weekly_limit,
+    weekly_used,
+    (weekly_limit - weekly_used) AS weekly_remaining,
+    grok_calls,
+    cerebras_calls,
+    round((((weekly_used)::numeric / (NULLIF(weekly_limit, 0))::numeric) * (100)::numeric), 1) AS usage_pct,
+    week_start,
+    last_reset,
+        CASE
+            WHEN (weekly_used >= weekly_limit) THEN 'exhausted'::text
+            WHEN ((weekly_used)::numeric >= ((weekly_limit)::numeric * 0.8)) THEN 'low'::text
+            WHEN ((weekly_used)::numeric >= ((weekly_limit)::numeric * 0.5)) THEN 'moderate'::text
+            ELSE 'healthy'::text
+        END AS budget_health
+   FROM meta.audit_budget_pool;
+
+
+--
+-- Name: VIEW v_budget_status; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_budget_status IS 'Current pooled budget status for Metabase dashboard';
+
+
+--
 -- Name: fmea_outcomes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4918,6 +5469,89 @@ CREATE VIEW meta.v_prospects_status AS
 --
 
 COMMENT ON VIEW meta.v_prospects_status IS 'Consolidated prospects status for active candidates only';
+
+
+--
+-- Name: v_quality_summary; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_quality_summary AS
+ SELECT source_type,
+    count(*) AS total_assessments,
+    count(*) FILTER (WHERE is_textbook_quality) AS textbook_quality_count,
+    round((avg(coherence_score))::numeric, 3) AS avg_coherence,
+    round((avg(coverage_score))::numeric, 3) AS avg_coverage,
+    round((avg(novelty_score))::numeric, 3) AS avg_novelty,
+    round((avg(weighted_reward))::numeric, 3) AS avg_weighted_reward,
+    round((((count(*) FILTER (WHERE is_textbook_quality))::numeric / (NULLIF(count(*), 0))::numeric) * (100)::numeric), 1) AS textbook_quality_pct
+   FROM meta.quality_assessments
+  GROUP BY source_type;
+
+
+--
+-- Name: VIEW v_quality_summary; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_quality_summary IS 'Aggregated quality metrics by source type';
+
+
+--
+-- Name: v_recent_audits; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_recent_audits AS
+ SELECT audit_id,
+    started_at,
+    completed_at,
+    scope,
+    status,
+    provider,
+    tokens_used,
+    duration_ms,
+    kb_path,
+    COALESCE(jsonb_array_length(findings), 0) AS findings_count,
+    ( SELECT count(*) AS count
+           FROM meta.audit_recommendations r
+          WHERE (r.audit_id = a.audit_id)) AS recommendations_count
+   FROM meta.metaagent_audits a
+  ORDER BY started_at DESC
+ LIMIT 20;
+
+
+--
+-- Name: VIEW v_recent_audits; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_recent_audits IS 'Recent audit runs with finding/recommendation counts';
+
+
+--
+-- Name: v_recommendation_funnel; Type: VIEW; Schema: meta; Owner: -
+--
+
+CREATE VIEW meta.v_recommendation_funnel AS
+ SELECT status,
+    count(*) AS count,
+    array_agg(DISTINCT category) AS categories,
+    array_agg(DISTINCT severity) AS severities
+   FROM meta.audit_recommendations
+  GROUP BY status
+  ORDER BY
+        CASE status
+            WHEN 'pending'::text THEN 1
+            WHEN 'accepted'::text THEN 2
+            WHEN 'implemented'::text THEN 3
+            WHEN 'verified'::text THEN 4
+            WHEN 'rejected'::text THEN 5
+            ELSE NULL::integer
+        END;
+
+
+--
+-- Name: VIEW v_recommendation_funnel; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON VIEW meta.v_recommendation_funnel IS 'Recommendation status funnel for self-improvement tracking';
 
 
 --
@@ -12347,10 +12981,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__1nqxnpooyt4ig7gnaao3x; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__1nqxnpooyt4ig7gnaao3x (
+CREATE TABLE public.search_index__4asdmoroquqdnn2arfyd5 (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -12383,11 +13017,11 @@ CREATE TABLE public.search_index__1nqxnpooyt4ig7gnaao3x (
 
 
 --
--- Name: search_index__1nqxnpooyt4ig7gnaao3x_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__1nqxnpooyt4ig7gnaao3x ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__1nqxnpooyt4ig7gnaao3x_id_seq
+ALTER TABLE public.search_index__4asdmoroquqdnn2arfyd5 ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__4asdmoroquqdnn2arfyd5_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -12397,10 +13031,10 @@ ALTER TABLE public.search_index__1nqxnpooyt4ig7gnaao3x ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__kkos2jvgaj_r04tu4mw5_; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__kkos2jvgaj_r04tu4mw5_ (
+CREATE TABLE public.search_index__cvo4ibtsyjzvh5x7v49a6 (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -12433,11 +13067,11 @@ CREATE TABLE public.search_index__kkos2jvgaj_r04tu4mw5_ (
 
 
 --
--- Name: search_index__kkos2jvgaj_r04tu4mw5__id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__kkos2jvgaj_r04tu4mw5_ ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__kkos2jvgaj_r04tu4mw5__id_seq
+ALTER TABLE public.search_index__cvo4ibtsyjzvh5x7v49a6 ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__cvo4ibtsyjzvh5x7v49a6_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -13881,6 +14515,130 @@ CREATE VIEW public.v_view_log AS
 
 
 --
+-- Name: x_auto_sync_schedules; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_auto_sync_schedules (
+    user_id character varying(64) NOT NULL,
+    is_active boolean DEFAULT true,
+    next_run_at timestamp with time zone NOT NULL,
+    folders_total integer DEFAULT 0,
+    folders_synced integer DEFAULT 0,
+    sync_iterations integer DEFAULT 0,
+    interval_minutes integer DEFAULT 16,
+    max_iterations integer DEFAULT 50,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    completed_at timestamp with time zone,
+    last_error text,
+    metadata jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: TABLE x_auto_sync_schedules; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_auto_sync_schedules IS 'Active auto-sync schedules for X bookmarks';
+
+
+--
+-- Name: COLUMN x_auto_sync_schedules.interval_minutes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_auto_sync_schedules.interval_minutes IS 'Minutes between sync iterations (16 = 15min rate limit + 1min buffer)';
+
+
+--
+-- Name: COLUMN x_auto_sync_schedules.max_iterations; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_auto_sync_schedules.max_iterations IS 'Maximum iterations before auto-cancel (prevents runaway)';
+
+
+--
+-- Name: x_oauth_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.x_oauth_tokens (
+    user_id character varying(64) NOT NULL,
+    username character varying(64) NOT NULL,
+    access_token text NOT NULL,
+    refresh_token text,
+    token_type character varying(32) DEFAULT 'Bearer'::character varying,
+    scopes text[],
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE x_oauth_tokens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.x_oauth_tokens IS 'OAuth 2.0 tokens for X API access';
+
+
+--
+-- Name: COLUMN x_oauth_tokens.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_tokens.user_id IS 'X user ID (numeric string)';
+
+
+--
+-- Name: COLUMN x_oauth_tokens.access_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_tokens.access_token IS 'Encrypted access token';
+
+
+--
+-- Name: COLUMN x_oauth_tokens.refresh_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.x_oauth_tokens.refresh_token IS 'Encrypted refresh token for token renewal';
+
+
+--
+-- Name: v_x_auto_sync_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_x_auto_sync_status AS
+ SELECT s.user_id,
+    t.username,
+    s.is_active,
+    s.folders_total,
+    s.folders_synced,
+    (s.folders_total - s.folders_synced) AS folders_remaining,
+    s.sync_iterations,
+    s.max_iterations,
+    s.interval_minutes,
+    s.next_run_at,
+    s.last_error,
+    s.created_at,
+    s.completed_at,
+        CASE
+            WHEN (NOT s.is_active) THEN 'stopped'::text
+            WHEN (t.expires_at <= now()) THEN 'token_expired'::text
+            WHEN (s.next_run_at <= now()) THEN 'due'::text
+            ELSE 'scheduled'::text
+        END AS status,
+    (s.metadata ->> 'stop_reason'::text) AS stop_reason
+   FROM (public.x_auto_sync_schedules s
+     JOIN public.x_oauth_tokens t ON (((t.user_id)::text = (s.user_id)::text)))
+  ORDER BY s.updated_at DESC;
+
+
+--
+-- Name: VIEW v_x_auto_sync_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.v_x_auto_sync_status IS 'Auto-sync schedule status per user';
+
+
+--
 -- Name: x_api_requests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -13983,51 +14741,6 @@ COMMENT ON COLUMN public.x_bookmarks_sync.content_hash IS 'SHA-256 hash for dedu
 --
 
 COMMENT ON COLUMN public.x_bookmarks_sync.iceberg_id IS 'Reference to raw.x_bookmarks Iceberg table';
-
-
---
--- Name: x_oauth_tokens; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.x_oauth_tokens (
-    user_id character varying(64) NOT NULL,
-    username character varying(64) NOT NULL,
-    access_token text NOT NULL,
-    refresh_token text,
-    token_type character varying(32) DEFAULT 'Bearer'::character varying,
-    scopes text[],
-    expires_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
-);
-
-
---
--- Name: TABLE x_oauth_tokens; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.x_oauth_tokens IS 'OAuth 2.0 tokens for X API access';
-
-
---
--- Name: COLUMN x_oauth_tokens.user_id; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.x_oauth_tokens.user_id IS 'X user ID (numeric string)';
-
-
---
--- Name: COLUMN x_oauth_tokens.access_token; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.x_oauth_tokens.access_token IS 'Encrypted access token';
-
-
---
--- Name: COLUMN x_oauth_tokens.refresh_token; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.x_oauth_tokens.refresh_token IS 'Encrypted refresh token for token renewal';
 
 
 --
@@ -14316,6 +15029,13 @@ ALTER TABLE ONLY gaius_hx._ag_label_vertex ALTER COLUMN id SET DEFAULT ag_catalo
 
 
 --
+-- Name: audit_recommendations id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.audit_recommendations ALTER COLUMN id SET DEFAULT nextval('meta.audit_recommendations_id_seq'::regclass);
+
+
+--
 -- Name: data_dependencies id; Type: DEFAULT; Schema: meta; Owner: -
 --
 
@@ -14351,6 +15071,27 @@ ALTER TABLE ONLY meta.institutional_holders_cache ALTER COLUMN id SET DEFAULT ne
 
 
 --
+-- Name: metaagent_audits id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metaagent_audits ALTER COLUMN id SET DEFAULT nextval('meta.metaagent_audits_id_seq'::regclass);
+
+
+--
+-- Name: metabase_models id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metabase_models ALTER COLUMN id SET DEFAULT nextval('meta.metabase_models_id_seq'::regclass);
+
+
+--
+-- Name: metabase_sync_runs id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metabase_sync_runs ALTER COLUMN id SET DEFAULT nextval('meta.metabase_sync_runs_id_seq'::regclass);
+
+
+--
 -- Name: ngrc_models id; Type: DEFAULT; Schema: meta; Owner: -
 --
 
@@ -14376,6 +15117,13 @@ ALTER TABLE ONLY meta.prospect_candidates ALTER COLUMN id SET DEFAULT nextval('m
 --
 
 ALTER TABLE ONLY meta.prospect_strategies ALTER COLUMN id SET DEFAULT nextval('meta.prospect_strategies_id_seq'::regclass);
+
+
+--
+-- Name: quality_assessments id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.quality_assessments ALTER COLUMN id SET DEFAULT nextval('meta.quality_assessments_id_seq'::regclass);
 
 
 --
@@ -14859,6 +15607,22 @@ ALTER TABLE ONLY meta.alert_thresholds
 
 
 --
+-- Name: audit_budget_pool audit_budget_pool_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.audit_budget_pool
+    ADD CONSTRAINT audit_budget_pool_pkey PRIMARY KEY (pool_id);
+
+
+--
+-- Name: audit_recommendations audit_recommendations_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.audit_recommendations
+    ADD CONSTRAINT audit_recommendations_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: data_dependencies data_dependencies_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
@@ -15003,11 +15767,51 @@ ALTER TABLE ONLY meta.lineage_sankey_agg
 
 
 --
+-- Name: metaagent_audits metaagent_audits_audit_id_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metaagent_audits
+    ADD CONSTRAINT metaagent_audits_audit_id_key UNIQUE (audit_id);
+
+
+--
+-- Name: metaagent_audits metaagent_audits_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metaagent_audits
+    ADD CONSTRAINT metaagent_audits_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: metaagent_queries metaagent_queries_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
 --
 
 ALTER TABLE ONLY meta.metaagent_queries
     ADD CONSTRAINT metaagent_queries_pkey PRIMARY KEY (query_hash);
+
+
+--
+-- Name: metabase_models metabase_models_card_id_key; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metabase_models
+    ADD CONSTRAINT metabase_models_card_id_key UNIQUE (card_id);
+
+
+--
+-- Name: metabase_models metabase_models_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metabase_models
+    ADD CONSTRAINT metabase_models_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: metabase_sync_runs metabase_sync_runs_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.metabase_sync_runs
+    ADD CONSTRAINT metabase_sync_runs_pkey PRIMARY KEY (id);
 
 
 --
@@ -15072,6 +15876,14 @@ ALTER TABLE ONLY meta.prospect_strategies
 
 ALTER TABLE ONLY meta.prospect_strategies
     ADD CONSTRAINT prospect_strategies_symbol_profile_domain_key UNIQUE (symbol, profile, domain);
+
+
+--
+-- Name: quality_assessments quality_assessments_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.quality_assessments
+    ADD CONSTRAINT quality_assessments_pkey PRIMARY KEY (id);
 
 
 --
@@ -16899,19 +17711,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__1nqxnpooyt4ig7gnaao3x search_index__1nqxnpooyt4ig7gnaao3x_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5 search_index__4asdmoroquqdnn2arfyd5_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__1nqxnpooyt4ig7gnaao3x
-    ADD CONSTRAINT search_index__1nqxnpooyt4ig7gnaao3x_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__4asdmoroquqdnn2arfyd5
+    ADD CONSTRAINT search_index__4asdmoroquqdnn2arfyd5_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__kkos2jvgaj_r04tu4mw5_ search_index__kkos2jvgaj_r04tu4mw5__pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6 search_index__cvo4ibtsyjzvh5x7v49a6_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__kkos2jvgaj_r04tu4mw5_
-    ADD CONSTRAINT search_index__kkos2jvgaj_r04tu4mw5__pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__cvo4ibtsyjzvh5x7v49a6
+    ADD CONSTRAINT search_index__cvo4ibtsyjzvh5x7v49a6_pkey PRIMARY KEY (id);
 
 
 --
@@ -17243,6 +18055,14 @@ ALTER TABLE ONLY public.x_api_requests
 
 
 --
+-- Name: x_auto_sync_schedules x_auto_sync_schedules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_auto_sync_schedules
+    ADD CONSTRAINT x_auto_sync_schedules_pkey PRIMARY KEY (user_id);
+
+
+--
 -- Name: x_bookmark_folders x_bookmark_folders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17382,6 +18202,20 @@ CREATE INDEX idx_meta_agent_perf_date ON meta.agent_performance USING btree (dat
 
 
 --
+-- Name: idx_meta_audits_scope; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_audits_scope ON meta.metaagent_audits USING btree (scope);
+
+
+--
+-- Name: idx_meta_audits_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_audits_time ON meta.metaagent_audits USING btree (started_at DESC);
+
+
+--
 -- Name: idx_meta_clusters_snapshot; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -17480,10 +18314,73 @@ CREATE INDEX idx_meta_kb_topology_time ON meta.kb_topology USING btree (computed
 
 
 --
+-- Name: idx_meta_metabase_models_name; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_metabase_models_name ON meta.metabase_models USING btree (name);
+
+
+--
+-- Name: idx_meta_metabase_sync_status; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_metabase_sync_status ON meta.metabase_sync_runs USING btree (status);
+
+
+--
+-- Name: idx_meta_metabase_sync_time; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_metabase_sync_time ON meta.metabase_sync_runs USING btree (started_at DESC);
+
+
+--
 -- Name: idx_meta_nifi_flows_status; Type: INDEX; Schema: meta; Owner: -
 --
 
 CREATE INDEX idx_meta_nifi_flows_status ON meta.nifi_flows USING btree (status);
+
+
+--
+-- Name: idx_meta_quality_reward; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_quality_reward ON meta.quality_assessments USING btree (weighted_reward DESC);
+
+
+--
+-- Name: idx_meta_quality_source; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_quality_source ON meta.quality_assessments USING btree (source_type, source_id);
+
+
+--
+-- Name: idx_meta_quality_textbook; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_quality_textbook ON meta.quality_assessments USING btree (is_textbook_quality) WHERE (is_textbook_quality = true);
+
+
+--
+-- Name: idx_meta_recommendations_audit; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_recommendations_audit ON meta.audit_recommendations USING btree (audit_id);
+
+
+--
+-- Name: idx_meta_recommendations_severity; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_recommendations_severity ON meta.audit_recommendations USING btree (severity);
+
+
+--
+-- Name: idx_meta_recommendations_status; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_meta_recommendations_status ON meta.audit_recommendations USING btree (status);
 
 
 --
@@ -20285,6 +21182,13 @@ CREATE INDEX idx_x_api_user ON public.x_api_requests USING btree (user_id, compl
 
 
 --
+-- Name: idx_x_auto_sync_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_x_auto_sync_active ON public.x_auto_sync_schedules USING btree (is_active, next_run_at) WHERE (is_active = true);
+
+
+--
 -- Name: idx_x_bookmarks_folder; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -20334,73 +21238,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__1nqxnpooyt4ig7gnaao3x_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__1nqxnpooyt4ig7gnaao3x_archived_idx ON public.search_index__1nqxnpooyt4ig7gnaao3x USING btree (archived);
-
-
---
--- Name: search_index__1nqxnpooyt4ig7gnaao3x_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__1nqxnpooyt4ig7gnaao3x_identity_idx ON public.search_index__1nqxnpooyt4ig7gnaao3x USING btree (model, model_id);
+CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_archived_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING btree (archived);
 
 
 --
--- Name: search_index__1nqxnpooyt4ig7gnaao3x_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__1nqxnpooyt4ig7gnaao3x_model_archived_idx ON public.search_index__1nqxnpooyt4ig7gnaao3x USING btree (model, archived);
-
-
---
--- Name: search_index__1nqxnpooyt4ig7gnaao3x_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__1nqxnpooyt4ig7gnaao3x_native_tsvector_idx ON public.search_index__1nqxnpooyt4ig7gnaao3x USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index__4asdmoroquqdnn2arfyd5_identity_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING btree (model, model_id);
 
 
 --
--- Name: search_index__1nqxnpooyt4ig7gnaao3x_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__1nqxnpooyt4ig7gnaao3x_tsvector_idx ON public.search_index__1nqxnpooyt4ig7gnaao3x USING gin (search_vector);
-
-
---
--- Name: search_index__kkos2jvgaj_r04tu4mw5__archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__kkos2jvgaj_r04tu4mw5__archived_idx ON public.search_index__kkos2jvgaj_r04tu4mw5_ USING btree (archived);
+CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_model_archived_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING btree (model, archived);
 
 
 --
--- Name: search_index__kkos2jvgaj_r04tu4mw5__identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__kkos2jvgaj_r04tu4mw5__identity_idx ON public.search_index__kkos2jvgaj_r04tu4mw5_ USING btree (model, model_id);
-
-
---
--- Name: search_index__kkos2jvgaj_r04tu4mw5__model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__kkos2jvgaj_r04tu4mw5__model_archived_idx ON public.search_index__kkos2jvgaj_r04tu4mw5_ USING btree (model, archived);
+CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_native_tsvector_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING gin (with_native_query_vector);
 
 
 --
--- Name: search_index__kkos2jvgaj_r04tu4mw5__native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__4asdmoroquqdnn2arfyd5_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__kkos2jvgaj_r04tu4mw5__native_tsvector_idx ON public.search_index__kkos2jvgaj_r04tu4mw5_ USING gin (with_native_query_vector);
+CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_tsvector_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING gin (search_vector);
 
 
 --
--- Name: search_index__kkos2jvgaj_r04tu4mw5__tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__kkos2jvgaj_r04tu4mw5__tsvector_idx ON public.search_index__kkos2jvgaj_r04tu4mw5_ USING gin (search_vector);
+CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_archived_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING btree (archived);
+
+
+--
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_identity_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING btree (model, model_id);
+
+
+--
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_model_archived_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING btree (model, archived);
+
+
+--
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_native_tsvector_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__cvo4ibtsyjzvh5x7v49a6_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_tsvector_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING gin (search_vector);
 
 
 --
@@ -20471,6 +21375,13 @@ COMMENT ON TRIGGER research_progress_notify ON meta.research_progress IS 'Real-t
 
 
 --
+-- Name: audit_budget_pool trg_reset_weekly_budget; Type: TRIGGER; Schema: meta; Owner: -
+--
+
+CREATE TRIGGER trg_reset_weekly_budget BEFORE UPDATE ON meta.audit_budget_pool FOR EACH ROW EXECUTE FUNCTION meta.check_reset_weekly_budget();
+
+
+--
 -- Name: health_observer_state health_observer_state_updated; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -20489,6 +21400,14 @@ CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW
 --
 
 CREATE TRIGGER trg_update_calibration_summary AFTER INSERT ON public.evolution_calibrations FOR EACH ROW EXECUTE FUNCTION public.update_calibration_summary();
+
+
+--
+-- Name: audit_recommendations audit_recommendations_audit_id_fkey; Type: FK CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.audit_recommendations
+    ADD CONSTRAINT audit_recommendations_audit_id_fkey FOREIGN KEY (audit_id) REFERENCES meta.metaagent_audits(audit_id) ON DELETE CASCADE;
 
 
 --
@@ -21980,6 +22899,14 @@ ALTER TABLE ONLY public.x_api_requests
 
 
 --
+-- Name: x_auto_sync_schedules x_auto_sync_schedules_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.x_auto_sync_schedules
+    ADD CONSTRAINT x_auto_sync_schedules_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.x_oauth_tokens(user_id) ON DELETE CASCADE;
+
+
+--
 -- Name: x_bookmark_folders x_bookmark_folders_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -22023,7 +22950,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JSuDNI2khIOk1n1tW6W3WcYvLUSmO8sgJbEN60PG6ERNADOoNjMaP0c0qM1e0oB
+\unrestrict CbjSDoC4JeqeKqMard6L7gvnisVL4Qv9YeePD5XWhs8gSnG5dOuZ58BmT97uf79
 
 
 --
@@ -22079,4 +23006,6 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260114000001'),
     ('20260114000002'),
     ('20260114000003'),
-    ('20260115000001');
+    ('20260115000001'),
+    ('20260118000001'),
+    ('20260119000001');

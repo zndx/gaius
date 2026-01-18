@@ -2297,6 +2297,270 @@ class MetaAgentQueryResponse(_message.Message):
     error: str
     def __init__(self, success: bool = ..., answer: _Optional[str] = ..., dot_graph: _Optional[str] = ..., markdown_tables: _Optional[_Iterable[str]] = ..., agent_insights: _Optional[_Mapping[str, bytes]] = ..., queries_executed: _Optional[_Iterable[str]] = ..., agents_used: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
 
+class MetaAgentStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class MetaAgentStatusResponse(_message.Message):
+    __slots__ = ("running", "metabase_connected", "last_sync_at", "last_audit_at", "next_audit_at", "budget", "models_synced", "dashboards_synced", "error")
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    METABASE_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    LAST_SYNC_AT_FIELD_NUMBER: _ClassVar[int]
+    LAST_AUDIT_AT_FIELD_NUMBER: _ClassVar[int]
+    NEXT_AUDIT_AT_FIELD_NUMBER: _ClassVar[int]
+    BUDGET_FIELD_NUMBER: _ClassVar[int]
+    MODELS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    DASHBOARDS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    running: bool
+    metabase_connected: bool
+    last_sync_at: str
+    last_audit_at: str
+    next_audit_at: str
+    budget: PooledBudgetStatus
+    models_synced: int
+    dashboards_synced: int
+    error: str
+    def __init__(self, running: bool = ..., metabase_connected: bool = ..., last_sync_at: _Optional[str] = ..., last_audit_at: _Optional[str] = ..., next_audit_at: _Optional[str] = ..., budget: _Optional[_Union[PooledBudgetStatus, _Mapping]] = ..., models_synced: _Optional[int] = ..., dashboards_synced: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class MetabaseSyncRequest(_message.Message):
+    __slots__ = ("full_refresh", "tables", "sync_dashboards")
+    FULL_REFRESH_FIELD_NUMBER: _ClassVar[int]
+    TABLES_FIELD_NUMBER: _ClassVar[int]
+    SYNC_DASHBOARDS_FIELD_NUMBER: _ClassVar[int]
+    full_refresh: bool
+    tables: _containers.RepeatedScalarFieldContainer[str]
+    sync_dashboards: bool
+    def __init__(self, full_refresh: bool = ..., tables: _Optional[_Iterable[str]] = ..., sync_dashboards: bool = ...) -> None: ...
+
+class MetabaseSyncResponse(_message.Message):
+    __slots__ = ("success", "models_created", "models_updated", "models_failed", "dashboards_synced", "duration_ms", "errors")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MODELS_CREATED_FIELD_NUMBER: _ClassVar[int]
+    MODELS_UPDATED_FIELD_NUMBER: _ClassVar[int]
+    MODELS_FAILED_FIELD_NUMBER: _ClassVar[int]
+    DASHBOARDS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERRORS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    models_created: int
+    models_updated: int
+    models_failed: int
+    dashboards_synced: int
+    duration_ms: int
+    errors: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, success: bool = ..., models_created: _Optional[int] = ..., models_updated: _Optional[int] = ..., models_failed: _Optional[int] = ..., dashboards_synced: _Optional[int] = ..., duration_ms: _Optional[int] = ..., errors: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class MetaAgentAuditRequest(_message.Message):
+    __slots__ = ("scope", "use_remote_llm", "lookback_days", "dry_run")
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    USE_REMOTE_LLM_FIELD_NUMBER: _ClassVar[int]
+    LOOKBACK_DAYS_FIELD_NUMBER: _ClassVar[int]
+    DRY_RUN_FIELD_NUMBER: _ClassVar[int]
+    scope: str
+    use_remote_llm: bool
+    lookback_days: int
+    dry_run: bool
+    def __init__(self, scope: _Optional[str] = ..., use_remote_llm: bool = ..., lookback_days: _Optional[int] = ..., dry_run: bool = ...) -> None: ...
+
+class AuditFinding(_message.Message):
+    __slots__ = ("category", "severity", "title", "description", "suggested_action", "evidence")
+    CATEGORY_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SUGGESTED_ACTION_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_FIELD_NUMBER: _ClassVar[int]
+    category: str
+    severity: str
+    title: str
+    description: str
+    suggested_action: str
+    evidence: bytes
+    def __init__(self, category: _Optional[str] = ..., severity: _Optional[str] = ..., title: _Optional[str] = ..., description: _Optional[str] = ..., suggested_action: _Optional[str] = ..., evidence: _Optional[bytes] = ...) -> None: ...
+
+class AuditRecommendation(_message.Message):
+    __slots__ = ("id", "audit_id", "category", "severity", "title", "description", "suggested_implementation", "status", "created_at")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
+    CATEGORY_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SUGGESTED_IMPLEMENTATION_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    audit_id: str
+    category: str
+    severity: str
+    title: str
+    description: str
+    suggested_implementation: str
+    status: str
+    created_at: str
+    def __init__(self, id: _Optional[str] = ..., audit_id: _Optional[str] = ..., category: _Optional[str] = ..., severity: _Optional[str] = ..., title: _Optional[str] = ..., description: _Optional[str] = ..., suggested_implementation: _Optional[str] = ..., status: _Optional[str] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class MetaAgentAuditResponse(_message.Message):
+    __slots__ = ("success", "audit_id", "scope", "summary", "findings", "recommendations", "kb_path", "tokens_used", "provider", "duration_ms", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    FINDINGS_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATIONS_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_USED_FIELD_NUMBER: _ClassVar[int]
+    PROVIDER_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    audit_id: str
+    scope: str
+    summary: str
+    findings: _containers.RepeatedCompositeFieldContainer[AuditFinding]
+    recommendations: _containers.RepeatedCompositeFieldContainer[AuditRecommendation]
+    kb_path: str
+    tokens_used: int
+    provider: str
+    duration_ms: int
+    error: str
+    def __init__(self, success: bool = ..., audit_id: _Optional[str] = ..., scope: _Optional[str] = ..., summary: _Optional[str] = ..., findings: _Optional[_Iterable[_Union[AuditFinding, _Mapping]]] = ..., recommendations: _Optional[_Iterable[_Union[AuditRecommendation, _Mapping]]] = ..., kb_path: _Optional[str] = ..., tokens_used: _Optional[int] = ..., provider: _Optional[str] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class PooledBudgetStatus(_message.Message):
+    __slots__ = ("weekly_limit", "weekly_used", "weekly_remaining", "grok_calls", "cerebras_calls", "week_start", "last_reset", "usage_pct", "budget_health")
+    WEEKLY_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    WEEKLY_USED_FIELD_NUMBER: _ClassVar[int]
+    WEEKLY_REMAINING_FIELD_NUMBER: _ClassVar[int]
+    GROK_CALLS_FIELD_NUMBER: _ClassVar[int]
+    CEREBRAS_CALLS_FIELD_NUMBER: _ClassVar[int]
+    WEEK_START_FIELD_NUMBER: _ClassVar[int]
+    LAST_RESET_FIELD_NUMBER: _ClassVar[int]
+    USAGE_PCT_FIELD_NUMBER: _ClassVar[int]
+    BUDGET_HEALTH_FIELD_NUMBER: _ClassVar[int]
+    weekly_limit: int
+    weekly_used: int
+    weekly_remaining: int
+    grok_calls: int
+    cerebras_calls: int
+    week_start: str
+    last_reset: str
+    usage_pct: float
+    budget_health: str
+    def __init__(self, weekly_limit: _Optional[int] = ..., weekly_used: _Optional[int] = ..., weekly_remaining: _Optional[int] = ..., grok_calls: _Optional[int] = ..., cerebras_calls: _Optional[int] = ..., week_start: _Optional[str] = ..., last_reset: _Optional[str] = ..., usage_pct: _Optional[float] = ..., budget_health: _Optional[str] = ...) -> None: ...
+
+class GetPooledBudgetRequest(_message.Message):
+    __slots__ = ("pool_id",)
+    POOL_ID_FIELD_NUMBER: _ClassVar[int]
+    pool_id: str
+    def __init__(self, pool_id: _Optional[str] = ...) -> None: ...
+
+class GetPooledBudgetResponse(_message.Message):
+    __slots__ = ("success", "budget", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    BUDGET_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    budget: PooledBudgetStatus
+    error: str
+    def __init__(self, success: bool = ..., budget: _Optional[_Union[PooledBudgetStatus, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class QualityAssessment(_message.Message):
+    __slots__ = ("id", "source_type", "source_id", "coherence_score", "coverage_score", "novelty_score", "weighted_reward", "is_textbook_quality", "evaluator_type", "created_at")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    COHERENCE_SCORE_FIELD_NUMBER: _ClassVar[int]
+    COVERAGE_SCORE_FIELD_NUMBER: _ClassVar[int]
+    NOVELTY_SCORE_FIELD_NUMBER: _ClassVar[int]
+    WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
+    IS_TEXTBOOK_QUALITY_FIELD_NUMBER: _ClassVar[int]
+    EVALUATOR_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    source_type: str
+    source_id: str
+    coherence_score: float
+    coverage_score: float
+    novelty_score: float
+    weighted_reward: float
+    is_textbook_quality: bool
+    evaluator_type: str
+    created_at: str
+    def __init__(self, id: _Optional[int] = ..., source_type: _Optional[str] = ..., source_id: _Optional[str] = ..., coherence_score: _Optional[float] = ..., coverage_score: _Optional[float] = ..., novelty_score: _Optional[float] = ..., weighted_reward: _Optional[float] = ..., is_textbook_quality: bool = ..., evaluator_type: _Optional[str] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class GetQualitySummaryRequest(_message.Message):
+    __slots__ = ("source_type", "limit")
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    source_type: str
+    limit: int
+    def __init__(self, source_type: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class GetQualitySummaryResponse(_message.Message):
+    __slots__ = ("success", "total_assessments", "textbook_quality_count", "textbook_quality_pct", "avg_coherence", "avg_coverage", "avg_novelty", "avg_weighted_reward", "recent", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_PCT_FIELD_NUMBER: _ClassVar[int]
+    AVG_COHERENCE_FIELD_NUMBER: _ClassVar[int]
+    AVG_COVERAGE_FIELD_NUMBER: _ClassVar[int]
+    AVG_NOVELTY_FIELD_NUMBER: _ClassVar[int]
+    AVG_WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
+    RECENT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    total_assessments: int
+    textbook_quality_count: int
+    textbook_quality_pct: float
+    avg_coherence: float
+    avg_coverage: float
+    avg_novelty: float
+    avg_weighted_reward: float
+    recent: _containers.RepeatedCompositeFieldContainer[QualityAssessment]
+    error: str
+    def __init__(self, success: bool = ..., total_assessments: _Optional[int] = ..., textbook_quality_count: _Optional[int] = ..., textbook_quality_pct: _Optional[float] = ..., avg_coherence: _Optional[float] = ..., avg_coverage: _Optional[float] = ..., avg_novelty: _Optional[float] = ..., avg_weighted_reward: _Optional[float] = ..., recent: _Optional[_Iterable[_Union[QualityAssessment, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ListRecommendationsRequest(_message.Message):
+    __slots__ = ("status", "audit_id", "limit")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    status: str
+    audit_id: str
+    limit: int
+    def __init__(self, status: _Optional[str] = ..., audit_id: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class ListRecommendationsResponse(_message.Message):
+    __slots__ = ("success", "recommendations", "total_count", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    recommendations: _containers.RepeatedCompositeFieldContainer[AuditRecommendation]
+    total_count: int
+    error: str
+    def __init__(self, success: bool = ..., recommendations: _Optional[_Iterable[_Union[AuditRecommendation, _Mapping]]] = ..., total_count: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class UpdateRecommendationRequest(_message.Message):
+    __slots__ = ("recommendation_id", "new_status")
+    RECOMMENDATION_ID_FIELD_NUMBER: _ClassVar[int]
+    NEW_STATUS_FIELD_NUMBER: _ClassVar[int]
+    recommendation_id: str
+    new_status: str
+    def __init__(self, recommendation_id: _Optional[str] = ..., new_status: _Optional[str] = ...) -> None: ...
+
+class UpdateRecommendationResponse(_message.Message):
+    __slots__ = ("success", "recommendation", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    recommendation: AuditRecommendation
+    error: str
+    def __init__(self, success: bool = ..., recommendation: _Optional[_Union[AuditRecommendation, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
 class CLTExtractRequest(_message.Message):
     __slots__ = ("text", "layer_indices", "top_k", "model_name", "device")
     TEXT_FIELD_NUMBER: _ClassVar[int]

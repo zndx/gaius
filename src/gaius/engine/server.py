@@ -111,6 +111,9 @@ class GaiusEngine:
         # Vector search service (orchestrator-managed ColNomic)
         self._vector_search_service = None
 
+        # MetaAgent service (Metabase sync, audits, budget)
+        self._metaagent_service = None
+
         # Health service (basic metrics)
         self._health_service = None
 
@@ -975,6 +978,9 @@ class GaiusEngine:
         # 3. Initialize Reconciliation (REQUIRED, depends on health_observer)
         await self._create_reconciliation_daemon()
 
+        # 4. Initialize MetaAgent (OPTIONAL, depends on health_observer for db_pool)
+        await self._create_metaagent_daemon()
+
         # Register daemons with dependency ordering
         if self._health_observer_service:
             self._daemon_registry.register(self._health_observer_service, after=[])
@@ -987,6 +993,11 @@ class GaiusEngine:
         if self._reconciliation_service:
             self._daemon_registry.register(
                 self._reconciliation_service, after=["health_observer"]
+            )
+
+        if self._metaagent_service:
+            self._daemon_registry.register(
+                self._metaagent_service, after=["health_observer"]
             )
 
         # Wire cross-references between daemons BEFORE starting
@@ -1120,6 +1131,36 @@ class GaiusEngine:
             logger.warning(f"Reconciliation service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to create Reconciliation daemon: {e}")
+
+    async def _create_metaagent_daemon(self) -> None:
+        """Create MetaAgent daemon instance (doesn't start it).
+
+        MetaAgent provides:
+        - Metabase model sync (hourly via pg_cron)
+        - Weekly LLM audits with pooled budget
+        - Quality assessments for synthetic data
+        - Audit recommendations tracking
+        """
+        try:
+            from .services.metaagent_service import MetaAgentService
+
+            logger.info("Creating MetaAgent daemon...")
+
+            # Create service with db_pool for direct DB access
+            self._metaagent_service = MetaAgentService(db_pool=self._db_pool)
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "metaagent_service", self._metaagent_service
+                )
+
+            logger.info("MetaAgent daemon created (Metabase sync, audits, budget)")
+
+        except ImportError as e:
+            logger.warning(f"MetaAgent service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create MetaAgent daemon: {e}")
 
     async def _create_agenda_tracker(self) -> None:
         """Create and wire AgendaTracker for workload-centric incident tracking.

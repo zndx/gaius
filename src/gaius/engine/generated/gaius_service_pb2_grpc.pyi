@@ -185,6 +185,22 @@ class GaiusServiceStub:
     ─────────────────────────────────────────────────────────────────────────
     """
     MetaAgentQueryStream: grpc.UnaryStreamMultiCallable[gaius_service_pb2.MetaAgentQueryRequest, gaius_service_pb2.MetaAgentEvent]
+    MetaAgentStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentStatusRequest, gaius_service_pb2.MetaAgentStatusResponse]
+    """MetaAgent Service (Metabase Sync & Weekly Audit)
+    Daemon status
+    """
+    MetabaseSyncTrigger: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetabaseSyncRequest, gaius_service_pb2.MetabaseSyncResponse]
+    """Manual sync trigger"""
+    MetaAgentAuditTrigger: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentAuditRequest, gaius_service_pb2.MetaAgentAuditResponse]
+    """Manual audit trigger"""
+    GetPooledBudget: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetPooledBudgetRequest, gaius_service_pb2.GetPooledBudgetResponse]
+    """Budget status"""
+    GetQualitySummary: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetQualitySummaryRequest, gaius_service_pb2.GetQualitySummaryResponse]
+    """Quality metrics"""
+    ListRecommendations: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ListRecommendationsRequest, gaius_service_pb2.ListRecommendationsResponse]
+    """Audit recommendations"""
+    UpdateRecommendation: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.UpdateRecommendationRequest, gaius_service_pb2.UpdateRecommendationResponse]
+    """Update rec status"""
     CLTExtract: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CLTExtractRequest, gaius_service_pb2.CLTExtractResponse]
     """─────────────────────────────────────────────────────────────────────────
     CLT (Cross-Layer Transcoders)
@@ -436,6 +452,22 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     ─────────────────────────────────────────────────────────────────────────
     """
     MetaAgentQueryStream: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.MetaAgentQueryRequest, gaius_service_pb2.MetaAgentEvent]  # type: ignore[assignment]
+    MetaAgentStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentStatusRequest, gaius_service_pb2.MetaAgentStatusResponse]  # type: ignore[assignment]
+    """MetaAgent Service (Metabase Sync & Weekly Audit)
+    Daemon status
+    """
+    MetabaseSyncTrigger: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetabaseSyncRequest, gaius_service_pb2.MetabaseSyncResponse]  # type: ignore[assignment]
+    """Manual sync trigger"""
+    MetaAgentAuditTrigger: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentAuditRequest, gaius_service_pb2.MetaAgentAuditResponse]  # type: ignore[assignment]
+    """Manual audit trigger"""
+    GetPooledBudget: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetPooledBudgetRequest, gaius_service_pb2.GetPooledBudgetResponse]  # type: ignore[assignment]
+    """Budget status"""
+    GetQualitySummary: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetQualitySummaryRequest, gaius_service_pb2.GetQualitySummaryResponse]  # type: ignore[assignment]
+    """Quality metrics"""
+    ListRecommendations: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ListRecommendationsRequest, gaius_service_pb2.ListRecommendationsResponse]  # type: ignore[assignment]
+    """Audit recommendations"""
+    UpdateRecommendation: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.UpdateRecommendationRequest, gaius_service_pb2.UpdateRecommendationResponse]  # type: ignore[assignment]
+    """Update rec status"""
     CLTExtract: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CLTExtractRequest, gaius_service_pb2.CLTExtractResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
     CLT (Cross-Layer Transcoders)
@@ -1056,6 +1088,64 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.MetaAgentQueryRequest,
         context: _ServicerContext,
     ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.MetaAgentEvent], collections.abc.AsyncIterator[gaius_service_pb2.MetaAgentEvent]]: ...
+
+    @abc.abstractmethod
+    def MetaAgentStatus(
+        self,
+        request: gaius_service_pb2.MetaAgentStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.MetaAgentStatusResponse, collections.abc.Awaitable[gaius_service_pb2.MetaAgentStatusResponse]]:
+        """MetaAgent Service (Metabase Sync & Weekly Audit)
+        Daemon status
+        """
+
+    @abc.abstractmethod
+    def MetabaseSyncTrigger(
+        self,
+        request: gaius_service_pb2.MetabaseSyncRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.MetabaseSyncResponse, collections.abc.Awaitable[gaius_service_pb2.MetabaseSyncResponse]]:
+        """Manual sync trigger"""
+
+    @abc.abstractmethod
+    def MetaAgentAuditTrigger(
+        self,
+        request: gaius_service_pb2.MetaAgentAuditRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.MetaAgentAuditResponse, collections.abc.Awaitable[gaius_service_pb2.MetaAgentAuditResponse]]:
+        """Manual audit trigger"""
+
+    @abc.abstractmethod
+    def GetPooledBudget(
+        self,
+        request: gaius_service_pb2.GetPooledBudgetRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.GetPooledBudgetResponse, collections.abc.Awaitable[gaius_service_pb2.GetPooledBudgetResponse]]:
+        """Budget status"""
+
+    @abc.abstractmethod
+    def GetQualitySummary(
+        self,
+        request: gaius_service_pb2.GetQualitySummaryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.GetQualitySummaryResponse, collections.abc.Awaitable[gaius_service_pb2.GetQualitySummaryResponse]]:
+        """Quality metrics"""
+
+    @abc.abstractmethod
+    def ListRecommendations(
+        self,
+        request: gaius_service_pb2.ListRecommendationsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ListRecommendationsResponse, collections.abc.Awaitable[gaius_service_pb2.ListRecommendationsResponse]]:
+        """Audit recommendations"""
+
+    @abc.abstractmethod
+    def UpdateRecommendation(
+        self,
+        request: gaius_service_pb2.UpdateRecommendationRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.UpdateRecommendationResponse, collections.abc.Awaitable[gaius_service_pb2.UpdateRecommendationResponse]]:
+        """Update rec status"""
 
     @abc.abstractmethod
     def CLTExtract(

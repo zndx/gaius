@@ -349,6 +349,41 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.MetaAgentEvent.FromString,
                 _registered_method=True)
+        self.MetaAgentStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetaAgentStatus',
+                request_serializer=gaius__service__pb2.MetaAgentStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentStatusResponse.FromString,
+                _registered_method=True)
+        self.MetabaseSyncTrigger = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetabaseSyncTrigger',
+                request_serializer=gaius__service__pb2.MetabaseSyncRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetabaseSyncResponse.FromString,
+                _registered_method=True)
+        self.MetaAgentAuditTrigger = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetaAgentAuditTrigger',
+                request_serializer=gaius__service__pb2.MetaAgentAuditRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentAuditResponse.FromString,
+                _registered_method=True)
+        self.GetPooledBudget = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetPooledBudget',
+                request_serializer=gaius__service__pb2.GetPooledBudgetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetPooledBudgetResponse.FromString,
+                _registered_method=True)
+        self.GetQualitySummary = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetQualitySummary',
+                request_serializer=gaius__service__pb2.GetQualitySummaryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetQualitySummaryResponse.FromString,
+                _registered_method=True)
+        self.ListRecommendations = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListRecommendations',
+                request_serializer=gaius__service__pb2.ListRecommendationsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListRecommendationsResponse.FromString,
+                _registered_method=True)
+        self.UpdateRecommendation = channel.unary_unary(
+                '/gaius.engine.GaiusService/UpdateRecommendation',
+                request_serializer=gaius__service__pb2.UpdateRecommendationRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.UpdateRecommendationResponse.FromString,
+                _registered_method=True)
         self.CLTExtract = channel.unary_unary(
                 '/gaius.engine.GaiusService/CLTExtract',
                 request_serializer=gaius__service__pb2.CLTExtractRequest.SerializeToString,
@@ -1007,6 +1042,56 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MetaAgentStatus(self, request, context):
+        """MetaAgent Service (Metabase Sync & Weekly Audit)
+        Daemon status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetabaseSyncTrigger(self, request, context):
+        """Manual sync trigger
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetaAgentAuditTrigger(self, request, context):
+        """Manual audit trigger
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPooledBudget(self, request, context):
+        """Budget status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetQualitySummary(self, request, context):
+        """Quality metrics
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListRecommendations(self, request, context):
+        """Audit recommendations
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateRecommendation(self, request, context):
+        """Update rec status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CLTExtract(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         CLT (Cross-Layer Transcoders)
@@ -1612,6 +1697,41 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.MetaAgentQueryStream,
                     request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
                     response_serializer=gaius__service__pb2.MetaAgentEvent.SerializeToString,
+            ),
+            'MetaAgentStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetaAgentStatus,
+                    request_deserializer=gaius__service__pb2.MetaAgentStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentStatusResponse.SerializeToString,
+            ),
+            'MetabaseSyncTrigger': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetabaseSyncTrigger,
+                    request_deserializer=gaius__service__pb2.MetabaseSyncRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetabaseSyncResponse.SerializeToString,
+            ),
+            'MetaAgentAuditTrigger': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetaAgentAuditTrigger,
+                    request_deserializer=gaius__service__pb2.MetaAgentAuditRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentAuditResponse.SerializeToString,
+            ),
+            'GetPooledBudget': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPooledBudget,
+                    request_deserializer=gaius__service__pb2.GetPooledBudgetRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetPooledBudgetResponse.SerializeToString,
+            ),
+            'GetQualitySummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetQualitySummary,
+                    request_deserializer=gaius__service__pb2.GetQualitySummaryRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetQualitySummaryResponse.SerializeToString,
+            ),
+            'ListRecommendations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListRecommendations,
+                    request_deserializer=gaius__service__pb2.ListRecommendationsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListRecommendationsResponse.SerializeToString,
+            ),
+            'UpdateRecommendation': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateRecommendation,
+                    request_deserializer=gaius__service__pb2.UpdateRecommendationRequest.FromString,
+                    response_serializer=gaius__service__pb2.UpdateRecommendationResponse.SerializeToString,
             ),
             'CLTExtract': grpc.unary_unary_rpc_method_handler(
                     servicer.CLTExtract,
@@ -3502,6 +3622,195 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/MetaAgentQueryStream',
             gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
             gaius__service__pb2.MetaAgentEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentStatus',
+            gaius__service__pb2.MetaAgentStatusRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetabaseSyncTrigger(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetabaseSyncTrigger',
+            gaius__service__pb2.MetabaseSyncRequest.SerializeToString,
+            gaius__service__pb2.MetabaseSyncResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentAuditTrigger(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentAuditTrigger',
+            gaius__service__pb2.MetaAgentAuditRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentAuditResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPooledBudget(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetPooledBudget',
+            gaius__service__pb2.GetPooledBudgetRequest.SerializeToString,
+            gaius__service__pb2.GetPooledBudgetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetQualitySummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetQualitySummary',
+            gaius__service__pb2.GetQualitySummaryRequest.SerializeToString,
+            gaius__service__pb2.GetQualitySummaryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListRecommendations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListRecommendations',
+            gaius__service__pb2.ListRecommendationsRequest.SerializeToString,
+            gaius__service__pb2.ListRecommendationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateRecommendation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/UpdateRecommendation',
+            gaius__service__pb2.UpdateRecommendationRequest.SerializeToString,
+            gaius__service__pb2.UpdateRecommendationResponse.FromString,
             options,
             channel_credentials,
             insecure,

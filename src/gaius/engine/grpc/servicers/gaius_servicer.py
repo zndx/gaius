@@ -154,10 +154,29 @@ from ...generated import (
     DatasetLineageResponse,
     LineageNode,
     LineageEdge,
-    # MetaAgent
+    # MetaAgent (Analytics Query)
     MetaAgentQueryRequest,
     MetaAgentQueryResponse,
     MetaAgentEvent,
+    # MetaAgent Service (Sync, Audit, Budget)
+    MetaAgentStatusRequest,
+    MetaAgentStatusResponse,
+    MetabaseSyncRequest,
+    MetabaseSyncResponse,
+    MetaAgentAuditRequest,
+    MetaAgentAuditResponse,
+    AuditFinding,
+    AuditRecommendation,
+    PooledBudgetStatus,
+    GetPooledBudgetRequest,
+    GetPooledBudgetResponse,
+    QualityAssessment,
+    GetQualitySummaryRequest,
+    GetQualitySummaryResponse,
+    ListRecommendationsRequest,
+    ListRecommendationsResponse,
+    UpdateRecommendationRequest,
+    UpdateRecommendationResponse,
     # ThetaAgent
     ThetaSitrepRequest,
     ThetaSitrepResponse,
@@ -6675,4 +6694,183 @@ class GaiusServicer(GaiusServiceServicer):
                 success=False,
                 message="",
                 error=result.get("error", "Unknown error"),
+            )
+
+    # =========================================================================
+    # MetaAgent Service (Sync, Audit, Budget)
+    # =========================================================================
+
+    async def MetaAgentStatus(
+        self,
+        request: MetaAgentStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetaAgentStatusResponse:
+        """Get MetaAgent service status including sync and budget info."""
+        service = self._services.metaagent_service
+        if service is None:
+            return MetaAgentStatusResponse(
+                running=False,
+                metabase_connected=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            status = await service.get_status()
+            return status
+        except Exception as e:
+            logger.error(f"MetaAgentStatus error: {e}")
+            return MetaAgentStatusResponse(
+                running=False,
+                metabase_connected=False,
+                error=str(e),
+            )
+
+    async def MetabaseSyncTrigger(
+        self,
+        request: MetabaseSyncRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetabaseSyncResponse:
+        """Trigger Metabase model sync."""
+        service = self._services.metaagent_service
+        if service is None:
+            return MetabaseSyncResponse(
+                success=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.trigger_sync(full_refresh=request.full_refresh)
+            return result
+        except Exception as e:
+            logger.error(f"MetabaseSyncTrigger error: {e}")
+            return MetabaseSyncResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def MetaAgentAuditTrigger(
+        self,
+        request: MetaAgentAuditRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetaAgentAuditResponse:
+        """Trigger a MetaAgent audit with optional remote LLM."""
+        service = self._services.metaagent_service
+        if service is None:
+            return MetaAgentAuditResponse(
+                success=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.trigger_audit(
+                scope=request.scope or "full",
+                use_remote_llm=request.use_remote_llm,
+            )
+            return result
+        except Exception as e:
+            logger.error(f"MetaAgentAuditTrigger error: {e}")
+            return MetaAgentAuditResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def GetPooledBudget(
+        self,
+        request: GetPooledBudgetRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetPooledBudgetResponse:
+        """Get current pooled budget status."""
+        service = self._services.metaagent_service
+        if service is None:
+            return GetPooledBudgetResponse(
+                budget=PooledBudgetStatus(
+                    weekly_limit=0,
+                    weekly_used=0,
+                    weekly_remaining=0,
+                    budget_health="unknown",
+                ),
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            budget_status = await service.budget_manager.get_status()
+            return GetPooledBudgetResponse(budget=budget_status, error="")
+        except Exception as e:
+            logger.error(f"GetPooledBudget error: {e}")
+            return GetPooledBudgetResponse(
+                budget=PooledBudgetStatus(
+                    weekly_limit=0,
+                    weekly_used=0,
+                    weekly_remaining=0,
+                    budget_health="error",
+                ),
+                error=str(e),
+            )
+
+    async def GetQualitySummary(
+        self,
+        request: GetQualitySummaryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetQualitySummaryResponse:
+        """Get quality assessment summary by source type."""
+        service = self._services.metaagent_service
+        if service is None:
+            return GetQualitySummaryResponse(error="MetaAgent service not initialized")
+
+        try:
+            summary = await service.get_quality_summary(
+                source_type=request.source_type if request.source_type else None,
+            )
+            return summary
+        except Exception as e:
+            logger.error(f"GetQualitySummary error: {e}")
+            return GetQualitySummaryResponse(error=str(e))
+
+    async def ListRecommendations(
+        self,
+        request: ListRecommendationsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ListRecommendationsResponse:
+        """List audit recommendations with optional filters."""
+        service = self._services.metaagent_service
+        if service is None:
+            return ListRecommendationsResponse(
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.list_recommendations(
+                status_filter=request.status_filter if request.status_filter else None,
+                severity_filter=request.severity_filter if request.severity_filter else None,
+                limit=request.limit if request.limit > 0 else 20,
+            )
+            return result
+        except Exception as e:
+            logger.error(f"ListRecommendations error: {e}")
+            return ListRecommendationsResponse(error=str(e))
+
+    async def UpdateRecommendation(
+        self,
+        request: UpdateRecommendationRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> UpdateRecommendationResponse:
+        """Update a recommendation status (accept/reject/implement/verify)."""
+        service = self._services.metaagent_service
+        if service is None:
+            return UpdateRecommendationResponse(
+                success=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.update_recommendation(
+                recommendation_id=request.recommendation_id,
+                new_status=request.new_status,
+            )
+            return result
+        except Exception as e:
+            logger.error(f"UpdateRecommendation error: {e}")
+            return UpdateRecommendationResponse(
+                success=False,
+                error=str(e),
             )
