@@ -150,6 +150,11 @@ class XBookmarksConfig:
     queue_poll_interval_s: int = 900  # 15 minutes for Free tier rate limit
     sync_batch_size: int = 100  # Max bookmarks per page
     kb_root: str = "build/dev"
+    # Rate limit settings for Basic tier ($200/mo): 10 requests per 15 min
+    rate_limit_requests: int = 10
+    rate_limit_window_s: int = 900  # 15 minutes
+    # How many folders to sync per rate-limit window (leave margin for tweets lookup)
+    folders_per_window: int = 3  # Conservative: 3 folders + tweet lookups per window
 
     @classmethod
     def from_hocon(cls, config: dict[str, Any]) -> "XBookmarksConfig":
@@ -159,6 +164,9 @@ class XBookmarksConfig:
             queue_poll_interval_s=x_config.get("poll_interval_s", 900),
             sync_batch_size=x_config.get("batch_size", 100),
             kb_root=config.get("gaius", {}).get("kb", {}).get("root", "build/dev"),
+            rate_limit_requests=x_config.get("rate_limit_requests", 10),
+            rate_limit_window_s=x_config.get("rate_limit_window_s", 900),
+            folders_per_window=x_config.get("folders_per_window", 3),
         )
 
 
@@ -199,6 +207,8 @@ class XBookmarksService:
         # Background task state
         self._running = False
         self._queue_task: asyncio.Task | None = None
+        self._listen_task: asyncio.Task | None = None
+        self._listen_conn: asyncpg.Connection | None = None
 
         # Stats
         self._total_syncs = 0
@@ -290,16 +300,17 @@ class XBookmarksService:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Start the background queue processor."""
+        """Start the background queue processor and pg_notify listener."""
         if self._running:
             return
 
         self._running = True
         self._queue_task = asyncio.create_task(self._queue_processor_loop())
+        self._listen_task = asyncio.create_task(self._auto_sync_listener_loop())
         logger.info("XBookmarksService started")
 
     async def stop(self) -> None:
-        """Stop the background queue processor."""
+        """Stop the background queue processor and pg_notify listener."""
         if not self._running:
             return
 
@@ -310,6 +321,17 @@ class XBookmarksService:
                 await self._queue_task
             except asyncio.CancelledError:
                 pass
+
+        if self._listen_task:
+            self._listen_task.cancel()
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._listen_conn:
+            await self._listen_conn.close()
+            self._listen_conn = None
 
         logger.info("XBookmarksService stopped")
 
@@ -603,20 +625,27 @@ class XBookmarksService:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def trigger_sync(
-        self, user_id: str | None = None, force: bool = False
+        self, user_id: str | None = None, force: bool = False, full_sync: bool = False
     ) -> XSyncRun:
-        """Trigger a bookmark sync using folder-first approach.
+        """Trigger a bookmark sync using folder-first approach with rate limiting.
 
-        Only syncs bookmarks that are in folders. Unfiled bookmarks are skipped.
-        If folders endpoint is not available, raises XBookmarksError with
-        guru code #XB.00000011.NOFOLDER.
+        Implements incremental sync to respect X API rate limits:
+        - Basic tier: 10 requests per 15 minutes
+        - Syncs a limited number of folders per invocation
+        - Tracks which folders have been synced via last_sync_at
+        - Returns partial progress so client can poll for completion
 
         Args:
             user_id: Specific user, or None for any configured user.
             force: Force sync even if rate limited.
+            full_sync: If True, reset folder sync state and re-sync all.
 
         Returns:
-            XSyncRun with sync results.
+            XSyncRun with sync results. Status will be:
+            - "partial": Some folders synced, more remain (call again)
+            - "completed": All folders synced
+            - "queued": Rate limited, queued for later
+            - "failed": Error occurred
 
         Raises:
             XBookmarksError: If folders endpoint unavailable (fail-fast).
@@ -626,26 +655,35 @@ class XBookmarksService:
         tokens = await ensure_valid_token(self._pool, user_id)
         user_id = tokens.user_id
 
-        # Check rate limit (unless force)
-        if not force:
-            can_proceed = await self._check_rate_limit(user_id)
-            if not can_proceed:
-                # Queue the request instead
-                run_id = await self._start_sync_run(user_id)
-                await self._queue_request(user_id, run_id)
-                return XSyncRun(
-                    run_id=run_id,
-                    user_id=user_id,
-                    status="queued",
-                    started_at=datetime.now(timezone.utc),
-                )
-
         # Start sync run
         run_id = await self._start_sync_run(user_id)
 
         try:
-            # Step 1: Fetch folders (fail-fast if unavailable)
-            folders = await self._fetch_folders(user_id, tokens.access_token)
+            # Step 1: Fetch/refresh folder list (or use cached if rate limited)
+            folders = None
+            folders_from_cache = False
+            try:
+                folders = await self._fetch_folders(user_id, tokens.access_token)
+                # Step 2: Store folder metadata
+                await self._store_folders(user_id, folders)
+            except XBookmarksError as e:
+                if "429" in str(e):
+                    # Rate limited on folder fetch - try to use cached folders
+                    logger.warning("Rate limited on folder fetch, using cached folders")
+                    cached = await self._get_cached_folders(user_id)
+                    if cached:
+                        folders = cached
+                        folders_from_cache = True
+                        logger.info(f"Using {len(folders)} cached folders")
+                    else:
+                        # No cached folders - we need to wait for rate limit
+                        raise XBookmarksError(
+                            "Rate limited and no cached folders available. "
+                            "Wait 15 minutes for rate limit to reset.",
+                            guru_code="#XB.00000014.RATELIMIT",
+                        )
+                else:
+                    raise
 
             if not folders:
                 logger.info("No bookmark folders found - nothing to sync")
@@ -667,39 +705,107 @@ class XBookmarksService:
                     completed_at=datetime.now(timezone.utc),
                 )
 
-            # Step 2: Store folder metadata
-            await self._store_folders(user_id, folders)
+            # Step 3: Get folders needing sync (oldest first, or all if full_sync)
+            folders_to_sync = await self._get_folders_needing_sync(
+                user_id, limit=self._config.folders_per_window, full_sync=full_sync
+            )
+            logger.info(f"Folders to sync: {len(folders_to_sync)} (full_sync={full_sync})")
 
-            # Step 3: Fetch and store bookmarks per folder
-            total_fetched = 0
-            total_new = 0
-
-            for folder in folders:
-                bookmarks = await self._fetch_bookmarks_in_folder(
-                    user_id, folder["id"], folder["name"], tokens.access_token
+            if not folders_to_sync:
+                # All folders are already synced
+                logger.info("All folders already synced")
+                await self._complete_sync_run(
+                    run_id,
+                    status="completed",
+                    bookmarks_fetched=0,
+                    bookmarks_new=0,
+                    folders_synced=0,
+                )
+                return XSyncRun(
+                    run_id=run_id,
+                    user_id=user_id,
+                    status="completed",
+                    bookmarks_fetched=0,
+                    bookmarks_new=0,
+                    folders_synced=0,
+                    started_at=datetime.now(timezone.utc),
+                    completed_at=datetime.now(timezone.utc),
+                    action_required=None,
+                    guidance_message="All folders are up to date",
                 )
 
-                new_count = await self._store_bookmarks(user_id, bookmarks)
-                total_fetched += len(bookmarks)
-                total_new += new_count
+            # Step 4: Sync limited folders (rate-limited batch)
+            total_fetched = 0
+            total_new = 0
+            synced_folders = 0
+            logger.info(f"Starting sync loop for {len(folders_to_sync)} folders")
 
-                # Write folder manifest to KB
-                await self._write_folder_manifest_to_kb(folder["name"], bookmarks)
+            for folder_id, folder_name in folders_to_sync:
+                logger.info(f"Syncing folder '{folder_name}' ({folder_id})")
+                try:
+                    bookmarks = await self._fetch_bookmarks_in_folder(
+                        user_id, folder_id, folder_name, tokens.access_token
+                    )
+
+                    new_count = await self._store_bookmarks(user_id, bookmarks)
+                    total_fetched += len(bookmarks)
+                    total_new += new_count
+                    synced_folders += 1
+
+                    # Mark folder as synced
+                    await self._mark_folder_synced(folder_id)
+
+                    # Write folder manifest to KB
+                    await self._write_folder_manifest_to_kb(folder_name, bookmarks)
+
+                    logger.info(
+                        f"Synced folder '{folder_name}': "
+                        f"{len(bookmarks)} bookmarks, {new_count} new"
+                    )
+
+                except XBookmarksError as e:
+                    if "#XB.00000013.BOOKMARKFAIL" in str(e) and "429" in str(e):
+                        # Rate limited mid-sync - stop and report partial progress
+                        logger.warning(f"Rate limited during sync of '{folder_name}'")
+                        break
+                    raise
+
+            # Check if more folders remain
+            remaining_folders = await self._get_folders_needing_sync(
+                user_id, limit=1, full_sync=False
+            )
+            is_partial = len(remaining_folders) > 0
+            status = "partial" if is_partial else "completed"
+
+            # Calculate timing for next batch
+            if is_partial:
+                wait_time_min = self._config.rate_limit_window_s // 60
+                total_remaining = await self._count_folders_needing_sync(user_id)
+                batches_needed = (total_remaining + self._config.folders_per_window - 1) // self._config.folders_per_window
+                estimated_time_min = batches_needed * wait_time_min
+                guidance = (
+                    f"Synced {synced_folders} folders. {total_remaining} folders remaining. "
+                    f"Run /xb sync again in {wait_time_min} minutes, or wait ~{estimated_time_min} min for full sync."
+                )
+                action = "PARTIAL_SYNC"
+            else:
+                guidance = f"All {len(folders)} folders synced successfully."
+                action = None
 
             # Complete sync run
             await self._complete_sync_run(
                 run_id,
-                status="completed",
+                status=status,
                 bookmarks_fetched=total_fetched,
                 bookmarks_new=total_new,
-                folders_synced=len(folders),
+                folders_synced=synced_folders,
             )
             self._total_syncs += 1
             self._total_bookmarks += total_new
             self._last_sync_at = datetime.now(timezone.utc)
 
             logger.info(
-                f"Sync completed: {len(folders)} folders, "
+                f"Sync {status}: {synced_folders}/{len(folders)} folders, "
                 f"{total_fetched} bookmarks fetched, {total_new} new"
             )
 
@@ -719,17 +825,29 @@ class XBookmarksService:
             except Exception as e:
                 logger.warning(f"Work queue population failed (non-fatal): {e}")
 
+            # Start auto-sync if partial (pg_cron will continue)
+            if is_partial:
+                try:
+                    total_folder_count = len(folders) if folders else 0
+                    await self._start_auto_sync(user_id, total_folder_count)
+                    guidance += " Auto-sync scheduled to continue every 16 minutes."
+                    logger.info(f"Started auto-sync for user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to start auto-sync: {e}")
+
             return XSyncRun(
                 run_id=run_id,
                 user_id=user_id,
-                status="completed",
+                status=status,
                 bookmarks_fetched=total_fetched,
                 bookmarks_new=total_new,
-                folders_synced=len(folders),
+                folders_synced=synced_folders,
                 iceberg_written=iceberg_written,
                 queue_items=queue_items,
                 started_at=datetime.now(timezone.utc),
                 completed_at=datetime.now(timezone.utc),
+                action_required=action,
+                guidance_message=guidance,
             )
 
         except (XOAuthError, XBookmarksError) as e:
@@ -739,6 +857,234 @@ class XBookmarksService:
                 error_message=str(e),
             )
             raise
+
+    async def _get_folders_needing_sync(
+        self, user_id: str, limit: int, full_sync: bool
+    ) -> list[tuple[str, str]]:
+        """Get folders that need syncing, oldest first.
+
+        Args:
+            user_id: X user ID.
+            limit: Max folders to return.
+            full_sync: If True, return all folders regardless of last_sync_at.
+
+        Returns:
+            List of (folder_id, folder_name) tuples.
+        """
+        async with self._pool.acquire() as conn:
+            if full_sync:
+                # Return all folders
+                rows = await conn.fetch(
+                    """
+                    SELECT x_folder_id, name FROM x_bookmark_folders
+                    WHERE user_id = $1
+                    ORDER BY name
+                    LIMIT $2
+                    """,
+                    user_id,
+                    limit,
+                )
+            else:
+                # Return folders never synced or synced more than 24h ago
+                rows = await conn.fetch(
+                    """
+                    SELECT x_folder_id, name FROM x_bookmark_folders
+                    WHERE user_id = $1
+                    AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '24 hours')
+                    ORDER BY last_sync_at NULLS FIRST, name
+                    LIMIT $2
+                    """,
+                    user_id,
+                    limit,
+                )
+            return [(row["x_folder_id"], row["name"]) for row in rows]
+
+    async def _count_folders_needing_sync(self, user_id: str) -> int:
+        """Count folders that still need syncing."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM x_bookmark_folders
+                WHERE user_id = $1
+                AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '24 hours')
+                """,
+                user_id,
+            ) or 0
+
+    async def _mark_folder_synced(self, folder_id: str) -> None:
+        """Mark a folder as synced."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE x_bookmark_folders
+                SET last_sync_at = NOW()
+                WHERE x_folder_id = $1
+                """,
+                folder_id,
+            )
+
+    async def _get_cached_folders(self, user_id: str) -> list[dict]:
+        """Get folders from database cache.
+
+        Used as fallback when rate limited on folder fetch.
+
+        Returns:
+            List of {id: str, name: str} dicts matching _fetch_folders format.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT x_folder_id, name FROM x_bookmark_folders
+                WHERE user_id = $1
+                ORDER BY name
+                """,
+                user_id,
+            )
+            return [{"id": row["x_folder_id"], "name": row["name"]} for row in rows]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Auto-Sync (pg_cron driven background continuation)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _start_auto_sync(
+        self, user_id: str, folders_total: int, interval_minutes: int = 16
+    ) -> bool:
+        """Start auto-sync schedule for background continuation.
+
+        Called when trigger_sync returns partial status. pg_cron will then
+        call x_trigger_due_auto_syncs() every 5 minutes to check if any
+        schedules are due, and send pg_notify to the engine.
+
+        Args:
+            user_id: X user ID.
+            folders_total: Total number of folders to sync.
+            interval_minutes: Minutes between sync iterations (default 16 = 15min rate limit + 1min buffer).
+
+        Returns:
+            True if schedule was created/updated.
+        """
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT x_start_auto_sync($1, $2, $3)",
+                user_id,
+                folders_total,
+                interval_minutes,
+            )
+
+    async def _update_auto_sync_progress(
+        self, user_id: str, folders_synced: int, folders_remaining: int, error: str | None = None
+    ) -> bool:
+        """Update auto-sync progress after a sync iteration.
+
+        Called by the auto-sync handler after each iteration.
+
+        Args:
+            user_id: X user ID.
+            folders_synced: Folders synced in this batch.
+            folders_remaining: Folders still needing sync.
+            error: Error message if any.
+
+        Returns:
+            True if progress was updated.
+        """
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT x_update_auto_sync_progress($1, $2, $3, $4)",
+                user_id,
+                folders_synced,
+                folders_remaining,
+                error,
+            )
+
+    async def _stop_auto_sync(self, user_id: str, reason: str = "manual") -> bool:
+        """Stop auto-sync for a user.
+
+        Args:
+            user_id: X user ID.
+            reason: Reason for stopping (manual, completed, max_iterations, error).
+
+        Returns:
+            True if schedule was stopped.
+        """
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT x_stop_auto_sync($1, $2)",
+                user_id,
+                reason,
+            )
+
+    async def get_auto_sync_status(self, user_id: str) -> dict[str, Any] | None:
+        """Get auto-sync status for a user.
+
+        Args:
+            user_id: X user ID.
+
+        Returns:
+            Status dict or None if no auto-sync scheduled.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM x_get_auto_sync_status($1)",
+                user_id,
+            )
+            if not row:
+                return None
+            return {
+                "active": row["active"],
+                "folders_total": row["folders_total"],
+                "folders_synced": row["folders_synced"],
+                "folders_remaining": row["folders_remaining"],
+                "iterations": row["iterations"],
+                "max_iterations": row["max_iterations"],
+                "next_run_at": row["next_run_at"].isoformat() if row["next_run_at"] else None,
+                "estimated_completion": row["estimated_completion"].isoformat() if row["estimated_completion"] else None,
+            }
+
+    async def continue_auto_sync(self, user_id: str) -> XSyncRun | None:
+        """Continue auto-sync for a user (called by pg_notify handler).
+
+        This is the entry point for background continuation. It:
+        1. Runs trigger_sync(force=False, full_sync=False) to sync next batch
+        2. Updates auto-sync progress
+        3. Stops auto-sync if complete or on error
+
+        Args:
+            user_id: X user ID from pg_notify payload.
+
+        Returns:
+            XSyncRun result or None if auto-sync not active.
+        """
+        try:
+            # Check if auto-sync is still active
+            status = await self.get_auto_sync_status(user_id)
+            if not status or not status["active"]:
+                logger.info(f"Auto-sync not active for user {user_id}")
+                return None
+
+            logger.info(
+                f"Continuing auto-sync for {user_id}: "
+                f"iteration {status['iterations'] + 1}, "
+                f"{status['folders_remaining']} folders remaining"
+            )
+
+            # Run sync
+            run = await self.trigger_sync(user_id=user_id, force=False, full_sync=False)
+
+            # Update progress
+            folders_remaining = await self._count_folders_needing_sync(user_id)
+            await self._update_auto_sync_progress(
+                user_id,
+                folders_synced=run.folders_synced,
+                folders_remaining=folders_remaining,
+                error=run.error_message,
+            )
+
+            return run
+
+        except Exception as e:
+            logger.error(f"Auto-sync continuation failed for {user_id}: {e}")
+            await self._stop_auto_sync(user_id, f"error: {e}")
+            return None
 
     async def get_sync_status(self, user_id: str | None = None) -> dict[str, Any]:
         """Get sync status for a user.
@@ -1702,6 +2048,89 @@ class XBookmarksService:
             else:
                 # Slow poll when no auth pending
                 await asyncio.sleep(no_auth_check_interval)
+
+    async def _auto_sync_listener_loop(self) -> None:
+        """Background loop to listen for pg_notify auto-sync triggers.
+
+        pg_cron runs every 5 minutes and calls x_trigger_due_auto_syncs(),
+        which sends pg_notify('x_auto_sync_due', ...) for each user with
+        a due auto-sync schedule.
+
+        This loop listens on that channel and calls continue_auto_sync()
+        for each notification.
+        """
+        import os
+
+        # Get database connection parameters from pool (or environment)
+        # We need a dedicated connection for LISTEN
+        dsn = os.environ.get(
+            "DATABASE_URL",
+            "postgresql://gaius:gaius@localhost:5432/zndx_gaius"
+        )
+
+        logger.info("Starting auto-sync listener for 'x_auto_sync_due' channel")
+
+        while self._running:
+            try:
+                # Create a dedicated connection for LISTEN
+                self._listen_conn = await asyncpg.connect(dsn)
+
+                # Set up the listener callback
+                async def handle_notification(
+                    conn: asyncpg.Connection,
+                    pid: int,
+                    channel: str,
+                    payload: str,
+                ) -> None:
+                    """Handle incoming pg_notify for auto-sync."""
+                    try:
+                        data = json.loads(payload)
+                        user_id = data.get("user_id")
+                        iteration = data.get("iteration", 0)
+                        folders_remaining = data.get("folders_remaining", 0)
+
+                        logger.info(
+                            f"Auto-sync notification received: user={user_id}, "
+                            f"iteration={iteration}, remaining={folders_remaining}"
+                        )
+
+                        # Run the sync continuation
+                        await self.continue_auto_sync(user_id)
+
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Invalid auto-sync payload: {payload} - {e}")
+                    except Exception as e:
+                        logger.error(f"Auto-sync handler error: {e}", exc_info=True)
+
+                # Register listener
+                await self._listen_conn.add_listener("x_auto_sync_due", handle_notification)
+                logger.info("Auto-sync listener registered on 'x_auto_sync_due' channel")
+
+                # Keep connection alive - asyncpg handles reconnection internally
+                while self._running and not self._listen_conn.is_closed():
+                    # Ping every 30 seconds to keep connection alive
+                    try:
+                        await self._listen_conn.execute("SELECT 1")
+                    except Exception:
+                        break
+                    await asyncio.sleep(30)
+
+            except asyncio.CancelledError:
+                logger.info("Auto-sync listener cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Auto-sync listener error: {e}")
+                # Wait before reconnecting
+                await asyncio.sleep(10)
+            finally:
+                if self._listen_conn and not self._listen_conn.is_closed():
+                    try:
+                        await self._listen_conn.close()
+                    except Exception:
+                        pass
+                self._listen_conn = None
+
+        logger.info("Auto-sync listener stopped")
 
     async def _process_queue(self) -> None:
         """Process next queued request if rate limit allows."""

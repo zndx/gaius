@@ -2170,6 +2170,7 @@ dependencies = [
     { name = "hf-mem" },
     { name = "kaleido" },
     { name = "math-verify" },
+    { name = "metabase-api" },
     { name = "metaflow" },
     { name = "minio" },
     { name = "nvidia-ml-py" },
@@ -2395,6 +2396,7 @@ requires-dist = [
     { name = "lxml", marker = "extra == 'workers'", specifier = ">=5.0.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
+    { name = "metabase-api", specifier = ">=3.5.2" },
     { name = "metaflow", specifier = ">=2.12.0" },
     { name = "minio", specifier = ">=7.2.0" },
     { name = "networkx", marker = "extra == 'tda'", specifier = ">=3.0" },
@@ -4146,6 +4148,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "metabase-api"
+version = "3.5.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/d6/47552fe1d35baf09fc6bfdbc7631bc9fff9915bedf5e18bd978908eead9c/metabase-api-3.5.2.tar.gz", hash = "sha256:56c1f4aafdbc4f8a79f883fe83debd1f6ec51e281df8149c35dbab558d3b5fbd", size = 28296, upload-time = "2025-07-27T20:33:20.291Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/e8/518503cd61e3a2032b9db041103042a18f82a6acc42f81500f10e6d0bf76/metabase_api-3.5.2-py3-none-any.whl", hash = "sha256:dac88386460cd256d05b22b075f3c62550bf6c3b90cbc769a05319c739fd20a3", size = 32900, upload-time = "2025-07-27T20:33:19.349Z" },
 ]
 
 [[package]]

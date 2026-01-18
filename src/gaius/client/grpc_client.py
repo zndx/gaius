@@ -969,6 +969,34 @@ class GrpcEngineClient:
             )
             return MessageToDict(response, preserving_proto_field_name=True)
 
+        elif action == "phase_change":
+            # Phase Change Pattern: Resilient dynamic workload coordination
+            from ..engine.generated import PhaseChangeRequest
+            response = await self._stub.PhaseChange(
+                PhaseChangeRequest(
+                    change_type=params.get("change_type", ""),
+                    target_endpoint=params.get("target_endpoint", ""),
+                    await_healthy=params.get("await_healthy", True),
+                    timeout_s=params.get("timeout_s", 120.0),
+                ),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "phase_change_profiles":
+            response = await self._stub.GetPhaseChangeProfiles(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "active_phase_changes":
+            response = await self._stub.GetActivePhaseChanges(
+                empty_pb2.Empty(),
+                timeout=timeout,
+            )
+            return MessageToDict(response, preserving_proto_field_name=True)
+
         else:
             raise ValueError(f"Unknown Orchestrator action: {action}")
 

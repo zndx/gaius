@@ -43,6 +43,13 @@ from ...generated import (
     CleanStartRequest,
     CleanStartResponse,
     EndpointResponse,
+    # Phase Change Pattern
+    PhaseChangeRequest,
+    PhaseChangeResponse,
+    PhaseChangeProfile,
+    PhaseChangeProfilesResponse,
+    ActivePhaseChange,
+    ActivePhaseChangesResponse,
     # Scheduler
     CompleteRequest,
     CompleteResponse,
@@ -578,6 +585,119 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.error(f"Failed to clean start: {e}")
             return CleanStartResponse(success=False, message=str(e))
+
+    # =========================================================================
+    # Phase Change Pattern - Resilient Dynamic Workload Coordination
+    # =========================================================================
+
+    async def PhaseChange(
+        self,
+        request: PhaseChangeRequest,
+        context: aio.ServicerContext,
+    ) -> PhaseChangeResponse:
+        """Execute a phase change with convergence waiting.
+
+        Waits for the target endpoint to reach HEALTHY status before returning.
+        Accumulates timing statistics for future decision support.
+        """
+        orchestrator = self._services.orchestrator_service
+
+        if not orchestrator:
+            return PhaseChangeResponse(
+                converged=False,
+                status="failed",
+                error_message="OrchestratorService not initialized",
+            )
+
+        try:
+            result = await orchestrator.phase_change(
+                change_type=request.change_type,
+                target_endpoint=request.target_endpoint,
+                await_healthy=request.await_healthy,
+                timeout_s=request.timeout_s if request.timeout_s > 0 else 120.0,
+            )
+
+            return PhaseChangeResponse(
+                converged=result.get("converged", False),
+                status=result.get("endpoint_status", "unknown"),  # orchestrator returns endpoint_status
+                duration_ms=result.get("duration_ms", 0),
+                change_type=request.change_type,
+                target_endpoint=request.target_endpoint,
+                error_message=result.get("error", ""),  # orchestrator returns error, not error_message
+                otel_trace_id=result.get("otel_trace_id", ""),
+            )
+        except Exception as e:
+            logger.error(f"Phase change failed: {e}")
+            return PhaseChangeResponse(
+                converged=False,
+                status="failed",
+                error_message=str(e),
+            )
+
+    async def GetPhaseChangeProfiles(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> PhaseChangeProfilesResponse:
+        """Get phase change timing statistics."""
+        orchestrator = self._services.orchestrator_service
+
+        if not orchestrator:
+            return PhaseChangeProfilesResponse()
+
+        try:
+            profiles_dict = orchestrator.get_phase_change_profiles()
+            profiles = []
+
+            for change_type, data in profiles_dict.items():
+                profile = PhaseChangeProfile(
+                    change_type=change_type,
+                    sample_count=data.get("sample_count", 0),
+                    total_duration_ms=data.get("total_duration_ms", 0),
+                    min_duration_ms=data.get("min_duration_ms") or 0,
+                    max_duration_ms=data.get("max_duration_ms") or 0,
+                    avg_duration_ms=data.get("avg_duration_ms") or 0.0,
+                    failures=data.get("failures", 0),
+                    failure_rate=data.get("failure_rate", 0.0),
+                    has_statistical_power=data.get("has_statistical_power", False),
+                )
+                profiles.append(profile)
+
+            return PhaseChangeProfilesResponse(profiles=profiles)
+        except Exception as e:
+            logger.error(f"Failed to get phase change profiles: {e}")
+            return PhaseChangeProfilesResponse()
+
+    async def GetActivePhaseChanges(
+        self,
+        request: empty_pb2.Empty,
+        context: aio.ServicerContext,
+    ) -> ActivePhaseChangesResponse:
+        """Get currently active phase changes."""
+        orchestrator = self._services.orchestrator_service
+
+        if not orchestrator:
+            return ActivePhaseChangesResponse()
+
+        try:
+            changes_list = orchestrator.get_active_phase_changes()
+            changes = []
+
+            for data in changes_list:
+                change = ActivePhaseChange(
+                    change_type=data.get("change_type", ""),
+                    status=data.get("status", ""),
+                    target_endpoint=data.get("target_endpoint", ""),
+                    progress_pct=data.get("progress_pct", 0),
+                    started_at=data.get("started_at", ""),
+                    otel_trace_id=data.get("otel_trace_id", ""),
+                )
+                changes.append(change)
+
+            return ActivePhaseChangesResponse(changes=changes)
+        except Exception as e:
+            logger.error(f"Failed to get active phase changes: {e}")
+            return ActivePhaseChangesResponse()
 
     # =========================================================================
     # Scheduler
@@ -4994,7 +5114,7 @@ class GaiusServicer(GaiusServiceServicer):
 
             sync_run = await service.trigger_sync(
                 user_id=request.user_id if request.user_id else None,
-                force=request.full_sync,  # full_sync maps to force
+                full_sync=request.full_sync,  # Reset sync state and re-sync all folders
             )
             return XBookmarksSyncResponse(
                 started=True,

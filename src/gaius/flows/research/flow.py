@@ -769,11 +769,13 @@ class ResearchFlow(TracedFlow, GaiusFlow):
             ) from e
 
     def _do_vector_search(self) -> list[dict]:
-        """Execute vector search and return results.
+        """Execute vector search via gRPC streaming.
+
+        NOTE: Vector search uses ColNomic embeddings on Qdrant, which doesn't
+        require vLLM endpoint coordination. Phase Change Pattern is NOT needed
+        here - it's for instruct/reasoning model transitions with GPU sharing.
 
         Event-driven: Streams progress events until COMPLETE or ERROR.
-        No timeout - ColNomic loading may take significant time.
-
         Fail-fast: Raises SearchError on failure with remediation hint.
         """
         async def do_vector():
@@ -781,7 +783,7 @@ class ResearchFlow(TracedFlow, GaiusFlow):
 
             client = await get_grpc_client()
 
-            # Event-driven streaming - no timeout, wait for COMPLETE/ERROR
+            # Execute vector search - ColNomic runs on Qdrant without vLLM
             async for event in client.stream(
                 service="Search",
                 action="semantic_stream",
@@ -790,7 +792,7 @@ class ResearchFlow(TracedFlow, GaiusFlow):
                     "limit": self.vector_limit,
                     "use_maxsim": True,
                 },
-                timeout=None,  # Event-driven: wait indefinitely for completion
+                timeout=60.0,  # Search should be fast once model is ready
             ):
                 phase = event.get("phase", "UNKNOWN")
                 message = event.get("message", "")

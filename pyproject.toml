@@ -65,6 +65,7 @@ dependencies = [
     "google-api-python-client>=2.187.0",
     "hf-mem>=0.1.1",
     "vulture>=2.14",
+    "metabase-api>=3.5.2",
 ]
 
 [project.optional-dependencies]

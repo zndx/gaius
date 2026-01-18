@@ -472,6 +472,8 @@ class ResearchWorkloadService:
                     guru_code = "#RF.00000007.FLOWFAIL"
                     error_message = f"ResearchFlow {executing.status}"
                     try:
+                        from metaflow import Flow  # type: ignore[attr-defined]
+
                         run = Flow("ResearchFlow")[executing.run.id]
                         for step in run.steps():
                             for task in step:

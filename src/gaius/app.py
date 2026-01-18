@@ -3132,6 +3132,146 @@ Use `/evolve stop` to stop orchestrated evolution.
         thought_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return thought_files
 
+    def _handle_sitrep_command(self, args: str) -> None:
+        """Handle /sitrep command for situational awareness report.
+
+        ThetaAgent synthesizes objectives, thoughts, agendas, health, and evolution
+        into a daily briefing. The single pane of glass for starting your day.
+
+        Usage:
+            /sitrep              - Today's situation report (day horizon)
+            /sitrep day          - Same as /sitrep (explicit)
+            /sitrep week         - Week view with rolling agenda synthesis
+            /sitrep quarter      - Quarterly view with strategic progress
+            /sitrep open         - Open threads and research continuity
+        """
+        import asyncio
+        from datetime import datetime
+        from pathlib import Path
+
+        from .widgets.note_editor import NoteEditor
+
+        content = self.query_one("#info-panel", InfoPanel)
+        editor = self.query_one("#note-editor", NoteEditor)
+        file_tree = self.query_one("#file-tree", FileTree)
+
+        # Parse horizon argument
+        parts = args.split() if args else []
+        horizon = parts[0].lower() if parts else "day"
+
+        # Validate horizon
+        valid_horizons = ["day", "week", "quarter", "open"]
+        if horizon not in valid_horizons:
+            content.show_file(
+                "sitrep_error.md",
+                f"# Sitrep Error\n\n"
+                f"Unknown horizon: **{horizon}**\n\n"
+                f"Valid horizons: {', '.join(valid_horizons)}\n\n"
+                f"## Usage\n\n"
+                f"- `/sitrep` - Today's situation report\n"
+                f"- `/sitrep day` - Daily tactical view\n"
+                f"- `/sitrep week` - Sprint planning view\n"
+                f"- `/sitrep quarter` - Strategic progress\n"
+                f"- `/sitrep open` - Open research threads\n"
+            )
+            return
+
+        # Show loading state in InfoPanel
+        content.show_file(
+            "sitrep.md",
+            f"# Situational Report ({horizon})\n\n*Generating report...*"
+        )
+
+        async def run_sitrep():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    raise RuntimeError(
+                        "Engine not available.\n"
+                        "  Try: devenv tasks run restart:clean"
+                    )
+
+                result = await client.call(
+                    service="Gaius",
+                    action="ThetaSitrep",
+                    params={"horizon": horizon},
+                    timeout=60.0,
+                )
+
+                if result.get("error"):
+                    content.show_file(
+                        "sitrep_error.md",
+                        f"# Sitrep Error\n\n{result.get('error')}"
+                    )
+                    return
+
+                # Get ASCII formatted report (or build fallback)
+                ascii_output = result.get("ascii_format", "")
+                if not ascii_output:
+                    # Fallback to structured display
+                    ascii_output = "\n".join([
+                        f"# Situational Report ({horizon})",
+                        "",
+                        f"**System Health:** {'Healthy' if result.get('healthy') else 'Degraded'}",
+                        f"**Status:** {result.get('status_text', 'Unknown')}",
+                        "",
+                        "## Summary",
+                        f"- GPUs: {result.get('gpu_count', 0)}",
+                        f"- Endpoints: {result.get('endpoint_count', 0)}",
+                        f"- Priorities: {result.get('priority_count', 0)}",
+                        f"- Thoughts: {result.get('thought_count', 0)}",
+                        f"- Objectives: {result.get('objective_count', 0)}",
+                        f"- Projects: {result.get('project_count', 0)}",
+                    ])
+
+                # Save to zettelkasten scratch file
+                kb_root = Path(self.config.kb.root) if hasattr(self.config.kb, "root") else Path("build/dev")
+                today = datetime.now().strftime("%Y-%m-%d")
+                timestamp = datetime.now().strftime("%H%M%S")
+                scratch_dir = kb_root / "scratch" / today
+                scratch_dir.mkdir(parents=True, exist_ok=True)
+
+                filename = f"{timestamp}_sitrep_{horizon}.md"
+                sitrep_path = scratch_dir / filename
+                sitrep_path.write_text(ascii_output)
+
+                # Show summary in InfoPanel
+                healthy = result.get("healthy", False)
+                status_icon = "[OK]" if healthy else "[!]"
+                summary_lines = [
+                    f"# Sitrep Generated ({horizon})",
+                    "",
+                    f"{status_icon} **System:** {result.get('status_text', 'Unknown')}",
+                    f"    GPUs: {result.get('gpu_count', 0)} | Endpoints: {result.get('endpoint_count', 0)}",
+                    "",
+                    f"**Counts:**",
+                    f"- Priorities: {result.get('priority_count', 0)}",
+                    f"- Thoughts: {result.get('thought_count', 0)}",
+                    f"- Objectives: {result.get('objective_count', 0)}",
+                    f"- Projects: {result.get('project_count', 0)}",
+                    "",
+                    f"*Saved to: scratch/{today}/{filename}*",
+                ]
+                content.show_file("sitrep.md", "\n".join(summary_lines))
+
+                # Open the full report in NoteEditor
+                editor.remove_class("hidden")
+                editor.open_note(str(sitrep_path))
+
+                # Refresh file tree to show new file
+                file_tree.refresh_tree()
+
+            except Exception as e:
+                content.show_file(
+                    "sitrep_error.md",
+                    f"# Sitrep Error\n\n{e}\n\n"
+                    f"Try: `devenv tasks run restart:clean`"
+                )
+
+        asyncio.create_task(run_sitrep())
+
     def _handle_health_command(self, args: str) -> None:
         """Handle /health command for comprehensive system diagnostics.
 
@@ -8604,6 +8744,9 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "health":
             # Run comprehensive health check
             self._handle_health_command(args)
+        elif command == "sitrep":
+            # Situational awareness report (ThetaAgent)
+            self._handle_sitrep_command(args)
         elif command == "ambient":
             # Ambient computing cycles
             self._handle_ambient_command(args)

@@ -283,6 +283,25 @@ def create_service_handlers(
         elif action == "gpu_health":
             return {"utilization": orchestrator_service.get_gpu_utilization()}
 
+        elif action == "phase_change":
+            # Phase Change Pattern: Resilient dynamic workload coordination
+            # Ensures endpoint is HEALTHY before proceeding
+            result = await orchestrator_service.phase_change(
+                change_type=params.get("change_type", ""),
+                target_endpoint=params.get("target_endpoint", ""),
+                await_healthy=params.get("await_healthy", True),
+                timeout_s=params.get("timeout_s", 120.0),
+            )
+            return result
+
+        elif action == "phase_change_profiles":
+            # Get accumulated phase change timing statistics
+            return orchestrator_service.get_phase_change_profiles()
+
+        elif action == "active_phase_changes":
+            # Get currently in-progress phase changes
+            return orchestrator_service.get_active_phase_changes()
+
         else:
             raise ValueError(f"Unknown orchestrator action: {action}")
 

@@ -54,6 +54,22 @@ class IncidentTransition(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     INCIDENT_TRANSITION_RECOVERING_TO_RESOLVED: _ClassVar[IncidentTransition]
     INCIDENT_TRANSITION_RECOVERING_TO_ACTIVE: _ClassVar[IncidentTransition]
 
+class PhaseChangeType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PHASE_CHANGE_UNSPECIFIED: _ClassVar[PhaseChangeType]
+    PHASE_CHANGE_COLNOMIC_LOAD: _ClassVar[PhaseChangeType]
+    PHASE_CHANGE_INSTRUCT_RESTORE: _ClassVar[PhaseChangeType]
+    PHASE_CHANGE_REASONING_LOAD: _ClassVar[PhaseChangeType]
+    PHASE_CHANGE_BASELINE_RESTORE: _ClassVar[PhaseChangeType]
+
+class PhaseChangeStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PHASE_STATUS_UNSPECIFIED: _ClassVar[PhaseChangeStatus]
+    PHASE_STATUS_PENDING: _ClassVar[PhaseChangeStatus]
+    PHASE_STATUS_IN_PROGRESS: _ClassVar[PhaseChangeStatus]
+    PHASE_STATUS_CONVERGED: _ClassVar[PhaseChangeStatus]
+    PHASE_STATUS_FAILED: _ClassVar[PhaseChangeStatus]
+
 class WorkloadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     WORKLOAD_INIT: _ClassVar[WorkloadType]
@@ -106,6 +122,16 @@ INCIDENT_TRANSITION_HEALING_TO_RECOVERING: IncidentTransition
 INCIDENT_TRANSITION_HEALING_TO_MANUAL: IncidentTransition
 INCIDENT_TRANSITION_RECOVERING_TO_RESOLVED: IncidentTransition
 INCIDENT_TRANSITION_RECOVERING_TO_ACTIVE: IncidentTransition
+PHASE_CHANGE_UNSPECIFIED: PhaseChangeType
+PHASE_CHANGE_COLNOMIC_LOAD: PhaseChangeType
+PHASE_CHANGE_INSTRUCT_RESTORE: PhaseChangeType
+PHASE_CHANGE_REASONING_LOAD: PhaseChangeType
+PHASE_CHANGE_BASELINE_RESTORE: PhaseChangeType
+PHASE_STATUS_UNSPECIFIED: PhaseChangeStatus
+PHASE_STATUS_PENDING: PhaseChangeStatus
+PHASE_STATUS_IN_PROGRESS: PhaseChangeStatus
+PHASE_STATUS_CONVERGED: PhaseChangeStatus
+PHASE_STATUS_FAILED: PhaseChangeStatus
 WORKLOAD_INIT: WorkloadType
 WORKLOAD_SWARM: WorkloadType
 WORKLOAD_INFERENCE: WorkloadType
@@ -216,6 +242,86 @@ class CleanStartResponse(_message.Message):
     processes_killed: int
     endpoints_started: int
     def __init__(self, success: bool = ..., message: _Optional[str] = ..., processes_killed: _Optional[int] = ..., endpoints_started: _Optional[int] = ...) -> None: ...
+
+class PhaseChangeRequest(_message.Message):
+    __slots__ = ("change_type", "target_endpoint", "await_healthy", "timeout_s")
+    CHANGE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    AWAIT_HEALTHY_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUT_S_FIELD_NUMBER: _ClassVar[int]
+    change_type: str
+    target_endpoint: str
+    await_healthy: bool
+    timeout_s: float
+    def __init__(self, change_type: _Optional[str] = ..., target_endpoint: _Optional[str] = ..., await_healthy: bool = ..., timeout_s: _Optional[float] = ...) -> None: ...
+
+class PhaseChangeResponse(_message.Message):
+    __slots__ = ("converged", "status", "duration_ms", "change_type", "target_endpoint", "error_message", "otel_trace_id")
+    CONVERGED_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    CHANGE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    OTEL_TRACE_ID_FIELD_NUMBER: _ClassVar[int]
+    converged: bool
+    status: str
+    duration_ms: int
+    change_type: str
+    target_endpoint: str
+    error_message: str
+    otel_trace_id: str
+    def __init__(self, converged: bool = ..., status: _Optional[str] = ..., duration_ms: _Optional[int] = ..., change_type: _Optional[str] = ..., target_endpoint: _Optional[str] = ..., error_message: _Optional[str] = ..., otel_trace_id: _Optional[str] = ...) -> None: ...
+
+class PhaseChangeProfile(_message.Message):
+    __slots__ = ("change_type", "sample_count", "total_duration_ms", "min_duration_ms", "max_duration_ms", "avg_duration_ms", "failures", "failure_rate", "has_statistical_power")
+    CHANGE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    MIN_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    MAX_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    AVG_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    FAILURES_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_RATE_FIELD_NUMBER: _ClassVar[int]
+    HAS_STATISTICAL_POWER_FIELD_NUMBER: _ClassVar[int]
+    change_type: str
+    sample_count: int
+    total_duration_ms: int
+    min_duration_ms: int
+    max_duration_ms: int
+    avg_duration_ms: float
+    failures: int
+    failure_rate: float
+    has_statistical_power: bool
+    def __init__(self, change_type: _Optional[str] = ..., sample_count: _Optional[int] = ..., total_duration_ms: _Optional[int] = ..., min_duration_ms: _Optional[int] = ..., max_duration_ms: _Optional[int] = ..., avg_duration_ms: _Optional[float] = ..., failures: _Optional[int] = ..., failure_rate: _Optional[float] = ..., has_statistical_power: bool = ...) -> None: ...
+
+class PhaseChangeProfilesResponse(_message.Message):
+    __slots__ = ("profiles",)
+    PROFILES_FIELD_NUMBER: _ClassVar[int]
+    profiles: _containers.RepeatedCompositeFieldContainer[PhaseChangeProfile]
+    def __init__(self, profiles: _Optional[_Iterable[_Union[PhaseChangeProfile, _Mapping]]] = ...) -> None: ...
+
+class ActivePhaseChange(_message.Message):
+    __slots__ = ("change_type", "status", "target_endpoint", "progress_pct", "started_at", "otel_trace_id")
+    CHANGE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    TARGET_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_PCT_FIELD_NUMBER: _ClassVar[int]
+    STARTED_AT_FIELD_NUMBER: _ClassVar[int]
+    OTEL_TRACE_ID_FIELD_NUMBER: _ClassVar[int]
+    change_type: str
+    status: str
+    target_endpoint: str
+    progress_pct: int
+    started_at: str
+    otel_trace_id: str
+    def __init__(self, change_type: _Optional[str] = ..., status: _Optional[str] = ..., target_endpoint: _Optional[str] = ..., progress_pct: _Optional[int] = ..., started_at: _Optional[str] = ..., otel_trace_id: _Optional[str] = ...) -> None: ...
+
+class ActivePhaseChangesResponse(_message.Message):
+    __slots__ = ("changes",)
+    CHANGES_FIELD_NUMBER: _ClassVar[int]
+    changes: _containers.RepeatedCompositeFieldContainer[ActivePhaseChange]
+    def __init__(self, changes: _Optional[_Iterable[_Union[ActivePhaseChange, _Mapping]]] = ...) -> None: ...
 
 class EndpointResponse(_message.Message):
     __slots__ = ("success", "message")

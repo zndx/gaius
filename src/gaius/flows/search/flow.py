@@ -168,7 +168,11 @@ class SearchFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def vector_search(self):
-        """Phase 2: ColNomic MaxSim vector search.
+        """Phase 2: ColNomic MaxSim vector search with Phase Change coordination.
+
+        Phase Change Pattern: Ensures ColNomic model is loaded and HEALTHY
+        before executing search. This provides resilient dynamic workload
+        coordination following the Ambient workload reliability model.
 
         This step evicts the instruct endpoint to load ColNomic embeddings.
         The ensure_instruct step must restore it before synthesis.
@@ -181,9 +185,11 @@ class SearchFlow(TracedFlow, GaiusFlow):
 
             client = await get_grpc_client()
 
-            print("search.vector.evicting")
+            # NOTE: Vector search uses ColNomic embeddings on Qdrant, which doesn't
+            # require vLLM endpoint coordination. Phase Change Pattern is NOT needed
+            # here - it's for instruct/reasoning model transitions with GPU sharing.
 
-            # Stream semantic search - this handles endpoint management
+            # Execute vector search directly - ColNomic runs on Qdrant
             async for event in client.stream(
                 service="Search",
                 action="semantic_stream",
@@ -192,7 +198,7 @@ class SearchFlow(TracedFlow, GaiusFlow):
                     "limit": self.vector_limit,
                     "use_maxsim": True,
                 },
-                timeout=120.0,
+                timeout=60.0,  # Search should be fast once model is ready
             ):
                 phase = event.get("phase", "UNKNOWN")
                 message = event.get("message", "")
@@ -286,7 +292,12 @@ class SearchFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def ensure_instruct(self):
-        """Phase 4: Restore instruct endpoint after ColNomic eviction.
+        """Phase 4: Restore instruct endpoint with Phase Change coordination.
+
+        Phase Change Pattern: Uses instruct_restore phase change to ensure
+        the instruct endpoint is loaded and HEALTHY before synthesis.
+        This provides resilient dynamic workload coordination following
+        the Ambient workload reliability model.
 
         Fails fast if instruct endpoint cannot be restored - synthesis
         requires a functioning local LLM endpoint.
@@ -294,38 +305,50 @@ class SearchFlow(TracedFlow, GaiusFlow):
         print("search.instruct_restoring")
         start = time.time()
 
-        async def do_ensure():
+        async def do_ensure_with_phase_change():
             from gaius.client import get_grpc_client
 
             client = await get_grpc_client()
 
-            result = await client.call(
+            # Phase Change: Request instruct restoration via orchestrator
+            # Watch OTel progress and await HEALTHY before proceeding
+            print("search.instruct.phase_change")
+            phase_result = await client.call(
                 service="Orchestrator",
-                action="ensure",
-                params={"endpoint": "instruct"},
+                action="phase_change",
+                params={
+                    "change_type": "instruct_restore",
+                    "target_endpoint": "instruct",
+                    "await_healthy": True,
+                },
                 timeout=120.0,
             )
 
-            return result
+            return phase_result
 
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                result = loop.run_until_complete(do_ensure())
+                result = loop.run_until_complete(do_ensure_with_phase_change())
             finally:
                 loop.close()
 
-            healthy = result.get("healthy", False)
-            status = result.get("status", "unknown")
+            converged = result.get("converged", False)
+            status = result.get("endpoint_status", "unknown")
+            duration_ms = result.get("duration_ms", 0)
 
-            if not healthy:
+            if not converged:
+                error_msg = result.get("error", "Phase change did not converge")
                 raise RuntimeError(
-                    f"Instruct endpoint not healthy: {status}\n"
-                    "  Guru Meditation: #SF.00000002.NOINSTRUCT\n"
-                    "  Try: /health fix instruct"
+                    f"Instruct phase change failed: {error_msg}\n"
+                    f"  Endpoint status: {status}\n"
+                    f"  Duration: {duration_ms}ms\n"
+                    "  Guru Meditation: #SF.00000015.PHASECHANGE\n"
+                    "  Try: /health fix endpoints"
                 )
 
+            print(f"search.instruct.phase_change.converged duration_ms={duration_ms}")
             print("search.instruct_ready")
 
         except Exception as e:

@@ -138,6 +138,74 @@ message CleanStartResponse {
   int32 endpoints_started = 4;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase Change Pattern - Resilient Dynamic Workload Coordination
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Phase change types for model loading transitions
+enum PhaseChangeType {
+  PHASE_CHANGE_UNSPECIFIED = 0;
+  PHASE_CHANGE_COLNOMIC_LOAD = 1;      // Load ColNomic for vector search
+  PHASE_CHANGE_INSTRUCT_RESTORE = 2;   // Restore instruct after vector search
+  PHASE_CHANGE_REASONING_LOAD = 3;     // Load reasoning model
+  PHASE_CHANGE_BASELINE_RESTORE = 4;   // Restore baseline after reasoning
+}
+
+// Phase change status
+enum PhaseChangeStatus {
+  PHASE_STATUS_UNSPECIFIED = 0;
+  PHASE_STATUS_PENDING = 1;
+  PHASE_STATUS_IN_PROGRESS = 2;
+  PHASE_STATUS_CONVERGED = 3;
+  PHASE_STATUS_FAILED = 4;
+}
+
+message PhaseChangeRequest {
+  string change_type = 1;       // e.g., "colnomic_load", "instruct_restore"
+  string target_endpoint = 2;   // Endpoint to ensure healthy
+  bool await_healthy = 3;       // Whether to wait for HEALTHY status
+  float timeout_s = 4;          // Timeout in seconds (default 120)
+}
+
+message PhaseChangeResponse {
+  bool converged = 1;                  // Whether phase change converged successfully
+  string status = 2;                   // Final status (converged, failed)
+  int32 duration_ms = 3;               // Duration in milliseconds
+  string change_type = 4;              // Echo back change type
+  string target_endpoint = 5;          // Echo back target endpoint
+  string error_message = 6;            // Error message if failed
+  string otel_trace_id = 7;            // OTel trace ID for correlation
+}
+
+message PhaseChangeProfile {
+  string change_type = 1;
+  int32 sample_count = 2;
+  int64 total_duration_ms = 3;
+  int32 min_duration_ms = 4;
+  int32 max_duration_ms = 5;
+  double avg_duration_ms = 6;
+  int32 failures = 7;
+  double failure_rate = 8;
+  bool has_statistical_power = 9;    // True if >= 70 samples
+}
+
+message PhaseChangeProfilesResponse {
+  repeated PhaseChangeProfile profiles = 1;
+}
+
+message ActivePhaseChange {
+  string change_type = 1;
+  string status = 2;
+  string target_endpoint = 3;
+  int32 progress_pct = 4;
+  string started_at = 5;
+  string otel_trace_id = 6;
+}
+
+message ActivePhaseChangesResponse {
+  repeated ActivePhaseChange changes = 1;
+}
+
 message EndpointResponse {
   bool success = 1;
   string message = 2;
@@ -2237,6 +2305,11 @@ service GaiusService {
   rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);
   rpc RestartEndpoint(RestartEndpointRequest) returns (EndpointResponse);
   rpc CleanStart(CleanStartRequest) returns (CleanStartResponse);  // Kill stale processes and optionally start endpoints
+
+  // Phase Change Pattern - Resilient Dynamic Workload Coordination
+  rpc PhaseChange(PhaseChangeRequest) returns (PhaseChangeResponse);           // Execute phase change with convergence waiting
+  rpc GetPhaseChangeProfiles(google.protobuf.Empty) returns (PhaseChangeProfilesResponse);  // Get timing statistics
+  rpc GetActivePhaseChanges(google.protobuf.Empty) returns (ActivePhaseChangesResponse);    // Get in-progress changes
 
   // ─────────────────────────────────────────────────────────────────────────
   // Scheduler

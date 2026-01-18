@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from gaius.models.registry import ModelSpec, TaskType
     from ..backends.vllm_controller import VLLMProcess
     from ..config import AgentConfig
+    from ..phase_change import PhaseChangeObserver
     from ..scheduling.types import SchedulingTask, TransitionPlan
     from ..workloads import WorkloadRequest, WorkloadResult
     from .agenda_tracker import AgendaTracker
@@ -195,6 +196,10 @@ class OrchestratorService:
         # Agenda-centric incident tracking
         # Wired via set_agenda_tracker() after server initialization
         self._agenda_tracker: Optional["AgendaTracker"] = None
+
+        # Phase Change Observer for resilient workload coordination
+        # Lazily initialized to avoid circular imports
+        self._phase_observer: Optional["PhaseChangeObserver"] = None
 
         logger.info("OrchestratorService initialized")
 
@@ -657,6 +662,146 @@ class OrchestratorService:
         return self._vllm.get_recent_logs(agent_alias, lines)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Phase Change Pattern (Resilient Workload Coordination)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _get_phase_observer(self) -> "PhaseChangeObserver":
+        """Get or create the PhaseChangeObserver (lazy init).
+
+        Returns:
+            PhaseChangeObserver instance
+        """
+        if self._phase_observer is None:
+            from ..phase_change import PhaseChangeObserver
+            self._phase_observer = PhaseChangeObserver(self)
+        return self._phase_observer
+
+    async def get_endpoint_status_async(self, agent_alias: str) -> str:
+        """Get endpoint status string (async version for PhaseChangeObserver).
+
+        Args:
+            agent_alias: Agent identifier
+
+        Returns:
+            Status string like "PROCESS_STATUS_HEALTHY"
+        """
+        status = self.get_endpoint_status(agent_alias)
+        if status:
+            # Normalize to proto-style status string
+            status_str = status.status
+            if not status_str.startswith("PROCESS_STATUS_"):
+                status_str = f"PROCESS_STATUS_{status_str.upper()}"
+            return status_str
+        return "PROCESS_STATUS_STOPPED"
+
+    async def phase_change(
+        self,
+        change_type: str,
+        target_endpoint: str,
+        await_healthy: bool = True,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        """Execute a phase change with convergence waiting.
+
+        A Phase Change occurs when the system transitions between operational
+        modes (e.g., loading ColNomic for vector search). This method waits
+        for the target endpoint to reach HEALTHY status before returning.
+
+        Design Philosophy: "Premature optimization is the root of all evil."
+        The solution prioritizes resilience over speed by awaiting positive
+        confirmation of HEALTHY status before proceeding.
+
+        Args:
+            change_type: Type of phase change (colnomic_load, instruct_restore, etc.)
+            target_endpoint: Endpoint name to ensure healthy
+            await_healthy: Whether to block until HEALTHY confirmed (default: True)
+            timeout_s: Maximum seconds to wait for convergence (default: 120)
+
+        Returns:
+            Dict with keys:
+                - converged: bool - Whether endpoint reached HEALTHY
+                - duration_ms: int - Time taken for phase change
+                - endpoint_status: str - Final endpoint status
+                - otel_trace_id: str - Trace ID for debugging
+                - error: Optional[str] - Error message if failed
+
+        Guru Codes:
+            #PC.00000001.TIMEOUT - Phase change timeout
+            #PC.00000002.FAILED - Phase change to FAILED status
+        """
+        from ..phase_change import PhaseChangeType
+
+        started = time.time()
+        observer = self._get_phase_observer()
+
+        try:
+            change_type_enum = PhaseChangeType(change_type)
+        except ValueError:
+            return {
+                "converged": False,
+                "duration_ms": 0,
+                "endpoint_status": "UNKNOWN",
+                "error": f"Unknown change_type: {change_type}",
+            }
+
+        try:
+            if await_healthy:
+                # Use PhaseChangeObserver to wait for convergence
+                event = await observer.await_phase_change(
+                    change_type=change_type_enum,
+                    target_endpoint=target_endpoint,
+                    timeout_s=timeout_s,
+                )
+
+                return {
+                    "converged": event.status.value == "converged",
+                    "duration_ms": event.duration_ms or 0,
+                    "endpoint_status": await self.get_endpoint_status_async(target_endpoint),
+                    "otel_trace_id": event.otel_trace_id,
+                    "error": event.error_message,
+                }
+            else:
+                # Non-blocking: just initiate the change
+                await self.ensure_endpoint(target_endpoint)
+                return {
+                    "converged": False,  # Not awaited
+                    "duration_ms": int((time.time() - started) * 1000),
+                    "endpoint_status": await self.get_endpoint_status_async(target_endpoint),
+                }
+
+        except asyncio.TimeoutError:
+            return {
+                "converged": False,
+                "duration_ms": int((time.time() - started) * 1000),
+                "endpoint_status": "PROCESS_STATUS_TIMEOUT",
+                "error": f"Phase change timed out after {timeout_s}s (#PC.00000001.TIMEOUT)",
+            }
+        except Exception as e:
+            logger.exception("Phase change failed: %s", e)
+            return {
+                "converged": False,
+                "duration_ms": int((time.time() - started) * 1000),
+                "endpoint_status": "PROCESS_STATUS_FAILED",
+                "error": f"Phase change error: {e} (#PC.00000002.FAILED)",
+            }
+
+    def get_phase_change_profiles(self) -> dict[str, dict]:
+        """Get accumulated phase change timing profiles.
+
+        Returns:
+            Dict mapping change_type to profile statistics
+        """
+        return self._get_phase_observer().get_profiles()
+
+    def get_active_phase_changes(self) -> list[dict]:
+        """Get currently active phase changes.
+
+        Returns:
+            List of active phase change event dictionaries
+        """
+        return self._get_phase_observer().get_active_changes()
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Capability-Based Endpoint Management (Yunikorn-Style)
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -904,8 +1049,27 @@ class OrchestratorService:
                     startup_message=f"Failed to load embedding model: {e}",
                 )
 
+    def _is_port_free_on_system(self, port: int) -> bool:
+        """Check if a port is free on the system (not just in our tracking).
+
+        This prevents conflicts with external processes (kubectl port-forwards,
+        other services, etc.) that may occupy ports in our allocation range.
+        """
+        import socket
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
+                return True
+        except OSError:
+            return False
+
     def _find_available_port(self, start: int = 8080, end: int = 8095) -> int:
         """Find an available port for a new endpoint.
+
+        Checks both internal tracking AND system availability to prevent
+        conflicts with external processes.
 
         Args:
             start: Start of port range
@@ -920,10 +1084,13 @@ class OrchestratorService:
                 used_ports.add(proc.port)
 
         for port in range(start, end + 1):
-            if port not in used_ports:
+            if port not in used_ports and self._is_port_free_on_system(port):
                 return port
 
-        raise RuntimeError(f"No available ports in range {start}-{end}")
+        raise RuntimeError(
+            f"No available ports in range {start}-{end}. "
+            f"Used by vLLM: {sorted(used_ports)}"
+        )
 
     async def _start_clt_capability(
         self,

@@ -48,6 +48,14 @@ class GaiusServiceStub:
     RestartEndpoint: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.RestartEndpointRequest, gaius_service_pb2.EndpointResponse]
     CleanStart: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CleanStartRequest, gaius_service_pb2.CleanStartResponse]
     """Kill stale processes and optionally start endpoints"""
+    PhaseChange: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.PhaseChangeRequest, gaius_service_pb2.PhaseChangeResponse]
+    """Phase Change Pattern - Resilient Dynamic Workload Coordination
+    Execute phase change with convergence waiting
+    """
+    GetPhaseChangeProfiles: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.PhaseChangeProfilesResponse]
+    """Get timing statistics"""
+    GetActivePhaseChanges: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.ActivePhaseChangesResponse]
+    """Get in-progress changes"""
     SchedulerStatus: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.SchedulerStatusResponse]
     """─────────────────────────────────────────────────────────────────────────
     Scheduler
@@ -291,6 +299,14 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     RestartEndpoint: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.RestartEndpointRequest, gaius_service_pb2.EndpointResponse]  # type: ignore[assignment]
     CleanStart: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CleanStartRequest, gaius_service_pb2.CleanStartResponse]  # type: ignore[assignment]
     """Kill stale processes and optionally start endpoints"""
+    PhaseChange: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.PhaseChangeRequest, gaius_service_pb2.PhaseChangeResponse]  # type: ignore[assignment]
+    """Phase Change Pattern - Resilient Dynamic Workload Coordination
+    Execute phase change with convergence waiting
+    """
+    GetPhaseChangeProfiles: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.PhaseChangeProfilesResponse]  # type: ignore[assignment]
+    """Get timing statistics"""
+    GetActivePhaseChanges: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.ActivePhaseChangesResponse]  # type: ignore[assignment]
+    """Get in-progress changes"""
     SchedulerStatus: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.SchedulerStatusResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
     Scheduler
@@ -567,6 +583,32 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.CleanStartResponse, collections.abc.Awaitable[gaius_service_pb2.CleanStartResponse]]:
         """Kill stale processes and optionally start endpoints"""
+
+    @abc.abstractmethod
+    def PhaseChange(
+        self,
+        request: gaius_service_pb2.PhaseChangeRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.PhaseChangeResponse, collections.abc.Awaitable[gaius_service_pb2.PhaseChangeResponse]]:
+        """Phase Change Pattern - Resilient Dynamic Workload Coordination
+        Execute phase change with convergence waiting
+        """
+
+    @abc.abstractmethod
+    def GetPhaseChangeProfiles(
+        self,
+        request: google.protobuf.empty_pb2.Empty,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.PhaseChangeProfilesResponse, collections.abc.Awaitable[gaius_service_pb2.PhaseChangeProfilesResponse]]:
+        """Get timing statistics"""
+
+    @abc.abstractmethod
+    def GetActivePhaseChanges(
+        self,
+        request: google.protobuf.empty_pb2.Empty,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ActivePhaseChangesResponse, collections.abc.Awaitable[gaius_service_pb2.ActivePhaseChangesResponse]]:
+        """Get in-progress changes"""
 
     @abc.abstractmethod
     def SchedulerStatus(

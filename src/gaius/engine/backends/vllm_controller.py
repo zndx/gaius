@@ -175,8 +175,7 @@ class VLLMController:
         self._processes: dict[str, VLLMProcess] = {}
         self._lock = asyncio.Lock()
 
-        # Port allocation (starting port, incrementing)
-        self._next_port = 8080
+        # Port allocation - tracks ports we've allocated (system check on allocation)
         self._allocated_ports: set[int] = set()
 
         # Health check settings
@@ -209,14 +208,49 @@ class VLLMController:
 
         logger.info("VLLMController stopped")
 
-    def _allocate_port(self) -> int:
-        """Allocate next available port."""
-        while self._next_port in self._allocated_ports:
-            self._next_port += 1
-        port = self._next_port
-        self._allocated_ports.add(port)
-        self._next_port += 1
-        return port
+    def _is_port_free_on_system(self, port: int) -> bool:
+        """Check if a port is free on the system (not just in our tracking).
+
+        This prevents conflicts with external processes (kubectl port-forwards,
+        other services, etc.) that may occupy ports in our allocation range.
+        """
+        import socket
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
+                return True
+        except OSError:
+            return False
+
+    def _allocate_port(self, start: int = 8080, end: int = 8095) -> int:
+        """Allocate next available port.
+
+        Checks both internal tracking AND system availability to prevent
+        conflicts with external processes.
+
+        Args:
+            start: Start of port range (default 8080)
+            end: End of port range (default 8095)
+
+        Returns:
+            Available port number
+
+        Raises:
+            RuntimeError: If no ports available in range
+        """
+        # Try to re-use freed ports first (scan from start)
+        for port in range(start, end + 1):
+            if port not in self._allocated_ports and self._is_port_free_on_system(port):
+                self._allocated_ports.add(port)
+                logger.debug(f"Allocated port {port} (system-verified)")
+                return port
+
+        raise RuntimeError(
+            f"No available ports in range {start}-{end}. "
+            f"Allocated: {sorted(self._allocated_ports)}"
+        )
 
     def _release_port(self, port: int) -> None:
         """Release a port."""

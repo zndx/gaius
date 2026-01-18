@@ -85,6 +85,13 @@ from .gaius_service_pb2 import (
     CleanStartResponse,
     EndpointResponse,
     EnsureEndpointResponse,
+    # Phase Change Pattern
+    PhaseChangeRequest,
+    PhaseChangeResponse,
+    PhaseChangeProfile,
+    PhaseChangeProfilesResponse,
+    ActivePhaseChange,
+    ActivePhaseChangesResponse,
     # Scheduler
     CompleteRequest,
     CompleteResponse,
@@ -410,6 +417,13 @@ __all__ = [
     "CleanStartResponse",
     "EndpointResponse",
     "EnsureEndpointResponse",
+    # Phase Change Pattern
+    "PhaseChangeRequest",
+    "PhaseChangeResponse",
+    "PhaseChangeProfile",
+    "PhaseChangeProfilesResponse",
+    "ActivePhaseChange",
+    "ActivePhaseChangesResponse",
     "CompleteRequest",
     "CompleteResponse",
     "SubmitJobRequest",

@@ -69,6 +69,21 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.CleanStartRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.CleanStartResponse.FromString,
                 _registered_method=True)
+        self.PhaseChange = channel.unary_unary(
+                '/gaius.engine.GaiusService/PhaseChange',
+                request_serializer=gaius__service__pb2.PhaseChangeRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.PhaseChangeResponse.FromString,
+                _registered_method=True)
+        self.GetPhaseChangeProfiles = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetPhaseChangeProfiles',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.PhaseChangeProfilesResponse.FromString,
+                _registered_method=True)
+        self.GetActivePhaseChanges = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetActivePhaseChanges',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=gaius__service__pb2.ActivePhaseChangesResponse.FromString,
+                _registered_method=True)
         self.SchedulerStatus = channel.unary_unary(
                 '/gaius.engine.GaiusService/SchedulerStatus',
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
@@ -589,6 +604,28 @@ class GaiusServiceServicer(object):
 
     def CleanStart(self, request, context):
         """Kill stale processes and optionally start endpoints
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PhaseChange(self, request, context):
+        """Phase Change Pattern - Resilient Dynamic Workload Coordination
+        Execute phase change with convergence waiting
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPhaseChangeProfiles(self, request, context):
+        """Get timing statistics
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetActivePhaseChanges(self, request, context):
+        """Get in-progress changes
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1296,6 +1333,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.CleanStartRequest.FromString,
                     response_serializer=gaius__service__pb2.CleanStartResponse.SerializeToString,
             ),
+            'PhaseChange': grpc.unary_unary_rpc_method_handler(
+                    servicer.PhaseChange,
+                    request_deserializer=gaius__service__pb2.PhaseChangeRequest.FromString,
+                    response_serializer=gaius__service__pb2.PhaseChangeResponse.SerializeToString,
+            ),
+            'GetPhaseChangeProfiles': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPhaseChangeProfiles,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.PhaseChangeProfilesResponse.SerializeToString,
+            ),
+            'GetActivePhaseChanges': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetActivePhaseChanges,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=gaius__service__pb2.ActivePhaseChangesResponse.SerializeToString,
+            ),
             'SchedulerStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.SchedulerStatus,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
@@ -1938,6 +1990,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CleanStart',
             gaius__service__pb2.CleanStartRequest.SerializeToString,
             gaius__service__pb2.CleanStartResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PhaseChange(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/PhaseChange',
+            gaius__service__pb2.PhaseChangeRequest.SerializeToString,
+            gaius__service__pb2.PhaseChangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPhaseChangeProfiles(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetPhaseChangeProfiles',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.PhaseChangeProfilesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetActivePhaseChanges(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetActivePhaseChanges',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            gaius__service__pb2.ActivePhaseChangesResponse.FromString,
             options,
             channel_credentials,
             insecure,
