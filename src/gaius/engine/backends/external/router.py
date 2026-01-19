@@ -284,6 +284,7 @@ class ExternalInferenceRouter:
                             },
                             response_content=response.content,
                             response_model=response.model,
+                            response_reasoning=response.reasoning,  # GLM-4.7 chain-of-thought
                             input_tokens=response.input_tokens,
                             output_tokens=response.output_tokens,
                             latency_ms=response.latency_ms,

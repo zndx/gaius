@@ -43,6 +43,7 @@ def get_exchange_schema():
         NestedField(11, "latency_ms", LongType(), required=False, doc="Request latency in milliseconds"),
         NestedField(12, "created_at", TimestamptzType(), required=True, doc="When exchange was captured"),
         NestedField(13, "source_context", StringType(), required=False, doc="JSON: agent_alias, task_type, etc."),
+        NestedField(14, "response_reasoning", StringType(), required=False, doc="Chain-of-thought reasoning from reasoning models (GLM-4.7)"),
     )
 
 
