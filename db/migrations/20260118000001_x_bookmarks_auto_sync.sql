@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS x_auto_sync_schedules (
     metadata JSONB DEFAULT '{}'
 );
 
-CREATE INDEX idx_x_auto_sync_active ON x_auto_sync_schedules(is_active, next_run_at)
+CREATE INDEX IF NOT EXISTS idx_x_auto_sync_active ON x_auto_sync_schedules(is_active, next_run_at)
     WHERE is_active = TRUE;
 
 COMMENT ON TABLE x_auto_sync_schedules IS 'Active auto-sync schedules for X bookmarks';
