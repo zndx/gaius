@@ -1552,6 +1552,9 @@ message MetabaseSyncResponse {
   int32 dashboards_synced = 5;
   int32 duration_ms = 6;
   repeated string errors = 7;
+  string error = 8;                   // Single error message (deprecated, use errors)
+  int32 models_synced = 9;            // Total models synced (created + updated)
+  int32 dashboards_failed = 10;       // Dashboards that failed to sync
 }
 
 // Weekly audit request
@@ -1570,6 +1573,7 @@ message AuditFinding {
   string description = 4;
   string suggested_action = 5;
   bytes evidence = 6;                 // JSON evidence data
+  string affected_component = 7;      // agent, flow, dashboard, endpoint
 }
 
 // Audit recommendation (for self-improvement loop)
@@ -1645,6 +1649,18 @@ message GetQualitySummaryRequest {
   int32 limit = 2;                    // Max results (default: 100)
 }
 
+// Quality source summary (aggregated metrics per source type)
+message QualitySourceSummary {
+  string source_type = 1;
+  int32 total_assessments = 2;
+  int32 textbook_quality_count = 3;
+  float textbook_quality_pct = 4;
+  float avg_coherence = 5;
+  float avg_coverage = 6;
+  float avg_novelty = 7;
+  float avg_weighted_reward = 8;
+}
+
 // Get quality summary response
 message GetQualitySummaryResponse {
   bool success = 1;
@@ -1657,6 +1673,7 @@ message GetQualitySummaryResponse {
   float avg_weighted_reward = 8;
   repeated QualityAssessment recent = 9;
   string error = 10;
+  repeated QualitySourceSummary assessments = 11;  // Per-source summaries
 }
 
 // List recommendations request
@@ -1664,6 +1681,8 @@ message ListRecommendationsRequest {
   string status = 1;                  // Filter by status (empty = all)
   string audit_id = 2;                // Filter by audit (empty = all)
   int32 limit = 3;                    // Max results (default: 50)
+  string status_filter = 4;           // Alias for status (for backward compatibility)
+  string severity_filter = 5;         // Filter by severity (critical, high, medium, low)
 }
 
 // List recommendations response
@@ -1685,6 +1704,8 @@ message UpdateRecommendationResponse {
   bool success = 1;
   AuditRecommendation recommendation = 2;
   string error = 3;
+  string recommendation_id = 4;       // ID of updated recommendation
+  string new_status = 5;              // New status after update
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

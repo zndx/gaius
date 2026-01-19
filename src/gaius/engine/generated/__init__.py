@@ -227,6 +227,7 @@ from .gaius_service_pb2 import (
     GetPooledBudgetRequest,
     GetPooledBudgetResponse,
     QualityAssessment,
+    QualitySourceSummary,
     GetQualitySummaryRequest,
     GetQualitySummaryResponse,
     ListRecommendationsRequest,

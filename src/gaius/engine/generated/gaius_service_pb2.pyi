@@ -2334,7 +2334,7 @@ class MetabaseSyncRequest(_message.Message):
     def __init__(self, full_refresh: bool = ..., tables: _Optional[_Iterable[str]] = ..., sync_dashboards: bool = ...) -> None: ...
 
 class MetabaseSyncResponse(_message.Message):
-    __slots__ = ("success", "models_created", "models_updated", "models_failed", "dashboards_synced", "duration_ms", "errors")
+    __slots__ = ("success", "models_created", "models_updated", "models_failed", "dashboards_synced", "duration_ms", "errors", "error", "models_synced", "dashboards_failed")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     MODELS_CREATED_FIELD_NUMBER: _ClassVar[int]
     MODELS_UPDATED_FIELD_NUMBER: _ClassVar[int]
@@ -2342,6 +2342,9 @@ class MetabaseSyncResponse(_message.Message):
     DASHBOARDS_SYNCED_FIELD_NUMBER: _ClassVar[int]
     DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     ERRORS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    MODELS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    DASHBOARDS_FAILED_FIELD_NUMBER: _ClassVar[int]
     success: bool
     models_created: int
     models_updated: int
@@ -2349,7 +2352,10 @@ class MetabaseSyncResponse(_message.Message):
     dashboards_synced: int
     duration_ms: int
     errors: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, success: bool = ..., models_created: _Optional[int] = ..., models_updated: _Optional[int] = ..., models_failed: _Optional[int] = ..., dashboards_synced: _Optional[int] = ..., duration_ms: _Optional[int] = ..., errors: _Optional[_Iterable[str]] = ...) -> None: ...
+    error: str
+    models_synced: int
+    dashboards_failed: int
+    def __init__(self, success: bool = ..., models_created: _Optional[int] = ..., models_updated: _Optional[int] = ..., models_failed: _Optional[int] = ..., dashboards_synced: _Optional[int] = ..., duration_ms: _Optional[int] = ..., errors: _Optional[_Iterable[str]] = ..., error: _Optional[str] = ..., models_synced: _Optional[int] = ..., dashboards_failed: _Optional[int] = ...) -> None: ...
 
 class MetaAgentAuditRequest(_message.Message):
     __slots__ = ("scope", "use_remote_llm", "lookback_days", "dry_run")
@@ -2364,20 +2370,22 @@ class MetaAgentAuditRequest(_message.Message):
     def __init__(self, scope: _Optional[str] = ..., use_remote_llm: bool = ..., lookback_days: _Optional[int] = ..., dry_run: bool = ...) -> None: ...
 
 class AuditFinding(_message.Message):
-    __slots__ = ("category", "severity", "title", "description", "suggested_action", "evidence")
+    __slots__ = ("category", "severity", "title", "description", "suggested_action", "evidence", "affected_component")
     CATEGORY_FIELD_NUMBER: _ClassVar[int]
     SEVERITY_FIELD_NUMBER: _ClassVar[int]
     TITLE_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     SUGGESTED_ACTION_FIELD_NUMBER: _ClassVar[int]
     EVIDENCE_FIELD_NUMBER: _ClassVar[int]
+    AFFECTED_COMPONENT_FIELD_NUMBER: _ClassVar[int]
     category: str
     severity: str
     title: str
     description: str
     suggested_action: str
     evidence: bytes
-    def __init__(self, category: _Optional[str] = ..., severity: _Optional[str] = ..., title: _Optional[str] = ..., description: _Optional[str] = ..., suggested_action: _Optional[str] = ..., evidence: _Optional[bytes] = ...) -> None: ...
+    affected_component: str
+    def __init__(self, category: _Optional[str] = ..., severity: _Optional[str] = ..., title: _Optional[str] = ..., description: _Optional[str] = ..., suggested_action: _Optional[str] = ..., evidence: _Optional[bytes] = ..., affected_component: _Optional[str] = ...) -> None: ...
 
 class AuditRecommendation(_message.Message):
     __slots__ = ("id", "audit_id", "category", "severity", "title", "description", "suggested_implementation", "status", "created_at")
@@ -2497,8 +2505,28 @@ class GetQualitySummaryRequest(_message.Message):
     limit: int
     def __init__(self, source_type: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
 
+class QualitySourceSummary(_message.Message):
+    __slots__ = ("source_type", "total_assessments", "textbook_quality_count", "textbook_quality_pct", "avg_coherence", "avg_coverage", "avg_novelty", "avg_weighted_reward")
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_PCT_FIELD_NUMBER: _ClassVar[int]
+    AVG_COHERENCE_FIELD_NUMBER: _ClassVar[int]
+    AVG_COVERAGE_FIELD_NUMBER: _ClassVar[int]
+    AVG_NOVELTY_FIELD_NUMBER: _ClassVar[int]
+    AVG_WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
+    source_type: str
+    total_assessments: int
+    textbook_quality_count: int
+    textbook_quality_pct: float
+    avg_coherence: float
+    avg_coverage: float
+    avg_novelty: float
+    avg_weighted_reward: float
+    def __init__(self, source_type: _Optional[str] = ..., total_assessments: _Optional[int] = ..., textbook_quality_count: _Optional[int] = ..., textbook_quality_pct: _Optional[float] = ..., avg_coherence: _Optional[float] = ..., avg_coverage: _Optional[float] = ..., avg_novelty: _Optional[float] = ..., avg_weighted_reward: _Optional[float] = ...) -> None: ...
+
 class GetQualitySummaryResponse(_message.Message):
-    __slots__ = ("success", "total_assessments", "textbook_quality_count", "textbook_quality_pct", "avg_coherence", "avg_coverage", "avg_novelty", "avg_weighted_reward", "recent", "error")
+    __slots__ = ("success", "total_assessments", "textbook_quality_count", "textbook_quality_pct", "avg_coherence", "avg_coverage", "avg_novelty", "avg_weighted_reward", "recent", "error", "assessments")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     TOTAL_ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
     TEXTBOOK_QUALITY_COUNT_FIELD_NUMBER: _ClassVar[int]
@@ -2509,6 +2537,7 @@ class GetQualitySummaryResponse(_message.Message):
     AVG_WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
     RECENT_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
     success: bool
     total_assessments: int
     textbook_quality_count: int
@@ -2519,17 +2548,22 @@ class GetQualitySummaryResponse(_message.Message):
     avg_weighted_reward: float
     recent: _containers.RepeatedCompositeFieldContainer[QualityAssessment]
     error: str
-    def __init__(self, success: bool = ..., total_assessments: _Optional[int] = ..., textbook_quality_count: _Optional[int] = ..., textbook_quality_pct: _Optional[float] = ..., avg_coherence: _Optional[float] = ..., avg_coverage: _Optional[float] = ..., avg_novelty: _Optional[float] = ..., avg_weighted_reward: _Optional[float] = ..., recent: _Optional[_Iterable[_Union[QualityAssessment, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+    assessments: _containers.RepeatedCompositeFieldContainer[QualitySourceSummary]
+    def __init__(self, success: bool = ..., total_assessments: _Optional[int] = ..., textbook_quality_count: _Optional[int] = ..., textbook_quality_pct: _Optional[float] = ..., avg_coherence: _Optional[float] = ..., avg_coverage: _Optional[float] = ..., avg_novelty: _Optional[float] = ..., avg_weighted_reward: _Optional[float] = ..., recent: _Optional[_Iterable[_Union[QualityAssessment, _Mapping]]] = ..., error: _Optional[str] = ..., assessments: _Optional[_Iterable[_Union[QualitySourceSummary, _Mapping]]] = ...) -> None: ...
 
 class ListRecommendationsRequest(_message.Message):
-    __slots__ = ("status", "audit_id", "limit")
+    __slots__ = ("status", "audit_id", "limit", "status_filter", "severity_filter")
     STATUS_FIELD_NUMBER: _ClassVar[int]
     AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
     LIMIT_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FILTER_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FILTER_FIELD_NUMBER: _ClassVar[int]
     status: str
     audit_id: str
     limit: int
-    def __init__(self, status: _Optional[str] = ..., audit_id: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+    status_filter: str
+    severity_filter: str
+    def __init__(self, status: _Optional[str] = ..., audit_id: _Optional[str] = ..., limit: _Optional[int] = ..., status_filter: _Optional[str] = ..., severity_filter: _Optional[str] = ...) -> None: ...
 
 class ListRecommendationsResponse(_message.Message):
     __slots__ = ("success", "recommendations", "total_count", "error")
@@ -2552,14 +2586,18 @@ class UpdateRecommendationRequest(_message.Message):
     def __init__(self, recommendation_id: _Optional[str] = ..., new_status: _Optional[str] = ...) -> None: ...
 
 class UpdateRecommendationResponse(_message.Message):
-    __slots__ = ("success", "recommendation", "error")
+    __slots__ = ("success", "recommendation", "error", "recommendation_id", "new_status")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     RECOMMENDATION_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATION_ID_FIELD_NUMBER: _ClassVar[int]
+    NEW_STATUS_FIELD_NUMBER: _ClassVar[int]
     success: bool
     recommendation: AuditRecommendation
     error: str
-    def __init__(self, success: bool = ..., recommendation: _Optional[_Union[AuditRecommendation, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+    recommendation_id: str
+    new_status: str
+    def __init__(self, success: bool = ..., recommendation: _Optional[_Union[AuditRecommendation, _Mapping]] = ..., error: _Optional[str] = ..., recommendation_id: _Optional[str] = ..., new_status: _Optional[str] = ...) -> None: ...
 
 class CLTExtractRequest(_message.Message):
     __slots__ = ("text", "layer_indices", "top_k", "model_name", "device")

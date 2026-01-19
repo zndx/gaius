@@ -33,6 +33,7 @@ from gaius.engine.generated import (
     MetabaseSyncResponse,
     PooledBudgetStatus,
     QualityAssessment,
+    QualitySourceSummary,
     UpdateRecommendationResponse,
 )
 from gaius.engine.services.base_daemon import (
@@ -81,6 +82,7 @@ class MetaAgentService(BaseDaemon):
         sync_interval_hours: int = 1,
         audit_day: int = 0,  # Monday
         audit_hour: int = 5,  # 5 AM UTC
+        db_pool: asyncpg.Pool | None = None,
     ):
         """Initialize MetaAgent service.
 
@@ -90,6 +92,7 @@ class MetaAgentService(BaseDaemon):
             sync_interval_hours: Hours between syncs (default: 1)
             audit_day: Day of week for audits (0=Monday, default: 0)
             audit_hour: Hour of day for audits (default: 5)
+            db_pool: Database connection pool for direct DB access
         """
         self._budget_manager = budget_manager
         self._metabase_client = metabase_client
@@ -101,7 +104,7 @@ class MetaAgentService(BaseDaemon):
         self._sync_task: asyncio.Task | None = None
         self._last_sync_at: datetime | None = None
         self._last_audit_at: datetime | None = None
-        self._pool: asyncpg.Pool | None = None
+        self._pool: asyncpg.Pool | None = db_pool
 
     @property
     def name(self) -> str:
@@ -634,7 +637,7 @@ class MetaAgentService(BaseDaemon):
         assessments = []
         for row in rows:
             assessments.append(
-                QualityAssessment(
+                QualitySourceSummary(
                     source_type=row["source_type"],
                     total_assessments=row["total_assessments"],
                     textbook_quality_count=row["textbook_count"],
@@ -786,7 +789,7 @@ class MetaAgentService(BaseDaemon):
 
         return UpdateRecommendationResponse(
             success=True,
-            recommendation_id=recommendation_id,
+            recommendation_id=str(recommendation_id),
             new_status=new_status,
             error="",
         )
