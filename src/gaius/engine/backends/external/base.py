@@ -26,6 +26,8 @@ class ExternalResponse:
         error: Error message if request failed
         reasoning: Chain-of-thought from reasoning models (for distillation)
         finish_reason: API finish reason (stop, length, content_filter, etc.)
+        exchange_id: UUID of captured exchange record (for lineage linkage)
+        request_hash: SHA-256 hash of request (for deduplication/linkage)
     """
 
     content: str
@@ -37,6 +39,8 @@ class ExternalResponse:
     error: Optional[str] = None
     reasoning: Optional[str] = None
     finish_reason: Optional[str] = None
+    exchange_id: Optional[str] = None
+    request_hash: Optional[str] = None
 
     @property
     def success(self) -> bool:

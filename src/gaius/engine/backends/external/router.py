@@ -144,6 +144,8 @@ class ExternalInferenceRouter:
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        source_context: Optional[dict[str, Any]] = None,
+        emit_lineage: bool = True,
         **kwargs: Any,
     ) -> ExternalResponse:
         """Route completion to best available backend.
@@ -159,14 +161,20 @@ class ExternalInferenceRouter:
             model: Model override for the backend
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            source_context: Additional context for provenance tracking:
+                - agent_alias: Agent making the call (metaagent, swarm, etc.)
+                - task_type: Type of task (audit, synthesis, etc.)
+                - parent_run_id: Parent lineage run ID for nested chains
+            emit_lineage: Whether to emit OpenLineage events (default: True)
 
         Returns:
-            ExternalResponse with completion result
+            ExternalResponse with completion result (includes exchange_id for linkage)
         """
         # If provider specified, use that directly
         if provider:
             return await self._complete_with_provider(
-                provider, messages, model, temperature, max_tokens, **kwargs
+                provider, messages, model, temperature, max_tokens,
+                source_context=source_context, emit_lineage=emit_lineage, **kwargs
             )
 
         # Select backend based on tier
@@ -186,7 +194,8 @@ class ExternalInferenceRouter:
             )
 
         return await self._complete_with_provider(
-            backend_name, messages, model, temperature, max_tokens, **kwargs
+            backend_name, messages, model, temperature, max_tokens,
+            source_context=source_context, emit_lineage=emit_lineage, **kwargs
         )
 
     async def _complete_with_provider(
@@ -196,6 +205,8 @@ class ExternalInferenceRouter:
         model: Optional[str],
         temperature: float,
         max_tokens: int,
+        source_context: Optional[dict[str, Any]] = None,
+        emit_lineage: bool = True,
         **kwargs: Any,
     ) -> ExternalResponse:
         """Complete with specific provider, tracking budget."""
@@ -251,11 +262,17 @@ class ExternalInferenceRouter:
                 elif provider == "cerebras":
                     self.budget.record_cerebras_use(response.total_tokens)
 
-                # Capture successful exchange to Iceberg (fire-and-forget)
+                # Capture successful exchange to Iceberg with provenance
                 capture = self._get_exchange_capture()
                 if capture:
                     try:
                         from gaius.hx.exchange import ExchangeRecord
+
+                        # Build enriched source_context with provider + caller context
+                        full_context = {"provider": provider}
+                        if source_context:
+                            full_context.update(source_context)
+
                         record = ExchangeRecord(
                             provider=provider,
                             request_messages=messages,
@@ -270,10 +287,22 @@ class ExternalInferenceRouter:
                             input_tokens=response.input_tokens,
                             output_tokens=response.output_tokens,
                             latency_ms=response.latency_ms,
-                            source_context={"provider": provider},
+                            source_context=full_context,
                         )
-                        # Fire-and-forget - don't block inference
+
+                        # Capture to Iceberg (fire-and-forget)
                         asyncio.create_task(capture.capture(record))
+
+                        # Populate exchange linkage fields on response
+                        response.exchange_id = record.id
+                        response.request_hash = record.request_hash
+
+                        # Emit OpenLineage event for provenance graph
+                        if emit_lineage:
+                            asyncio.create_task(
+                                self._emit_exchange_lineage(record, full_context)
+                            )
+
                     except Exception as e:
                         logger.debug(f"Failed to capture exchange: {e}")
 
@@ -283,6 +312,66 @@ class ExternalInferenceRouter:
             # Release Bytez slot
             if provider == "bytez":
                 self.budget.record_bytez_end()
+
+    async def _emit_exchange_lineage(
+        self,
+        record: Any,  # ExchangeRecord - using Any to avoid import
+        source_context: dict[str, Any],
+    ) -> None:
+        """Emit OpenLineage event for an exchange.
+
+        Creates a lineage edge from the exchange to derived artifacts.
+        The exchange becomes an output Dataset that can be linked to
+        downstream KB artifacts created from the LLM response.
+
+        Args:
+            record: ExchangeRecord with id and request_hash
+            source_context: Context including agent_alias, task_type, parent_run_id
+        """
+        try:
+            from gaius.hx.lineage import Dataset, Job, Run, RunEvent, get_emitter
+
+            # Build job name from context
+            agent_alias = source_context.get("agent_alias", "external_inference")
+            task_type = source_context.get("task_type", "completion")
+            job_name = f"{agent_alias}_{task_type}"
+
+            # Create run with optional parent linkage
+            parent_run_id = source_context.get("parent_run_id")
+            if parent_run_id:
+                from uuid import UUID
+                run = Run.with_parent(UUID(parent_run_id) if isinstance(parent_run_id, str) else parent_run_id)
+            else:
+                run = Run()
+
+            # Create exchange output dataset
+            exchange_dataset = Dataset.from_exchange(
+                provider=record.provider,
+                request_hash=record.request_hash,
+                exchange_id=record.id,
+            )
+
+            # Emit complete event
+            emitter = get_emitter()
+            event = RunEvent.complete(
+                run=run,
+                job=Job.agent(job_name),
+                inputs=[],  # Exchange has no upstream inputs at this layer
+                outputs=[exchange_dataset],
+            )
+            await emitter.emit(event)
+
+            logger.debug(
+                f"Emitted lineage for exchange: id={record.id[:8]}... "
+                f"job={job_name} provider={record.provider}"
+            )
+
+        except Exception as e:
+            # Don't fail the inference for lineage errors
+            logger.warning(
+                f"Failed to emit exchange lineage: {e}\n"
+                f"  Guru Meditation: #HX.00000002.LINEAGEFAIL"
+            )
 
     def _select_token_backend(self, prefer_fast: bool = False) -> Optional[str]:
         """Select best token-tier backend."""

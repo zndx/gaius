@@ -36,6 +36,7 @@ class InferenceRequest:
         temperature: Sampling temperature
         max_tokens: Maximum tokens to generate
         technique: optillm technique (for optillm backend)
+        source_context: Provenance context for HX exchange tracking (external backends)
     """
 
     messages: list[dict[str, str]]
@@ -43,6 +44,7 @@ class InferenceRequest:
     temperature: float = 0.7
     max_tokens: int = 2048
     technique: Optional[str] = None
+    source_context: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -58,6 +60,8 @@ class InferenceResponse:
         latency_ms: Request latency in milliseconds
         technique: optillm technique if used
         error: Error message if request failed
+        exchange_id: UUID of captured exchange (external backends only)
+        request_hash: SHA-256 hash for lineage linking (external backends only)
     """
 
     content: str
@@ -68,6 +72,8 @@ class InferenceResponse:
     latency_ms: int = 0
     technique: Optional[str] = None
     error: Optional[str] = None
+    exchange_id: Optional[str] = None
+    request_hash: Optional[str] = None
 
     @property
     def success(self) -> bool:
@@ -281,6 +287,7 @@ class BackendRouter:
                 model=model,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                source_context=request.source_context,
             )
 
             latency_ms = int((time.time() - start_time) * 1000)
@@ -293,6 +300,8 @@ class BackendRouter:
                 output_tokens=response.output_tokens,
                 latency_ms=latency_ms,
                 error=response.error,
+                exchange_id=response.exchange_id,
+                request_hash=response.request_hash,
             )
 
         except Exception as e:
@@ -416,6 +425,8 @@ class BackendRouter:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         technique: Optional[str] = None,
+        source_context: Optional[dict[str, Any]] = None,
+        task_type: Optional[str] = None,
     ) -> InferenceResponse:
         """Convenience method for simple completions.
 
@@ -426,14 +437,23 @@ class BackendRouter:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             technique: Optional optillm technique
+            source_context: Full provenance context for HX exchange tracking
+            task_type: Convenience - auto-builds source_context if not provided
 
         Returns:
-            InferenceResponse
+            InferenceResponse with exchange_id/request_hash for external backends
         """
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+
+        # Auto-build source_context if task_type provided but not full context
+        if source_context is None and task_type:
+            source_context = {
+                "agent_alias": agent_alias,
+                "task_type": task_type,
+            }
 
         request = InferenceRequest(
             messages=messages,
@@ -441,6 +461,7 @@ class BackendRouter:
             temperature=temperature,
             max_tokens=max_tokens,
             technique=technique,
+            source_context=source_context,
         )
 
         return await self.route(request)

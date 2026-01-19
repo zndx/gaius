@@ -1800,6 +1800,7 @@ class GaiusEngine:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     technique=technique,
+                    task_type="engine_inference",
                 )
 
                 return Response.success(

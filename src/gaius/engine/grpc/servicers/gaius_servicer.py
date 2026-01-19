@@ -307,6 +307,7 @@ from ...metrics import record_exception_caught
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
+    from ...services.research_workload_service import ResearchWorkloadService
 
 logger = logging.getLogger(__name__)
 
@@ -762,6 +763,7 @@ class GaiusServicer(GaiusServiceServicer):
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
+                task_type="scheduler_complete",
             )
 
             latency_ms = (time.time() - start_time) * 1000
@@ -1423,6 +1425,12 @@ class GaiusServicer(GaiusServiceServicer):
                         system_prompt=role_def.system_prompt or "",
                         temperature=role_def.temperature,
                         max_tokens=role_def.max_tokens,
+                        source_context={
+                            "agent_alias": f"swarm_{role_name}",
+                            "task_type": "swarm_analysis",
+                            "role_name": role_name,
+                            "domain": domain,
+                        },
                     )
 
                     agent_result = {
@@ -2681,6 +2689,7 @@ class GaiusServicer(GaiusServiceServicer):
                     agent_alias="instruct",  # Use instruct endpoint for explain
                     temperature=0.7,
                     max_tokens=max_tokens,
+                    task_type="grid_explain",
                 )
 
                 if result.error:
@@ -3943,6 +3952,7 @@ class GaiusServicer(GaiusServiceServicer):
                         system_prompt=system,
                         temperature=temperature,
                         max_tokens=4096,
+                        task_type="metaagent_query",
                     )
                     return result.content or ""
                 return ""
@@ -4041,6 +4051,7 @@ class GaiusServicer(GaiusServiceServicer):
                         system_prompt=system,
                         temperature=temperature,
                         max_tokens=4096,
+                        task_type="metaagent_query_stream",
                     )
                     return result.content or ""
                 return ""
