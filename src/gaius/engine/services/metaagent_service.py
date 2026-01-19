@@ -15,6 +15,7 @@ Architecture:
 """
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -422,46 +423,118 @@ class MetaAgentService(BaseDaemon):
         scope: str,
         provider: str,
     ) -> tuple[list[dict], list[dict]]:
-        """Run the actual audit analysis.
+        """Run Multi-Agent Debate audit analysis.
 
-        This is a placeholder that will be expanded with actual LLM analysis.
+        Implements the 5-phase debate flow (SOTA LLM agent architecture):
+        1. Data Gathering (SQL queries - no LLM)
+        2. Initial Analysis (Cerebras GLM 4.7)
+        3. Skeptic Critique (XAI Grok)
+        4. Actionability Validation (Cerebras)
+        5. Judge Synthesis (XAI Grok)
+
+        This architecture overcomes "Degeneration-of-Thought" where single-agent
+        systems become overconfident. The debate between Analyst, Skeptic, and
+        Judge produces robust findings that survive adversarial scrutiny.
 
         Args:
-            scope: Audit scope
-            provider: LLM provider to use
+            scope: Audit scope (full, health, performance, etc.)
+            provider: LLM provider hint (ignored - debate uses Quality-First strategy)
 
         Returns:
             Tuple of (findings, recommendations)
         """
-        # TODO: Implement actual audit analysis with LLM
-        # For now, return basic health-based findings
-        findings = []
-        recommendations = []
+        from gaius.engine.services.metaagent_debate import get_debate_coordinator
+        from gaius.engine.services.llm_exchange_context import link_kb_artifact
 
-        # Query recent incidents
+        # Create coordinator with parent run ID for lineage
         pool = await self._get_pool()
-        async with pool.acquire() as conn:
-            # Check for recent unresolved incidents
-            incidents = await conn.fetch(
-                """
-                SELECT fingerprint, status, rpn_score, failure_mode_id
-                FROM health_incidents
-                WHERE status != 'resolved'
-                ORDER BY rpn_score DESC
-                LIMIT 10
-                """
-            )
+        parent_run_id = str(uuid.uuid4())
+        coordinator = get_debate_coordinator(
+            pool=pool,
+            parent_run_id=parent_run_id,
+        )
 
-            for incident in incidents:
-                findings.append({
-                    "category": "health",
-                    "severity": "high" if incident["rpn_score"] > 100 else "medium",
-                    "title": f"Unresolved incident: {incident['fingerprint']}",
-                    "description": f"Incident {incident['fingerprint']} has status {incident['status']}",
-                    "affected_component": incident["failure_mode_id"],
-                })
+        # Execute the 5-phase debate
+        result = await coordinator.run_debate(scope)
+
+        # Store debate transcript to KB if successful
+        if result.succeeded and result.transcript.exchange_ids:
+            try:
+                kb_path = f"scratch/{datetime.now().strftime('%Y-%m-%d')}/audit_{scope}_{parent_run_id[:8]}.md"
+                await self._write_kb_artifact(kb_path, result.transcript.to_markdown())
+
+                # Link KB artifact to exchanges for HX lineage
+                for exchange_id in result.transcript.exchange_ids:
+                    await link_kb_artifact(kb_path, exchange_id)
+
+                logger.info(f"Debate transcript saved to KB: {kb_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save debate transcript: {e}")
+
+        # Convert to legacy format for gRPC response compatibility
+        findings = [
+            {
+                "category": "audit",
+                "severity": "high" if f.final_confidence > 0.7 else "medium",
+                "title": f.title,
+                "description": f.description,
+                "confidence": f.final_confidence,
+                "status": f.status,
+                "affected_component": "",
+            }
+            for f in result.findings
+        ]
+
+        recommendations = [
+            {
+                "id": str(i),
+                "category": "audit",
+                "severity": "high" if r.priority <= 2 else "medium",
+                "title": r.title,
+                "description": r.description,
+                "suggested_implementation": ", ".join(r.commands) if r.commands else "",
+                "status": "pending",
+            }
+            for i, r in enumerate(result.recommendations, 1)
+        ]
+
+        # If debate failed, include error as a finding
+        if result.error:
+            findings.append({
+                "category": "audit",
+                "severity": "high",
+                "title": "Audit Analysis Error",
+                "description": result.error,
+                "affected_component": "metaagent_debate",
+            })
+
+        logger.info(
+            f"Audit complete: {len(findings)} findings, {len(recommendations)} recommendations, "
+            f"{result.total_llm_calls} LLM calls, {result.total_tokens} tokens"
+        )
 
         return findings, recommendations
+
+    async def _write_kb_artifact(self, kb_path: str, content: str) -> None:
+        """Write content to KB as a scratch artifact.
+
+        Args:
+            kb_path: Relative KB path (e.g., "scratch/2026-01-19/audit.md")
+            content: Markdown content to write
+        """
+        import os
+        from pathlib import Path
+
+        # Get KB root from environment or default
+        kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+        full_path = Path(kb_root) / kb_path
+
+        # Ensure parent directory exists
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write content
+        full_path.write_text(content)
+        logger.debug(f"Wrote KB artifact: {full_path}")
 
     async def _record_sync_start(self, full_refresh: bool) -> int:
         """Record sync start in database."""
@@ -539,7 +612,7 @@ class MetaAgentService(BaseDaemon):
         """Record audit completion."""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            # Update audit record
+            # Update audit record (serialize findings to JSON for JSONB column)
             await conn.execute(
                 """
                 UPDATE meta.metaagent_audits
@@ -550,7 +623,7 @@ class MetaAgentService(BaseDaemon):
                 WHERE audit_id = $1
                 """,
                 uuid.UUID(audit_id),
-                findings,
+                json.dumps(findings),
                 provider,
             )
 
