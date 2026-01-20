@@ -13,6 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ToolCall:
+    """A tool call from an LLM response (OpenAI function calling format).
+
+    Attributes:
+        id: Unique identifier for this tool call
+        name: Name of the function to call
+        arguments: JSON string of arguments to pass
+    """
+
+    id: str
+    name: str
+    arguments: str  # JSON string
+
+
+@dataclass
 class ExternalResponse:
     """Response from an external inference API.
 
@@ -25,9 +40,10 @@ class ExternalResponse:
         latency_ms: Request latency in milliseconds
         error: Error message if request failed
         reasoning: Chain-of-thought from reasoning models (for distillation)
-        finish_reason: API finish reason (stop, length, content_filter, etc.)
+        finish_reason: API finish reason (stop, length, content_filter, tool_calls, etc.)
         exchange_id: UUID of captured exchange record (for lineage linkage)
         request_hash: SHA-256 hash of request (for deduplication/linkage)
+        tool_calls: List of tool calls if model requested function calling
     """
 
     content: str
@@ -41,6 +57,7 @@ class ExternalResponse:
     finish_reason: Optional[str] = None
     exchange_id: Optional[str] = None
     request_hash: Optional[str] = None
+    tool_calls: Optional[list[ToolCall]] = None
 
     @property
     def success(self) -> bool:

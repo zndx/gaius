@@ -30,7 +30,7 @@ Cerebras models use their own ID format (e.g., llama-3.3-70b, zai-glm-4.7, qwen-
 GLM is a reasoning model that outputs chain-of-thought in the 'reasoning' field.
 """
 
-from .base import ExternalBackend, ExternalResponse
+from .base import ExternalBackend, ExternalResponse, ToolCall
 from .budget import (
     ExternalBudget,
     ProviderBudget,
@@ -50,6 +50,7 @@ __all__ = [
     # Base
     "ExternalBackend",
     "ExternalResponse",
+    "ToolCall",
     # Budget
     "ExternalBudget",
     "ProviderBudget",

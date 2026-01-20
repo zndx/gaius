@@ -10,7 +10,7 @@ import os
 import time
 from typing import Any, Optional
 
-from .base import ExternalBackend, ExternalResponse
+from .base import ExternalBackend, ExternalResponse, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +76,12 @@ class XAIBackend(ExternalBackend):
             model: Model to use (default: grok-2-latest)
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            **kwargs: Additional parameters including:
+                - tools: List of tool definitions for function calling
+                - tool_choice: How to select tools ("auto", "none", or specific)
 
         Returns:
-            ExternalResponse with completion result
+            ExternalResponse with completion result (may include tool_calls)
         """
         if not self.is_available:
             return ExternalResponse(
@@ -91,6 +94,10 @@ class XAIBackend(ExternalBackend):
         use_model = model or self._model
         start_time = time.time()
 
+        # Extract tool calling parameters from kwargs
+        tools = kwargs.get("tools")
+        tool_choice = kwargs.get("tool_choice", "auto")
+
         # Retry configuration for transient errors (502, 503, 429)
         max_retries = 3
         retry_delay = 2.0  # Initial delay in seconds
@@ -101,6 +108,19 @@ class XAIBackend(ExternalBackend):
             last_error: Exception | None = None
             for attempt in range(max_retries):
                 try:
+                    # Build request payload
+                    request_json: dict[str, Any] = {
+                        "model": use_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
+
+                    # Add tools if provided (OpenAI-compatible function calling)
+                    if tools:
+                        request_json["tools"] = tools
+                        request_json["tool_choice"] = tool_choice
+
                     async with httpx.AsyncClient() as client:
                         response = await client.post(
                             f"{self.API_BASE}/chat/completions",
@@ -108,12 +128,7 @@ class XAIBackend(ExternalBackend):
                                 "Authorization": f"Bearer {self._api_key}",
                                 "Content-Type": "application/json",
                             },
-                            json={
-                                "model": use_model,
-                                "messages": messages,
-                                "temperature": temperature,
-                                "max_tokens": max_tokens,
-                            },
+                            json=request_json,
                             timeout=120.0,  # Increased for large context
                         )
 
@@ -158,10 +173,30 @@ class XAIBackend(ExternalBackend):
             # Extract response
             content = ""
             finish_reason = None
+            tool_calls_list: list[ToolCall] | None = None
+
             if data.get("choices"):
                 choice = data["choices"][0]
-                content = choice.get("message", {}).get("content", "")
+                message = choice.get("message", {})
+                content = message.get("content") or ""
                 finish_reason = choice.get("finish_reason")
+
+                # Extract tool calls if present (OpenAI function calling format)
+                raw_tool_calls = message.get("tool_calls")
+                if raw_tool_calls:
+                    tool_calls_list = []
+                    for tc in raw_tool_calls:
+                        tool_calls_list.append(
+                            ToolCall(
+                                id=tc.get("id", ""),
+                                name=tc.get("function", {}).get("name", ""),
+                                arguments=tc.get("function", {}).get("arguments", "{}"),
+                            )
+                        )
+                    logger.debug(
+                        f"XAI returned {len(tool_calls_list)} tool calls: "
+                        f"{[tc.name for tc in tool_calls_list]}"
+                    )
 
             usage = data.get("usage", {})
             input_tokens = usage.get("prompt_tokens", 0)
@@ -204,6 +239,7 @@ class XAIBackend(ExternalBackend):
                 output_tokens=output_tokens,
                 latency_ms=latency_ms,
                 finish_reason=finish_reason,
+                tool_calls=tool_calls_list,
             )
 
         except Exception as e:

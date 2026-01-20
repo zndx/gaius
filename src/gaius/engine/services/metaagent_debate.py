@@ -139,11 +139,628 @@ class DebateResult:
     total_llm_calls: int
     total_tokens: int
     error: str | None = None
+    fused_opinion: "Opinion | None" = None
 
     @property
     def succeeded(self) -> bool:
         """Check if debate completed successfully."""
         return self.error is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Subjective Logic Opinion (Jøsang 2016)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class Opinion:
+    """Subjective Logic opinion tuple ω = (b, d, u, a).
+
+    Constraint: b + d + u = 1
+    Where:
+      b = belief (evidence supports claim)
+      d = disbelief (evidence refutes claim)
+      u = uncertainty (insufficient evidence)
+      a = base rate (prior probability when uncertain)
+
+    Reference: Jøsang 2016 "Subjective Logic: A Formalism for Reasoning
+    Under Uncertainty"
+
+    This enables explicit epistemic uncertainty tracking in the Agentic Judge
+    phase, where each tool verification produces an opinion that can be
+    fused with other opinions via cumulative or averaging fusion.
+    """
+
+    belief: float
+    disbelief: float
+    uncertainty: float
+    base_rate: float = 0.5
+
+    def __post_init__(self) -> None:
+        """Validate the b + d + u = 1 constraint."""
+        total = self.belief + self.disbelief + self.uncertainty
+        if not (0.99 <= total <= 1.01):
+            raise ValueError(
+                f"Subjective Logic constraint violation: b + d + u must equal 1, "
+                f"got {total:.4f} (b={self.belief}, d={self.disbelief}, u={self.uncertainty})"
+            )
+
+    @property
+    def expected_probability(self) -> float:
+        """Expected probability E[P] = b + a * u.
+
+        When uncertainty is high, the expected probability moves toward
+        the base rate. When evidence is strong (u → 0), the expected
+        probability equals the belief.
+        """
+        return self.belief + self.base_rate * self.uncertainty
+
+    @classmethod
+    def vacuous(cls, base_rate: float = 0.5) -> "Opinion":
+        """Create a vacuous opinion representing complete uncertainty.
+
+        A vacuous opinion has no evidence (b=0, d=0, u=1), so the
+        expected probability equals the base rate.
+        """
+        return cls(belief=0.0, disbelief=0.0, uncertainty=1.0, base_rate=base_rate)
+
+    @classmethod
+    def from_tool_result(cls, verified: bool, confidence: float = 0.8) -> "Opinion":
+        """Create opinion from a tool verification result.
+
+        Args:
+            verified: Whether the tool verified the claim
+            confidence: How confident the tool result is (default 0.8)
+
+        Returns:
+            Opinion with belief/disbelief proportional to confidence
+        """
+        uncertainty = 1.0 - confidence
+        if verified:
+            return cls(belief=confidence, disbelief=0.0, uncertainty=uncertainty)
+        else:
+            return cls(belief=0.0, disbelief=confidence, uncertainty=uncertainty)
+
+    @classmethod
+    def from_rase_verdict(cls, verdict_name: str, accuracy: float) -> "Opinion":
+        """Create opinion from RASE verification result.
+
+        Args:
+            verdict_name: VerdictKind name (PASS, FAIL, INCONCLUSIVE, ERROR)
+            accuracy: RASE accuracy score (0.0-1.0)
+
+        Returns:
+            Opinion reflecting the RASE verification outcome
+        """
+        if verdict_name == "PASS":
+            return cls(belief=accuracy, disbelief=0.0, uncertainty=1.0 - accuracy)
+        elif verdict_name == "FAIL":
+            return cls(belief=0.0, disbelief=accuracy, uncertainty=1.0 - accuracy)
+        else:  # INCONCLUSIVE, ERROR
+            return cls.vacuous()
+
+    def to_dict(self) -> dict[str, float]:
+        """Convert to dictionary for serialization."""
+        return {
+            "belief": self.belief,
+            "disbelief": self.disbelief,
+            "uncertainty": self.uncertainty,
+            "base_rate": self.base_rate,
+            "expected_probability": self.expected_probability,
+        }
+
+
+def cumulative_fusion(opinions: list[Opinion]) -> Opinion:
+    """Combine multiple independent opinions via averaging fusion.
+
+    This is a simplified version of Jøsang's cumulative fusion operator.
+    For the full cumulative fusion with proper uncertainty handling, see
+    Jøsang 2016 Chapter 12.
+
+    For Gaius's Agentic Judge, averaging fusion provides a reasonable
+    approximation that:
+    - Reduces uncertainty as more evidence is collected
+    - Balances conflicting evidence proportionally
+    - Preserves the b + d + u = 1 constraint
+
+    Args:
+        opinions: List of opinions to fuse
+
+    Returns:
+        Fused opinion representing combined evidence
+    """
+    if not opinions:
+        return Opinion.vacuous()
+    if len(opinions) == 1:
+        return opinions[0]
+
+    n = len(opinions)
+    b = sum(o.belief for o in opinions) / n
+    d = sum(o.disbelief for o in opinions) / n
+    u = sum(o.uncertainty for o in opinions) / n
+    a = sum(o.base_rate for o in opinions) / n
+
+    # Renormalize to ensure b + d + u = 1 (handles floating point drift)
+    total = b + d + u
+    if total > 0:
+        b, d, u = b / total, d / total, u / total
+    else:
+        # Degenerate case - return vacuous
+        b, d, u = 0.0, 0.0, 1.0
+
+    return Opinion(belief=b, disbelief=d, uncertainty=u, base_rate=a)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Agentic Judge Tools (MCP-style function definitions)
+# ═══════════════════════════════════════════════════════════════════════════
+
+AGENTIC_JUDGE_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_gpu_state",
+            "description": "Check actual GPU health (VRAM, temp, utilization) to verify claims about GPU status in the debate.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_endpoint_health",
+            "description": "Check if a specific vLLM endpoint is actually healthy/unhealthy by querying orchestrator status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "endpoint": {
+                        "type": "string",
+                        "description": "Endpoint name (e.g., 'reasoning', 'instruct', 'embedding')",
+                    }
+                },
+                "required": ["endpoint"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_precedent",
+            "description": "Search KB heuristics for similar past incidents or remediation patterns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for KB heuristics",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_recommendation",
+            "description": "Use RASE verification to validate that a recommendation meets quality gates (syntactic, semantic, empirical).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recommendation": {
+                        "type": "string",
+                        "description": "The recommendation text to verify",
+                    },
+                    "objective": {
+                        "type": "string",
+                        "description": "RASE objective name (default: audit-recommendation-quality)",
+                        "default": "audit-recommendation-quality",
+                    },
+                },
+                "required": ["recommendation"],
+            },
+        },
+    },
+]
+
+
+@dataclass
+class ToolResult:
+    """Result from an Agentic Judge tool invocation."""
+
+    tool_name: str
+    arguments: dict[str, Any]
+    output: str
+    opinion: Opinion
+    success: bool
+    error: str | None = None
+
+    def to_message(self) -> str:
+        """Format as a tool result message for the LLM."""
+        if not self.success:
+            return f"Tool {self.tool_name} failed: {self.error}"
+        return f"Tool {self.tool_name} result:\n{self.output}"
+
+
+class AgenticJudgeToolHandler:
+    """Handles tool calls from the Agentic Judge phase.
+
+    The handler provides access to:
+    - GPU health via Orchestrator gRPC
+    - Endpoint status via Orchestrator gRPC
+    - KB search for precedent heuristics
+    - RASE verification for recommendation quality
+
+    Each tool returns both a text result (for LLM context) and a Subjective
+    Logic Opinion for uncertainty quantification and fusion.
+    """
+
+    def __init__(self, pool: "asyncpg.Pool | None" = None) -> None:
+        """Initialize the tool handler.
+
+        Args:
+            pool: Database pool for KB operations (optional)
+        """
+        self._pool = pool
+
+    async def handle_tool_call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> ToolResult:
+        """Dispatch a tool call and return result with opinion.
+
+        Args:
+            name: Tool name (verify_gpu_state, verify_endpoint_health, etc.)
+            arguments: Tool arguments from LLM
+
+        Returns:
+            ToolResult with output text and Subjective Logic opinion
+        """
+        try:
+            if name == "verify_gpu_state":
+                return await self._verify_gpu_state()
+            elif name == "verify_endpoint_health":
+                endpoint = arguments.get("endpoint", "")
+                return await self._verify_endpoint_health(endpoint)
+            elif name == "search_precedent":
+                query = arguments.get("query", "")
+                return await self._search_precedent(query)
+            elif name == "verify_recommendation":
+                recommendation = arguments.get("recommendation", "")
+                objective = arguments.get("objective", "audit-recommendation-quality")
+                return await self._verify_recommendation(recommendation, objective)
+            else:
+                return ToolResult(
+                    tool_name=name,
+                    arguments=arguments,
+                    output="",
+                    opinion=Opinion.vacuous(),
+                    success=False,
+                    error=f"Unknown tool: {name}",
+                )
+        except Exception as e:
+            logger.error(f"Tool {name} failed: {e}")
+            return ToolResult(
+                tool_name=name,
+                arguments=arguments,
+                output="",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=str(e),
+            )
+
+    async def _verify_gpu_state(self) -> ToolResult:
+        """Verify GPU health claims against actual state.
+
+        Returns:
+            ToolResult with GPU health summary and opinion
+        """
+        from gaius.mcp.operations import mcp_call
+
+        result = await mcp_call("gpu_health")
+
+        if "error" in result:
+            return ToolResult(
+                tool_name="verify_gpu_state",
+                arguments={},
+                output=f"GPU health check failed: {result['error']}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=result["error"],
+            )
+
+        # Extract GPU status from result
+        gpus = result.get("gpus", result.get("data", {}).get("gpus", []))
+        if not gpus:
+            return ToolResult(
+                tool_name="verify_gpu_state",
+                arguments={},
+                output="No GPU data available",
+                opinion=Opinion.vacuous(),
+                success=True,
+            )
+
+        # Build summary
+        lines = ["GPU Health Status:"]
+        healthy_count = 0
+        total_count = len(gpus)
+
+        for gpu in gpus:
+            idx = gpu.get("index", gpu.get("id", "?"))
+            name = gpu.get("name", "Unknown")
+            util = gpu.get("utilization_gpu", gpu.get("utilization", 0))
+            mem_used = gpu.get("memory_used_mib", gpu.get("memory_used", 0))
+            mem_total = gpu.get("memory_total_mib", gpu.get("memory_total", 1))
+            temp = gpu.get("temperature_gpu", gpu.get("temperature", 0))
+
+            mem_pct = (mem_used / mem_total * 100) if mem_total > 0 else 0
+            status = "healthy" if util < 95 and mem_pct < 95 and temp < 85 else "degraded"
+            if status == "healthy":
+                healthy_count += 1
+
+            lines.append(
+                f"  GPU {idx} ({name}): {status} "
+                f"[util={util}%, mem={mem_pct:.0f}%, temp={temp}C]"
+            )
+
+        output = "\n".join(lines)
+
+        # Generate opinion based on health ratio
+        health_ratio = healthy_count / total_count if total_count > 0 else 0.5
+        if health_ratio >= 0.9:
+            opinion = Opinion.from_tool_result(verified=True, confidence=0.9)
+        elif health_ratio >= 0.5:
+            opinion = Opinion(belief=health_ratio * 0.8, disbelief=0.1, uncertainty=0.9 - health_ratio * 0.8)
+        else:
+            opinion = Opinion.from_tool_result(verified=False, confidence=0.8)
+
+        return ToolResult(
+            tool_name="verify_gpu_state",
+            arguments={},
+            output=output,
+            opinion=opinion,
+            success=True,
+        )
+
+    async def _verify_endpoint_health(self, endpoint: str) -> ToolResult:
+        """Verify endpoint health claims against actual state.
+
+        Args:
+            endpoint: Endpoint name to check
+
+        Returns:
+            ToolResult with endpoint status and opinion
+        """
+        from gaius.mcp.operations import mcp_call
+
+        if not endpoint:
+            return ToolResult(
+                tool_name="verify_endpoint_health",
+                arguments={"endpoint": endpoint},
+                output="No endpoint specified",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error="endpoint parameter required",
+            )
+
+        result = await mcp_call("orchestrator_status")
+
+        if "error" in result:
+            return ToolResult(
+                tool_name="verify_endpoint_health",
+                arguments={"endpoint": endpoint},
+                output=f"Orchestrator status check failed: {result['error']}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=result["error"],
+            )
+
+        # Find the specific endpoint
+        endpoints = result.get("endpoints", result.get("data", {}).get("endpoints", []))
+        target = None
+        for ep in endpoints:
+            if ep.get("name", "").lower() == endpoint.lower():
+                target = ep
+                break
+
+        if not target:
+            return ToolResult(
+                tool_name="verify_endpoint_health",
+                arguments={"endpoint": endpoint},
+                output=f"Endpoint '{endpoint}' not found in orchestrator status",
+                opinion=Opinion.vacuous(),
+                success=True,
+            )
+
+        # Extract status
+        status = target.get("status", "unknown")
+        healthy = target.get("healthy", status.lower() in ("healthy", "running"))
+        port = target.get("port", "?")
+        pid = target.get("pid", "?")
+
+        output = (
+            f"Endpoint '{endpoint}' status:\n"
+            f"  Status: {status}\n"
+            f"  Healthy: {healthy}\n"
+            f"  Port: {port}\n"
+            f"  PID: {pid}"
+        )
+
+        # Generate opinion based on health
+        if healthy:
+            opinion = Opinion.from_tool_result(verified=True, confidence=0.9)
+        elif status.lower() in ("starting", "pending"):
+            opinion = Opinion(belief=0.3, disbelief=0.2, uncertainty=0.5)
+        else:
+            opinion = Opinion.from_tool_result(verified=False, confidence=0.85)
+
+        return ToolResult(
+            tool_name="verify_endpoint_health",
+            arguments={"endpoint": endpoint},
+            output=output,
+            opinion=opinion,
+            success=True,
+        )
+
+    async def _search_precedent(self, query: str) -> ToolResult:
+        """Search KB for similar past incidents or heuristics.
+
+        Args:
+            query: Search query
+
+        Returns:
+            ToolResult with matching heuristics and opinion
+        """
+        if not query:
+            return ToolResult(
+                tool_name="search_precedent",
+                arguments={"query": query},
+                output="No query specified",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error="query parameter required",
+            )
+
+        from gaius.storage.kb_ops import search_kb
+
+        results = await search_kb(query, max_results=5)
+
+        if not results:
+            return ToolResult(
+                tool_name="search_precedent",
+                arguments={"query": query},
+                output=f"No KB entries found matching '{query}'",
+                opinion=Opinion(belief=0.1, disbelief=0.1, uncertainty=0.8),
+                success=True,
+            )
+
+        # Format results
+        lines = [f"KB search results for '{query}':"]
+        for r in results:
+            path = r.path if hasattr(r, "path") else str(r)
+            snippet = r.snippet[:100] if hasattr(r, "snippet") and r.snippet else ""
+            lines.append(f"  - {path}")
+            if snippet:
+                lines.append(f"    {snippet}...")
+
+        output = "\n".join(lines)
+
+        # More results = higher confidence that precedent exists
+        confidence = min(0.9, 0.5 + len(results) * 0.1)
+        opinion = Opinion(belief=confidence, disbelief=0.0, uncertainty=1.0 - confidence)
+
+        return ToolResult(
+            tool_name="search_precedent",
+            arguments={"query": query},
+            output=output,
+            opinion=opinion,
+            success=True,
+        )
+
+    async def _verify_recommendation(
+        self,
+        recommendation: str,
+        objective: str = "audit-recommendation-quality",
+    ) -> ToolResult:
+        """Verify recommendation via RASE verification case.
+
+        Args:
+            recommendation: The recommendation text to verify
+            objective: RASE objective name
+
+        Returns:
+            ToolResult with RASE verdict and opinion
+        """
+        if not recommendation:
+            return ToolResult(
+                tool_name="verify_recommendation",
+                arguments={"recommendation": recommendation, "objective": objective},
+                output="No recommendation specified",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error="recommendation parameter required",
+            )
+
+        try:
+            # Import RASE components
+            from gaius.rase.domains.kb.verification import KBVerificationCase
+            from gaius.rase.domains.kb.state import KBState
+            from gaius.rase.domains.kb.objective import load_objective
+
+            # Load objective from KB
+            objective_path = f"current/objectives/{objective}.md"
+            obj = load_objective(objective_path)
+
+            # Build verification case
+            case = KBVerificationCase(objective=obj)
+
+            # Create state from recommendation text
+            state = KBState.from_text(recommendation)
+
+            # Evaluate
+            result = case.evaluate(state)
+
+            # Format output
+            verdict = result.verdict.value if hasattr(result.verdict, "value") else str(result.verdict)
+            accuracy = result.accuracy if hasattr(result, "accuracy") else 0.0
+
+            gate_results = []
+            if hasattr(result, "constraint_results"):
+                for name, r in result.constraint_results.items():
+                    satisfied = r.satisfied if hasattr(r, "satisfied") else "?"
+                    gate_results.append(f"  - {name}: {'PASS' if satisfied else 'FAIL'}")
+
+            output = (
+                f"RASE Verification Result:\n"
+                f"  Verdict: {verdict}\n"
+                f"  Accuracy: {accuracy:.2f}\n"
+                f"Gate Results:\n" + "\n".join(gate_results) if gate_results else ""
+            )
+
+            # Generate opinion from RASE result
+            opinion = Opinion.from_rase_verdict(verdict, accuracy)
+
+            return ToolResult(
+                tool_name="verify_recommendation",
+                arguments={"recommendation": recommendation, "objective": objective},
+                output=output,
+                opinion=opinion,
+                success=True,
+            )
+
+        except FileNotFoundError:
+            # Objective not found - return vacuous opinion
+            return ToolResult(
+                tool_name="verify_recommendation",
+                arguments={"recommendation": recommendation, "objective": objective},
+                output=f"RASE objective '{objective}' not found in KB. Skipping verification.",
+                opinion=Opinion.vacuous(),
+                success=True,
+            )
+        except ImportError as e:
+            # RASE not available
+            return ToolResult(
+                tool_name="verify_recommendation",
+                arguments={"recommendation": recommendation, "objective": objective},
+                output=f"RASE verification not available: {e}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.error(f"RASE verification failed: {e}")
+            return ToolResult(
+                tool_name="verify_recommendation",
+                arguments={"recommendation": recommendation, "objective": objective},
+                output=f"RASE verification error: {e}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=str(e),
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -261,6 +878,71 @@ Output your verdict in this format:
 ### Overall Assessment
 [Summary paragraph of system health and key actions needed]
 """
+
+AGENTIC_JUDGE_PROMPT = """You are the final arbiter synthesizing the debate between analyst and skeptic.
+
+You have access to tools that let you verify claims before making your final verdict:
+- verify_gpu_state: Check actual GPU health to verify claims about GPU status
+- verify_endpoint_health: Check if a specific endpoint is actually healthy/unhealthy
+- search_precedent: Search KB heuristics for similar past incidents
+- verify_recommendation: Use RASE to validate recommendation quality
+
+**Your workflow:**
+1. First, analyze the debate transcript to identify claims that need verification
+2. Use tools to verify key claims (especially about system state or recommendations)
+3. After gathering tool evidence, synthesize your final verdict
+
+**When to use tools:**
+- A finding claims GPU is overloaded → call verify_gpu_state
+- A finding claims an endpoint is unhealthy → call verify_endpoint_health
+- The debate mentions a similar past incident → call search_precedent
+- A recommendation includes a command → call verify_recommendation
+
+**Maximum tool calls:** 5 (be selective, verify the most impactful claims)
+
+After verification, output your verdict in this format:
+
+## Tool Verification Summary
+[Summary of what tools verified and the evidence gathered]
+
+## Final Verdict
+
+### Confirmed Findings (High Confidence)
+[Findings that survived critique AND tool verification]
+- Finding: [title]
+  - Original Confidence: X.X
+  - Final Confidence: X.X
+  - Tool Evidence: [what verification showed]
+  - Reasoning: [why it survived critique]
+
+### Qualified Findings (Medium Confidence)
+[Findings with valid concerns that warrant caution]
+- Finding: [title]
+  - Original Confidence: X.X
+  - Final Confidence: X.X
+  - Caveats: [what the skeptic raised or tools showed]
+
+### Dismissed Findings
+[Findings that skeptic or tools successfully challenged]
+- Finding: [title]
+  - Reason for Dismissal: [what critique or tool evidence was fatal]
+
+### Prioritized Recommendations
+1. [Most actionable + highest impact] - Commands: [...] - RASE Verified: [yes/no/skipped]
+2. [Second priority] - Commands: [...] - RASE Verified: [yes/no/skipped]
+
+### Overall Assessment
+[Summary paragraph of system health and key actions needed]
+
+### Epistemic State
+[Your overall confidence after tool verification, expressed as:
+ Belief: X.X (evidence supports verdict)
+ Disbelief: X.X (evidence contradicts)
+ Uncertainty: X.X (insufficient evidence)]
+"""
+
+# Maximum tool calls allowed in agentic judge phase
+MAX_AGENTIC_JUDGE_TOOL_CALLS = 5
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -608,7 +1290,16 @@ class MetaAgentDebateCoordinator:
     async def _run_judge_synthesis(
         self, findings: str, critique: str, actionability: str
     ) -> DebateResult:
-        """Phase 5: Final synthesis with XAI (always frontier quality).
+        """Phase 5: Agentic Judge synthesis with MCP tool access and RASE verification.
+
+        This phase transforms from a single LLM call into an agentic loop where
+        the Judge can verify claims via tools before rendering a final verdict.
+
+        The agentic loop:
+        1. Initial synthesis request (with tools available)
+        2. If LLM requests tool calls, execute them and accumulate opinions
+        3. Continue loop until LLM produces final verdict (no tool calls)
+        4. Fuse all opinions and include in final result
 
         Args:
             findings: Initial analysis from Phase 2
@@ -616,7 +1307,7 @@ class MetaAgentDebateCoordinator:
             actionability: Actionability assessment from Phase 4
 
         Returns:
-            Complete DebateResult with parsed findings and recommendations
+            Complete DebateResult with parsed findings, recommendations, and fused opinion
         """
         combined_input = f"""## Initial Findings (Phase 2)
 {findings or 'No initial findings generated.'}
@@ -628,49 +1319,130 @@ class MetaAgentDebateCoordinator:
 {actionability or 'Actionability phase skipped or failed.'}
 """
         router = self._get_router()
-        response = await router.complete(
-            messages=[
-                {"role": "system", "content": JUDGE_PROMPT},
-                {"role": "user", "content": combined_input},
-            ],
-            provider="xai",  # Always XAI for judge (Quality-First)
-            max_tokens=4096,
-            temperature=0.4,
-            source_context=self._get_source_context(
-                agent_alias="metaagent_judge",
-                task_type="judge_synthesis",
-            ),
-        )
+        tool_handler = AgenticJudgeToolHandler(pool=self._pool)
 
-        if response.error:
-            logger.error(
-                f"Judge synthesis failed: {response.error}\n"
-                f"  Guru Meditation: #MA.DEBATE.00000005.JUDGEFAIL"
-            )
-            self._transcript.judge_synthesis = f"ERROR: {response.error}"
-            return DebateResult(
-                findings=[],
-                recommendations=[],
-                transcript=self._transcript,
-                verdict_summary="",
-                total_llm_calls=self._total_calls,
-                total_tokens=self._total_tokens,
-                error=f"Judge synthesis failed: {response.error}",
+        # Build conversation for agentic loop
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": AGENTIC_JUDGE_PROMPT},
+            {"role": "user", "content": combined_input},
+        ]
+
+        # Track tool opinions for fusion
+        collected_opinions: list[Opinion] = []
+        tool_results_log: list[str] = []
+        tool_call_count = 0
+
+        # Agentic loop - continue until LLM gives final verdict (no tool calls)
+        while tool_call_count < MAX_AGENTIC_JUDGE_TOOL_CALLS:
+            response = await router.complete(
+                messages=messages,
+                provider="xai",  # Always XAI for judge (Quality-First)
+                max_tokens=4096,
+                temperature=0.4,
+                tools=AGENTIC_JUDGE_TOOLS,
+                source_context=self._get_source_context(
+                    agent_alias="metaagent_agentic_judge",
+                    task_type="judge_synthesis",
+                ),
             )
 
-        self._track_exchange(response)
-        self._transcript.judge_synthesis = response.content
+            if response.error:
+                logger.error(
+                    f"Agentic Judge synthesis failed: {response.error}\n"
+                    f"  Guru Meditation: #MA.DEBATE.00000005.JUDGEFAIL"
+                )
+                self._transcript.judge_synthesis = f"ERROR: {response.error}"
+                return DebateResult(
+                    findings=[],
+                    recommendations=[],
+                    transcript=self._transcript,
+                    verdict_summary="",
+                    total_llm_calls=self._total_calls,
+                    total_tokens=self._total_tokens,
+                    error=f"Agentic Judge synthesis failed: {response.error}",
+                )
+
+            self._track_exchange(response)
+
+            # Check if LLM requested tool calls (ExternalResponse.tool_calls is Optional[list[ToolCall]])
+            tool_calls = response.tool_calls
+
+            if not tool_calls:
+                # No tool calls - LLM has produced final verdict
+                logger.info(
+                    f"Agentic Judge completed with {tool_call_count} tool calls"
+                )
+                break
+
+            # Process tool calls (ToolCall dataclass has id, name, arguments attributes)
+            for tool_call in tool_calls:
+                tool_call_count += 1
+                if tool_call_count > MAX_AGENTIC_JUDGE_TOOL_CALLS:
+                    logger.warning(
+                        f"Agentic Judge exceeded max tool calls ({MAX_AGENTIC_JUDGE_TOOL_CALLS})"
+                    )
+                    break
+
+                # Extract tool call info from ToolCall dataclass
+                tool_name = tool_call.name
+                tool_args_str = tool_call.arguments
+                tool_call_id = tool_call.id or f"call_{tool_call_count}"
+
+                try:
+                    tool_args = json.loads(tool_args_str) if isinstance(tool_args_str, str) else tool_args_str
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                logger.info(f"Agentic Judge tool call: {tool_name}({tool_args})")
+
+                # Execute tool
+                tool_result = await tool_handler.handle_tool_call(tool_name, tool_args)
+
+                # Collect opinion for fusion
+                collected_opinions.append(tool_result.opinion)
+                tool_results_log.append(
+                    f"[{tool_name}] {tool_result.output[:200]}..."
+                    if len(tool_result.output) > 200
+                    else f"[{tool_name}] {tool_result.output}"
+                )
+
+                # Add assistant's tool call to messages
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [tool_call],
+                })
+
+                # Add tool result to messages
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": tool_result.to_message(),
+                })
+
+        # Fuse all collected opinions
+        fused_opinion = cumulative_fusion(collected_opinions) if collected_opinions else None
+
+        # Build final verdict content
+        final_content = response.content or ""
+        if tool_results_log:
+            # Prepend tool verification log if tools were used
+            tool_log = "\n\n## Tool Verification Log\n" + "\n".join(tool_results_log)
+            final_content = tool_log + "\n\n" + final_content
+
+        self._transcript.judge_synthesis = final_content
 
         # Parse judge output into structured result
-        parsed_findings, parsed_recommendations = self._parse_judge_output(response.content)
+        parsed_findings, parsed_recommendations = self._parse_judge_output(response.content or "")
 
         return DebateResult(
             findings=parsed_findings,
             recommendations=parsed_recommendations,
             transcript=self._transcript,
-            verdict_summary=response.content,
+            verdict_summary=final_content,
             total_llm_calls=self._total_calls,
             total_tokens=self._total_tokens,
+            fused_opinion=fused_opinion,
         )
 
     def _format_data_for_analysis(self, data: dict[str, Any]) -> str:

@@ -74,6 +74,7 @@ sequenceDiagram
     participant S as Skeptic<br/>(XAI)
     participant C as Critic<br/>(Cerebras)
     participant J as Judge<br/>(XAI)
+    participant MCP as MCP Tools
     participant KB as Knowledge Base
 
     Note over DB: Phase 1: Data Gathering (No LLM)
@@ -93,11 +94,14 @@ sequenceDiagram
     C->>C: Check prerequisites
     C-->>J: Actionability assessment
 
-    Note over J: Phase 5: Judge Synthesis (ALWAYS XAI)
-    J->>J: Weigh analyst vs skeptic
-    J->>J: Adjust confidences
-    J->>J: Prioritize recommendations
-    J-->>KB: Debate transcript
+    Note over J: Phase 5: Agentic Judge (ALWAYS XAI)
+    J->>MCP: verify_gpu_state()
+    MCP-->>J: GPU health data
+    J->>MCP: verify_recommendation()
+    MCP-->>J: RASE verdict + accuracy
+    J->>J: Fuse opinions (Subjective Logic)
+    J->>J: Render final verdict
+    J-->>KB: Debate transcript + fused_opinion
 ```
 
 ### Budget Strategy: Quality-First
@@ -129,6 +133,126 @@ for role in roles:
     print(f"{role.name}: {role.description}")
     print(f"  Provider: {role.preferred_model_id or 'default'}")
 ```
+
+## Agentic Judge Phase (Phase 5)
+
+Phase 5 is an **agentic loop** where the Judge can verify claims using MCP tools before rendering a final verdict. This transforms MetaAgent from Stage 2 (Reactive) to Stage 3 (Self-Evolving) in the Agent-as-a-Judge taxonomy (arXiv:2601.05111).
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Agentic Judge Loop                        │
+├─────────────────────────────────────────────────────────────┤
+│ 1. Initial synthesis request (with tools available)         │
+│ 2. While LLM requests tool calls (max 5):                   │
+│    - Execute tool (gpu_health, orchestrator_status, etc.)   │
+│    - Collect Opinion (Subjective Logic) from result         │
+│    - Continue conversation with tool results                │
+│ 3. When LLM produces final verdict (no tool calls):         │
+│    - Fuse all collected opinions via cumulative_fusion()    │
+│    - Return DebateResult with fused_opinion                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Available Tools
+
+The Judge has access to 4 MCP-style tools:
+
+| Tool | Description | Use Case |
+|------|-------------|----------|
+| `verify_gpu_state` | Check actual GPU health metrics | "GPU 4 is overloaded" |
+| `verify_endpoint_health` | Validate endpoint status | "reasoning endpoint is down" |
+| `search_precedent` | Search KB for similar past incidents | "similar incident in past" |
+| `verify_recommendation` | RASE verification of recommendation quality | Validate `/health fix` commands |
+
+### Subjective Logic Integration
+
+Tool results are converted to Subjective Logic opinions (Jøsang 2016) for uncertainty quantification:
+
+```python
+from gaius.engine.services.metaagent_debate import Opinion, cumulative_fusion
+
+# Opinion tuple: ω = (belief, disbelief, uncertainty, base_rate)
+# Constraint: belief + disbelief + uncertainty = 1
+
+# From tool verification
+gpu_opinion = Opinion.from_tool_result(verified=True, confidence=0.9)
+# → Opinion(belief=0.9, disbelief=0.0, uncertainty=0.1)
+
+# From RASE verdict
+rase_opinion = Opinion.from_rase_verdict(verdict_name="PASS", accuracy=0.85)
+# → Opinion(belief=0.85, disbelief=0.0, uncertainty=0.15)
+
+# Fuse multiple opinions
+fused = cumulative_fusion([gpu_opinion, rase_opinion])
+# → Combined opinion with weighted belief/disbelief/uncertainty
+
+# Expected probability (for thresholding)
+p = fused.expected_probability  # belief + base_rate * uncertainty
+```
+
+### RASE Verification
+
+The `verify_recommendation` tool uses the RASE objective at `current/objectives/audit-recommendation-quality.md`:
+
+| Gate | Level | Constraint | Weight |
+|------|-------|------------|--------|
+| command_parseable | Syntactic | CommandParseable | 1.0 |
+| follows_pattern | Syntactic | FollowsPattern | 1.0 |
+| references_heuristic | Semantic | ReferencesKBHeuristic | 1.5 |
+| command_exists | Empirical | CommandExists | 2.0 |
+
+Recognized command patterns:
+- `/health fix <service>` - Automated remediation
+- `devenv tasks run <task>` - Infrastructure management
+- `uv run gaius-cli --cmd "<command>"` - CLI operations
+
+### Tool Calling Flow
+
+```python
+# In metaagent_debate.py
+
+# XAI backend now supports tool calling
+response = await router.complete(
+    messages=messages,
+    provider="xai",
+    tools=AGENTIC_JUDGE_TOOLS,  # 4 tool definitions
+    max_tokens=4096,
+)
+
+# Response may include tool_calls (ToolCall dataclass)
+if response.tool_calls:
+    for tool_call in response.tool_calls:
+        # Execute tool via AgenticJudgeToolHandler
+        result = await handler.handle_tool_call(
+            tool_call.name,      # e.g., "verify_gpu_state"
+            tool_call.arguments  # JSON string
+        )
+        # Collect opinion for fusion
+        opinions.append(result.opinion)
+```
+
+### Budget Impact
+
+| Scenario | Tool Calls | Est. Cost |
+|----------|------------|-----------|
+| No verification needed | 0 | ~$0.08 |
+| Typical (1-2 tools) | 1-2 | ~$0.12 |
+| Thorough (3-5 tools) | 3-5 | ~$0.20 |
+
+### Configuration
+
+```python
+# Maximum tool calls per judge phase (prevents runaway)
+MAX_AGENTIC_JUDGE_TOOL_CALLS = 5
+```
+
+### References
+
+- [arXiv:2601.05111](https://arxiv.org/abs/2601.05111) - Agent-as-a-Judge Survey
+- [Subjective Logic](https://en.wikipedia.org/wiki/Subjective_logic) - Jøsang 2016
+- [RASE Objective](../../build/dev/current/objectives/audit-recommendation-quality.md)
 
 ## HX Exchange Tracking
 
@@ -399,10 +523,10 @@ export METAAGENT_SYNC_INTERVAL=1  # Hours between syncs
 <!-- GAI:META
 module: gaius.engine.services.metaagent
 layer: L3-engine
-key_types: [MetaAgentService, MetaAgentDebateCoordinator, DebateTranscript, DebateResult, Finding, Recommendation, ExchangeRecord, ExchangeCapture, ExternalInferenceRouter]
-key_funcs: [trigger_audit, trigger_sync, run_debate, get_metaagent_service, get_debate_coordinator, get_source_context, link_kb_artifact]
+key_types: [MetaAgentService, MetaAgentDebateCoordinator, DebateTranscript, DebateResult, Finding, Recommendation, ExchangeRecord, ExchangeCapture, ExternalInferenceRouter, Opinion, ToolResult, AgenticJudgeToolHandler, ToolCall]
+key_funcs: [trigger_audit, trigger_sync, run_debate, get_metaagent_service, get_debate_coordinator, get_source_context, link_kb_artifact, cumulative_fusion]
 submodules: [metaagent_debate, llm_exchange_context, pooled_budget, metabase_sync]
-depends: [backends.external, hx.exchange, hx.lineage, agents.roles]
+depends: [backends.external, hx.exchange, hx.lineage, agents.roles, mcp.operations, rase.domains.kb]
 dependents: [grpc.servicers, mcp_server]
 config_keys: [metaagent.audit_day, metaagent.audit_hour, metaagent.sync_interval]
 env_vars: [XAI_API_KEY, CEREBRAS_API_KEY, GAIUS_HX_CAPTURE_EXCHANGES, METAAGENT_AUDIT_DAY, METAAGENT_AUDIT_HOUR, METAAGENT_SYNC_INTERVAL]
@@ -410,6 +534,7 @@ grpc_services: [GaiusService.TriggerMetaAgentAudit, GaiusService.TriggerMetaAgen
 call_paths:
   audit: mcp.metaagent_audit→MetaAgentService.trigger_audit→DebateCoordinator.run_debate→Router.complete→HX.capture
   sync: mcp.metaagent_sync→MetaAgentService.trigger_sync→MetabaseSyncClient.sync_all_models
+  agentic_judge: DebateCoordinator._run_judge_synthesis→Router.complete(tools)→AgenticJudgeToolHandler→mcp_call/search_kb→Opinion.from_*→cumulative_fusion
 cross_module_calls:
   - from: MetaAgentService._run_audit_analysis
     to: metaagent_debate.MetaAgentDebateCoordinator.run_debate
@@ -423,10 +548,19 @@ cross_module_calls:
   - from: MetaAgentService._run_audit_analysis
     to: llm_exchange_context.link_kb_artifact
     purpose: Link KB artifacts to source exchanges
+  - from: AgenticJudgeToolHandler._verify_gpu_state
+    to: mcp.operations.mcp_call("gpu_health")
+    purpose: Verify GPU claims via MCP
+  - from: AgenticJudgeToolHandler._verify_endpoint_health
+    to: mcp.operations.mcp_call("orchestrator_status")
+    purpose: Verify endpoint status via MCP
+  - from: AgenticJudgeToolHandler._verify_recommendation
+    to: rase.domains.kb.verification.KBVerificationCase
+    purpose: RASE verification of recommendations
 test_cmds:
   status: 'uv run gaius-cli --cmd "/metaagent status" --format json'
   audit: 'uv run gaius-cli --cmd "/metaagent audit" --format json'
   sync: 'uv run gaius-cli --cmd "/metaagent sync" --format json'
-guru_codes: [MA.00000001.BUDGETEXHAUST, MA.00000010.MBNOCONFIG, MA.00000020.AUDITFAIL, MA.DEBATE.00000001.GATHERINGFAIL, MA.DEBATE.00000006.NOXAI]
+guru_codes: [MA.00000001.BUDGETEXHAUST, MA.00000010.MBNOCONFIG, MA.00000020.AUDITFAIL, MA.DEBATE.00000001.GATHERINGFAIL, MA.DEBATE.00000005.JUDGEFAIL, MA.DEBATE.00000006.NOXAI]
 fail_fast: true
 -->
