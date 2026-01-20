@@ -5732,6 +5732,248 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- Metaflow Operational Insights ---
+    # Read-only access to Metaflow run history for situational awareness
+
+    @server.tool()
+    async def metaflow_status() -> str:
+        """Get Metaflow operational status summary.
+
+        Returns flow types, recent activity, running flows, and failures.
+        Provides situational awareness for pipeline operations.
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            status = await client.get_status_summary()
+            return json.dumps(status, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_list_types() -> str:
+        """List all Metaflow flow types with run counts.
+
+        Returns available flow types with statistics on completions and failures.
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            flow_types = await client.list_flow_types()
+            return json.dumps({
+                "count": len(flow_types),
+                "flow_types": flow_types,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_list_runs(
+        flow_type: str = "",
+        status: str = "",
+        limit: int = 20,
+    ) -> str:
+        """List recent Metaflow runs with optional filtering.
+
+        Args:
+            flow_type: Filter by flow type (e.g., "research", "arxiv")
+            status: Filter by status (completed, failed, running)
+            limit: Maximum runs to return (default 20)
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            runs = await client.list_recent_runs(
+                flow_type=flow_type if flow_type else None,
+                status=status if status else None,
+                limit=limit,
+            )
+            return json.dumps({
+                "count": len(runs),
+                "runs": runs,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_get_run(run_id: str) -> str:
+        """Get detailed information about a specific Metaflow run.
+
+        Args:
+            run_id: UUID of the flow run
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            run = await client.get_run_details(run_id)
+            if not run:
+                return json.dumps({"error": f"Run {run_id} not found"}, indent=2)
+            return json.dumps(run, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_stats(flow_type: str = "", hours: int = 24) -> str:
+        """Get Metaflow statistics over a time period.
+
+        Args:
+            flow_type: Specific flow type or empty for all
+            hours: Time window in hours (default 24)
+
+        Returns:
+            Statistics including success rates, durations, throughput
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            stats = await client.get_flow_stats(
+                flow_type=flow_type if flow_type else None,
+                hours=hours,
+            )
+            return json.dumps(stats, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Observability / Prometheus Metrics ---
+    # Read-only access to OTel metrics via Prometheus for situational awareness
+
+    @server.tool()
+    async def observe_status() -> str:
+        """Get full observability dashboard status.
+
+        Returns system metrics including latency, error rates, GPU utilization,
+        and healing status via the engine's Observe service.
+        """
+        try:
+            from .client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call("Observe", "status", {
+                "include_sparklines": False,
+                "sparkline_points": 0,
+            })
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def observe_metrics(include_sparklines: bool = False) -> str:
+        """Get current OTel metrics with optional time series.
+
+        Args:
+            include_sparklines: Include time series data for trending
+
+        Returns:
+            Metrics dashboard with values and optional sparkline data
+        """
+        try:
+            from .client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call("Observe", "status", {
+                "include_sparklines": include_sparklines,
+                "sparkline_points": 20 if include_sparklines else 0,
+            })
+            return json.dumps({
+                "metrics": result.get("metrics", []),
+                "timestamp": result.get("timestamp"),
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prometheus_query(query: str) -> str:
+        """Execute a PromQL instant query against Prometheus.
+
+        Args:
+            query: PromQL query string (e.g., "gaius_gaius_inference_count_total")
+
+        Returns:
+            Query result with current value and labels
+        """
+        try:
+            from .observability.sources.prometheus import get_prometheus_source
+
+            source = get_prometheus_source()
+            result = await source.query_instant(query)
+            if result is None:
+                return json.dumps({
+                    "query": query,
+                    "result": None,
+                    "message": "No data returned",
+                }, indent=2)
+
+            return json.dumps({
+                "query": query,
+                "value": result.value,
+                "timestamp": result.timestamp.isoformat(),
+                "labels": result.labels,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prometheus_query_range(
+        query: str,
+        duration_seconds: int = 300,
+        step_seconds: int = 15,
+    ) -> str:
+        """Execute a PromQL range query for time series data.
+
+        Args:
+            query: PromQL query string
+            duration_seconds: How far back to query (default 5 minutes)
+            step_seconds: Resolution between points (default 15s)
+
+        Returns:
+            Time series with values suitable for trending analysis
+        """
+        try:
+            from .observability.sources.prometheus import get_prometheus_source
+
+            source = get_prometheus_source()
+            series = await source.query_range(
+                query=query,
+                duration_seconds=duration_seconds,
+                step_seconds=step_seconds,
+            )
+
+            return json.dumps({
+                "query": query,
+                "duration_seconds": duration_seconds,
+                "step_seconds": step_seconds,
+                "count": len(series.values),
+                "values": [
+                    {"value": v.value, "timestamp": v.timestamp.isoformat()}
+                    for v in series.values
+                ],
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prometheus_health() -> str:
+        """Check Prometheus availability.
+
+        Returns whether Prometheus is reachable and accepting queries.
+        """
+        try:
+            from .observability.sources.prometheus import get_prometheus_source
+
+            source = get_prometheus_source()
+            healthy = await source.health_check()
+            return json.dumps({
+                "healthy": healthy,
+                "url": source.base_url,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e), "healthy": False}, indent=2)
+
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing
 

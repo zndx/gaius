@@ -382,6 +382,50 @@ AGENTIC_JUDGE_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_metaflow",
+            "description": "Query Metaflow operational data to understand pipeline execution history, success rates, and recent failures. Provides situational awareness about what flows are running, which have failed, and overall pipeline health.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_type": {
+                        "type": "string",
+                        "enum": ["status", "types", "recent_runs", "failed", "stats"],
+                        "description": "Type of Metaflow query: status (summary), types (flow types with counts), recent_runs (recent executions), failed (recent failures), stats (success rates and durations)",
+                    },
+                    "flow_type": {
+                        "type": "string",
+                        "description": "Optional: Filter by flow type (e.g., 'research', 'arxiv', 'cloudera_docs')",
+                    },
+                },
+                "required": ["query_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_metrics",
+            "description": "Query Prometheus/OTel metrics to verify claims about system performance, resource usage, and operational health. Can execute PromQL queries or get metric summaries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_type": {
+                        "type": "string",
+                        "enum": ["health", "summary", "query"],
+                        "description": "Type of metrics query: health (Prometheus availability), summary (current metrics overview), query (execute PromQL)",
+                    },
+                    "promql": {
+                        "type": "string",
+                        "description": "PromQL query string (required when query_type='query'). Example: 'gaius_gaius_inference_requests_total'",
+                    },
+                },
+                "required": ["query_type"],
+            },
+        },
+    },
 ]
 
 
@@ -454,6 +498,14 @@ class AgenticJudgeToolHandler:
             elif name == "query_metabase":
                 query_type = arguments.get("query_type", "status")
                 return await self._query_metabase(query_type)
+            elif name == "query_metaflow":
+                query_type = arguments.get("query_type", "status")
+                flow_type = arguments.get("flow_type", "")
+                return await self._query_metaflow(query_type, flow_type)
+            elif name == "query_metrics":
+                query_type = arguments.get("query_type", "health")
+                promql = arguments.get("promql", "")
+                return await self._query_metrics(query_type, promql)
             else:
                 return ToolResult(
                     tool_name=name,
@@ -896,6 +948,307 @@ class AgenticJudgeToolHandler:
                 error=str(e),
             )
 
+    async def _query_metaflow(self, query_type: str, flow_type: str = "") -> ToolResult:
+        """Query Metaflow for operational insights.
+
+        Provides read-only access to Metaflow run history, success rates,
+        and failure information for situational awareness.
+
+        Args:
+            query_type: Type of query (status, types, recent_runs, failed, stats)
+            flow_type: Optional flow type filter
+
+        Returns:
+            ToolResult with Metaflow data and opinion
+        """
+        from gaius.engine.services.metaflow_query import get_metaflow_client
+
+        client = get_metaflow_client()
+
+        try:
+            if query_type == "status":
+                status = await client.get_status_summary()
+                stats_24h = status.get("stats_24h", {})
+                running = status.get("currently_running", [])
+                failures = status.get("recent_failures", [])
+
+                summary = (
+                    f"Metaflow Operational Status (last 24h):\n"
+                    f"  Total Runs: {stats_24h.get('total_runs', 0)}\n"
+                    f"  Completed: {stats_24h.get('completed', 0)}\n"
+                    f"  Failed: {stats_24h.get('failed', 0)}\n"
+                    f"  Running: {stats_24h.get('running', 0)}\n"
+                    f"  Success Rate: {stats_24h.get('success_rate_pct', 0):.1f}%\n"
+                    f"  Currently Running: {len(running)}\n"
+                    f"  Recent Failures (1h): {len(failures)}"
+                )
+
+                # Success rate affects opinion
+                success_rate = stats_24h.get("success_rate_pct", 50) / 100
+                if success_rate >= 0.9:
+                    opinion = Opinion(belief=0.8, disbelief=0.0, uncertainty=0.2)
+                elif success_rate >= 0.7:
+                    opinion = Opinion(belief=0.5, disbelief=0.2, uncertainty=0.3)
+                else:
+                    opinion = Opinion(belief=0.2, disbelief=0.5, uncertainty=0.3)
+
+            elif query_type == "types":
+                flow_types = await client.list_flow_types()
+                if flow_types:
+                    lines = ["Available Flow Types:"]
+                    for ft in flow_types[:10]:
+                        lines.append(
+                            f"  - {ft.get('flow_type', '?')}: "
+                            f"{ft.get('total_runs', 0)} runs, "
+                            f"{ft.get('completed', 0)} completed, "
+                            f"{ft.get('failed', 0)} failed"
+                        )
+                    if len(flow_types) > 10:
+                        lines.append(f"  ... and {len(flow_types) - 10} more")
+                    summary = "\n".join(lines)
+                else:
+                    summary = "No flow types found in Metaflow history"
+
+                opinion = Opinion(belief=0.5, disbelief=0.0, uncertainty=0.5)
+
+            elif query_type == "recent_runs":
+                runs = await client.list_recent_runs(
+                    flow_type=flow_type if flow_type else None,
+                    limit=10,
+                )
+                if runs:
+                    lines = [f"Recent Runs{' (' + flow_type + ')' if flow_type else ''}:"]
+                    for r in runs:
+                        lines.append(
+                            f"  - {r.get('run_id', '?')[:8]}: "
+                            f"{r.get('flow_type', '?')} "
+                            f"[{r.get('status', '?')}] "
+                            f"duration={r.get('duration_ms', 0)}ms"
+                        )
+                    summary = "\n".join(lines)
+                else:
+                    summary = f"No recent runs found{' for ' + flow_type if flow_type else ''}"
+
+                opinion = Opinion(belief=0.5, disbelief=0.0, uncertainty=0.5)
+
+            elif query_type == "failed":
+                runs = await client.list_recent_runs(status="failed", limit=10)
+                if runs:
+                    lines = ["Recent Failed Runs:"]
+                    for r in runs:
+                        lines.append(
+                            f"  - {r.get('run_id', '?')[:8]}: "
+                            f"{r.get('flow_type', '?')} "
+                            f"at {r.get('completed_at', '?')}"
+                        )
+                    summary = "\n".join(lines)
+                    # Failures indicate potential issues
+                    opinion = Opinion(belief=0.2, disbelief=0.5, uncertainty=0.3)
+                else:
+                    summary = "No recent failed runs found"
+                    opinion = Opinion(belief=0.8, disbelief=0.0, uncertainty=0.2)
+
+            elif query_type == "stats":
+                stats = await client.get_flow_stats(
+                    flow_type=flow_type if flow_type else None,
+                    hours=24,
+                )
+                summary = (
+                    f"Flow Statistics (last 24h){' for ' + flow_type if flow_type else ''}:\n"
+                    f"  Total Runs: {stats.get('total_runs', 0)}\n"
+                    f"  Completed: {stats.get('completed', 0)}\n"
+                    f"  Failed: {stats.get('failed', 0)}\n"
+                    f"  Running: {stats.get('running', 0)}\n"
+                    f"  Success Rate: {stats.get('success_rate_pct', 0):.1f}%\n"
+                    f"  Avg Duration: {stats.get('avg_duration_ms', 0)}ms\n"
+                    f"  Total Inputs: {stats.get('total_inputs', 0)}\n"
+                    f"  Total Outputs: {stats.get('total_outputs', 0)}"
+                )
+
+                success_rate = stats.get("success_rate_pct", 50) / 100
+                opinion = Opinion(
+                    belief=success_rate * 0.8,
+                    disbelief=(1 - success_rate) * 0.5,
+                    uncertainty=1.0 - success_rate * 0.8 - (1 - success_rate) * 0.5,
+                )
+
+            else:
+                return ToolResult(
+                    tool_name="query_metaflow",
+                    arguments={"query_type": query_type, "flow_type": flow_type},
+                    output=f"Unknown query_type: {query_type}. Use: status, types, recent_runs, failed, stats",
+                    opinion=Opinion.vacuous(),
+                    success=False,
+                    error=f"Unknown query_type: {query_type}",
+                )
+
+            return ToolResult(
+                tool_name="query_metaflow",
+                arguments={"query_type": query_type, "flow_type": flow_type},
+                output=summary,
+                opinion=opinion,
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(f"Metaflow query failed: {e}")
+            return ToolResult(
+                tool_name="query_metaflow",
+                arguments={"query_type": query_type, "flow_type": flow_type},
+                output=f"Metaflow query error: {e}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=str(e),
+            )
+
+    async def _query_metrics(self, query_type: str, promql: str = "") -> ToolResult:
+        """Query Prometheus/OTel metrics for verification.
+
+        Provides access to system metrics for verifying claims about
+        performance, resource usage, and operational health.
+
+        Args:
+            query_type: Type of query (health, summary, query)
+            promql: PromQL query string (required when query_type='query')
+
+        Returns:
+            ToolResult with metrics data and opinion
+        """
+        from gaius.observability.sources.prometheus import get_prometheus_source
+
+        source = get_prometheus_source()
+
+        try:
+            if query_type == "health":
+                health = await source.health_check()
+                if health.get("healthy", False):
+                    summary = (
+                        f"Prometheus Health:\n"
+                        f"  Status: Healthy\n"
+                        f"  URL: {source.base_url}\n"
+                        f"  Version: {health.get('version', 'unknown')}"
+                    )
+                    opinion = Opinion(belief=0.9, disbelief=0.0, uncertainty=0.1)
+                else:
+                    summary = (
+                        f"Prometheus Health:\n"
+                        f"  Status: Unhealthy\n"
+                        f"  URL: {source.base_url}\n"
+                        f"  Error: {health.get('error', 'Unknown error')}"
+                    )
+                    opinion = Opinion(belief=0.0, disbelief=0.8, uncertainty=0.2)
+
+            elif query_type == "summary":
+                # Query a few key metrics for summary
+                metrics = []
+
+                # Try to get inference request count
+                try:
+                    result = await source.query_instant("gaius_gaius_inference_requests_total")
+                    if result.get("data", {}).get("result"):
+                        for r in result["data"]["result"][:3]:
+                            metric = r.get("metric", {})
+                            value = r.get("value", [0, "0"])[1]
+                            metrics.append(f"  - inference_requests ({metric.get('agent', 'total')}): {value}")
+                except Exception:
+                    pass
+
+                # Try to get KB entries
+                try:
+                    result = await source.query_instant("gaius_gaius_kb_entries")
+                    if result.get("data", {}).get("result"):
+                        value = result["data"]["result"][0].get("value", [0, "0"])[1]
+                        metrics.append(f"  - kb_entries: {value}")
+                except Exception:
+                    pass
+
+                # Try to get health check count
+                try:
+                    result = await source.query_instant("gaius_gaius_health_checks_total")
+                    if result.get("data", {}).get("result"):
+                        value = result["data"]["result"][0].get("value", [0, "0"])[1]
+                        metrics.append(f"  - health_checks: {value}")
+                except Exception:
+                    pass
+
+                if metrics:
+                    summary = "OTel Metrics Summary:\n" + "\n".join(metrics)
+                    opinion = Opinion(belief=0.6, disbelief=0.0, uncertainty=0.4)
+                else:
+                    summary = "OTel Metrics Summary:\n  No Gaius metrics found in Prometheus"
+                    opinion = Opinion(belief=0.3, disbelief=0.2, uncertainty=0.5)
+
+            elif query_type == "query":
+                if not promql:
+                    return ToolResult(
+                        tool_name="query_metrics",
+                        arguments={"query_type": query_type, "promql": promql},
+                        output="PromQL query required when query_type='query'",
+                        opinion=Opinion.vacuous(),
+                        success=False,
+                        error="promql parameter required",
+                    )
+
+                result = await source.query_instant(promql)
+
+                if result.get("status") == "success":
+                    data = result.get("data", {})
+                    results = data.get("result", [])
+
+                    if results:
+                        lines = [f"PromQL: {promql}"]
+                        for r in results[:10]:
+                            metric = r.get("metric", {})
+                            value = r.get("value", [0, "0"])[1]
+                            labels = ", ".join(f"{k}={v}" for k, v in list(metric.items())[:3])
+                            lines.append(f"  {{{labels}}}: {value}")
+                        if len(results) > 10:
+                            lines.append(f"  ... and {len(results) - 10} more")
+                        summary = "\n".join(lines)
+                        opinion = Opinion(belief=0.7, disbelief=0.0, uncertainty=0.3)
+                    else:
+                        summary = f"PromQL: {promql}\n  No results returned"
+                        opinion = Opinion(belief=0.3, disbelief=0.2, uncertainty=0.5)
+                else:
+                    error_msg = result.get("error", "Unknown error")
+                    return ToolResult(
+                        tool_name="query_metrics",
+                        arguments={"query_type": query_type, "promql": promql},
+                        output=f"PromQL query failed: {error_msg}",
+                        opinion=Opinion.vacuous(),
+                        success=False,
+                        error=error_msg,
+                    )
+
+            else:
+                return ToolResult(
+                    tool_name="query_metrics",
+                    arguments={"query_type": query_type, "promql": promql},
+                    output=f"Unknown query_type: {query_type}. Use: health, summary, query",
+                    opinion=Opinion.vacuous(),
+                    success=False,
+                    error=f"Unknown query_type: {query_type}",
+                )
+
+            return ToolResult(
+                tool_name="query_metrics",
+                arguments={"query_type": query_type, "promql": promql},
+                output=summary,
+                opinion=opinion,
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(f"Metrics query failed: {e}")
+            return ToolResult(
+                tool_name="query_metrics",
+                arguments={"query_type": query_type, "promql": promql},
+                output=f"Metrics query error: {e}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=str(e),
+            )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # System Prompts
@@ -1020,6 +1373,9 @@ You have access to tools that let you verify claims before making your final ver
 - verify_endpoint_health: Check if a specific endpoint is actually healthy/unhealthy
 - search_precedent: Search KB heuristics for similar past incidents
 - verify_recommendation: Use RASE to validate recommendation quality
+- query_metabase: Query Metabase for dashboards, models, and questions (observability artifacts)
+- query_metaflow: Query Metaflow for pipeline run history, success rates, and failures
+- query_metrics: Query Prometheus/OTel metrics to verify performance claims
 
 **Your workflow:**
 1. First, analyze the debate transcript to identify claims that need verification
@@ -1031,6 +1387,9 @@ You have access to tools that let you verify claims before making your final ver
 - A finding claims an endpoint is unhealthy → call verify_endpoint_health
 - The debate mentions a similar past incident → call search_precedent
 - A recommendation includes a command → call verify_recommendation
+- A finding mentions observability gaps or dashboards → call query_metabase
+- A finding mentions pipeline failures or slow flows → call query_metaflow
+- A finding makes claims about system performance → call query_metrics
 
 **Maximum tool calls:** 5 (be selective, verify the most impactful claims)
 

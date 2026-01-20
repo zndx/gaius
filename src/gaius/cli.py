@@ -303,6 +303,9 @@ class GaiusCLI:
                 # Metabase - Read-only Metabase API passthrough
                 elif command == "metabase" or command == "mb":
                     result["data"] = self._run_async(self._cmd_metabase(args))
+                # Metaflow - Read-only operational insights into flow runs
+                elif command == "metaflow" or command == "mf":
+                    result["data"] = self._run_async(self._cmd_metaflow_ops(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -12724,6 +12727,130 @@ Examples:
         return {
             "error": f"Unknown metabase subcommand: {subcmd}",
             "usage": "/metabase [status|dashboards|dashboard|models|questions|card|collections|databases|help]",
+        }
+
+    async def _cmd_metaflow_ops(self, args: str) -> dict:
+        """Metaflow - Read-only operational insights into flow runs.
+
+        Provides situational awareness for Metaflow pipeline operations
+        including run history, statistics, and failure analysis.
+
+        Usage:
+            /metaflow              - Show operational status summary
+            /metaflow status       - Same as above
+            /metaflow types        - List all flow types with run counts
+            /metaflow runs [type]  - List recent runs (optionally filter by type)
+            /metaflow run <id>     - Get details of a specific run
+            /metaflow stats [type] - Get statistics (optionally for specific type)
+            /metaflow failed       - List recent failed runs
+            /metaflow running      - List currently running flows
+            /metaflow help         - Show this help
+
+        Examples:
+            /metaflow                    # Overall status
+            /metaflow runs research      # Recent research flow runs
+            /metaflow stats arxiv 48     # Arxiv stats for last 48 hours
+            /metaflow failed             # Recent failures for triage
+        """
+        from .engine.services.metaflow_query import get_metaflow_client
+
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        # Help - show before client operations
+        if subcmd == "help":
+            return {"command": "metaflow", "help": self._cmd_metaflow_ops.__doc__}
+
+        client = get_metaflow_client()
+
+        # Status - overall summary
+        if subcmd == "status" or not args.strip():
+            status = await client.get_status_summary()
+            return {
+                "command": "metaflow",
+                "action": "status",
+                **status,
+            }
+
+        # Types - list all flow types
+        if subcmd == "types":
+            flow_types = await client.list_flow_types()
+            return {
+                "command": "metaflow",
+                "action": "types",
+                "count": len(flow_types),
+                "flow_types": flow_types,
+            }
+
+        # Runs - list recent runs
+        if subcmd == "runs":
+            flow_type = parts[1] if len(parts) > 1 else None
+            limit = int(parts[2]) if len(parts) > 2 else 20
+            runs = await client.list_recent_runs(
+                flow_type=flow_type,
+                limit=limit,
+            )
+            return {
+                "command": "metaflow",
+                "action": "runs",
+                "flow_type": flow_type or "all",
+                "count": len(runs),
+                "runs": runs,
+            }
+
+        # Run - get specific run details
+        if subcmd == "run":
+            if len(parts) < 2:
+                return {"error": "Usage: /metaflow run <run_id>"}
+            run_id = parts[1]
+            run = await client.get_run_details(run_id)
+            if not run:
+                return {"error": f"Run {run_id} not found"}
+            return {
+                "command": "metaflow",
+                "action": "run",
+                **run,
+            }
+
+        # Stats - flow statistics
+        if subcmd == "stats":
+            flow_type = parts[1] if len(parts) > 1 else None
+            hours = int(parts[2]) if len(parts) > 2 else 24
+            stats = await client.get_flow_stats(
+                flow_type=flow_type,
+                hours=hours,
+            )
+            return {
+                "command": "metaflow",
+                "action": "stats",
+                **stats,
+            }
+
+        # Failed - recent failures
+        if subcmd == "failed":
+            limit = int(parts[1]) if len(parts) > 1 else 10
+            runs = await client.list_recent_runs(status="failed", limit=limit)
+            return {
+                "command": "metaflow",
+                "action": "failed",
+                "count": len(runs),
+                "runs": runs,
+            }
+
+        # Running - currently running
+        if subcmd == "running":
+            runs = await client.list_recent_runs(status="running", limit=20)
+            return {
+                "command": "metaflow",
+                "action": "running",
+                "count": len(runs),
+                "runs": runs,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown metaflow subcommand: {subcmd}",
+            "usage": "/metaflow [status|types|runs|run|stats|failed|running|help]",
         }
 
 
