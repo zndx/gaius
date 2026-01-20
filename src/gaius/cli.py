@@ -300,6 +300,9 @@ class GaiusCLI:
                 # Prospects - FMP-based prospect intelligence
                 elif command == "prospects" or command == "pro":
                     result["data"] = self._run_async(self._cmd_prospects(args))
+                # Metabase - Read-only Metabase API passthrough
+                elif command == "metabase" or command == "mb":
+                    result["data"] = self._run_async(self._cmd_metabase(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -12541,6 +12544,186 @@ Examples:
         return {
             "error": f"Unknown prospects subcommand: {subcmd}",
             "usage": "/prospects [status|check|update|help] ...",
+        }
+
+    async def _cmd_metabase(self, args: str) -> dict:
+        """Metabase - Read-only API passthrough for situational awareness.
+
+        Query Metabase to understand dashboards, models, questions, and collections.
+        This is read-only for the MetaAgent Judge (Grok) situational awareness.
+
+        Usage:
+            /metabase              - Show connection status and counts
+            /metabase status       - Same as above
+            /metabase dashboards   - List all dashboards
+            /metabase dashboard N  - Get details of dashboard ID N
+            /metabase models       - List all models (semantic layer)
+            /metabase questions    - List all saved questions
+            /metabase card N       - Get details of card (model/question) ID N
+            /metabase collections  - List all collections
+            /metabase databases    - List all databases
+
+        Environment:
+            METABASE_URL         - Metabase instance URL (e.g., http://localhost:3000)
+            METABASE_API_KEY     - API key for authentication
+            METABASE_DATABASE_ID - Database ID for meta schema
+
+        Examples:
+            /metabase status       # Check connection
+            /metabase dashboards   # List dashboards
+            /metabase models       # List semantic models
+            /metabase card 42      # Get card details
+        """
+        from gaius.engine.services.metabase_sync import get_metabase_client
+
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+        subargs = parts[1:] if len(parts) > 1 else []
+
+        # Help is always available, even when not configured
+        if subcmd == "help":
+            return {
+                "command": "metabase",
+                "help": self._cmd_metabase.__doc__,
+            }
+
+        client = get_metabase_client()
+
+        if not client.is_configured:
+            return {
+                "error": "Metabase not configured",
+                "hint": "Set METABASE_URL, METABASE_API_KEY, METABASE_DATABASE_ID",
+            }
+
+        connected = await client.test_connection()
+        if not connected:
+            return {"error": "Failed to connect to Metabase"}
+
+        # Status (default)
+        if subcmd in ("", "status"):
+            status = await client.get_status()
+            return {
+                "command": "metabase",
+                "action": "status",
+                **status,
+            }
+
+        # List dashboards
+        if subcmd == "dashboards":
+            dashboards = await client.list_dashboards()
+            return {
+                "command": "metabase",
+                "action": "dashboards",
+                "count": len(dashboards),
+                "dashboards": [
+                    {"id": d["id"], "name": d["name"], "description": d.get("description")}
+                    for d in dashboards
+                ],
+            }
+
+        # Get single dashboard
+        if subcmd == "dashboard":
+            if not subargs:
+                return {"error": "Usage: /metabase dashboard <id>"}
+            try:
+                dashboard_id = int(subargs[0])
+            except ValueError:
+                return {"error": f"Invalid dashboard ID: {subargs[0]}"}
+            dashboard = await client.get_dashboard(dashboard_id)
+            if not dashboard:
+                return {"error": f"Dashboard {dashboard_id} not found"}
+            return {
+                "command": "metabase",
+                "action": "dashboard",
+                "id": dashboard["id"],
+                "name": dashboard["name"],
+                "description": dashboard.get("description"),
+                "cards": [
+                    {"id": c.get("id"), "name": c.get("card", {}).get("name")}
+                    for c in dashboard.get("dashcards", [])
+                    if c.get("card")
+                ],
+            }
+
+        # List models
+        if subcmd == "models":
+            models = await client.list_cards(filter_type="model")
+            return {
+                "command": "metabase",
+                "action": "models",
+                "count": len(models),
+                "models": [
+                    {"id": m["id"], "name": m["name"], "description": m.get("description")}
+                    for m in models
+                ],
+            }
+
+        # List questions
+        if subcmd == "questions":
+            questions = await client.list_cards(filter_type="question")
+            return {
+                "command": "metabase",
+                "action": "questions",
+                "count": len(questions),
+                "questions": [
+                    {"id": q["id"], "name": q["name"], "display": q.get("display")}
+                    for q in questions
+                ],
+            }
+
+        # Get single card
+        if subcmd == "card":
+            if not subargs:
+                return {"error": "Usage: /metabase card <id>"}
+            try:
+                card_id = int(subargs[0])
+            except ValueError:
+                return {"error": f"Invalid card ID: {subargs[0]}"}
+            card = await client.get_card(card_id)
+            if not card:
+                return {"error": f"Card {card_id} not found"}
+            return {
+                "command": "metabase",
+                "action": "card",
+                "id": card["id"],
+                "name": card["name"],
+                "type": card.get("type"),
+                "description": card.get("description"),
+                "display": card.get("display"),
+                "database_id": card.get("database_id"),
+                "query": card.get("dataset_query"),
+            }
+
+        # List collections
+        if subcmd == "collections":
+            collections = await client.list_collections()
+            return {
+                "command": "metabase",
+                "action": "collections",
+                "count": len(collections),
+                "collections": [
+                    {"id": c["id"], "name": c["name"], "location": c.get("location")}
+                    for c in collections
+                ],
+            }
+
+        # List databases
+        if subcmd == "databases":
+            databases = await client.list_databases()
+            return {
+                "command": "metabase",
+                "action": "databases",
+                "count": len(databases),
+                "databases": [
+                    {"id": d["id"], "name": d["name"], "engine": d.get("engine")}
+                    for d in databases
+                ],
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown metabase subcommand: {subcmd}",
+            "usage": "/metabase [status|dashboards|dashboard|models|questions|card|collections|databases|help]",
         }
 
 

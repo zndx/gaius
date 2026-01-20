@@ -364,6 +364,24 @@ AGENTIC_JUDGE_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_metabase",
+            "description": "Query Metabase to understand available dashboards, models, and questions for observability. Provides situational awareness about what monitoring artifacts exist and what could be created.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_type": {
+                        "type": "string",
+                        "enum": ["status", "dashboards", "models", "questions"],
+                        "description": "Type of Metabase query: status (overview), dashboards (list), models (semantic layer), questions (saved queries)",
+                    }
+                },
+                "required": ["query_type"],
+            },
+        },
+    },
 ]
 
 
@@ -433,6 +451,9 @@ class AgenticJudgeToolHandler:
                 recommendation = arguments.get("recommendation", "")
                 objective = arguments.get("objective", "audit-recommendation-quality")
                 return await self._verify_recommendation(recommendation, objective)
+            elif name == "query_metabase":
+                query_type = arguments.get("query_type", "status")
+                return await self._query_metabase(query_type)
             else:
                 return ToolResult(
                     tool_name=name,
@@ -757,6 +778,119 @@ class AgenticJudgeToolHandler:
                 tool_name="verify_recommendation",
                 arguments={"recommendation": recommendation, "objective": objective},
                 output=f"RASE verification error: {e}",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error=str(e),
+            )
+
+    async def _query_metabase(self, query_type: str) -> ToolResult:
+        """Query Metabase for situational awareness.
+
+        Provides read-only access to Metabase dashboards, models, and questions
+        to understand what monitoring artifacts exist and what could be created.
+
+        Args:
+            query_type: Type of query (status, dashboards, models, questions)
+
+        Returns:
+            ToolResult with Metabase data and opinion
+        """
+        from gaius.engine.services.metabase_sync import get_metabase_client
+
+        client = get_metabase_client()
+
+        if not client.is_configured:
+            return ToolResult(
+                tool_name="query_metabase",
+                arguments={"query_type": query_type},
+                output="Metabase not configured. Set METABASE_URL, METABASE_API_KEY, METABASE_DATABASE_ID.",
+                opinion=Opinion.vacuous(),
+                success=False,
+                error="Metabase not configured",
+            )
+
+        try:
+            connected = await client.test_connection()
+            if not connected:
+                return ToolResult(
+                    tool_name="query_metabase",
+                    arguments={"query_type": query_type},
+                    output="Failed to connect to Metabase",
+                    opinion=Opinion.vacuous(),
+                    success=False,
+                    error="Connection failed",
+                )
+
+            if query_type == "status":
+                status = await client.get_status()
+                summary = (
+                    f"Metabase Status:\n"
+                    f"  Connected: {status.get('connected', False)}\n"
+                    f"  URL: {status.get('url', 'unknown')}\n"
+                    f"  Dashboards: {status.get('dashboards', 0)}\n"
+                    f"  Models: {status.get('models', 0)}\n"
+                    f"  Questions: {status.get('questions', 0)}\n"
+                    f"  Collections: {status.get('collections', 0)}"
+                )
+
+            elif query_type == "dashboards":
+                dashboards = await client.list_dashboards()
+                if dashboards:
+                    names = [d.get("name", "?") for d in dashboards[:10]]
+                    summary = f"Found {len(dashboards)} dashboards: {', '.join(names)}"
+                    if len(dashboards) > 10:
+                        summary += f" (and {len(dashboards) - 10} more)"
+                else:
+                    summary = "No dashboards found in Metabase"
+
+            elif query_type == "models":
+                models = await client.list_cards(filter_type="model")
+                if models:
+                    names = [m.get("name", "?") for m in models[:10]]
+                    summary = f"Found {len(models)} models: {', '.join(names)}"
+                    if len(models) > 10:
+                        summary += f" (and {len(models) - 10} more)"
+                else:
+                    summary = "No models (semantic layer) found in Metabase"
+
+            elif query_type == "questions":
+                questions = await client.list_cards(filter_type="question")
+                if questions:
+                    names = [q.get("name", "?") for q in questions[:10]]
+                    summary = f"Found {len(questions)} saved questions: {', '.join(names)}"
+                    if len(questions) > 10:
+                        summary += f" (and {len(questions) - 10} more)"
+                else:
+                    summary = "No saved questions found in Metabase"
+
+            else:
+                return ToolResult(
+                    tool_name="query_metabase",
+                    arguments={"query_type": query_type},
+                    output=f"Unknown query_type: {query_type}. Use: status, dashboards, models, questions",
+                    opinion=Opinion.vacuous(),
+                    success=False,
+                    error=f"Unknown query_type: {query_type}",
+                )
+
+            # Metabase queries provide context, not verification
+            # Return a neutral opinion (high uncertainty)
+            opinion = Opinion(belief=0.5, disbelief=0.0, uncertainty=0.5)
+
+            return ToolResult(
+                tool_name="query_metabase",
+                arguments={"query_type": query_type},
+                output=summary,
+                opinion=opinion,
+                success=True,
+            )
+
+        except Exception as e:
+            logger.error(f"Metabase query failed: {e}")
+            return ToolResult(
+                tool_name="query_metabase",
+                arguments={"query_type": query_type},
+                output=f"Metabase query error: {e}",
                 opinion=Opinion.vacuous(),
                 success=False,
                 error=str(e),

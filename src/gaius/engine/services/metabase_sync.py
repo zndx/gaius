@@ -327,6 +327,168 @@ class MetabaseSyncClient:
             duration_ms=duration_ms,
         )
 
+    # =========================================================================
+    # Read Operations (for situational awareness)
+    # =========================================================================
+
+    async def list_dashboards(self) -> list[dict[str, Any]]:
+        """List all dashboards.
+
+        Returns:
+            List of dashboard metadata
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        client = await self._get_client()
+        try:
+            response = await client.get("/api/dashboard")
+            if response.status_code != 200:
+                logger.warning(f"Failed to list dashboards: {response.status_code}")
+                return []
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error listing dashboards: {e}")
+            return []
+
+    async def get_dashboard(self, dashboard_id: int) -> dict[str, Any] | None:
+        """Get dashboard details including cards.
+
+        Args:
+            dashboard_id: The dashboard ID to retrieve
+
+        Returns:
+            Dashboard data or None if not found
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        client = await self._get_client()
+        try:
+            response = await client.get(f"/api/dashboard/{dashboard_id}")
+            if response.status_code != 200:
+                return None
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error getting dashboard {dashboard_id}: {e}")
+            return None
+
+    async def list_cards(self, filter_type: str | None = None) -> list[dict[str, Any]]:
+        """List all cards (questions/models).
+
+        Args:
+            filter_type: Filter by type ("model", "question", or None for all)
+
+        Returns:
+            List of card metadata
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        client = await self._get_client()
+        try:
+            params: dict[str, Any] = {"f": "all"}
+            if filter_type == "model":
+                params["model_id"] = True
+            response = await client.get("/api/card", params=params)
+            if response.status_code != 200:
+                logger.warning(f"Failed to list cards: {response.status_code}")
+                return []
+            cards = response.json()
+            if filter_type:
+                cards = [c for c in cards if c.get("type") == filter_type]
+            return cards
+        except Exception as e:
+            logger.error(f"Error listing cards: {e}")
+            return []
+
+    async def get_card(self, card_id: int) -> dict[str, Any] | None:
+        """Get card (question/model) details.
+
+        Args:
+            card_id: The card ID to retrieve
+
+        Returns:
+            Card data or None if not found
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        client = await self._get_client()
+        try:
+            response = await client.get(f"/api/card/{card_id}")
+            if response.status_code != 200:
+                return None
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error getting card {card_id}: {e}")
+            return None
+
+    async def list_collections(self) -> list[dict[str, Any]]:
+        """List all collections.
+
+        Returns:
+            List of collection metadata
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        client = await self._get_client()
+        try:
+            response = await client.get("/api/collection")
+            if response.status_code != 200:
+                logger.warning(f"Failed to list collections: {response.status_code}")
+                return []
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error listing collections: {e}")
+            return []
+
+    async def list_databases(self) -> list[dict[str, Any]]:
+        """List all databases.
+
+        Returns:
+            List of database metadata
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        client = await self._get_client()
+        try:
+            response = await client.get("/api/database")
+            if response.status_code != 200:
+                logger.warning(f"Failed to list databases: {response.status_code}")
+                return []
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error listing databases: {e}")
+            return []
+
+    async def get_status(self) -> dict[str, Any]:
+        """Get Metabase instance status summary.
+
+        Returns:
+            Summary dict with connection status and object counts
+        """
+        if not self._connected:
+            await self.test_connection()
+
+        dashboards = await self.list_dashboards()
+        cards = await self.list_cards()
+        models = [c for c in cards if c.get("type") == "model"]
+        questions = [c for c in cards if c.get("type") != "model"]
+        collections = await self.list_collections()
+
+        return {
+            "connected": self._connected,
+            "url": self.base_url,
+            "database_id": self.database_id,
+            "dashboards": len(dashboards),
+            "models": len(models),
+            "questions": len(questions),
+            "collections": len(collections),
+        }
+
     async def close(self) -> None:
         """Close HTTP client."""
         if self._client:

@@ -5569,6 +5569,169 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- Metabase Read Operations ---
+    # Read-only access to Metabase for situational awareness
+
+    @server.tool()
+    async def metabase_status() -> str:
+        """Get Metabase connection status and summary.
+
+        Returns connection status and counts of dashboards, models, questions.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({
+                    "error": "Metabase not configured",
+                    "hint": "Set METABASE_URL, METABASE_API_KEY, METABASE_DATABASE_ID"
+                }, indent=2)
+
+            await client.test_connection()
+            status = await client.get_status()
+            return json.dumps(status, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_list_dashboards() -> str:
+        """List all Metabase dashboards.
+
+        Returns list of dashboards with id, name, and description.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            dashboards = await client.list_dashboards()
+            return json.dumps({
+                "count": len(dashboards),
+                "dashboards": [
+                    {"id": d["id"], "name": d["name"], "description": d.get("description")}
+                    for d in dashboards
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_get_dashboard(dashboard_id: int) -> str:
+        """Get details of a specific Metabase dashboard.
+
+        Args:
+            dashboard_id: The dashboard ID to retrieve
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            dashboard = await client.get_dashboard(dashboard_id)
+            if not dashboard:
+                return json.dumps({"error": f"Dashboard {dashboard_id} not found"}, indent=2)
+
+            return json.dumps({
+                "id": dashboard["id"],
+                "name": dashboard["name"],
+                "description": dashboard.get("description"),
+                "cards": [
+                    {"id": c.get("card", {}).get("id"), "name": c.get("card", {}).get("name")}
+                    for c in dashboard.get("dashcards", [])
+                    if c.get("card")
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_list_models() -> str:
+        """List all Metabase models (semantic layer).
+
+        Returns list of models with id, name, and description.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            models = await client.list_cards(filter_type="model")
+            return json.dumps({
+                "count": len(models),
+                "models": [
+                    {"id": m["id"], "name": m["name"], "description": m.get("description")}
+                    for m in models
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_list_questions() -> str:
+        """List all Metabase questions (saved queries).
+
+        Returns list of questions with id, name, and display type.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            questions = await client.list_cards(filter_type="question")
+            return json.dumps({
+                "count": len(questions),
+                "questions": [
+                    {"id": q["id"], "name": q["name"], "display": q.get("display")}
+                    for q in questions
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_get_card(card_id: int) -> str:
+        """Get details of a specific Metabase card (model or question).
+
+        Args:
+            card_id: The card ID to retrieve
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            card = await client.get_card(card_id)
+            if not card:
+                return json.dumps({"error": f"Card {card_id} not found"}, indent=2)
+
+            return json.dumps({
+                "id": card["id"],
+                "name": card["name"],
+                "type": card.get("type"),
+                "description": card.get("description"),
+                "display": card.get("display"),
+                "database_id": card.get("database_id"),
+                "query": card.get("dataset_query"),
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing
 
