@@ -96,6 +96,9 @@ class ServiceRegistry:
     # MetaAgent service for Metabase sync, audits, budget
     metaagent_service: Any = None
 
+    # ThetaAgent service for situational awareness and consolidation
+    theta_service: Any = None
+
     # Engine config
     config: Any = None
 

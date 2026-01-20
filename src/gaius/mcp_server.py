@@ -63,6 +63,12 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 - theta_consolidate: Run NVAR-mediated consolidation cycle
 - theta_consolidation_stats: Get consolidation statistics
 
+**Bases Feature Store (Dataview-style DQL)**
+- bases_list: List available bases (snapshot, historical, registry)
+- bases_query: Execute DQL query against a base
+- bases_entity_history: Get event-sourced history for an entity
+- bases_health: Check feature store health
+
 **Development**
 - reload_modules: Hot-reload Python modules without restart
 
@@ -5971,6 +5977,192 @@ Domain: {domain or 'general'}
                 "healthy": healthy,
                 "url": source.base_url,
             }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e), "healthy": False}, indent=2)
+
+    # =========================================================================
+    # Bases Feature Store (Dataview-style DQL over feature bases)
+    # =========================================================================
+
+    @server.tool()
+    async def bases_list(
+        base_type: str = "all",
+        tags: str = "",
+    ) -> str:
+        """List available bases in the feature store.
+
+        Bases are named views over features/entities with Dataview-style
+        query semantics. Types include snapshot (real-time), historical
+        (event-sourced), and registry (metadata).
+
+        Args:
+            base_type: Filter by type ("snapshot", "historical", "registry", "all")
+            tags: Comma-separated tags to filter by (matches ANY)
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+            bases = await service.list_bases(base_type=base_type, tags=tag_list)
+
+            return json.dumps({
+                "count": len(bases),
+                "bases": [
+                    {
+                        "name": b.name,
+                        "display_name": b.display_name,
+                        "description": b.description,
+                        "base_type": b.base_type,
+                        "entity_type": b.entity_type,
+                        "feature_groups": b.feature_groups,
+                        "tags": b.tags,
+                        "default_dql": b.default_dql,
+                    }
+                    for b in bases
+                ],
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def bases_query(
+        base_name: str,
+        dql: str = "",
+        timeout_ms: int = 30000,
+        max_rows: int = 1000,
+    ) -> str:
+        """Execute a DQL query against a base.
+
+        DQL (Dataview Query Language) supports:
+        - WHERE: Filter conditions (field = value, AND, OR, NOT, IN, LIKE)
+        - ORDER BY: Sorting (field ASC/DESC)
+        - LIMIT: Row limit
+        - AS OF: Point-in-time query for historical bases
+        - GROUP BY: Aggregation
+
+        Examples:
+            bases_query("_entity_types")
+            bases_query("holdings_snapshot", "WHERE ticker IN ('AAPL', 'MSFT') ORDER BY value DESC LIMIT 10")
+            bases_query("trades_historical", "WHERE entity_id = 'user_123' AS OF '2024-01-01' LIMIT 100")
+
+        Args:
+            base_name: Name of the base to query
+            dql: DQL query string (WHERE, ORDER BY, LIMIT, AS OF, GROUP BY)
+            timeout_ms: Query timeout in milliseconds
+            max_rows: Maximum rows to return
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            result = await service.query_base(
+                base_name=base_name,
+                dql=dql or None,
+                options={
+                    "timeout_ms": timeout_ms,
+                    "max_rows": max_rows,
+                },
+            )
+
+            return json.dumps({
+                "base_name": base_name,
+                "row_count": result.row_count,
+                "truncated": result.truncated,
+                "query_time_ms": result.query_time_ms,
+                "backend": result.backend,
+                "columns": [
+                    {"name": c.name, "type": c.data_type, "nullable": c.nullable}
+                    for c in result.columns
+                ],
+                "rows": result.rows,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def bases_entity_history(
+        entity_id: str,
+        entity_type: str = "",
+        base_name: str = "",
+        max_events: int = 1000,
+        include_deleted: bool = False,
+    ) -> str:
+        """Get event-sourced history for an entity.
+
+        Retrieves the full event history from a historical base, showing
+        how an entity's state changed over time (INSERT, UPDATE, DELETE).
+
+        Args:
+            entity_id: The entity identifier to query
+            entity_type: Entity type (e.g., "holding", "trade") - required if base_name not provided
+            base_name: Specific historical base to query (optional)
+            max_events: Maximum events to return
+            include_deleted: Include DELETE operations in results
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            result = await service.get_entity_history(
+                entity_id=entity_id,
+                entity_type=entity_type or None,
+                base_name=base_name or None,
+                options={
+                    "max_events": max_events,
+                    "include_deleted": include_deleted,
+                },
+            )
+
+            return json.dumps({
+                "entity_id": result.entity_id,
+                "entity_type": result.entity_type,
+                "total_events": result.total_events,
+                "time_range": [
+                    str(result.time_range[0]) if result.time_range else None,
+                    str(result.time_range[1]) if result.time_range else None,
+                ],
+                "events": result.events,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def bases_health() -> str:
+        """Check Bases feature store health.
+
+        Returns service status, query statistics, and backend availability.
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            health = await service.health_check()
+            return json.dumps(health, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e), "healthy": False}, indent=2)
 

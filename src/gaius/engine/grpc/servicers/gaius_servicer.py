@@ -4124,15 +4124,52 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaSitrepRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaSitrepResponse:
-        """Generate situational awareness report."""
+        """Generate situational awareness report.
+
+        Delegates to ThetaService if available, otherwise falls back to
+        direct ThetaAgent instantiation for backward compatibility.
+        """
         try:
+            horizon = request.horizon or "day"
+
+            # Prefer ThetaService if available (Engine-First architecture)
+            theta_service = self._services.theta_service
+            if theta_service:
+                result = await theta_service.sitrep(horizon=horizon)
+
+                if not result.get("success"):
+                    return ThetaSitrepResponse(
+                        success=False,
+                        error=result.get("error", "Unknown error"),
+                    )
+
+                report = result.get("report", {})
+                return ThetaSitrepResponse(
+                    success=True,
+                    horizon=horizon,
+                    generated_at_ms=int(
+                        report.get("generated_at_ms", 0)
+                        or (report.get("generated_at", 0) * 1000 if isinstance(report.get("generated_at"), float) else 0)
+                    ),
+                    healthy=report.get("system_status", {}).get("healthy", False),
+                    status_text=report.get("system_status", {}).get("status_text", ""),
+                    gpu_count=report.get("system_status", {}).get("gpu_count", 0),
+                    endpoint_count=report.get("system_status", {}).get("endpoint_count", 0),
+                    priority_count=len(report.get("priorities", [])),
+                    thought_count=len(report.get("thoughts", [])),
+                    objective_count=len(report.get("objectives", [])),
+                    project_count=report.get("project_count", 0),
+                    report_json=json.dumps(report).encode(),
+                    ascii_format=result.get("ascii_format", ""),
+                )
+
+            # Fallback: direct ThetaAgent instantiation
             import os
             from ....agents.theta import ThetaAgent
 
             kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
             agent = ThetaAgent(kb_root=kb_root)
 
-            horizon = request.horizon or "day"
             report = await agent.sitrep(horizon=horizon)
             report_dict = report.to_dict()
 
@@ -4163,8 +4200,37 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidateRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidateResponse:
-        """Run NVAR-mediated consolidation cycle."""
+        """Run NVAR-mediated consolidation cycle.
+
+        Delegates to ThetaService if available, otherwise falls back to
+        direct ThetaAgent instantiation for backward compatibility.
+        """
         try:
+            temporal_slice = request.temporal_slice or None
+            max_candidates = request.max_candidates or 10
+
+            # Prefer ThetaService if available (Engine-First architecture)
+            theta_service = self._services.theta_service
+            if theta_service:
+                result = await theta_service.run_consolidation(
+                    temporal_slice=temporal_slice,
+                    max_candidates=max_candidates,
+                )
+
+                signal = result.get("signal", {}) or {}
+                return ThetaConsolidateResponse(
+                    success=result.get("success", False),
+                    slice_id=result.get("slice_id", ""),
+                    urgency=signal.get("urgency", 0.0),
+                    drift=signal.get("drift", 0.0),
+                    candidates_evaluated=result.get("candidates_evaluated", 0),
+                    candidates_selected=result.get("candidates_selected", 0),
+                    documents_augmented=result.get("documents_augmented", 0),
+                    error=result.get("error", ""),
+                    guru_meditation=result.get("guru_code", ""),
+                )
+
+            # Fallback: direct ThetaAgent instantiation
             import os
             from ....agents.theta import ThetaAgent
             from ....agents.theta.subsumption import DeepOntoNotAvailableError
@@ -4176,8 +4242,8 @@ class GaiusServicer(GaiusServiceServicer):
             )
 
             result = await agent.run_consolidation(
-                temporal_slice=request.temporal_slice or None,
-                max_candidates=request.max_candidates or 10,
+                temporal_slice=temporal_slice,
+                max_candidates=max_candidates,
             )
 
             return ThetaConsolidateResponse(
@@ -4194,7 +4260,7 @@ class GaiusServicer(GaiusServiceServicer):
             error_msg = str(e)
             guru = ""
             if "DEEPONTO_UNAVAILABLE" in error_msg:
-                guru = "#THETA.00000001.DEEPONTO_UNAVAILABLE"
+                guru = "#THETA.00000001.DEEPONTO"
 
             logger.exception(f"ThetaConsolidate failed: {e}")
             return ThetaConsolidateResponse(
@@ -4208,14 +4274,24 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidationStatsRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidationStatsResponse:
-        """Get consolidation statistics."""
-        try:
-            import os
-            from ....agents.theta import ThetaAgent
+        """Get consolidation statistics.
 
-            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
-            agent = ThetaAgent(kb_root=kb_root)
-            stats = agent.get_consolidation_stats()
+        Delegates to ThetaService if available, otherwise falls back to
+        direct ThetaAgent instantiation for backward compatibility.
+        """
+        try:
+            # Prefer ThetaService if available (Engine-First architecture)
+            theta_service = self._services.theta_service
+            if theta_service:
+                stats = theta_service.get_consolidation_stats()
+            else:
+                # Fallback: direct ThetaAgent instantiation
+                import os
+                from ....agents.theta import ThetaAgent
+
+                kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+                agent = ThetaAgent(kb_root=kb_root)
+                stats = agent.get_consolidation_stats()
 
             return ThetaConsolidationStatsResponse(
                 # NVAR dynamics

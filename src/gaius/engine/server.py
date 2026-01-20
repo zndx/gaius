@@ -114,6 +114,9 @@ class GaiusEngine:
         # MetaAgent service (Metabase sync, audits, budget)
         self._metaagent_service = None
 
+        # ThetaAgent service (situational awareness, consolidation)
+        self._theta_service = None
+
         # Health service (basic metrics)
         self._health_service = None
 
@@ -981,6 +984,9 @@ class GaiusEngine:
         # 4. Initialize MetaAgent (OPTIONAL, depends on health_observer for db_pool)
         await self._create_metaagent_daemon()
 
+        # 5. Initialize ThetaAgent (NORMAL, no background loop - passive service)
+        await self._create_theta_service()
+
         # Register daemons with dependency ordering
         if self._health_observer_service:
             self._daemon_registry.register(self._health_observer_service, after=[])
@@ -1161,6 +1167,49 @@ class GaiusEngine:
             logger.warning(f"MetaAgent service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to create MetaAgent daemon: {e}")
+
+    async def _create_theta_service(self) -> None:
+        """Create ThetaService for situational awareness and consolidation.
+
+        ThetaService wraps ThetaAgent with Engine-First gRPC integration.
+        It's a passive service (NORMAL criticality) that responds to requests,
+        not a background daemon that polls for work.
+
+        Provides:
+        - /sitrep: Situational awareness reports
+        - /consolidate: NVAR-mediated temporal consolidation
+        - Consolidation statistics
+        """
+        try:
+            import os
+            from .services.theta_service import ThetaService, ThetaConfig
+
+            logger.info("Creating ThetaService...")
+
+            # Get KB root from environment or use default
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+
+            # Create service with config
+            self._theta_service = ThetaService(
+                config=ThetaConfig(kb_root=kb_root),
+                db_pool=self._db_pool,
+            )
+
+            # Start the service (marks it as running)
+            await self._theta_service.start()
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "theta_service", self._theta_service
+                )
+
+            logger.info("ThetaService created (sitrep, consolidation)")
+
+        except ImportError as e:
+            logger.warning(f"ThetaService not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create ThetaService: {e}")
 
     async def _create_agenda_tracker(self) -> None:
         """Create and wire AgendaTracker for workload-centric incident tracking.
