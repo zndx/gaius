@@ -90,7 +90,7 @@ function generateStyles(theme: Theme): string {
       color: var(--text-secondary);
     }
 
-    /* Masonry grid */
+    /* Masonry grid - CSS columns for true responsive masonry */
     main {
       max-width: 1400px;
       margin: 0 auto;
@@ -98,17 +98,13 @@ function generateStyles(theme: Theme): string {
     }
 
     .masonry-grid {
-      display: flex;
-      gap: 1.25rem;
-      align-items: flex-start;
+      column-count: 3;
+      column-gap: 1.25rem;
     }
 
     .masonry-column {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
+      break-inside: avoid;
+      margin-bottom: 1.25rem;
     }
 
     /* Cards */
@@ -229,14 +225,14 @@ function generateStyles(theme: Theme): string {
 
     /* Responsive */
     @media (max-width: 1024px) {
-      .masonry-column:nth-child(3) {
-        display: none;
+      .masonry-grid {
+        column-count: 2;
       }
     }
 
     @media (max-width: 640px) {
-      .masonry-column:nth-child(2) {
-        display: none;
+      .masonry-grid {
+        column-count: 1;
       }
       .viz-header { height: 200px; }
       .viz-title { font-size: 1.5rem; }
@@ -364,14 +360,6 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;');
 }
 
-function distributeToColumns(cards: Card[], numColumns: number): Card[][] {
-  const columns: Card[][] = Array.from({ length: numColumns }, () => []);
-  cards.forEach((card, i) => {
-    columns[i % numColumns].push(card);
-  });
-  return columns;
-}
-
 export async function handleLanding(c: Context): Promise<Response> {
   const kv = c.env?.GAIUS_COLLECTIONS;
 
@@ -405,9 +393,7 @@ export async function handleLanding(c: Context): Promise<Response> {
     console.error('Failed to fetch cards:', err);
   }
 
-  // Distribute cards to 3 columns for masonry layout
-  const columns = distributeToColumns(cards, 3);
-
+  // Cards rendered directly (CSS columns handles layout)
   const html = `
     <!DOCTYPE html>
     <html lang="en">
@@ -431,9 +417,9 @@ export async function handleLanding(c: Context): Promise<Response> {
       <main>
         ${cards.length > 0 ? `
           <div class="masonry-grid">
-            ${columns.map(col => `
+            ${cards.map(card => `
               <div class="masonry-column">
-                ${col.map(card => renderCard(card)).join('')}
+                ${renderCard(card)}
               </div>
             `).join('')}
           </div>
