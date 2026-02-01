@@ -90,7 +90,7 @@ function generateStyles(theme: Theme): string {
       color: var(--text-secondary);
     }
 
-    /* Masonry grid - CSS columns for true responsive masonry */
+    /* Card grid - CSS Grid for top-aligned responsive columns */
     main {
       max-width: 1400px;
       margin: 0 auto;
@@ -98,13 +98,14 @@ function generateStyles(theme: Theme): string {
     }
 
     .masonry-grid {
-      column-count: 3;
-      column-gap: 1.25rem;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+      align-items: start;
     }
 
     .masonry-column {
-      break-inside: avoid;
-      margin-bottom: 1.25rem;
+      /* Wrapper for each card */
     }
 
     /* Cards */
@@ -226,13 +227,13 @@ function generateStyles(theme: Theme): string {
     /* Responsive */
     @media (max-width: 1024px) {
       .masonry-grid {
-        column-count: 2;
+        grid-template-columns: repeat(2, 1fr);
       }
     }
 
     @media (max-width: 640px) {
       .masonry-grid {
-        column-count: 1;
+        grid-template-columns: 1fr;
       }
       .viz-header { height: 200px; }
       .viz-title { font-size: 1.5rem; }
