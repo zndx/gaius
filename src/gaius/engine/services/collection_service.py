@@ -31,7 +31,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, AsyncIterator
 
 import asyncpg
@@ -100,6 +100,7 @@ class Card:
     image_url: str | None = None
     status: str = "pending"  # pending, published, archived
     published_at: datetime | None = None
+    source_date: date | None = None  # Original source publication date (e.g., arXiv submission)
     sequence: int | None = None
     article_id: str | None = None
     prev_card_id: str | None = None
@@ -142,6 +143,7 @@ class Card:
             "image_url": self.image_url,
             "status": self.status,
             "published_at": self.published_at.isoformat() if self.published_at else None,
+            "source_date": self.source_date.isoformat() if self.source_date else None,
             "sequence": self.sequence,
         }
 
@@ -852,6 +854,7 @@ class CollectionService:
             image_url=row.get("image_url"),
             status=row.get("status") or "pending",
             published_at=row.get("published_at"),
+            source_date=row.get("source_date"),
             sequence=row.get("sequence"),
             article_id=row.get("article_id"),
             prev_card_id=row.get("prev_card_id"),

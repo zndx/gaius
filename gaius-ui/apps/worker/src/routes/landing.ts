@@ -20,6 +20,7 @@ interface Card {
   source_url: string;
   source_type: string;
   published_at: string;
+  source_date?: string;  // Original source publication date (e.g., arXiv submission)
 }
 
 interface ThemeConfig {
@@ -335,7 +336,9 @@ function generateVizScript(theme: Theme): string {
 }
 
 function renderCard(card: Card): string {
-  const date = new Date(card.published_at).toLocaleDateString('en-US', {
+  // Prefer source_date (original publication) over published_at (when we added it)
+  const dateStr = card.source_date || card.published_at;
+  const date = new Date(dateStr).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
   });
