@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Enable workers.dev subdomain (gaius-web.rch-zndx.workers.dev)
+workers_dev = true
+
 # Development settings
 [dev]
 port = 8787
@@ -13,13 +16,15 @@ local_protocol = "http"
 binding = "GAIUS_SESSIONS"
 id = "98d07129d1564d479a3ba0b8c81e36c3"
 
+# KV namespace for public collection cards
+[[kv_namespaces]]
+binding = "GAIUS_COLLECTIONS"
+id = "4541b17fa5244bffb346f9a55b8eca93"
+
 # Environment variables
 [vars]
 # ENGINE_CALLBACK_URL = "https://engine.gaius.zndx.org"  # Set after tunnel is configured
 
-# Production custom domain
-# This will create/update the custom domain routing
-[[routes]]
-pattern = "gaius.zndx.org"
-zone_id = "b44e1003e7233d89a90312aeb88e31d4"
-custom_domain = true
+# Production custom domain: gaius.zndx.org
+# Route is configured in Cloudflare dashboard (API token lacks zone:route permissions)
+# To update route, use dashboard or add zone permissions to CLOUDFLARE_API_TOKEN

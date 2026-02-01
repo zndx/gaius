@@ -2483,6 +2483,152 @@ message ProspectsUpdateEvent {
   string sitrep_path = 8;         // Path to sitrep.md (only on COMPLETED)
 }
 
+// =============================================================================
+// Collections (Public Content Landing Page)
+// =============================================================================
+
+// Collection summary for list views
+message CollectionInfo {
+  string collection_id = 1;
+  string slug = 2;
+  string name = 3;
+  string description = 4;
+  string status = 5;              // draft, active, archived
+  bool featured = 6;
+  int32 total_cards = 7;
+  int32 pending_cards = 8;
+  int32 published_cards = 9;
+  string created_at = 10;
+}
+
+// Card summary for list views
+message CardInfo {
+  string card_id = 1;
+  string title = 2;
+  string summary = 3;
+  string source_url = 4;
+  string source_type = 5;         // arxiv, huggingface, cloudera, web, x_bookmark
+  string image_url = 6;
+  string status = 7;              // pending, published, archived
+  string published_at = 8;
+  int32 sequence = 9;
+}
+
+// Status request (overall statistics)
+message CollectionStatusRequest {}
+
+message CollectionStatusResponse {
+  bool success = 1;
+  int32 total_collections = 2;
+  int32 total_cards = 3;
+  int32 pending_cards = 4;
+  int32 published_cards = 5;
+  CollectionInfo featured_collection = 6;
+  string error = 7;
+}
+
+// List collections request
+message CollectionListRequest {
+  string status = 1;              // Filter by status (empty = all)
+  int32 limit = 2;                // Max results (default 50)
+}
+
+message CollectionListResponse {
+  bool success = 1;
+  repeated CollectionInfo collections = 2;
+  string error = 3;
+}
+
+// Create collection request
+message CollectionCreateRequest {
+  string slug = 1;
+  string name = 2;
+  string description = 3;
+  bool featured = 4;              // Set as featured collection
+}
+
+message CollectionCreateResponse {
+  bool success = 1;
+  CollectionInfo collection = 2;
+  string error = 3;
+}
+
+// Set featured collection
+message CollectionSetFeaturedRequest {
+  string slug = 1;                // Collection slug to set as featured
+}
+
+message CollectionSetFeaturedResponse {
+  bool success = 1;
+  CollectionInfo collection = 2;
+  string error = 3;
+}
+
+// Add card to collection
+message CollectionAddCardRequest {
+  string slug = 1;                // Collection slug
+  string title = 2;
+  string summary = 3;
+  string source_url = 4;
+  string source_type = 5;
+  string image_url = 6;
+}
+
+message CollectionAddCardResponse {
+  bool success = 1;
+  CardInfo card = 2;
+  string error = 3;
+}
+
+// List cards in collection
+message CollectionListCardsRequest {
+  string slug = 1;                // Collection slug
+  string status = 2;              // Filter by status (empty = all)
+  int32 limit = 3;                // Max results (default 100)
+}
+
+message CollectionListCardsResponse {
+  bool success = 1;
+  repeated CardInfo cards = 2;
+  int32 total = 3;
+  string error = 4;
+}
+
+// Publish pending cards
+message CollectionPublishCardsRequest {
+  int32 count = 1;                // Number of cards to publish (default 3)
+  string collection_slug = 2;     // Specific collection (empty = featured)
+}
+
+message CollectionPublishCardsResponse {
+  bool success = 1;
+  repeated CardInfo published_cards = 2;
+  int32 published_count = 3;
+  string error = 4;
+}
+
+// Publish 3D visualization data to KV
+message CollectionPublishVizRequest {}
+
+message CollectionPublishVizResponse {
+  bool success = 1;
+  int32 points_count = 2;         // Number of points in viz
+  int32 clusters_count = 3;       // Number of clusters
+  string published_at = 4;
+  string error = 5;
+}
+
+// Sync theme configuration from HOCON to Cloudflare KV
+message CollectionSyncThemeRequest {}
+
+message CollectionSyncThemeResponse {
+  bool success = 1;
+  string theme_id = 2;            // Theme synced (e.g., "keiretsu-dark")
+  string title = 3;               // Site title
+  string namespace_id = 4;        // KV namespace synced to
+  string error = 5;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2726,4 +2872,17 @@ service GaiusService {
   rpc ProspectsStatus(ProspectsStatusRequest) returns (ProspectsStatusResponse);      // Lightweight status check
   rpc ProspectsCheck(ProspectsCheckRequest) returns (ProspectsCheckResponse);         // Daily check with local LLM
   rpc ProspectsUpdate(ProspectsUpdateRequest) returns (stream ProspectsUpdateEvent);  // Full billable analysis (streaming)
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Collections (Public Content Landing Page)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc CollectionStatus(CollectionStatusRequest) returns (CollectionStatusResponse);      // Get overall statistics
+  rpc CollectionList(CollectionListRequest) returns (CollectionListResponse);            // List all collections
+  rpc CollectionCreate(CollectionCreateRequest) returns (CollectionCreateResponse);       // Create new collection
+  rpc CollectionSetFeatured(CollectionSetFeaturedRequest) returns (CollectionSetFeaturedResponse);  // Set featured collection
+  rpc CollectionAddCard(CollectionAddCardRequest) returns (CollectionAddCardResponse);    // Add card to collection
+  rpc CollectionListCards(CollectionListCardsRequest) returns (CollectionListCardsResponse);  // List cards in collection
+  rpc CollectionPublishCards(CollectionPublishCardsRequest) returns (CollectionPublishCardsResponse);  // Publish pending cards
+  rpc CollectionPublishViz(CollectionPublishVizRequest) returns (CollectionPublishVizResponse);  // Update 3D viz data
+  rpc CollectionSyncTheme(CollectionSyncThemeRequest) returns (CollectionSyncThemeResponse);    // Sync HOCON theme to KV
 }

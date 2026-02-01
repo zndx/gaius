@@ -3706,3 +3706,231 @@ class ProspectsUpdateEvent(_message.Message):
     data: bytes
     sitrep_path: str
     def __init__(self, type: _Optional[_Union[ProspectsUpdateEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., symbol: _Optional[str] = ..., filing_type: _Optional[str] = ..., data: _Optional[bytes] = ..., sitrep_path: _Optional[str] = ...) -> None: ...
+
+class CollectionInfo(_message.Message):
+    __slots__ = ("collection_id", "slug", "name", "description", "status", "featured", "total_cards", "pending_cards", "published_cards", "created_at")
+    COLLECTION_ID_FIELD_NUMBER: _ClassVar[int]
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    FEATURED_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PENDING_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_CARDS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    collection_id: str
+    slug: str
+    name: str
+    description: str
+    status: str
+    featured: bool
+    total_cards: int
+    pending_cards: int
+    published_cards: int
+    created_at: str
+    def __init__(self, collection_id: _Optional[str] = ..., slug: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., status: _Optional[str] = ..., featured: bool = ..., total_cards: _Optional[int] = ..., pending_cards: _Optional[int] = ..., published_cards: _Optional[int] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class CardInfo(_message.Message):
+    __slots__ = ("card_id", "title", "summary", "source_url", "source_type", "image_url", "status", "published_at", "sequence")
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_URL_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_URL_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_AT_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_FIELD_NUMBER: _ClassVar[int]
+    card_id: str
+    title: str
+    summary: str
+    source_url: str
+    source_type: str
+    image_url: str
+    status: str
+    published_at: str
+    sequence: int
+    def __init__(self, card_id: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ..., source_url: _Optional[str] = ..., source_type: _Optional[str] = ..., image_url: _Optional[str] = ..., status: _Optional[str] = ..., published_at: _Optional[str] = ..., sequence: _Optional[int] = ...) -> None: ...
+
+class CollectionStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CollectionStatusResponse(_message.Message):
+    __slots__ = ("success", "total_collections", "total_cards", "pending_cards", "published_cards", "featured_collection", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_COLLECTIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PENDING_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_CARDS_FIELD_NUMBER: _ClassVar[int]
+    FEATURED_COLLECTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    total_collections: int
+    total_cards: int
+    pending_cards: int
+    published_cards: int
+    featured_collection: CollectionInfo
+    error: str
+    def __init__(self, success: bool = ..., total_collections: _Optional[int] = ..., total_cards: _Optional[int] = ..., pending_cards: _Optional[int] = ..., published_cards: _Optional[int] = ..., featured_collection: _Optional[_Union[CollectionInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionListRequest(_message.Message):
+    __slots__ = ("status", "limit")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    status: str
+    limit: int
+    def __init__(self, status: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class CollectionListResponse(_message.Message):
+    __slots__ = ("success", "collections", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    COLLECTIONS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    collections: _containers.RepeatedCompositeFieldContainer[CollectionInfo]
+    error: str
+    def __init__(self, success: bool = ..., collections: _Optional[_Iterable[_Union[CollectionInfo, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionCreateRequest(_message.Message):
+    __slots__ = ("slug", "name", "description", "featured")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    FEATURED_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    name: str
+    description: str
+    featured: bool
+    def __init__(self, slug: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., featured: bool = ...) -> None: ...
+
+class CollectionCreateResponse(_message.Message):
+    __slots__ = ("success", "collection", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    collection: CollectionInfo
+    error: str
+    def __init__(self, success: bool = ..., collection: _Optional[_Union[CollectionInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionSetFeaturedRequest(_message.Message):
+    __slots__ = ("slug",)
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    def __init__(self, slug: _Optional[str] = ...) -> None: ...
+
+class CollectionSetFeaturedResponse(_message.Message):
+    __slots__ = ("success", "collection", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    collection: CollectionInfo
+    error: str
+    def __init__(self, success: bool = ..., collection: _Optional[_Union[CollectionInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionAddCardRequest(_message.Message):
+    __slots__ = ("slug", "title", "summary", "source_url", "source_type", "image_url")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_URL_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_URL_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    title: str
+    summary: str
+    source_url: str
+    source_type: str
+    image_url: str
+    def __init__(self, slug: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ..., source_url: _Optional[str] = ..., source_type: _Optional[str] = ..., image_url: _Optional[str] = ...) -> None: ...
+
+class CollectionAddCardResponse(_message.Message):
+    __slots__ = ("success", "card", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    CARD_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    card: CardInfo
+    error: str
+    def __init__(self, success: bool = ..., card: _Optional[_Union[CardInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionListCardsRequest(_message.Message):
+    __slots__ = ("slug", "status", "limit")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    status: str
+    limit: int
+    def __init__(self, slug: _Optional[str] = ..., status: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class CollectionListCardsResponse(_message.Message):
+    __slots__ = ("success", "cards", "total", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    CARDS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    cards: _containers.RepeatedCompositeFieldContainer[CardInfo]
+    total: int
+    error: str
+    def __init__(self, success: bool = ..., cards: _Optional[_Iterable[_Union[CardInfo, _Mapping]]] = ..., total: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionPublishCardsRequest(_message.Message):
+    __slots__ = ("count", "collection_slug")
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_SLUG_FIELD_NUMBER: _ClassVar[int]
+    count: int
+    collection_slug: str
+    def __init__(self, count: _Optional[int] = ..., collection_slug: _Optional[str] = ...) -> None: ...
+
+class CollectionPublishCardsResponse(_message.Message):
+    __slots__ = ("success", "published_cards", "published_count", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    published_cards: _containers.RepeatedCompositeFieldContainer[CardInfo]
+    published_count: int
+    error: str
+    def __init__(self, success: bool = ..., published_cards: _Optional[_Iterable[_Union[CardInfo, _Mapping]]] = ..., published_count: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionPublishVizRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CollectionPublishVizResponse(_message.Message):
+    __slots__ = ("success", "points_count", "clusters_count", "published_at", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    POINTS_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CLUSTERS_COUNT_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_AT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    points_count: int
+    clusters_count: int
+    published_at: str
+    error: str
+    def __init__(self, success: bool = ..., points_count: _Optional[int] = ..., clusters_count: _Optional[int] = ..., published_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionSyncThemeRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CollectionSyncThemeResponse(_message.Message):
+    __slots__ = ("success", "theme_id", "title", "namespace_id", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    THEME_ID_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    NAMESPACE_ID_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    theme_id: str
+    title: str
+    namespace_id: str
+    error: str
+    def __init__(self, success: bool = ..., theme_id: _Optional[str] = ..., title: _Optional[str] = ..., namespace_id: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...

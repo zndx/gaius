@@ -288,6 +288,27 @@ from ...generated import (
     ProspectsCheckResponse,
     ProspectsUpdateRequest,
     ProspectsUpdateEvent,
+    # Collections (Public Content Landing Page)
+    CollectionInfo,
+    CardInfo,
+    CollectionStatusRequest,
+    CollectionStatusResponse,
+    CollectionListRequest,
+    CollectionListResponse,
+    CollectionCreateRequest,
+    CollectionCreateResponse,
+    CollectionSetFeaturedRequest,
+    CollectionSetFeaturedResponse,
+    CollectionAddCardRequest,
+    CollectionAddCardResponse,
+    CollectionListCardsRequest,
+    CollectionListCardsResponse,
+    CollectionPublishCardsRequest,
+    CollectionPublishCardsResponse,
+    CollectionPublishVizRequest,
+    CollectionPublishVizResponse,
+    CollectionSyncThemeRequest,
+    CollectionSyncThemeResponse,
     # Multi-Phase Search Flow
     SearchFlowRequest,
     WebSearchResult,
@@ -6961,3 +6982,387 @@ class GaiusServicer(GaiusServiceServicer):
                 success=False,
                 error=str(e),
             )
+
+    # =========================================================================
+    # Collections (Public Content Landing Page)
+    # =========================================================================
+
+    async def CollectionStatus(
+        self,
+        request: CollectionStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionStatusResponse:
+        """Get collection statistics."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionStatusResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            stats = await service.get_stats()
+            featured = await service.get_featured_collection()
+
+            featured_info = None
+            if featured:
+                featured_cards = await service.list_cards(featured.collection_id)
+                pending = sum(1 for c in featured_cards if c.status == "pending")
+                published = sum(1 for c in featured_cards if c.status == "published")
+                featured_info = CollectionInfo(
+                    collection_id=featured.collection_id,
+                    slug=featured.slug,
+                    name=featured.name,
+                    description=featured.description,
+                    status=featured.status,
+                    featured=featured.featured,
+                    total_cards=len(featured_cards),
+                    pending_cards=pending,
+                    published_cards=published,
+                    created_at=featured.created_at.isoformat() if featured.created_at else "",
+                )
+
+            return CollectionStatusResponse(
+                success=True,
+                total_collections=stats.get("total_collections", 0),
+                total_cards=stats.get("total_cards", 0),
+                pending_cards=stats.get("pending_cards", 0),
+                published_cards=stats.get("published_cards", 0),
+                featured_collection=featured_info,
+            )
+        except Exception as e:
+            logger.exception(f"CollectionStatus failed: {e}")
+            return CollectionStatusResponse(success=False, error=str(e))
+
+    async def CollectionList(
+        self,
+        request: CollectionListRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionListResponse:
+        """List all collections."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionListResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            status_filter = request.status if request.status else None
+            limit = request.limit if request.limit > 0 else 50
+            collections = await service.list_collections(status=status_filter, limit=limit)
+
+            collection_infos = []
+            for col in collections:
+                cards = await service.list_cards(col.collection_id)
+                pending = sum(1 for c in cards if c.status == "pending")
+                published = sum(1 for c in cards if c.status == "published")
+                collection_infos.append(CollectionInfo(
+                    collection_id=col.collection_id,
+                    slug=col.slug,
+                    name=col.name,
+                    description=col.description,
+                    status=col.status,
+                    featured=col.featured,
+                    total_cards=len(cards),
+                    pending_cards=pending,
+                    published_cards=published,
+                    created_at=col.created_at.isoformat() if col.created_at else "",
+                ))
+
+            return CollectionListResponse(success=True, collections=collection_infos)
+        except Exception as e:
+            logger.exception(f"CollectionList failed: {e}")
+            return CollectionListResponse(success=False, error=str(e))
+
+    async def CollectionCreate(
+        self,
+        request: CollectionCreateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionCreateResponse:
+        """Create a new collection."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionCreateResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.create_collection(
+                slug=request.slug,
+                name=request.name,
+                description=request.description,
+                featured=request.featured,
+            )
+
+            return CollectionCreateResponse(
+                success=True,
+                collection=CollectionInfo(
+                    collection_id=collection.collection_id,
+                    slug=collection.slug,
+                    name=collection.name,
+                    description=collection.description,
+                    status=collection.status,
+                    featured=collection.featured,
+                    total_cards=0,
+                    pending_cards=0,
+                    published_cards=0,
+                    created_at=collection.created_at.isoformat() if collection.created_at else "",
+                ),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionCreate failed: {e}")
+            return CollectionCreateResponse(success=False, error=str(e))
+
+    async def CollectionSetFeatured(
+        self,
+        request: CollectionSetFeaturedRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionSetFeaturedResponse:
+        """Set a collection as featured."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionSetFeaturedResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.get_collection_by_slug(request.slug)
+            if not collection:
+                return CollectionSetFeaturedResponse(
+                    success=False,
+                    error=f"Collection not found: {request.slug}",
+                )
+
+            await service.set_featured(collection.collection_id)
+            # Refresh to get updated state
+            collection = await service.get_collection(collection.collection_id)
+
+            return CollectionSetFeaturedResponse(
+                success=True,
+                collection=CollectionInfo(
+                    collection_id=collection.collection_id,
+                    slug=collection.slug,
+                    name=collection.name,
+                    description=collection.description,
+                    status=collection.status,
+                    featured=collection.featured,
+                    total_cards=0,
+                    pending_cards=0,
+                    published_cards=0,
+                    created_at=collection.created_at.isoformat() if collection.created_at else "",
+                ),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionSetFeatured failed: {e}")
+            return CollectionSetFeaturedResponse(success=False, error=str(e))
+
+    async def CollectionAddCard(
+        self,
+        request: CollectionAddCardRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionAddCardResponse:
+        """Add a card to a collection."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionAddCardResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.get_collection_by_slug(request.slug)
+            if not collection:
+                return CollectionAddCardResponse(
+                    success=False,
+                    error=f"Collection not found: {request.slug}",
+                )
+
+            card = await service.add_card(
+                collection_id=collection.collection_id,
+                title=request.title,
+                summary=request.summary,
+                source_url=request.source_url,
+                source_type=request.source_type,
+                image_url=request.image_url if request.image_url else None,
+            )
+
+            return CollectionAddCardResponse(
+                success=True,
+                card=CardInfo(
+                    card_id=card.card_id,
+                    title=card.title,
+                    summary=card.summary,
+                    source_url=card.source_url,
+                    source_type=card.source_type,
+                    image_url=card.image_url or "",
+                    status=card.status,
+                    published_at=card.published_at.isoformat() if card.published_at else "",
+                    sequence=card.sequence or 0,
+                ),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionAddCard failed: {e}")
+            return CollectionAddCardResponse(success=False, error=str(e))
+
+    async def CollectionListCards(
+        self,
+        request: CollectionListCardsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionListCardsResponse:
+        """List cards in a collection."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionListCardsResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.get_collection_by_slug(request.slug)
+            if not collection:
+                return CollectionListCardsResponse(
+                    success=False,
+                    error=f"Collection not found: {request.slug}",
+                )
+
+            status_filter = request.status if request.status else None
+            limit = request.limit if request.limit > 0 else 100
+            cards = await service.list_cards(
+                collection_id=collection.collection_id,
+                status=status_filter,
+                limit=limit,
+            )
+
+            card_infos = [
+                CardInfo(
+                    card_id=c.card_id,
+                    title=c.title,
+                    summary=c.summary,
+                    source_url=c.source_url,
+                    source_type=c.source_type,
+                    image_url=c.image_url or "",
+                    status=c.status,
+                    published_at=c.published_at.isoformat() if c.published_at else "",
+                    sequence=c.sequence or 0,
+                )
+                for c in cards
+            ]
+
+            return CollectionListCardsResponse(
+                success=True,
+                cards=card_infos,
+                total=len(cards),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionListCards failed: {e}")
+            return CollectionListCardsResponse(success=False, error=str(e))
+
+    async def CollectionPublishCards(
+        self,
+        request: CollectionPublishCardsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionPublishCardsResponse:
+        """Publish pending cards."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionPublishCardsResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            count = request.count if request.count > 0 else 3
+            collection_id = None
+
+            if request.collection_slug:
+                collection = await service.get_collection_by_slug(request.collection_slug)
+                if not collection:
+                    return CollectionPublishCardsResponse(
+                        success=False,
+                        error=f"Collection not found: {request.collection_slug}",
+                    )
+                collection_id = collection.collection_id
+
+            # Use publish_and_sync to publish cards and sync to Cloudflare KV
+            result = await service.publish_and_sync(count=count, collection_id=collection_id)
+
+            card_infos = [
+                CardInfo(
+                    card_id=c["card_id"],
+                    title=c["title"],
+                    summary=c["summary"],
+                    source_url=c["source_url"],
+                    source_type=c["source_type"],
+                    image_url=c.get("image_url") or "",
+                    status=c.get("status") or "published",
+                    published_at=c.get("published_at") or "",
+                    sequence=c.get("sequence") or 0,
+                )
+                for c in result.get("published", [])
+            ]
+
+            kv_sync = result.get("kv_sync", {})
+            kv_status = "synced" if kv_sync.get("success") else "not synced"
+
+            # Use error field to communicate KV sync status (no kv_synced field in proto)
+            error_msg = ""
+            if not kv_sync.get("success"):
+                error_msg = f"Cards published but KV sync failed: {kv_status}"
+
+            return CollectionPublishCardsResponse(
+                success=True,
+                published_cards=card_infos,
+                published_count=result.get("published_count", len(card_infos)),
+                error=error_msg,
+            )
+        except Exception as e:
+            logger.exception(f"CollectionPublishCards failed: {e}")
+            return CollectionPublishCardsResponse(success=False, error=str(e))
+
+    async def CollectionPublishViz(
+        self,
+        request: CollectionPublishVizRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionPublishVizResponse:
+        """Publish 3D visualization data to Cloudflare KV."""
+        try:
+            # TODO: Implement when Cloudflare KV integration is added
+            return CollectionPublishVizResponse(
+                success=True,
+                points_count=0,
+                clusters_count=0,
+                published_at="",
+                error="Not yet implemented - Cloudflare KV integration pending",
+            )
+        except Exception as e:
+            logger.exception(f"CollectionPublishViz failed: {e}")
+            return CollectionPublishVizResponse(success=False, error=str(e))
+
+    async def CollectionSyncTheme(
+        self,
+        request: CollectionSyncThemeRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionSyncThemeResponse:
+        """Sync theme configuration from HOCON to Cloudflare KV."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionSyncThemeResponse(
+                    success=False,
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                )
+
+            result = await service.sync_theme_config()
+
+            return CollectionSyncThemeResponse(
+                success=result.get("success", False),
+                theme_id=result.get("theme_id", ""),
+                title=result.get("title", ""),
+                namespace_id=result.get("namespace_id", ""),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionSyncTheme failed: {e}")
+            return CollectionSyncThemeResponse(success=False, error=str(e))

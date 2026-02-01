@@ -101,6 +101,25 @@ from ..engine.generated import (
     ProspectsCheckResponse,
     ProspectsUpdateRequest,
     ProspectsUpdateEvent,
+    # Collections (Public Content Landing Page)
+    CollectionStatusRequest,
+    CollectionStatusResponse,
+    CollectionListRequest,
+    CollectionListResponse,
+    CollectionCreateRequest,
+    CollectionCreateResponse,
+    CollectionSetFeaturedRequest,
+    CollectionSetFeaturedResponse,
+    CollectionAddCardRequest,
+    CollectionAddCardResponse,
+    CollectionListCardsRequest,
+    CollectionListCardsResponse,
+    CollectionPublishCardsRequest,
+    CollectionPublishCardsResponse,
+    CollectionPublishVizRequest,
+    CollectionPublishVizResponse,
+    CollectionSyncThemeRequest,
+    CollectionSyncThemeResponse,
     # Multi-Phase Search Flow
     SearchFlowRequest,
     SearchFlowEvent,
@@ -904,6 +923,8 @@ class GrpcEngineClient:
             return await self._call_prospects(action, params, timeout)
         elif service == "ResearchFlow":
             return await self._call_research_flow(action, params, timeout)
+        elif service == "Collection":
+            return await self._call_collection(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
 
@@ -2715,6 +2736,97 @@ class GrpcEngineClient:
                 f"Unknown ResearchFlow action: {action}. "
                 f"For 'research_stream', use stream() method instead of call()."
             )
+
+    async def _call_collection(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Collection service calls via gRPC.
+
+        Actions:
+            status: Get collection statistics
+            list_collections: List all collections
+            create_collection: Create new collection
+            set_featured: Set featured collection
+            add_card: Add card to collection
+            list_cards: List cards in collection
+            publish_cards: Publish pending cards
+            publish_viz: Update 3D visualization data
+
+        Args:
+            action: Action to perform
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with collection/card data
+        """
+        if action == "status":
+            request = CollectionStatusRequest()
+            response = await self._stub.CollectionStatus(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "list_collections":
+            request = CollectionListRequest(
+                status=params.get("status", ""),
+                limit=params.get("limit", 50),
+            )
+            response = await self._stub.CollectionList(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "create_collection":
+            request = CollectionCreateRequest(
+                slug=params.get("slug", ""),
+                name=params.get("name", ""),
+                description=params.get("description", ""),
+                featured=params.get("featured", False),
+            )
+            response = await self._stub.CollectionCreate(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "set_featured":
+            request = CollectionSetFeaturedRequest(slug=params.get("slug", ""))
+            response = await self._stub.CollectionSetFeatured(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "add_card":
+            request = CollectionAddCardRequest(
+                slug=params.get("slug", ""),
+                title=params.get("title", ""),
+                summary=params.get("summary", ""),
+                source_url=params.get("source_url", ""),
+                source_type=params.get("source_type", "web"),
+                image_url=params.get("image_url", ""),
+            )
+            response = await self._stub.CollectionAddCard(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "list_cards":
+            request = CollectionListCardsRequest(
+                slug=params.get("slug", ""),
+                status=params.get("status", ""),
+                limit=params.get("limit", 100),
+            )
+            response = await self._stub.CollectionListCards(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "publish_cards":
+            request = CollectionPublishCardsRequest(
+                count=params.get("count", 3),
+                collection_slug=params.get("collection_slug", ""),
+            )
+            response = await self._stub.CollectionPublishCards(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "publish_viz":
+            request = CollectionPublishVizRequest()
+            response = await self._stub.CollectionPublishViz(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "sync_theme":
+            request = CollectionSyncThemeRequest()
+            response = await self._stub.CollectionSyncTheme(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(f"Unknown Collection action: {action}")
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.

@@ -306,6 +306,15 @@ class GaiusCLI:
                 # Metaflow - Read-only operational insights into flow runs
                 elif command == "metaflow" or command == "mf":
                     result["data"] = self._run_async(self._cmd_metaflow_ops(args))
+                # Dataview - Bases feature store queries (Kudu SDK-style fluent API)
+                elif command == "dataview" or command == "dv":
+                    result["data"] = self._run_async(self._cmd_dataview(args))
+                # Publish - Collection card publishing for landing page
+                elif command == "publish" or command == "pub":
+                    result["data"] = self._run_async(self._cmd_publish(args))
+                # Collections - Collection management
+                elif command == "collection" or command == "col":
+                    result["data"] = self._run_async(self._cmd_collection(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -1310,6 +1319,8 @@ class GaiusCLI:
                 "exec <cmd> [args]": "Execute via Engine's CommandService",
                 # ThetaAgent situational awareness
                 "sitrep [horizon]": "Situational report (day, week, quarter, open)",
+                # Dataview - Bases feature store
+                "dataview [cmd]": "Bases feature store (list, <base>, health)",
             },
             "tagline": "/sitrep to start your day! Use /ask for queries, /thoughts for cognition.",
         }
@@ -8692,7 +8703,14 @@ fingerprint: "{incident.get('fingerprint', 'unknown')}"
     def format_output(self, result: dict) -> str:
         """Format result based on output format."""
         if self.format == "json":
-            return json.dumps(result, indent=2)
+            from datetime import datetime, date, timedelta
+            def json_serializer(obj):
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                if isinstance(obj, timedelta):
+                    return obj.total_seconds()
+                raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+            return json.dumps(result, indent=2, default=json_serializer)
         else:
             # Text format
             if not result["success"]:
@@ -12851,6 +12869,430 @@ Examples:
         return {
             "error": f"Unknown metaflow subcommand: {subcmd}",
             "usage": "/metaflow [status|types|runs|run|stats|failed|running|help]",
+        }
+
+    async def _cmd_dataview(self, args: str) -> dict:
+        """Dataview - Kudu-backed feature store with fluent query API.
+
+        Query bases using Kudu SDK-style fluent syntax with BFO ontology grounding.
+        Storage is backed by Apache Kudu via PostgreSQL FDW (currently PostgreSQL stub).
+
+        Usage:
+            /dataview                     - List available bases
+            /dataview list [type]         - List bases (snapshot|historical|registry|all)
+            /dataview <base>              - Query base with default settings
+            /dataview <base> <fluent>     - Query with fluent syntax
+            /dataview health              - Check feature store health
+            /dataview help                - Show this help
+
+        Fluent Syntax:
+            where(col("age") > 30)                   - Column filter
+            where(term("BFO:site") == "NYC")         - Ontology-grounded filter
+            select("name", "email")                  - Project columns
+            order_by("created_at", desc=True)        - Sort results
+            limit(100)                               - Limit rows
+
+        Examples:
+            /dataview list                           # List all bases
+            /dataview _entity_types                  # Query registry base
+            /dataview events where(col("age") > 30).limit(10)
+            /dataview positions where(term("BFO:0000040") == "USER-123")
+            /dataview trades_historical WHERE entity_id = 'user_123' LIMIT 100
+
+        Ontology Grounding:
+            term("BFO:0000040")      - Material entity (entity_id)
+            term("BFO:site")         - Spatial region (location)
+            term("BFO:temporal_region") - Timestamp column
+
+        Aliases: /dataview, /dv
+        """
+        from .bases.service import get_bases_service, BasesConfig
+        from .storage.database import get_pool
+
+        parts = args.strip().split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        # Help - show before service operations
+        if subcmd == "help":
+            return {"command": "dataview", "help": self._cmd_dataview.__doc__}
+
+        # Get database pool and service
+        try:
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+        except Exception as e:
+            return {
+                "command": "dataview",
+                "error": f"Failed to initialize BasesService: {e}",
+                "hint": "Try: /health fix postgres",
+            }
+
+        # List bases (default)
+        if subcmd == "list" or not args.strip():
+            base_type_filter = parts[1].lower() if len(parts) > 1 else "all"
+            try:
+                bases = await service.list_bases(base_type=base_type_filter)
+                return {
+                    "command": "dataview",
+                    "action": "list",
+                    "base_type": base_type_filter,
+                    "count": len(bases),
+                    "bases": [
+                        {
+                            "name": b.name,
+                            "display_name": b.display_name,
+                            "base_type": b.base_type,
+                            "description": b.description,
+                            "tags": b.tags,
+                        }
+                        for b in bases
+                    ],
+                }
+            except Exception as e:
+                return {"command": "dataview", "error": str(e)}
+
+        # Health check
+        if subcmd == "health":
+            try:
+                health = await service.health_check()
+                return {
+                    "command": "dataview",
+                    "action": "health",
+                    **health,
+                }
+            except Exception as e:
+                return {"command": "dataview", "error": str(e)}
+
+        # Query a base
+        base_name = subcmd
+        query_str = parts[1] if len(parts) > 1 else ""
+
+        try:
+            # Execute query (service auto-detects fluent vs SQL syntax)
+            result = await service.query_base(
+                base_name=base_name,
+                dql=query_str,
+            )
+            return {
+                "command": "dataview",
+                "action": "query",
+                "base": base_name,
+                "query": query_str or "(default)",
+                "row_count": result.row_count,
+                "columns": [c.to_dict() for c in result.columns],
+                "rows": result.rows[:100],  # Limit output for CLI
+                "truncated": result.row_count > 100,
+                "query_time_ms": result.query_time_ms,
+            }
+        except Exception as e:
+            return {
+                "command": "dataview",
+                "error": str(e),
+                "base": base_name,
+                "query": query_str,
+            }
+
+    async def _cmd_publish(self, args: str) -> dict:
+        """Publish - Publish pending cards to the landing page.
+
+        Publishes cards from the featured collection to Cloudflare KV
+        for display on the public landing page at gaius.zndx.org.
+
+        Usage:
+            /publish                  - Publish 3 pending cards (default)
+            /publish cards            - Same as above
+            /publish cards -N 5       - Publish 5 pending cards
+            /publish viz              - Update 3D visualization data in KV
+            /publish theme            - Sync theme config from HOCON to KV
+            /publish status           - Show collection/card statistics
+            /publish help             - Show this help
+
+        Options:
+            -N, --count <num>    Number of cards to publish (default: 3)
+            --collection <slug>  Specific collection (default: featured)
+
+        Theme Configuration (config/base.conf):
+            gaius.landing.theme_id    - Theme to use (keiretsu-dark, solarized-dark, etc.)
+            gaius.landing.title       - Site title
+            gaius.landing.subtitle    - Site subtitle
+
+        Examples:
+            /publish                    # Publish 3 cards from featured
+            /publish cards -N 5         # Publish 5 cards
+            /publish theme              # Sync HOCON theme to landing page
+            /publish status             # Show stats
+
+        Cost: $0 - pure database + KV operations
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "cards"
+
+        client = await get_grpc_client()
+
+        # Default / cards: publish pending cards
+        if subcmd in ("", "cards"):
+            count = 3
+            collection_slug = None
+
+            # Parse options
+            i = 1
+            while i < len(parts):
+                part = parts[i]
+                if part in ("-N", "--count") and i + 1 < len(parts):
+                    try:
+                        count = int(parts[i + 1])
+                        i += 1
+                    except ValueError:
+                        pass
+                elif part in ("--collection", "-c") and i + 1 < len(parts):
+                    collection_slug = parts[i + 1]
+                    i += 1
+                i += 1
+
+            result = await client.call("Collection", "publish_cards", {
+                "count": count,
+                "collection_slug": collection_slug,
+            })
+
+            return {
+                "command": "publish",
+                "action": "cards",
+                "count_requested": count,
+                **result,
+            }
+
+        # Viz: update 3D visualization data
+        if subcmd == "viz":
+            result = await client.call("Collection", "publish_viz", {})
+            return {
+                "command": "publish",
+                "action": "viz",
+                **result,
+            }
+
+        # Theme: sync HOCON theme config to Cloudflare KV
+        if subcmd == "theme":
+            result = await client.call("Collection", "sync_theme", {})
+            return {
+                "command": "publish",
+                "action": "theme",
+                **result,
+            }
+
+        # Status: show collection statistics
+        if subcmd == "status":
+            result = await client.call("Collection", "status", {})
+            return {
+                "command": "publish",
+                "action": "status",
+                **result,
+            }
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "publish",
+                "help": self._cmd_publish.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown publish subcommand: {subcmd}",
+            "usage": "/publish [cards|viz|theme|status|help] ...",
+        }
+
+    async def _cmd_collection(self, args: str) -> dict:
+        """Collection - Manage curated content collections.
+
+        Collections organize public research content for the landing page.
+        Each collection contains cards linking to external sources (arXiv,
+        HuggingFace, etc.) - never internal KB paths.
+
+        Usage:
+            /collection                       - List all collections
+            /collection list                  - Same as above
+            /collection create <slug> <name>  - Create new collection
+            /collection feature <slug>        - Set as featured collection
+            /collection add <slug> <title> <url> [--type <type>] [--summary <text>]
+                                              - Add card to collection
+            /collection cards <slug>          - List cards in collection
+            /collection status                - Show overall statistics
+            /collection help                  - Show this help
+
+        Options:
+            --type <type>     Card source type: arxiv, huggingface, cloudera,
+                              web, x_bookmark, sec_filing, research
+            --summary <text>  Card summary (1-2 sentences)
+            --image <url>     Optional image URL
+
+        Examples:
+            /collection create ai-reasoning "AI Reasoning Research"
+            /collection feature ai-reasoning
+            /collection add ai-reasoning "Attention Paper" "https://arxiv.org/abs/1706.03762" --type arxiv
+            /collection cards ai-reasoning
+
+        Note: The featured collection is what appears on the landing page.
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        client = await get_grpc_client()
+
+        # Default / list: show all collections
+        if subcmd in ("", "list"):
+            result = await client.call("Collection", "list_collections", {})
+            return {
+                "command": "collection",
+                "action": "list",
+                **result,
+            }
+
+        # Create: create new collection
+        if subcmd == "create":
+            if len(parts) < 3:
+                return {
+                    "error": "create requires: <slug> <name>",
+                    "usage": "/collection create <slug> <name> [--description <text>]",
+                }
+            slug = parts[1]
+            # Join remaining parts as name (supports quoted names)
+            name = " ".join(parts[2:])
+            # Extract description if provided with --description
+            description = ""
+            if "--description" in parts:
+                desc_idx = parts.index("--description")
+                if desc_idx + 1 < len(parts):
+                    description = parts[desc_idx + 1]
+                    name = " ".join(parts[2:desc_idx])
+
+            result = await client.call("Collection", "create_collection", {
+                "slug": slug,
+                "name": name,
+                "description": description,
+            })
+            return {
+                "command": "collection",
+                "action": "create",
+                "slug": slug,
+                "name": name,
+                **result,
+            }
+
+        # Feature: set as featured collection
+        if subcmd == "feature":
+            if len(parts) < 2:
+                return {
+                    "error": "feature requires: <slug>",
+                    "usage": "/collection feature <slug>",
+                }
+            slug = parts[1]
+            result = await client.call("Collection", "set_featured", {
+                "slug": slug,
+            })
+            return {
+                "command": "collection",
+                "action": "feature",
+                "slug": slug,
+                **result,
+            }
+
+        # Add: add card to collection
+        if subcmd == "add":
+            if len(parts) < 4:
+                return {
+                    "error": "add requires: <slug> <title> <url>",
+                    "usage": "/collection add <slug> <title> <url> [--type <type>] [--summary <text>]",
+                }
+            slug = parts[1]
+            title = parts[2]
+            source_url = parts[3]
+
+            # Parse options
+            source_type = "web"
+            summary = ""
+            image_url = None
+            i = 4
+            while i < len(parts):
+                part = parts[i]
+                if part == "--type" and i + 1 < len(parts):
+                    source_type = parts[i + 1]
+                    i += 1
+                elif part == "--summary" and i + 1 < len(parts):
+                    summary = parts[i + 1]
+                    i += 1
+                elif part == "--image" and i + 1 < len(parts):
+                    image_url = parts[i + 1]
+                    i += 1
+                i += 1
+
+            result = await client.call("Collection", "add_card", {
+                "slug": slug,
+                "title": title,
+                "source_url": source_url,
+                "source_type": source_type,
+                "summary": summary,
+                "image_url": image_url,
+            })
+            return {
+                "command": "collection",
+                "action": "add",
+                "slug": slug,
+                "title": title,
+                **result,
+            }
+
+        # Cards: list cards in collection
+        if subcmd == "cards":
+            if len(parts) < 2:
+                return {
+                    "error": "cards requires: <slug>",
+                    "usage": "/collection cards <slug> [--status <status>]",
+                }
+            slug = parts[1]
+            status = None
+            if "--status" in parts:
+                status_idx = parts.index("--status")
+                if status_idx + 1 < len(parts):
+                    status = parts[status_idx + 1]
+
+            result = await client.call("Collection", "list_cards", {
+                "slug": slug,
+                "status": status,
+            })
+            return {
+                "command": "collection",
+                "action": "cards",
+                "slug": slug,
+                **result,
+            }
+
+        # Status: overall statistics
+        if subcmd == "status":
+            result = await client.call("Collection", "status", {})
+            return {
+                "command": "collection",
+                "action": "status",
+                **result,
+            }
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "collection",
+                "help": self._cmd_collection.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown collection subcommand: {subcmd}",
+            "usage": "/collection [list|create|feature|add|cards|status|help] ...",
         }
 
 

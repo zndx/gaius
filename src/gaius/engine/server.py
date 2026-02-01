@@ -105,6 +105,9 @@ class GaiusEngine:
         # Prospects/Stewardship service (FMP-based financial intelligence)
         self._prospects_service = None
 
+        # Collections service (public landing page content)
+        self._collection_service = None
+
         # Ambient computing workload service
         self._ambient_service = None
 
@@ -245,6 +248,8 @@ class GaiusEngine:
         # 2.6 Start Prospects/Stewardship service EARLY (no GPU deps, lightweight status)
         await self._init_prospects_service()
 
+        # 2.7 Collections service moved to after db_pool is created (in _autonomous_start_cognition)
+
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
         await self._init_telemetry()
 
@@ -288,6 +293,9 @@ class GaiusEngine:
 
         # Always start dataset service (lightweight, fail-fast by design)
         await self._init_dataset_service()
+
+        # NOTE: Collections service is initialized in _autonomous_start_cognition()
+        # after the db_pool is created (requires db_pool for database operations)
 
         # Initialize ambient computing workload service
         await self._init_ambient_service()
@@ -612,6 +620,9 @@ class GaiusEngine:
         except Exception as e:
             logger.warning(f"Failed to initialize topology service: {e}")
 
+        # Initialize Collections service (requires db_pool which is now available)
+        await self._init_collection_service()
+
     async def _autonomous_start_flow_scheduler(self) -> None:
         """Start the flow scheduler daemon automatically.
 
@@ -817,6 +828,45 @@ class GaiusEngine:
             logger.warning(f"Prospects/Stewardship service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize Prospects/Stewardship service: {e}")
+
+    async def _init_collection_service(self) -> None:
+        """Initialize the Collections service for public landing page content.
+
+        The CollectionService manages curated content collections:
+        - Create/manage collections with sources and cards
+        - Publish cards to Cloudflare KV for landing page
+        - Cards link to external PUBLIC sources (arXiv, HuggingFace, etc.)
+        """
+        try:
+            from .services.collection_service import CollectionService, CollectionConfig
+
+            # Get database pool
+            if not self._db_pool:
+                logger.warning("Collections service disabled - no database pool")
+                return
+
+            # Create KB root directory if needed
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = CollectionConfig(kb_root=kb_root)
+
+            # Create service (no start() needed - all operations use pool)
+            self._collection_service = CollectionService(
+                pool=self._db_pool,
+                config=config,
+            )
+            logger.info("Collections service initialized")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "collection_service", self._collection_service
+                )
+                logger.info("Collections service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"Collections service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Collections service: {e}")
 
     async def _init_ambient_service(self) -> None:
         """Initialize the Ambient Computing Workload service.

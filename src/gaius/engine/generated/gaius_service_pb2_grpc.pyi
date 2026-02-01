@@ -294,6 +294,28 @@ class GaiusServiceStub:
     """Daily check with local LLM"""
     ProspectsUpdate: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ProspectsUpdateRequest, gaius_service_pb2.ProspectsUpdateEvent]
     """Full billable analysis (streaming)"""
+    CollectionStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionStatusRequest, gaius_service_pb2.CollectionStatusResponse]
+    """─────────────────────────────────────────────────────────────────────────
+    Collections (Public Content Landing Page)
+    ─────────────────────────────────────────────────────────────────────────
+    Get overall statistics
+    """
+    CollectionList: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListRequest, gaius_service_pb2.CollectionListResponse]
+    """List all collections"""
+    CollectionCreate: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionCreateRequest, gaius_service_pb2.CollectionCreateResponse]
+    """Create new collection"""
+    CollectionSetFeatured: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSetFeaturedRequest, gaius_service_pb2.CollectionSetFeaturedResponse]
+    """Set featured collection"""
+    CollectionAddCard: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionAddCardRequest, gaius_service_pb2.CollectionAddCardResponse]
+    """Add card to collection"""
+    CollectionListCards: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListCardsRequest, gaius_service_pb2.CollectionListCardsResponse]
+    """List cards in collection"""
+    CollectionPublishCards: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishCardsRequest, gaius_service_pb2.CollectionPublishCardsResponse]
+    """Publish pending cards"""
+    CollectionPublishViz: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishVizRequest, gaius_service_pb2.CollectionPublishVizResponse]
+    """Update 3D viz data"""
+    CollectionSyncTheme: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSyncThemeRequest, gaius_service_pb2.CollectionSyncThemeResponse]
+    """Sync HOCON theme to KV"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -561,6 +583,28 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Daily check with local LLM"""
     ProspectsUpdate: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ProspectsUpdateRequest, gaius_service_pb2.ProspectsUpdateEvent]  # type: ignore[assignment]
     """Full billable analysis (streaming)"""
+    CollectionStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionStatusRequest, gaius_service_pb2.CollectionStatusResponse]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Collections (Public Content Landing Page)
+    ─────────────────────────────────────────────────────────────────────────
+    Get overall statistics
+    """
+    CollectionList: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListRequest, gaius_service_pb2.CollectionListResponse]  # type: ignore[assignment]
+    """List all collections"""
+    CollectionCreate: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionCreateRequest, gaius_service_pb2.CollectionCreateResponse]  # type: ignore[assignment]
+    """Create new collection"""
+    CollectionSetFeatured: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSetFeaturedRequest, gaius_service_pb2.CollectionSetFeaturedResponse]  # type: ignore[assignment]
+    """Set featured collection"""
+    CollectionAddCard: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionAddCardRequest, gaius_service_pb2.CollectionAddCardResponse]  # type: ignore[assignment]
+    """Add card to collection"""
+    CollectionListCards: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListCardsRequest, gaius_service_pb2.CollectionListCardsResponse]  # type: ignore[assignment]
+    """List cards in collection"""
+    CollectionPublishCards: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishCardsRequest, gaius_service_pb2.CollectionPublishCardsResponse]  # type: ignore[assignment]
+    """Publish pending cards"""
+    CollectionPublishViz: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishVizRequest, gaius_service_pb2.CollectionPublishVizResponse]  # type: ignore[assignment]
+    """Update 3D viz data"""
+    CollectionSyncTheme: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSyncThemeRequest, gaius_service_pb2.CollectionSyncThemeResponse]  # type: ignore[assignment]
+    """Sync HOCON theme to KV"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     """═══════════════════════════════════════════════════════════════════════════
@@ -1491,5 +1535,81 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ProspectsUpdateEvent], collections.abc.AsyncIterator[gaius_service_pb2.ProspectsUpdateEvent]]:
         """Full billable analysis (streaming)"""
+
+    @abc.abstractmethod
+    def CollectionStatus(
+        self,
+        request: gaius_service_pb2.CollectionStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionStatusResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionStatusResponse]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Collections (Public Content Landing Page)
+        ─────────────────────────────────────────────────────────────────────────
+        Get overall statistics
+        """
+
+    @abc.abstractmethod
+    def CollectionList(
+        self,
+        request: gaius_service_pb2.CollectionListRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionListResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionListResponse]]:
+        """List all collections"""
+
+    @abc.abstractmethod
+    def CollectionCreate(
+        self,
+        request: gaius_service_pb2.CollectionCreateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionCreateResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionCreateResponse]]:
+        """Create new collection"""
+
+    @abc.abstractmethod
+    def CollectionSetFeatured(
+        self,
+        request: gaius_service_pb2.CollectionSetFeaturedRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionSetFeaturedResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionSetFeaturedResponse]]:
+        """Set featured collection"""
+
+    @abc.abstractmethod
+    def CollectionAddCard(
+        self,
+        request: gaius_service_pb2.CollectionAddCardRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionAddCardResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionAddCardResponse]]:
+        """Add card to collection"""
+
+    @abc.abstractmethod
+    def CollectionListCards(
+        self,
+        request: gaius_service_pb2.CollectionListCardsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionListCardsResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionListCardsResponse]]:
+        """List cards in collection"""
+
+    @abc.abstractmethod
+    def CollectionPublishCards(
+        self,
+        request: gaius_service_pb2.CollectionPublishCardsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionPublishCardsResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionPublishCardsResponse]]:
+        """Publish pending cards"""
+
+    @abc.abstractmethod
+    def CollectionPublishViz(
+        self,
+        request: gaius_service_pb2.CollectionPublishVizRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionPublishVizResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionPublishVizResponse]]:
+        """Update 3D viz data"""
+
+    @abc.abstractmethod
+    def CollectionSyncTheme(
+        self,
+        request: gaius_service_pb2.CollectionSyncThemeRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionSyncThemeResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionSyncThemeResponse]]:
+        """Sync HOCON theme to KV"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

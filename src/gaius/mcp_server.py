@@ -6052,6 +6052,9 @@ Domain: {domain or 'general'}
             bases_query("holdings_snapshot", "WHERE ticker IN ('AAPL', 'MSFT') ORDER BY value DESC LIMIT 10")
             bases_query("trades_historical", "WHERE entity_id = 'user_123' AS OF '2024-01-01' LIMIT 100")
 
+        Fluent API (preferred for programmatic use):
+            bases_query("events", 'where(col("age") > 30).order_by("created_at", desc=True).limit(10)')
+
         Args:
             base_name: Name of the base to query
             dql: DQL query string (WHERE, ORDER BY, LIMIT, AS OF, GROUP BY)
@@ -6068,9 +6071,13 @@ Domain: {domain or 'general'}
             if not service.is_running:
                 await service.start()
 
+            # Detect fluent syntax vs DQL
+            is_fluent = dql and ('col(' in dql or 'term(' in dql)
+
             result = await service.query_base(
                 base_name=base_name,
-                dql=dql or None,
+                dql=None if is_fluent else (dql or None),
+                fluent=dql if is_fluent else None,
                 options={
                     "timeout_ms": timeout_ms,
                     "max_rows": max_rows,
@@ -6165,6 +6172,171 @@ Domain: {domain or 'general'}
             return json.dumps(health, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e), "healthy": False}, indent=2)
+
+    # --- Collection Tools ---
+    # Curated content collections for public landing page
+
+    @server.tool()
+    async def collection_status() -> str:
+        """Get collection statistics.
+
+        Shows total collections, cards, and featured collection status.
+        Cost: $0 - pure database operation.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "status", {})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_list(status: str = "") -> str:
+        """List all collections.
+
+        Args:
+            status: Filter by status (draft, active, archived). Empty = all.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "list_collections", {"status": status})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_create(slug: str, name: str, description: str = "", featured: bool = False) -> str:
+        """Create a new collection.
+
+        Args:
+            slug: URL-friendly identifier (e.g., "ai-reasoning")
+            name: Display name
+            description: Optional description
+            featured: Set as the featured collection (only one allowed)
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "create_collection", {
+                "slug": slug,
+                "name": name,
+                "description": description,
+                "featured": featured,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_set_featured(slug: str) -> str:
+        """Set a collection as featured.
+
+        The featured collection appears on the public landing page.
+        Only one collection can be featured at a time.
+
+        Args:
+            slug: Collection slug to feature
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "set_featured", {"slug": slug})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_add_card(
+        slug: str,
+        title: str,
+        summary: str,
+        source_url: str,
+        source_type: str = "web",
+        image_url: str = "",
+    ) -> str:
+        """Add a card to a collection.
+
+        Cards link to PUBLIC sources only (arXiv, HuggingFace, etc.) - never KB paths.
+
+        Args:
+            slug: Collection slug
+            title: Card title
+            summary: 1-2 sentence summary for card display
+            source_url: Link to original PUBLIC source
+            source_type: Type: arxiv, huggingface, cloudera, web, x_bookmark, sec_filing, research
+            image_url: Optional image URL for card display
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "add_card", {
+                "slug": slug,
+                "title": title,
+                "summary": summary,
+                "source_url": source_url,
+                "source_type": source_type,
+                "image_url": image_url,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_list_cards(slug: str, status: str = "") -> str:
+        """List cards in a collection.
+
+        Args:
+            slug: Collection slug
+            status: Filter by status (pending, published, archived). Empty = all.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "list_cards", {
+                "slug": slug,
+                "status": status,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_publish_cards(count: int = 3, collection_slug: str = "") -> str:
+        """Publish pending cards to the landing page.
+
+        Publishes cards from the featured collection (or specified collection)
+        to Cloudflare KV for display on gaius.zndx.org.
+
+        Args:
+            count: Number of cards to publish (default: 3)
+            collection_slug: Specific collection slug (empty = featured collection)
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "publish_cards", {
+                "count": count,
+                "collection_slug": collection_slug,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_publish_viz() -> str:
+        """Update 3D visualization data in Cloudflare KV.
+
+        Generates UMAP projection data for the landing page 3D visualization.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "publish_viz", {})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
 
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing

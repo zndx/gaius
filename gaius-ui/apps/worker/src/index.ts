@@ -1,14 +1,31 @@
 /**
  * Gaius Web Worker
  *
- * Cloudflare Worker handling OAuth callbacks and serving A2UI surfaces.
+ * Cloudflare Worker handling:
+ * - Public landing page with 3D viz + masonry cards
+ * - OAuth callbacks for X (Twitter)
+ * - API endpoints for card/viz data
+ * - Article permalinks with external redirects
  */
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { handleOAuthCallback } from './routes/callback';
+import {
+  handleLanding,
+  handleApiCards,
+  handleApiViz,
+  handleApiThemes,
+  handleArticleRedirect,
+} from './routes/landing';
 
-const app = new Hono();
+// Type bindings for KV namespaces
+type Bindings = {
+  GAIUS_SESSIONS: KVNamespace;
+  GAIUS_COLLECTIONS: KVNamespace;
+};
+
+const app = new Hono<{ Bindings: Bindings }>();
 
 // CORS for API endpoints
 app.use('/api/*', cors());
@@ -21,40 +38,23 @@ app.get('/health', (c) => {
 // OAuth callback route for X (Twitter)
 app.get('/x-callback', handleOAuthCallback);
 
-// Root - simple status page
-app.get('/', (c) => {
-  return c.html(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Gaius</title>
-      <style>
-        body {
-          font-family: system-ui, -apple-system, sans-serif;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          min-height: 100vh;
-          margin: 0;
-          background: #1a1a2e;
-          color: #eee;
-        }
-        .container {
-          text-align: center;
-          padding: 2rem;
-        }
-        h1 { color: #7c3aed; }
-        p { color: #888; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>Gaius</h1>
-        <p>Agent Interface Service</p>
-      </div>
-    </body>
-    </html>
-  `);
-});
+// ============================================================================
+// Public Landing Page Routes
+// ============================================================================
+
+// Landing page - 3D viz header + masonry cards
+app.get('/', handleLanding);
+
+// API: Get published cards
+app.get('/api/cards', handleApiCards);
+
+// API: Get visualization data
+app.get('/api/viz', handleApiViz);
+
+// API: Get available themes
+app.get('/api/themes', handleApiThemes);
+
+// Article permalinks - redirect to external URL
+app.get('/articles/:slug', handleArticleRedirect);
 
 export default app;
