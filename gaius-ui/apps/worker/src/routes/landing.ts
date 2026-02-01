@@ -338,9 +338,15 @@ function generateVizScript(theme: Theme): string {
 function renderCard(card: Card): string {
   // Prefer source_date (original publication) over published_at (when we added it)
   const dateStr = card.source_date || card.published_at;
-  const date = new Date(dateStr).toLocaleDateString('en-US', {
+  const dateObj = new Date(dateStr);
+  const currentYear = new Date().getFullYear();
+  const contentYear = dateObj.getFullYear();
+
+  // Include year for content from past years (like HN does for older content)
+  const date = dateObj.toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
+    ...(contentYear < currentYear && { year: 'numeric' }),
   });
 
   return `
