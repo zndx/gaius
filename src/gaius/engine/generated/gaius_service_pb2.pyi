@@ -346,20 +346,22 @@ class EnsureEndpointResponse(_message.Message):
     def __init__(self, healthy: bool = ..., status: _Optional[str] = ..., port: _Optional[int] = ..., gpu_ids: _Optional[_Iterable[int]] = ..., message: _Optional[str] = ...) -> None: ...
 
 class CompleteRequest(_message.Message):
-    __slots__ = ("agent_alias", "prompt", "system_prompt", "max_tokens", "temperature", "priority")
+    __slots__ = ("agent_alias", "prompt", "system_prompt", "max_tokens", "temperature", "priority", "technique")
     AGENT_ALIAS_FIELD_NUMBER: _ClassVar[int]
     PROMPT_FIELD_NUMBER: _ClassVar[int]
     SYSTEM_PROMPT_FIELD_NUMBER: _ClassVar[int]
     MAX_TOKENS_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    TECHNIQUE_FIELD_NUMBER: _ClassVar[int]
     agent_alias: str
     prompt: str
     system_prompt: str
     max_tokens: int
     temperature: float
     priority: str
-    def __init__(self, agent_alias: _Optional[str] = ..., prompt: _Optional[str] = ..., system_prompt: _Optional[str] = ..., max_tokens: _Optional[int] = ..., temperature: _Optional[float] = ..., priority: _Optional[str] = ...) -> None: ...
+    technique: str
+    def __init__(self, agent_alias: _Optional[str] = ..., prompt: _Optional[str] = ..., system_prompt: _Optional[str] = ..., max_tokens: _Optional[int] = ..., temperature: _Optional[float] = ..., priority: _Optional[str] = ..., technique: _Optional[str] = ...) -> None: ...
 
 class CompleteResponse(_message.Message):
     __slots__ = ("text", "tokens_used", "latency_ms", "model", "job_id")

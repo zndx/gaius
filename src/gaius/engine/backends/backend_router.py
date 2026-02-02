@@ -181,7 +181,15 @@ class BackendRouter:
             # Determine backend
             backend = agent_config.backend.lower()
 
-            if backend == "optillm":
+            # If technique is specified, route through optillm for optimization
+            # optillm acts as a proxy that applies the technique then forwards to vLLM
+            if request.technique and backend == "vllm":
+                logger.info(
+                    f"Routing {request.agent_alias} through optillm "
+                    f"(technique={request.technique})"
+                )
+                response = await self._route_to_optillm(request, agent_config)
+            elif backend == "optillm":
                 response = await self._route_to_optillm(request, agent_config)
             elif backend == "vllm":
                 response = await self._route_to_vllm(request, agent_config)

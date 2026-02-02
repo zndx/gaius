@@ -205,8 +205,18 @@ class OptillmController:
 
         # Build environment
         env = os.environ.copy()
-        env["OPTILLM_API_KEY"] = self._api_key
+        # NOTE: Do NOT set OPTILLM_API_KEY - that triggers local inference mode
+        # which tries to load model tokenizers. Only set OPENAI_API_KEY for proxy mode.
+        env.pop("OPTILLM_API_KEY", None)  # Remove if inherited from parent
+        # Remove CEREBRAS_API_KEY - optillm checks this BEFORE OPENAI_API_KEY
+        # and would create a Cerebras client instead of OpenAI client
+        env.pop("CEREBRAS_API_KEY", None)
         env["OPENAI_API_KEY"] = self._api_key
+        # Set backend URL for optillm to forward requests to vLLM
+        # Remove conflicting OPENAI_API_BASE if set in parent environment
+        env.pop("OPENAI_API_BASE", None)
+        backend_url = getattr(self.optillm_config, "backend_url", "http://localhost:8082/v1")
+        env["OPTILLM_BASE_URL"] = backend_url
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
 
@@ -274,8 +284,18 @@ class OptillmController:
 
         # Build environment
         env = os.environ.copy()
-        env["OPTILLM_API_KEY"] = self._api_key
+        # NOTE: Do NOT set OPTILLM_API_KEY - that triggers local inference mode
+        # which tries to load model tokenizers. Only set OPENAI_API_KEY for proxy mode.
+        env.pop("OPTILLM_API_KEY", None)  # Remove if inherited from parent
+        # Remove CEREBRAS_API_KEY - optillm checks this BEFORE OPENAI_API_KEY
+        # and would create a Cerebras client instead of OpenAI client
+        env.pop("CEREBRAS_API_KEY", None)
         env["OPENAI_API_KEY"] = self._api_key
+        # Set backend URL for optillm to forward requests to vLLM
+        # Remove conflicting OPENAI_API_BASE if set in parent environment
+        env.pop("OPENAI_API_BASE", None)
+        backend_url = getattr(self.optillm_config, "backend_url", "http://localhost:8082/v1")
+        env["OPTILLM_BASE_URL"] = backend_url
         # Clear PYTHONPATH to avoid Nix store conflicts
         env["PYTHONPATH"] = ""
 
@@ -287,6 +307,8 @@ class OptillmController:
         config_dir = getattr(gunicorn_cfg, "config_dir", "/tmp/gaius") if gunicorn_cfg else "/tmp/gaius"
 
         # Create gunicorn config generator
+        # Get backend URL from config (vLLM instruct endpoint)
+        backend_url = getattr(self.optillm_config, "backend_url", "http://localhost:8082/v1")
         settings = GunicornSettings(
             bind=f"127.0.0.1:{self._port}",
             workers=workers,
@@ -295,6 +317,7 @@ class OptillmController:
             graceful_timeout=30,
             optillm_api_key=self._api_key,
             optillm_approach=self._default_technique.value,
+            optillm_base_url=backend_url,
             config_dir=config_dir,
         )
         self._gunicorn_config = GunicornConfigGenerator(settings, config_dir)

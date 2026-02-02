@@ -793,6 +793,7 @@ class GaiusServicer(GaiusServiceServicer):
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
+                technique=request.technique or None,
                 task_type="scheduler_complete",
             )
 

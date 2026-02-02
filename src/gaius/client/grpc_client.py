@@ -1047,6 +1047,7 @@ class GrpcEngineClient:
                 max_tokens=params.get("max_tokens", 2048),
                 temperature=params.get("temperature", 0.7),
                 priority=params.get("priority", "normal"),
+                technique=params.get("technique", ""),
             )
             response = await self._stub.Complete(request, timeout=timeout)
             return MessageToDict(response, preserving_proto_field_name=True)

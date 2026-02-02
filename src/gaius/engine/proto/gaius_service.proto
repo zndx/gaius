@@ -231,6 +231,7 @@ message CompleteRequest {
   int32 max_tokens = 4;
   float temperature = 5;
   string priority = 6;  // "critical", "high", "normal", "low"
+  string technique = 7;  // optillm technique: cot_reflection, bon, moa, etc.
 }
 
 message CompleteResponse {
