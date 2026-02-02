@@ -378,6 +378,15 @@ from .gaius_service_pb2 import (
     CollectionPublishVizResponse,
     CollectionSyncThemeRequest,
     CollectionSyncThemeResponse,
+    # Article Curation (gRPC-First)
+    ArticleInfo,
+    CurationRunInfo,
+    ArticleStatusRequest,
+    ArticleStatusResponse,
+    ArticleNewRequest,
+    ArticleNewResponse,
+    ArticleCurationEvent,
+    ArticleCurateRequest,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -749,6 +758,15 @@ __all__ = [
     "CollectionPublishVizResponse",
     "CollectionSyncThemeRequest",
     "CollectionSyncThemeResponse",
+    # Article Curation (gRPC-First)
+    "ArticleInfo",
+    "CurationRunInfo",
+    "ArticleStatusRequest",
+    "ArticleStatusResponse",
+    "ArticleNewRequest",
+    "ArticleNewResponse",
+    "ArticleCurationEvent",
+    "ArticleCurateRequest",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceAsyncStub",

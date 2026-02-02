@@ -6338,6 +6338,705 @@ Use `/models kb` to see all KB models.
 
         asyncio.create_task(run_update())
 
+    def _handle_dataview_command(self, args: str) -> None:
+        """Handle /dataview command for Bases feature store queries.
+
+        Usage:
+            /dataview                     - List available bases
+            /dataview list [type]         - List bases (snapshot|historical|registry|all)
+            /dataview <base>              - Query base with default settings
+            /dataview <base> <fluent>     - Query with fluent syntax
+            /dataview health              - Check feature store health
+            /dataview help                - Show help
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        # Help
+        if subcmd == "help":
+            content.show_file("dataview.md", """# Dataview Command
+
+**Kudu-backed feature store with fluent query API.**
+
+## Usage
+
+- `/dataview` - List available bases
+- `/dataview list [type]` - List bases (snapshot|historical|registry|all)
+- `/dataview <base>` - Query base with default settings
+- `/dataview <base> <fluent>` - Query with fluent syntax
+- `/dataview health` - Check feature store health
+- `/dv` - Shortcut alias
+
+## Fluent Syntax
+
+```python
+where(col("age") > 30)                   # Column filter
+where(term("BFO:site") == "NYC")         # Ontology-grounded filter
+select("name", "email")                  # Project columns
+order_by("created_at", desc=True)        # Sort results
+limit(100)                               # Limit rows
+```
+
+## Examples
+
+```
+/dataview list                           # List all bases
+/dataview _entity_types                  # Query registry base
+/dataview events where(col("age") > 30).limit(10)
+/dataview positions where(term("BFO:0000040") == "USER-123")
+```
+
+## Ontology Grounding
+
+- `term("BFO:0000040")` - Material entity (entity_id)
+- `term("BFO:site")` - Spatial region (location)
+- `term("BFO:temporal_region")` - Timestamp column
+""")
+            return
+
+        # Show initial loading state
+        content.show_file("dataview.md", "# Dataview\n\n*Loading...*")
+
+        async def run_dataview():
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            try:
+                pool = await get_pool()
+                service = get_bases_service(BasesConfig(), pool)
+
+                if not service.is_running:
+                    await service.start()
+            except Exception as e:
+                content.show_file("dataview.md", f"# Error\n\n**Failed to initialize BasesService:**\n\n{e}\n\n---\n\nTry: `/health fix postgres`")
+                return
+
+            # List bases (default)
+            if subcmd in ("", "list"):
+                base_type_filter = parts[1].lower() if len(parts) > 1 else "all"
+                try:
+                    bases = await service.list_bases(
+                        base_type=base_type_filter if base_type_filter != "all" else None
+                    )
+
+                    if not bases:
+                        content.show_file("dataview.md", f"""# Dataview - Bases
+
+**Type:** {base_type_filter}
+**Count:** 0
+
+*No bases found.*
+
+---
+
+Use `/dataview help` for usage information.
+""")
+                        return
+
+                    lines = [
+                        "# Dataview - Bases",
+                        "",
+                        f"**Type:** {base_type_filter}",
+                        f"**Count:** {len(bases)}",
+                        "",
+                        "| Base ID | Type | Description |",
+                        "|---------|------|-------------|",
+                    ]
+                    for b in bases:
+                        desc = (b.description or "")[:40]
+                        lines.append(f"| {b.base_id} | {b.base_type.value} | {desc} |")
+
+                    lines.append("")
+                    lines.append("---")
+                    lines.append("`/dataview <base_id>` to query")
+
+                    content.show_file("dataview.md", "\n".join(lines))
+                except Exception as e:
+                    content.show_file("dataview.md", f"# Error\n\n{e}")
+                return
+
+            # Health check
+            if subcmd == "health":
+                try:
+                    health = await service.health_check()
+                    healthy = health.get("healthy", False)
+                    message = health.get("message", "")
+                    details = health.get("details", {})
+
+                    lines = [
+                        "# Dataview - Health",
+                        "",
+                        f"**Status:** {'✓ Healthy' if healthy else '✗ Unhealthy'}",
+                        f"**Message:** {message}",
+                        "",
+                        "## Details",
+                        "",
+                        f"- Query count: {details.get('query_count', 0)}",
+                        f"- Error count: {details.get('error_count', 0)}",
+                        f"- Iceberg enabled: {details.get('iceberg_enabled', False)}",
+                        f"- Pinot enabled: {details.get('pinot_enabled', False)}",
+                    ]
+
+                    content.show_file("dataview.md", "\n".join(lines))
+                except Exception as e:
+                    content.show_file("dataview.md", f"# Error\n\n{e}")
+                return
+
+            # Query a base
+            base_name = subcmd
+            query_str = parts[1] if len(parts) > 1 else ""
+
+            try:
+                result = await service.query_base(
+                    base_name=base_name,
+                    dql=query_str,
+                )
+
+                # Format result
+                lines = [
+                    f"# {base_name}",
+                    "",
+                    f"**Rows:** {result.row_count}",
+                    f"**Time:** {result.execution_time_ms:.1f}ms",
+                    f"**Query:** `{query_str or '(default)'}`",
+                    "",
+                ]
+
+                # Table header
+                if result.columns:
+                    lines.append("| " + " | ".join(result.columns) + " |")
+                    lines.append("| " + " | ".join(["---"] * len(result.columns)) + " |")
+
+                    # Limit rows for display
+                    display_rows = result.rows[:50]
+                    for row in display_rows:
+                        row_vals = [str(row.get(c, ""))[:30] for c in result.columns]
+                        lines.append("| " + " | ".join(row_vals) + " |")
+
+                    if result.row_count > 50:
+                        lines.append("")
+                        lines.append(f"*Showing 50 of {result.row_count} rows*")
+
+                content.show_file("dataview.md", "\n".join(lines))
+            except Exception as e:
+                content.show_file("dataview.md", f"# Error\n\n**Base:** {base_name}\n**Query:** `{query_str}`\n\n{e}")
+
+        asyncio.create_task(run_dataview())
+
+    def _handle_article_command(self, args: str) -> None:
+        """Handle /article command - dispatch to subcommand handlers.
+
+        Usage:
+            /article              - Situational awareness (like /ambient)
+            /article list         - List articles
+            /article curate       - Run curation with streaming progress
+            /article status       - Show article status
+            /article new <slug>   - Create new article
+            /article help         - Show help
+        """
+        content = self.query_one("#info-panel", InfoPanel)
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        if subcmd == "curate":
+            self._article_curate(content, parts[1:])
+        elif subcmd == "list":
+            self._article_list(content)
+        elif subcmd == "status":
+            self._article_status(content)
+        elif subcmd == "new":
+            self._article_new(content, parts[1:])
+        elif subcmd == "help":
+            self._article_help(content)
+        else:
+            # Default: situational awareness (like /ambient)
+            self._article_sitrep(content)
+
+    def _article_sitrep(self, content: "InfoPanel") -> None:
+        """Show article curation situational awareness (like /ambient status)."""
+        import asyncio
+
+        async def run():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                response = await client.ArticleStatus()
+
+                if not response.success:
+                    content.show_file("article.md", f"# Article Curation\n\n**Error:** {response.error}")
+                    return
+
+                # Format like /ambient: monospace alignment, minimal chrome
+                running = response.running
+                run_state = "RUNNING" if running else "IDLE"
+                current_step = response.current_step or "--"
+
+                # Use non-breaking spaces for alignment (Bloomberg Terminal aesthetic)
+                lines = [
+                    "# Article Curation",
+                    "",
+                    f"Status\u00a0\u00a0\u00a0\u00a0\u00a0{run_state}  ",
+                ]
+                if running:
+                    lines.append(f"Step\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0{current_step}  ")
+
+                lines.extend([
+                    "",
+                    "---",
+                    "",
+                    f"Pending\u00a0\u00a0\u00a0\u00a0{response.articles_pending} articles  ",
+                    f"Cards\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0{response.total_cards_pending} pending / {response.total_cards_published} published  ",
+                ])
+
+                # List pending articles
+                if response.articles:
+                    lines.extend(["", "## Articles", ""])
+                    for a in list(response.articles)[:5]:
+                        status_icon = {
+                            "pending": "[P]",
+                            "researching": "[R]",
+                            "drafting": "[D]",
+                            "published": "[+]",
+                        }.get(a.status, "[-]")
+                        lines.append(f"- {status_icon} **{a.slug}**: {a.title[:35]} ({a.zk_count} notes)")
+
+                # Recent activity
+                if response.recent_curations:
+                    lines.extend(["", "## Recent Activity", ""])
+                    for r in list(response.recent_curations)[:3]:
+                        lines.append(f"- {r.slug}: {r.cards_created} cards ({r.completed_at[:10] if r.completed_at else ''})")
+
+                # Available commands
+                lines.extend([
+                    "",
+                    "---",
+                    "",
+                    "`/article curate [slug]`  ",
+                    "`/article list`  ",
+                    "`/article new <slug>`  ",
+                    "`/article help`  ",
+                ])
+
+                content.show_file("article.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Article Curation\n\n**Error:** {e}")
+
+        content.show_file("article.md", "# Article Curation\n\n*Loading...*")
+        asyncio.create_task(run())
+
+    def _article_help(self, content: "InfoPanel") -> None:
+        """Show article command help."""
+        content.show_file("article.md", """# Article Commands
+
+**Manage KB article curation pipeline.**
+
+## Usage
+
+- `/article` - Situational awareness (status, pending, recent activity)
+- `/article list` - List articles with status
+- `/article curate [slug]` - Run curation with streaming progress
+- `/article status` - Show detailed pipeline status
+- `/article new <slug>` - Create new article directory
+- `/article help` - Show this help
+
+## Curation Pipeline
+
+The `/article curate` command runs a multi-step pipeline:
+
+1. **Research** - Synthesize zettelkasten notes with Grok
+2. **Select** - Choose article (optillm or explicit)
+3. **Acquire** - Fetch external sources (arXiv, Brave, bioRxiv)
+4. **Summarize** - Generate brief summaries
+5. **Draft** - Create article draft with Grok
+6. **Base** - Generate .base file with references
+7. **Cards** - Create collection cards (all pending)
+
+Progress is streamed in real-time via pg_notify.
+""")
+
+    def _article_curate(self, content: "InfoPanel", args: list[str]) -> None:
+        """Run article curation with streaming progress via gRPC.
+
+        Architecture compliance: TUI -> gRPC -> Engine -> Metaflow
+        """
+        import asyncio
+        import time
+
+        # Parse optional slug
+        slug = args[0] if args else ""
+
+        # Initial display
+        content.show_file("article.md", "# Article Curation\n\n*Connecting to engine...*")
+
+        UPDATE_INTERVAL = 0.2  # 200ms debounce
+        last_update = 0.0
+        lines: list[str] = ["# Article Curation", ""]
+
+        # Step indicators (ASCII, no emojis)
+        step_labels = {
+            "start": "[START]",
+            "select": "[SELECT]",
+            "research": "[RESEARCH]",
+            "acquire": "[ACQUIRE]",
+            "summarize": "[SUMMARIZE]",
+            "draft": "[DRAFT]",
+            "base": "[BASE]",
+            "cards": "[CARDS]",
+            "complete": "[DONE]",
+            "failed": "[FAIL]",
+        }
+
+        async def run_curate():
+            nonlocal last_update, lines
+
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+
+                async for event in client.ArticleCurate(slug=slug):
+                    label = step_labels.get(event.step, f"[{event.step.upper()}]")
+                    message = event.message
+
+                    # Format progress line
+                    if event.step == "complete":
+                        lines.append("")
+                        lines.append(f"**{label}** {message}")
+                    elif event.step == "failed":
+                        lines.append(f"{label} {message}")
+                    else:
+                        # Show step number if available
+                        if event.total_steps > 0:
+                            step_info = f"({event.step_number}/{event.total_steps})"
+                            lines.append(f"{label} {step_info} {message}")
+                        else:
+                            lines.append(f"{label} {message}")
+
+                    # Debounced UI update
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        display_lines = lines[-15:]  # Keep last 15
+                        if 0 < event.progress < 1.0:
+                            # ASCII progress bar
+                            bar_width = 20
+                            filled = int(bar_width * event.progress)
+                            bar = "[" + "=" * filled + "-" * (bar_width - filled) + "]"
+                            display_lines.append(f"\n{bar} {event.progress:.0%}")
+                        content.show_file("article.md", "\n".join(display_lines))
+                        last_update = now
+                        await asyncio.sleep(0)  # Yield to TUI
+
+                # Final update
+                content.show_file("article.md", "\n".join(lines[-20:]))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Article Curation\n\n**Error:** {e}")
+
+        asyncio.create_task(run_curate())
+
+    def _article_list(self, content: "InfoPanel") -> None:
+        """List articles (quick database query)."""
+        import asyncio
+
+        async def run_list():
+            try:
+                import asyncpg
+                import os
+                from .engine.services.collection_service import CollectionService
+
+                db_url = os.environ.get(
+                    "GAIUS_DATABASE_URL",
+                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+                )
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    articles = await service.list_articles(limit=50)
+
+                    if not articles:
+                        content.show_file("article.md", "# Articles\n\nNo articles found.\n\nCreate one with: `/article new <slug>`")
+                        return
+
+                    lines = ["# Articles", "", "| Slug | Title | Status | ZK | Sources |", "|------|-------|--------|-----|---------|"]
+                    for a in articles:
+                        lines.append(f"| {a.slug} | {a.title[:30]} | {a.status} | {a.zk_count} | {a.sources_count} |")
+
+                    content.show_file("article.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Error\n\n{e}")
+
+        content.show_file("article.md", "# Articles\n\n*Loading...*")
+        asyncio.create_task(run_list())
+
+    def _article_status(self, content: "InfoPanel") -> None:
+        """Show article pipeline status (quick database query)."""
+        import asyncio
+
+        async def run_status():
+            try:
+                import asyncpg
+                import os
+                from .engine.services.collection_service import CollectionService
+
+                db_url = os.environ.get(
+                    "GAIUS_DATABASE_URL",
+                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+                )
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    stats = await service.get_stats()
+
+                    lines = [
+                        "# Article Pipeline Status",
+                        "",
+                        f"**Collections:** {stats.get('total_collections', 0)}",
+                        f"**Featured:** {'Yes' if stats.get('featured_count', 0) > 0 else 'No'}",
+                        "",
+                        "## Cards",
+                        f"- Total: {stats.get('total_cards', 0)}",
+                        f"- Pending: {stats.get('pending_cards', 0)}",
+                        f"- Published: {stats.get('published_cards', 0)}",
+                    ]
+
+                    content.show_file("article.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Error\n\n{e}")
+
+        content.show_file("article.md", "# Status\n\n*Loading...*")
+        asyncio.create_task(run_status())
+
+    def _article_new(self, content: "InfoPanel", args: list[str]) -> None:
+        """Create new article directory via gRPC.
+
+        Engine owns KB filesystem - clients MUST NOT write directly.
+        """
+        import asyncio
+
+        if not args:
+            content.show_file("article.md", "# New Article\n\n**Usage:** `/article new <slug>`\n\nExample: `/article new ai-reasoning-weekly`")
+            return
+
+        slug = args[0]
+        title = " ".join(args[1:]) if len(args) > 1 else ""
+
+        async def run_new():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                response = await client.ArticleNew(slug=slug, title=title)
+
+                if not response.success:
+                    content.show_file("article.md", f"# Error\n\n{response.error}")
+                    return
+
+                content.show_file("article.md", f"""# Article Created
+
+**Slug:** `{response.slug}`
+**Title:** {response.title}
+**Path:** `{response.kb_path}`
+
+## Database Records
+
+- Article ID: `{response.article_id}`
+- Collection ID: `{response.collection_id}`
+
+## Next Steps
+
+1. Add research hints to `article.md` frontmatter:
+   - `arxiv_categories: [cs.AI, cs.LG, ...]`
+   - `keywords: [reasoning, transformers, ...]`
+   - `news_queries: ["AI reasoning research", ...]`
+
+2. Add zettelkasten notes to `zk/`
+
+3. Run curation: `/article curate {response.slug}`
+""")
+
+            except Exception as e:
+                content.show_file("article.md", f"# Error\n\n{e}")
+
+        content.show_file("article.md", f"# Creating Article\n\n*Creating `{slug}`...*")
+        asyncio.create_task(run_new())
+
+    def _handle_publish_command(self, args: str) -> None:
+        """Handle /publish command - publish pending cards to landing page.
+
+        Usage:
+            /publish              - Publish 3 pending cards (default)
+            /publish cards        - Same as above
+            /publish cards 5      - Publish 5 cards
+            /publish -n 5         - Same as above
+        """
+        import asyncio
+        content = self.query_one("#info-panel", InfoPanel)
+
+        # Parse count from args
+        parts = args.split() if args else []
+        count = 3  # default
+
+        for i, part in enumerate(parts):
+            if part == "-n" and i + 1 < len(parts):
+                try:
+                    count = int(parts[i + 1])
+                except ValueError:
+                    pass
+            elif part.isdigit():
+                count = int(part)
+
+        async def run_publish():
+            try:
+                import asyncpg
+                import os
+                from .engine.services.collection_service import CollectionService
+
+                db_url = os.environ.get(
+                    "GAIUS_DATABASE_URL",
+                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+                )
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+
+                    # Publish and sync to Cloudflare KV
+                    result = await service.publish_and_sync(count=count)
+
+                    published = result.get("published", [])
+                    kv_sync = result.get("kv_sync", {})
+
+                    if not published:
+                        content.show_file("publish.md", "# Publish\n\nNo pending cards to publish.\n\nRun `/article curate` to create more cards.")
+                        return
+
+                    lines = [
+                        "# Published Cards",
+                        "",
+                        f"**Count:** {len(published)}",
+                        f"**KV Sync:** {'✓ Success' if kv_sync.get('success') else '✗ Failed'}",
+                        "",
+                    ]
+
+                    for card in published:
+                        lines.append(f"- **{card.get('title', 'Untitled')}**")
+                        lines.append(f"  - [{card.get('source_type', 'web')}]({card.get('source_url', '')})")
+                        lines.append("")
+
+                    content.show_file("publish.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("publish.md", f"# Error\n\n{e}")
+
+        content.show_file("publish.md", f"# Publish\n\n*Publishing {count} cards...*")
+        asyncio.create_task(run_publish())
+
+    def _handle_collection_command(self, args: str) -> None:
+        """Handle /collection command - manage content collections.
+
+        Usage:
+            /collection           - Show status
+            /collection status    - Show status
+            /collection list      - List collections
+            /collection featured  - Show featured collection
+        """
+        import asyncio
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        async def run_status():
+            try:
+                import asyncpg
+                import os
+                from .engine.services.collection_service import CollectionService
+
+                db_url = os.environ.get(
+                    "GAIUS_DATABASE_URL",
+                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+                )
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    stats = await service.get_stats()
+                    featured = await service.get_featured_collection()
+
+                    lines = [
+                        "# Collection Status",
+                        "",
+                        f"**Total Collections:** {stats.get('total_collections', 0)}",
+                        f"**Featured:** {featured.name if featured else 'None'}",
+                        "",
+                        "## Cards",
+                        f"- Total: {stats.get('total_cards', 0)}",
+                        f"- Pending: {stats.get('pending_cards', 0)}",
+                        f"- Published: {stats.get('published_cards', 0)}",
+                    ]
+
+                    if featured:
+                        lines.extend([
+                            "",
+                            "## Featured Collection",
+                            f"- **Slug:** {featured.slug}",
+                            f"- **Name:** {featured.name}",
+                            f"- **Status:** {featured.status}",
+                        ])
+
+                    content.show_file("collection.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("collection.md", f"# Error\n\n{e}")
+
+        async def run_list():
+            try:
+                import asyncpg
+                import os
+                from .engine.services.collection_service import CollectionService
+
+                db_url = os.environ.get(
+                    "GAIUS_DATABASE_URL",
+                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+                )
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    collections = await service.list_collections()
+
+                    if not collections:
+                        content.show_file("collection.md", "# Collections\n\nNo collections found.")
+                        return
+
+                    lines = [
+                        "# Collections",
+                        "",
+                        "| Slug | Name | Status | Featured |",
+                        "|------|------|--------|----------|",
+                    ]
+
+                    for c in collections:
+                        featured = "★" if c.featured else ""
+                        lines.append(f"| {c.slug} | {c.name} | {c.status} | {featured} |")
+
+                    content.show_file("collection.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("collection.md", f"# Error\n\n{e}")
+
+        content.show_file("collection.md", f"# Collection\n\n*Loading...*")
+
+        if subcmd == "list":
+            asyncio.create_task(run_list())
+        else:
+            asyncio.create_task(run_status())
+
     def _handle_iso_command(self, args: str, content: "InfoPanel") -> None:
         """Handle /iso command for Iso view mode control.
 
@@ -8762,6 +9461,18 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "prospects":
             # Capital stewardship / prospects analysis
             self._handle_prospects_command(args)
+        elif command in ("dataview", "dv"):
+            # Bases feature store queries
+            self._handle_dataview_command(args)
+        elif command == "article":
+            # Article curation (delegates to CLI)
+            self._handle_article_command(args)
+        elif command == "publish":
+            # Publish cards to landing page (delegates to CLI)
+            self._handle_publish_command(args)
+        elif command == "collection":
+            # Collection management (delegates to CLI)
+            self._handle_collection_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:

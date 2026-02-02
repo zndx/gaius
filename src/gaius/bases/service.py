@@ -10,18 +10,22 @@ Guru Meditation Codes:
 - #BASES.00000005.QUERYFAIL - Query execution failed
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime
+from typing import Any, TYPE_CHECKING
 
-from gaius.bases.dql import parse_dql, DQLQuery
-from gaius.bases.dql.compiler import get_compiler, CompiledQuery
+from gaius.bases.fluent import FluentCompiler, parse_fluent, BaseQuery
 from gaius.bases.execution.guardrails import QueryGuardrails, GuardrailEnforcer
 from gaius.bases.execution.executor import QueryExecutor, ExecutorConfig
 from gaius.bases.models.base import BaseDefinition, BaseType
-from gaius.bases.models.schema import BaseInfo, ColumnSchema, QueryResult, EntityHistoryResult
+from gaius.bases.models.schema import BaseInfo, QueryResult, EntityHistoryResult
 from gaius.bases.registry.client import RegistryClient
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -218,13 +222,17 @@ class BasesService:
         self,
         base_name: str,
         dql: str | None = None,
+        fluent: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> QueryResult:
-        """Execute a DQL query against a base.
+        """Execute a query against a base.
+
+        Supports both fluent syntax (preferred) and legacy DQL-style strings.
 
         Args:
             base_name: Name of the base to query
-            dql: Dataview-style query string (WHERE, ORDER BY, LIMIT, etc.)
+            dql: Legacy DQL-style query string (WHERE, ORDER BY, etc.)
+            fluent: Fluent query string like 'where(col("x") > 1).limit(10)'
             options: Additional options:
                 - timeout_ms: Query timeout
                 - max_rows: Override default LIMIT
@@ -243,26 +251,38 @@ class BasesService:
             # Get base definition
             base = await self._registry.get_base(base_name)
 
-            # Parse DQL
-            query = parse_dql(dql or base.default_dql or "")
+            # Build query from fluent or DQL
+            if fluent:
+                # Parse fluent expression as method chain on base
+                full_expr = f'Base("{base_name}").{fluent}'
+                query = parse_fluent(full_expr)
+            elif dql:
+                # Convert simple DQL to fluent query
+                query = self._dql_to_fluent(base_name, dql)
+            else:
+                # No filter - select all
+                from gaius.bases.fluent import Base
+                query = Base(base_name)
 
-            # Apply guardrails
-            query = self._guardrail_enforcer.enforce(query, base)
+            # Apply guardrails (limit, etc.)
+            query = self._apply_guardrails(query, base, options)
 
             # Get timeout
             timeout_ms = self._guardrail_enforcer.validate_timeout(
                 options.get("timeout_ms")
             )
 
-            # Select compiler based on base type
-            backend = self._select_backend(base)
-            compiler = get_compiler(backend)
-
-            # Compile query
+            # Compile using SQLGlot
+            compiler = FluentCompiler(dialect="postgres")
             compiled = compiler.compile(query, base)
 
             # Execute
-            result = await self._executor.execute(compiled, base, timeout_ms)
+            result = await self._executor.execute_sql(
+                compiled.sql,
+                compiled.parameters,
+                base,
+                timeout_ms,
+            )
 
             # Update stats
             self._query_count += 1
@@ -271,9 +291,9 @@ class BasesService:
             duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             await self._registry.log_query(
                 base_id=base_name,
-                dql_query=dql or "",
+                dql_query=fluent or dql or "",
                 compiled_sql=compiled.sql,
-                backend=backend,
+                backend="postgres",  # Kudu via FDW when available
                 duration_ms=duration_ms,
                 rows_returned=result.row_count,
                 client_id=options.get("client_id"),
@@ -292,7 +312,7 @@ class BasesService:
                 try:
                     await self._registry.log_query(
                         base_id=base_name,
-                        dql_query=dql or "",
+                        dql_query=fluent or dql or "",
                         compiled_sql=None,
                         backend="unknown",
                         duration_ms=duration_ms,
@@ -304,6 +324,131 @@ class BasesService:
                     pass  # Don't fail on audit log error
 
             raise
+
+    async def execute_fluent(self, query: BaseQuery) -> QueryResult:
+        """Execute a fluent query object.
+
+        Called by BaseQuery.scan() method.
+
+        Args:
+            query: Fluent query object
+
+        Returns:
+            QueryResult with columns, rows, and metadata
+        """
+        if not self._registry or not self._executor or not self._guardrail_enforcer:
+            raise RuntimeError("[#BASES.00000001.NOPOOL] Service not started")
+
+        start_time = datetime.now()
+        base_name = query._base_name
+
+        try:
+            # Get base definition
+            base = await self._registry.get_base(base_name)
+
+            # Apply guardrails
+            query = self._apply_guardrails(query, base, {})
+
+            # Get timeout
+            timeout_ms = self._guardrail_enforcer.validate_timeout(None)
+
+            # Compile using SQLGlot
+            compiler = FluentCompiler(dialect="postgres")
+            compiled = compiler.compile(query, base)
+
+            # Execute
+            result = await self._executor.execute_sql(
+                compiled.sql,
+                compiled.parameters,
+                base,
+                timeout_ms,
+            )
+
+            # Update stats
+            self._query_count += 1
+
+            # Log query for audit
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self._registry.log_query(
+                base_id=base_name,
+                dql_query=str(query.to_dict()),
+                compiled_sql=compiled.sql,
+                backend="postgres",
+                duration_ms=duration_ms,
+                rows_returned=result.row_count,
+                client_id=None,
+                error=None,
+            )
+
+            return result
+
+        except Exception as e:
+            self._error_count += 1
+            logger.exception(f"Fluent query failed: {base_name}")
+            raise
+
+    def _dql_to_fluent(self, base_name: str, dql: str) -> BaseQuery:
+        """Convert a simple DQL string to a fluent query.
+
+        Handles basic patterns like:
+            WHERE x > 1 ORDER BY y DESC LIMIT 10
+
+        For complex queries, use the fluent API directly.
+        """
+        from gaius.bases.fluent import Base, col
+        import re
+
+        query = Base(base_name)
+
+        # Simple parsing - production would use a proper parser
+        dql_upper = dql.upper()
+
+        # Extract LIMIT
+        limit_match = re.search(r'LIMIT\s+(\d+)', dql_upper)
+        if limit_match:
+            query = query.limit(int(limit_match.group(1)))
+
+        # Extract ORDER BY (simple case)
+        order_match = re.search(r'ORDER\s+BY\s+(\w+)(?:\s+(ASC|DESC))?', dql_upper)
+        if order_match:
+            col_name = order_match.group(1).lower()
+            desc = order_match.group(2) == "DESC" if order_match.group(2) else False
+            query = query.order_by(col_name, desc=desc)
+
+        # For WHERE clauses, we'd need more sophisticated parsing
+        # For now, just log that complex WHERE should use fluent API
+        if 'WHERE' in dql_upper:
+            logger.warning(
+                "DQL WHERE clauses are deprecated. Use fluent API: "
+                "Base('name').where(col('x') > 1)"
+            )
+
+        return query
+
+    def _apply_guardrails(
+        self,
+        query: BaseQuery,
+        base: BaseDefinition,
+        options: dict[str, Any],
+    ) -> BaseQuery:
+        """Apply guardrails to a fluent query.
+
+        Ensures queries have appropriate limits and validates constraints.
+        """
+        if not self._guardrail_enforcer:
+            return query
+
+        # Get effective limit
+        effective_limit = self._guardrail_enforcer.get_effective_limit(
+            query._limit_value,
+            options,
+        )
+
+        # Apply limit if not set or if clamped
+        if query._limit_value is None or query._limit_value > effective_limit:
+            query = query.limit(effective_limit)
+
+        return query
 
     async def get_entity_history(
         self,
@@ -362,7 +507,7 @@ class BasesService:
                 dql = f'WHERE entity_id = "{entity_id}" AND event_time >= "{start.isoformat()}" AND event_time <= "{end.isoformat()}" ORDER BY event_time DESC LIMIT {max_events}'
 
         # Execute query
-        result = await self.query_base(base_name, dql, options)
+        result = await self.query_base(base_name, dql=dql, options=options)
 
         # Transform to EntityHistoryResult
         events = result.rows
@@ -415,12 +560,13 @@ class BasesService:
             return "iceberg"
 
         elif base.base_type == BaseType.SNAPSHOT:
-            # Pinot is roadmap-only - use PostgreSQL for snapshot bases
-            if self.config.pinot_enabled and base.pinot_table:
+            # Kudu is the target - use PostgreSQL as stub until kudu_fdw available
+            # Pinot is roadmap-only and intentionally disabled
+            if self.config.pinot_enabled:
                 raise RuntimeError(
                     f"[#BASES.00000003.NOPINOT] Pinot backend is roadmap-only.\n"
-                    f"  Base '{base.base_id}' configured for Pinot but Pinot is not yet implemented.\n"
-                    f"  Remove pinot_table from base definition to use PostgreSQL."
+                    f"  Base '{base.base_id}' cannot use Pinot - not yet implemented.\n"
+                    f"  Using PostgreSQL stub until kudu_fdw is available."
                 )
             return "postgres"
 

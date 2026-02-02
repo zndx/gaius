@@ -5,8 +5,8 @@ uiBackend:
   metadatadb:
     host: devenv-postgres
     port: "5438"
-    user: postgres
-    password: ""  # Empty password for devenv postgres
+    user: gaius
+    password: "gaius"
     name: metaflow
 
   metaflowDatastoreSysRootS3: "s3://metaflow-artifacts/metaflow"

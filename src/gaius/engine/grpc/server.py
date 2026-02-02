@@ -84,6 +84,9 @@ class ServiceRegistry:
     # Prospects/Stewardship service for FMP-based intelligence
     prospects_service: Any = None
 
+    # Collections service for public landing page content
+    collection_service: Any = None
+
     # Ambient computing workload service
     ambient_service: Any = None
 

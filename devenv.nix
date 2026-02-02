@@ -537,6 +537,14 @@
       export OPTILLM_API_KEY="''${OPTILLM_API_KEY:-gaius-local-key}"
       export OPENAI_API_KEY="''${OPTILLM_API_KEY:-gaius-local-key}"
 
+      # Pass through Cloudflare credentials for KV sync
+      export CLOUDFLARE_ACCOUNT_ID="''${CLOUDFLARE_ACCOUNT_ID:-}"
+      export CLOUDFLARE_API_TOKEN="''${CLOUDFLARE_API_TOKEN:-}"
+      # GAIUS_SESSIONS namespace for X OAuth
+      export CLOUDFLARE_KV_NAMESPACE_ID="''${CLOUDFLARE_KV_NAMESPACE_ID:-}"
+      # GAIUS_COLLECTIONS namespace for landing page cards
+      export CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID="''${CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID:-4541b17fa5244bffb346f9a55b8eca93}"
+
       echo ""
       echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
       export PYTHONPATH=""

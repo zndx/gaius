@@ -94,6 +94,14 @@ from .vector_search_service import (
     VectorSearchConfig,
     VectorSearchService,
 )
+from .collection_service import (
+    Card,
+    Collection,
+    CollectionConfig,
+    CollectionError,
+    CollectionService,
+    Source,
+)
 
 __all__ = [
     # Orchestrator
@@ -178,6 +186,13 @@ __all__ = [
     # Vector Search
     "VectorSearchConfig",
     "VectorSearchService",
+    # Collections
+    "Card",
+    "Collection",
+    "CollectionConfig",
+    "CollectionError",
+    "CollectionService",
+    "Source",
     # CLT (lazy-loaded)
     "AgentCLTState",
     "CLTProjectionBridge",

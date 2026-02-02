@@ -316,6 +316,16 @@ class GaiusServiceStub:
     """Update 3D viz data"""
     CollectionSyncTheme: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSyncThemeRequest, gaius_service_pb2.CollectionSyncThemeResponse]
     """Sync HOCON theme to KV"""
+    ArticleStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleStatusRequest, gaius_service_pb2.ArticleStatusResponse]
+    """─────────────────────────────────────────────────────────────────────────
+    Article Curation (gRPC-First, Engine Owns Filesystem)
+    ─────────────────────────────────────────────────────────────────────────
+    Situational awareness for /article sitrep
+    """
+    ArticleNew: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleNewRequest, gaius_service_pb2.ArticleNewResponse]
+    """Create article (engine writes to KB)"""
+    ArticleCurate: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ArticleCurateRequest, gaius_service_pb2.ArticleCurationEvent]
+    """Stream curation progress events"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -605,6 +615,16 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Update 3D viz data"""
     CollectionSyncTheme: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSyncThemeRequest, gaius_service_pb2.CollectionSyncThemeResponse]  # type: ignore[assignment]
     """Sync HOCON theme to KV"""
+    ArticleStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleStatusRequest, gaius_service_pb2.ArticleStatusResponse]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Article Curation (gRPC-First, Engine Owns Filesystem)
+    ─────────────────────────────────────────────────────────────────────────
+    Situational awareness for /article sitrep
+    """
+    ArticleNew: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleNewRequest, gaius_service_pb2.ArticleNewResponse]  # type: ignore[assignment]
+    """Create article (engine writes to KB)"""
+    ArticleCurate: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ArticleCurateRequest, gaius_service_pb2.ArticleCurationEvent]  # type: ignore[assignment]
+    """Stream curation progress events"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     """═══════════════════════════════════════════════════════════════════════════
@@ -1611,5 +1631,33 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.CollectionSyncThemeResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionSyncThemeResponse]]:
         """Sync HOCON theme to KV"""
+
+    @abc.abstractmethod
+    def ArticleStatus(
+        self,
+        request: gaius_service_pb2.ArticleStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ArticleStatusResponse, collections.abc.Awaitable[gaius_service_pb2.ArticleStatusResponse]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Article Curation (gRPC-First, Engine Owns Filesystem)
+        ─────────────────────────────────────────────────────────────────────────
+        Situational awareness for /article sitrep
+        """
+
+    @abc.abstractmethod
+    def ArticleNew(
+        self,
+        request: gaius_service_pb2.ArticleNewRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ArticleNewResponse, collections.abc.Awaitable[gaius_service_pb2.ArticleNewResponse]]:
+        """Create article (engine writes to KB)"""
+
+    @abc.abstractmethod
+    def ArticleCurate(
+        self,
+        request: gaius_service_pb2.ArticleCurateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ArticleCurationEvent], collections.abc.AsyncIterator[gaius_service_pb2.ArticleCurationEvent]]:
+        """Stream curation progress events"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

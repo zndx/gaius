@@ -186,6 +186,86 @@ class Source:
 
 
 @dataclass
+class Article:
+    """A KB article tracked in the database."""
+
+    article_id: str
+    slug: str
+    title: str
+    status: str = "pending"  # pending, researching, drafting, review, published, abandoned
+    kb_path: str = ""
+    collection_id: str | None = None
+    current_version: int = 0
+    zk_count: int = 0
+    sources_count: int = 0
+    arxiv_categories: list[str] | None = None
+    keywords: list[str] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for serialization."""
+        return {
+            "article_id": self.article_id,
+            "slug": self.slug,
+            "title": self.title,
+            "status": self.status,
+            "kb_path": self.kb_path,
+            "collection_id": self.collection_id,
+            "current_version": self.current_version,
+            "zk_count": self.zk_count,
+            "sources_count": self.sources_count,
+            "arxiv_categories": self.arxiv_categories,
+            "keywords": self.keywords,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+@dataclass
+class ArticleCurationEvent:
+    """Progress event from ArticleCurationFlow."""
+
+    event_id: int
+    run_id: str
+    step: str  # start, select, research, acquire, summarize, draft, base, cards, complete, failed
+    step_number: int
+    total_steps: int
+    progress: float  # 0.0 - 1.0
+    message: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: str) -> "ArticleCurationEvent":
+        """Parse from pg_notify JSON payload."""
+        import json
+        data = json.loads(payload)
+        return cls(
+            event_id=data.get("event_id", 0),
+            run_id=data["run_id"],
+            step=data["step"],
+            step_number=data["step_number"],
+            total_steps=data.get("total_steps", 9),
+            progress=data.get("progress", 0.0),
+            message=data.get("message", ""),
+            metadata=data.get("metadata", {}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for serialization."""
+        return {
+            "event_id": self.event_id,
+            "run_id": self.run_id,
+            "step": self.step,
+            "step_number": self.step_number,
+            "total_steps": self.total_steps,
+            "progress": self.progress,
+            "message": self.message,
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
 class CollectionConfig:
     """Configuration for Collection service."""
 
@@ -356,6 +436,171 @@ class CollectionService:
                 )
 
     # =========================================================================
+    # Article Operations
+    # =========================================================================
+
+    async def create_article_with_collection(
+        self,
+        slug: str,
+        title: str,
+        kb_path: str,
+        arxiv_categories: list[str] | None = None,
+        keywords: list[str] | None = None,
+    ) -> tuple[Article, Collection]:
+        """Create an article with its 1:1 collection atomically.
+
+        Uses same slug for both article and collection. This enforces
+        the 1:1 mapping between articles and collections.
+
+        Args:
+            slug: URL-friendly identifier (same for article and collection)
+            title: Display title
+            kb_path: KB path to article directory
+            arxiv_categories: Optional arXiv categories for research hints
+            keywords: Optional keywords for research hints
+
+        Returns:
+            Tuple of (Article, Collection) objects
+
+        Raises:
+            CollectionError: If creation fails
+        """
+        async with self._pool.acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM collections.create_article_with_collection($1, $2, $3, $4, $5)
+                    """,
+                    slug, title, kb_path, arxiv_categories, keywords,
+                )
+
+                if not row:
+                    raise CollectionError(
+                        f"Failed to create article: {slug}",
+                        guru_code="#COL.00000007.ARTICLEFAIL",
+                    )
+
+                article_id = row["article_id"]
+                collection_id = row["collection_id"]
+
+                # Fetch full objects
+                article = await self.get_article(article_id)
+                collection = await self.get_collection(collection_id)
+
+                if not article or not collection:
+                    raise CollectionError(
+                        f"Article or collection not found after creation: {slug}",
+                        guru_code="#COL.00000007.ARTICLEFAIL",
+                    )
+
+                logger.info(f"Created article {article_id} with collection {collection_id}")
+                return article, collection
+
+            except asyncpg.UniqueViolationError as e:
+                raise CollectionError(
+                    f"Article or collection with slug '{slug}' already exists.\n"
+                    f"  Detail: {e}",
+                    guru_code="#COL.00000008.DUPLICATE",
+                ) from e
+
+    async def get_article(self, article_id: str) -> Article | None:
+        """Get an article by ID."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM collections.articles WHERE article_id = $1",
+                article_id,
+            )
+            if not row:
+                return None
+            return self._row_to_article(row)
+
+    async def get_article_by_slug(self, slug: str) -> Article | None:
+        """Get an article by slug.
+
+        Used by CardUpkeepFlow to resolve article_id before creating cards.
+        Fail-fast if article not found in database.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM collections.articles WHERE slug = $1",
+                slug,
+            )
+            if not row:
+                return None
+            return self._row_to_article(row)
+
+    async def list_articles(
+        self,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[Article]:
+        """List articles with optional status filter."""
+        async with self._pool.acquire() as conn:
+            if status:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM collections.articles
+                    WHERE status = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    status, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM collections.articles
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            return [self._row_to_article(row) for row in rows]
+
+    async def update_article_stats(
+        self,
+        article_id: str,
+        zk_count: int | None = None,
+        sources_count: int | None = None,
+        current_version: int | None = None,
+    ) -> None:
+        """Update article statistics.
+
+        Called after zettelkasten notes or sources are added.
+        """
+        updates = []
+        params: list[str | int] = [article_id]
+        param_idx = 2
+
+        if zk_count is not None:
+            updates.append(f"zk_count = ${param_idx}")
+            params.append(zk_count)
+            param_idx += 1
+
+        if sources_count is not None:
+            updates.append(f"sources_count = ${param_idx}")
+            params.append(sources_count)
+            param_idx += 1
+
+        if current_version is not None:
+            updates.append(f"current_version = ${param_idx}")
+            params.append(current_version)
+            param_idx += 1
+
+        if not updates:
+            return
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                UPDATE collections.articles
+                SET {', '.join(updates)}, updated_at = NOW()
+                WHERE article_id = $1
+                """,
+                *params,
+            )
+
+    # =========================================================================
     # Card Operations
     # =========================================================================
 
@@ -368,6 +613,7 @@ class CollectionService:
         source_type: str,
         image_url: str | None = None,
         sequence: int | None = None,
+        article_id: str | None = None,
     ) -> Card:
         """Add a card to a collection.
 
@@ -379,6 +625,7 @@ class CollectionService:
             source_type: Type of source (arxiv, huggingface, etc.)
             image_url: Optional image URL
             sequence: Optional ordering sequence
+            article_id: Article ID for FK relationship (optional during transition)
 
         Returns:
             Created Card object
@@ -414,11 +661,11 @@ class CollectionService:
                 """
                 INSERT INTO collections.cards
                 (card_id, collection_id, title, summary, source_url, source_type,
-                 image_url, sequence, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 image_url, sequence, article_id, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
                 card_id, collection_id, title, summary, source_url, source_type,
-                image_url, sequence, now,
+                image_url, sequence, article_id, now,
             )
 
         return Card(
@@ -430,6 +677,7 @@ class CollectionService:
             source_type=source_type,
             image_url=image_url,
             sequence=sequence,
+            article_id=article_id,
             created_at=now,
         )
 
@@ -822,6 +1070,433 @@ class CollectionService:
         }
 
     # =========================================================================
+    # Article Situational Awareness
+    # =========================================================================
+
+    async def get_article_status(self) -> dict[str, Any]:
+        """Get article curation situational awareness.
+
+        Returns status suitable for /article sitrep display:
+        - running: Is an article curation flow currently executing?
+        - current_run_id: UUID of running flow (if any)
+        - current_step: Current step name (if running)
+        - articles_pending: Count of pending articles
+        - articles_list: List of articles with slug, title, zk_count, status
+        - recent_curations: List of recent completed curations
+        - total_cards_pending: Count of pending cards
+        - total_cards_published: Count of published cards
+        """
+        async with self._pool.acquire() as conn:
+            # Check for running flow via progress table
+            running_row = await conn.fetchrow(
+                """
+                SELECT run_id, step, message, created_at
+                FROM meta.article_curation_progress
+                WHERE step NOT IN ('complete', 'failed')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+
+            running = running_row is not None
+            current_run_id = running_row["run_id"] if running_row else None
+            current_step = running_row["step"] if running_row else None
+
+            # Get articles list from database
+            articles_rows = await conn.fetch(
+                """
+                SELECT slug, title, status, zk_count, sources_count
+                FROM collections.articles
+                ORDER BY
+                    CASE WHEN status = 'pending' THEN 0
+                         WHEN status = 'researching' THEN 1
+                         WHEN status = 'drafting' THEN 2
+                         ELSE 3
+                    END,
+                    created_at DESC
+                LIMIT 20
+                """
+            )
+            articles_list = [
+                {
+                    "slug": row["slug"],
+                    "title": row["title"],
+                    "status": row["status"],
+                    "zk_count": row["zk_count"] or 0,
+                    "sources_count": row["sources_count"] or 0,
+                }
+                for row in articles_rows
+            ]
+
+            # Count pending articles
+            articles_pending = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM collections.articles
+                WHERE status IN ('pending', 'researching', 'drafting')
+                """
+            ) or 0
+
+            # Get recent curations
+            recent_rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (run_id)
+                    run_id,
+                    metadata->>'slug' as slug,
+                    created_at,
+                    metadata->>'cards_created' as cards_created
+                FROM meta.article_curation_progress
+                WHERE step = 'complete'
+                ORDER BY run_id, created_at DESC
+                LIMIT 5
+                """
+            )
+            recent_curations = [
+                {
+                    "run_id": row["run_id"],
+                    "slug": row["slug"] or "unknown",
+                    "completed_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "cards_created": int(row["cards_created"]) if row["cards_created"] else 0,
+                }
+                for row in recent_rows
+            ]
+
+            # Card counts
+            cards_pending = await conn.fetchval(
+                "SELECT COUNT(*) FROM collections.cards WHERE status = 'pending'"
+            ) or 0
+            cards_published = await conn.fetchval(
+                "SELECT COUNT(*) FROM collections.cards WHERE status = 'published'"
+            ) or 0
+
+            return {
+                "running": running,
+                "current_run_id": current_run_id,
+                "current_step": current_step,
+                "articles_pending": articles_pending,
+                "articles_list": articles_list,
+                "recent_curations": recent_curations,
+                "total_cards_pending": cards_pending,
+                "total_cards_published": cards_published,
+            }
+
+    # =========================================================================
+    # Article Creation (Engine-First)
+    # =========================================================================
+
+    async def create_article(
+        self,
+        slug: str,
+        title: str = "",
+    ) -> dict[str, Any]:
+        """Create new article directory structure.
+
+        Engine owns KB filesystem - clients MUST NOT write directly.
+        This method creates the KB directory structure AND the database record.
+
+        Args:
+            slug: URL-friendly identifier
+            title: Display title (defaults to title-cased slug)
+
+        Returns:
+            Dict with slug, title, kb_path, article_id, collection_id
+
+        Raises:
+            CollectionError: If article already exists or creation fails
+        """
+        from pathlib import Path
+        import yaml
+        from datetime import datetime
+
+        if not title:
+            title = slug.replace("-", " ").title()
+
+        kb_root = Path(self._config.kb_root)
+        article_dir = kb_root / "current" / "articles" / slug
+        kb_path = f"current/articles/{slug}"
+
+        if article_dir.exists():
+            raise CollectionError(
+                f"Article directory already exists: {article_dir}",
+                guru_code="#COL.00000008.DUPLICATE",
+            )
+
+        try:
+            # Create directory structure
+            article_dir.mkdir(parents=True, exist_ok=True)
+            (article_dir / "zk").mkdir(exist_ok=True)
+            (article_dir / "hx").mkdir(exist_ok=True)
+            (article_dir / "sources").mkdir(exist_ok=True)
+
+            # Create article.md with frontmatter
+            now = datetime.now()
+            frontmatter = {
+                "title": title,
+                "status": "pending",
+                "version": 0,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "arxiv_categories": [],
+                "keywords": [],
+                "news_queries": [],
+            }
+            yaml_str = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
+            article_content = f"""---
+{yaml_str.strip()}
+---
+
+# {title}
+
+<!-- Article draft will be generated by the curation pipeline -->
+"""
+            (article_dir / "article.md").write_text(article_content)
+
+            # Create initial zettelkasten note
+            zk_time = now.strftime("%H%M%S")
+            zk_note = f"""---
+type: research-seed
+title: "Initial research direction for {title}"
+created_at: {now.isoformat()}
+---
+
+# Research Seed: {title}
+
+## Research Questions
+
+- What is the core thesis of this article?
+- What evidence and sources support it?
+- Who is the target audience?
+
+## Keywords
+
+- Add keywords here for research phase
+
+## Related KB Content
+
+- Link to relevant KB documents here
+"""
+            (article_dir / "zk" / f"{zk_time}_research_seed.md").write_text(zk_note)
+
+            # Create database record with 1:1 collection
+            article, collection = await self.create_article_with_collection(
+                slug=slug,
+                title=title,
+                kb_path=kb_path,
+            )
+
+            logger.info(f"Created article '{slug}' at {article_dir}")
+
+            return {
+                "slug": slug,
+                "title": title,
+                "kb_path": str(article_dir),
+                "article_id": article.article_id,
+                "collection_id": collection.collection_id,
+                "message": f"Created article '{title}' at {article_dir}. Add research notes to zk/ then run /article curate {slug}",
+            }
+
+        except CollectionError:
+            # Re-raise CollectionError as-is
+            raise
+        except Exception as e:
+            # Cleanup on failure
+            if article_dir.exists():
+                import shutil
+                shutil.rmtree(article_dir, ignore_errors=True)
+            raise CollectionError(
+                f"Failed to create article: {e}",
+                guru_code="#COL.00000007.ARTICLEFAIL",
+            ) from e
+
+    # =========================================================================
+    # Article Curation Streaming
+    # =========================================================================
+
+    async def article_curate_stream(
+        self,
+        slug: str = "",
+    ) -> AsyncIterator[ArticleCurationEvent]:
+        """Stream article curation progress via pg_notify.
+
+        Starts ArticleCurationFlow in the background and streams progress
+        events via PostgreSQL LISTEN/NOTIFY. Events include:
+        - start: Flow started
+        - select: Article selected
+        - research: Zettelkasten synthesis
+        - acquire: External source acquisition
+        - summarize: LLM summarization
+        - draft: Draft generation
+        - base: .base file creation
+        - cards: Card creation
+        - complete: Flow completed
+        - failed: Flow failed
+
+        Args:
+            slug: Optional article slug to curate (if empty, selects from pending)
+
+        Yields:
+            ArticleCurationEvent objects as they occur
+        """
+        import asyncio
+        import json
+        import subprocess
+
+        # Create a queue for events from pg_notify
+        event_queue: asyncio.Queue[ArticleCurationEvent | None] = asyncio.Queue()
+        run_id: str | None = None
+
+        # Capture the running loop for use in callbacks
+        loop = asyncio.get_running_loop()
+
+        def on_notification(
+            conn: asyncpg.Connection,
+            pid: int,
+            channel: str,
+            payload: str,
+        ) -> None:
+            """Handle pg_notify callback (sync, from asyncpg).
+
+            asyncpg callbacks run synchronously on the event loop thread,
+            so we can directly put to the queue without call_soon_threadsafe.
+            """
+            nonlocal run_id
+            try:
+                event = ArticleCurationEvent.from_payload(payload)
+                logger.debug(f"pg_notify received: {event.step} - {event.message[:50]}")
+
+                # Track the run_id from the first event
+                if run_id is None:
+                    run_id = event.run_id
+                    logger.info(f"Tracking article curation run: {run_id}")
+
+                # Only process events for our run
+                if run_id and event.run_id == run_id:
+                    # asyncpg callbacks are on the same thread as the event loop,
+                    # so we can put directly to the queue
+                    event_queue.put_nowait(event)
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"Failed to parse article curation event: {e}")
+
+        # Get a dedicated connection for LISTEN
+        db_url = os.environ.get(
+            "GAIUS_DATABASE_URL",
+            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+        )
+
+        conn: asyncpg.Connection | None = None
+        flow_task: asyncio.Task | None = None
+
+        try:
+            # Connect and start listening
+            conn = await asyncpg.connect(db_url)
+            await conn.add_listener("article_curation_progress", on_notification)
+            logger.info("Listening on article_curation_progress channel")
+
+            # Start the flow in a background task
+            async def run_flow():
+                """Run ArticleCurationFlow via subprocess."""
+                # Brief delay to ensure pg_notify listener is fully active
+                await asyncio.sleep(0.1)
+
+                try:
+                    # Run Metaflow flow module directly (not metaflow.cli)
+                    cmd = [
+                        "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
+                        "run",
+                    ]
+                    if slug:
+                        cmd.extend(["--article", slug])
+
+                    logger.info(f"Starting article curation: {' '.join(cmd)}")
+
+                    # Run Metaflow as subprocess
+                    # Uses inherited Metaflow configuration from environment
+                    process = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        cwd=os.environ.get("GAIUS_PROJECT_ROOT", os.getcwd()),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env={
+                            **os.environ,
+                            "GAIUS_KB_ROOT": self._config.kb_root,
+                        },
+                    )
+
+                    stdout, stderr = await process.communicate()
+
+                    if process.returncode != 0:
+                        logger.error(f"ArticleCurationFlow failed: {stderr.decode()}")
+                        # Emit a failed event if we tracked a run_id
+                        if run_id:
+                            failed_event = ArticleCurationEvent(
+                                event_id=0,
+                                run_id=run_id,
+                                step="failed",
+                                step_number=-1,
+                                total_steps=9,
+                                progress=-1.0,
+                                message=f"Flow failed: {stderr.decode()[:200]}",
+                                metadata={"exit_code": process.returncode},
+                            )
+                            await event_queue.put(failed_event)
+                    else:
+                        logger.info("ArticleCurationFlow completed successfully")
+
+                except Exception as e:
+                    logger.error(f"Failed to run ArticleCurationFlow: {e}")
+                    if run_id:
+                        failed_event = ArticleCurationEvent(
+                            event_id=0,
+                            run_id=run_id,
+                            step="failed",
+                            step_number=-1,
+                            total_steps=9,
+                            progress=-1.0,
+                            message=f"Flow error: {str(e)[:200]}",
+                            metadata={},
+                        )
+                        await event_queue.put(failed_event)
+
+                finally:
+                    # Signal completion
+                    await event_queue.put(None)
+
+            flow_task = asyncio.create_task(run_flow())
+
+            # Yield events as they come in
+            while True:
+                try:
+                    # Wait for event with timeout
+                    event = await asyncio.wait_for(event_queue.get(), timeout=300.0)
+                    if event is None:
+                        # Flow completed (success or failure)
+                        break
+                    yield event
+
+                    # Check for terminal states
+                    if event.step in ("complete", "failed"):
+                        break
+
+                except asyncio.TimeoutError:
+                    logger.warning("Article curation stream timeout (5 min)")
+                    break
+
+        finally:
+            # Cleanup
+            if conn:
+                try:
+                    await conn.remove_listener("article_curation_progress", on_notification)
+                    await conn.close()
+                except Exception:
+                    pass
+
+            if flow_task and not flow_task.done():
+                flow_task.cancel()
+                try:
+                    await flow_task
+                except asyncio.CancelledError:
+                    pass
+
+    # =========================================================================
     # Private Helpers
     # =========================================================================
 
@@ -879,6 +1554,24 @@ class CollectionService:
             ingested_via=row.get("ingested_via"),
             ingested_at=row.get("ingested_at"),
             kb_path=row.get("kb_path"),
+        )
+
+    def _row_to_article(self, row: asyncpg.Record) -> Article:
+        """Convert database row to Article object."""
+        return Article(
+            article_id=row["article_id"],
+            slug=row["slug"],
+            title=row["title"],
+            status=row.get("status") or "pending",
+            kb_path=row.get("kb_path") or "",
+            collection_id=row.get("collection_id"),
+            current_version=row.get("current_version") or 0,
+            zk_count=row.get("zk_count") or 0,
+            sources_count=row.get("sources_count") or 0,
+            arxiv_categories=row.get("arxiv_categories"),
+            keywords=row.get("keywords"),
+            created_at=row.get("created_at"),
+            updated_at=row.get("updated_at"),
         )
 
 

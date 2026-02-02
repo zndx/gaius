@@ -6338,6 +6338,200 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    # --- Article Curation ---
+
+    @server.tool()
+    async def article_list() -> str:
+        """List articles available for curation.
+
+        Returns articles with their status, zettelkasten note counts,
+        and readiness for the curation pipeline.
+        """
+        import asyncpg
+        import os
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+            )
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                articles = await service.list_articles(limit=50)
+
+                return json.dumps({
+                    "success": True,
+                    "articles": [a.to_dict() for a in articles],
+                    "count": len(articles),
+                }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def article_status() -> str:
+        """Get detailed status of article curation pipeline.
+
+        Shows which articles have been curated, their draft versions,
+        and card creation status.
+        """
+        import asyncpg
+        import os
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+            )
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                stats = await service.get_stats()
+                articles = await service.list_articles(limit=20)
+                featured = await service.get_featured_collection()
+
+                return json.dumps({
+                    "success": True,
+                    "stats": stats,
+                    "featured_collection": featured.to_dict() if featured else None,
+                    "recent_articles": [a.to_dict() for a in articles[:10]],
+                }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def article_curate() -> str:
+        """Run article curation pipeline.
+
+        Executes the full ArticleCurationFlow:
+        1. Research synthesis from zettelkasten notes
+        2. External source acquisition (arXiv, web)
+        3. Draft generation with Grok
+        4. .base file creation with semantic references
+        5. Card creation (all pending)
+
+        This is a long-running operation (2-5 minutes).
+        Progress events are collected and returned.
+        """
+        import asyncpg
+        import os
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+            )
+
+            events: list[dict] = []
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+
+                async for event in service.article_curate_stream():
+                    events.append(event.to_dict())
+
+            # Return final result with all events
+            final = events[-1] if events else {}
+            return json.dumps({
+                "success": final.get("step") == "complete",
+                "step": final.get("step", "unknown"),
+                "message": final.get("message", ""),
+                "events": events,
+                "events_count": len(events),
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def article_new(slug: str, title: str = "") -> str:
+        """Create a new article directory.
+
+        Creates the article structure in KB with zk/ subdirectory
+        for zettelkasten notes.
+
+        Architecture compliance: MCP -> gRPC -> Engine -> KB filesystem
+        The engine owns the KB filesystem - MCP MUST NOT write directly.
+
+        Args:
+            slug: URL-friendly identifier (e.g., "my-new-article")
+            title: Display title (defaults to slug if not provided)
+        """
+        try:
+            from gaius.client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            response = await client.ArticleNew(slug=slug, title=title)
+
+            if not response.success:
+                return json.dumps({
+                    "success": False,
+                    "error": response.error or "Failed to create article",
+                }, indent=2)
+
+            return json.dumps({
+                "success": True,
+                "slug": response.slug,
+                "title": response.title,
+                "path": response.kb_path,
+                "article_id": response.article_id,
+                "collection_id": response.collection_id,
+                "next_steps": [
+                    "Add arxiv_categories, keywords, news_queries to article.md frontmatter",
+                    "Add zettelkasten notes to zk/",
+                    f"Run curation: /article curate {response.slug}",
+                ],
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def publish_cards(count: int = 3) -> str:
+        """Publish pending cards to the landing page.
+
+        Publishes N cards from the pending queue to Cloudflare KV
+        for display on gaius.zndx.org.
+
+        Args:
+            count: Number of cards to publish (default: 3)
+        """
+        import asyncpg
+        import os
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = os.environ.get(
+                "GAIUS_DATABASE_URL",
+                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+            )
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                result = await service.publish_and_sync(count=count)
+
+                published = result.get("published", [])
+                kv_sync = result.get("kv_sync", {})
+
+                return json.dumps({
+                    "success": True,
+                    "published_count": len(published),
+                    "published_cards": published,
+                    "kv_sync": kv_sync,
+                }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing
 

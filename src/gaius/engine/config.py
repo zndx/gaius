@@ -107,6 +107,7 @@ class OptillmConfig:
     enabled: bool = True
     api_key: Optional[str] = None
     base_url: str = "http://localhost:8000"
+    backend_url: str = "http://localhost:8082/v1"  # vLLM instruct endpoint
     default_technique: str = "cot_reflection"
     timeout: int = 120
     use_gunicorn: bool = True
@@ -410,6 +411,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         base_url=optillm_conf.get("base-url", "http://localhost:8000")
         if hasattr(optillm_conf, "get")
         else "http://localhost:8000",
+        backend_url=optillm_conf.get("backend-url", "http://localhost:8082/v1")
+        if hasattr(optillm_conf, "get")
+        else "http://localhost:8082/v1",
         default_technique=optillm_conf.get("default-technique", "cot_reflection")
         if hasattr(optillm_conf, "get")
         else "cot_reflection",

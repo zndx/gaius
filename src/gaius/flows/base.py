@@ -127,7 +127,14 @@ class GaiusFlow(FlowSpec):
             logger.info(f"Lineage START emitted for {job_name} (run_id={run.run_id})")
 
         except Exception as e:
-            logger.warning(f"Failed to emit lineage START event: {e}")
+            # FAIL-FAST: Lineage tracking is critical infrastructure
+            error_msg = (
+                f"Lineage emission failed: {e}\n"
+                f"  Guru Meditation: #GF.00000001.LINEAGE\n"
+                f"  Fix: devenv tasks run restart:clean\n"
+                f"  Or: PGPASSWORD=gaius psql -h localhost -p 5438 -U gaius -d zndx_gaius"
+            )
+            raise RuntimeError(error_msg) from e
 
     def emit_lineage_complete(self, outputs: list[Dataset]) -> None:
         """Emit COMPLETE lineage event.
@@ -159,7 +166,14 @@ class GaiusFlow(FlowSpec):
             )
 
         except Exception as e:
-            logger.warning(f"Failed to emit lineage COMPLETE event: {e}")
+            # FAIL-FAST: Lineage tracking is critical infrastructure
+            error_msg = (
+                f"Lineage emission failed: {e}\n"
+                f"  Guru Meditation: #GF.00000002.LINEAGE_COMPLETE\n"
+                f"  Fix: devenv tasks run restart:clean\n"
+                f"  Or: PGPASSWORD=gaius psql -h localhost -p 5438 -U gaius -d zndx_gaius"
+            )
+            raise RuntimeError(error_msg) from e
 
     def emit_lineage_fail(self, error_message: str) -> None:
         """Emit FAIL lineage event.
@@ -191,4 +205,11 @@ class GaiusFlow(FlowSpec):
             )
 
         except Exception as e:
-            logger.warning(f"Failed to emit lineage FAIL event: {e}")
+            # FAIL-FAST: Lineage tracking is critical infrastructure
+            error_msg = (
+                f"Lineage emission failed: {e}\n"
+                f"  Guru Meditation: #GF.00000003.LINEAGE_FAIL\n"
+                f"  Fix: devenv tasks run restart:clean\n"
+                f"  Or: PGPASSWORD=gaius psql -h localhost -p 5438 -U gaius -d zndx_gaius"
+            )
+            raise RuntimeError(error_msg) from e

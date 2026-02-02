@@ -126,6 +126,13 @@ from ..engine.generated import (
     # Deep Research Flow (MemRL)
     ResearchFlowRequest,
     ResearchFlowEvent,
+    # Article Curation
+    ArticleStatusRequest,
+    ArticleStatusResponse,
+    ArticleNewRequest,
+    ArticleNewResponse,
+    ArticleCurateRequest,
+    ArticleCurationEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -925,6 +932,8 @@ class GrpcEngineClient:
             return await self._call_research_flow(action, params, timeout)
         elif service == "Collection":
             return await self._call_collection(action, params, timeout)
+        elif service == "Article":
+            return await self._call_article(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
 
@@ -2827,6 +2836,91 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Collection action: {action}")
+
+    async def _call_article(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Article service calls via gRPC.
+
+        Article curation pipeline for landing page content.
+
+        Args:
+            action: Action to perform (status, new, curate)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with article data
+        """
+        if action == "status":
+            request = ArticleStatusRequest()
+            response = await self._stub.ArticleStatus(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "new":
+            request = ArticleNewRequest(
+                slug=params.get("slug", ""),
+                title=params.get("title", ""),
+            )
+            response = await self._stub.ArticleNew(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(f"Unknown Article action: {action}")
+
+    async def ArticleStatus(self) -> ArticleStatusResponse:
+        """Get article curation situational awareness.
+
+        Direct gRPC call for TUI/CLI use.
+
+        Returns:
+            ArticleStatusResponse with articles list and metrics
+        """
+        request = ArticleStatusRequest()
+        response = await self._stub.ArticleStatus(request)
+        return response
+
+    async def ArticleNew(self, slug: str, title: str = "") -> ArticleNewResponse:
+        """Create new article via gRPC.
+
+        Architecture compliance: Client -> gRPC -> Engine -> KB filesystem
+        The engine owns the KB filesystem - clients MUST NOT write directly.
+
+        Args:
+            slug: URL-friendly identifier
+            title: Display title (defaults to slug if not provided)
+
+        Returns:
+            ArticleNewResponse with created article info
+        """
+        request = ArticleNewRequest(slug=slug, title=title)
+        response = await self._stub.ArticleNew(request)
+        return response
+
+    async def ArticleCurate(
+        self,
+        slug: str = "",
+        skip_grok: bool = False,
+        max_sources: int = 10,
+    ) -> AsyncIterator[ArticleCurationEvent]:
+        """Run article curation pipeline via gRPC streaming.
+
+        Architecture compliance: Client -> gRPC -> Engine -> Metaflow
+        NOT: Client -> subprocess.run() -> Metaflow
+
+        Args:
+            slug: Specific article to curate (empty = all pending)
+            skip_grok: Skip Grok synthesis for testing
+            max_sources: Maximum external sources per article
+
+        Yields:
+            ArticleCurationEvent stream with progress updates
+        """
+        request = ArticleCurateRequest(
+            slug=slug,
+            skip_grok=skip_grok,
+            max_sources=max_sources,
+        )
+        async for event in self._stub.ArticleCurate(request):
+            yield event
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.

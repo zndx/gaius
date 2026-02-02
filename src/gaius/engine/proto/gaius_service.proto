@@ -2630,6 +2630,77 @@ message CollectionSyncThemeResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Article Curation (Situational Awareness + gRPC Compliance)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Article info for list responses
+message ArticleInfo {
+  string slug = 1;
+  string title = 2;
+  string status = 3;
+  int32 zk_count = 4;
+  int32 sources_count = 5;
+}
+
+// Recent curation run info
+message CurationRunInfo {
+  string run_id = 1;
+  string slug = 2;
+  string completed_at = 3;
+  int32 cards_created = 4;
+}
+
+// Get article curation situational awareness
+message ArticleStatusRequest {}
+
+message ArticleStatusResponse {
+  bool success = 1;
+  bool running = 2;                           // Is curation flow currently running?
+  string current_run_id = 3;                  // UUID of running flow (if any)
+  string current_step = 4;                    // Current step name (if running)
+  int32 articles_pending = 5;                 // Count of pending articles
+  repeated ArticleInfo articles = 6;          // List of articles
+  repeated CurationRunInfo recent_curations = 7;  // Recent completed curations
+  int32 total_cards_pending = 8;              // Count of pending cards
+  int32 total_cards_published = 9;            // Count of published cards
+  string error = 10;
+}
+
+// Create new article directory structure (Engine-First)
+message ArticleNewRequest {
+  string slug = 1;                            // URL-friendly identifier
+  string title = 2;                           // Display title (defaults to title-cased slug)
+}
+
+message ArticleNewResponse {
+  bool success = 1;
+  string slug = 2;
+  string title = 3;
+  string kb_path = 4;
+  string article_id = 5;
+  string collection_id = 6;
+  string message = 7;
+  string error = 8;
+}
+
+// Article curation progress event (for streaming)
+message ArticleCurationEvent {
+  string run_id = 1;
+  string step = 2;                            // start, select, research, acquire, summarize, draft, base, cards, complete, failed
+  int32 step_number = 3;
+  int32 total_steps = 4;
+  float progress = 5;                         // 0.0 - 1.0
+  string message = 6;
+}
+
+// Stream article curation progress
+message ArticleCurateRequest {
+  string slug = 1;                            // Article slug to curate (empty = select from pending)
+  bool skip_grok = 2;                         // Skip Grok synthesis
+  int32 max_sources = 3;                      // Max external sources to acquire
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2885,4 +2956,11 @@ service GaiusService {
   rpc CollectionPublishCards(CollectionPublishCardsRequest) returns (CollectionPublishCardsResponse);  // Publish pending cards
   rpc CollectionPublishViz(CollectionPublishVizRequest) returns (CollectionPublishVizResponse);  // Update 3D viz data
   rpc CollectionSyncTheme(CollectionSyncThemeRequest) returns (CollectionSyncThemeResponse);    // Sync HOCON theme to KV
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Article Curation (gRPC-First, Engine Owns Filesystem)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc ArticleStatus(ArticleStatusRequest) returns (ArticleStatusResponse);               // Situational awareness for /article sitrep
+  rpc ArticleNew(ArticleNewRequest) returns (ArticleNewResponse);                        // Create article (engine writes to KB)
+  rpc ArticleCurate(ArticleCurateRequest) returns (stream ArticleCurationEvent);         // Stream curation progress events
 }

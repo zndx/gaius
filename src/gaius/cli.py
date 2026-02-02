@@ -315,6 +315,9 @@ class GaiusCLI:
                 # Collections - Collection management
                 elif command == "collection" or command == "col":
                     result["data"] = self._run_async(self._cmd_collection(args))
+                # Article Curation - KB article research and publication pipeline
+                elif command == "article" or command == "art":
+                    result["data"] = self._run_async(self._cmd_article(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -13294,6 +13297,284 @@ Examples:
             "error": f"Unknown collection subcommand: {subcmd}",
             "usage": "/collection [list|create|feature|add|cards|status|help] ...",
         }
+
+    async def _cmd_article(self, args: str) -> dict:
+        """Article Curation - KB article research and publication pipeline.
+
+        Articles live in KB at current/articles/{slug}/ with:
+        - article.md (current draft)
+        - zk/ (zettelkasten research notes)
+        - hx/ (draft history)
+        - sources/ (acquired external sources)
+        - manifest.yaml (collection manifest)
+        - base.md (BFO-grounded reference file)
+
+        Usage:
+            /article                          - List articles ready for curation
+            /article list                     - Same as above
+            /article new <slug> <title>       - Create new article directory
+            /article status [slug]            - Show article status
+            /article curate [slug]            - Run ArticleCurationFlow pipeline
+            /article help                     - Show this help
+
+        Curation Pipeline Steps:
+            1. Scan KB for articles with zk/ notes
+            2. Research Phase - gather KB context (BM25 + vector search)
+            3. Grok summary - synthesize into zettelkasten
+            4. Article selection - optillm selects article (Atropos-RL)
+            5. ACP acquisition - fetch external sources
+            6. Update manifest with sources
+            7. Sync to Grok Collections API
+            8. Create draft, archive current to hx/
+            9. Generate BFO Base file with ref_start/ref_end offsets
+
+        Examples:
+            /article new gaius-content-curation "Gaius: AI-Powered Content Curation"
+            /article status gaius-content-curation
+            /article curate gaius-content-curation
+        """
+        from pathlib import Path
+
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        kb_root = Path(self.config.kb.root)
+
+        # List: show articles ready for curation
+        if subcmd in ("", "list"):
+            return await self._article_list(kb_root)
+
+        # New: create new article directory
+        if subcmd == "new":
+            if len(parts) < 3:
+                return {
+                    "error": "new requires: <slug> <title>",
+                    "usage": "/article new <slug> <title>",
+                }
+            slug = parts[1]
+            title = " ".join(parts[2:])
+            return await self._article_new(kb_root, slug, title)
+
+        # Status: show article status
+        if subcmd == "status":
+            slug = parts[1] if len(parts) > 1 else None
+            return await self._article_status(kb_root, slug)
+
+        # Curate: run ArticleCurationFlow
+        if subcmd == "curate":
+            slug = parts[1] if len(parts) > 1 else None
+            # Parse options
+            dry_run = "--dry-run" in parts or "-n" in parts
+            skip_grok = "--skip-grok" in parts
+            max_sources = 10
+            for p in parts:
+                if p.startswith("--max-sources="):
+                    try:
+                        max_sources = int(p.split("=")[1])
+                    except ValueError:
+                        pass
+            return await self._article_curate(kb_root, slug, dry_run, skip_grok, max_sources)
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "article",
+                "help": self._cmd_article.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown article subcommand: {subcmd}",
+            "usage": "/article [list|new|status|curate|help] ...",
+        }
+
+    async def _article_list(self, kb_root: Path) -> dict:
+        """List articles ready for curation."""
+        try:
+            from gaius.flows.article_curation.common import scan_articles
+
+            candidates = scan_articles(kb_root)
+            articles = []
+            for c in candidates:
+                articles.append({
+                    "slug": c.slug,
+                    "title": c.title,
+                    "status": c.status.value,
+                    "zk_count": c.zk_count,
+                    "version": c.current_version,
+                    "kb_path": c.kb_path,
+                })
+
+            return {
+                "command": "article",
+                "action": "list",
+                "articles": articles,
+                "total": len(articles),
+                "message": f"Found {len(articles)} article(s) ready for curation" if articles else "No articles found. Create one with /article new <slug> <title>",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _article_new(self, kb_root: Path, slug: str, title: str) -> dict:
+        """Create new article directory structure via gRPC.
+
+        Architecture compliance: CLI -> gRPC -> Engine -> KB filesystem
+        The engine owns the KB filesystem - CLI MUST NOT write directly.
+        """
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            response = await client.ArticleNew(slug=slug, title=title)
+
+            if not response.success:
+                return {
+                    "error": response.error or "Failed to create article",
+                    "slug": slug,
+                }
+
+            return {
+                "command": "article",
+                "action": "new",
+                "slug": response.slug,
+                "title": response.title,
+                "kb_path": response.kb_path,
+                "article_id": response.article_id,
+                "collection_id": response.collection_id,
+                "message": response.message or f"Created article '{response.title}'. Add research notes to zk/ then run /article curate {response.slug}",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _article_status(self, kb_root: Path, slug: str | None) -> dict:
+        """Show article status."""
+        from gaius.flows.article_curation.common import scan_articles, ArticleCandidate
+
+        try:
+            if slug:
+                # Single article status
+                article_dir = kb_root / "current" / "articles" / slug
+                candidate = ArticleCandidate.from_kb_path(article_dir)
+                if not candidate:
+                    return {
+                        "error": f"Article not found: {slug}",
+                        "kb_path": str(article_dir),
+                    }
+
+                # Count files in subdirectories
+                hx_count = len(list((article_dir / "hx").glob("*.md"))) if (article_dir / "hx").exists() else 0
+                sources_count = len(list((article_dir / "sources").glob("*.md"))) if (article_dir / "sources").exists() else 0
+                has_manifest = (article_dir / "manifest.yaml").exists()
+                has_base = (article_dir / "base.md").exists()
+
+                return {
+                    "command": "article",
+                    "action": "status",
+                    "slug": candidate.slug,
+                    "title": candidate.title,
+                    "status": candidate.status.value,
+                    "version": candidate.current_version,
+                    "zk_count": candidate.zk_count,
+                    "hx_count": hx_count,
+                    "sources_count": sources_count,
+                    "has_manifest": has_manifest,
+                    "has_base": has_base,
+                    "kb_path": candidate.kb_path,
+                    "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+                    "updated_at": candidate.updated_at.isoformat() if candidate.updated_at else None,
+                }
+            else:
+                # Overview of all articles
+                candidates = scan_articles(kb_root)
+                by_status = {}
+                for c in candidates:
+                    status = c.status.value
+                    if status not in by_status:
+                        by_status[status] = []
+                    by_status[status].append(c.slug)
+
+                # Also check DB for additional article records
+                try:
+                    from gaius.storage.db import get_pool
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch("""
+                            SELECT status, COUNT(*) as count
+                            FROM collections.articles
+                            GROUP BY status
+                        """)
+                        db_stats = {row["status"]: row["count"] for row in rows}
+                except Exception:
+                    db_stats = {}
+
+                return {
+                    "command": "article",
+                    "action": "status",
+                    "kb_articles": by_status,
+                    "db_stats": db_stats,
+                    "total_in_kb": len(candidates),
+                }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _article_curate(
+        self,
+        kb_root: Path,
+        slug: str | None,
+        dry_run: bool,
+        skip_grok: bool,
+        max_sources: int,
+    ) -> dict:
+        """Run ArticleCurationFlow pipeline via gRPC streaming.
+
+        Architecture compliance: CLI -> gRPC -> Engine -> Metaflow
+        NOT: CLI -> subprocess.run() -> Metaflow
+        """
+        try:
+            if dry_run:
+                return {
+                    "command": "article",
+                    "action": "curate",
+                    "dry_run": True,
+                    "slug": slug,
+                    "message": "Would run article curation flow via gRPC",
+                }
+
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            events = []
+            async for event in client.ArticleCurate(
+                slug=slug or "",
+                skip_grok=skip_grok,
+                max_sources=max_sources,
+            ):
+                events.append({
+                    "run_id": event.run_id,
+                    "step": event.step,
+                    "step_number": event.step_number,
+                    "progress": event.progress,
+                    "message": event.message,
+                })
+                # Print progress for CLI users
+                print(f"[{event.step}] {event.message}")
+
+            final = events[-1] if events else {}
+            success = final.get("step") == "complete"
+
+            return {
+                "command": "article",
+                "action": "curate",
+                "slug": slug,
+                "success": success,
+                "events_count": len(events),
+                "final_step": final.get("step", ""),
+                "message": final.get("message", ""),
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
 
 
 def main():

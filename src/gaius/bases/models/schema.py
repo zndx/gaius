@@ -1,16 +1,26 @@
 """Schema and result models for query responses."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gaius.bases.models.base import BaseDefinition
+    from gaius.bases.models.types import KuduDataType
 
 
 @dataclass
 class ColumnSchema:
-    """Schema for a single column in query results."""
+    """Schema for a single column in query results.
+
+    Uses Kudu types as the canonical representation. The data_type field
+    is a string that can be parsed into a KuduDataType.
+    """
 
     name: str
-    data_type: str  # STRING, INT64, FLOAT64, BOOLEAN, TIMESTAMP, ARRAY<T>, STRUCT<...>
+    data_type: str  # Kudu type string: STRING, INT64, DECIMAL(18,2), VARCHAR(255), etc.
     nullable: bool = True
     description: str | None = None
 
@@ -23,17 +33,68 @@ class ColumnSchema:
             "description": self.description,
         }
 
+    @property
+    def kudu_type(self) -> "KuduDataType":
+        """Parse data_type string into KuduDataType."""
+        from gaius.bases.models.types import KuduDataType
+        return KuduDataType.from_string(self.data_type)
+
+    @property
+    def postgres_type(self) -> str:
+        """Get equivalent PostgreSQL type string."""
+        from gaius.bases.models.types import TypeConverter
+        return TypeConverter.kudu_to_postgres(self.kudu_type)
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ColumnSchema":
         """Create from dictionary.
 
         Handles both "data_type" and "type" keys for compatibility.
+        Normalizes type strings to Kudu format.
         """
+        raw_type = d.get("data_type") or d.get("type", "STRING")
+
+        # Normalize common type aliases to Kudu types
+        type_aliases = {
+            "INTEGER": "INT32",
+            "INT": "INT32",
+            "BIGINT": "INT64",
+            "SMALLINT": "INT16",
+            "TINYINT": "INT8",
+            "REAL": "FLOAT",
+            "FLOAT32": "FLOAT",
+            "FLOAT64": "DOUBLE",
+            "DOUBLE PRECISION": "DOUBLE",
+            "BOOLEAN": "BOOL",
+            "TEXT": "STRING",
+            "BYTEA": "BINARY",
+            "TIMESTAMP": "UNIXTIME_MICROS",
+            "TIMESTAMPTZ": "UNIXTIME_MICROS",
+            "TIMESTAMP WITH TIME ZONE": "UNIXTIME_MICROS",
+        }
+        normalized_type = type_aliases.get(raw_type.upper(), raw_type.upper())
+
         return cls(
             name=d["name"],
-            data_type=d.get("data_type") or d.get("type", "STRING"),
+            data_type=normalized_type,
             nullable=d.get("nullable", True),
             description=d.get("description"),
+        )
+
+    @classmethod
+    def from_kudu_type(
+        cls,
+        name: str,
+        kudu_type: "KuduDataType",
+        nullable: bool = True,
+        description: str | None = None,
+    ) -> "ColumnSchema":
+        """Create from KuduDataType."""
+        return cls(
+            name=name,
+            data_type=str(kudu_type),
+            nullable=nullable,
+            description=description,
         )
 
 

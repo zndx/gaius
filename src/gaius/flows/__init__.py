@@ -46,6 +46,16 @@ def _register_builtin_flows():
     except ImportError:
         pass  # research dependencies may not be installed
 
+    try:
+        from gaius.flows.article_curation import ArticleCurationFlow  # noqa: F401
+    except ImportError:
+        pass  # article_curation dependencies may not be installed
+
+    try:
+        from gaius.flows.card_upkeep import CardUpkeepFlow  # noqa: F401
+    except ImportError:
+        pass  # card_upkeep dependencies may not be installed
+
 
 _register_builtin_flows()
 

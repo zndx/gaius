@@ -4,16 +4,21 @@ A Base is the core abstraction - a named, typed view over features/entities
 that abstracts away the underlying storage backend.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gaius.bases.semantic import OntologyContext
 
 
 class BaseType(str, Enum):
     """Type of Base determining query semantics and backend routing."""
 
-    SNAPSHOT = "snapshot"  # Latest value per entity (Pinot)
+    SNAPSHOT = "snapshot"  # Latest value per entity (Kudu via FDW / PostgreSQL)
     HISTORICAL = "historical"  # Event-sourced with time-travel (Iceberg)
     REGISTRY = "registry"  # Metadata queries (PostgreSQL)
 
@@ -23,8 +28,11 @@ class BaseDefinition:
     """Definition of a Base in the feature store.
 
     Bases are the primary abstraction exposed to MCP clients. They hide
-    the complexity of underlying backends (PostgreSQL, Iceberg, Pinot)
+    the complexity of underlying backends (PostgreSQL, Iceberg, Kudu FDW)
     behind a unified query interface.
+
+    The @context field provides JSON-LD style semantic grounding, mapping
+    column names to ontology IRIs (BFO, OBO, etc.).
     """
 
     # Identity
@@ -36,13 +44,16 @@ class BaseDefinition:
     # Schema definition (columns exposed by this base)
     schema: list[dict[str, Any]] = field(default_factory=list)
 
+    # Semantic layer: JSON-LD style @context for ontology grounding
+    context: dict[str, Any] = field(default_factory=dict)
+
     # Source binding
     source_entity_type: str | None = None
     source_feature_groups: list[str] = field(default_factory=list)
 
     # Physical binding
-    physical_table: str | None = None  # Iceberg/Postgres table
-    pinot_table: str | None = None  # Pinot table (for snapshot bases)
+    physical_table: str | None = None  # Kudu/Iceberg/Postgres table
+    kudu_table: str | None = None  # Kudu table name (when kudu_fdw available)
 
     # Query defaults
     default_dql: str | None = None
@@ -58,6 +69,34 @@ class BaseDefinition:
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
+    # Cached ontology context (lazy-loaded)
+    _ontology_context: "OntologyContext | None" = field(default=None, repr=False)
+
+    @property
+    def ontology_context(self) -> "OntologyContext":
+        """Get the parsed OntologyContext for this base.
+
+        Lazily parses the @context dictionary into an OntologyContext
+        object for term resolution.
+        """
+        if self._ontology_context is None:
+            from gaius.bases.semantic import OntologyContext
+            object.__setattr__(self, "_ontology_context", OntologyContext.from_dict(self.context))
+        return self._ontology_context  # type: ignore[return-value]
+
+    def resolve_term(self, term_iri: str) -> str | None:
+        """Resolve an ontology term to a column name.
+
+        Convenience method for term resolution.
+
+        Args:
+            term_iri: Ontology IRI (CURIE or full)
+
+        Returns:
+            Column name if found, None otherwise
+        """
+        return self.ontology_context.resolve_term(term_iri)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -66,10 +105,11 @@ class BaseDefinition:
             "description": self.description,
             "base_type": self.base_type.value,
             "schema": self.schema,
+            "context": self.context,
             "source_entity_type": self.source_entity_type,
             "source_feature_groups": self.source_feature_groups,
             "physical_table": self.physical_table,
-            "pinot_table": self.pinot_table,
+            "kudu_table": self.kudu_table,
             "default_dql": self.default_dql,
             "default_time_range_seconds": self.default_time_range.total_seconds(),
             "max_time_range_seconds": self.max_time_range.total_seconds(),
@@ -89,10 +129,11 @@ class BaseDefinition:
             description=row.get("description"),
             base_type=BaseType(row["base_type"]),
             schema=row.get("schema", []),
+            context=row.get("context", {}),
             source_entity_type=row.get("source_entity_type"),
             source_feature_groups=row.get("source_feature_groups", []),
             physical_table=row.get("physical_table"),
-            pinot_table=row.get("pinot_table"),
+            kudu_table=row.get("kudu_table"),
             default_dql=row.get("default_dql"),
             default_time_range=row.get("default_time_range", timedelta(days=7)),
             max_time_range=row.get("max_time_range", timedelta(days=90)),

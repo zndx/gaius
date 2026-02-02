@@ -309,6 +309,15 @@ from ...generated import (
     CollectionPublishVizResponse,
     CollectionSyncThemeRequest,
     CollectionSyncThemeResponse,
+    # Article Curation (gRPC-First)
+    ArticleInfo,
+    CurationRunInfo,
+    ArticleStatusRequest,
+    ArticleStatusResponse,
+    ArticleNewRequest,
+    ArticleNewResponse,
+    ArticleCurationEvent,
+    ArticleCurateRequest,
     # Multi-Phase Search Flow
     SearchFlowRequest,
     WebSearchResult,
@@ -7366,3 +7375,149 @@ class GaiusServicer(GaiusServiceServicer):
         except Exception as e:
             logger.exception(f"CollectionSyncTheme failed: {e}")
             return CollectionSyncThemeResponse(success=False, error=str(e))
+
+    # =========================================================================
+    # Article Curation (gRPC-First, Engine Owns Filesystem)
+    # =========================================================================
+
+    async def ArticleStatus(
+        self,
+        request: ArticleStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ArticleStatusResponse:
+        """Get article curation situational awareness.
+
+        Returns status for /article sitrep display including:
+        - Is curation flow currently running?
+        - List of pending articles with zk counts
+        - Recent curation completions
+        - Pending/published card counts
+        """
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return ArticleStatusResponse(
+                    success=False,
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                )
+
+            status = await service.get_article_status()
+
+            # Convert articles to proto
+            articles = [
+                ArticleInfo(
+                    slug=a["slug"],
+                    title=a["title"],
+                    status=a["status"],
+                    zk_count=a.get("zk_count", 0),
+                    sources_count=a.get("sources_count", 0),
+                )
+                for a in status.get("articles_list", [])
+            ]
+
+            # Convert recent curations to proto
+            recent = [
+                CurationRunInfo(
+                    run_id=r["run_id"],
+                    slug=r.get("slug", ""),
+                    completed_at=r.get("completed_at", ""),
+                    cards_created=r.get("cards_created", 0),
+                )
+                for r in status.get("recent_curations", [])
+            ]
+
+            return ArticleStatusResponse(
+                success=True,
+                running=status.get("running", False),
+                current_run_id=status.get("current_run_id") or "",
+                current_step=status.get("current_step") or "",
+                articles_pending=status.get("articles_pending", 0),
+                articles=articles,
+                recent_curations=recent,
+                total_cards_pending=status.get("total_cards_pending", 0),
+                total_cards_published=status.get("total_cards_published", 0),
+            )
+        except Exception as e:
+            logger.exception(f"ArticleStatus failed: {e}")
+            return ArticleStatusResponse(success=False, error=str(e))
+
+    async def ArticleNew(
+        self,
+        request: ArticleNewRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ArticleNewResponse:
+        """Create new article directory structure.
+
+        Engine owns KB filesystem - clients MUST NOT write directly.
+        Creates directory structure, article.md, and database record.
+        """
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return ArticleNewResponse(
+                    success=False,
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                )
+
+            result = await service.create_article(
+                slug=request.slug,
+                title=request.title or "",
+            )
+
+            return ArticleNewResponse(
+                success=True,
+                slug=result.get("slug", ""),
+                title=result.get("title", ""),
+                kb_path=result.get("kb_path", ""),
+                article_id=result.get("article_id", ""),
+                collection_id=result.get("collection_id", ""),
+                message=result.get("message", ""),
+            )
+        except Exception as e:
+            logger.exception(f"ArticleNew failed: {e}")
+            return ArticleNewResponse(success=False, error=str(e))
+
+    async def ArticleCurate(
+        self,
+        request: ArticleCurateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[ArticleCurationEvent]:
+        """Stream article curation progress events.
+
+        Starts ArticleCurationFlow and streams progress via pg_notify.
+        """
+        try:
+            service = self._services.collection_service
+            if service is None:
+                yield ArticleCurationEvent(
+                    run_id="",
+                    step="failed",
+                    step_number=-1,
+                    total_steps=9,
+                    progress=-1.0,
+                    message="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                )
+                return
+
+            async for event in service.article_curate_stream(
+                slug=request.slug or "",
+            ):
+                yield ArticleCurationEvent(
+                    run_id=event.run_id,
+                    step=event.step,
+                    step_number=event.step_number,
+                    total_steps=event.total_steps,
+                    progress=event.progress,
+                    message=event.message,
+                )
+
+        except Exception as e:
+            logger.exception(f"ArticleCurate failed: {e}")
+            yield ArticleCurationEvent(
+                run_id="",
+                step="failed",
+                step_number=-1,
+                total_steps=9,
+                progress=-1.0,
+                message=f"ArticleCurate error: {e}",
+            )

@@ -66,6 +66,8 @@ dependencies = [
     "hf-mem>=0.1.1",
     "vulture>=2.14",
     "metabase-api>=3.5.2",
+    "sqlglot>=26.0.0",  # SQL parser/transpiler for fluent query compilation
+    "xai-sdk>=1.4.0",  # xAI Grok API (Collections support requires 1.4.0+)
 ]
 
 [project.optional-dependencies]

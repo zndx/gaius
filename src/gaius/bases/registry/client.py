@@ -67,7 +67,7 @@ class RegistryClient:
             """
             params: list[Any] = []
 
-            if base_type != "all":
+            if base_type and base_type != "all":
                 params.append(base_type)
                 query += f" AND base_type = ${len(params)}"
 
@@ -138,12 +138,12 @@ class RegistryClient:
                 """
                 INSERT INTO bases.bases (
                     base_id, display_name, description, base_type,
-                    schema, source_entity_type, source_feature_groups,
-                    physical_table, pinot_table, default_dql,
+                    schema, context, source_entity_type, source_feature_groups,
+                    physical_table, kudu_table, default_dql,
                     default_time_range, max_time_range, read_acl,
                     owner, tags
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
                 )
                 RETURNING *
                 """,
@@ -152,10 +152,11 @@ class RegistryClient:
                 base.description,
                 base.base_type.value,
                 json.dumps(base.schema),
+                json.dumps(base.context) if base.context else "{}",
                 base.source_entity_type,
                 base.source_feature_groups,
                 base.physical_table,
-                base.pinot_table,
+                base.kudu_table,
                 base.default_dql,
                 base.default_time_range,
                 base.max_time_range,
@@ -307,10 +308,11 @@ class RegistryClient:
             description=row.get("description"),
             base_type=BaseType(row["base_type"]),
             schema=_parse_json_column(row.get("schema")) or [],
+            context=_parse_json_column(row.get("context")) or {},
             source_entity_type=row.get("source_entity_type"),
             source_feature_groups=row.get("source_feature_groups") or [],
             physical_table=row.get("physical_table"),
-            pinot_table=row.get("pinot_table"),
+            kudu_table=row.get("kudu_table") or row.get("pinot_table"),  # Backwards compat
             default_dql=row.get("default_dql"),
             default_time_range=default_time_range,
             max_time_range=max_time_range,

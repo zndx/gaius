@@ -3934,3 +3934,111 @@ class CollectionSyncThemeResponse(_message.Message):
     namespace_id: str
     error: str
     def __init__(self, success: bool = ..., theme_id: _Optional[str] = ..., title: _Optional[str] = ..., namespace_id: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ArticleInfo(_message.Message):
+    __slots__ = ("slug", "title", "status", "zk_count", "sources_count")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    ZK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    SOURCES_COUNT_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    title: str
+    status: str
+    zk_count: int
+    sources_count: int
+    def __init__(self, slug: _Optional[str] = ..., title: _Optional[str] = ..., status: _Optional[str] = ..., zk_count: _Optional[int] = ..., sources_count: _Optional[int] = ...) -> None: ...
+
+class CurationRunInfo(_message.Message):
+    __slots__ = ("run_id", "slug", "completed_at", "cards_created")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_AT_FIELD_NUMBER: _ClassVar[int]
+    CARDS_CREATED_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    slug: str
+    completed_at: str
+    cards_created: int
+    def __init__(self, run_id: _Optional[str] = ..., slug: _Optional[str] = ..., completed_at: _Optional[str] = ..., cards_created: _Optional[int] = ...) -> None: ...
+
+class ArticleStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ArticleStatusResponse(_message.Message):
+    __slots__ = ("success", "running", "current_run_id", "current_step", "articles_pending", "articles", "recent_curations", "total_cards_pending", "total_cards_published", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_STEP_FIELD_NUMBER: _ClassVar[int]
+    ARTICLES_PENDING_FIELD_NUMBER: _ClassVar[int]
+    ARTICLES_FIELD_NUMBER: _ClassVar[int]
+    RECENT_CURATIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_PENDING_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_PUBLISHED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    running: bool
+    current_run_id: str
+    current_step: str
+    articles_pending: int
+    articles: _containers.RepeatedCompositeFieldContainer[ArticleInfo]
+    recent_curations: _containers.RepeatedCompositeFieldContainer[CurationRunInfo]
+    total_cards_pending: int
+    total_cards_published: int
+    error: str
+    def __init__(self, success: bool = ..., running: bool = ..., current_run_id: _Optional[str] = ..., current_step: _Optional[str] = ..., articles_pending: _Optional[int] = ..., articles: _Optional[_Iterable[_Union[ArticleInfo, _Mapping]]] = ..., recent_curations: _Optional[_Iterable[_Union[CurationRunInfo, _Mapping]]] = ..., total_cards_pending: _Optional[int] = ..., total_cards_published: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ArticleNewRequest(_message.Message):
+    __slots__ = ("slug", "title")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    title: str
+    def __init__(self, slug: _Optional[str] = ..., title: _Optional[str] = ...) -> None: ...
+
+class ArticleNewResponse(_message.Message):
+    __slots__ = ("success", "slug", "title", "kb_path", "article_id", "collection_id", "message", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    ARTICLE_ID_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_ID_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    slug: str
+    title: str
+    kb_path: str
+    article_id: str
+    collection_id: str
+    message: str
+    error: str
+    def __init__(self, success: bool = ..., slug: _Optional[str] = ..., title: _Optional[str] = ..., kb_path: _Optional[str] = ..., article_id: _Optional[str] = ..., collection_id: _Optional[str] = ..., message: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ArticleCurationEvent(_message.Message):
+    __slots__ = ("run_id", "step", "step_number", "total_steps", "progress", "message")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_FIELD_NUMBER: _ClassVar[int]
+    STEP_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_STEPS_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    step: str
+    step_number: int
+    total_steps: int
+    progress: float
+    message: str
+    def __init__(self, run_id: _Optional[str] = ..., step: _Optional[str] = ..., step_number: _Optional[int] = ..., total_steps: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ...) -> None: ...
+
+class ArticleCurateRequest(_message.Message):
+    __slots__ = ("slug", "skip_grok", "max_sources")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    SKIP_GROK_FIELD_NUMBER: _ClassVar[int]
+    MAX_SOURCES_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    skip_grok: bool
+    max_sources: int
+    def __init__(self, slug: _Optional[str] = ..., skip_grok: bool = ..., max_sources: _Optional[int] = ...) -> None: ...

@@ -639,6 +639,21 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.CollectionSyncThemeRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.CollectionSyncThemeResponse.FromString,
                 _registered_method=True)
+        self.ArticleStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ArticleStatus',
+                request_serializer=gaius__service__pb2.ArticleStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ArticleStatusResponse.FromString,
+                _registered_method=True)
+        self.ArticleNew = channel.unary_unary(
+                '/gaius.engine.GaiusService/ArticleNew',
+                request_serializer=gaius__service__pb2.ArticleNewRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ArticleNewResponse.FromString,
+                _registered_method=True)
+        self.ArticleCurate = channel.unary_stream(
+                '/gaius.engine.GaiusService/ArticleCurate',
+                request_serializer=gaius__service__pb2.ArticleCurateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ArticleCurationEvent.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1496,6 +1511,30 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ArticleStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Article Curation (gRPC-First, Engine Owns Filesystem)
+        ─────────────────────────────────────────────────────────────────────────
+        Situational awareness for /article sitrep
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ArticleNew(self, request, context):
+        """Create article (engine writes to KB)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ArticleCurate(self, request, context):
+        """Stream curation progress events
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2098,6 +2137,21 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.CollectionSyncTheme,
                     request_deserializer=gaius__service__pb2.CollectionSyncThemeRequest.FromString,
                     response_serializer=gaius__service__pb2.CollectionSyncThemeResponse.SerializeToString,
+            ),
+            'ArticleStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ArticleStatus,
+                    request_deserializer=gaius__service__pb2.ArticleStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.ArticleStatusResponse.SerializeToString,
+            ),
+            'ArticleNew': grpc.unary_unary_rpc_method_handler(
+                    servicer.ArticleNew,
+                    request_deserializer=gaius__service__pb2.ArticleNewRequest.FromString,
+                    response_serializer=gaius__service__pb2.ArticleNewResponse.SerializeToString,
+            ),
+            'ArticleCurate': grpc.unary_stream_rpc_method_handler(
+                    servicer.ArticleCurate,
+                    request_deserializer=gaius__service__pb2.ArticleCurateRequest.FromString,
+                    response_serializer=gaius__service__pb2.ArticleCurationEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -5344,6 +5398,87 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/CollectionSyncTheme',
             gaius__service__pb2.CollectionSyncThemeRequest.SerializeToString,
             gaius__service__pb2.CollectionSyncThemeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArticleStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ArticleStatus',
+            gaius__service__pb2.ArticleStatusRequest.SerializeToString,
+            gaius__service__pb2.ArticleStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArticleNew(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ArticleNew',
+            gaius__service__pb2.ArticleNewRequest.SerializeToString,
+            gaius__service__pb2.ArticleNewResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArticleCurate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ArticleCurate',
+            gaius__service__pb2.ArticleCurateRequest.SerializeToString,
+            gaius__service__pb2.ArticleCurationEvent.FromString,
             options,
             channel_credentials,
             insecure,

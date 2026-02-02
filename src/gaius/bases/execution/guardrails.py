@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from gaius.bases.dql.parser import DQLQuery, LimitClause
-from gaius.bases.dql.ast import BinaryOp, UnaryOp, Identifier, Expression
 from gaius.bases.models.base import BaseDefinition, BaseType
 
 
@@ -32,7 +30,7 @@ class QueryGuardrails:
     default_timeout_ms: int = 30000
     max_timeout_ms: int = 120000
 
-    # Read-only enforcement (DQL is inherently read-only)
+    # Read-only enforcement (fluent queries are inherently read-only)
     read_only: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,7 +48,7 @@ class QueryGuardrails:
 
 
 class GuardrailEnforcer:
-    """Enforce guardrails on DQL queries.
+    """Enforce guardrails on fluent queries.
 
     Validates and potentially modifies queries to ensure they comply
     with resource limits. Fails fast if guardrails are violated.
@@ -59,70 +57,71 @@ class GuardrailEnforcer:
     def __init__(self, guardrails: QueryGuardrails):
         self.guardrails = guardrails
 
-    def enforce(self, query: DQLQuery, base: BaseDefinition) -> DQLQuery:
-        """Apply guardrails to a parsed query.
-
-        May modify the query to add missing constraints.
-        Raises GuardrailViolation if hard limits are violated.
+    def get_effective_limit(
+        self,
+        requested_limit: int | None,
+        options: dict[str, Any] | None = None,
+    ) -> int:
+        """Get the effective LIMIT to apply.
 
         Args:
-            query: Parsed DQL query
-            base: Base definition being queried
+            requested_limit: Limit from the query (if any)
+            options: Query options that may override limit
 
         Returns:
-            Modified DQLQuery with guardrails applied
+            Effective limit value
 
         Raises:
-            GuardrailViolation: If guardrails are violated
+            GuardrailViolation: If requested limit exceeds maximum
         """
-        # Enforce LIMIT
-        if query.limit is None:
-            query.limit = LimitClause(self.guardrails.default_limit)
-        elif query.limit.count > self.guardrails.max_limit:
+        # Check for override in options
+        if options and "max_rows" in options:
+            requested_limit = options["max_rows"]
+
+        # Apply default if not specified
+        if requested_limit is None:
+            return self.guardrails.default_limit
+
+        # Check against maximum
+        if requested_limit > self.guardrails.max_limit:
             raise GuardrailViolation(
-                f"LIMIT {query.limit.count} exceeds maximum {self.guardrails.max_limit}. "
-                f"Reduce your LIMIT clause."
+                f"LIMIT {requested_limit} exceeds maximum {self.guardrails.max_limit}. "
+                f"Reduce your LIMIT clause or max_rows option."
             )
 
-        # Enforce time range for historical bases
-        if (
-            base.base_type == BaseType.HISTORICAL
-            and self.guardrails.require_time_range
-            and query.as_of is None
-            and not self._has_time_filter(query)
-        ):
-            # The compiler will add a default time filter, but log a warning
-            pass
+        return requested_limit
 
-        return query
+    def validate_time_range(
+        self,
+        base: BaseDefinition,
+        has_as_of: bool = False,
+        has_time_filter: bool = False,
+    ) -> None:
+        """Validate time range constraints for historical bases.
 
-    def _has_time_filter(self, query: DQLQuery) -> bool:
-        """Check if query has an explicit time filter."""
-        if query.where is None:
-            return False
-        return self._expression_has_time_filter(query.where.expression)
+        Args:
+            base: Base definition being queried
+            has_as_of: Whether query has AS OF clause
+            has_time_filter: Whether query has time filter in WHERE
 
-    def _expression_has_time_filter(self, expr: Expression) -> bool:
-        """Recursively check for time column references."""
-        if isinstance(expr, BinaryOp):
-            return (
-                self._expression_has_time_filter(expr.left)
-                or self._expression_has_time_filter(expr.right)
-            )
-        elif isinstance(expr, UnaryOp):
-            return self._expression_has_time_filter(expr.operand)
-        elif isinstance(expr, Identifier):
-            # Common time column names
-            time_columns = {
-                "event_time",
-                "ingestion_time",
-                "created_at",
-                "updated_at",
-                "timestamp",
-                "ts",
-            }
-            return expr.name.lower() in time_columns
-        return False
+        Raises:
+            GuardrailViolation: If time range constraint is violated
+        """
+        if base.base_type != BaseType.HISTORICAL:
+            return
+
+        if not self.guardrails.require_time_range:
+            return
+
+        if has_as_of or has_time_filter:
+            return
+
+        # Historical base without time constraint - this is expensive
+        raise GuardrailViolation(
+            f"Historical base '{base.base_id}' requires a time constraint.\n"
+            f"  Add .as_of('timestamp') or filter on a time column.\n"
+            f"  Default time range: {self.guardrails.default_time_range.days} days"
+        )
 
     def validate_timeout(self, timeout_ms: int | None) -> int:
         """Validate and normalize timeout.

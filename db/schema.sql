@@ -1,4 +1,4 @@
-\restrict CbjSDoC4JeqeKqMard6L7gvnisVL4Qv9YeePD5XWhs8gSnG5dOuZ58BmT97uf79
+\restrict EkR3l6PfIHFSPOxDGOLf2i2NrEJNUNN9Xjb8qktk52bDptNmb1CnmrpUXdASvfF
 
 -- Dumped from database version 16.10
 -- Dumped by pg_dump version 16.10
@@ -19,6 +19,34 @@ SET row_security = off;
 --
 
 CREATE SCHEMA ag_catalog;
+
+
+--
+-- Name: bases; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA bases;
+
+
+--
+-- Name: SCHEMA bases; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA bases IS 'Feature store registry and Iceberg catalog';
+
+
+--
+-- Name: collections; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA collections;
+
+
+--
+-- Name: SCHEMA collections; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA collections IS 'Curated content collections for public landing page';
 
 
 --
@@ -82,6 +110,17 @@ CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION citext IS 'data type for case-insensitive character strings';
+
+
+--
+-- Name: base_type; Type: TYPE; Schema: bases; Owner: -
+--
+
+CREATE TYPE bases.base_type AS ENUM (
+    'snapshot',
+    'historical',
+    'registry'
+);
 
 
 --
@@ -215,6 +254,164 @@ CREATE TYPE public.source_type AS ENUM (
 
 
 --
+-- Name: create_article_with_collection(text, text, text, text[], text[]); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.create_article_with_collection(p_slug text, p_title text, p_kb_path text, p_arxiv_categories text[] DEFAULT NULL::text[], p_keywords text[] DEFAULT NULL::text[]) RETURNS TABLE(article_id text, collection_id text)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_article_id TEXT;
+    v_collection_id TEXT;
+BEGIN
+    -- Generate IDs
+    v_article_id := 'art_' || replace(gen_random_uuid()::text, '-', '')::varchar(12);
+    v_collection_id := 'col_' || replace(gen_random_uuid()::text, '-', '')::varchar(12);
+
+    -- Create collection first (1:1 with article, same slug)
+    INSERT INTO collections.collections (
+        collection_id, slug, name, description, status, kb_path
+    ) VALUES (
+        v_collection_id,
+        p_slug,
+        p_title,
+        'Cards from article: ' || p_title,
+        'draft',
+        'current/collections/' || p_slug || '/'
+    );
+
+    -- Create article with collection_id
+    INSERT INTO collections.articles (
+        article_id, slug, title, status, kb_path, collection_id,
+        arxiv_categories, keywords
+    ) VALUES (
+        v_article_id,
+        p_slug,
+        p_title,
+        'pending',
+        p_kb_path,
+        v_collection_id,
+        p_arxiv_categories,
+        p_keywords
+    );
+
+    RETURN QUERY SELECT v_article_id, v_collection_id;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION create_article_with_collection(p_slug text, p_title text, p_kb_path text, p_arxiv_categories text[], p_keywords text[]); Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON FUNCTION collections.create_article_with_collection(p_slug text, p_title text, p_kb_path text, p_arxiv_categories text[], p_keywords text[]) IS 'Atomically create article and its 1:1 collection (same slug)';
+
+
+--
+-- Name: get_article_by_slug(text); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.get_article_by_slug(p_slug text) RETURNS TABLE(article_id text, collection_id text, slug text, title text, status text, kb_path text, current_version integer, zk_count integer)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        a.article_id,
+        a.collection_id,
+        a.slug,
+        a.title,
+        a.status,
+        a.kb_path,
+        a.current_version,
+        a.zk_count
+    FROM collections.articles a
+    WHERE a.slug = p_slug;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION get_article_by_slug(p_slug text); Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON FUNCTION collections.get_article_by_slug(p_slug text) IS 'Get article by slug for CardUpkeepFlow validation';
+
+
+--
+-- Name: get_published_cards(integer); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.get_published_cards(max_cards integer DEFAULT 50) RETURNS TABLE(card_id text, title text, summary text, image_url text, source_url text, source_type text, published_at timestamp with time zone, source_date date)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    SELECT c.card_id, c.title, c.summary, c.image_url, c.source_url, c.source_type, c.published_at, c.source_date
+    FROM collections.cards c
+    JOIN collections.collections col ON c.collection_id = col.collection_id
+    WHERE col.featured = TRUE
+      AND c.status = 'published'
+    ORDER BY c.published_at DESC
+    LIMIT max_cards;
+END;
+$$;
+
+
+--
+-- Name: publish_cards(integer); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.publish_cards(card_count integer DEFAULT 3) RETURNS TABLE(card_id text, title text, published_at timestamp with time zone)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    RETURN QUERY
+    WITH pending_cards AS (
+        SELECT c.card_id, c.title
+        FROM collections.cards c
+        JOIN collections.collections col ON c.collection_id = col.collection_id
+        WHERE col.featured = TRUE
+          AND c.status = 'pending'
+        ORDER BY c.sequence NULLS LAST, c.created_at ASC
+        LIMIT card_count
+        FOR UPDATE OF c
+    ),
+    updated AS (
+        UPDATE collections.cards
+        SET status = 'published',
+            published_at = NOW(),
+            updated_at = NOW()
+        WHERE collections.cards.card_id IN (SELECT pc.card_id FROM pending_cards pc)
+        RETURNING collections.cards.card_id, collections.cards.title, collections.cards.published_at
+    )
+    SELECT * FROM updated;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION publish_cards(card_count integer); Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON FUNCTION collections.publish_cards(card_count integer) IS 'Publish N pending cards from featured collection';
+
+
+--
+-- Name: set_updated_at(); Type: FUNCTION; Schema: collections; Owner: -
+--
+
+CREATE FUNCTION collections.set_updated_at() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: check_reset_weekly_budget(); Type: FUNCTION; Schema: meta; Owner: -
 --
 
@@ -232,6 +429,32 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: cleanup_article_curation_progress(integer); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.cleanup_article_curation_progress(retention_hours integer DEFAULT 24) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM meta.article_curation_progress
+    WHERE created_at < NOW() - (retention_hours || ' hours')::INTERVAL;
+
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION cleanup_article_curation_progress(retention_hours integer); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.cleanup_article_curation_progress(retention_hours integer) IS 'Prune article curation progress events older than retention period';
 
 
 --
@@ -315,6 +538,40 @@ $$;
 --
 
 COMMENT ON FUNCTION meta.cron_job_status() IS 'Check status of meta observability cron jobs';
+
+
+--
+-- Name: notify_article_curation_progress(); Type: FUNCTION; Schema: meta; Owner: -
+--
+
+CREATE FUNCTION meta.notify_article_curation_progress() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Push notification for every new event
+    PERFORM pg_notify(
+        'article_curation_progress',
+        json_build_object(
+            'event_id', NEW.event_id,
+            'run_id', NEW.run_id,
+            'step', NEW.step,
+            'step_number', NEW.step_number,
+            'total_steps', NEW.total_steps,
+            'progress', NEW.progress,
+            'message', NEW.message,
+            'metadata', NEW.metadata
+        )::text
+    );
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION notify_article_curation_progress(); Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON FUNCTION meta.notify_article_curation_progress() IS 'Push article curation progress events via pg_notify on insert';
 
 
 --
@@ -2442,6 +2699,509 @@ $$;
 
 
 --
+-- Name: bases; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.bases (
+    base_id text NOT NULL,
+    display_name text NOT NULL,
+    description text,
+    base_type bases.base_type NOT NULL,
+    schema jsonb NOT NULL,
+    source_entity_type text,
+    source_feature_groups text[],
+    physical_table text,
+    pinot_table text,
+    default_dql text,
+    default_time_range interval DEFAULT '7 days'::interval,
+    max_time_range interval DEFAULT '90 days'::interval,
+    read_acl text[] DEFAULT '{*}'::text[],
+    owner text,
+    tags text[] DEFAULT '{}'::text[],
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    kudu_table text,
+    context jsonb DEFAULT '{}'::jsonb
+);
+
+
+--
+-- Name: COLUMN bases.kudu_table; Type: COMMENT; Schema: bases; Owner: -
+--
+
+COMMENT ON COLUMN bases.bases.kudu_table IS 'Kudu table name (via kudu_fdw when available)';
+
+
+--
+-- Name: COLUMN bases.context; Type: COMMENT; Schema: bases; Owner: -
+--
+
+COMMENT ON COLUMN bases.bases.context IS 'JSON-LD style @context for BFO ontology grounding';
+
+
+--
+-- Name: entity_types; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.entity_types (
+    entity_type_id text NOT NULL,
+    display_name text NOT NULL,
+    description text,
+    key_columns jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE entity_types; Type: COMMENT; Schema: bases; Owner: -
+--
+
+COMMENT ON TABLE bases.entity_types IS 'Entity types that features can be computed for';
+
+
+--
+-- Name: feature_groups; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.feature_groups (
+    group_id text NOT NULL,
+    display_name text NOT NULL,
+    description text,
+    entity_type_id text,
+    owner text,
+    tags text[] DEFAULT '{}'::text[],
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: feature_lineage; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.feature_lineage (
+    id integer NOT NULL,
+    source_feature_id text,
+    target_feature_id text,
+    relationship text DEFAULT 'derived_from'::text,
+    transformation text,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: feature_lineage_id_seq; Type: SEQUENCE; Schema: bases; Owner: -
+--
+
+CREATE SEQUENCE bases.feature_lineage_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: feature_lineage_id_seq; Type: SEQUENCE OWNED BY; Schema: bases; Owner: -
+--
+
+ALTER SEQUENCE bases.feature_lineage_id_seq OWNED BY bases.feature_lineage.id;
+
+
+--
+-- Name: features; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.features (
+    feature_id text NOT NULL,
+    group_id text NOT NULL,
+    name text NOT NULL,
+    display_name text,
+    description text,
+    value_type text NOT NULL,
+    nullable boolean DEFAULT true,
+    default_value jsonb,
+    transformation text,
+    aggregation_type text,
+    window_duration interval,
+    status text DEFAULT 'active'::text,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: iceberg_tables; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.iceberg_tables (
+    table_id text NOT NULL,
+    namespace text NOT NULL,
+    table_name text NOT NULL,
+    location text NOT NULL,
+    current_schema_id integer,
+    partition_spec jsonb,
+    sort_order jsonb,
+    record_count bigint,
+    file_count integer,
+    total_size_bytes bigint,
+    last_commit_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: query_log; Type: TABLE; Schema: bases; Owner: -
+--
+
+CREATE TABLE bases.query_log (
+    id bigint NOT NULL,
+    base_id text,
+    dql_query text NOT NULL,
+    compiled_sql text,
+    backend text,
+    executed_at timestamp with time zone DEFAULT now(),
+    duration_ms integer,
+    rows_returned integer,
+    client_id text,
+    error text
+);
+
+
+--
+-- Name: query_log_id_seq; Type: SEQUENCE; Schema: bases; Owner: -
+--
+
+CREATE SEQUENCE bases.query_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: query_log_id_seq; Type: SEQUENCE OWNED BY; Schema: bases; Owner: -
+--
+
+ALTER SEQUENCE bases.query_log_id_seq OWNED BY bases.query_log.id;
+
+
+--
+-- Name: acquired_sources; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.acquired_sources (
+    source_id text NOT NULL,
+    article_id text NOT NULL,
+    source_type text NOT NULL,
+    url text NOT NULL,
+    title text NOT NULL,
+    summary text,
+    excerpt_text text,
+    excerpt_char_start integer,
+    excerpt_char_end integer,
+    traceable_id text,
+    metadata jsonb,
+    content_hash text,
+    dedupe_similarity double precision,
+    fetched_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT acquired_sources_source_type_check CHECK ((source_type = ANY (ARRAY['arxiv'::text, 'biorxiv'::text, 'brave'::text, 'philpapers'::text, 'philevents'::text, 'sec_filing'::text, 'web'::text])))
+);
+
+
+--
+-- Name: article_references; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.article_references (
+    reference_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    article_id text NOT NULL,
+    ref_id text NOT NULL,
+    source_id text,
+    traceable_id text NOT NULL,
+    ref_start integer NOT NULL,
+    ref_end integer NOT NULL,
+    excerpt text NOT NULL,
+    iao_type text DEFAULT 'IAO:0000300'::text,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: articles; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.articles (
+    article_id text NOT NULL,
+    collection_id text,
+    slug text NOT NULL,
+    title text NOT NULL,
+    status text DEFAULT 'pending'::text,
+    kb_path text NOT NULL,
+    current_version integer DEFAULT 0,
+    arxiv_categories text[],
+    keywords text[],
+    news_queries text[],
+    zk_count integer DEFAULT 0,
+    sources_count integer DEFAULT 0,
+    external_url text,
+    external_platform text,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    research_started_at timestamp with time zone,
+    draft_completed_at timestamp with time zone,
+    published_at timestamp with time zone,
+    CONSTRAINT articles_external_platform_check CHECK ((external_platform = ANY (ARRAY['substack'::text, 'x_thread'::text, 'medium'::text, 'custom'::text]))),
+    CONSTRAINT articles_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'researching'::text, 'drafting'::text, 'review'::text, 'published'::text, 'abandoned'::text])))
+);
+
+
+--
+-- Name: collections; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.collections (
+    collection_id text NOT NULL,
+    slug text NOT NULL,
+    name text NOT NULL,
+    description text,
+    status text DEFAULT 'draft'::text,
+    featured boolean DEFAULT false,
+    grok_collection_id text,
+    grok_last_sync_at timestamp with time zone,
+    series_enabled boolean DEFAULT true,
+    kb_path text NOT NULL,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT collections_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text])))
+);
+
+
+--
+-- Name: TABLE collections; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.collections IS 'Curated content collections for public research materials';
+
+
+--
+-- Name: COLUMN collections.featured; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.collections.featured IS 'Only one collection can be featured at a time';
+
+
+--
+-- Name: COLUMN collections.grok_collection_id; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.collections.grok_collection_id IS 'Grok Collections API ID for X platform sync';
+
+
+--
+-- Name: articles_ready; Type: VIEW; Schema: collections; Owner: -
+--
+
+CREATE VIEW collections.articles_ready AS
+ SELECT a.article_id,
+    a.slug,
+    a.title,
+    a.status,
+    a.zk_count,
+    a.current_version,
+    a.created_at,
+    c.name AS collection_name
+   FROM (collections.articles a
+     LEFT JOIN collections.collections c ON ((a.collection_id = c.collection_id)))
+  WHERE ((a.status = ANY (ARRAY['pending'::text, 'researching'::text])) AND (a.zk_count > 0))
+  ORDER BY a.created_at;
+
+
+--
+-- Name: cards; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.cards (
+    card_id text NOT NULL,
+    collection_id text NOT NULL,
+    title text NOT NULL,
+    summary text NOT NULL,
+    image_url text,
+    source_url text NOT NULL,
+    source_type text NOT NULL,
+    status text DEFAULT 'pending'::text,
+    published_at timestamp with time zone,
+    sequence integer,
+    article_id text NOT NULL,
+    prev_card_id text,
+    next_card_id text,
+    kb_path text,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    source_date date,
+    CONSTRAINT cards_source_type_check CHECK ((source_type = ANY (ARRAY['arxiv'::text, 'huggingface'::text, 'cloudera'::text, 'web'::text, 'x_bookmark'::text, 'sec_filing'::text, 'research'::text]))),
+    CONSTRAINT cards_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'published'::text, 'archived'::text])))
+);
+
+
+--
+-- Name: TABLE cards; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.cards IS 'Public-facing content cards linking to external sources';
+
+
+--
+-- Name: COLUMN cards.summary; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.cards.summary IS '1-2 sentence summary for card display';
+
+
+--
+-- Name: COLUMN cards.source_url; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.cards.source_url IS 'Link to original PUBLIC source - never internal KB paths';
+
+
+--
+-- Name: draft_history; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.draft_history (
+    draft_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    article_id text NOT NULL,
+    version integer NOT NULL,
+    filename text NOT NULL,
+    content_hash text NOT NULL,
+    word_count integer,
+    source_count integer,
+    generator_model text,
+    generator_run_id text,
+    parent_version integer,
+    archived_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: publications; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.publications (
+    publication_id text NOT NULL,
+    collection_id text NOT NULL,
+    platform text NOT NULL,
+    external_url text,
+    article_kb_path text,
+    content_hash text,
+    status text DEFAULT 'draft'::text,
+    published_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT publications_platform_check CHECK ((platform = ANY (ARRAY['substack'::text, 'x_thread'::text, 'medium'::text, 'custom'::text]))),
+    CONSTRAINT publications_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text])))
+);
+
+
+--
+-- Name: TABLE publications; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.publications IS 'External article publications (Substack, X threads)';
+
+
+--
+-- Name: COLUMN publications.content_hash; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.publications.content_hash IS 'Detect if KB article changed since publication';
+
+
+--
+-- Name: selection_traces; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.selection_traces (
+    trace_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    collection_id text,
+    flow_run_id text,
+    item_id text NOT NULL,
+    prompt text NOT NULL,
+    output text NOT NULL,
+    score double precision,
+    reward_strategy text,
+    candidates jsonb NOT NULL,
+    selected_card_id text,
+    selected_slug text,
+    criteria_scores jsonb,
+    tradeoffs text,
+    confidence double precision,
+    model text,
+    technique text,
+    temperature double precision,
+    latency_ms integer,
+    tokens_used integer,
+    created_at timestamp with time zone DEFAULT now(),
+    reward_computed_at timestamp with time zone
+);
+
+
+--
+-- Name: selection_trace_stats; Type: VIEW; Schema: collections; Owner: -
+--
+
+CREATE VIEW collections.selection_trace_stats AS
+ SELECT technique,
+    count(*) AS trace_count,
+    avg(score) AS avg_score,
+    avg(confidence) AS avg_confidence,
+    avg(latency_ms) AS avg_latency_ms,
+    avg(tokens_used) AS avg_tokens
+   FROM collections.selection_traces
+  WHERE (created_at > (now() - '7 days'::interval))
+  GROUP BY technique
+  ORDER BY (count(*)) DESC;
+
+
+--
+-- Name: sources; Type: TABLE; Schema: collections; Owner: -
+--
+
+CREATE TABLE collections.sources (
+    source_id text NOT NULL,
+    card_id text NOT NULL,
+    provenance_url text NOT NULL,
+    provenance_traceable_id text,
+    source_type text NOT NULL,
+    excerpt_text text,
+    excerpt_page integer,
+    excerpt_section text,
+    excerpt_char_range int4range,
+    ingested_via text,
+    ingested_at timestamp with time zone DEFAULT now(),
+    kb_path text
+);
+
+
+--
+-- Name: TABLE sources; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON TABLE collections.sources IS 'Detailed provenance for card sources with precise citations';
+
+
+--
+-- Name: COLUMN sources.excerpt_char_range; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON COLUMN collections.sources.excerpt_char_range IS 'Character range [start, end) for precise excerpt location';
+
+
+--
 -- Name: _ag_label_vertex; Type: TABLE; Schema: gaius_hx; Owner: -
 --
 
@@ -3076,6 +3836,91 @@ CREATE VIEW meta.ambient_cycle_metrics AS
 --
 
 COMMENT ON VIEW meta.ambient_cycle_metrics IS 'Hourly aggregate metrics from agenda_operations for Metabase dashboards';
+
+
+--
+-- Name: article_curation_progress; Type: TABLE; Schema: meta; Owner: -
+--
+
+CREATE TABLE meta.article_curation_progress (
+    event_id bigint NOT NULL,
+    run_id text NOT NULL,
+    step text NOT NULL,
+    step_number integer NOT NULL,
+    total_steps integer DEFAULT 9,
+    progress real DEFAULT 0.0,
+    message text DEFAULT ''::text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: TABLE article_curation_progress; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TABLE meta.article_curation_progress IS 'Fine-grained ArticleCurationFlow progress events for TUI streaming';
+
+
+--
+-- Name: COLUMN article_curation_progress.run_id; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.article_curation_progress.run_id IS 'Flow run ID (e.g., acf_20260202_050000)';
+
+
+--
+-- Name: COLUMN article_curation_progress.step; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.article_curation_progress.step IS 'Step name (select, research, acquire, draft, base, cards, complete, failed)';
+
+
+--
+-- Name: COLUMN article_curation_progress.step_number; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.article_curation_progress.step_number IS 'Current step number (1-9)';
+
+
+--
+-- Name: COLUMN article_curation_progress.total_steps; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.article_curation_progress.total_steps IS 'Total steps in pipeline (default 9)';
+
+
+--
+-- Name: COLUMN article_curation_progress.progress; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.article_curation_progress.progress IS 'Progress 0.0-1.0 for progress bar display';
+
+
+--
+-- Name: COLUMN article_curation_progress.metadata; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON COLUMN meta.article_curation_progress.metadata IS 'Additional event data (slug, sources_count, cards_created, etc.)';
+
+
+--
+-- Name: article_curation_progress_event_id_seq; Type: SEQUENCE; Schema: meta; Owner: -
+--
+
+CREATE SEQUENCE meta.article_curation_progress_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: article_curation_progress_event_id_seq; Type: SEQUENCE OWNED BY; Schema: meta; Owner: -
+--
+
+ALTER SEQUENCE meta.article_curation_progress_event_id_seq OWNED BY meta.article_curation_progress.event_id;
 
 
 --
@@ -12981,10 +13826,10 @@ ALTER SEQUENCE public.scoring_rubrics_id_seq OWNED BY public.scoring_rubrics.id;
 
 
 --
--- Name: search_index__4asdmoroquqdnn2arfyd5; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__4asdmoroquqdnn2arfyd5 (
+CREATE TABLE public.search_index__9mlhjckt6psr53dm2euxs (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -13017,11 +13862,11 @@ CREATE TABLE public.search_index__4asdmoroquqdnn2arfyd5 (
 
 
 --
--- Name: search_index__4asdmoroquqdnn2arfyd5_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__4asdmoroquqdnn2arfyd5 ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__4asdmoroquqdnn2arfyd5_id_seq
+ALTER TABLE public.search_index__9mlhjckt6psr53dm2euxs ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__9mlhjckt6psr53dm2euxs_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -13031,10 +13876,10 @@ ALTER TABLE public.search_index__4asdmoroquqdnn2arfyd5 ALTER COLUMN id ADD GENER
 
 
 --
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6; Type: TABLE; Schema: public; Owner: -
+-- Name: search_index__szrsf2xim8g35plmve9qg; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.search_index__cvo4ibtsyjzvh5x7v49a6 (
+CREATE TABLE public.search_index__szrsf2xim8g35plmve9qg (
     id bigint NOT NULL,
     search_vector tsvector NOT NULL,
     with_native_query_vector tsvector NOT NULL,
@@ -13067,11 +13912,11 @@ CREATE TABLE public.search_index__cvo4ibtsyjzvh5x7v49a6 (
 
 
 --
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: search_index__szrsf2xim8g35plmve9qg_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.search_index__cvo4ibtsyjzvh5x7v49a6 ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.search_index__cvo4ibtsyjzvh5x7v49a6_id_seq
+ALTER TABLE public.search_index__szrsf2xim8g35plmve9qg ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.search_index__szrsf2xim8g35plmve9qg_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -14917,6 +15762,20 @@ ALTER SEQUENCE public.x_sync_runs_id_seq OWNED BY public.x_sync_runs.id;
 
 
 --
+-- Name: feature_lineage id; Type: DEFAULT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_lineage ALTER COLUMN id SET DEFAULT nextval('bases.feature_lineage_id_seq'::regclass);
+
+
+--
+-- Name: query_log id; Type: DEFAULT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.query_log ALTER COLUMN id SET DEFAULT nextval('bases.query_log_id_seq'::regclass);
+
+
+--
 -- Name: Dataset id; Type: DEFAULT; Schema: gaius_hx; Owner: -
 --
 
@@ -15026,6 +15885,13 @@ ALTER TABLE ONLY gaius_hx._ag_label_edge ALTER COLUMN id SET DEFAULT ag_catalog.
 --
 
 ALTER TABLE ONLY gaius_hx._ag_label_vertex ALTER COLUMN id SET DEFAULT ag_catalog._graphid((ag_catalog._label_id('gaius_hx'::name, '_ag_label_vertex'::name))::integer, nextval('gaius_hx._ag_label_vertex_id_seq'::regclass));
+
+
+--
+-- Name: article_curation_progress event_id; Type: DEFAULT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.article_curation_progress ALTER COLUMN event_id SET DEFAULT nextval('meta.article_curation_progress_event_id_seq'::regclass);
 
 
 --
@@ -15575,6 +16441,221 @@ ALTER TABLE ONLY public.x_sync_runs ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
+-- Name: bases bases_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.bases
+    ADD CONSTRAINT bases_pkey PRIMARY KEY (base_id);
+
+
+--
+-- Name: entity_types entity_types_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.entity_types
+    ADD CONSTRAINT entity_types_pkey PRIMARY KEY (entity_type_id);
+
+
+--
+-- Name: feature_groups feature_groups_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_groups
+    ADD CONSTRAINT feature_groups_pkey PRIMARY KEY (group_id);
+
+
+--
+-- Name: feature_lineage feature_lineage_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_lineage
+    ADD CONSTRAINT feature_lineage_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: feature_lineage feature_lineage_source_feature_id_target_feature_id_key; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_lineage
+    ADD CONSTRAINT feature_lineage_source_feature_id_target_feature_id_key UNIQUE (source_feature_id, target_feature_id);
+
+
+--
+-- Name: features features_group_id_name_key; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.features
+    ADD CONSTRAINT features_group_id_name_key UNIQUE (group_id, name);
+
+
+--
+-- Name: features features_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.features
+    ADD CONSTRAINT features_pkey PRIMARY KEY (feature_id);
+
+
+--
+-- Name: iceberg_tables iceberg_tables_namespace_table_name_key; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.iceberg_tables
+    ADD CONSTRAINT iceberg_tables_namespace_table_name_key UNIQUE (namespace, table_name);
+
+
+--
+-- Name: iceberg_tables iceberg_tables_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.iceberg_tables
+    ADD CONSTRAINT iceberg_tables_pkey PRIMARY KEY (table_id);
+
+
+--
+-- Name: query_log query_log_pkey; Type: CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.query_log
+    ADD CONSTRAINT query_log_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: acquired_sources acquired_sources_article_id_url_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.acquired_sources
+    ADD CONSTRAINT acquired_sources_article_id_url_key UNIQUE (article_id, url);
+
+
+--
+-- Name: acquired_sources acquired_sources_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.acquired_sources
+    ADD CONSTRAINT acquired_sources_pkey PRIMARY KEY (source_id);
+
+
+--
+-- Name: article_references article_references_article_id_ref_id_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.article_references
+    ADD CONSTRAINT article_references_article_id_ref_id_key UNIQUE (article_id, ref_id);
+
+
+--
+-- Name: article_references article_references_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.article_references
+    ADD CONSTRAINT article_references_pkey PRIMARY KEY (reference_id);
+
+
+--
+-- Name: articles articles_collection_id_unique; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.articles
+    ADD CONSTRAINT articles_collection_id_unique UNIQUE (collection_id);
+
+
+--
+-- Name: CONSTRAINT articles_collection_id_unique ON articles; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON CONSTRAINT articles_collection_id_unique ON collections.articles IS 'Enforces 1:1 article-collection mapping';
+
+
+--
+-- Name: articles articles_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.articles
+    ADD CONSTRAINT articles_pkey PRIMARY KEY (article_id);
+
+
+--
+-- Name: articles articles_slug_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.articles
+    ADD CONSTRAINT articles_slug_key UNIQUE (slug);
+
+
+--
+-- Name: cards cards_collection_id_sequence_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.cards
+    ADD CONSTRAINT cards_collection_id_sequence_key UNIQUE (collection_id, sequence);
+
+
+--
+-- Name: cards cards_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.cards
+    ADD CONSTRAINT cards_pkey PRIMARY KEY (card_id);
+
+
+--
+-- Name: collections collections_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.collections
+    ADD CONSTRAINT collections_pkey PRIMARY KEY (collection_id);
+
+
+--
+-- Name: collections collections_slug_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.collections
+    ADD CONSTRAINT collections_slug_key UNIQUE (slug);
+
+
+--
+-- Name: draft_history draft_history_article_id_version_key; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.draft_history
+    ADD CONSTRAINT draft_history_article_id_version_key UNIQUE (article_id, version);
+
+
+--
+-- Name: draft_history draft_history_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.draft_history
+    ADD CONSTRAINT draft_history_pkey PRIMARY KEY (draft_id);
+
+
+--
+-- Name: publications publications_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.publications
+    ADD CONSTRAINT publications_pkey PRIMARY KEY (publication_id);
+
+
+--
+-- Name: selection_traces selection_traces_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.selection_traces
+    ADD CONSTRAINT selection_traces_pkey PRIMARY KEY (trace_id);
+
+
+--
+-- Name: sources sources_pkey; Type: CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.sources
+    ADD CONSTRAINT sources_pkey PRIMARY KEY (source_id);
+
+
+--
 -- Name: _ag_label_edge _ag_label_edge_pkey; Type: CONSTRAINT; Schema: gaius_hx; Owner: -
 --
 
@@ -15604,6 +16685,14 @@ ALTER TABLE ONLY meta.agent_performance
 
 ALTER TABLE ONLY meta.alert_thresholds
     ADD CONSTRAINT alert_thresholds_pkey PRIMARY KEY (metric_name);
+
+
+--
+-- Name: article_curation_progress article_curation_progress_pkey; Type: CONSTRAINT; Schema: meta; Owner: -
+--
+
+ALTER TABLE ONLY meta.article_curation_progress
+    ADD CONSTRAINT article_curation_progress_pkey PRIMARY KEY (event_id);
 
 
 --
@@ -17711,19 +18800,19 @@ ALTER TABLE ONLY public.scoring_rubrics
 
 
 --
--- Name: search_index__4asdmoroquqdnn2arfyd5 search_index__4asdmoroquqdnn2arfyd5_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs search_index__9mlhjckt6psr53dm2euxs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__4asdmoroquqdnn2arfyd5
-    ADD CONSTRAINT search_index__4asdmoroquqdnn2arfyd5_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__9mlhjckt6psr53dm2euxs
+    ADD CONSTRAINT search_index__9mlhjckt6psr53dm2euxs_pkey PRIMARY KEY (id);
 
 
 --
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6 search_index__cvo4ibtsyjzvh5x7v49a6_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: search_index__szrsf2xim8g35plmve9qg search_index__szrsf2xim8g35plmve9qg_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.search_index__cvo4ibtsyjzvh5x7v49a6
-    ADD CONSTRAINT search_index__cvo4ibtsyjzvh5x7v49a6_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.search_index__szrsf2xim8g35plmve9qg
+    ADD CONSTRAINT search_index__szrsf2xim8g35plmve9qg_pkey PRIMARY KEY (id);
 
 
 --
@@ -18111,6 +19200,244 @@ ALTER TABLE ONLY public.x_sync_runs
 
 
 --
+-- Name: idx_bases_bases_entity; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_bases_entity ON bases.bases USING btree (source_entity_type);
+
+
+--
+-- Name: idx_bases_bases_type; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_bases_type ON bases.bases USING btree (base_type);
+
+
+--
+-- Name: idx_bases_features_group; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_features_group ON bases.features USING btree (group_id);
+
+
+--
+-- Name: idx_bases_features_status; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_features_status ON bases.features USING btree (status);
+
+
+--
+-- Name: idx_bases_fg_entity; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_fg_entity ON bases.feature_groups USING btree (entity_type_id);
+
+
+--
+-- Name: idx_bases_fg_tags; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_fg_tags ON bases.feature_groups USING gin (tags);
+
+
+--
+-- Name: idx_bases_iceberg_ns; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_iceberg_ns ON bases.iceberg_tables USING btree (namespace);
+
+
+--
+-- Name: idx_bases_lineage_source; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_lineage_source ON bases.feature_lineage USING btree (source_feature_id);
+
+
+--
+-- Name: idx_bases_lineage_target; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_lineage_target ON bases.feature_lineage USING btree (target_feature_id);
+
+
+--
+-- Name: idx_bases_qlog_base; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_qlog_base ON bases.query_log USING btree (base_id, executed_at DESC);
+
+
+--
+-- Name: idx_bases_qlog_time; Type: INDEX; Schema: bases; Owner: -
+--
+
+CREATE INDEX idx_bases_qlog_time ON bases.query_log USING btree (executed_at DESC);
+
+
+--
+-- Name: idx_acquired_sources_article; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_acquired_sources_article ON collections.acquired_sources USING btree (article_id);
+
+
+--
+-- Name: idx_acquired_sources_type; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_acquired_sources_type ON collections.acquired_sources USING btree (source_type);
+
+
+--
+-- Name: idx_article_references_article; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_article_references_article ON collections.article_references USING btree (article_id);
+
+
+--
+-- Name: idx_article_references_source; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_article_references_source ON collections.article_references USING btree (source_id);
+
+
+--
+-- Name: idx_articles_collection; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_articles_collection ON collections.articles USING btree (collection_id);
+
+
+--
+-- Name: idx_articles_kb_path; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_articles_kb_path ON collections.articles USING btree (kb_path);
+
+
+--
+-- Name: idx_articles_status; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_articles_status ON collections.articles USING btree (status);
+
+
+--
+-- Name: idx_cards_article_id; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_cards_article_id ON collections.cards USING btree (article_id);
+
+
+--
+-- Name: INDEX idx_cards_article_id; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON INDEX collections.idx_cards_article_id IS 'Index for FK lookup and joins by article_id';
+
+
+--
+-- Name: idx_cards_collection; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_cards_collection ON collections.cards USING btree (collection_id);
+
+
+--
+-- Name: idx_cards_published; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_cards_published ON collections.cards USING btree (published_at DESC);
+
+
+--
+-- Name: idx_cards_source_type; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_cards_source_type ON collections.cards USING btree (source_type);
+
+
+--
+-- Name: idx_cards_status; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_cards_status ON collections.cards USING btree (status);
+
+
+--
+-- Name: idx_collections_featured; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_collections_featured ON collections.collections USING btree (featured) WHERE (featured = true);
+
+
+--
+-- Name: idx_collections_single_featured; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_collections_single_featured ON collections.collections USING btree (featured) WHERE (featured = true);
+
+
+--
+-- Name: idx_collections_status; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_collections_status ON collections.collections USING btree (status);
+
+
+--
+-- Name: idx_draft_history_article; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_draft_history_article ON collections.draft_history USING btree (article_id);
+
+
+--
+-- Name: idx_publications_collection; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_publications_collection ON collections.publications USING btree (collection_id);
+
+
+--
+-- Name: idx_publications_platform; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_publications_platform ON collections.publications USING btree (platform);
+
+
+--
+-- Name: idx_selection_traces_collection; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_selection_traces_collection ON collections.selection_traces USING btree (collection_id);
+
+
+--
+-- Name: idx_selection_traces_created; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_selection_traces_created ON collections.selection_traces USING btree (created_at DESC);
+
+
+--
+-- Name: idx_selection_traces_technique; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_selection_traces_technique ON collections.selection_traces USING btree (technique);
+
+
+--
+-- Name: idx_sources_card; Type: INDEX; Schema: collections; Owner: -
+--
+
+CREATE INDEX idx_sources_card ON collections.sources USING btree (card_id);
+
+
+--
 -- Name: idx_agent_positions_role; Type: INDEX; Schema: meta; Owner: -
 --
 
@@ -18122,6 +19449,20 @@ CREATE INDEX idx_agent_positions_role ON meta.swarm_agent_positions USING btree 
 --
 
 CREATE INDEX idx_agent_positions_snapshot ON meta.swarm_agent_positions USING btree (snapshot_id);
+
+
+--
+-- Name: idx_article_curation_progress_created; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_article_curation_progress_created ON meta.article_curation_progress USING btree (created_at DESC);
+
+
+--
+-- Name: idx_article_curation_progress_run; Type: INDEX; Schema: meta; Owner: -
+--
+
+CREATE INDEX idx_article_curation_progress_run ON meta.article_curation_progress USING btree (run_id, event_id);
 
 
 --
@@ -21238,73 +22579,73 @@ CREATE INDEX idx_x_sync_runs_user ON public.x_sync_runs USING btree (user_id, st
 
 
 --
--- Name: search_index__4asdmoroquqdnn2arfyd5_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_archived_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING btree (archived);
-
-
---
--- Name: search_index__4asdmoroquqdnn2arfyd5_identity_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX search_index__4asdmoroquqdnn2arfyd5_identity_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING btree (model, model_id);
+CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_archived_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING btree (archived);
 
 
 --
--- Name: search_index__4asdmoroquqdnn2arfyd5_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs_identity_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_model_archived_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING btree (model, archived);
-
-
---
--- Name: search_index__4asdmoroquqdnn2arfyd5_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_native_tsvector_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING gin (with_native_query_vector);
+CREATE UNIQUE INDEX search_index__9mlhjckt6psr53dm2euxs_identity_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING btree (model, model_id);
 
 
 --
--- Name: search_index__4asdmoroquqdnn2arfyd5_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs_model_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__4asdmoroquqdnn2arfyd5_tsvector_idx ON public.search_index__4asdmoroquqdnn2arfyd5 USING gin (search_vector);
-
-
---
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_archived_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING btree (archived);
+CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_model_archived_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING btree (model, archived);
 
 
 --
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6_identity_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_identity_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING btree (model, model_id);
-
-
---
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6_model_archived_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_model_archived_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING btree (model, archived);
+CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_native_tsvector_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING gin (with_native_query_vector);
 
 
 --
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__9mlhjckt6psr53dm2euxs_tsvector_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_native_tsvector_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING gin (with_native_query_vector);
+CREATE INDEX search_index__9mlhjckt6psr53dm2euxs_tsvector_idx ON public.search_index__9mlhjckt6psr53dm2euxs USING gin (search_vector);
 
 
 --
--- Name: search_index__cvo4ibtsyjzvh5x7v49a6_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: search_index__szrsf2xim8g35plmve9qg_archived_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX search_index__cvo4ibtsyjzvh5x7v49a6_tsvector_idx ON public.search_index__cvo4ibtsyjzvh5x7v49a6 USING gin (search_vector);
+CREATE INDEX search_index__szrsf2xim8g35plmve9qg_archived_idx ON public.search_index__szrsf2xim8g35plmve9qg USING btree (archived);
+
+
+--
+-- Name: search_index__szrsf2xim8g35plmve9qg_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX search_index__szrsf2xim8g35plmve9qg_identity_idx ON public.search_index__szrsf2xim8g35plmve9qg USING btree (model, model_id);
+
+
+--
+-- Name: search_index__szrsf2xim8g35plmve9qg_model_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__szrsf2xim8g35plmve9qg_model_archived_idx ON public.search_index__szrsf2xim8g35plmve9qg USING btree (model, archived);
+
+
+--
+-- Name: search_index__szrsf2xim8g35plmve9qg_native_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__szrsf2xim8g35plmve9qg_native_tsvector_idx ON public.search_index__szrsf2xim8g35plmve9qg USING gin (with_native_query_vector);
+
+
+--
+-- Name: search_index__szrsf2xim8g35plmve9qg_tsvector_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX search_index__szrsf2xim8g35plmve9qg_tsvector_idx ON public.search_index__szrsf2xim8g35plmve9qg USING gin (search_vector);
 
 
 --
@@ -21337,6 +22678,48 @@ CREATE OR REPLACE VIEW public.v_source_status AS
      LEFT JOIN public.profiles p ON ((p.id = ps.profile_id)))
   GROUP BY fs.id
   ORDER BY fs.name;
+
+
+--
+-- Name: articles set_articles_updated_at; Type: TRIGGER; Schema: collections; Owner: -
+--
+
+CREATE TRIGGER set_articles_updated_at BEFORE UPDATE ON collections.articles FOR EACH ROW EXECUTE FUNCTION collections.set_updated_at();
+
+
+--
+-- Name: cards set_cards_updated_at; Type: TRIGGER; Schema: collections; Owner: -
+--
+
+CREATE TRIGGER set_cards_updated_at BEFORE UPDATE ON collections.cards FOR EACH ROW EXECUTE FUNCTION collections.set_updated_at();
+
+
+--
+-- Name: collections set_collections_updated_at; Type: TRIGGER; Schema: collections; Owner: -
+--
+
+CREATE TRIGGER set_collections_updated_at BEFORE UPDATE ON collections.collections FOR EACH ROW EXECUTE FUNCTION collections.set_updated_at();
+
+
+--
+-- Name: publications set_publications_updated_at; Type: TRIGGER; Schema: collections; Owner: -
+--
+
+CREATE TRIGGER set_publications_updated_at BEFORE UPDATE ON collections.publications FOR EACH ROW EXECUTE FUNCTION collections.set_updated_at();
+
+
+--
+-- Name: article_curation_progress article_curation_progress_notify; Type: TRIGGER; Schema: meta; Owner: -
+--
+
+CREATE TRIGGER article_curation_progress_notify AFTER INSERT ON meta.article_curation_progress FOR EACH ROW EXECUTE FUNCTION meta.notify_article_curation_progress();
+
+
+--
+-- Name: TRIGGER article_curation_progress_notify ON article_curation_progress; Type: COMMENT; Schema: meta; Owner: -
+--
+
+COMMENT ON TRIGGER article_curation_progress_notify ON meta.article_curation_progress IS 'Real-time progress streaming to TUI via LISTEN/NOTIFY';
 
 
 --
@@ -21400,6 +22783,149 @@ CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW
 --
 
 CREATE TRIGGER trg_update_calibration_summary AFTER INSERT ON public.evolution_calibrations FOR EACH ROW EXECUTE FUNCTION public.update_calibration_summary();
+
+
+--
+-- Name: bases bases_source_entity_type_fkey; Type: FK CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.bases
+    ADD CONSTRAINT bases_source_entity_type_fkey FOREIGN KEY (source_entity_type) REFERENCES bases.entity_types(entity_type_id);
+
+
+--
+-- Name: feature_groups feature_groups_entity_type_id_fkey; Type: FK CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_groups
+    ADD CONSTRAINT feature_groups_entity_type_id_fkey FOREIGN KEY (entity_type_id) REFERENCES bases.entity_types(entity_type_id);
+
+
+--
+-- Name: feature_lineage feature_lineage_source_feature_id_fkey; Type: FK CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_lineage
+    ADD CONSTRAINT feature_lineage_source_feature_id_fkey FOREIGN KEY (source_feature_id) REFERENCES bases.features(feature_id);
+
+
+--
+-- Name: feature_lineage feature_lineage_target_feature_id_fkey; Type: FK CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.feature_lineage
+    ADD CONSTRAINT feature_lineage_target_feature_id_fkey FOREIGN KEY (target_feature_id) REFERENCES bases.features(feature_id);
+
+
+--
+-- Name: features features_group_id_fkey; Type: FK CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.features
+    ADD CONSTRAINT features_group_id_fkey FOREIGN KEY (group_id) REFERENCES bases.feature_groups(group_id);
+
+
+--
+-- Name: query_log query_log_base_id_fkey; Type: FK CONSTRAINT; Schema: bases; Owner: -
+--
+
+ALTER TABLE ONLY bases.query_log
+    ADD CONSTRAINT query_log_base_id_fkey FOREIGN KEY (base_id) REFERENCES bases.bases(base_id);
+
+
+--
+-- Name: acquired_sources acquired_sources_article_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.acquired_sources
+    ADD CONSTRAINT acquired_sources_article_id_fkey FOREIGN KEY (article_id) REFERENCES collections.articles(article_id) ON DELETE CASCADE;
+
+
+--
+-- Name: article_references article_references_article_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.article_references
+    ADD CONSTRAINT article_references_article_id_fkey FOREIGN KEY (article_id) REFERENCES collections.articles(article_id) ON DELETE CASCADE;
+
+
+--
+-- Name: article_references article_references_source_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.article_references
+    ADD CONSTRAINT article_references_source_id_fkey FOREIGN KEY (source_id) REFERENCES collections.acquired_sources(source_id);
+
+
+--
+-- Name: articles articles_collection_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.articles
+    ADD CONSTRAINT articles_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections.collections(collection_id) ON DELETE SET NULL;
+
+
+--
+-- Name: cards cards_article_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.cards
+    ADD CONSTRAINT cards_article_id_fkey FOREIGN KEY (article_id) REFERENCES collections.articles(article_id) ON DELETE CASCADE;
+
+
+--
+-- Name: CONSTRAINT cards_article_id_fkey ON cards; Type: COMMENT; Schema: collections; Owner: -
+--
+
+COMMENT ON CONSTRAINT cards_article_id_fkey ON collections.cards IS 'Enforces cards reference valid article (fail-fast)';
+
+
+--
+-- Name: cards cards_collection_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.cards
+    ADD CONSTRAINT cards_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections.collections(collection_id) ON DELETE CASCADE;
+
+
+--
+-- Name: cards cards_next_card_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.cards
+    ADD CONSTRAINT cards_next_card_id_fkey FOREIGN KEY (next_card_id) REFERENCES collections.cards(card_id);
+
+
+--
+-- Name: cards cards_prev_card_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.cards
+    ADD CONSTRAINT cards_prev_card_id_fkey FOREIGN KEY (prev_card_id) REFERENCES collections.cards(card_id);
+
+
+--
+-- Name: draft_history draft_history_article_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.draft_history
+    ADD CONSTRAINT draft_history_article_id_fkey FOREIGN KEY (article_id) REFERENCES collections.articles(article_id) ON DELETE CASCADE;
+
+
+--
+-- Name: publications publications_collection_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.publications
+    ADD CONSTRAINT publications_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections.collections(collection_id) ON DELETE CASCADE;
+
+
+--
+-- Name: sources sources_card_id_fkey; Type: FK CONSTRAINT; Schema: collections; Owner: -
+--
+
+ALTER TABLE ONLY collections.sources
+    ADD CONSTRAINT sources_card_id_fkey FOREIGN KEY (card_id) REFERENCES collections.cards(card_id) ON DELETE CASCADE;
 
 
 --
@@ -22950,7 +24476,7 @@ ALTER TABLE ONLY public.x_sync_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict CbjSDoC4JeqeKqMard6L7gvnisVL4Qv9YeePD5XWhs8gSnG5dOuZ58BmT97uf79
+\unrestrict EkR3l6PfIHFSPOxDGOLf2i2NrEJNUNN9Xjb8qktk52bDptNmb1CnmrpUXdASvfF
 
 
 --
@@ -23006,6 +24532,14 @@ INSERT INTO public.schema_migrations (version) VALUES
     ('20260114000001'),
     ('20260114000002'),
     ('20260114000003'),
+    ('20260114000004'),
     ('20260115000001'),
     ('20260118000001'),
-    ('20260119000001');
+    ('20260119000001'),
+    ('20260120000001'),
+    ('20260122000001'),
+    ('20260201000001'),
+    ('20260201000002'),
+    ('20260202000001'),
+    ('20260202000002'),
+    ('20260202100000');
