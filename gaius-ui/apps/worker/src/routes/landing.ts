@@ -388,7 +388,7 @@ export async function handleLanding(c: Context): Promise<Response> {
 
   const theme = getTheme(themeConfig.theme_id);
   const title = themeConfig.title || 'Gaius';
-  const subtitle = themeConfig.subtitle || 'Curated research in AI reasoning, transformers, and machine learning';
+  const subtitle = themeConfig.subtitle || 'Curated research in AI reasoning, epistemic uncertainty, and normative aesthetics';
 
   // Get cards from KV (or return empty array if not available)
   let cards: Card[] = [];

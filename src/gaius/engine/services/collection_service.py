@@ -943,7 +943,7 @@ class CollectionService:
         theme_config = {
             "theme_id": landing.get("theme_id", "keiretsu-dark"),
             "title": landing.get("title", "Gaius"),
-            "subtitle": landing.get("subtitle", "Curated research in AI reasoning, transformers, and machine learning"),
+            "subtitle": landing.get("subtitle", "Curated research in AI reasoning, epistemic uncertainty, and normative aesthetics"),
         }
 
         # Get KV credentials
