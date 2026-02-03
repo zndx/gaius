@@ -35,6 +35,20 @@ app.get('/health', (c) => {
   return c.json({ status: 'ok', service: 'gaius-web' });
 });
 
+// ============================================================================
+// Well-Known Verification Files
+// ============================================================================
+
+// Brave Rewards publisher verification
+app.get('/.well-known/brave-rewards-verification.txt', (c) => {
+  const verificationText = `This is a Brave Creators publisher verification file.
+
+Domain: zndx.org
+Token: e92f68d6a291100fe760a6f1352e97d7543d5f3537f5ab4743d25a2029e6e4a8
+`;
+  return c.text(verificationText);
+});
+
 // OAuth callback route for X (Twitter)
 app.get('/x-callback', handleOAuthCallback);
 
