@@ -60,6 +60,9 @@ class ArticleCandidate:
         current_version: Current draft version number
         created_at: When article was created
         updated_at: Last modification time
+        pending_cards: Number of pending cards in queue (for selection fairness)
+        total_cards: Total cards ever created for this article
+        last_curated_at: When article was last curated (for round-robin)
     """
 
     slug: str
@@ -71,6 +74,10 @@ class ArticleCandidate:
     current_version: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Card backlog stats (populated from database for selection fairness)
+    pending_cards: int = 0
+    total_cards: int = 0
+    last_curated_at: Optional[datetime] = None
 
     @classmethod
     def from_kb_path(cls, article_dir: Path) -> Optional["ArticleCandidate"]:
@@ -490,6 +497,60 @@ def scan_articles(kb_root: str | Path) -> list[ArticleCandidate]:
 def get_kb_root() -> Path:
     """Get KB root directory from environment or default."""
     return Path(os.environ.get("GAIUS_KB_ROOT", "build/dev"))
+
+
+async def fetch_article_card_stats(slugs: list[str]) -> dict[str, dict[str, Any]]:
+    """Fetch card statistics for articles from database.
+
+    Queries the collections schema for pending/total card counts and
+    last curation time per article. Used to inform fair article selection.
+
+    Args:
+        slugs: List of article slugs to fetch stats for
+
+    Returns:
+        Dict mapping slug -> {pending_cards, total_cards, last_curated_at}
+    """
+    import asyncpg
+
+    db_url = os.environ.get(
+        "GAIUS_DATABASE_URL",
+        "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+    )
+
+    stats: dict[str, dict[str, Any]] = {slug: {} for slug in slugs}
+
+    try:
+        conn = await asyncpg.connect(db_url)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    a.slug,
+                    COUNT(c.card_id) FILTER (WHERE c.status = 'pending') as pending_cards,
+                    COUNT(c.card_id) as total_cards,
+                    MAX(c.created_at) as last_card_created
+                FROM collections.articles a
+                LEFT JOIN collections.cards c ON c.article_id = a.article_id
+                WHERE a.slug = ANY($1)
+                GROUP BY a.slug
+                """,
+                slugs,
+            )
+            for row in rows:
+                stats[row["slug"]] = {
+                    "pending_cards": row["pending_cards"] or 0,
+                    "total_cards": row["total_cards"] or 0,
+                    "last_curated_at": row["last_card_created"],
+                }
+        finally:
+            await conn.close()
+    except Exception as e:
+        # Non-fatal: return empty stats, selection proceeds without balance info
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to fetch card stats: {e}")
+
+    return stats
 
 
 def find_extracted_path(kb_root: Path, traceable_id: str) -> str:

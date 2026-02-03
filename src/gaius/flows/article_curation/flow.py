@@ -172,9 +172,27 @@ class ArticleCurationFlow(TracedFlow, GaiusFlow):
             emit_failed(self.progress_run_id, error_msg)
             raise RuntimeError(error_msg)
 
+        # Fetch card stats from database for fairness-aware selection
+        from gaius.flows.article_curation.common import fetch_article_card_stats
+        try:
+            card_stats = asyncio.get_event_loop().run_until_complete(
+                fetch_article_card_stats([c.slug for c in candidates])
+            )
+        except RuntimeError:
+            card_stats = asyncio.new_event_loop().run_until_complete(
+                fetch_article_card_stats([c.slug for c in candidates])
+            )
+
+        # Populate card stats on candidates
+        for c in candidates:
+            stats = card_stats.get(c.slug, {})
+            c.pending_cards = stats.get("pending_cards", 0)
+            c.total_cards = stats.get("total_cards", 0)
+            c.last_curated_at = stats.get("last_curated_at")
+
         print(f"Found {len(candidates)} candidate articles:")
         for c in candidates:
-            print(f"  - {c.slug}: {c.title} (zk: {c.zk_count}, status: {c.status.value})")
+            print(f"  - {c.slug}: {c.title} (zk: {c.zk_count}, pending_cards: {c.pending_cards}, status: {c.status.value})")
 
         # If specific article requested, filter to it
         if self.article_slug:
@@ -468,14 +486,22 @@ Create a comprehensive research summary that will guide article development."""
         """
         from gaius.inference.engine_client import get_engine_client
 
-        # Build candidate descriptions from zk/ notes (not KB search)
+        # Build candidate descriptions with card stats for fair selection
         candidates_text = []
         for i, c in enumerate(self.candidates, 1):
+            last_curated = "never"
+            if c.last_curated_at:
+                days_ago = (datetime.now(c.last_curated_at.tzinfo) - c.last_curated_at).days
+                last_curated = f"{days_ago} days ago" if days_ago > 0 else "today"
+
             candidates_text.append(
                 f"### Candidate {i}: {c.title}\n"
                 f"- Slug: {c.slug}\n"
                 f"- Status: {c.status.value}\n"
                 f"- Zettelkasten notes: {c.zk_count}\n"
+                f"- Pending cards in queue: {c.pending_cards}\n"
+                f"- Total cards created: {c.total_cards}\n"
+                f"- Last curated: {last_curated}\n"
             )
 
         prompt = f"""Select the best article to advance for publication.
@@ -488,21 +514,25 @@ Create a comprehensive research summary that will guide article development."""
 
 {self.research_summary[:2000]}
 
-## Selection Criteria (in order):
-1. Timeliness - How recent are the sources?
-2. Novelty - Does it offer fresh insights?
-3. Audience Fit - Will ML practitioners care?
-4. Source Quality - Authoritative citations?
-5. Narrative Potential - Can it become a compelling article?
+## Selection Criteria (weighted equally):
+1. **Collection Balance** - STRONGLY prefer articles with FEWER pending cards to maintain diverse content on the landing page. Articles with large backlogs should be deprioritized.
+2. **Recency Fairness** - Prefer articles that haven't been curated recently (round-robin across all articles).
+3. Timeliness - How recent are the sources?
+4. Novelty - Does it offer fresh insights?
+5. Audience Fit - Will ML practitioners care?
+6. Source Quality - Authoritative citations?
+
+IMPORTANT: If one article has significantly more pending cards than others, you MUST select a different article to maintain collection diversity. A balanced landing page with varied topics is more valuable than deep coverage of one topic.
 
 Respond with JSON:
 {{
   "selected_slug": "<slug of selected article>",
   "confidence": <0.0-1.0>,
-  "reasoning": "<detailed reasoning>",
+  "reasoning": "<explain how balance and fairness influenced your choice>",
   "criteria_scores": {{
+    "collection_balance": {{"<slug>": <score>, ...}},
+    "recency_fairness": {{"<slug>": <score>, ...}},
     "timeliness": {{"<slug>": <score>, ...}},
-    "novelty": {{"<slug>": <score>, ...}},
     ...
   }}
 }}"""

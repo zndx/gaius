@@ -765,9 +765,10 @@ class CollectionService:
         count: int = 3,
         collection_id: str | None = None,
     ) -> list[Card]:
-        """Publish pending cards from a collection.
+        """Publish pending cards from a collection with diversity.
 
-        Marks cards as published and returns them for KV sync.
+        Selects cards using round-robin across articles and source types
+        to maintain variety on the landing page.
 
         Args:
             count: Number of cards to publish (default: 3)
@@ -780,42 +781,79 @@ class CollectionService:
 
         async with self._pool.acquire() as conn:
             if collection_id:
-                # Publish from specific collection
+                # Publish from specific collection with diversity
                 rows = await conn.fetch(
                     """
-                    WITH pending AS (
-                        SELECT card_id FROM collections.cards
+                    WITH pending_ranked AS (
+                        -- Rank cards within each article/source_type combo
+                        -- to enable round-robin selection across diverse sources
+                        SELECT
+                            card_id,
+                            article_id,
+                            source_type,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY article_id, source_type
+                                ORDER BY created_at ASC
+                            ) as rank_in_group,
+                            ROW_NUMBER() OVER (
+                                -- Interleave by cycling through articles then source types
+                                ORDER BY
+                                    ROW_NUMBER() OVER (PARTITION BY article_id ORDER BY created_at),
+                                    article_id,
+                                    source_type,
+                                    created_at
+                            ) as selection_order
+                        FROM collections.cards
                         WHERE collection_id = $1 AND status = 'pending'
-                        ORDER BY sequence ASC, created_at ASC
+                    ),
+                    diverse_pending AS (
+                        SELECT card_id
+                        FROM pending_ranked
+                        ORDER BY selection_order
                         LIMIT $2
                         FOR UPDATE
                     )
                     UPDATE collections.cards
                     SET status = 'published', published_at = NOW(), updated_at = NOW()
-                    WHERE card_id IN (SELECT card_id FROM pending)
+                    WHERE card_id IN (SELECT card_id FROM diverse_pending)
                     RETURNING *
                     """,
                     collection_id, count,
                 )
             else:
-                # Publish from featured collection
+                # Publish from featured collection with diversity
+                # Round-robin across articles and source types for varied landing page
                 rows = await conn.fetch(
                     """
                     WITH featured_col AS (
                         SELECT collection_id FROM collections.collections
                         WHERE featured = TRUE
                     ),
-                    pending AS (
-                        SELECT c.card_id FROM collections.cards c
+                    pending_ranked AS (
+                        -- Rank cards within each article/source_type combo
+                        SELECT
+                            c.card_id,
+                            c.article_id,
+                            c.source_type,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY c.article_id, c.source_type
+                                ORDER BY c.created_at ASC
+                            ) as rank_in_group
+                        FROM collections.cards c
                         JOIN featured_col fc ON c.collection_id = fc.collection_id
                         WHERE c.status = 'pending'
-                        ORDER BY c.sequence ASC, c.created_at ASC
+                    ),
+                    diverse_pending AS (
+                        -- Select round-robin: one from each article/type combo before repeating
+                        SELECT card_id
+                        FROM pending_ranked
+                        ORDER BY rank_in_group, article_id, source_type
                         LIMIT $1
-                        FOR UPDATE OF c
+                        FOR UPDATE
                     )
                     UPDATE collections.cards
                     SET status = 'published', published_at = NOW(), updated_at = NOW()
-                    WHERE card_id IN (SELECT card_id FROM pending)
+                    WHERE card_id IN (SELECT card_id FROM diverse_pending)
                     RETURNING *
                     """,
                     count,
@@ -823,7 +861,7 @@ class CollectionService:
 
             published = [self._row_to_card(row) for row in rows]
 
-            logger.info(f"Published {len(published)} cards")
+            logger.info(f"Published {len(published)} cards (diversity-aware)")
             return published
 
     async def get_cards_for_kv(self, limit: int = 50) -> list[dict[str, Any]]:
