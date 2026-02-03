@@ -355,6 +355,14 @@ class HealthChecker:
                 check_fn="_check_task_queue",
                 heuristic_id="cognition/task_queue_stalled",
             ),
+            # Landing page pipeline checks
+            HealthCheck(
+                id="landing_page_pipeline",
+                name="Landing Page",
+                category="pipeline",
+                description="Check article curation and card publishing pipeline health",
+                check_fn="_check_landing_page_pipeline",
+            ),
         ]
 
     async def run_all(
@@ -502,12 +510,13 @@ class HealthChecker:
 
         # Essential service checks for quick view
         essential_ids = [
-            "grpc_connection",      # gRPC to engine
-            "optillm_service",      # Primary inference
-            "vllm_service",         # Fallback inference
-            "database_connection",  # PostgreSQL (critical)
-            "qdrant_service",       # Vector DB
-            "s3_minio_service",     # Object storage
+            "grpc_connection",         # gRPC to engine
+            "optillm_service",         # Primary inference
+            "vllm_service",            # Fallback inference
+            "database_connection",     # PostgreSQL (critical)
+            "qdrant_service",          # Vector DB
+            "s3_minio_service",        # Object storage
+            "landing_page_pipeline",   # Article curation / card publishing
         ]
 
         # Filter checks for quick view
@@ -2377,6 +2386,151 @@ class HealthChecker:
         except Exception as e:
             return CheckResult(
                 name="Task Queue",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_landing_page_pipeline(self) -> CheckResult:
+        """Check landing page pipeline health.
+
+        Monitors article curation and card publishing pipeline:
+        - Task failures in last 24h (zero tolerance - any failure = WARN)
+        - Cards published today vs expected (~6/day)
+        - Curations this week vs expected (~4-5/week)
+        - Current backlog level
+
+        Any non-zero error rate surfaces as WARN for investigation.
+        """
+        try:
+            import os
+
+            import asyncpg
+
+            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                # Check if collections schema exists
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Landing Page",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                # Count task failures in last 24h
+                curate_failures = await conn.fetchval("""
+                    SELECT COUNT(*) FROM scheduled_tasks
+                    WHERE task_type = 'article_curate'
+                      AND completed_at > NOW() - interval '24 hours'
+                      AND (result::jsonb->>'success')::boolean = FALSE
+                """) or 0
+
+                publish_failures = await conn.fetchval("""
+                    SELECT COUNT(*) FROM scheduled_tasks
+                    WHERE task_type = 'publish_cards'
+                      AND completed_at > NOW() - interval '24 hours'
+                      AND (result::jsonb->>'success')::boolean = FALSE
+                """) or 0
+
+                # Get cards published in last 24h
+                cards_today = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE published_at > NOW() - interval '24 hours'
+                """) or 0
+
+                # Get curations in last 7 days
+                curations_week = await conn.fetchval("""
+                    SELECT COUNT(*) FROM scheduled_tasks
+                    WHERE task_type = 'article_curate'
+                      AND completed_at > NOW() - interval '7 days'
+                      AND (result::jsonb->>'success')::boolean = TRUE
+                """) or 0
+
+                # Get current pending backlog
+                pending_cards = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards c
+                    JOIN collections.collections col ON c.collection_id = col.collection_id
+                    WHERE col.featured = TRUE AND c.status = 'pending'
+                """) or 0
+
+                await conn.close()
+
+                # Any failure = WARN for investigation (zero tolerance)
+                if curate_failures > 0 or publish_failures > 0:
+                    return CheckResult(
+                        name="Landing Page",
+                        status=CheckStatus.WARN,
+                        message=f"Pipeline errors: {curate_failures} curate, {publish_failures} publish failures (24h)",
+                        details={
+                            "curate_failures": curate_failures,
+                            "publish_failures": publish_failures,
+                            "cards_published_today": cards_today,
+                            "curations_this_week": curations_week,
+                            "pending_cards": pending_cards,
+                            "action": "Investigate scheduled_tasks table for error details",
+                        },
+                        suggestion="Check: SELECT * FROM scheduled_tasks WHERE task_type IN ('article_curate', 'publish_cards') AND (result::jsonb->>'success')::boolean = FALSE ORDER BY completed_at DESC LIMIT 5",
+                    )
+
+                # All operational metrics in details
+                details = {
+                    "cards_published_today": cards_today,
+                    "curations_this_week": curations_week,
+                    "pending_cards": pending_cards,
+                    "expected_cards_per_day": 6,
+                    "expected_curations_per_week": 4,
+                }
+
+                # Check backlog level
+                if pending_cards == 0:
+                    return CheckResult(
+                        name="Landing Page",
+                        status=CheckStatus.WARN,
+                        message=f"Empty backlog: {cards_today} cards today, {curations_week} curations/week",
+                        details=details,
+                        suggestion="Schedule article curation to replenish backlog",
+                    )
+
+                return CheckResult(
+                    name="Landing Page",
+                    status=CheckStatus.PASS,
+                    message=f"Pipeline OK: {cards_today} cards today, {curations_week}/wk, {pending_cards} pending",
+                    details=details,
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Landing Page",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str:
+                return CheckResult(
+                    name="Landing Page",
+                    status=CheckStatus.SKIP,
+                    message="Landing page tables not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Landing Page",
                 status=CheckStatus.WARN,
                 message=f"Check failed: {str(e)[:80]}",
             )

@@ -35,10 +35,17 @@ BDD Alignment:
 import asyncio
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
+from ..metrics import (
+    record_cards_published,
+    record_pipeline_backlog,
+    record_pipeline_task_completion,
+)
 from .base_daemon import (
     BaseDaemon,
     DaemonCriticality,
@@ -343,6 +350,9 @@ class CognitionService(BaseDaemon):
             "tda_computation": self._run_tda_computation,
             "held_out_refresh": self._run_held_out_refresh,
             "feed_check": self._run_feed_check,
+            # Landing page pipeline tasks
+            "article_curate": self._run_article_curate,
+            "publish_cards": self._run_publish_cards,
         }
 
         try:
@@ -1879,6 +1889,315 @@ Your summary note content"""
         except Exception as e:
             logger.error(f"Feed check failed: {e}")
             return {"error": str(e)}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Landing Page Pipeline Tasks
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_article_curate(self, payload: dict) -> dict:
+        """Run article curation flow via Metaflow subprocess.
+
+        Spawns ArticleCurationFlow which:
+        - Selects article to curate (fairness-aware)
+        - Synthesizes zk/ notes with Grok
+        - Acquires external sources
+        - Creates cards for landing page
+
+        Args:
+            payload: Task payload with optional check_cooldown flag
+
+        Returns:
+            Result dict with flow outcome
+        """
+        import subprocess
+
+        start_time = time.time()
+
+        # Check cooldown if requested (36-hour interval)
+        if payload.get("check_cooldown") and self._db_pool:
+            try:
+                async with self._db_pool.acquire() as conn:
+                    should_run = await conn.fetchval(
+                        "SELECT collections.should_run_curation()"
+                    )
+                    if not should_run:
+                        return {
+                            "success": False,
+                            "skipped": True,
+                            "reason": "cooldown_active",
+                            "message": "Less than 36 hours since last curation",
+                        }
+            except Exception as e:
+                logger.warning(f"Cooldown check failed, proceeding anyway: {e}")
+
+        # Mark curation started
+        if self._db_pool:
+            try:
+                async with self._db_pool.acquire() as conn:
+                    await conn.execute("SELECT collections.mark_curation_started()")
+            except Exception as e:
+                logger.warning(f"Failed to mark curation started: {e}")
+
+        # Run Metaflow flow as subprocess
+        cmd = [
+            "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
+            "run",
+        ]
+
+        logger.info(f"Starting article curation: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,  # 30 minute timeout
+                cwd=os.environ.get("GAIUS_PROJECT_ROOT", os.getcwd()),
+            )
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            if result.returncode == 0:
+                logger.info("Article curation completed successfully")
+                record_pipeline_task_completion(
+                    task_type="article_curate",
+                    success=True,
+                    duration_ms=duration_ms,
+                    items_processed=1,
+                )
+                return {
+                    "success": True,
+                    "stdout": result.stdout[-2000:] if result.stdout else "",
+                    "duration_ms": duration_ms,
+                }
+            else:
+                logger.error(f"Article curation failed: {result.stderr}")
+                record_pipeline_task_completion(
+                    task_type="article_curate",
+                    success=False,
+                    duration_ms=duration_ms,
+                )
+                return {
+                    "success": False,
+                    "error": result.stderr[-1000:] if result.stderr else "Unknown error",
+                    "returncode": result.returncode,
+                    "duration_ms": duration_ms,
+                }
+
+        except subprocess.TimeoutExpired:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error("Article curation timed out after 30 minutes")
+            record_pipeline_task_completion(
+                task_type="article_curate",
+                success=False,
+                duration_ms=duration_ms,
+            )
+            return {"success": False, "error": "timeout", "timeout_seconds": 1800}
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error(f"Article curation failed: {e}")
+            record_pipeline_task_completion(
+                task_type="article_curate",
+                success=False,
+                duration_ms=duration_ms,
+            )
+            return {"success": False, "error": str(e)}
+
+    async def _run_publish_cards(self, payload: dict) -> dict:
+        """Publish pending cards to Cloudflare KV.
+
+        Diversity-aware card selection ensures varied landing page content
+        by round-robin across articles and source types.
+
+        Args:
+            payload: Task payload with count and optional slot identifier
+
+        Returns:
+            Result dict with published cards
+        """
+        start_time = time.time()
+        count = payload.get("count", 1)
+        slot = payload.get("slot", "unknown")
+
+        if not self._db_pool:
+            record_pipeline_task_completion(
+                task_type="publish_cards",
+                success=False,
+                duration_ms=0,
+            )
+            return {"success": False, "error": "no_database"}
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                # Use diversity-aware card selection (round-robin across articles/types)
+                rows = await conn.fetch(
+                    """
+                    WITH featured_col AS (
+                        SELECT collection_id FROM collections.collections
+                        WHERE featured = TRUE
+                    ),
+                    pending_ranked AS (
+                        SELECT
+                            c.card_id,
+                            c.article_id,
+                            c.source_type,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY c.article_id, c.source_type
+                                ORDER BY c.created_at ASC
+                            ) as rank_in_group
+                        FROM collections.cards c
+                        JOIN featured_col fc ON c.collection_id = fc.collection_id
+                        WHERE c.status = 'pending'
+                    ),
+                    diverse_pending AS (
+                        SELECT card_id
+                        FROM pending_ranked
+                        ORDER BY rank_in_group, article_id, source_type
+                        LIMIT $1
+                        FOR UPDATE
+                    )
+                    UPDATE collections.cards
+                    SET status = 'published', published_at = NOW(), updated_at = NOW()
+                    WHERE card_id IN (SELECT card_id FROM diverse_pending)
+                    RETURNING card_id, title, source_type, article_id
+                    """,
+                    count,
+                )
+
+                # Query current backlog for metrics
+                pending_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM collections.cards c
+                    JOIN collections.collections col ON c.collection_id = col.collection_id
+                    WHERE col.featured = TRUE AND c.status = 'pending'
+                    """
+                )
+
+            published = [dict(row) for row in rows]
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Record backlog metric
+            record_pipeline_backlog(pending_count or 0)
+
+            if not published:
+                logger.info(f"No pending cards to publish (slot={slot})")
+                record_pipeline_task_completion(
+                    task_type="publish_cards",
+                    success=True,
+                    duration_ms=duration_ms,
+                    items_processed=0,
+                )
+                return {
+                    "success": True,
+                    "published_count": 0,
+                    "slot": slot,
+                    "message": "No pending cards",
+                    "pending_backlog": pending_count,
+                }
+
+            # Sync to Cloudflare KV
+            sync_result = await self._sync_cards_to_kv()
+
+            # Record metrics
+            record_pipeline_task_completion(
+                task_type="publish_cards",
+                success=True,
+                duration_ms=duration_ms,
+                items_processed=len(published),
+            )
+            record_cards_published(len(published))
+
+            logger.info(f"Published {len(published)} cards (slot={slot})")
+            return {
+                "success": True,
+                "published_count": len(published),
+                "slot": slot,
+                "cards": published,
+                "kv_sync": sync_result,
+                "pending_backlog": pending_count,
+            }
+
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error(f"Publish cards failed: {e}")
+            record_pipeline_task_completion(
+                task_type="publish_cards",
+                success=False,
+                duration_ms=duration_ms,
+            )
+            return {"success": False, "error": str(e), "slot": slot}
+
+    async def _sync_cards_to_kv(self) -> dict:
+        """Sync published cards to Cloudflare KV.
+
+        Returns:
+            Result dict with sync status
+        """
+        import aiohttp
+
+        if not self._db_pool:
+            return {"success": False, "error": "no_database"}
+
+        try:
+            # Get published cards
+            async with self._db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        c.card_id, c.title, c.summary, c.source_url,
+                        c.source_type, c.image_url, c.published_at,
+                        c.source_date
+                    FROM collections.cards c
+                    JOIN collections.collections col ON c.collection_id = col.collection_id
+                    WHERE col.featured = TRUE AND c.status = 'published'
+                    ORDER BY c.published_at DESC
+                    LIMIT 50
+                    """
+                )
+
+            cards = [
+                {
+                    "card_id": row["card_id"],
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "source_url": row["source_url"],
+                    "source_type": row["source_type"],
+                    "image_url": row["image_url"],
+                    "published_at": row["published_at"].isoformat() if row["published_at"] else None,
+                    "source_date": row["source_date"].isoformat() if row["source_date"] else None,
+                }
+                for row in rows
+            ]
+
+            # Get Cloudflare credentials from environment
+            account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+            namespace_id = os.environ.get("CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID")
+            api_token = os.environ.get("CLOUDFLARE_API_TOKEN")
+
+            if not all([account_id, namespace_id, api_token]):
+                return {"success": False, "error": "missing_cloudflare_credentials"}
+
+            # Push to KV
+            url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/published_cards"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {api_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json=cards,
+                ) as resp:
+                    if resp.status == 200:
+                        return {"success": True, "cards_synced": len(cards)}
+                    else:
+                        error = await resp.text()
+                        return {"success": False, "error": error}
+
+        except Exception as e:
+            logger.error(f"KV sync failed: {e}")
+            return {"success": False, "error": str(e)}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Engine Metrics Collection
