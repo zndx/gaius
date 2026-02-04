@@ -120,6 +120,9 @@ class GaiusEngine:
         # ThetaAgent service (situational awareness, consolidation)
         self._theta_service = None
 
+        # Scheduled task processor (LISTEN/NOTIFY for pg_cron tasks)
+        self._scheduled_task_processor = None
+
         # Health service (basic metrics)
         self._health_service = None
 
@@ -1037,6 +1040,9 @@ class GaiusEngine:
         # 5. Initialize ThetaAgent (NORMAL, no background loop - passive service)
         await self._create_theta_service()
 
+        # 6. Initialize ScheduledTaskProcessor (OPTIONAL, landing page tasks)
+        await self._create_scheduled_task_processor()
+
         # Register daemons with dependency ordering
         if self._health_observer_service:
             self._daemon_registry.register(self._health_observer_service, after=[])
@@ -1054,6 +1060,11 @@ class GaiusEngine:
         if self._metaagent_service:
             self._daemon_registry.register(
                 self._metaagent_service, after=["health_observer"]
+            )
+
+        if self._scheduled_task_processor:
+            self._daemon_registry.register(
+                self._scheduled_task_processor, after=[]
             )
 
         # Wire cross-references between daemons BEFORE starting
@@ -1260,6 +1271,34 @@ class GaiusEngine:
             logger.warning(f"ThetaService not available: {e}")
         except Exception as e:
             logger.error(f"Failed to create ThetaService: {e}")
+
+    async def _create_scheduled_task_processor(self) -> None:
+        """Create ScheduledTaskProcessor for pg_cron task execution.
+
+        Listens on 'scheduled_task_ready' channel for tasks inserted by pg_cron.
+        Handles:
+        - publish_cards: Publish pending cards to Cloudflare KV
+        - article_curate: Trigger ArticleCurationFlow
+
+        OPTIONAL criticality - landing page tasks aren't critical to engine.
+        No automatic catch-up - stale tasks require manual intervention.
+        """
+        try:
+            from .services.scheduled_task_processor import ScheduledTaskProcessor
+
+            logger.info("Creating ScheduledTaskProcessor...")
+
+            self._scheduled_task_processor = ScheduledTaskProcessor()
+
+            # Note: Don't start here - daemon registry will start it
+            # This allows proper dependency ordering
+
+            logger.info("ScheduledTaskProcessor created (publish_cards, article_curate)")
+
+        except ImportError as e:
+            logger.warning(f"ScheduledTaskProcessor not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create ScheduledTaskProcessor: {e}")
 
     async def _create_agenda_tracker(self) -> None:
         """Create and wire AgendaTracker for workload-centric incident tracking.
