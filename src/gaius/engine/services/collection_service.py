@@ -435,6 +435,43 @@ class CollectionService:
                     guru_code="#COL.00000001.NOTFOUND",
                 )
 
+    async def update_grok_collection_id(
+        self,
+        collection_id: str,
+        grok_collection_id: str,
+    ) -> None:
+        """Update grok_collection_id and grok_last_sync_at for a collection.
+
+        Called by ArticleCurationFlow after creating or finding a Grok collection
+        to persist the 1:1 mapping between local and xAI collections.
+
+        Args:
+            collection_id: Local PostgreSQL collection ID
+            grok_collection_id: xAI/Grok collection ID
+
+        Raises:
+            CollectionError: If collection not found
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE collections.collections
+                SET grok_collection_id = $2,
+                    grok_last_sync_at = NOW(),
+                    updated_at = NOW()
+                WHERE collection_id = $1
+                """,
+                collection_id, grok_collection_id,
+            )
+            if result == "UPDATE 0":
+                raise CollectionError(
+                    f"Collection not found: {collection_id}",
+                    guru_code="#COL.00000001.NOTFOUND",
+                )
+            logger.info(
+                f"Updated collection {collection_id} with grok_collection_id: {grok_collection_id}"
+            )
+
     # =========================================================================
     # Article Operations
     # =========================================================================

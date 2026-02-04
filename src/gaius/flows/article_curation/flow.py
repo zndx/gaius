@@ -1272,6 +1272,15 @@ Respond with JSON:
                     "  Check xAI Collections API response format"
                 )
 
+            # Step 2.5: Persist grok_collection_id to PostgreSQL (1:1 mapping)
+            if self.collection_id and not self.dry_run:
+                try:
+                    await self._update_grok_collection_id_in_db(collection_id)
+                    print(f"Persisted grok_collection_id to database: {collection_id}")
+                except Exception as e:
+                    # Log but don't fail - the Grok collection was created successfully
+                    logger.warning(f"Failed to persist grok_collection_id to database: {e}")
+
             # Step 3: Upload acquired sources as documents
             upload_results = []
             for source in self.acquired_sources:
@@ -1339,6 +1348,35 @@ Respond with JSON:
 
         finally:
             client.close()
+
+    async def _update_grok_collection_id_in_db(self, grok_collection_id: str) -> None:
+        """Persist grok_collection_id to PostgreSQL for 1:1 article-collection mapping.
+
+        This ensures the local PostgreSQL collection record tracks its corresponding
+        xAI/Grok collection, enabling reconciliation and status queries.
+
+        Args:
+            grok_collection_id: The xAI/Grok collection ID to persist
+
+        Uses self.collection_id (local PostgreSQL collection ID) set in select_article step.
+        """
+        import asyncpg
+        from gaius.engine.services.collection_service import CollectionService
+
+        db_url = os.environ.get(
+            "GAIUS_DATABASE_URL",
+            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+        )
+
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+        try:
+            service = CollectionService(pool)
+            await service.update_grok_collection_id(
+                collection_id=self.collection_id,
+                grok_collection_id=grok_collection_id,
+            )
+        finally:
+            await pool.close()
 
     def _preserve_frontmatter_fields(self, original_path: Path) -> dict:
         """Extract essential frontmatter fields to preserve during draft regeneration.

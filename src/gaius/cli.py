@@ -13125,6 +13125,7 @@ Examples:
                                               - Add card to collection
             /collection cards <slug>          - List cards in collection
             /collection status                - Show overall statistics
+            /collection reconcile-grok        - Sync grok_collection_id from xAI to DB
             /collection help                  - Show this help
 
         Options:
@@ -13292,11 +13293,134 @@ Examples:
                 "help": self._cmd_collection.__doc__,
             }
 
+        # Reconcile-grok: sync grok_collection_id from xAI to PostgreSQL
+        if subcmd == "reconcile-grok":
+            return await self._reconcile_grok_collections()
+
         # Unknown subcommand
         return {
             "error": f"Unknown collection subcommand: {subcmd}",
-            "usage": "/collection [list|create|feature|add|cards|status|help] ...",
+            "usage": "/collection [list|create|feature|add|cards|status|reconcile-grok|help] ...",
         }
+
+    async def _reconcile_grok_collections(self) -> dict:
+        """Reconcile grok_collection_id from xAI to PostgreSQL.
+
+        One-time reconciliation that:
+        1. Lists all Grok collections via xai-sdk
+        2. Matches by name pattern `gaius-article-{slug}`
+        3. Updates PostgreSQL with grok_collection_id for matches
+
+        Returns:
+            Dict with reconciliation results
+        """
+        import os
+        import asyncpg
+
+        results = {
+            "command": "collection",
+            "action": "reconcile-grok",
+            "matched": [],
+            "unmatched_grok": [],
+            "unmatched_local": [],
+        }
+
+        # Get Grok collections
+        mgmt_key = os.environ.get("XAI_MANAGEMENT_KEY")
+        if not mgmt_key:
+            return {
+                **results,
+                "error": "XAI_MANAGEMENT_KEY not configured",
+                "guru_code": "#ACF.00000011.NOMGMTKEY",
+            }
+
+        try:
+            from xai_sdk import Client as XAIClient
+            client = XAIClient(management_api_key=mgmt_key)
+            try:
+                grok_collections = {}
+                for c in client.collections.list().collections:
+                    if c.collection_name.startswith("gaius-article-"):
+                        slug = c.collection_name.replace("gaius-article-", "")
+                        grok_collections[slug] = c.collection_id
+            finally:
+                client.close()
+        except Exception as e:
+            return {
+                **results,
+                "error": f"Failed to list Grok collections: {e}",
+                "guru_code": "#COL.00000004.GROKFAIL",
+            }
+
+        # Get local collections from database
+        db_url = os.environ.get(
+            "GAIUS_DATABASE_URL",
+            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
+        )
+
+        try:
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+            try:
+                from gaius.engine.services.collection_service import CollectionService
+                service = CollectionService(pool)
+
+                # Get all collections from database
+                local_collections = await service.list_collections(limit=100)
+                local_by_slug = {c.slug: c for c in local_collections}
+
+                # Match and update
+                for slug, grok_id in grok_collections.items():
+                    if slug in local_by_slug:
+                        local = local_by_slug[slug]
+                        if local.grok_collection_id != grok_id:
+                            await service.update_grok_collection_id(
+                                collection_id=local.collection_id,
+                                grok_collection_id=grok_id,
+                            )
+                            results["matched"].append({
+                                "slug": slug,
+                                "collection_id": local.collection_id,
+                                "grok_collection_id": grok_id,
+                                "action": "updated",
+                            })
+                        else:
+                            results["matched"].append({
+                                "slug": slug,
+                                "collection_id": local.collection_id,
+                                "grok_collection_id": grok_id,
+                                "action": "already_synced",
+                            })
+                    else:
+                        results["unmatched_grok"].append({
+                            "slug": slug,
+                            "grok_collection_id": grok_id,
+                        })
+
+                # Find local collections without Grok match
+                for slug, local in local_by_slug.items():
+                    if slug not in grok_collections and not local.grok_collection_id:
+                        results["unmatched_local"].append({
+                            "slug": slug,
+                            "collection_id": local.collection_id,
+                        })
+
+            finally:
+                await pool.close()
+
+        except Exception as e:
+            return {
+                **results,
+                "error": f"Database error: {e}",
+                "guru_code": "#COL.00000002.DBFAIL",
+            }
+
+        results["success"] = True
+        results["summary"] = (
+            f"Matched {len(results['matched'])} collections, "
+            f"{len(results['unmatched_grok'])} orphan Grok, "
+            f"{len(results['unmatched_local'])} local without Grok"
+        )
+        return results
 
     async def _cmd_article(self, args: str) -> dict:
         """Article Curation - KB article research and publication pipeline.
