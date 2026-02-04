@@ -1269,8 +1269,8 @@ class CollectionService:
         This method creates the KB directory structure AND the database record.
 
         Args:
-            slug: URL-friendly identifier
-            title: Display title (defaults to title-cased slug)
+            slug: URL-friendly identifier (will be date-prefixed as YYYYMMDD-slug)
+            title: Display title (defaults to title-cased slug without date prefix)
 
         Returns:
             Dict with slug, title, kb_path, article_id, collection_id
@@ -1280,14 +1280,29 @@ class CollectionService:
         """
         from pathlib import Path
         import yaml
+        import re
         from datetime import datetime
 
+        # Generate date prefix (YYYYMMDD format)
+        now = datetime.now()
+        date_prefix = now.strftime("%Y%m%d")
+
+        # Check if slug already has a date prefix (avoid double-prefixing)
+        if re.match(r'^\d{8}-', slug):
+            final_slug = slug
+            # Use the part after the date for title generation
+            title_source = slug[9:]  # Skip "YYYYMMDD-"
+        else:
+            final_slug = f"{date_prefix}-{slug}"
+            title_source = slug
+
+        # Use original slug (without date) for title if not provided
         if not title:
-            title = slug.replace("-", " ").title()
+            title = title_source.replace("-", " ").title()
 
         kb_root = Path(self._config.kb_root)
-        article_dir = kb_root / "current" / "articles" / slug
-        kb_path = f"current/articles/{slug}"
+        article_dir = kb_root / "current" / "articles" / final_slug
+        kb_path = f"current/articles/{final_slug}"
 
         if article_dir.exists():
             raise CollectionError(
@@ -1353,20 +1368,20 @@ created_at: {now.isoformat()}
 
             # Create database record with 1:1 collection
             article, collection = await self.create_article_with_collection(
-                slug=slug,
+                slug=final_slug,
                 title=title,
                 kb_path=kb_path,
             )
 
-            logger.info(f"Created article '{slug}' at {article_dir}")
+            logger.info(f"Created article '{final_slug}' at {article_dir}")
 
             return {
-                "slug": slug,
+                "slug": final_slug,
                 "title": title,
                 "kb_path": str(article_dir),
                 "article_id": article.article_id,
                 "collection_id": collection.collection_id,
-                "message": f"Created article '{title}' at {article_dir}. Add research notes to zk/ then run /article curate {slug}",
+                "message": f"Created article '{title}' at {article_dir}. Add research notes to zk/ then run /article curate {final_slug}",
             }
 
         except CollectionError:
