@@ -37,6 +37,7 @@ export interface CollectionData {
   summaries: {
     frontier?: CollectionSummary;
     open_weights?: CollectionSummary;
+    cerebras?: CollectionSummary;
   };
   zettle_aliases: string[];
   cards: Card[];
@@ -53,6 +54,29 @@ export interface CollectionIndexEntry {
   total_cards: number;
   last_published_at: string | null;
   updated_at: string | null;
+}
+
+export interface CardPageData {
+  card_id: string;
+  collection_id: string;
+  title: string;
+  summary: string;
+  source_url: string;
+  source_type: string;
+  image_url?: string;
+  published_at: string;
+  source_date?: string;
+  summaries: {
+    frontier?: CollectionSummary;
+    open_weights?: CollectionSummary;
+    cerebras?: CollectionSummary;
+  };
+  brave_followups: string[];
+  collection_name: string;
+  collection_slug: string;
+  prev_card_id?: string;
+  next_card_id?: string;
+  updated_at: string;
 }
 
 export interface CollectionAliasData {

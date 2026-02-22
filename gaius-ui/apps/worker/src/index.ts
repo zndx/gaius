@@ -22,6 +22,7 @@ import {
   handleCollectionIndex,
   handleCollectionPage,
 } from './routes/collections';
+import { handleCardPage } from './routes/cards';
 
 // Type bindings for KV namespaces
 type Bindings = {
@@ -75,6 +76,9 @@ app.get('/api/themes', handleApiThemes);
 // Collection pages
 app.get('/collections', handleCollectionIndex);
 app.get('/collections/:id', handleCollectionPage);
+
+// Card detail pages
+app.get('/cards/:id', handleCardPage);
 
 // Article permalinks - redirect to external URL
 app.get('/articles/:slug', handleArticleRedirect);

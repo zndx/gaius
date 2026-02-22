@@ -159,7 +159,7 @@ function generateStyles(theme: Theme): string {
       border-top: 1px solid var(--color-grid);
     }
 
-    .card-type, .card-source-link {
+    .card-type {
       font-size: 0.7rem;
       font-weight: 600;
       text-transform: uppercase;
@@ -168,15 +168,6 @@ function generateStyles(theme: Theme): string {
       background: color-mix(in srgb, var(--color-info) 15%, transparent);
       padding: 0.25rem 0.5rem;
       border-radius: 2px;
-    }
-
-    .card-source-link {
-      text-decoration: none;
-    }
-
-    .card-source-link:hover {
-      background: color-mix(in srgb, var(--color-info) 30%, transparent);
-      text-decoration: none;
     }
 
     .card-date {

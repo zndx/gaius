@@ -36,12 +36,13 @@ STEPS = {
     "draft": {"number": 6, "progress": 0.65},
     "base": {"number": 7, "progress": 0.80},
     "cards": {"number": 8, "progress": 0.85},
-    "publish": {"number": 9, "progress": 0.95},
-    "complete": {"number": 10, "progress": 1.0},
+    "publish": {"number": 9, "progress": 0.90},
+    "card_summaries": {"number": 10, "progress": 0.97},
+    "complete": {"number": 11, "progress": 1.0},
     "failed": {"number": -1, "progress": -1.0},
 }
 
-TOTAL_STEPS = 10
+TOTAL_STEPS = 11
 
 
 def generate_run_id() -> str:
@@ -193,6 +194,16 @@ def emit_publish(run_id: str, published_count: int) -> None:
         "publish",
         f"Published {published_count} cards and synced KV",
         {"published_count": published_count},
+    )
+
+
+def emit_card_summaries(run_id: str, count: int) -> None:
+    """Emit card summaries generation event."""
+    emit_progress(
+        run_id,
+        "card_summaries",
+        f"Generated summaries for {count} cards",
+        {"cards_summarized": count},
     )
 
 

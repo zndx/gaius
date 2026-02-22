@@ -3,7 +3,7 @@
  *
  * Provides:
  * - GET /collections — Index page listing all active collections
- * - GET /collections/:id — Individual collection page with dual-model summaries
+ * - GET /collections/:id — Individual collection page with multi-model summaries
  *
  * Data is sourced from Cloudflare KV:
  * - collection:{collection_id} — Full collection page data
@@ -48,7 +48,7 @@ function generateCollectionStyles(theme: Theme): string {
 
     /* Breadcrumb + header */
     .page-header {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 2rem 2rem 0;
     }
@@ -77,7 +77,7 @@ function generateCollectionStyles(theme: Theme): string {
 
     /* Summary panels */
     .summaries-container {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 0 2rem;
     }
@@ -96,6 +96,7 @@ function generateCollectionStyles(theme: Theme): string {
     .summary-panel {
       flex: 0 0 100%;
       scroll-snap-align: start;
+      scroll-snap-stop: always;
       background: var(--color-charcoal);
       border: 1px solid var(--color-grid);
       border-radius: 4px;
@@ -187,7 +188,7 @@ function generateCollectionStyles(theme: Theme): string {
 
     /* Card grid */
     main {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 2rem;
     }
@@ -268,7 +269,7 @@ function generateCollectionStyles(theme: Theme): string {
       border-top: 1px solid var(--color-grid);
     }
 
-    .card-type, .card-source-link {
+    .card-type {
       font-size: 0.7rem;
       font-weight: 600;
       text-transform: uppercase;
@@ -279,15 +280,6 @@ function generateCollectionStyles(theme: Theme): string {
       border-radius: 2px;
     }
 
-    .card-source-link {
-      text-decoration: none;
-    }
-
-    .card-source-link:hover {
-      background: color-mix(in srgb, var(--color-info) 30%, transparent);
-      text-decoration: none;
-    }
-
     .card-date {
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -296,7 +288,7 @@ function generateCollectionStyles(theme: Theme): string {
 
     /* Footer */
     .page-footer {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
       padding: 2rem;
       border-top: 1px solid var(--color-grid);
@@ -516,8 +508,12 @@ export async function handleCollectionPage(c: Context): Promise<Response> {
   const summaryLabels: string[] = [];
 
   if (data.summaries.frontier) {
-    summaryLabels.push('Frontier Model');
-    summaryPanels.push(renderSummaryPanel(data.summaries.frontier, 'Frontier Model'));
+    summaryLabels.push('Brave API');
+    summaryPanels.push(renderSummaryPanel(data.summaries.frontier, 'Brave API'));
+  }
+  if (data.summaries.cerebras) {
+    summaryLabels.push('Cerebras Thinking');
+    summaryPanels.push(renderSummaryPanel(data.summaries.cerebras, 'Cerebras Thinking'));
   }
   if (data.summaries.open_weights) {
     summaryLabels.push('Open-Weights Reasoning');
@@ -533,7 +529,7 @@ export async function handleCollectionPage(c: Context): Promise<Response> {
       <div class="section-title">Research Materials (${data.cards.length})</div>
       <div class="masonry-grid">
         ${data.cards.map((card: Card) => `
-          <div>${renderCard(card, { linkToSource: true })}</div>
+          <div>${renderCard(card)}</div>
         `).join('')}
       </div>
     `
@@ -712,7 +708,7 @@ export async function handleCollectionIndex(c: Context): Promise<Response> {
           <a href="/">&larr; Home</a>
         </div>
         <h1 class="collection-title">Collections</h1>
-        <p class="collection-description">Curated research collections with dual-model AI summaries.</p>
+        <p class="collection-description">Curated research collections with multi-model AI summaries.</p>
       </div>
 
       <main>

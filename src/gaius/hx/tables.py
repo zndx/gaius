@@ -226,7 +226,7 @@ def get_llm_generation_schema():
     return Schema(
         NestedField(1, "id", StringType(), required=True, doc="UUID of the generation record"),
         NestedField(2, "collection_id", StringType(), required=False, doc="Associated collection ID"),
-        NestedField(3, "summary_type", StringType(), required=True, doc="Generation type (frontier, open_weights)"),
+        NestedField(3, "summary_type", StringType(), required=True, doc="Generation type (frontier, open_weights, cerebras)"),
         NestedField(4, "prompt", StringType(), required=True, doc="Full prompt sent to the model"),
         NestedField(5, "output", StringType(), required=True, doc="Model output text"),
         NestedField(6, "thinking_trace", StringType(), required=False, doc="Chain-of-thought reasoning trace"),
@@ -242,7 +242,7 @@ def get_llm_generation_partition_spec():
     """Get the partition specification for LLM generations.
 
     Partitions by:
-    - summary_type: Separate files per generation type (frontier, open_weights)
+    - summary_type: Separate files per generation type (frontier, open_weights, cerebras)
     - generation_month: Monthly partitions for time-based queries
 
     Returns:

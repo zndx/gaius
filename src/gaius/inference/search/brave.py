@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, asdict
 
@@ -40,6 +41,41 @@ class SearchResult:
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return asdict(self)
+
+
+@dataclass
+class AnswerCitation:
+    """A citation from Brave's Answers API."""
+
+    url: str
+    snippet: str = ""
+    favicon: str = ""
+    start_index: int | None = None
+    end_index: int | None = None
+
+
+@dataclass
+class AnswerResult:
+    """Result from Brave's Answers API (/res/v1/chat/completions).
+
+    Uses streaming to extract summary text, citations, and usage metadata.
+    """
+
+    summary_text: str
+    citations: list[AnswerCitation]
+    input_tokens: int = 0
+    output_tokens: int = 0
+    query_cost: float = 0.0
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "summary_text": self.summary_text,
+            "citations": [asdict(c) for c in self.citations],
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "query_cost": self.query_cost,
+        }
 
 
 class BraveSearch:
@@ -160,6 +196,167 @@ class BraveSearch:
                     logger.debug(f"Failed to capture Brave search exchange: {e}")
 
         return results
+
+    async def answer(
+        self,
+        query: str,
+        answers_api_key: str | None = None,
+    ) -> AnswerResult:
+        """Call Brave's Answers API for a grounded AI summary.
+
+        Uses streaming to extract the full response with inline citations.
+        Requires a Brave Answers API key (BRAVE_ANSWERS_API_KEY).
+
+        Args:
+            query: Question or topic to summarize
+            answers_api_key: Answers API key (if different from search key)
+
+        Returns:
+            AnswerResult with summary text and citations
+
+        Raises:
+            httpx.HTTPStatusError: If API returns an error
+            RuntimeError: If BRAVE_ANSWERS_API_KEY is not available
+        """
+        api_key = answers_api_key or os.environ.get("BRAVE_ANSWERS_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "Brave Answers API key not available.\n"
+                "  Set: BRAVE_ANSWERS_API_KEY environment variable\n"
+                "  #COL.00000012.BRAVESUMFAIL"
+            )
+
+        start_time = time.time()
+        full_content = ""
+
+        async with httpx.AsyncClient(
+            headers={
+                "x-subscription-token": api_key,
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            timeout=60.0,
+        ) as client:
+            async with client.stream(
+                "POST",
+                f"{self.BASE_URL}/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": query}],
+                    "model": "brave",
+                    "stream": True,
+                    "enable_citations": True,
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        payload = line[6:]
+                        if payload == "[DONE]":
+                            break
+                        chunk = json.loads(payload)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if "content" in delta:
+                            full_content += delta["content"]
+
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        # Parse inline citations from streamed content
+        citations: list[AnswerCitation] = []
+        for match in re.finditer(r"<citation>(.*?)</citation>", full_content):
+            try:
+                parsed = json.loads(match.group(1))
+                citations.append(AnswerCitation(
+                    url=parsed.get("url", ""),
+                    snippet=parsed.get("snippet", ""),
+                    favicon=parsed.get("favicon", ""),
+                    start_index=parsed.get("start_index"),
+                    end_index=parsed.get("end_index"),
+                ))
+            except json.JSONDecodeError:
+                pass
+
+        # Parse usage metadata
+        input_tokens = 0
+        output_tokens = 0
+        query_cost = 0.0
+        for match in re.finditer(r"<usage>(.*?)</usage>", full_content):
+            try:
+                usage = json.loads(match.group(1))
+                input_tokens = usage.get("X-Request-Tokens-In", 0)
+                output_tokens = usage.get("X-Request-Tokens-Out", 0)
+                query_cost = usage.get("X-Request-Queries-Cost", 0.0)
+            except json.JSONDecodeError:
+                pass
+
+        # Strip inline tags from the text
+        clean_text = re.sub(r"<citation>.*?</citation>", "", full_content)
+        clean_text = re.sub(r"<enum_item>.*?</enum_item>", "", clean_text)
+        clean_text = re.sub(r"<usage>.*?</usage>", "", clean_text).strip()
+
+        result = AnswerResult(
+            summary_text=clean_text,
+            citations=citations,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            query_cost=query_cost,
+        )
+
+        # Capture exchange to Iceberg
+        capture = self._get_exchange_capture()
+        if capture:
+            try:
+                from gaius.hx.exchange import ExchangeRecord
+                record = ExchangeRecord(
+                    provider="brave-answers",
+                    request_messages=[{"role": "user", "content": query}],
+                    request_model="brave-answers-v1",
+                    request_params={"enable_citations": True},
+                    response_content=json.dumps(result.to_dict()),
+                    response_model="brave-answers-v1",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    latency_ms=latency_ms,
+                    source_context={
+                        "provider": "brave-answers",
+                        "citation_count": len(citations),
+                    },
+                )
+                asyncio.create_task(capture.capture(record))
+            except Exception as e:
+                logger.debug(f"Failed to capture Brave Answers exchange: {e}")
+
+        logger.info(
+            f"Brave Answers: {len(clean_text)} chars, "
+            f"{len(citations)} citations, {latency_ms}ms"
+        )
+
+        return result
+
+    async def summarize_topic(
+        self,
+        title: str,
+        context: str = "",
+        answers_api_key: str | None = None,
+    ) -> AnswerResult:
+        """Summarize a topic using Brave's Answers API.
+
+        Builds a query from title + truncated context and calls the Answers API.
+
+        Args:
+            title: Topic title
+            context: Additional context (truncated to 200 chars)
+            answers_api_key: Answers API key (if different from search key)
+
+        Returns:
+            AnswerResult with summary text and citations
+
+        Raises:
+            RuntimeError: If BRAVE_ANSWERS_API_KEY is not available
+        """
+        query = title
+        if context:
+            query = f"{title} {context[:200]}"
+        return await self.answer(query, answers_api_key=answers_api_key)
 
     async def search_for_kb(
         self,

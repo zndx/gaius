@@ -148,8 +148,8 @@ class EngineMetrics:
 
             # Check if we got a real meter (not NoOpMeter)
             if hasattr(self._meter, "__class__") and "NoOp" in self._meter.__class__.__name__:
-                logger.debug("OTel not initialized yet, engine metrics deferred")
-                # Don't mark as initialized - we'll retry later
+                logger.debug("OTel not initialized, engine metrics will be no-ops")
+                self._initialized = True
                 return
 
             # Create instruments
@@ -492,10 +492,11 @@ class EngineMetrics:
             provider: Provider name (cerebras, xai, local) for filtering
         """
         if not self._inference_count:
-            logger.warning(
-                f"record_inference called but _inference_count is None "
-                f"(initialized={self._initialized}, model={model})"
-            )
+            if not self._initialized:
+                logger.warning(
+                    f"record_inference called but _inference_count is None "
+                    f"(initialized={self._initialized}, model={model})"
+                )
             return
 
         attrs = {"model": model}

@@ -1,6 +1,6 @@
 """ArticleCurationFlow - Metaflow pipeline for article research and publication.
 
-This flow implements a 9-step pipeline that automates article curation:
+This flow implements a 10-step pipeline that automates article curation:
 1. start: Find unpublished articles in KB
 2. grok_research_summary: Synthesize zettelkasten notes with Grok
 3. select_article: Select article (optillm or explicit)
@@ -10,7 +10,8 @@ This flow implements a 9-step pipeline that automates article curation:
 7. create_base: BFO-grounded Base file with ref_start/ref_end
 8. create_cards: Create collection cards from .base references (all pending)
 9. publish_batch: Publish cards, sync all KV stores
-10. end: Emit lineage, report results
+10. generate_card_summaries: Dual-model summaries + card page KV sync
+11. end: Emit lineage, report results
 
 PRIVACY: This flow does NOT search the KB to avoid exposing private materials
 in published articles. Only the article's own zk/ notes are used.
@@ -63,6 +64,7 @@ from gaius.flows.card_upkeep.common import (
 from gaius.flows.article_curation.progress import (
     emit_acquire,
     emit_base,
+    emit_card_summaries,
     emit_cards,
     emit_complete,
     emit_draft,
@@ -2194,7 +2196,7 @@ Be concise - each summary should be 1-2 sentences max."""
         if cards_created == 0:
             print("No cards to publish, skipping publish_batch")
             self.published_count = 0
-            self.next(self.end)
+            self.next(self.generate_card_summaries)
             return
 
         print(f"Publishing {cards_created} cards and syncing KV stores...")
@@ -2218,7 +2220,7 @@ Be concise - each summary should be 1-2 sentences max."""
 
         emit_publish(self.progress_run_id, published_count)
 
-        self.next(self.end)
+        self.next(self.generate_card_summaries)
 
     async def _publish_batch_async(self, cards_created: int) -> int:
         """Publish cards and sync KV stores.
@@ -2265,6 +2267,99 @@ Be concise - each summary should be 1-2 sentences max."""
 
     @traced_step
     @step
+    def generate_card_summaries(self):
+        """Generate tri-model summaries for published cards.
+
+        For each card published in this run:
+        1. Generate frontier summary (Brave Summarizer)
+        2. Generate open-weights summary (reasoning model)
+        3. Generate cerebras summary (GLM-4.7 thinking)
+        4. Sync card page to KV (card:{card_id})
+
+        Unlike core pipeline steps, card summary generation logs failures
+        and continues. Cards are already published — summaries are enrichment
+        that can be regenerated via MCP.
+        """
+        published_count = getattr(self, "published_count", 0)
+        if published_count == 0:
+            print("No published cards, skipping card summary generation")
+            self.cards_summarized = 0
+            self.next(self.end)
+            return
+
+        print(f"Generating summaries for {published_count} published cards...")
+
+        try:
+            cards_summarized = asyncio.get_event_loop().run_until_complete(
+                self._generate_card_summaries_async()
+            )
+        except RuntimeError:
+            cards_summarized = asyncio.new_event_loop().run_until_complete(
+                self._generate_card_summaries_async()
+            )
+
+        self.cards_summarized = cards_summarized
+        print(f"Generated summaries for {cards_summarized} cards")
+
+        emit_card_summaries(self.progress_run_id, cards_summarized)
+
+        self.next(self.end)
+
+    async def _generate_card_summaries_async(self) -> int:
+        """Generate summaries and sync KV for published cards.
+
+        Returns:
+            Number of cards successfully summarized
+        """
+        import asyncpg
+        from gaius.core.config import get_database_url
+        from gaius.engine.services.collection_service import CollectionService
+
+        db_url = get_database_url()
+        cards_summarized = 0
+
+        async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+            service = CollectionService(pool)
+
+            # Get published cards for this collection
+            cards = await service.get_published_cards(
+                collection_id=self.collection_id, limit=100
+            )
+
+            for i, card in enumerate(cards):
+                card_label = f"[{i+1}/{len(cards)}] {card.title[:50]}"
+                try:
+                    # Generate frontier summary
+                    await service.generate_card_summary(card.card_id, "frontier")
+                    print(f"  {card_label}: frontier OK")
+                except Exception as e:
+                    print(f"  {card_label}: frontier FAILED - {e}")
+
+                try:
+                    # Generate open-weights summary
+                    await service.generate_card_summary(card.card_id, "open_weights")
+                    print(f"  {card_label}: open_weights OK")
+                except Exception as e:
+                    print(f"  {card_label}: open_weights FAILED - {e}")
+
+                try:
+                    # Generate cerebras thinking summary
+                    await service.generate_card_summary(card.card_id, "cerebras")
+                    print(f"  {card_label}: cerebras OK")
+                except Exception as e:
+                    print(f"  {card_label}: cerebras FAILED - {e}")
+
+                try:
+                    # Sync card page to KV
+                    await service.sync_card_to_kv(card.card_id)
+                    cards_summarized += 1
+                except Exception as e:
+                    print(f"  {card_label}: KV sync FAILED - {e}")
+
+        return cards_summarized
+
+    @traced_step
+    @step
     def end(self):
         """Emit lineage and report results."""
         from gaius.hx.lineage.events import Dataset
@@ -2293,6 +2388,7 @@ Be concise - each summary should be 1-2 sentences max."""
             print(f"Base file: {self.base_path}")
             print(f"Cards created: {getattr(self, 'cards_created', 0)}")
             print(f"Cards published: {getattr(self, 'published_count', 0)}")
+            print(f"Cards summarized: {getattr(self, 'cards_summarized', 0)}")
             print(f"Grok sync: {'Success' if self.grok_sync_result.get('success') else 'Fallback mode'}")
 
         self.emit_event("article_curation.completed", {
@@ -2301,6 +2397,7 @@ Be concise - each summary should be 1-2 sentences max."""
             "draft_version": self.draft_entry.version if self.draft_entry else None,
             "cards_created": getattr(self, "cards_created", 0),
             "published_count": getattr(self, "published_count", 0),
+            "cards_summarized": getattr(self, "cards_summarized", 0),
         })
 
         # Emit progress: flow completed

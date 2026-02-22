@@ -1197,13 +1197,25 @@ class CollectionService:
             logger.info(f"Published {len(published)} cards (diversity-aware)")
             return published
 
-    async def get_cards_for_kv(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Get published cards in format suitable for Cloudflare KV.
+    async def get_cards_for_kv(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Get all published cards across active collections for Cloudflare KV.
 
-        Returns cards as public dicts ready for JSON serialization.
+        Returns cards from ALL active collections as public dicts,
+        sorted by published_at descending — ready for JSON serialization
+        and the landing page published_cards KV key.
         """
-        cards = await self.get_published_cards(limit=limit)
-        return [card.to_public_dict() for card in cards]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT c.* FROM collections.cards c
+                JOIN collections.collections col ON c.collection_id = col.collection_id
+                WHERE col.status = 'active' AND c.status = 'published'
+                ORDER BY c.published_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+        return [self._row_to_card(row).to_public_dict() for row in rows]
 
     # =========================================================================
     # Statistics
@@ -1893,7 +1905,8 @@ created_at: {now.isoformat()}
 
         Args:
             collection_id: Collection to summarize
-            summary_type: "frontier" (xai/grok) or "open_weights" (reasoning model)
+            summary_type: "frontier" (xai/grok), "open_weights" (local GPU),
+                or "cerebras" (Cerebras GLM-4.7 with thinking trace)
 
         Returns:
             Dict with summary text, model label, and metadata
@@ -1903,9 +1916,9 @@ created_at: {now.isoformat()}
         """
         import time as _time
 
-        if summary_type not in ("frontier", "open_weights"):
+        if summary_type not in ("frontier", "open_weights", "cerebras"):
             raise CollectionError(
-                f"Invalid summary_type: {summary_type}. Must be 'frontier' or 'open_weights'.",
+                f"Invalid summary_type: {summary_type}. Must be 'frontier', 'open_weights', or 'cerebras'.",
                 guru_code="#COL.00000009.SUMMARYFAIL",
             )
 
@@ -1962,17 +1975,43 @@ created_at: {now.isoformat()}
                 max_tokens=4096,
             )
             model_label = "frontier model"
+        elif summary_type == "open_weights":
+            # open_weights — use local engine (Devstral-24B on tinybox GPUs)
+            from gaius.inference.engine_client import get_engine_client, Message as EngMsg
+
+            engine = await get_engine_client()
+            result = await engine.complete(
+                [EngMsg(role="user", content=prompt)],
+                model="instruct",
+                temperature=0.7,
+                max_tokens=4096,
+                timeout=120.0,
+            )
+            # Wrap in ExternalResponse-compatible shape
+            from gaius.engine.backends.external.base import ExternalResponse
+            response = ExternalResponse(
+                content=result.content,
+                model=result.model,
+                provider=result.backend or "local-engine",
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+            )
+            model_label = "open-weights reasoning model"
+
         else:
-            # open_weights — use the router with subscription tier (Bytez/DeepSeek-R1)
-            from gaius.engine.backends.external.router import get_external_router
-            router = get_external_router()
+            # cerebras — use Cerebras GLM-4.7 via external router
+            from gaius.engine.backends.external.router import ExternalInferenceRouter
+
+            router = ExternalInferenceRouter(
+                capture_exchanges=self._capture_exchanges_enabled(),
+            )
             response = await router.complete(
                 messages,
-                tier="subscription",
+                provider="cerebras",
                 temperature=0.7,
                 max_tokens=4096,
             )
-            model_label = "open-weights reasoning model"
+            model_label = "cerebras thinking"
 
         latency_ms = int(_time.time() * 1000) - start_ms
 
@@ -2122,6 +2161,343 @@ created_at: {now.isoformat()}
             ) from e
 
         logger.debug(f"Stored generation {generation_id} to Iceberg HX")
+
+    # =========================================================================
+    # Card Summary Generation
+    # =========================================================================
+
+    async def generate_card_summary(
+        self,
+        card_id: str,
+        summary_type: str = "frontier",
+    ) -> dict[str, Any]:
+        """Generate an AI summary for an individual card page.
+
+        For frontier type: Uses Brave Summarizer (grounded in web results).
+        For open_weights type: Uses local GPU engine (Devstral-24B).
+        For cerebras type: Uses Cerebras GLM-4.7 with thinking trace for HX.
+
+        Args:
+            card_id: Card to summarize
+            summary_type: "frontier" (brave), "open_weights" (local GPU),
+                or "cerebras" (Cerebras GLM-4.7 with thinking trace)
+
+        Returns:
+            Dict with summary text, model label, and metadata
+
+        Raises:
+            CollectionError: If card not found or generation fails
+        """
+        import time as _time
+
+        if summary_type not in ("frontier", "open_weights", "cerebras"):
+            raise CollectionError(
+                f"Invalid summary_type: {summary_type}. Must be 'frontier', 'open_weights', or 'cerebras'.",
+                guru_code="#COL.00000013.CARDSUMFAIL",
+            )
+
+        # Fetch card
+        card = await self.get_card(card_id)
+        if not card:
+            raise CollectionError(
+                f"Card not found: {card_id}",
+                guru_code="#COL.00000001.NOTFOUND",
+            )
+
+        start_ms = int(_time.time() * 1000)
+        brave_followups: list[str] = []
+
+        if summary_type == "frontier":
+            # Use Brave Answers API for grounded, web-cited summaries
+            from gaius.inference.search.brave import BraveSearch
+            async with BraveSearch("unused", capture_exchanges=self._capture_exchanges_enabled()) as brave:
+                result = await brave.summarize_topic(card.title, card.summary)
+            summary_text = result.summary_text
+            model_label = "brave answers"
+            input_tokens = result.input_tokens
+            output_tokens = result.output_tokens
+            provider = "brave-answers"
+            thinking_trace = None
+            # Store unique citation URLs for display on card page
+            seen_urls: set[str] = set()
+            for cite in result.citations:
+                if cite.url and cite.url not in seen_urls:
+                    seen_urls.add(cite.url)
+                    brave_followups.append(cite.url)
+        elif summary_type == "open_weights":
+            # open_weights — use local engine (Devstral-24B on tinybox GPUs)
+            from gaius.inference.engine_client import get_engine_client, Message
+
+            engine = await get_engine_client()
+
+            prompt = (
+                f"You are summarizing a research material for a curated collection.\n\n"
+                f"Title: {card.title}\n"
+                f"Brief: {card.summary}\n"
+                f"Source type: {card.source_type}\n"
+                f"Source URL: {card.source_url}\n\n"
+                f"Write a substantive 2-3 paragraph summary explaining what this material "
+                f"covers, its key contributions or insights, and why it matters. "
+                f"Write for a technically literate audience. Use markdown formatting."
+            )
+
+            result = await engine.complete(
+                [Message(role="user", content=prompt)],
+                model="instruct",
+                temperature=0.7,
+                max_tokens=4096,
+                timeout=120.0,
+            )
+
+            if not result.content:
+                raise CollectionError(
+                    f"Local engine generation returned empty content.\n"
+                    f"  Model: {result.model}\n"
+                    f"  Try: /health fix endpoints",
+                    guru_code="#COL.00000013.CARDSUMFAIL",
+                )
+
+            summary_text = result.content
+            model_label = "open-weights reasoning model"
+            input_tokens = result.input_tokens
+            output_tokens = result.output_tokens
+            provider = result.backend or "local-engine"
+            thinking_trace = None
+
+        else:
+            # cerebras — use Cerebras GLM-4.7 via external router
+            from gaius.engine.backends.external.router import ExternalInferenceRouter
+
+            router = ExternalInferenceRouter(
+                capture_exchanges=self._capture_exchanges_enabled(),
+            )
+
+            prompt = (
+                f"You are summarizing a research material for a curated collection.\n\n"
+                f"Title: {card.title}\n"
+                f"Brief: {card.summary}\n"
+                f"Source type: {card.source_type}\n"
+                f"Source URL: {card.source_url}\n\n"
+                f"Write a substantive 2-3 paragraph summary explaining what this material "
+                f"covers, its key contributions or insights, and why it matters. "
+                f"Write for a technically literate audience. Use markdown formatting."
+            )
+
+            response = await router.complete(
+                [{"role": "user", "content": prompt}],
+                provider="cerebras",
+                temperature=0.7,
+                max_tokens=4096,
+            )
+
+            if not response.success:
+                raise CollectionError(
+                    f"Cerebras generation failed: {response.error}\n"
+                    f"  Provider: {response.provider}\n"
+                    f"  Try: /health fix endpoints",
+                    guru_code="#COL.00000013.CARDSUMFAIL",
+                )
+
+            summary_text = response.content
+            model_label = "cerebras thinking"
+            input_tokens = response.input_tokens
+            output_tokens = response.output_tokens
+            provider = response.provider
+            thinking_trace = response.reasoning
+
+        latency_ms = int(_time.time() * 1000) - start_ms
+
+        # Store to Iceberg HX
+        hx_generation_id = str(uuid.uuid4())
+        await self._store_generation_to_hx(
+            generation_id=hx_generation_id,
+            collection_id=card.collection_id,
+            summary_type=f"card_{summary_type}",
+            prompt=f"Card: {card.title} ({card.source_type})",
+            output=summary_text,
+            thinking_trace=thinking_trace,
+            model_name=provider or model_label,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+        )
+
+        # Flag frontier summaries with zero citations for future retry
+        needs_retry = summary_type == "frontier" and len(brave_followups) == 0
+
+        # UPSERT to PostgreSQL
+        import json as _json
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO collections.card_summaries
+                (card_id, summary_type, hx_generation_id, summary_text,
+                 model_label, brave_followups, input_tokens, output_tokens,
+                 needs_retry, generated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                ON CONFLICT (card_id, summary_type) DO UPDATE SET
+                    hx_generation_id = EXCLUDED.hx_generation_id,
+                    summary_text = EXCLUDED.summary_text,
+                    model_label = EXCLUDED.model_label,
+                    brave_followups = EXCLUDED.brave_followups,
+                    input_tokens = EXCLUDED.input_tokens,
+                    output_tokens = EXCLUDED.output_tokens,
+                    needs_retry = EXCLUDED.needs_retry,
+                    generated_at = NOW()
+                """,
+                card_id, summary_type, hx_generation_id, summary_text,
+                model_label,
+                _json.dumps(brave_followups) if brave_followups else None,
+                input_tokens, output_tokens,
+                needs_retry,
+            )
+
+        logger.info(
+            f"Generated {summary_type} card summary for {card.title[:50]} "
+            f"({input_tokens}in/{output_tokens}out, {latency_ms}ms)"
+        )
+
+        return {
+            "card_id": card_id,
+            "summary_type": summary_type,
+            "summary_text": summary_text,
+            "model_label": model_label,
+            "brave_followups": brave_followups,
+            "hx_generation_id": hx_generation_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "latency_ms": latency_ms,
+        }
+
+    @staticmethod
+    def _capture_exchanges_enabled() -> bool:
+        """Check if exchange capture is enabled."""
+        env_val = os.environ.get("GAIUS_HX_CAPTURE_EXCHANGES", "true")
+        return env_val.lower() in ("1", "true", "yes")
+
+    # =========================================================================
+    # Card Page KV Sync
+    # =========================================================================
+
+    async def sync_card_to_kv(
+        self,
+        card_id: str,
+    ) -> dict[str, Any]:
+        """Sync a single card's page data to Cloudflare KV.
+
+        Assembles card metadata, summaries (frontier/open_weights/cerebras), brave followups, and
+        collection info into a JSON blob for the worker to render.
+
+        Args:
+            card_id: Card to sync
+
+        Returns:
+            Result dict with sync status
+
+        Raises:
+            CollectionError: If card not found or KV push fails
+        """
+        import aiohttp
+        import json
+
+        # Fetch card
+        card = await self.get_card(card_id)
+        if not card:
+            raise CollectionError(
+                f"Card not found: {card_id}",
+                guru_code="#COL.00000001.NOTFOUND",
+            )
+
+        # Fetch collection info
+        collection = await self.get_collection(card.collection_id)
+
+        # Fetch summaries
+        summaries: dict[str, Any] = {}
+        brave_followups: list[str] = []
+        async with self._pool.acquire() as conn:
+            summary_rows = await conn.fetch(
+                """
+                SELECT summary_type, summary_text, model_label, brave_followups, generated_at
+                FROM collections.card_summaries
+                WHERE card_id = $1
+                """,
+                card_id,
+            )
+            for row in summary_rows:
+                summaries[row["summary_type"]] = {
+                    "text": row["summary_text"],
+                    "model_label": row["model_label"],
+                    "generated_at": row["generated_at"].isoformat() if row["generated_at"] else None,
+                }
+                if row["summary_type"] == "frontier" and row["brave_followups"]:
+                    followups_data = row["brave_followups"]
+                    if isinstance(followups_data, str):
+                        brave_followups = json.loads(followups_data)
+                    else:
+                        brave_followups = followups_data
+
+        # Assemble the card page data
+        now = datetime.now(timezone.utc)
+        page_data = {
+            "card_id": card_id,
+            "collection_id": card.collection_id,
+            "title": card.title,
+            "summary": card.summary,
+            "source_url": card.source_url,
+            "source_type": card.source_type,
+            "image_url": card.image_url,
+            "published_at": card.published_at.isoformat() if card.published_at else None,
+            "source_date": card.source_date.isoformat() if card.source_date else None,
+            "summaries": summaries,
+            "brave_followups": brave_followups,
+            "collection_name": collection.name if collection else "",
+            "collection_slug": collection.slug if collection else "",
+            "prev_card_id": card.prev_card_id,
+            "next_card_id": card.next_card_id,
+            "updated_at": now.isoformat(),
+        }
+
+        # Push to KV
+        account_id, api_token, namespace_id = self._get_kv_credentials()
+
+        kv_base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"{kv_base_url}/card:{card_id}",
+                    headers=headers,
+                    data=json.dumps(page_data),
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        raise CollectionError(
+                            f"Cloudflare KV API error: {resp.status} - {error_text}",
+                            guru_code="#COL.00000003.KVFAIL",
+                        )
+
+            logger.info(
+                f"Synced card {card.title[:50]} to KV "
+                f"({len(summaries)} summaries, {len(brave_followups)} followups)"
+            )
+
+            return {
+                "success": True,
+                "card_id": card_id,
+                "summaries": list(summaries.keys()),
+                "followups": len(brave_followups),
+                "namespace_id": namespace_id,
+            }
+
+        except aiohttp.ClientError as e:
+            raise CollectionError(
+                f"Cloudflare KV network error: {e}",
+                guru_code="#COL.00000003.KVFAIL",
+            ) from e
 
     # =========================================================================
     # Per-Collection KV Sync
