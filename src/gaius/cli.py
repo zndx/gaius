@@ -6457,13 +6457,11 @@ Respond with:
                 # Pipeline fix - schedule triage tasks and reset stuck tasks
                 try:
                     import json
-                    import os
 
                     import asyncpg
+                    from .core.config import get_database_url
 
-                    db_url = os.environ.get(
-                        "GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius"
-                    )
+                    db_url = get_database_url()
                     conn = await asyncpg.connect(db_url)
 
                     try:
@@ -6580,7 +6578,7 @@ Respond with:
                     return {
                         "error": f"Pipeline fix failed: {e}",
                         "guru_meditation": "#PIPE.00000001.STALLED",
-                        "remediation": "Check PostgreSQL connection: pg_isready -p 5438",
+                        "remediation": "Check PostgreSQL connection: pg_isready -p 5444",
                     }
 
             else:
@@ -10758,10 +10756,8 @@ Examples:
         """Show topology service status."""
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
                 async with pool.acquire() as conn:
@@ -10851,10 +10847,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -10941,10 +10935,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -11016,10 +11008,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -11077,10 +11067,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -11201,10 +11189,8 @@ Examples:
         """Show NG-RC model status for all domains."""
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
                 async with pool.acquire() as conn:
@@ -11298,11 +11284,9 @@ Examples:
         try:
             import asyncpg
             from gaius.engine.services.ngrc import NGRCPredictor
+            from .core.config import get_database_url
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            database_url = get_database_url()
 
             import numpy as np
 
@@ -11413,11 +11397,9 @@ Examples:
         try:
             import asyncpg
             from gaius.engine.services.ngrc import NGRCPredictor
+            from .core.config import get_database_url
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            database_url = get_database_url()
 
             import numpy as np
 
@@ -11505,11 +11487,9 @@ Examples:
         try:
             import asyncpg
             from gaius.engine.services.ngrc import NGRCPredictor
+            from .core.config import get_database_url
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            database_url = get_database_url()
 
             async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
                 async with pool.acquire() as conn:
@@ -13353,10 +13333,8 @@ Examples:
             }
 
         # Get local collections from database
-        db_url = os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-        )
+        from .core.config import get_database_url
+        db_url = get_database_url()
 
         try:
             pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)

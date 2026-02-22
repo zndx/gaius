@@ -6747,13 +6747,10 @@ Progress is streamed in real-time via pg_notify.
         async def run_list():
             try:
                 import asyncpg
-                import os
+                from .core.config import get_database_url
                 from .engine.services.collection_service import CollectionService
 
-                db_url = os.environ.get(
-                    "GAIUS_DATABASE_URL",
-                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-                )
+                db_url = get_database_url()
 
                 async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                     service = CollectionService(pool)
@@ -6782,13 +6779,10 @@ Progress is streamed in real-time via pg_notify.
         async def run_status():
             try:
                 import asyncpg
-                import os
+                from .core.config import get_database_url
                 from .engine.services.collection_service import CollectionService
 
-                db_url = os.environ.get(
-                    "GAIUS_DATABASE_URL",
-                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-                )
+                db_url = get_database_url()
 
                 async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                     service = CollectionService(pool)
@@ -6896,13 +6890,10 @@ Progress is streamed in real-time via pg_notify.
         async def run_publish():
             try:
                 import asyncpg
-                import os
+                from .core.config import get_database_url
                 from .engine.services.collection_service import CollectionService
 
-                db_url = os.environ.get(
-                    "GAIUS_DATABASE_URL",
-                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-                )
+                db_url = get_database_url()
 
                 async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                     service = CollectionService(pool)
@@ -6956,13 +6947,10 @@ Progress is streamed in real-time via pg_notify.
         async def run_status():
             try:
                 import asyncpg
-                import os
+                from .core.config import get_database_url
                 from .engine.services.collection_service import CollectionService
 
-                db_url = os.environ.get(
-                    "GAIUS_DATABASE_URL",
-                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-                )
+                db_url = get_database_url()
 
                 async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                     service = CollectionService(pool)
@@ -6998,13 +6986,10 @@ Progress is streamed in real-time via pg_notify.
         async def run_list():
             try:
                 import asyncpg
-                import os
+                from .core.config import get_database_url
                 from .engine.services.collection_service import CollectionService
 
-                db_url = os.environ.get(
-                    "GAIUS_DATABASE_URL",
-                    "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-                )
+                db_url = get_database_url()
 
                 async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                     service = CollectionService(pool)

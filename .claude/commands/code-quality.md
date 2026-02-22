@@ -323,17 +323,17 @@ x = foo()  # type: ignore
 **CRITICAL**: The PostgreSQL database name is `zndx_gaius`, NOT `gaius`.
 
 When auditing code or writing psql commands:
-- **Correct**: `-d zndx_gaius` or `postgres://...@localhost:5438/zndx_gaius`
+- **Correct**: `-d zndx_gaius` or `postgres://...@localhost:5444/zndx_gaius`
 - **WRONG**: `-d gaius` (will fail with "database does not exist")
 
-Full connection: `postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable`
+Full connection: `postgres://gaius:gaius@localhost:5444/zndx_gaius?sslmode=disable`
 
 ### Audit for Incorrect Database References
 
 ```bash
 # Find code using wrong database name (should return zero matches in src/)
 grep -rn "localhost:5432/gaius[^_]" src/
-grep -rn "localhost:5438/gaius[^_]" src/
+grep -rn "localhost:5444/gaius[^_]" src/
 grep -rn '"/gaius"' src/
 ```
 

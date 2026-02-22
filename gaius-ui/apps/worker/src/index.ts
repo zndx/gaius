@@ -18,6 +18,10 @@ import {
   handleApiThemes,
   handleArticleRedirect,
 } from './routes/landing';
+import {
+  handleCollectionIndex,
+  handleCollectionPage,
+} from './routes/collections';
 
 // Type bindings for KV namespaces
 type Bindings = {
@@ -67,6 +71,10 @@ app.get('/api/viz', handleApiViz);
 
 // API: Get available themes
 app.get('/api/themes', handleApiThemes);
+
+// Collection pages
+app.get('/collections', handleCollectionIndex);
+app.get('/collections/:id', handleCollectionPage);
 
 // Article permalinks - redirect to external URL
 app.get('/articles/:slug', handleArticleRedirect);

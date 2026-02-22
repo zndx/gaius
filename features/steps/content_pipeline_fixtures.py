@@ -55,7 +55,7 @@ class PipelineTestConfig:
     Provides isolation settings and timeouts for each test scenario.
 
     Database URLs:
-    - devenv postgres: postgresql://rch@localhost:5438/zndx_gaius (uses system user)
+    - devenv postgres: postgresql://rch@localhost:5444/zndx_gaius (uses system user)
     - System postgres: postgresql://gaius:gaius@localhost:5432/gaius
 
     MinIO/S3 Configuration:
@@ -63,11 +63,11 @@ class PipelineTestConfig:
     - Per-scenario prefix: hx-test/{scenario_id}/
     """
 
-    # Database connection (defaults to devenv postgres on port 5438)
+    # Database connection (defaults to devenv postgres on port 5444)
     # Note: devenv postgres uses the system user (rch), not 'postgres'
     db_url: str = field(default_factory=lambda: os.environ.get(
         "GAIUS_DATABASE_URL",
-        "postgresql://rch@localhost:5438/zndx_gaius"
+        "postgresql://rch@localhost:5444/zndx_gaius"
     ))
 
     # Project root for finding config files
@@ -122,11 +122,11 @@ class PipelineTestConfig:
     def postgres_port(self) -> int:
         """Extract port from db_url."""
         # Parse port from URL like postgresql://user@host:port/db
-        if ":5438" in self.db_url:
-            return 5438
+        if ":5444" in self.db_url:
+            return 5444
         elif ":5432" in self.db_url:
             return 5432
-        return 5438  # Default to devenv port
+        return 5444  # Default to devenv port
 
 
 # ─────────────────────────────────────────────────────────────────────────────

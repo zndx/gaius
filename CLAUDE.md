@@ -113,7 +113,7 @@ Install optional deps: `uv sync --extra tda` or `uv sync --extra swarm`
 
 ```bash
 # Correct database connection
-PGPASSWORD=gaius psql -h localhost -p 5438 -U gaius -d zndx_gaius
+PGPASSWORD=gaius psql -h localhost -p 5444 -U gaius -d zndx_gaius
 
 # WRONG - will fail with "database does not exist"
 # psql -d gaius  # <-- DO NOT USE
@@ -121,12 +121,12 @@ PGPASSWORD=gaius psql -h localhost -p 5438 -U gaius -d zndx_gaius
 
 Connection parameters:
 - Host: `localhost`
-- Port: `5438`
+- Port: `5444`
 - Database: `zndx_gaius`
 - User: `gaius`
 - Password: `gaius`
 
-Full connection URL: `postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable`
+Full connection URL: `postgres://gaius:gaius@localhost:5444/zndx_gaius?sslmode=disable`
 
 ## Documentation
 

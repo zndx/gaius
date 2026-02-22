@@ -88,6 +88,42 @@ _STATUS_TO_PROTO: dict["CheckStatus", "ProtoCheckStatus"] = {
 
 _PROTO_TO_STATUS: dict["ProtoCheckStatus", "CheckStatus"] = {v: k for k, v in _STATUS_TO_PROTO.items()}
 
+# Expected cadences for periodic tasks: task_type -> (interval, label, catch-up hint)
+_PERIODIC_TASK_CADENCES: dict[str, tuple[timedelta, str, str]] = {
+    # Engine cognition cycle — core thinking loop
+    "cognition_cycle":       (timedelta(minutes=15), "Cognition cycle",       "Engine must be running: devenv processes up"),
+    "llm_triage":            (timedelta(hours=1),    "LLM triage",            "Engine must be running: devenv processes up"),
+    "content_processing":    (timedelta(hours=1),    "Content processing",    "Engine must be running: devenv processes up"),
+    "article_curation":      (timedelta(hours=6),    "Article curation",      "Engine must be running: devenv processes up"),
+    "card_publishing":       (timedelta(hours=6),    "Card publishing",       "Engine must be running: devenv processes up"),
+    "evolution_cycle":       (timedelta(hours=12),   "Evolution cycle",       "Engine must be running: devenv processes up"),
+    "card_upkeep":           (timedelta(hours=12),   "Card upkeep",           "Engine must be running: devenv processes up"),
+    # pg_cron SQL-only jobs (run even without engine)
+    "heuristic-triage":      (timedelta(hours=1),    "Heuristic triage",      "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%heuristic%'"),
+    "engine-audit":          (timedelta(hours=1),    "Engine audit",          "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%audit%'"),
+    "meta-consolidation":    (timedelta(hours=6),    "Meta consolidation",    "Check pg_cron: SELECT * FROM cron.job"),
+    "prospect-refresh":      (timedelta(hours=12),   "Prospect refresh",      "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%prospect%'"),
+    "calibration":           (timedelta(days=1),     "Calibration",           "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%calibrat%'"),
+}
+
+
+def _format_timedelta(td: timedelta) -> str:
+    """Format timedelta as human-readable string (e.g., '2h 30m', '3d 4h')."""
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "0m"
+
 
 @dataclass
 class CheckResult:
@@ -362,6 +398,14 @@ class HealthChecker:
                 category="pipeline",
                 description="Check article curation and card publishing pipeline health",
                 check_fn="_check_landing_page_pipeline",
+            ),
+            # Periodic task freshness
+            HealthCheck(
+                id="periodic_task_freshness",
+                name="Periodic Tasks",
+                category="periodic",
+                description="Check periodic task completion cadence (cognition, triage, curation, evolution)",
+                check_fn="_check_periodic_task_freshness",
             ),
         ]
 
@@ -702,11 +746,11 @@ class HealthChecker:
     async def _check_database(self) -> CheckResult:
         """Check database connectivity."""
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
             # Basic connectivity test - just run a simple query
@@ -730,7 +774,7 @@ class HealthChecker:
                 name="Database Connection",
                 status=CheckStatus.FAIL,
                 message="Connection timeout",
-                suggestion="Check PostgreSQL is running: pg_isready -p 5438",
+                suggestion="Check PostgreSQL is running: pg_isready -p 5444",
             )
         except Exception as e:
             return CheckResult(
@@ -2138,11 +2182,11 @@ class HealthChecker:
         - kb_write: Writing triaged content to KB
         """
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
 
@@ -2250,11 +2294,11 @@ class HealthChecker:
         - stuck_running: Tasks running too long without completion
         """
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
 
@@ -2402,11 +2446,11 @@ class HealthChecker:
         Any non-zero error rate surfaces as WARN for investigation.
         """
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
 
@@ -2531,6 +2575,146 @@ class HealthChecker:
                 )
             return CheckResult(
                 name="Landing Page",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_periodic_task_freshness(self) -> CheckResult:
+        """Check periodic task completion cadence.
+
+        Answers: "Are my periodic processes actually completing on their
+        expected cadence?"  Uses _PERIODIC_TASK_CADENCES to compare last
+        successful completion time against expected intervals.
+
+        Ratio thresholds:
+          <= 1.0  → current (ok)
+          1–3×    → overdue (WARN)
+          > 3×    → critically overdue (FAIL)
+
+        Task types not present in scheduled_tasks are silently skipped
+        (no false positives for features not yet exercised).
+        """
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                rows = await conn.fetch("""
+                    SELECT
+                        task_type,
+                        MAX(completed_at) FILTER (WHERE error IS NULL) AS last_success,
+                        COUNT(*) FILTER (WHERE completed_at IS NULL) AS pending,
+                        COUNT(*) FILTER (WHERE error IS NOT NULL
+                                         AND completed_at > NOW() - interval '7 days') AS errors_7d
+                    FROM scheduled_tasks
+                    GROUP BY task_type
+                """)
+                await conn.close()
+            except Exception as e:
+                await conn.close()
+                raise e
+
+            from datetime import timezone
+
+            now = datetime.now(timezone.utc)
+            task_details: dict[str, dict[str, Any]] = {}
+            worst = CheckStatus.PASS
+            summary_parts: list[str] = []
+
+            for row in rows:
+                task_type = row["task_type"]
+                if task_type not in _PERIODIC_TASK_CADENCES:
+                    continue  # fail-open: skip unknown types
+
+                expected_interval, label, hint = _PERIODIC_TASK_CADENCES[task_type]
+                last_success = row["last_success"]
+                pending = row["pending"]
+                errors_7d = row["errors_7d"]
+
+                if last_success is None:
+                    status = "fail"
+                    age_str = "never"
+                    worst = CheckStatus.FAIL
+                    summary_parts.append(f"{label} NEVER")
+                else:
+                    # Ensure tz-aware comparison
+                    if last_success.tzinfo is None:
+                        last_success = last_success.replace(tzinfo=timezone.utc)
+                    age = now - last_success
+
+                    ratio = age / expected_interval
+                    age_str = _format_timedelta(age)
+
+                    if ratio <= 1.0:
+                        status = "ok"
+                    elif ratio <= 3.0:
+                        status = "warn"
+                        summary_parts.append(f"{label} {age_str}")
+                        if worst == CheckStatus.PASS:
+                            worst = CheckStatus.WARN
+                    else:
+                        status = "fail"
+                        summary_parts.append(f"{label} {age_str}")
+                        worst = CheckStatus.FAIL
+
+                entry: dict[str, Any] = {
+                    "status": status,
+                    "last_success": str(last_success) if last_success else None,
+                    "age": age_str,
+                    "expected_interval": _format_timedelta(expected_interval),
+                    "pending": pending,
+                    "errors_7d": errors_7d,
+                }
+                if status != "ok":
+                    entry["hint"] = hint
+                if errors_7d > 0:
+                    entry["note"] = f"{errors_7d} errors in last 7d"
+                task_details[task_type] = entry
+
+            if not task_details:
+                return CheckResult(
+                    name="Periodic Tasks",
+                    status=CheckStatus.SKIP,
+                    message="No periodic tasks found in scheduled_tasks table",
+                )
+
+            if worst == CheckStatus.PASS:
+                message = f"All {len(task_details)} periodic tasks current"
+            elif worst == CheckStatus.WARN:
+                message = f"Overdue: {', '.join(summary_parts)}"
+            else:
+                message = f"Critically overdue: {', '.join(summary_parts)}"
+
+            return CheckResult(
+                name="Periodic Tasks",
+                status=worst,
+                message=message,
+                details={"tasks": task_details},
+                suggestion="Engine must be running: devenv processes up" if worst != CheckStatus.PASS else None,
+            )
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Periodic Tasks",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str:
+                return CheckResult(
+                    name="Periodic Tasks",
+                    status=CheckStatus.SKIP,
+                    message="scheduled_tasks table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Periodic Tasks",
                 status=CheckStatus.WARN,
                 message=f"Check failed: {str(e)[:80]}",
             )

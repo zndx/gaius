@@ -4,7 +4,7 @@
 uiBackend:
   metadatadb:
     host: devenv-postgres
-    port: "5438"
+    port: "5444"
     user: gaius
     password: "gaius"
     name: metaflow

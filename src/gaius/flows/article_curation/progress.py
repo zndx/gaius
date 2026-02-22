@@ -35,12 +35,13 @@ STEPS = {
     "summarize": {"number": 5, "progress": 0.50},
     "draft": {"number": 6, "progress": 0.65},
     "base": {"number": 7, "progress": 0.80},
-    "cards": {"number": 8, "progress": 0.90},
-    "complete": {"number": 9, "progress": 1.0},
+    "cards": {"number": 8, "progress": 0.85},
+    "publish": {"number": 9, "progress": 0.95},
+    "complete": {"number": 10, "progress": 1.0},
     "failed": {"number": -1, "progress": -1.0},
 }
 
-TOTAL_STEPS = 9
+TOTAL_STEPS = 10
 
 
 def generate_run_id() -> str:
@@ -73,10 +74,8 @@ def emit_progress(
     metadata = metadata or {}
 
     # Get database URL
-    db_url = os.environ.get(
-        "DATABASE_URL",
-        "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-    )
+    from gaius.core.config import get_database_url
+    db_url = get_database_url()
 
     try:
         conn = psycopg2.connect(db_url)
@@ -184,6 +183,16 @@ def emit_cards(run_id: str, cards_count: int) -> None:
         "cards",
         f"Created {cards_count} cards (pending)",
         {"cards_count": cards_count},
+    )
+
+
+def emit_publish(run_id: str, published_count: int) -> None:
+    """Emit card publish event."""
+    emit_progress(
+        run_id,
+        "publish",
+        f"Published {published_count} cards and synced KV",
+        {"published_count": published_count},
     )
 
 

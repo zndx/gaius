@@ -258,7 +258,7 @@ uv run python -m gaius.workers.cli list --status pending --limit 20
 ```python
 @dataclass
 class WorkerConfig:
-    database_url: str = "postgresql://gaius:gaius@localhost:5438/zndx_gaius"
+    database_url: str = "postgresql://gaius:gaius@localhost:5444/zndx_gaius"
     hx_enabled: bool = True          # Store in HX data lake
     kb_enabled: bool = True          # Create KB summaries
     summarize_on_fetch: bool = False # Immediate summarization

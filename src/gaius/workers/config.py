@@ -15,7 +15,7 @@ class WorkerConfig:
     """Configuration for the fetch worker pool."""
 
     # Database connection
-    db_url: str = "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+    db_url: str = ""
 
     # Worker pool settings
     pool_size: int = 4  # Number of concurrent workers
@@ -31,14 +31,19 @@ class WorkerConfig:
     http_timeout: float = 30.0  # Request timeout
     user_agent: str = "Gaius-Worker/0.2.0 (https://github.com/zndx/gaius)"
 
+    def __post_init__(self):
+        """Resolve database URL from config if not explicitly provided."""
+        if not self.db_url:
+            from gaius.core.config import get_database_url
+            self.db_url = get_database_url()
+
     @classmethod
     def from_env(cls) -> "WorkerConfig":
         """Load configuration from environment variables."""
+        from gaius.core.config import get_database_url
+
         return cls(
-            db_url=os.getenv(
-                "DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable",
-            ),
+            db_url=get_database_url(),
             pool_size=int(os.getenv("GAIUS_WORKER_POOL_SIZE", "4")),
             poll_interval=int(os.getenv("GAIUS_WORKER_POLL_INTERVAL", "30")),
             job_timeout=int(os.getenv("GAIUS_WORKER_JOB_TIMEOUT", "300")),

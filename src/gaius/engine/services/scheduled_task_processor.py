@@ -72,10 +72,11 @@ class ScheduledTaskProcessor(BaseDaemon):
         database_url: str | None = None,
         channel: str = "scheduled_task_ready",
     ):
-        self._database_url = database_url or os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius",
-        )
+        if database_url:
+            self._database_url = database_url
+        else:
+            from gaius.core.config import get_database_url
+            self._database_url = get_database_url()
         self._channel = channel
 
         self._running = False

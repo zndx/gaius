@@ -551,10 +551,9 @@ class GaiusEngine:
         try:
             import asyncpg
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from gaius.core.config import get_database_url
+
+            database_url = get_database_url()
             self._db_pool = await asyncpg.create_pool(
                 database_url,
                 min_size=2,
@@ -717,10 +716,9 @@ class GaiusEngine:
             logger.info("Initializing X Bookmarks service...")
 
             # Get database pool from config
-            db_url = os.environ.get(
-                "DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
 
             # Create database pool
             pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
@@ -794,10 +792,9 @@ class GaiusEngine:
             logger.info("Initializing Prospects/Stewardship service...")
 
             # Get database pool from config
-            db_url = os.environ.get(
-                "DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
 
             # Create database pool
             pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)

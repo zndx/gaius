@@ -110,10 +110,11 @@ class FlowEventListener:
             handler: Async callback for flow events
             channel: PostgreSQL LISTEN channel name
         """
-        self.database_url = database_url or os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://localhost:5438/zndx_gaius?sslmode=disable",
-        )
+        if database_url:
+            self.database_url = database_url
+        else:
+            from gaius.core.config import get_database_url
+            self.database_url = get_database_url()
         self._handler = handler
         self._channel = channel
 

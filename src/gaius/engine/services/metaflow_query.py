@@ -68,10 +68,11 @@ class MetaflowQueryClient:
         Args:
             database_url: PostgreSQL connection URL (default from env)
         """
-        self.database_url = database_url or os.environ.get(
-            "DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius",
-        )
+        if database_url:
+            self.database_url = database_url
+        else:
+            from gaius.core.config import get_database_url
+            self.database_url = get_database_url()
         self._pool: asyncpg.Pool | None = None
 
     async def _get_pool(self) -> asyncpg.Pool:

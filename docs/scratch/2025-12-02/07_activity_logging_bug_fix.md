@@ -56,13 +56,13 @@ exec .devenv/state/venv/bin/python -m gaius.mcp_server "$@"
 **After (lines 9-23):**
 ```bash
 # Ensure devenv services are running (postgres, minio, qdrant)
-if ! pgrep -f "postgres.*5438" > /dev/null; then
+if ! pgrep -f "postgres.*5444" > /dev/null; then
     echo "[gaius-mcp] Starting devenv services..." >&2
     devenv up -d 2>&1 | grep -v "process-compose" >&2 || true
 
     # Wait for postgres to be ready
     for i in {1..10}; do
-        if pg_isready -h localhost -p 5438 > /dev/null 2>&1; then
+        if pg_isready -h localhost -p 5444 > /dev/null 2>&1; then
             echo "[gaius-mcp] PostgreSQL ready" >&2
             break
         fi
@@ -72,7 +72,7 @@ fi
 ```
 
 **How it works:**
-1. Check if postgres is running (port 5438)
+1. Check if postgres is running (port 5444)
 2. If not, start devenv services with `devenv up -d`
 3. Wait up to 5 seconds for postgres to be ready
 4. Proceed with MCP server startup
@@ -119,7 +119,7 @@ mcp__gaius__get_activity_stats(1)
 
 ```bash
 # Kill existing services
-pkill -f "postgres.*5438"
+pkill -f "postgres.*5444"
 pkill -f "minio"
 
 # Start MCP server (via Claude Code or directly)
@@ -130,7 +130,7 @@ bin/gaius-mcp
 # [gaius-mcp] PostgreSQL ready
 
 # Verify services running
-pg_isready -h localhost -p 5438  # Should succeed
+pg_isready -h localhost -p 5444  # Should succeed
 pgrep -f "minio"  # Should return PID
 ```
 
@@ -154,7 +154,7 @@ pgrep -f "minio"  # Should return PID
 - Services remain running after MCP server stops (by design)
 - Subsequent MCP sessions reuse existing services (fast startup)
 - Services managed by devenv, not MCP server lifecycle
-- Database connection string: `postgres://localhost:5438/zndx_gaius`
+- Database connection string: `postgres://localhost:5444/zndx_gaius`
 
 ## Verification Checklist
 

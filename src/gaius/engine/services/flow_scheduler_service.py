@@ -60,12 +60,12 @@ class FlowConfig:
     enable_scoring: bool = False  # Disable by default to avoid LLM costs
 
     # Database
-    database_url: str = field(
-        default_factory=lambda: os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-        )
-    )
+    database_url: str | None = field(default=None)
+
+    def __post_init__(self):
+        if self.database_url is None:
+            from gaius.core.config import get_database_url
+            self.database_url = get_database_url()
 
     # KB paths
     kb_root: str = field(

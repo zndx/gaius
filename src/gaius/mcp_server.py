@@ -6338,6 +6338,130 @@ Domain: {domain or 'general'}
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
+    @server.tool()
+    async def collection_generate_summaries(slug: str) -> str:
+        """Generate AI summaries for a collection (frontier + open-weights).
+
+        Creates dual-model summaries for the collection page:
+        - Frontier: Uses xAI Grok for high-quality synthesis
+        - Open-weights: Uses reasoning model for alternative perspective
+
+        Stores full outputs in Iceberg HX for provenance, with denormalized
+        summaries in PostgreSQL for fast KV sync.
+
+        Cost: ~$0.01-0.05 per summary (token-based pricing).
+
+        Args:
+            slug: Collection slug to generate summaries for
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+
+                # Resolve slug to collection_id
+                collection = await service.get_collection_by_slug(slug)
+                if not collection:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Collection not found: {slug}",
+                    }, indent=2)
+
+                # Generate both summaries — fail-fast, no partial success.
+                # If either fails, the entire operation fails.
+                frontier = await service.generate_collection_summary(
+                    collection.collection_id, "frontier"
+                )
+                open_weights = await service.generate_collection_summary(
+                    collection.collection_id, "open_weights"
+                )
+
+                return json.dumps({
+                    "success": True,
+                    "collection_id": collection.collection_id,
+                    "slug": slug,
+                    "summaries": {
+                        "frontier": frontier,
+                        "open_weights": open_weights,
+                    },
+                }, indent=2, default=str)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_sync_page(slug: str = "") -> str:
+        """Sync collection page data to Cloudflare KV.
+
+        If slug is provided, syncs that specific collection.
+        If empty, syncs all active collections and the index page.
+
+        Pushes collection metadata, summaries, cards, and zettle aliases
+        to KV for the Cloudflare Worker to render at /collections/:id.
+
+        Cost: $0 - pure API operations.
+
+        Args:
+            slug: Collection slug to sync (empty = sync all + index)
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+
+                if slug:
+                    # Sync specific collection
+                    collection = await service.get_collection_by_slug(slug)
+                    if not collection:
+                        return json.dumps({
+                            "success": False,
+                            "error": f"Collection not found: {slug}",
+                        }, indent=2)
+
+                    result = await service.sync_collection_to_kv(collection.collection_id)
+                    return json.dumps(result, indent=2, default=str)
+
+                else:
+                    # Sync all active collections + index
+                    collections = await service.list_collections(status="active")
+                    results = []
+
+                    for coll in collections:
+                        try:
+                            r = await service.sync_collection_to_kv(coll.collection_id)
+                            results.append(r)
+                        except Exception as e:
+                            results.append({
+                                "success": False,
+                                "collection_id": coll.collection_id,
+                                "slug": coll.slug,
+                                "error": str(e),
+                            })
+
+                    # Sync the index
+                    index_result = await service.sync_collections_index_to_kv()
+
+                    return json.dumps({
+                        "success": True,
+                        "collections_synced": results,
+                        "index": index_result,
+                    }, indent=2, default=str)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
     # --- Article Curation ---
 
     @server.tool()
@@ -6348,15 +6472,12 @@ Domain: {domain or 'general'}
         and readiness for the curation pipeline.
         """
         import asyncpg
-        import os
+        from .core.config import get_database_url
 
         try:
             from .engine.services.collection_service import CollectionService
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-            )
+            db_url = get_database_url()
 
             async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                 service = CollectionService(pool)
@@ -6379,15 +6500,12 @@ Domain: {domain or 'general'}
         and card creation status.
         """
         import asyncpg
-        import os
+        from .core.config import get_database_url
 
         try:
             from .engine.services.collection_service import CollectionService
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-            )
+            db_url = get_database_url()
 
             async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                 service = CollectionService(pool)
@@ -6420,15 +6538,12 @@ Domain: {domain or 'general'}
         Progress events are collected and returned.
         """
         import asyncpg
-        import os
+        from .core.config import get_database_url
 
         try:
             from .engine.services.collection_service import CollectionService
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-            )
+            db_url = get_database_url()
 
             events: list[dict] = []
 
@@ -6505,15 +6620,12 @@ Domain: {domain or 'general'}
             count: Number of cards to publish (default: 3)
         """
         import asyncpg
-        import os
+        from .core.config import get_database_url
 
         try:
             from .engine.services.collection_service import CollectionService
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-            )
+            db_url = get_database_url()
 
             async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
                 service = CollectionService(pool)

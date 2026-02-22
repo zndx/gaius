@@ -513,10 +513,8 @@ async def fetch_article_card_stats(slugs: list[str]) -> dict[str, dict[str, Any]
     """
     import asyncpg
 
-    db_url = os.environ.get(
-        "GAIUS_DATABASE_URL",
-        "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-    )
+    from gaius.core.config import get_database_url
+    db_url = get_database_url()
 
     stats: dict[str, dict[str, Any]] = {slug: {} for slug in slugs}
 

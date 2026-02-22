@@ -124,39 +124,13 @@ def check_database_availability_sync() -> bool:
 
 
 def get_database_url() -> str:
-    """Get database URL from environment or HOCON config.
+    """Get database URL from config.
 
-    Priority:
-    1. DATABASE_URL env var
-    2. GAIUS_DATABASE_URL env var
-    3. Config file (config/base.conf)
-    4. Default (devenv Postgres on port 5438)
+    Delegates to gaius.core.config.get_database_url() for centralized
+    database URL resolution.
     """
-    # First check direct env vars
-    url = os.getenv("DATABASE_URL")
-    if url:
-        return url
-
-    url = os.getenv("GAIUS_DATABASE_URL")
-    if url:
-        return url
-
-    # Try loading from HOCON config
-    try:
-        from pyhocon import ConfigFactory
-        import pathlib
-
-        config_path = pathlib.Path(__file__).parent.parent.parent.parent / "config" / "base.conf"
-        if config_path.exists():
-            config = ConfigFactory.parse_file(str(config_path))
-            url = config.get_string("gaius.database.url", None)
-            if url:
-                return url
-    except Exception:
-        pass
-
-    # Default for devenv (Postgres on port 5438)
-    return "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+    from ..core.config import get_database_url as _core_get_database_url
+    return _core_get_database_url()
 
 
 # =============================================================================

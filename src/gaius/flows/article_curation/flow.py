@@ -1,6 +1,6 @@
 """ArticleCurationFlow - Metaflow pipeline for article research and publication.
 
-This flow implements an 8-step pipeline that automates article curation:
+This flow implements a 9-step pipeline that automates article curation:
 1. start: Find unpublished articles in KB
 2. grok_research_summary: Synthesize zettelkasten notes with Grok
 3. select_article: Select article (optillm or explicit)
@@ -9,7 +9,8 @@ This flow implements an 8-step pipeline that automates article curation:
 6. create_draft: Generate draft with Grok, archive to hx/
 7. create_base: BFO-grounded Base file with ref_start/ref_end
 8. create_cards: Create collection cards from .base references (all pending)
-9. end: Emit lineage, report results
+9. publish_batch: Publish cards, sync all KV stores
+10. end: Emit lineage, report results
 
 PRIVACY: This flow does NOT search the KB to avoid exposing private materials
 in published articles. Only the article's own zk/ notes are used.
@@ -66,6 +67,7 @@ from gaius.flows.article_curation.progress import (
     emit_complete,
     emit_draft,
     emit_failed,
+    emit_publish,
     emit_research,
     emit_select,
     emit_start,
@@ -494,6 +496,10 @@ Create a comprehensive research summary that will guide article development."""
                 days_ago = (datetime.now(c.last_curated_at.tzinfo) - c.last_curated_at).days
                 last_curated = f"{days_ago} days ago" if days_ago > 0 else "today"
 
+            has_keywords = bool(c.research_hints.get("keywords"))
+            has_queries = bool(c.research_hints.get("news_queries"))
+            readiness = "ready" if (has_keywords or has_queries) else "NOT READY (missing keywords/news_queries)"
+
             candidates_text.append(
                 f"### Candidate {i}: {c.title}\n"
                 f"- Slug: {c.slug}\n"
@@ -502,6 +508,7 @@ Create a comprehensive research summary that will guide article development."""
                 f"- Pending cards in queue: {c.pending_cards}\n"
                 f"- Total cards created: {c.total_cards}\n"
                 f"- Last curated: {last_curated}\n"
+                f"- Curation readiness: {readiness}\n"
             )
 
         prompt = f"""Select the best article to advance for publication.
@@ -515,12 +522,13 @@ Create a comprehensive research summary that will guide article development."""
 {self.research_summary[:2000]}
 
 ## Selection Criteria (weighted equally):
-1. **Collection Balance** - STRONGLY prefer articles with FEWER pending cards to maintain diverse content on the landing page. Articles with large backlogs should be deprioritized.
-2. **Recency Fairness** - Prefer articles that haven't been curated recently (round-robin across all articles).
-3. Timeliness - How recent are the sources?
-4. Novelty - Does it offer fresh insights?
-5. Audience Fit - Will ML practitioners care?
-6. Source Quality - Authoritative citations?
+1. **Curation Readiness** - NEVER select articles marked "NOT READY". They lack the metadata needed for source fetching and will fail.
+2. **Collection Balance** - STRONGLY prefer articles with FEWER pending cards to maintain diverse content on the landing page. Articles with large backlogs should be deprioritized.
+3. **Recency Fairness** - Prefer articles that haven't been curated recently (round-robin across all articles).
+4. Timeliness - How recent are the sources?
+5. Novelty - Does it offer fresh insights?
+6. Audience Fit - Will ML practitioners care?
+7. Source Quality - Authoritative citations?
 
 IMPORTANT: If one article has significantly more pending cards than others, you MUST select a different article to maintain collection diversity. A balanced landing page with varied topics is more valuable than deep coverage of one topic.
 
@@ -608,10 +616,8 @@ Respond with JSON:
                 "  Guru Meditation: #ACF.00000004.SELECTFAIL"
             )
 
-        db_url = os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-        )
+        from gaius.core.config import get_database_url
+        db_url = get_database_url()
 
         async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
             service = CollectionService(pool)
@@ -1273,13 +1279,12 @@ Respond with JSON:
                 )
 
             # Step 2.5: Persist grok_collection_id to PostgreSQL (1:1 mapping)
+            # Fail-fast: if DB persistence fails, the 1:1 mapping is lost.
+            # The Grok collection still exists on xAI and can be recovered
+            # via /collection reconcile-grok, but we must not silently continue.
             if self.collection_id and not self.dry_run:
-                try:
-                    await self._update_grok_collection_id_in_db(collection_id)
-                    print(f"Persisted grok_collection_id to database: {collection_id}")
-                except Exception as e:
-                    # Log but don't fail - the Grok collection was created successfully
-                    logger.warning(f"Failed to persist grok_collection_id to database: {e}")
+                await self._update_grok_collection_id_in_db(collection_id)
+                print(f"Persisted grok_collection_id to database: {collection_id}")
 
             # Step 3: Upload acquired sources as documents
             upload_results = []
@@ -1361,12 +1366,10 @@ Respond with JSON:
         Uses self.collection_id (local PostgreSQL collection ID) set in select_article step.
         """
         import asyncpg
+        from gaius.core.config import get_database_url
         from gaius.engine.services.collection_service import CollectionService
 
-        db_url = os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-        )
+        db_url = get_database_url()
 
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
         try:
@@ -1858,8 +1861,12 @@ IMPORTANT: In References, include <!-- ref_start:N ref_end:M --> comments with t
         backend = XAIBackend()
 
         if not backend.is_available:
-            logger.warning("XAI backend not available for brief summaries - using excerpts")
-            return {}
+            raise RuntimeError(
+                "XAI backend not available for brief summary generation.\n"
+                "  Guru Meditation: #ACF.00000018.XAINOTAVAIL\n"
+                "  Try: /health fix endpoints\n"
+                "  Or:  Ensure XAI_API_KEY is configured"
+            )
 
         # Build batch prompt
         sources_text = []
@@ -1893,22 +1900,33 @@ Be concise - each summary should be 1-2 sentences max."""
             )
 
             if not response.success or not response.content:
-                logger.warning(f"Brief summary generation failed: {response.error}")
-                return {}
+                raise RuntimeError(
+                    f"Brief summary API call failed: {response.error}\n"
+                    "  Guru Meditation: #ACF.00000019.BRIEFSUMFAIL\n"
+                    "  Try: /health fix endpoints\n"
+                    "  Or:  Check XAI backend availability"
+                )
 
             # Parse JSON response
             content = response.content
             start = content.find("{")
             end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                summaries_raw = json.loads(content[start:end])
-                # Convert string keys to int
-                return {int(k): v for k, v in summaries_raw.items() if k.isdigit()}
+            if start < 0 or end <= start:
+                raise RuntimeError(
+                    "Brief summary response contains no JSON object.\n"
+                    "  Guru Meditation: #ACF.00000020.BRIEFSUMPARSE\n"
+                    f"  Response preview: {content[:200]}"
+                )
+            summaries_raw = json.loads(content[start:end])
+            # Convert string keys to int
+            return {int(k): v for k, v in summaries_raw.items() if k.isdigit()}
 
-        except Exception as e:
-            logger.warning(f"Brief summary generation error: {e}")
-
-        return {}
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Brief summary response parse error: {e}\n"
+                "  Guru Meditation: #ACF.00000020.BRIEFSUMPARSE\n"
+                "  The XAI response was not valid JSON"
+            ) from e
 
     @traced_step
     @step
@@ -1932,7 +1950,7 @@ Be concise - each summary should be 1-2 sentences max."""
 
         if not self.base_path or self.dry_run:
             self.cards_created = 0
-            self.next(self.end)
+            self.next(self.publish_batch)
             return
 
         try:
@@ -1962,13 +1980,18 @@ Be concise - each summary should be 1-2 sentences max."""
         # Emit progress: cards created
         emit_cards(self.progress_run_id, self.cards_created)
 
-        self.next(self.end)
+        self.next(self.publish_batch)
 
     async def _create_cards_async(self) -> tuple[list[str], list[str]]:
-        """Create cards via CollectionService.
+        """Create cards with full provenance via CollectionService.
 
-        Cards use title from source (arXiv, etc.) with brief_summary as description.
-        No fallbacks - both title and brief_summary are required.
+        For each reference in the .base file:
+        1. Creates the card with metadata (zettle_slug, kb_path)
+        2. Creates a Source record linking the card to its provenance
+
+        Both operations must succeed — if Source creation fails after
+        card creation, the error propagates (fail-fast). The card will
+        exist without a source, which is detectable and repairable.
 
         Returns:
             Tuple of (card_ids, ref_ids) for created cards
@@ -1977,6 +2000,7 @@ Be concise - each summary should be 1-2 sentences max."""
             RuntimeError: On schema mismatch or missing required data
         """
         import asyncpg
+        from gaius.core.config import get_database_url
         from gaius.engine.services.collection_service import CollectionService
 
         if not self.base_path:
@@ -1985,10 +2009,7 @@ Be concise - each summary should be 1-2 sentences max."""
         base_path = Path(self.base_path)
         data, references = parse_base_file(base_path)
 
-        db_url = os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-        )
+        db_url = get_database_url()
 
         async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
             service = CollectionService(pool)
@@ -2001,6 +2022,15 @@ Be concise - each summary should be 1-2 sentences max."""
                     "  This should not happen - article is registered in select_article step"
                 )
 
+            # zettle_slug comes from the selected article
+            zettle_slug = self.selected_slug if hasattr(self, "selected_slug") else None
+            if not zettle_slug:
+                raise RuntimeError(
+                    "Missing selected_slug for card metadata.\n"
+                    "  Guru Meditation: #ACF.00000017.NOSLUG\n"
+                    "  This should not happen - slug is set in select_article step"
+                )
+
             card_ids: list[str] = []
             ref_ids: list[str] = []
 
@@ -2011,6 +2041,9 @@ Be concise - each summary should be 1-2 sentences max."""
 
                 source_url = traceable_id_to_url(ref.traceable_id)
                 source_type = extract_source_type(ref.traceable_id)
+
+                # Validate source URL before creating card
+                self._validate_source_url(source_url, ref.ref_id, ref.traceable_id)
 
                 brief_summary = ref.brief_summary or ""
                 if not brief_summary:
@@ -2032,6 +2065,9 @@ Be concise - each summary should be 1-2 sentences max."""
                         "  Fix: Check source fetcher provides title"
                     )
 
+                # KB path to the source file on disk
+                source_kb_path = f"current/articles/{zettle_slug}/sources/{ref.source_id}.md"
+
                 card = await service.add_card(
                     collection_id=self.collection_id,
                     title=card_title,
@@ -2039,11 +2075,74 @@ Be concise - each summary should be 1-2 sentences max."""
                     source_url=source_url,
                     source_type=source_type,
                     article_id=self.article_id,
+                    kb_path=source_kb_path,
+                    zettle_slug=zettle_slug,
                 )
+
+                # Create provenance source record — fail-fast
+                excerpt_char_start = ref.ref_start if ref.ref_start >= 0 else None
+                excerpt_char_end = ref.ref_end if ref.ref_end >= 0 else None
+
+                await service.add_source(
+                    source_id=ref.ref_id,
+                    card_id=card.card_id,
+                    provenance_url=source_url,
+                    source_type=source_type,
+                    provenance_traceable_id=ref.traceable_id,
+                    excerpt_text=ref.excerpt if ref.excerpt else None,
+                    excerpt_char_start=excerpt_char_start,
+                    excerpt_char_end=excerpt_char_end,
+                    ingested_via="article_curation",
+                    kb_path=source_kb_path,
+                )
+
                 card_ids.append(card.card_id)
                 ref_ids.append(ref.ref_id)
 
             return card_ids, ref_ids
+
+    @staticmethod
+    def _validate_source_url(url: str, ref_id: str, traceable_id: str) -> None:
+        """Validate source URL before card creation.
+
+        Rejects empty, placeholder, and unparseable URLs to prevent
+        broken cards from entering the database.
+
+        Raises:
+            RuntimeError: If the URL is invalid or a known placeholder
+        """
+        import re
+        from urllib.parse import urlparse
+
+        if not url or not url.strip():
+            raise RuntimeError(
+                f"Empty source URL for {ref_id} (traceable_id={traceable_id}).\n"
+                "  Guru Meditation: #ACF.00000021.BADURL\n"
+                "  Fix: Check traceable_id_to_url() conversion"
+            )
+
+        # Reject known placeholder patterns
+        placeholder_patterns = [
+            r"2501\.00000",       # Fake arXiv ID from test scripts
+            r"example\.com",      # Generic placeholder domain
+            r"placeholder",       # Explicit placeholder
+        ]
+        for pattern in placeholder_patterns:
+            if re.search(pattern, url, re.IGNORECASE):
+                raise RuntimeError(
+                    f"Placeholder URL detected for {ref_id}: {url}\n"
+                    "  Guru Meditation: #ACF.00000021.BADURL\n"
+                    "  Fix: Ensure source has a real traceable_id, not test data"
+                )
+
+        # Basic URL structure check
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            raise RuntimeError(
+                f"Malformed URL for {ref_id}: {url}\n"
+                "  Guru Meditation: #ACF.00000021.BADURL\n"
+                "  Fix: URL must have scheme and host"
+            )
 
     def _extract_card_title(self, content: str) -> str:
         """Extract title from brief_summary content.
@@ -2076,6 +2175,96 @@ Be concise - each summary should be 1-2 sentences max."""
 
     @traced_step
     @step
+    def publish_batch(self):
+        """Publish created cards and sync all KV stores.
+
+        This step promotes pending cards to published status and syncs
+        Cloudflare KV so content appears on gaius.zndx.org immediately.
+
+        Operations (all fail-fast):
+        1. publish_cards() — promote pending cards from this run
+        2. sync_to_kv() — update landing page published_cards key
+        3. sync_collection_to_kv() — update collection detail page
+        4. sync_collections_index_to_kv() — update /collections index
+
+        If no cards were created (dry_run or no base_path), skips publishing.
+        """
+        cards_created = getattr(self, "cards_created", 0)
+
+        if cards_created == 0:
+            print("No cards to publish, skipping publish_batch")
+            self.published_count = 0
+            self.next(self.end)
+            return
+
+        print(f"Publishing {cards_created} cards and syncing KV stores...")
+
+        try:
+            published_count = asyncio.get_event_loop().run_until_complete(
+                self._publish_batch_async(cards_created)
+            )
+        except RuntimeError:
+            published_count = asyncio.new_event_loop().run_until_complete(
+                self._publish_batch_async(cards_created)
+            )
+
+        self.published_count = published_count
+        print(f"Published {published_count} cards, KV stores synced")
+
+        self.emit_event("article_curation.published", {
+            "slug": self.selected_slug,
+            "published_count": published_count,
+        })
+
+        emit_publish(self.progress_run_id, published_count)
+
+        self.next(self.end)
+
+    async def _publish_batch_async(self, cards_created: int) -> int:
+        """Publish cards and sync KV stores.
+
+        Args:
+            cards_created: Number of cards to publish
+
+        Returns:
+            Number of cards actually published
+
+        Raises:
+            RuntimeError: If any step fails
+        """
+        import asyncpg
+        from gaius.core.config import get_database_url
+        from gaius.engine.services.collection_service import CollectionService
+
+        db_url = get_database_url()
+
+        async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+            service = CollectionService(pool)
+
+            # 1. Publish pending cards from this collection
+            published = await service.publish_cards(
+                count=cards_created,
+                collection_id=self.collection_id,
+            )
+            published_count = len(published)
+            print(f"  publish_cards: {published_count} cards promoted to published")
+
+            # 2. Sync landing page KV (published_cards key)
+            sync_result = await service.sync_to_kv()
+            print(f"  sync_to_kv: {sync_result.get('cards_synced', 0)} cards synced")
+
+            # 3. Sync collection detail page KV
+            col_result = await service.sync_collection_to_kv(self.collection_id)
+            print(f"  sync_collection_to_kv: {col_result.get('cards_synced', 0)} cards")
+
+            # 4. Sync collections index page KV
+            idx_result = await service.sync_collections_index_to_kv()
+            print(f"  sync_collections_index_to_kv: {idx_result.get('collections_synced', 0)} collections")
+
+            return published_count
+
+    @traced_step
+    @step
     def end(self):
         """Emit lineage and report results."""
         from gaius.hx.lineage.events import Dataset
@@ -2102,7 +2291,8 @@ Be concise - each summary should be 1-2 sentences max."""
                 print(f"Draft version: {self.draft_entry.version}")
                 print(f"Word count: {self.draft_entry.word_count}")
             print(f"Base file: {self.base_path}")
-            print(f"Cards created: {getattr(self, 'cards_created', 0)} (pending)")
+            print(f"Cards created: {getattr(self, 'cards_created', 0)}")
+            print(f"Cards published: {getattr(self, 'published_count', 0)}")
             print(f"Grok sync: {'Success' if self.grok_sync_result.get('success') else 'Fallback mode'}")
 
         self.emit_event("article_curation.completed", {
@@ -2110,6 +2300,7 @@ Be concise - each summary should be 1-2 sentences max."""
             "sources_count": len(self.acquired_sources),
             "draft_version": self.draft_entry.version if self.draft_entry else None,
             "cards_created": getattr(self, "cards_created", 0),
+            "published_count": getattr(self, "published_count", 0),
         })
 
         # Emit progress: flow completed

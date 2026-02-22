@@ -71,10 +71,9 @@ class PooledBudgetManager:
     async def _get_pool(self) -> asyncpg.Pool:
         """Get or create database connection pool."""
         if self._pool is None:
-            database_url = os.environ.get(
-                "DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius",
-            )
+            from gaius.core.config import get_database_url
+
+            database_url = get_database_url()
             self._pool = await asyncpg.create_pool(
                 database_url,
                 min_size=1,

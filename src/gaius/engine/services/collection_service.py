@@ -23,6 +23,9 @@ Guru Meditation Codes:
 - #COL.00000003.KVFAIL: Cloudflare KV publish failed
 - #COL.00000004.GROKFAIL: Grok Collections API failed
 - #COL.00000005.CARDFAIL: Card publish failed
+- #HX.00000001.CATALOGFAIL: Iceberg HX catalog not reachable
+- #HX.00000002.TABLEFAIL: Could not access/create Iceberg table
+- #HX.00000003.WRITEFAIL: Failed to append record to Iceberg
 """
 
 from __future__ import annotations
@@ -136,6 +139,7 @@ class Card:
         """
         return {
             "card_id": self.card_id,
+            "collection_id": self.collection_id,
             "title": self.title,
             "summary": self.summary,
             "source_url": self.source_url,
@@ -472,6 +476,188 @@ class CollectionService:
                 f"Updated collection {collection_id} with grok_collection_id: {grok_collection_id}"
             )
 
+    async def sync_collection_to_grok(
+        self,
+        collection_id: str,
+        kb_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Sync a collection to Grok Collections API (standalone).
+
+        Reads source files from the KB disk and uploads them to xAI
+        Grok Collections. Creates the Grok collection if needed.
+        Persists grok_collection_id to PostgreSQL (fail-fast).
+
+        This is independent of the ArticleCurationFlow — any collection
+        can be synced at any time.
+
+        Args:
+            collection_id: Local PostgreSQL collection ID
+            kb_root: KB root directory (defaults to GAIUS_KB_ROOT)
+
+        Returns:
+            Dict with collection_id, documents uploaded, etc.
+
+        Raises:
+            CollectionError: If collection/article not found or sync fails
+            RuntimeError: If XAI_MANAGEMENT_KEY not set
+
+        Guru Meditation: #COL.00000010.GROKSYNC
+        """
+        import os
+        from pathlib import Path
+
+        import yaml
+        from xai_sdk import Client as XAIClient
+        from xai_sdk.collections import FieldDefinition
+
+        # Step 1: Get collection + article from Postgres
+        collection = await self.get_collection(collection_id)
+        if not collection:
+            raise CollectionError(
+                f"Collection not found: {collection_id}",
+                guru_code="#COL.00000001.NOTFOUND",
+            )
+
+        # Find the article linked to this collection
+        article = None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM collections.articles WHERE collection_id = $1",
+                collection_id,
+            )
+            if row:
+                article = self._row_to_article(row)
+
+        if not article:
+            raise CollectionError(
+                f"No article linked to collection {collection_id}.\n"
+                "  Guru Meditation: #COL.00000010.GROKSYNC\n"
+                "  Grok sync requires an article with source files on disk",
+                guru_code="#COL.00000010.GROKSYNC",
+            )
+
+        # Step 2: Read source files from KB disk
+        if not kb_root:
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+        sources_dir = Path(kb_root) / article.kb_path / "sources"
+
+        if not sources_dir.exists():
+            raise CollectionError(
+                f"Sources directory not found: {sources_dir}\n"
+                "  Guru Meditation: #COL.00000010.GROKSYNC\n"
+                f"  Expected source files at {sources_dir}",
+                guru_code="#COL.00000010.GROKSYNC",
+            )
+
+        source_files = sorted(sources_dir.glob("*.md"))
+        if not source_files:
+            raise CollectionError(
+                f"No source files found in {sources_dir}\n"
+                "  Guru Meditation: #COL.00000010.GROKSYNC\n"
+                "  Run article curation to acquire sources first",
+                guru_code="#COL.00000010.GROKSYNC",
+            )
+
+        # Step 3: Parse source files (YAML frontmatter + content)
+        sources = []
+        for sf in source_files:
+            content = sf.read_text()
+            frontmatter = {}
+            body = content
+
+            # Parse YAML frontmatter if present
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    frontmatter = yaml.safe_load(parts[1]) or {}
+                    body = parts[2].strip()
+
+            sources.append({
+                "source_id": sf.stem,
+                "source_type": frontmatter.get("source_type", "web"),
+                "url": frontmatter.get("url", ""),
+                "title": frontmatter.get("title", sf.stem),
+                "content": body,
+            })
+
+        # Step 4: Create/find Grok collection via xai-sdk
+        mgmt_key = os.environ.get("XAI_MANAGEMENT_KEY")
+        if not mgmt_key:
+            raise RuntimeError(
+                "XAI_MANAGEMENT_KEY not configured — required for Grok Collections.\n"
+                "  Guru Meditation: #COL.00000011.NOMGMTKEY\n"
+                "  Create a Management API Key at https://console.x.ai\n"
+                "  Set XAI_MANAGEMENT_KEY environment variable"
+            )
+
+        client = XAIClient(management_api_key=mgmt_key)
+        try:
+            collection_name = f"gaius-article-{article.slug}"
+            grok_collection_id = collection.grok_collection_id
+
+            # Check for existing collection on xAI
+            if not grok_collection_id:
+                collections_resp = client.collections.list()
+                for c in collections_resp.collections:
+                    if c.collection_name == collection_name:
+                        grok_collection_id = c.collection_id
+                        logger.info(f"Found existing Grok collection: {grok_collection_id}")
+                        break
+
+            # Create if not found
+            if not grok_collection_id:
+                logger.info(f"Creating Grok collection: {collection_name}")
+                grok_col = client.collections.create(
+                    name=collection_name,
+                    model_name="grok-embedding-small",
+                    field_definitions=[
+                        FieldDefinition(key="source_type", required=False, inject_into_chunk=True, unique=False),
+                        FieldDefinition(key="source_id", required=False, inject_into_chunk=False, unique=True),
+                        FieldDefinition(key="url", required=False, inject_into_chunk=True, unique=False),
+                    ],
+                )
+                grok_collection_id = grok_col.collection_id
+                logger.info(f"Created Grok collection: {grok_collection_id}")
+
+            # Step 5: Upload source documents
+            upload_results = []
+            for source in sources:
+                doc_content = f"# {source['title']}\n\n"
+                doc_content += f"Source: {source['url']}\n"
+                doc_content += f"Type: {source['source_type']}\n\n"
+                doc_content += source["content"]
+
+                document = client.collections.upload_document(
+                    collection_id=grok_collection_id,
+                    name=f"{source['source_id']}.md",
+                    data=doc_content.encode("utf-8"),
+                    fields={
+                        "source_type": source["source_type"],
+                        "source_id": source["source_id"],
+                        "url": source["url"],
+                    },
+                )
+
+                upload_results.append({
+                    "source_id": source["source_id"],
+                    "status": "uploaded",
+                    "document_id": getattr(document, "file_id", None),
+                })
+
+            # Step 6: Persist grok_collection_id (fail-fast)
+            await self.update_grok_collection_id(collection_id, grok_collection_id)
+
+            return {
+                "collection_id": collection_id,
+                "grok_collection_id": grok_collection_id,
+                "collection_name": collection_name,
+                "documents_uploaded": len(upload_results),
+                "upload_results": upload_results,
+            }
+
+        finally:
+            client.close()
+
     # =========================================================================
     # Article Operations
     # =========================================================================
@@ -651,6 +837,9 @@ class CollectionService:
         image_url: str | None = None,
         sequence: int | None = None,
         article_id: str | None = None,
+        source_date: date | None = None,
+        kb_path: str | None = None,
+        zettle_slug: str | None = None,
     ) -> Card:
         """Add a card to a collection.
 
@@ -662,7 +851,10 @@ class CollectionService:
             source_type: Type of source (arxiv, huggingface, etc.)
             image_url: Optional image URL
             sequence: Optional ordering sequence
-            article_id: Article ID for FK relationship (optional during transition)
+            article_id: Article ID for FK relationship
+            source_date: Original source publication date
+            kb_path: Path to source file in KB
+            zettle_slug: Zettelkasten slug current when card was created
 
         Returns:
             Created Card object
@@ -698,11 +890,13 @@ class CollectionService:
                 """
                 INSERT INTO collections.cards
                 (card_id, collection_id, title, summary, source_url, source_type,
-                 image_url, sequence, article_id, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 image_url, sequence, article_id, source_date, kb_path, zettle_slug,
+                 created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 """,
                 card_id, collection_id, title, summary, source_url, source_type,
-                image_url, sequence, article_id, now,
+                image_url, sequence, article_id, source_date, kb_path, zettle_slug,
+                now,
             )
 
         return Card(
@@ -715,7 +909,100 @@ class CollectionService:
             image_url=image_url,
             sequence=sequence,
             article_id=article_id,
+            source_date=source_date,
+            kb_path=kb_path,
             created_at=now,
+        )
+
+    async def add_source(
+        self,
+        source_id: str,
+        card_id: str,
+        provenance_url: str,
+        source_type: str,
+        provenance_traceable_id: str | None = None,
+        excerpt_text: str | None = None,
+        excerpt_page: int | None = None,
+        excerpt_section: str | None = None,
+        excerpt_char_start: int | None = None,
+        excerpt_char_end: int | None = None,
+        ingested_via: str | None = None,
+        kb_path: str | None = None,
+    ) -> Source:
+        """Add a provenance source record for a card.
+
+        Every card must have at least one source record linking it to
+        the original content. This is the provenance chain.
+
+        Args:
+            source_id: Unique source identifier (e.g., src_arxiv_abc123)
+            card_id: Parent card ID (must exist)
+            provenance_url: Original source URL
+            source_type: Type (arxiv, web, huggingface, etc.)
+            provenance_traceable_id: TraceableId URI (e.g., arxiv://2401.12345)
+            excerpt_text: Key excerpt for citation
+            excerpt_page: Page number of excerpt
+            excerpt_section: Section heading of excerpt
+            excerpt_char_start: Start character offset
+            excerpt_char_end: End character offset
+            ingested_via: How source was acquired (article_curation, web_search, etc.)
+            kb_path: Path to source file in KB
+
+        Returns:
+            Created Source object
+
+        Raises:
+            CollectionError: If card not found or insert fails
+        """
+        now = datetime.now(timezone.utc)
+
+        async with self._pool.acquire() as conn:
+            # Verify card exists
+            exists = await conn.fetchval(
+                "SELECT 1 FROM collections.cards WHERE card_id = $1",
+                card_id,
+            )
+            if not exists:
+                raise CollectionError(
+                    f"Card not found: {card_id}",
+                    guru_code="#COL.00000005.CARDFAIL",
+                )
+
+            # Build excerpt_char_range from start/end if provided
+            char_range = None
+            if excerpt_char_start is not None and excerpt_char_end is not None:
+                # asyncpg handles Range types via asyncpg.Range
+                from asyncpg import Range
+                char_range = Range(excerpt_char_start, excerpt_char_end)
+
+            await conn.execute(
+                """
+                INSERT INTO collections.sources
+                (source_id, card_id, provenance_url, provenance_traceable_id,
+                 source_type, excerpt_text, excerpt_page, excerpt_section,
+                 excerpt_char_range, ingested_via, ingested_at, kb_path)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (source_id) DO NOTHING
+                """,
+                source_id, card_id, provenance_url, provenance_traceable_id,
+                source_type, excerpt_text, excerpt_page, excerpt_section,
+                char_range, ingested_via, now, kb_path,
+            )
+
+        return Source(
+            source_id=source_id,
+            card_id=card_id,
+            provenance_url=provenance_url,
+            provenance_traceable_id=provenance_traceable_id,
+            source_type=source_type,
+            excerpt_text=excerpt_text,
+            excerpt_page=excerpt_page,
+            excerpt_section=excerpt_section,
+            excerpt_char_start=excerpt_char_start,
+            excerpt_char_end=excerpt_char_end,
+            ingested_via=ingested_via,
+            ingested_at=now,
+            kb_path=kb_path,
         )
 
     async def get_card(self, card_id: str) -> Card | None:
@@ -819,6 +1106,7 @@ class CollectionService:
         async with self._pool.acquire() as conn:
             if collection_id:
                 # Publish from specific collection with diversity
+                # Round-robin across articles and source types for varied content
                 rows = await conn.fetch(
                     """
                     WITH pending_ranked AS (
@@ -831,22 +1119,15 @@ class CollectionService:
                             ROW_NUMBER() OVER (
                                 PARTITION BY article_id, source_type
                                 ORDER BY created_at ASC
-                            ) as rank_in_group,
-                            ROW_NUMBER() OVER (
-                                -- Interleave by cycling through articles then source types
-                                ORDER BY
-                                    ROW_NUMBER() OVER (PARTITION BY article_id ORDER BY created_at),
-                                    article_id,
-                                    source_type,
-                                    created_at
-                            ) as selection_order
+                            ) as rank_in_group
                         FROM collections.cards
                         WHERE collection_id = $1 AND status = 'pending'
                     ),
                     diverse_pending AS (
+                        -- Select round-robin: one from each article/type combo before repeating
                         SELECT card_id
                         FROM pending_ranked
-                        ORDER BY selection_order
+                        ORDER BY rank_in_group, article_id, source_type
                         LIMIT $2
                         FOR UPDATE
                     )
@@ -897,6 +1178,21 @@ class CollectionService:
                 )
 
             published = [self._row_to_card(row) for row in rows]
+
+            # Auto-activate collection on first publish
+            # Collections start as 'draft' and must be 'active' to appear
+            # in sync_collections_index_to_kv() which filters WHERE status = 'active'
+            if published:
+                col_ids = {card.collection_id for card in published}
+                for cid in col_ids:
+                    await conn.execute(
+                        """
+                        UPDATE collections.collections
+                        SET status = 'active', updated_at = NOW()
+                        WHERE collection_id = $1 AND status = 'draft'
+                        """,
+                        cid,
+                    )
 
             logger.info(f"Published {len(published)} cards (diversity-aware)")
             return published
@@ -1131,12 +1427,8 @@ class CollectionService:
         # Publish cards first
         published = await self.publish_cards(count=count, collection_id=collection_id)
 
-        # Sync to KV
-        sync_result = {"success": False, "cards_synced": 0}
-        try:
-            sync_result = await self.sync_to_kv()
-        except CollectionError as e:
-            logger.error(f"KV sync failed: {e}")
+        # Sync to KV — fail-fast, callers must know if KV sync fails
+        sync_result = await self.sync_to_kv()
 
         return {
             "published": [card.to_public_dict() for card in published],
@@ -1467,10 +1759,9 @@ created_at: {now.isoformat()}
                 logger.warning(f"Failed to parse article curation event: {e}")
 
         # Get a dedicated connection for LISTEN
-        db_url = os.environ.get(
-            "GAIUS_DATABASE_URL",
-            "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-        )
+        from gaius.core.config import get_database_url
+
+        db_url = get_database_url()
 
         conn: asyncpg.Connection | None = None
         flow_task: asyncio.Task | None = None
@@ -1585,6 +1876,483 @@ created_at: {now.isoformat()}
                     await flow_task
                 except asyncio.CancelledError:
                     pass
+
+    # =========================================================================
+    # Collection Summary Generation
+    # =========================================================================
+
+    async def generate_collection_summary(
+        self,
+        collection_id: str,
+        summary_type: str = "frontier",
+    ) -> dict[str, Any]:
+        """Generate an AI summary for a collection.
+
+        Uses the collection's published cards to build a content overview,
+        then calls the appropriate LLM backend for summarization.
+
+        Args:
+            collection_id: Collection to summarize
+            summary_type: "frontier" (xai/grok) or "open_weights" (reasoning model)
+
+        Returns:
+            Dict with summary text, model label, and metadata
+
+        Raises:
+            CollectionError: If collection not found or LLM call fails
+        """
+        import time as _time
+
+        if summary_type not in ("frontier", "open_weights"):
+            raise CollectionError(
+                f"Invalid summary_type: {summary_type}. Must be 'frontier' or 'open_weights'.",
+                guru_code="#COL.00000009.SUMMARYFAIL",
+            )
+
+        # Fetch collection
+        collection = await self.get_collection(collection_id)
+        if not collection:
+            raise CollectionError(
+                f"Collection not found: {collection_id}",
+                guru_code="#COL.00000001.NOTFOUND",
+            )
+
+        # Get published cards for context
+        cards = await self.list_cards(collection_id, status="published")
+        if not cards:
+            # Also try pending cards if none published yet
+            cards = await self.list_cards(collection_id, limit=20)
+
+        # Build prompt from collection + cards
+        card_descriptions = "\n".join(
+            f"- {card.title}: {card.summary} [{card.source_type}]"
+            for card in cards[:30]  # Cap at 30 cards for prompt size
+        )
+
+        prompt = (
+            f"You are summarizing a curated research collection.\n\n"
+            f"Collection: {collection.name}\n"
+            f"Description: {collection.description}\n\n"
+            f"The collection contains {len(cards)} cards covering these topics:\n"
+            f"{card_descriptions}\n\n"
+            f"Write a substantive 2-3 paragraph summary of what this collection covers, "
+            f"the key themes and connections between the research materials, and why "
+            f"these topics matter. Write for a technically literate audience. "
+            f"Use markdown formatting (paragraphs, bold for emphasis)."
+        )
+
+        messages = [{"role": "user", "content": prompt}]
+
+        # Call appropriate backend
+        start_ms = int(_time.time() * 1000)
+
+        if summary_type == "frontier":
+            from gaius.engine.backends.external.xai_backend import XAIBackend
+            backend = XAIBackend()
+            if not backend.is_available:
+                raise CollectionError(
+                    "XAI backend not available (XAI_API_KEY not set).\n"
+                    "  Set: XAI_API_KEY environment variable",
+                    guru_code="#COL.00000009.SUMMARYFAIL",
+                )
+            response = await backend.complete(
+                messages,
+                model="grok-4-1-fast",
+                temperature=0.7,
+                max_tokens=4096,
+            )
+            model_label = "frontier model"
+        else:
+            # open_weights — use the router with subscription tier (Bytez/DeepSeek-R1)
+            from gaius.engine.backends.external.router import get_external_router
+            router = get_external_router()
+            response = await router.complete(
+                messages,
+                tier="subscription",
+                temperature=0.7,
+                max_tokens=4096,
+            )
+            model_label = "open-weights reasoning model"
+
+        latency_ms = int(_time.time() * 1000) - start_ms
+
+        if not response.success:
+            raise CollectionError(
+                f"LLM generation failed: {response.error}\n"
+                f"  Backend: {response.provider}\n"
+                f"  Try: /health fix endpoints",
+                guru_code="#COL.00000009.SUMMARYFAIL",
+            )
+
+        summary_text = response.content
+        thinking_trace = response.reasoning
+
+        # Store to Iceberg HX
+        hx_generation_id = str(uuid.uuid4())
+        await self._store_generation_to_hx(
+            generation_id=hx_generation_id,
+            collection_id=collection_id,
+            summary_type=summary_type,
+            prompt=prompt,
+            output=summary_text,
+            thinking_trace=thinking_trace,
+            model_name=response.model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_ms=latency_ms,
+        )
+
+        # UPSERT to PostgreSQL
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO collections.collection_summaries
+                (collection_id, summary_type, hx_generation_id, summary_text,
+                 model_label, input_tokens, output_tokens, generated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (collection_id, summary_type) DO UPDATE SET
+                    hx_generation_id = EXCLUDED.hx_generation_id,
+                    summary_text = EXCLUDED.summary_text,
+                    model_label = EXCLUDED.model_label,
+                    input_tokens = EXCLUDED.input_tokens,
+                    output_tokens = EXCLUDED.output_tokens,
+                    generated_at = NOW()
+                """,
+                collection_id, summary_type, hx_generation_id, summary_text,
+                model_label, response.input_tokens, response.output_tokens,
+            )
+
+        logger.info(
+            f"Generated {summary_type} summary for {collection.slug} "
+            f"({response.input_tokens}in/{response.output_tokens}out, {latency_ms}ms)"
+        )
+
+        return {
+            "collection_id": collection_id,
+            "summary_type": summary_type,
+            "summary_text": summary_text,
+            "model_label": model_label,
+            "hx_generation_id": hx_generation_id,
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "latency_ms": latency_ms,
+        }
+
+    async def _store_generation_to_hx(
+        self,
+        generation_id: str,
+        collection_id: str,
+        summary_type: str,
+        prompt: str,
+        output: str,
+        thinking_trace: str | None,
+        model_name: str,
+        input_tokens: int,
+        output_tokens: int,
+        latency_ms: int,
+    ) -> None:
+        """Store LLM generation to Iceberg HX for provenance.
+
+        Raises:
+            CollectionError: If storage fails (fail-fast, no fallback).
+        """
+        import pyarrow as pa
+        from gaius.hx.catalog import get_catalog
+        from gaius.hx.tables import get_llm_generation_table
+
+        try:
+            catalog = get_catalog()
+        except Exception as e:
+            raise CollectionError(
+                f"Iceberg HX catalog unavailable: {e}\n"
+                "  Try: /health fix hx\n"
+                "  Or:  Check MinIO + PostgreSQL catalog connectivity",
+                guru_code="#HX.00000001.CATALOGFAIL",
+            ) from e
+
+        try:
+            table = get_llm_generation_table(catalog)
+        except Exception as e:
+            raise CollectionError(
+                f"Failed to access llm.generations table: {e}\n"
+                "  Try: /health fix hx\n"
+                "  Or:  Ensure 'llm' namespace exists in Iceberg catalog",
+                guru_code="#HX.00000002.TABLEFAIL",
+            ) from e
+
+        now = datetime.now(timezone.utc)
+
+        # Explicit schema matching Iceberg table: required fields must be non-nullable
+        arrow_schema = pa.schema([
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("collection_id", pa.string(), nullable=True),
+            pa.field("summary_type", pa.string(), nullable=False),
+            pa.field("prompt", pa.string(), nullable=False),
+            pa.field("output", pa.string(), nullable=False),
+            pa.field("thinking_trace", pa.string(), nullable=True),
+            pa.field("model_name", pa.string(), nullable=False),
+            pa.field("input_tokens", pa.int64(), nullable=True),
+            pa.field("output_tokens", pa.int64(), nullable=True),
+            pa.field("latency_ms", pa.int64(), nullable=True),
+            pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+        ])
+
+        record = pa.table({
+            "id": [generation_id],
+            "collection_id": [collection_id],
+            "summary_type": [summary_type],
+            "prompt": [prompt],
+            "output": [output],
+            "thinking_trace": [thinking_trace or ""],
+            "model_name": [model_name],
+            "input_tokens": [input_tokens],
+            "output_tokens": [output_tokens],
+            "latency_ms": [latency_ms],
+            "generated_at": [now],
+        }, schema=arrow_schema)
+
+        try:
+            table.append(record)
+        except Exception as e:
+            raise CollectionError(
+                f"Failed to write generation to Iceberg HX: {e}\n"
+                "  Try: /health fix hx\n"
+                "  Or:  Check MinIO storage availability",
+                guru_code="#HX.00000003.WRITEFAIL",
+            ) from e
+
+        logger.debug(f"Stored generation {generation_id} to Iceberg HX")
+
+    # =========================================================================
+    # Per-Collection KV Sync
+    # =========================================================================
+
+    async def sync_collection_to_kv(
+        self,
+        collection_id: str,
+    ) -> dict[str, Any]:
+        """Sync a single collection's page data to Cloudflare KV.
+
+        Assembles collection metadata, summaries, cards, and zettle aliases
+        into a JSON blob and pushes to KV for the worker to render.
+
+        Args:
+            collection_id: Collection to sync
+
+        Returns:
+            Result dict with sync status
+
+        Raises:
+            CollectionError: If collection not found or KV push fails
+        """
+        import aiohttp
+        import json
+
+        # Fetch collection
+        collection = await self.get_collection(collection_id)
+        if not collection:
+            raise CollectionError(
+                f"Collection not found: {collection_id}",
+                guru_code="#COL.00000001.NOTFOUND",
+            )
+
+        # Fetch summaries
+        summaries: dict[str, Any] = {}
+        async with self._pool.acquire() as conn:
+            summary_rows = await conn.fetch(
+                """
+                SELECT summary_type, summary_text, model_label, generated_at
+                FROM collections.collection_summaries
+                WHERE collection_id = $1
+                """,
+                collection_id,
+            )
+            for row in summary_rows:
+                summaries[row["summary_type"]] = {
+                    "text": row["summary_text"],
+                    "model_label": row["model_label"],
+                    "generated_at": row["generated_at"].isoformat() if row["generated_at"] else None,
+                }
+
+        # Fetch published cards
+        cards = await self.get_published_cards(collection_id=collection_id, limit=100)
+        card_dicts = [card.to_public_dict() for card in cards]
+
+        # Collect zettle-slug aliases from cards
+        async with self._pool.acquire() as conn:
+            alias_rows = await conn.fetch(
+                """
+                SELECT DISTINCT zettle_slug
+                FROM collections.cards
+                WHERE collection_id = $1 AND zettle_slug IS NOT NULL
+                ORDER BY zettle_slug
+                """,
+                collection_id,
+            )
+        zettle_aliases = [row["zettle_slug"] for row in alias_rows]
+
+        # Assemble the collection page data
+        now = datetime.now(timezone.utc)
+        page_data = {
+            "collection_id": collection_id,
+            "slug": collection.slug,
+            "name": collection.name,
+            "description": collection.description,
+            "summaries": summaries,
+            "zettle_aliases": zettle_aliases,
+            "cards": card_dicts,
+            "updated_at": now.isoformat(),
+        }
+
+        # Push to KV
+        account_id, api_token, namespace_id = self._get_kv_credentials()
+
+        kv_base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 1. Put collection page data
+                async with session.put(
+                    f"{kv_base_url}/collection:{collection_id}",
+                    headers=headers,
+                    data=json.dumps(page_data),
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        raise CollectionError(
+                            f"Cloudflare KV API error: {resp.status} - {error_text}",
+                            guru_code="#COL.00000003.KVFAIL",
+                        )
+
+                # 2. Put zettle-slug alias keys for slug-based lookup
+                for alias in zettle_aliases:
+                    alias_data = json.dumps({"collection_id": collection_id})
+                    async with session.put(
+                        f"{kv_base_url}/collection-alias:{alias}",
+                        headers=headers,
+                        data=alias_data,
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"Failed to set alias key for {alias}: {resp.status}")
+
+                # 3. Also set alias for collection slug itself
+                slug_alias = json.dumps({"collection_id": collection_id})
+                async with session.put(
+                    f"{kv_base_url}/collection-alias:{collection.slug}",
+                    headers=headers,
+                    data=slug_alias,
+                ) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"Failed to set slug alias for {collection.slug}: {resp.status}")
+
+            logger.info(
+                f"Synced collection {collection.slug} to KV "
+                f"({len(card_dicts)} cards, {len(zettle_aliases)} aliases)"
+            )
+
+            return {
+                "success": True,
+                "collection_id": collection_id,
+                "slug": collection.slug,
+                "cards_synced": len(card_dicts),
+                "aliases_synced": len(zettle_aliases),
+                "summaries": list(summaries.keys()),
+                "namespace_id": namespace_id,
+            }
+
+        except aiohttp.ClientError as e:
+            raise CollectionError(
+                f"Cloudflare KV network error: {e}",
+                guru_code="#COL.00000003.KVFAIL",
+            ) from e
+
+    async def sync_collections_index_to_kv(self) -> dict[str, Any]:
+        """Sync the collections index to Cloudflare KV.
+
+        Pushes a list of all active collections with card counts
+        to the collections_index KV key for the index page.
+
+        Returns:
+            Result dict with sync status
+        """
+        import aiohttp
+        import json
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    c.collection_id,
+                    c.slug,
+                    c.name,
+                    c.description,
+                    c.status,
+                    c.featured,
+                    COUNT(CASE WHEN card.status = 'published' THEN 1 END) as published_cards,
+                    COUNT(card.card_id) as total_cards,
+                    MAX(card.published_at) as last_published_at,
+                    c.updated_at
+                FROM collections.collections c
+                LEFT JOIN collections.cards card ON c.collection_id = card.collection_id
+                WHERE c.status = 'active'
+                GROUP BY c.collection_id
+                ORDER BY c.featured DESC, c.updated_at DESC
+                """
+            )
+
+        index_entries = [
+            {
+                "collection_id": row["collection_id"],
+                "slug": row["slug"],
+                "name": row["name"],
+                "description": row["description"] or "",
+                "featured": row["featured"],
+                "published_cards": row["published_cards"],
+                "total_cards": row["total_cards"],
+                "last_published_at": row["last_published_at"].isoformat() if row["last_published_at"] else None,
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+            for row in rows
+        ]
+
+        # Push to KV
+        account_id, api_token, namespace_id = self._get_kv_credentials()
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/collections_index"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    url,
+                    headers=headers,
+                    data=json.dumps(index_entries),
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        raise CollectionError(
+                            f"Cloudflare KV API error: {resp.status} - {error_text}",
+                            guru_code="#COL.00000003.KVFAIL",
+                        )
+
+            logger.info(f"Synced collections index to KV ({len(index_entries)} collections)")
+            return {
+                "success": True,
+                "collections_synced": len(index_entries),
+                "namespace_id": namespace_id,
+            }
+
+        except aiohttp.ClientError as e:
+            raise CollectionError(
+                f"Cloudflare KV network error: {e}",
+                guru_code="#COL.00000003.KVFAIL",
+            ) from e
 
     # =========================================================================
     # Private Helpers

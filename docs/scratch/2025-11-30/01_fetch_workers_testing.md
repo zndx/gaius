@@ -10,7 +10,7 @@ Completed end-to-end testing of the fetch workers module. Fixed several issues d
 ## Issues Fixed
 
 ### 1. PostgreSQL TCP Listening
-- **Problem**: asyncpg couldn't connect via TCP (port 5438)
+- **Problem**: asyncpg couldn't connect via TCP (port 5444)
 - **Fix**: Added `listen_addresses = "127.0.0.1"` to devenv.nix postgres config
 - **File**: `devenv.nix:51`
 
@@ -61,13 +61,13 @@ Sources requiring additional fetchers (Sprint 2):
 uv run gaius-worker --status
 
 # Schedule a job manually
-psql -h 127.0.0.1 -p 5438 -d zndx_gaius -c "SELECT schedule_fetch('arxiv_cs_dc');"
+psql -h 127.0.0.1 -p 5444 -d zndx_gaius -c "SELECT schedule_fetch('arxiv_cs_dc');"
 
 # Run worker once (process all pending jobs)
 uv run gaius-worker --once -v
 
 # Verify metadata is proper JSONB
-psql -h 127.0.0.1 -p 5438 -d zndx_gaius -c \
+psql -h 127.0.0.1 -p 5444 -d zndx_gaius -c \
   "SELECT jsonb_typeof(metadata), metadata->>'arxiv_id' FROM content_items LIMIT 1;"
 ```
 

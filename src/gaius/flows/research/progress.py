@@ -195,7 +195,8 @@ def emit_progress(
     _emit_otel_progress(event_name, progress, session_id, pass_number, message)
 
     # Emit to PostgreSQL (for TUI LISTEN/NOTIFY)
-    db_url = os.environ.get("DATABASE_URL", "postgres://gaius:gaius@localhost:5432/gaius")
+    from gaius.core.config import get_database_url
+    db_url = get_database_url()
 
     try:
         conn = psycopg2.connect(db_url)

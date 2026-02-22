@@ -34,6 +34,12 @@ class EndpointConfig:
     tensor_parallel: int = 1
     max_num_seqs: int = 256  # Max concurrent sequences for vLLM
     task: str = "generate"  # vLLM task: generate | embed | classify | reward
+    # Per-endpoint overrides (None = use global vLLM defaults)
+    dtype: Optional[str] = None
+    enforce_eager: bool = False
+    gpu_memory_utilization: Optional[float] = None
+    swap_space: Optional[float] = None
+    embedding_dim: Optional[int] = None
 
 
 @dataclass
@@ -356,6 +362,11 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
                     tensor_parallel=safe_get(endpoint_conf, "tensor-parallel", 1),
                     max_num_seqs=safe_get(endpoint_conf, "max-num-seqs", 256),
                     task=safe_get(endpoint_conf, "task", "generate"),
+                    dtype=safe_get(endpoint_conf, "dtype"),
+                    enforce_eager=safe_get(endpoint_conf, "enforce-eager", False),
+                    gpu_memory_utilization=safe_get(endpoint_conf, "gpu-memory-utilization"),
+                    swap_space=safe_get(endpoint_conf, "swap-space"),
+                    embedding_dim=safe_get(endpoint_conf, "embedding-dim"),
                 )
 
             agents[name] = AgentConfig(

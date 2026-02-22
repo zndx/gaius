@@ -104,8 +104,11 @@ def _create_sql_catalog(config: HxConfig) -> Catalog:
         **properties,
     )
 
-    # Ensure namespace exists
-    _ensure_namespace(catalog, config.namespace)
+    # Ensure required namespaces exist
+    # config.namespace is typically "raw"; "llm" is needed for LLM generation storage
+    REQUIRED_NAMESPACES = [config.namespace, "llm"]
+    for ns in REQUIRED_NAMESPACES:
+        _ensure_namespace(catalog, ns)
 
     return catalog
 
@@ -173,16 +176,14 @@ def _ensure_namespace(catalog: Catalog, namespace: str) -> None:
     """Ensure the namespace exists in the catalog.
 
     Creates the namespace if it doesn't exist.
-    """
-    from pyiceberg.catalog import Catalog
 
-    try:
-        namespaces = catalog.list_namespaces()
-        if (namespace,) not in namespaces:
-            logger.info(f"Creating namespace '{namespace}'")
-            catalog.create_namespace(namespace)
-    except Exception as e:
-        logger.warning(f"Could not check/create namespace: {e}")
+    Raises:
+        Exception: If namespace cannot be listed or created (fail-fast).
+    """
+    namespaces = catalog.list_namespaces()
+    if (namespace,) not in namespaces:
+        logger.info(f"Creating namespace '{namespace}'")
+        catalog.create_namespace(namespace)
 
 
 def reset_catalog() -> None:

@@ -63,10 +63,8 @@ logger = logging.getLogger(__name__)
 
 def _get_database_url() -> str:
     """Get database URL for asyncpg pool."""
-    return os.environ.get(
-        "GAIUS_DATABASE_URL",
-        "postgres://gaius:gaius@localhost:5438/zndx_gaius"
-    )
+    from gaius.core.config import get_database_url
+    return get_database_url()
 
 
 def _extract_title(content: str) -> str:

@@ -2063,10 +2063,8 @@ class XBookmarksService:
 
         # Get database connection parameters from pool (or environment)
         # We need a dedicated connection for LISTEN
-        dsn = os.environ.get(
-            "DATABASE_URL",
-            "postgresql://gaius:gaius@localhost:5432/zndx_gaius"
-        )
+        from gaius.core.config import get_database_url
+        dsn = get_database_url()
 
         logger.info("Starting auto-sync listener for 'x_auto_sync_due' channel")
 

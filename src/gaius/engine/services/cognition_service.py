@@ -1331,11 +1331,10 @@ class CognitionService(BaseDaemon):
             from ...workers.db import Database
             import os
 
-            # Get database URL from environment or config
-            db_url = os.getenv(
-                "GAIUS_DATABASE_URL",
-                os.getenv("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            # Get database URL from config
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
 
             # Create minimal worker config
             config = WorkerConfig(db_url=db_url)

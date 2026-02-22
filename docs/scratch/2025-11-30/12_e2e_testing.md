@@ -23,7 +23,7 @@ Services:
 - vLLM:    http://localhost:8088 (Qwen/Qwen3-Coder-30B-A3B-Instruct)
 - optillm: http://localhost:8080 (API proxy to vLLM)
 - Qdrant:  http://localhost:6339 (vector store)
-- Postgres: localhost:5438 (zndx_gaius)
+- Postgres: localhost:5444 (zndx_gaius)
 ```
 
 ## Issues Found and Fixed

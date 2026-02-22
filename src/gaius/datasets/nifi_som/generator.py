@@ -464,7 +464,7 @@ class NiFiSoMGenerator:
 
     async def generate_from_metaflow_db(
         self,
-        db_url: str = "postgres://localhost:5438/metaflow",
+        db_url: str | None = None,
         limit: int = 10,
     ) -> list[DatasetExample]:
         """Generate examples from flows in the Metaflow database.
@@ -476,6 +476,11 @@ class NiFiSoMGenerator:
         Returns:
             List of dataset examples
         """
+        # Resolve database URL from config if not provided
+        if db_url is None:
+            from gaius.core.config import get_database_url
+            db_url = get_database_url()
+
         # Query flows from database
         flows = await self._query_metaflow_flows(db_url, limit)
 

@@ -49,12 +49,10 @@ class MetaSyncFlow(FlowSpec):
     def start(self):
         """Initialize sync and load watermarks."""
         import psycopg2
-        import os
 
-        self.db_url = os.getenv(
-            "GAIUS_DATABASE_URL",
-            "postgres://localhost:5438/zndx_gaius?sslmode=disable",
-        )
+        from gaius.core.config import get_database_url
+
+        self.db_url = get_database_url()
 
         logger.info(f"Starting MetaSyncFlow in {self.sync_mode} mode")
 

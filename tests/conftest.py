@@ -159,7 +159,7 @@ def database_url():
     url = os.environ.get("DATABASE_URL")
     if not url:
         # Try default devenv configuration
-        url = "postgres://postgres:postgres@localhost:5438/zndx_gaius?sslmode=disable"
+        url = "postgres://postgres:postgres@localhost:5444/zndx_gaius?sslmode=disable"
 
     # Quick connectivity check
     try:

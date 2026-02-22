@@ -373,7 +373,8 @@ Be concise and decisive. The system should make steady progress without human in
             import asyncpg
             import os
 
-            url = os.getenv("DATABASE_URL", "postgresql://gaius:gaius@localhost:5432/gaius")
+            from ...core.config import get_database_url
+            url = get_database_url()
             conn = await asyncpg.connect(url)
             try:
                 rows = await conn.fetch("""

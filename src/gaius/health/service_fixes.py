@@ -92,7 +92,7 @@ class PostgresFixStrategy(ServiceFixStrategy):
 
     def __init__(self):
         super().__init__("postgres")
-        self.port = int(os.getenv("GAIUS_DB_PORT", "5438"))
+        self.port = int(os.getenv("PGPORT", "5444"))
 
     def create_fix_actions(
         self, check_result: dict | None = None
@@ -914,11 +914,11 @@ class PipelineFixStrategy(ServiceFixStrategy):
                 description="Check pipeline stage backlogs and stuck tasks",
                 code='''
 import asyncio
-import os
 import asyncpg
+from gaius.core.config import get_database_url
 
 async def diagnose():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -985,11 +985,11 @@ print(f"\\nDiagnosis: {result}")
                 description="Reset tasks that have been running too long",
                 code='''
 import asyncio
-import os
 import asyncpg
+from gaius.core.config import get_database_url
 
 async def reset_stuck():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -1039,12 +1039,12 @@ print(f"Total tasks reset: {count}")
                 description="Schedule immediate triage if content backlog exists",
                 code='''
 import asyncio
-import os
 import asyncpg
 import json
+from gaius.core.config import get_database_url
 
 async def schedule_triage():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -1120,11 +1120,11 @@ print(f"\\nScheduled {count} task(s)")
                 description="Check that cognition daemon is processing tasks",
                 code='''
 import asyncio
-import os
 import asyncpg
+from gaius.core.config import get_database_url
 
 async def verify():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)

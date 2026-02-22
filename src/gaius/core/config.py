@@ -65,7 +65,7 @@ class KBConfig:
 class DatabaseConfig:
     """Database connection configuration."""
 
-    url: str = "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+    url: str = "postgres://localhost:5444/zndx_gaius?sslmode=disable"
     pool_size: int = 10
 
 
@@ -456,7 +456,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     )
 
     # Strip quotes from database URL if present (common .env issue)
-    db_url = g.get("database.url", "postgres://localhost:5438/zndx_gaius?sslmode=disable")
+    db_url = g.get("database.url", "postgres://localhost:5444/zndx_gaius?sslmode=disable")
     if isinstance(db_url, str):
         db_url = db_url.strip('"').strip("'")
 

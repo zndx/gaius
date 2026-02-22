@@ -238,7 +238,7 @@ services:
       POSTGRES_DB: zndx_gaius
       POSTGRES_PASSWORD: postgres
     ports:
-      - 5438:5432
+      - 5444:5432
 
   qdrant:
     image: qdrant/qdrant:latest

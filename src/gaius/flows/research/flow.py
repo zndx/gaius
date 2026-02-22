@@ -576,9 +576,9 @@ class ResearchFlow(TracedFlow, GaiusFlow):
 
         async def do_save():
             import asyncpg
+            from gaius.core.config import get_database_url
 
-            # Database URL from environment
-            db_url = "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            db_url = get_database_url()
 
             async with asyncpg.create_pool(db_url, min_size=1, max_size=1) as pool:
                 async with pool.acquire() as conn:
@@ -640,8 +640,9 @@ class ResearchFlow(TracedFlow, GaiusFlow):
 
         async def do_register():
             import asyncpg
+            from gaius.core.config import get_database_url
 
-            db_url = "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            db_url = get_database_url()
 
             async with asyncpg.create_pool(db_url, min_size=1, max_size=1) as pool:
                 async with pool.acquire() as conn:
@@ -692,8 +693,9 @@ class ResearchFlow(TracedFlow, GaiusFlow):
         async def do_complete():
             import asyncpg
             import uuid
+            from gaius.core.config import get_database_url
 
-            db_url = "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+            db_url = get_database_url()
 
             async with asyncpg.create_pool(db_url, min_size=1, max_size=1) as pool:
                 async with pool.acquire() as conn:

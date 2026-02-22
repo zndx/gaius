@@ -24,7 +24,7 @@ allow_k8s_contexts(['default', 'kubernetes-admin@kubernetes'])
 
 # Devenv service endpoints (accessed via K8s Services pointing to host)
 DEVENV_POSTGRES_HOST = "devenv-postgres"
-DEVENV_POSTGRES_PORT = "5438"
+DEVENV_POSTGRES_PORT = "5444"
 DEVENV_MINIO_HOST = "devenv-minio"
 DEVENV_MINIO_PORT = "9010"
 
@@ -205,7 +205,7 @@ if config.tilt_subcommand == 'up':
     print("  API Backend:      http://<host-ip>:9083")
     print("")
     print("Devenv (host):")
-    print("  PostgreSQL:       localhost:5438")
+    print("  PostgreSQL:       localhost:5444")
     print("  MinIO:            localhost:9010")
     print("")
     print("Port Allocation (no conflicts):")

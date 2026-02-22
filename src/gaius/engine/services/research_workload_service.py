@@ -69,7 +69,12 @@ class ResearchConfig:
     flow_timeout_s: int = 600  # 10 minutes max for full research
 
     # Database URL for LISTEN/NOTIFY
-    database_url: str = "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
+    database_url: str | None = None
+
+    def __post_init__(self):
+        if self.database_url is None:
+            from gaius.core.config import get_database_url
+            self.database_url = get_database_url()
 
 
 # Event type mapping to proto enum values

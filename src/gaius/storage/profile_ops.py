@@ -29,15 +29,13 @@ def _get_asyncpg():
 
 
 def get_database_url() -> str:
-    """Get database URL from environment.
+    """Get database URL from config.
 
-    Checks GAIUS_DATABASE_URL first (preferred), then falls back to DATABASE_URL.
-    Default is the zndx_gaius database at localhost:5438.
+    Delegates to gaius.core.config.get_database_url() for consistent
+    database URL resolution across the codebase.
     """
-    return os.getenv(
-        "GAIUS_DATABASE_URL",
-        os.getenv("DATABASE_URL", "postgres://gaius:gaius@localhost:5438/zndx_gaius")
-    )
+    from gaius.core.config import get_database_url as _get_database_url
+    return _get_database_url()
 
 
 # =============================================================================

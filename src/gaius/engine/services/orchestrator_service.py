@@ -2547,10 +2547,9 @@ class OrchestratorService:
         try:
             import asyncpg
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:

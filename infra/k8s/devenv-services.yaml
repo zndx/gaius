@@ -9,7 +9,7 @@
 #   3. Apply: kubectl apply -f infra/k8s/devenv-services.yaml
 #
 # Services:
-#   - devenv-postgres: PostgreSQL on 5438 -> NodePort 30438
+#   - devenv-postgres: PostgreSQL on 5444 -> NodePort 30438
 #   - devenv-minio: MinIO on 9010 -> NodePort 30910
 
 ---
@@ -24,8 +24,8 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: 5438
-      targetPort: 5438
+    - port: 5444
+      targetPort: 5444
       protocol: TCP
       name: postgres
 
@@ -40,7 +40,7 @@ subsets:
       # Host IP for tinybox (where devenv postgres runs)
       - ip: "192.168.1.55"
     ports:
-      - port: 5438
+      - port: 5444
         name: postgres
 
 ---

@@ -104,10 +104,8 @@ class HeldOutManager:
             import asyncpg
             import os
 
-            url = self.db_url or os.getenv(
-                "DATABASE_URL",
-                "postgresql://gaius:gaius@localhost:5432/gaius"
-            )
+            from ...core.config import get_database_url
+            url = self.db_url or get_database_url()
             self._pool = await asyncpg.create_pool(url)
         return self._pool
 
@@ -334,10 +332,8 @@ class DailyEvaluator:
             import asyncpg
             import os
 
-            url = self.db_url or os.getenv(
-                "DATABASE_URL",
-                "postgresql://gaius:gaius@localhost:5432/gaius"
-            )
+            from ...core.config import get_database_url
+            url = self.db_url or get_database_url()
             self._pool = await asyncpg.create_pool(url)
         return self._pool
 

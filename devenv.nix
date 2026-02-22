@@ -53,6 +53,15 @@
   #   chmod 600 ~/.config/kube/rke2.yaml
   enterShell = ''
     export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
+
+    # Fix opencv conflict: rapidocr→opencv-python (needs libGL.so.1, unavailable
+    # on Nix) vs vllm→opencv-python-headless (no GL deps, identical cv2 API).
+    # uv sync installs both; remove GUI variant and reinstall headless.
+    if uv pip show opencv-python 2>/dev/null | grep -q "opencv-python"; then
+      uv pip uninstall opencv-python -q 2>/dev/null
+      uv pip install --reinstall opencv-python-headless -q 2>/dev/null
+      uv pip install "numpy>=1.26,<2.0" -q 2>/dev/null
+    fi
   '';
 
   # https://devenv.sh/packages/
@@ -113,7 +122,7 @@
       { name = "zndx_gaius"; }
       { name = "metaflow"; }
     ];
-    port = 5438;
+    port = 5444;
     listen_addresses = "*";  # Enable TCP from K8s pods and local clients
     settings = {
       shared_preload_libraries = "pg_cron,age";
@@ -546,6 +555,16 @@
       export CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID="''${CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID:-4541b17fa5244bffb346f9a55b8eca93}"
 
       echo ""
+
+      # Fix opencv conflict: rapidocr→opencv-python (needs libGL.so.1, unavailable
+      # on Nix) vs vllm→opencv-python-headless (no GL deps, identical cv2 API).
+      # uv sync installs both; remove GUI variant and reinstall headless.
+      if uv pip show opencv-python 2>/dev/null | grep -q "opencv-python"; then
+        uv pip uninstall opencv-python -q 2>/dev/null
+        uv pip install --reinstall opencv-python-headless -q 2>/dev/null
+        uv pip install "numpy>=1.26,<2.0" -q 2>/dev/null
+      fi
+
       echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
       export PYTHONPATH=""
       exec .devenv/state/venv/bin/python -m gaius.engine --config config/agents.conf -v
@@ -594,7 +613,7 @@
       # Wait for postgres to be ready
       echo "Waiting for PostgreSQL..."
       for i in $(seq 1 30); do
-        if pg_isready -h 127.0.0.1 -p 5438 -U gaius >/dev/null 2>&1; then
+        if pg_isready -h 127.0.0.1 -p $PGPORT -U gaius >/dev/null 2>&1; then
           echo "✓ PostgreSQL ready"
           break
         fi
@@ -608,18 +627,18 @@
       # Create metaflow user and database if they don't exist
       # Use $USER (superuser) for initial setup since gaius doesn't have CREATEROLE
       echo "Ensuring metaflow user and database exist..."
-      psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -tc \
+      psql -h 127.0.0.1 -p $PGPORT -U $USER -d zndx_gaius -tc \
         "SELECT 1 FROM pg_roles WHERE rolname = 'metaflow'" | \
         grep -q 1 || \
-        psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -c "CREATE USER metaflow WITH PASSWORD 'metaflow'"
+        psql -h 127.0.0.1 -p $PGPORT -U $USER -d zndx_gaius -c "CREATE USER metaflow WITH PASSWORD 'metaflow'"
 
-      psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -tc \
+      psql -h 127.0.0.1 -p $PGPORT -U $USER -d zndx_gaius -tc \
         "SELECT 1 FROM pg_database WHERE datname = 'metaflow'" | \
         grep -q 1 || \
-        psql -h 127.0.0.1 -p 5438 -U $USER -d zndx_gaius -c "CREATE DATABASE metaflow OWNER metaflow"
+        psql -h 127.0.0.1 -p $PGPORT -U $USER -d zndx_gaius -c "CREATE DATABASE metaflow OWNER metaflow"
 
       # Grant permissions
-      psql -h 127.0.0.1 -p 5438 -U $USER -d metaflow -c "GRANT ALL PRIVILEGES ON DATABASE metaflow TO metaflow" 2>/dev/null || true
+      psql -h 127.0.0.1 -p $PGPORT -U $USER -d metaflow -c "GRANT ALL PRIVILEGES ON DATABASE metaflow TO metaflow" 2>/dev/null || true
       echo "✓ metaflow user and database ready"
 
       # Ensure metaflow-artifacts bucket exists in MinIO
@@ -802,7 +821,7 @@
       # Wait for PostgreSQL to be ready
       echo "Waiting for PostgreSQL..."
       for i in $(seq 1 30); do
-        if pg_isready -h 127.0.0.1 -p 5438 -U postgres >/dev/null 2>&1; then
+        if pg_isready -h 127.0.0.1 -p $PGPORT -U postgres >/dev/null 2>&1; then
           echo "✓ PostgreSQL ready"
           break
         fi
@@ -831,7 +850,7 @@
       # Use PostgreSQL for Metabase application database (not H2)
       export MB_DB_TYPE="postgres"
       export MB_DB_HOST="127.0.0.1"
-      export MB_DB_PORT="5438"
+      export MB_DB_PORT="$PGPORT"
       export MB_DB_DBNAME="zndx_gaius"
       export MB_DB_USER="$USER"
       export MB_DB_PASS=""
@@ -1030,7 +1049,7 @@ BOOTSTRAP_EOF
       # Wait for postgres to be ready
       echo "Waiting for PostgreSQL..."
       for i in $(seq 1 30); do
-        if pg_isready -h 127.0.0.1 -p 5438 -U postgres >/dev/null 2>&1; then
+        if pg_isready -h 127.0.0.1 -p $PGPORT -U postgres >/dev/null 2>&1; then
           echo "✓ PostgreSQL ready"
           break
         fi

@@ -11,23 +11,8 @@
 
 import type { Context } from 'hono';
 import { getTheme, generateCSSVariables, listThemes, type Theme } from '../themes';
-
-interface Card {
-  card_id: string;
-  title: string;
-  summary: string;
-  image_url?: string;
-  source_url: string;
-  source_type: string;
-  published_at: string;
-  source_date?: string;  // Original source publication date (e.g., arXiv submission)
-}
-
-interface ThemeConfig {
-  theme_id: string;
-  title?: string;
-  subtitle?: string;
-}
+import type { Card, ThemeConfig } from '../types';
+import { escapeHtml, renderCard } from '../utils/html';
 
 /**
  * Generate CSS styles using theme variables
@@ -174,7 +159,7 @@ function generateStyles(theme: Theme): string {
       border-top: 1px solid var(--color-grid);
     }
 
-    .card-type {
+    .card-type, .card-source-link {
       font-size: 0.7rem;
       font-weight: 600;
       text-transform: uppercase;
@@ -183,6 +168,15 @@ function generateStyles(theme: Theme): string {
       background: color-mix(in srgb, var(--color-info) 15%, transparent);
       padding: 0.25rem 0.5rem;
       border-radius: 2px;
+    }
+
+    .card-source-link {
+      text-decoration: none;
+    }
+
+    .card-source-link:hover {
+      background: color-mix(in srgb, var(--color-info) 30%, transparent);
+      text-decoration: none;
     }
 
     .card-date {
@@ -333,41 +327,6 @@ function generateVizScript(theme: Theme): string {
       }
     }
   `;
-}
-
-function renderCard(card: Card): string {
-  // Prefer source_date (original publication) over published_at (when we added it)
-  const dateStr = card.source_date || card.published_at;
-  const dateObj = new Date(dateStr);
-  const currentYear = new Date().getFullYear();
-  const contentYear = dateObj.getFullYear();
-
-  // Include year for content from past years (like HN does for older content)
-  const date = dateObj.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    ...(contentYear < currentYear && { year: 'numeric' }),
-  });
-
-  return `
-    <a href="${card.source_url}" target="_blank" rel="noopener noreferrer" class="card">
-      <div class="card-title">${escapeHtml(card.title)}</div>
-      <div class="card-summary">${escapeHtml(card.summary)}</div>
-      <div class="card-footer">
-        <span class="card-type">${card.source_type}</span>
-        <span class="card-date">${date}</span>
-      </div>
-    </a>
-  `;
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }
 
 export async function handleLanding(c: Context): Promise<Response> {
