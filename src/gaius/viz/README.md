@@ -8,53 +8,34 @@ semantic neighborhood.
 
 ## Architecture
 
-```
-  Nomic embeddings (768-dim)
-          │
-          ▼
-  ┌─────────────────┐
-  │ GeometryComputer │  Ollivier-Ricci curvature, gradient fields,
-  │ (core/geometry)  │  divergence on k-NN graph
-  └────────┬────────┘
-           │
-           │   ┌──────────────┐
-           ├──►│ TDAComputer  │  Persistent homology via ripser:
-           │   │ (core/tda)   │  Betti numbers, persistence diagrams
-           │   └──────┬───────┘
-           │          │
-           ▼          ▼
-  ┌──────────────────────────┐
-  │      CardVizData         │  Normalized feature vector per card:
-  │      (data.py)           │  κ, π, complexity, boundary, b0-b2,
-  │                          │  gradient direction, persistence diagram
-  └────────────┬─────────────┘
-               │
-               ▼
-  ┌──────────────────────────┐
-  │    expand_grammar()      │  CFDG-inspired recursive expansion:
-  │    (grammar.py)          │  weighted rules, seeded RNG, transform
-  │                          │  accumulation → flat shape list
-  └────────────┬─────────────┘
-               │
-               ▼
-  ┌──────────────────────────┐
-  │    meshgen.py            │  Pure numpy mesh generators:
-  │                          │  ico_sphere, petal_disk, torus, cylinder
-  │                          │  + Euler rotation, vertex normals
-  └────────────┬─────────────┘
-               │
-               ▼
-  ┌──────────────────────────┐
-  │  luxcore_renderer.py     │  LuxCore PATHOCL (GPU) or PATHCPU:
-  │                          │  spectral glass, volume absorption,
-  │                          │  physically-based caustics
-  └────────────┬─────────────┘
-               │
-               ▼
-  ┌──────────────────────────┐
-  │     storage.py           │  R2 upload, DB image_url update,
-  │                          │  KV sync for live card pages
-  └──────────────────────────┘
+```mermaid
+graph TD
+    E["Nomic embeddings (768-dim)"] --> GC
+    E --> TDA
+
+    GC["<b>GeometryComputer</b><br/><code>core/geometry</code><br/>Ollivier-Ricci curvature,<br/>gradient fields, divergence<br/>on k-NN graph"]
+    TDA["<b>TDAComputer</b><br/><code>core/tda</code><br/>Persistent homology via ripser:<br/>Betti numbers, persistence diagrams"]
+
+    GC --> CVD
+    TDA --> CVD
+
+    CVD["<b>CardVizData</b><br/><code>data.py</code><br/>Normalized feature vector per card:<br/>κ, π, complexity, boundary, b₀–b₂,<br/>gradient direction, persistence diagram"]
+
+    CVD --> GR
+
+    GR["<b>expand_grammar()</b><br/><code>grammar.py</code><br/>CFDG-inspired recursive expansion:<br/>weighted rules, seeded RNG,<br/>transform accumulation → flat shape list"]
+
+    GR --> MG
+
+    MG["<b>meshgen</b><br/><code>meshgen.py</code><br/>Pure numpy mesh generators:<br/>ico_sphere, petal_disk, torus, cylinder<br/>+ Euler rotation, vertex normals"]
+
+    MG --> LX
+
+    LX["<b>LuxCore renderer</b><br/><code>luxcore_renderer.py</code><br/>PATHOCL (GPU) or PATHCPU:<br/>spectral glass, volume absorption,<br/>physically-based caustics"]
+
+    LX --> ST
+
+    ST["<b>storage</b><br/><code>storage.py</code><br/>R2 upload, DB image_url update,<br/>KV sync for live card pages"]
 ```
 
 ## Mathematical Grounding
