@@ -230,40 +230,91 @@ class ScheduledTaskProcessor(BaseDaemon):
             """Handle article_curate task.
 
             Triggers ArticleCurationFlow via Metaflow CLI.
+
+            Uses progress-based idle timeout: the subprocess must produce
+            stdout within IDLE_TIMEOUT seconds or it's considered stalled.
+            There is no hard wall-clock limit — a flow that keeps printing
+            progress can run as long as it needs (render step alone can
+            take 15+ minutes for many cards).
             """
             import subprocess
+            import select
+            import time
+
+            IDLE_TIMEOUT = 300  # 5 minutes without output = stalled
 
             logger.info("Triggering ArticleCurationFlow...")
 
-            # Run Metaflow flow as subprocess
-            # This keeps the flow isolated and allows proper Metaflow tracking
             try:
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     [
                         "uv", "run", "python", "-m",
                         "gaius.flows.article_curation.flow", "run",
                         "--max_articles", "1",
                     ],
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
-                    timeout=600,  # 10 minute timeout
                     cwd=os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius"),
                 )
 
-                if result.returncode == 0:
+                last_output = time.monotonic()
+                output_lines: list[str] = []
+                stdout = proc.stdout
+                assert stdout is not None  # guaranteed by stdout=PIPE
+
+                while True:
+                    # Wait for output with idle timeout
+                    ready, _, _ = select.select(
+                        [stdout], [], [], IDLE_TIMEOUT
+                    )
+
+                    if ready:
+                        line = stdout.readline()
+                        if line:
+                            last_output = time.monotonic()
+                            output_lines.append(line.rstrip())
+                            logger.info(f"  ArticleCuration: {line.rstrip()}")
+                        elif proc.poll() is not None:
+                            # EOF + process exited
+                            break
+                    else:
+                        # No output within idle timeout
+                        idle_s = time.monotonic() - last_output
+                        if proc.poll() is not None:
+                            break  # Already exited
+                        logger.error(
+                            f"ArticleCurationFlow stalled: no output for {idle_s:.0f}s"
+                        )
+                        proc.kill()
+                        proc.wait()
+                        return {
+                            "status": "stalled",
+                            "idle_seconds": idle_s,
+                            "last_lines": output_lines[-10:],
+                        }
+
+                retcode = proc.wait()
+                if retcode == 0:
                     logger.info("ArticleCurationFlow completed successfully")
-                    return {"status": "completed", "returncode": 0}
+                    return {
+                        "status": "completed",
+                        "returncode": 0,
+                        "last_lines": output_lines[-10:],
+                    }
                 else:
-                    logger.error(f"ArticleCurationFlow failed: {result.stderr[:500]}")
+                    logger.error(
+                        f"ArticleCurationFlow failed (exit {retcode})"
+                    )
                     return {
                         "status": "failed",
-                        "returncode": result.returncode,
-                        "stderr": result.stderr[:500],
+                        "returncode": retcode,
+                        "last_lines": output_lines[-20:],
                     }
 
-            except subprocess.TimeoutExpired:
-                logger.error("ArticleCurationFlow timed out after 10 minutes")
-                return {"status": "timeout"}
+            except Exception as e:
+                logger.error(f"ArticleCurationFlow error: {e}")
+                return {"status": "error", "error": str(e)}
 
         self.register_handler("publish_cards", handle_publish_cards)
         self.register_handler("article_curate", handle_article_curate)

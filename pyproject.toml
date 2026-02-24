@@ -194,6 +194,10 @@ engine-grpc = [
     "gaius[engine]",
     "gaius[grpc]",
 ]
+# Visualization rendering (LuxCore physically-based renderer)
+viz = [
+    "Pillow>=10.0.0",
+]
 
 [project.scripts]
 gaius = "gaius.launcher:main"
@@ -247,6 +251,15 @@ dev = [
 [tool.uv]
 override-dependencies = [
     "peft>=0.18.0",
+    # rapidocr wants opencv-python which needs libGL.so.1 (unavailable on Nix).
+    # vLLM wants opencv-python-headless (no libGL). Having both installed causes
+    # opencv-python to win the import and crash. Force headless everywhere.
+    "opencv-python>=4.11 ; sys_platform == 'never'",
+    # ninja pip package is a manylinux ELF binary linked against host glibc.
+    # It picks up Nix libstdc++ (glibc 2.42) via LD_LIBRARY_PATH but runs against
+    # host glibc (2.35), causing GLIBC_2.38 not found. devenv provides ninja via Nix
+    # which is self-contained with its own glibc. Block the pip version.
+    "ninja>=1.0 ; sys_platform == 'never'",
 ]
 
 # ty type checker configuration

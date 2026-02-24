@@ -11,7 +11,8 @@ This flow implements a 10-step pipeline that automates article curation:
 8. create_cards: Create collection cards from .base references (all pending)
 9. publish_batch: Publish cards, sync all KV stores
 10. generate_card_summaries: Dual-model summaries + card page KV sync
-11. end: Emit lineage, report results
+11. render_visualizations: Procedural Blender viz from embedding geometry
+12. end: Emit lineage, report results
 
 PRIVACY: This flow does NOT search the KB to avoid exposing private materials
 in published articles. Only the article's own zk/ notes are used.
@@ -70,6 +71,7 @@ from gaius.flows.article_curation.progress import (
     emit_draft,
     emit_failed,
     emit_publish,
+    emit_render_viz,
     emit_research,
     emit_select,
     emit_start,
@@ -2284,7 +2286,7 @@ Be concise - each summary should be 1-2 sentences max."""
         if published_count == 0:
             print("No published cards, skipping card summary generation")
             self.cards_summarized = 0
-            self.next(self.end)
+            self.next(self.render_visualizations)
             return
 
         print(f"Generating summaries for {published_count} published cards...")
@@ -2303,7 +2305,7 @@ Be concise - each summary should be 1-2 sentences max."""
 
         emit_card_summaries(self.progress_run_id, cards_summarized)
 
-        self.next(self.end)
+        self.next(self.render_visualizations)
 
     async def _generate_card_summaries_async(self) -> int:
         """Generate summaries and sync KV for published cards.
@@ -2360,6 +2362,130 @@ Be concise - each summary should be 1-2 sentences max."""
 
     @traced_step
     @step
+    def render_visualizations(self):
+        """Render LuxCore glass visualizations for published cards.
+
+        For each published card:
+        1. Extract viz data from embedding geometry (CPU, avoids GPU contention)
+        2. Render display (1400x300) + og (1200x630) variants via LuxCore
+        3. If R2 configured: upload both variants + update card image_url + sync KV
+        4. Otherwise: save to build/viz/{card_id}/{variant}.png (local-only)
+
+        Non-fatal enrichment — cards are already published. Failures are
+        logged and skipped, same as card summaries.
+        """
+        published_count = getattr(self, "published_count", 0)
+        if published_count == 0:
+            print("No published cards, skipping visualization rendering")
+            self.cards_rendered = 0
+            self.next(self.end)
+            return
+
+        print(f"Rendering visualizations for {published_count} published cards...")
+
+        try:
+            cards_rendered = asyncio.get_event_loop().run_until_complete(
+                self._render_visualizations_async()
+            )
+        except RuntimeError:
+            cards_rendered = asyncio.new_event_loop().run_until_complete(
+                self._render_visualizations_async()
+            )
+
+        self.cards_rendered = cards_rendered
+        print(f"Rendered visualizations for {cards_rendered} cards")
+
+        emit_render_viz(self.progress_run_id, cards_rendered)
+
+        self.next(self.end)
+
+    async def _render_visualizations_async(self) -> int:
+        """Render display + og variants via LuxCore for published cards.
+
+        Returns:
+            Number of cards successfully rendered (both variants)
+        """
+        import asyncpg
+        from gaius.core.config import get_database_url
+        from gaius.engine.services.collection_service import CollectionService
+        from gaius.viz.data import extract_card_viz_data
+
+        try:
+            from gaius.viz.renderer import render_card_variants_luxcore
+        except ImportError:
+            print("  pyluxcore not installed, skipping rendering")
+            print("  Fix: uv pip install pyluxcore --no-deps")
+            return 0
+
+        from gaius.viz.storage import update_card_image_url, upload_card_variants
+
+        db_url = get_database_url()
+        cards_rendered = 0
+        r2_configured = bool(os.environ.get("CF_R2_ACCESS_KEY_ID"))
+
+        async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+            service = CollectionService(pool)
+
+            # Get published cards for this collection
+            cards = await service.get_published_cards(
+                collection_id=self.collection_id, limit=100
+            )
+
+            for i, card in enumerate(cards):
+                card_label = f"[{i+1}/{len(cards)}] {card.title[:50]}"
+
+                # 1. Extract viz data (CPU to avoid GPU contention with vLLM)
+                try:
+                    viz_data = await extract_card_viz_data(
+                        pool, card.card_id, device="cpu"
+                    )
+                except Exception as e:
+                    print(f"  {card_label}: viz data FAILED - {e}")
+                    continue
+
+                print(
+                    f"  {card_label}: κ={viz_data.curvature:.2f} "
+                    f"π={viz_data.persistence:.2f} b1={viz_data.b1}"
+                )
+
+                # 2. Render display + og variants via LuxCore
+                try:
+                    card_output_dir = Path("build/viz") / card.card_id
+                    variant_paths = await render_card_variants_luxcore(
+                        viz_data,
+                        card_output_dir,
+                        halt_time=20,
+                        halt_samples=128,
+                    )
+                except Exception as e:
+                    print(f"  {card_label}: render FAILED - {e}")
+                    continue
+
+                # 3. Upload both variants to R2 if configured, otherwise local-only
+                if r2_configured:
+                    try:
+                        urls = await upload_card_variants(
+                            card.card_id, variant_paths
+                        )
+                        display_url = urls["display"]
+                        await update_card_image_url(
+                            pool, card.card_id, display_url
+                        )
+                        await service.sync_card_to_kv(card.card_id)
+                        print(f"  {card_label}: uploaded → {display_url}")
+                    except Exception as e:
+                        print(f"  {card_label}: upload FAILED - {e}")
+                        # Still count as rendered (local files exist)
+                else:
+                    for v, p in variant_paths.items():
+                        print(f"  {card_label}: saved {v} → {p}")
+
+                cards_rendered += 1
+
+        return cards_rendered
+
+    @traced_step
+    @step
     def end(self):
         """Emit lineage and report results."""
         from gaius.hx.lineage.events import Dataset
@@ -2389,6 +2515,7 @@ Be concise - each summary should be 1-2 sentences max."""
             print(f"Cards created: {getattr(self, 'cards_created', 0)}")
             print(f"Cards published: {getattr(self, 'published_count', 0)}")
             print(f"Cards summarized: {getattr(self, 'cards_summarized', 0)}")
+            print(f"Cards rendered: {getattr(self, 'cards_rendered', 0)}")
             print(f"Grok sync: {'Success' if self.grok_sync_result.get('success') else 'Fallback mode'}")
 
         self.emit_event("article_curation.completed", {
@@ -2398,6 +2525,7 @@ Be concise - each summary should be 1-2 sentences max."""
             "cards_created": getattr(self, "cards_created", 0),
             "published_count": getattr(self, "published_count", 0),
             "cards_summarized": getattr(self, "cards_summarized", 0),
+            "cards_rendered": getattr(self, "cards_rendered", 0),
         })
 
         # Emit progress: flow completed

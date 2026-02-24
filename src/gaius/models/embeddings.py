@@ -517,6 +517,49 @@ def get_embeddings(device: str | None = None) -> NomicEmbeddings:
     return _embeddings
 
 
+def clear_embeddings() -> None:
+    """Unload the embedding model from GPU and reset singleton.
+
+    Called after rendering completes to release GPU memory before
+    restoring vLLM endpoints.  Without this, the ~3GB embedding model
+    on the render GPU causes NCCL init failure in tensor-parallel vLLM.
+    """
+    global _embeddings
+    if _embeddings is None:
+        return
+
+    import gc
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info("Clearing embedding model from GPU")
+
+    # Move models to CPU then delete
+    try:
+        import torch
+
+        if _embeddings._text_model is not None:
+            if hasattr(_embeddings._text_model, "to"):
+                _embeddings._text_model.to("cpu")
+            _embeddings._text_model = None
+            _embeddings._text_tokenizer = None
+
+        if _embeddings._vision_model is not None:
+            if hasattr(_embeddings._vision_model, "to"):
+                _embeddings._vision_model.to("cpu")
+            _embeddings._vision_model = None
+            _embeddings._vision_processor = None
+
+        _embeddings = None
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        logger.info("Embedding model cleared, GPU memory released")
+    except Exception as e:
+        logger.warning(f"Error clearing embeddings: {e}")
+        _embeddings = None
+
+
 async def embed_text(text: str) -> np.ndarray:
     """Convenience function to embed text."""
     embeddings = get_embeddings()

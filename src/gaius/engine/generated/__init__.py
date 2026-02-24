@@ -387,6 +387,18 @@ from .gaius_service_pb2 import (
     ArticleNewResponse,
     ArticleCurationEvent,
     ArticleCurateRequest,
+    # Rendering (Blender Card Visualization)
+    RenderPhase,
+    RENDER_PHASE_UNSPECIFIED,
+    RENDER_PHASE_QUEUED,
+    RENDER_PHASE_ALLOCATING,
+    RENDER_PHASE_RENDERING,
+    RENDER_PHASE_UPLOADING,
+    RENDER_PHASE_COMPLETE,
+    RENDER_PHASE_FAILED,
+    RENDER_PHASE_BATCH_COMPLETE,
+    RenderCardsRequest,
+    RenderCardEvent,
 )
 
 from .gaius_service_pb2_grpc import (
@@ -767,6 +779,18 @@ __all__ = [
     "ArticleNewResponse",
     "ArticleCurationEvent",
     "ArticleCurateRequest",
+    # Rendering (Blender Card Visualization)
+    "RenderPhase",
+    "RENDER_PHASE_UNSPECIFIED",
+    "RENDER_PHASE_QUEUED",
+    "RENDER_PHASE_ALLOCATING",
+    "RENDER_PHASE_RENDERING",
+    "RENDER_PHASE_UPLOADING",
+    "RENDER_PHASE_COMPLETE",
+    "RENDER_PHASE_FAILED",
+    "RENDER_PHASE_BATCH_COMPLETE",
+    "RenderCardsRequest",
+    "RenderCardEvent",
     # Stubs
     "GaiusServiceStub",
     "GaiusServiceAsyncStub",

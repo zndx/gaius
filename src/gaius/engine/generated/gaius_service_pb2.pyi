@@ -77,6 +77,7 @@ class WorkloadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WORKLOAD_INFERENCE: _ClassVar[WorkloadType]
     WORKLOAD_EMBEDDING: _ClassVar[WorkloadType]
     WORKLOAD_EVOLUTION: _ClassVar[WorkloadType]
+    WORKLOAD_RENDERING: _ClassVar[WorkloadType]
 
 class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -91,6 +92,17 @@ class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AMBIENT_PHASE_FETCH_CONTENT: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_SUMMARIZATION: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_BUFFER_ANALYSIS: _ClassVar[AmbientPhase]
+
+class RenderPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    RENDER_PHASE_UNSPECIFIED: _ClassVar[RenderPhase]
+    RENDER_PHASE_QUEUED: _ClassVar[RenderPhase]
+    RENDER_PHASE_ALLOCATING: _ClassVar[RenderPhase]
+    RENDER_PHASE_RENDERING: _ClassVar[RenderPhase]
+    RENDER_PHASE_UPLOADING: _ClassVar[RenderPhase]
+    RENDER_PHASE_COMPLETE: _ClassVar[RenderPhase]
+    RENDER_PHASE_FAILED: _ClassVar[RenderPhase]
+    RENDER_PHASE_BATCH_COMPLETE: _ClassVar[RenderPhase]
 PROCESS_STATUS_UNSPECIFIED: ProcessStatus
 PROCESS_STATUS_STOPPED: ProcessStatus
 PROCESS_STATUS_STARTING: ProcessStatus
@@ -137,6 +149,7 @@ WORKLOAD_SWARM: WorkloadType
 WORKLOAD_INFERENCE: WorkloadType
 WORKLOAD_EMBEDDING: WorkloadType
 WORKLOAD_EVOLUTION: WorkloadType
+WORKLOAD_RENDERING: WorkloadType
 AMBIENT_PHASE_UNSPECIFIED: AmbientPhase
 AMBIENT_PHASE_BASELINE_HEALTH: AmbientPhase
 AMBIENT_PHASE_BASELINE_WORKLOAD: AmbientPhase
@@ -148,6 +161,14 @@ AMBIENT_PHASE_ERROR: AmbientPhase
 AMBIENT_PHASE_FETCH_CONTENT: AmbientPhase
 AMBIENT_PHASE_SUMMARIZATION: AmbientPhase
 AMBIENT_PHASE_BUFFER_ANALYSIS: AmbientPhase
+RENDER_PHASE_UNSPECIFIED: RenderPhase
+RENDER_PHASE_QUEUED: RenderPhase
+RENDER_PHASE_ALLOCATING: RenderPhase
+RENDER_PHASE_RENDERING: RenderPhase
+RENDER_PHASE_UPLOADING: RenderPhase
+RENDER_PHASE_COMPLETE: RenderPhase
+RENDER_PHASE_FAILED: RenderPhase
+RENDER_PHASE_BATCH_COMPLETE: RenderPhase
 
 class FailureModeMapping(_message.Message):
     __slots__ = ("fmea_id", "heuristic_path", "check_name_pattern", "endpoint_pattern")
@@ -4044,3 +4065,45 @@ class ArticleCurateRequest(_message.Message):
     skip_grok: bool
     max_sources: int
     def __init__(self, slug: _Optional[str] = ..., skip_grok: bool = ..., max_sources: _Optional[int] = ...) -> None: ...
+
+class RenderCardsRequest(_message.Message):
+    __slots__ = ("collection_slug", "card_id", "sample", "variants", "force", "upload")
+    COLLECTION_SLUG_FIELD_NUMBER: _ClassVar[int]
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_FIELD_NUMBER: _ClassVar[int]
+    VARIANTS_FIELD_NUMBER: _ClassVar[int]
+    FORCE_FIELD_NUMBER: _ClassVar[int]
+    UPLOAD_FIELD_NUMBER: _ClassVar[int]
+    collection_slug: str
+    card_id: str
+    sample: int
+    variants: _containers.RepeatedScalarFieldContainer[str]
+    force: bool
+    upload: bool
+    def __init__(self, collection_slug: _Optional[str] = ..., card_id: _Optional[str] = ..., sample: _Optional[int] = ..., variants: _Optional[_Iterable[str]] = ..., force: bool = ..., upload: bool = ...) -> None: ...
+
+class RenderCardEvent(_message.Message):
+    __slots__ = ("phase", "card_id", "message", "progress", "variant", "output_path", "image_url", "cards_done", "cards_total", "duration_ms", "error")
+    PHASE_FIELD_NUMBER: _ClassVar[int]
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    VARIANT_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_PATH_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_URL_FIELD_NUMBER: _ClassVar[int]
+    CARDS_DONE_FIELD_NUMBER: _ClassVar[int]
+    CARDS_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    phase: RenderPhase
+    card_id: str
+    message: str
+    progress: float
+    variant: str
+    output_path: str
+    image_url: str
+    cards_done: int
+    cards_total: int
+    duration_ms: int
+    error: str
+    def __init__(self, phase: _Optional[_Union[RenderPhase, str]] = ..., card_id: _Optional[str] = ..., message: _Optional[str] = ..., progress: _Optional[float] = ..., variant: _Optional[str] = ..., output_path: _Optional[str] = ..., image_url: _Optional[str] = ..., cards_done: _Optional[int] = ..., cards_total: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...

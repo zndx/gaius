@@ -318,6 +318,10 @@ from ...generated import (
     ArticleNewResponse,
     ArticleCurationEvent,
     ArticleCurateRequest,
+    # Rendering (Blender Card Visualization)
+    RenderCardsRequest,
+    RenderCardEvent,
+    RENDER_PHASE_FAILED,
     # Multi-Phase Search Flow
     SearchFlowRequest,
     WebSearchResult,
@@ -907,6 +911,7 @@ class GaiusServicer(GaiusServiceServicer):
                 ProtoWorkloadType.WORKLOAD_INFERENCE: WorkloadType.INFERENCE,
                 ProtoWorkloadType.WORKLOAD_EMBEDDING: WorkloadType.EMBEDDING,
                 ProtoWorkloadType.WORKLOAD_EVOLUTION: WorkloadType.EVOLUTION,
+                ProtoWorkloadType.WORKLOAD_RENDERING: WorkloadType.RENDERING,
             }
             workload_type = workload_type_map.get(
                 request.workload_type, WorkloadType.INFERENCE
@@ -7521,4 +7526,41 @@ class GaiusServicer(GaiusServiceServicer):
                 total_steps=9,
                 progress=-1.0,
                 message=f"ArticleCurate error: {e}",
+            )
+
+    async def RenderCards(
+        self,
+        request: RenderCardsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[RenderCardEvent]:
+        """Stream card rendering progress events."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                yield RenderCardEvent(
+                    phase=RENDER_PHASE_FAILED,
+                    message="Collection service not initialized.\n"
+                    "  #VIZ.00000010.SVCNOTINIT\n"
+                    "  Try: /health fix engine\n"
+                    "  Or:  devenv tasks run restart:clean",
+                )
+                return
+
+            async for event in service.render_cards_stream(
+                collection_slug=request.collection_slug,
+                card_id=request.card_id,
+                sample=request.sample,
+                variants=list(request.variants),
+                force=request.force,
+                upload=request.upload,
+                orchestrator=self._services.orchestrator_service,
+            ):
+                yield event
+
+        except Exception as e:
+            logger.exception(f"RenderCards failed: {e}")
+            yield RenderCardEvent(
+                phase=RENDER_PHASE_FAILED,
+                message=f"RenderCards error: {e}",
+                error=str(e),
             )

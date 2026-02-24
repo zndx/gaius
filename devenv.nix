@@ -17,19 +17,69 @@
   # This must be set BEFORE importing deeponto.onto to avoid interactive prompt
   env.JVM_MEMORY = "4g";
 
-  # Library paths for Python C extensions and CUDA
-  # Use project-local symlinks to NVIDIA drivers (avoids glibc conflicts with Nix)
+  # Library paths for CUDA and NVIDIA drivers.
+  # NOTE: Nix Python's RUNPATH already includes Nix glibc + libstdc++ from the store.
+  # Do NOT add pkgs.stdenv.cc.cc.lib here — it leaks Nix libstdc++ (glibc 2.42) to
+  # host binaries (apt-get, pip-installed ELFs) via LD_LIBRARY_PATH, causing
+  # "GLIBC_2.38 not found" crashes on hosts with older glibc (e.g., Ubuntu 22.04).
   env.LD_LIBRARY_PATH = lib.concatStringsSep ":" [
-    (lib.makeLibraryPath [
-      pkgs.zlib
-      pkgs.stdenv.cc.cc.lib  # libstdc++
-    ])
     # NVIDIA drivers (symlinked to .devenv/nvidia-libs to avoid system glibc conflicts)
     "${config.devenv.root}/.devenv/nvidia-libs"
     # CUDA toolkit paths (if available)
     "/usr/local/cuda/lib64"
     "/usr/local/cuda/extras/CUPTI/lib64"
   ];
+
+  # Pkg-config paths for LuxCore build-from-source.
+  # devenv's pkg-config wrapper doesn't automatically include .dev outputs
+  # of packages added to the packages list. We merge all .dev outputs into a
+  # single buildEnv so conan's opengl/system and xorg/system recipes can find
+  # libraries via pkg-config.
+  env.LUXCORE_NIX_PKGCONFIG = let
+    luxcore-syslibs = pkgs.buildEnv {
+      name = "luxcore-syslibs-pkgconfig";
+      paths = with pkgs; [
+        libGL.dev
+        libdrm.dev
+        xorg.libX11.dev
+        xorg.libxcb.dev
+        xorg.libXext.dev
+        xorg.libXrender.dev
+        xorg.libXrandr.dev
+        xorg.libXfixes.dev
+        xorg.libXinerama.dev
+        xorg.libXcursor.dev
+        xorg.libXi.dev
+        xorg.libXxf86vm.dev
+        xorg.libICE.dev
+        xorg.libSM.dev
+        xorg.libXau.dev
+        xorg.libXdmcp.dev
+        xorg.libXt.dev
+        xorg.xcbutil.dev
+        xorg.xcbutilwm.dev
+        xorg.xcbutilimage.dev
+        xorg.xcbutilkeysyms.dev
+        xorg.xcbutilrenderutil.dev
+        xorg.xcbutilcursor.dev
+        xorg.libxshmfence.dev
+        xorg.libXScrnSaver    # single-output (no .dev)
+        xorg.libfontenc       # single-output (no .dev) — fontenc.pc
+        xorg.libXaw.dev       # xaw7.pc
+        xorg.libXdamage.dev
+        xorg.libXcomposite.dev
+        xorg.libXtst          # single-output (no .dev) — xtst.pc
+        xorg.libXres.dev
+        xorg.libxkbfile.dev
+        xorg.libXmu.dev       # xmu.pc + xmuu.pc
+        xorg.libXpm.dev
+        xorg.libXv.dev
+        libxkbcommon.dev
+        util-linux.dev  # uuid.pc
+      ];
+      pathsToLink = [ "/lib/pkgconfig" "/share/pkgconfig" ];
+    };
+  in "${luxcore-syslibs}/lib/pkgconfig";
 
   # Override MinIO data directory to use RAID storage
   env.MINIO_DATA_DIR = lib.mkForce "/raid/minio/gaius";
@@ -53,22 +103,15 @@
   #   chmod 600 ~/.config/kube/rke2.yaml
   enterShell = ''
     export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
-
-    # Fix opencv conflict: rapidocr→opencv-python (needs libGL.so.1, unavailable
-    # on Nix) vs vllm→opencv-python-headless (no GL deps, identical cv2 API).
-    # uv sync installs both; remove GUI variant and reinstall headless.
-    if uv pip show opencv-python 2>/dev/null | grep -q "opencv-python"; then
-      uv pip uninstall opencv-python -q 2>/dev/null
-      uv pip install --reinstall opencv-python-headless -q 2>/dev/null
-      uv pip install "numpy>=1.26,<2.0" -q 2>/dev/null
-    fi
   '';
 
   # https://devenv.sh/packages/
   packages = with pkgs; [
     aeron
     awscli2
+    inputs.blender-bin.packages.${pkgs.system}.default  # Pre-built Blender with GPU (OptiX/CUDA)
     cmake
+    conan
     conftest
     d2
     dbmate
@@ -85,6 +128,7 @@
     mdbook-katex
     mdbook-mermaid
     nifi
+    ninja
     open-policy-agent
     opentofu
     protobuf
@@ -93,8 +137,6 @@
     tilt          # K8s development environment for Metaflow
     tlaps         # TLA+ proof checker
     wrangler
-    zlib  # Required for numpy C extensions
-
     # Browser automation for dataset generation (selenium + chromedriver)
     chromium
     chromedriver
@@ -102,6 +144,48 @@
     # Gaius Engine dependencies
     aeron-cpp      # Aeron C++ library and aeronmd media driver
     flatbuffers    # FlatBuffers compiler for schema generation
+
+    # LuxCore build-from-source dependencies (thirdparty/src/LuxCore)
+    # Build with: devenv tasks run thirdparty:luxcore
+    # Provides system libraries that conan's opengl/system and xorg/system
+    # recipes would otherwise try to apt-get install.
+    libGL          # OpenGL runtime + headers (GL/gl.h, gl.pc)
+    libdrm         # DRM (Direct Rendering Manager)
+    xorg.libX11    # X11 core
+    xorg.libxcb    # XCB protocol library
+    xorg.libXext   # X11 extensions
+    xorg.libXrender
+    xorg.libXrandr
+    xorg.libXfixes
+    xorg.libXinerama
+    xorg.libXcursor
+    xorg.libXi     # X Input
+    xorg.libXxf86vm
+    xorg.libICE
+    xorg.libSM
+    xorg.libXau
+    xorg.libXdmcp
+    xorg.libXt
+    xorg.libfontenc
+    xorg.xorgproto   # X11 protocol headers
+    xorg.xcbutil      # xcb-util
+    xorg.xcbutilwm    # xcb-ewmh, xcb-icccm
+    xorg.xcbutilimage
+    xorg.xcbutilkeysyms
+    xorg.xcbutilrenderutil
+    xorg.xcbutilcursor
+    xorg.libxshmfence
+    xorg.libXScrnSaver  # Xss
+    xorg.libXaw        # Athena widgets (xaw7)
+    xorg.libXdamage    # X Damage
+    xorg.libXcomposite # X Composite
+    xorg.libXtst       # X Test (xtst)
+    xorg.libXres       # X Resource
+    xorg.libxkbfile    # XKB file handling
+    xorg.libXmu        # X Miscellaneous Utilities (xmu + xmuu)
+    xorg.libXpm        # X Pixmap
+    xorg.libXv         # X Video
+    libxkbcommon   # XKB keyboard handling
   ];
 
   services.minio = {
@@ -248,6 +332,7 @@
     # Third-party build tasks
     "thirdparty:download".exec = "cd thirdparty && ./download-thirdparty.sh";
     "thirdparty:build".exec = "cd thirdparty && ./build-thirdparty.sh";
+    "thirdparty:luxcore".exec = "cd thirdparty && ./build-thirdparty.sh --component luxcore";
 
     # Proto generation task - regenerates gRPC stubs and fixes imports
     "proto:generate".exec = ''
@@ -306,6 +391,16 @@
     "mcp:test".exec = ''
       # Test that MCP server can start (useful for debugging)
       PYTHONPATH="" .devenv/state/venv/bin/python -c "from gaius.mcp_server import create_server; print('MCP server OK')"
+    '';
+
+    # Viz pipeline - regenerate the Geometry Nodes template for card rendering
+    "viz:template".exec = ''
+      echo "Generating recursive_glass.blend template..."
+      TEMPLATE_DIR="src/gaius/viz/templates"
+      mkdir -p "$TEMPLATE_DIR"
+      blender --background --python src/gaius/viz/scripts/create_template.py -- \
+        --output "$TEMPLATE_DIR/recursive_glass.blend"
+      echo "✓ Template saved to $TEMPLATE_DIR/recursive_glass.blend"
     '';
 
     # GPU cleanup task - kills stale vLLM processes and frees GPU memory
@@ -555,15 +650,6 @@
       export CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID="''${CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID:-4541b17fa5244bffb346f9a55b8eca93}"
 
       echo ""
-
-      # Fix opencv conflict: rapidocr→opencv-python (needs libGL.so.1, unavailable
-      # on Nix) vs vllm→opencv-python-headless (no GL deps, identical cv2 API).
-      # uv sync installs both; remove GUI variant and reinstall headless.
-      if uv pip show opencv-python 2>/dev/null | grep -q "opencv-python"; then
-        uv pip uninstall opencv-python -q 2>/dev/null
-        uv pip install --reinstall opencv-python-headless -q 2>/dev/null
-        uv pip install "numpy>=1.26,<2.0" -q 2>/dev/null
-      fi
 
       echo "Starting gaius-engine (manages optillm/vLLM dynamically)..."
       export PYTHONPATH=""

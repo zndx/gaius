@@ -64,6 +64,7 @@ export interface CardPageData {
   source_url: string;
   source_type: string;
   image_url?: string;
+  image_url_og?: string;
   published_at: string;
   source_date?: string;
   summaries: {

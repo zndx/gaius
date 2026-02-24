@@ -318,6 +318,9 @@ class GaiusCLI:
                 # Article Curation - KB article research and publication pipeline
                 elif command == "article" or command == "art":
                     result["data"] = self._run_async(self._cmd_article(args))
+                # Rendering - Blender card visualization via engine workload
+                elif command == "render":
+                    result["data"] = self._run_async(self._cmd_render(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -13677,6 +13680,115 @@ Examples:
 
         except Exception as e:
             return {"error": str(e)}
+
+    async def _cmd_render(self, args: str) -> dict:
+        """Render card visualizations via engine workload management.
+
+        Usage:
+            /render                              Render all cards without images
+            /render --collection <slug>          Render cards in collection
+            /render --card <id>                  Render single card
+            /render --sample 5                   Random sample of 5 cards
+            /render --force                      Re-render even if image exists
+            /render --variants display           Only display variant
+            /render --no-upload                  Don't upload to R2
+            /render help                         Show this help
+        """
+        parts = args.strip().split() if args else []
+
+        if parts and parts[0] == "help":
+            return {
+                "command": "render",
+                "help": self._cmd_render.__doc__,
+            }
+
+        # Parse flags
+        collection_slug = ""
+        card_id = ""
+        sample = 0
+        variants: list[str] = []
+        force = False
+        upload = True
+
+        i = 0
+        while i < len(parts):
+            flag = parts[i]
+            if flag == "--collection" and i + 1 < len(parts):
+                collection_slug = parts[i + 1]
+                i += 2
+            elif flag == "--card" and i + 1 < len(parts):
+                card_id = parts[i + 1]
+                i += 2
+            elif flag == "--sample" and i + 1 < len(parts):
+                sample = int(parts[i + 1])
+                i += 2
+            elif flag == "--variants" and i + 1 < len(parts):
+                variants = parts[i + 1].split(",")
+                i += 2
+            elif flag == "--force":
+                force = True
+                i += 1
+            elif flag == "--no-upload":
+                upload = False
+                i += 1
+            else:
+                i += 1
+
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            events = []
+            async for event in client.RenderCards(
+                collection_slug=collection_slug,
+                card_id=card_id,
+                sample=sample,
+                variants=variants or None,
+                force=force,
+                upload=upload,
+            ):
+                events.append({
+                    "phase": event.phase,
+                    "card_id": event.card_id,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "variant": event.variant,
+                    "output_path": event.output_path,
+                    "image_url": event.image_url,
+                    "cards_done": event.cards_done,
+                    "cards_total": event.cards_total,
+                    "duration_ms": event.duration_ms,
+                    "error": event.error,
+                })
+                # Print progress for CLI users
+                # Map phase numbers to readable labels
+                phase_labels = {
+                    1: "queued", 2: "allocating", 3: "rendering",
+                    4: "uploading", 5: "complete", 6: "failed",
+                    7: "batch_complete",
+                }
+                label = phase_labels.get(event.phase, f"phase_{event.phase}")
+                if event.image_url:
+                    print(f"[{label}] {event.card_id} -> {event.image_url}")
+                elif event.error:
+                    print(f"[{label}] {event.message} ({event.error})")
+                else:
+                    print(f"[{label}] {event.message}")
+
+            final = events[-1] if events else {}
+            return {
+                "command": "render",
+                "success": final.get("phase") == 7,  # BATCH_COMPLETE
+                "events_count": len(events),
+                "message": final.get("message", ""),
+                "cards_done": final.get("cards_done", 0),
+                "cards_total": final.get("cards_total", 0),
+                "duration_ms": final.get("duration_ms", 0),
+            }
+
+        except Exception as e:
+            return {"command": "render", "error": str(e)}
 
 
 def main():

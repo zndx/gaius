@@ -133,6 +133,9 @@ from ..engine.generated import (
     ArticleNewResponse,
     ArticleCurateRequest,
     ArticleCurationEvent,
+    # Rendering (Blender Card Visualization)
+    RenderCardsRequest,
+    RenderCardEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -2921,6 +2924,41 @@ class GrpcEngineClient:
             max_sources=max_sources,
         )
         async for event in self._stub.ArticleCurate(request):
+            yield event
+
+    async def RenderCards(
+        self,
+        collection_slug: str = "",
+        card_id: str = "",
+        sample: int = 0,
+        variants: list[str] | None = None,
+        force: bool = False,
+        upload: bool = True,
+    ) -> AsyncIterator[RenderCardEvent]:
+        """Stream card rendering progress via gRPC.
+
+        Architecture compliance: Client -> gRPC -> Engine -> Blender subprocess
+
+        Args:
+            collection_slug: Render cards in this collection (empty = all)
+            card_id: Render specific card (overrides collection)
+            sample: Random sample N cards (0 = all matching)
+            variants: Resolution variants to render (empty = all)
+            force: Re-render even if image exists
+            upload: Upload to R2 after rendering
+
+        Yields:
+            RenderCardEvent stream with progress updates
+        """
+        request = RenderCardsRequest(
+            collection_slug=collection_slug,
+            card_id=card_id,
+            sample=sample,
+            variants=variants or [],
+            force=force,
+            upload=upload,
+        )
+        async for event in self._stub.RenderCards(request):
             yield event
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:

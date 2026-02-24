@@ -1937,7 +1937,14 @@ Your summary note content"""
             except Exception as e:
                 logger.warning(f"Failed to mark curation started: {e}")
 
-        # Run Metaflow flow as subprocess
+        # Run Metaflow flow as subprocess with progress-based idle timeout.
+        # No hard wall-clock limit — the render step alone can take 15+ min
+        # for many cards. The flow must produce stdout within IDLE_TIMEOUT
+        # or it's considered stalled.
+        import select
+
+        IDLE_TIMEOUT = 300  # 5 minutes without output = stalled
+
         cmd = [
             "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
             "run",
@@ -1946,17 +1953,58 @@ Your summary note content"""
         logger.info(f"Starting article curation: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=1800,  # 30 minute timeout
                 cwd=os.environ.get("GAIUS_PROJECT_ROOT", os.getcwd()),
             )
 
+            last_output = time.time()
+            output_lines: list[str] = []
+            stdout = proc.stdout
+            assert stdout is not None  # guaranteed by stdout=PIPE
+
+            while True:
+                ready, _, _ = select.select(
+                    [stdout], [], [], IDLE_TIMEOUT
+                )
+
+                if ready:
+                    line = stdout.readline()
+                    if line:
+                        last_output = time.time()
+                        output_lines.append(line.rstrip())
+                        logger.info(f"  ArticleCuration: {line.rstrip()}")
+                    elif proc.poll() is not None:
+                        break
+                else:
+                    idle_s = time.time() - last_output
+                    if proc.poll() is not None:
+                        break
+                    logger.error(
+                        f"Article curation stalled: no output for {idle_s:.0f}s"
+                    )
+                    proc.kill()
+                    proc.wait()
+                    duration_ms = (time.time() - start_time) * 1000
+                    record_pipeline_task_completion(
+                        task_type="article_curate",
+                        success=False,
+                        duration_ms=duration_ms,
+                    )
+                    return {
+                        "success": False,
+                        "error": f"stalled: no output for {idle_s:.0f}s",
+                        "last_lines": output_lines[-10:],
+                        "duration_ms": duration_ms,
+                    }
+
+            retcode = proc.wait()
             duration_ms = (time.time() - start_time) * 1000
 
-            if result.returncode == 0:
+            if retcode == 0:
                 logger.info("Article curation completed successfully")
                 record_pipeline_task_completion(
                     task_type="article_curate",
@@ -1966,11 +2014,11 @@ Your summary note content"""
                 )
                 return {
                     "success": True,
-                    "stdout": result.stdout[-2000:] if result.stdout else "",
+                    "stdout": "\n".join(output_lines[-50:]),
                     "duration_ms": duration_ms,
                 }
             else:
-                logger.error(f"Article curation failed: {result.stderr}")
+                logger.error(f"Article curation failed (exit {retcode})")
                 record_pipeline_task_completion(
                     task_type="article_curate",
                     success=False,
@@ -1978,20 +2026,11 @@ Your summary note content"""
                 )
                 return {
                     "success": False,
-                    "error": result.stderr[-1000:] if result.stderr else "Unknown error",
-                    "returncode": result.returncode,
+                    "error": "\n".join(output_lines[-20:]),
+                    "returncode": retcode,
                     "duration_ms": duration_ms,
                 }
 
-        except subprocess.TimeoutExpired:
-            duration_ms = (time.time() - start_time) * 1000
-            logger.error("Article curation timed out after 30 minutes")
-            record_pipeline_task_completion(
-                task_type="article_curate",
-                success=False,
-                duration_ms=duration_ms,
-            )
-            return {"success": False, "error": "timeout", "timeout_seconds": 1800}
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
             logger.error(f"Article curation failed: {e}")
@@ -2000,7 +2039,7 @@ Your summary note content"""
                 success=False,
                 duration_ms=duration_ms,
             )
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "duration_ms": duration_ms}
 
     async def _run_publish_cards(self, payload: dict) -> dict:
         """Publish pending cards to Cloudflare KV.

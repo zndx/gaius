@@ -2437,6 +2437,14 @@ created_at: {now.isoformat()}
                         brave_followups = followups_data
 
         # Assemble the card page data
+        # Derive OG variant URL from display URL by path convention
+        display_url = card.image_url
+        og_url = (
+            display_url.replace("/display.png", "/og.png")
+            if display_url and "/display.png" in display_url
+            else None
+        )
+
         now = datetime.now(timezone.utc)
         page_data = {
             "card_id": card_id,
@@ -2445,7 +2453,8 @@ created_at: {now.isoformat()}
             "summary": card.summary,
             "source_url": card.source_url,
             "source_type": card.source_type,
-            "image_url": card.image_url,
+            "image_url": display_url,
+            "image_url_og": og_url,
             "published_at": card.published_at.isoformat() if card.published_at else None,
             "source_date": card.source_date.isoformat() if card.source_date else None,
             "summaries": summaries,
@@ -2807,6 +2816,380 @@ created_at: {now.isoformat()}
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
         )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Rendering (Blender Card Visualization via Workload Management)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def render_cards_stream(
+        self,
+        collection_slug: str = "",
+        card_id: str = "",
+        sample: int = 0,
+        variants: list[str] | None = None,
+        force: bool = False,
+        upload: bool = True,
+        orchestrator: Any = None,
+    ) -> AsyncIterator[Any]:
+        """Render card visualizations with GPU workload management.
+
+        Flow:
+        1. Query DB for cards to render
+        2. Begin WORKLOAD_RENDERING (may evict idle vLLM endpoints)
+        3. For each card: extract viz data -> render -> upload to R2
+        4. Complete workload (restores evicted endpoints)
+        5. Stream RenderCardEvent for each phase transition
+        """
+        import asyncio
+        import time as time_mod
+        from pathlib import Path
+        from ..generated import (
+            RenderCardEvent,
+            RENDER_PHASE_QUEUED,
+            RENDER_PHASE_ALLOCATING,
+            RENDER_PHASE_RENDERING,
+            RENDER_PHASE_UPLOADING,
+            RENDER_PHASE_COMPLETE,
+            RENDER_PHASE_FAILED,
+            RENDER_PHASE_BATCH_COMPLETE,
+        )
+
+        batch_start = time_mod.time()
+
+        # 1. Query cards to render
+        cards_to_render = await self._query_cards_for_rendering(
+            collection_slug=collection_slug,
+            card_id=card_id,
+            sample=sample,
+            force=force,
+        )
+
+        if not cards_to_render:
+            yield RenderCardEvent(
+                phase=RENDER_PHASE_FAILED,
+                message="No cards found matching criteria.",
+                error="#VIZ.00000011.NOCARDS",
+            )
+            return
+
+        total = len(cards_to_render)
+        done = 0
+        failed = 0
+
+        # Determine which variants to render
+        from gaius.viz.renderer import CARD_VARIANTS
+        if variants:
+            render_variants = {k: v for k, v in CARD_VARIANTS.items() if k in variants}
+        else:
+            render_variants = CARD_VARIANTS
+
+        yield RenderCardEvent(
+            phase=RENDER_PHASE_QUEUED,
+            message=f"Rendering {total} card(s), variants: {list(render_variants.keys())}",
+            cards_total=total,
+        )
+
+        # 2. Begin workload for GPU memory management
+        workload_id = f"render-{uuid.uuid4().hex[:8]}"
+        workload_started = False
+
+        yield RenderCardEvent(
+            phase=RENDER_PHASE_ALLOCATING,
+            message="Requesting GPU resources for LuxCore rendering...",
+            cards_total=total,
+        )
+
+        if not orchestrator:
+            yield RenderCardEvent(
+                phase=RENDER_PHASE_FAILED,
+                message="Orchestrator not available — cannot manage GPU memory for rendering.\n"
+                "  #VIZ.00000012.NOORCH\n"
+                "  Try: devenv tasks run restart:clean",
+            )
+            return
+
+        # Pick a single GPU to evict for rendering.
+        # Rendering needs ~8GB (embeddings + Blender CUDA).
+        # We evict one endpoint to free one full GPU (~24GB).
+        target_gpu = await self._pick_render_gpu(orchestrator)
+
+        try:
+            from ..workloads import WorkloadRequest, WorkloadType
+            from .scheduler_service import JobPriority
+
+            workload_req = WorkloadRequest(
+                workload_id=workload_id,
+                workload_type=WorkloadType.RENDERING,
+                required_capabilities=[],
+                priority=JobPriority.HIGH,
+                estimated_duration_s=total * 60,
+                estimated_memory_mb=8000,
+                preemptible=False,
+                metadata={
+                    "allow_baseline_eviction": True,
+                    "target_gpus": [target_gpu],
+                },
+            )
+            result = await orchestrator.begin_workload(workload_req)
+            workload_started = True
+
+            if not result.success:
+                yield RenderCardEvent(
+                    phase=RENDER_PHASE_FAILED,
+                    message=f"Failed to allocate GPU resources: {result.error}",
+                    error="#VIZ.00000013.ALLOCFAIL",
+                )
+                return
+
+            if result.evicted_endpoints:
+                yield RenderCardEvent(
+                    phase=RENDER_PHASE_ALLOCATING,
+                    message=f"Evicted {len(result.evicted_endpoints)} endpoint(s) for GPU memory: {', '.join(result.evicted_endpoints)}",
+                    cards_total=total,
+                )
+            else:
+                yield RenderCardEvent(
+                    phase=RENDER_PHASE_ALLOCATING,
+                    message="GPU memory already available (no eviction needed)",
+                    cards_total=total,
+                )
+        except Exception as e:
+            logger.error(f"Workload allocation failed: {e}")
+            yield RenderCardEvent(
+                phase=RENDER_PHASE_FAILED,
+                message=f"GPU workload allocation failed: {e}\n"
+                "  #VIZ.00000013.ALLOCFAIL",
+                error=str(e),
+            )
+            return
+
+        try:
+            # 3. Render each card
+            from gaius.viz.data import extract_card_viz_data
+            from gaius.viz.renderer import render_card_variants_luxcore
+            from gaius.viz.storage import upload_card_variants, update_card_image_url
+            import tempfile
+
+            render_semaphore = asyncio.Semaphore(2)
+
+            for row in cards_to_render:
+                cid = row["card_id"]
+                card_start = time_mod.time()
+
+                yield RenderCardEvent(
+                    phase=RENDER_PHASE_RENDERING,
+                    card_id=cid,
+                    message=f"Rendering {cid} ({done + 1}/{total})",
+                    progress=done / total,
+                    cards_done=done,
+                    cards_total=total,
+                )
+
+                try:
+                    async with render_semaphore:
+                        # Extract viz data (CPU embeddings to avoid CUDA
+                        # context conflict with LuxCore on same GPU)
+                        viz_data = await extract_card_viz_data(
+                            self._pool, cid, device="cpu",
+                        )
+
+                        # Render all variants
+                        output_dir = Path(tempfile.mkdtemp(prefix=f"gaius-viz-{cid}-"))
+                        variant_paths = await render_card_variants_luxcore(
+                            viz_data, output_dir, variants=render_variants,
+                            gpu_id=target_gpu,
+                        )
+
+                    card_duration = int((time_mod.time() - card_start) * 1000)
+
+                    # Upload to R2 if requested
+                    if upload and variant_paths:
+                        yield RenderCardEvent(
+                            phase=RENDER_PHASE_UPLOADING,
+                            card_id=cid,
+                            message=f"Uploading {cid} to R2...",
+                            cards_done=done,
+                            cards_total=total,
+                        )
+
+                        try:
+                            urls = await upload_card_variants(cid, variant_paths)
+                            # Update DB with display variant URL
+                            display_url = urls.get("display", "")
+                            if display_url:
+                                await update_card_image_url(self._pool, cid, display_url)
+
+                            done += 1
+                            yield RenderCardEvent(
+                                phase=RENDER_PHASE_COMPLETE,
+                                card_id=cid,
+                                message=f"Rendered and uploaded {cid}",
+                                image_url=display_url,
+                                progress=done / total,
+                                cards_done=done,
+                                cards_total=total,
+                                duration_ms=card_duration,
+                            )
+                        except Exception as e:
+                            logger.error(f"R2 upload failed for {cid}: {e}")
+                            done += 1
+                            yield RenderCardEvent(
+                                phase=RENDER_PHASE_COMPLETE,
+                                card_id=cid,
+                                message=f"Rendered {cid} (upload failed: {e})",
+                                output_path=str(variant_paths.get("display", "")),
+                                progress=done / total,
+                                cards_done=done,
+                                cards_total=total,
+                                duration_ms=card_duration,
+                            )
+                    else:
+                        done += 1
+                        yield RenderCardEvent(
+                            phase=RENDER_PHASE_COMPLETE,
+                            card_id=cid,
+                            message=f"Rendered {cid} (local only)",
+                            output_path=str(variant_paths.get("display", "")),
+                            progress=done / total,
+                            cards_done=done,
+                            cards_total=total,
+                            duration_ms=card_duration,
+                        )
+
+                except Exception as e:
+                    failed += 1
+                    done += 1
+                    logger.error(f"Render failed for card {cid}: {e}")
+                    yield RenderCardEvent(
+                        phase=RENDER_PHASE_FAILED,
+                        card_id=cid,
+                        message=f"Failed to render {cid}: {e}",
+                        error=str(e),
+                        progress=done / total,
+                        cards_done=done,
+                        cards_total=total,
+                    )
+
+        finally:
+            # 4. Complete workload (restores evicted endpoints)
+            if orchestrator and workload_started:
+                try:
+                    # Release embedding model from GPU before restoring vLLM.
+                    # The ~3GB Nomic model on the render GPU causes NCCL init
+                    # failures when vLLM tries tensor-parallel across that GPU.
+                    from gaius.models.embeddings import clear_embeddings
+                    clear_embeddings()
+
+                    # Wait for GPU memory to be fully released (Blender CUDA
+                    # context + embedding model) before vLLM starts.
+                    logger.info("Waiting for GPU memory cleanup before restoring endpoints...")
+                    await asyncio.sleep(10)
+                    logger.info(f"Completing rendering workload {workload_id}, restoring endpoints...")
+                    await orchestrator.complete_workload(workload_id)
+                    logger.info(f"Completed rendering workload {workload_id}, endpoints restored")
+                except Exception as e:
+                    logger.error(f"Failed to complete workload {workload_id}: {e}")
+
+        # 5. Batch complete
+        batch_duration = int((time_mod.time() - batch_start) * 1000)
+        succeeded = done - failed
+        yield RenderCardEvent(
+            phase=RENDER_PHASE_BATCH_COMPLETE,
+            message=f"{done}/{total} cards rendered in {batch_duration / 1000:.1f}s ({succeeded} success, {failed} failed)",
+            progress=1.0,
+            cards_done=done,
+            cards_total=total,
+            duration_ms=batch_duration,
+        )
+
+    async def _query_cards_for_rendering(
+        self,
+        collection_slug: str = "",
+        card_id: str = "",
+        sample: int = 0,
+        force: bool = False,
+    ) -> list[Any]:
+        """Query cards that need rendering.
+
+        Args:
+            collection_slug: Filter by collection (empty = all)
+            card_id: Specific card ID (overrides collection)
+            sample: Random sample N cards (0 = all matching)
+            force: Include cards that already have image_url
+        """
+        async with self._pool.acquire() as conn:
+            if card_id:
+                # Specific card
+                rows = await conn.fetch(
+                    "SELECT card_id, collection_id, title FROM collections.cards WHERE card_id = $1",
+                    card_id,
+                )
+                return list(rows)
+
+            # Build query for cards needing renders
+            conditions = ["c.status = 'published'"]
+            params: list[Any] = []
+
+            if not force:
+                conditions.append("(c.image_url IS NULL OR c.image_url = '')")
+
+            if collection_slug:
+                params.append(collection_slug)
+                conditions.append(f"col.slug = ${len(params)}")
+
+            where = " AND ".join(conditions)
+
+            if sample > 0:
+                params.append(sample)
+                query = f"""
+                    SELECT c.card_id, c.collection_id, c.title
+                    FROM collections.cards c
+                    JOIN collections.collections col ON c.collection_id = col.collection_id
+                    WHERE {where}
+                    ORDER BY RANDOM()
+                    LIMIT ${len(params)}
+                """
+            else:
+                query = f"""
+                    SELECT c.card_id, c.collection_id, c.title
+                    FROM collections.cards c
+                    JOIN collections.collections col ON c.collection_id = col.collection_id
+                    WHERE {where}
+                    ORDER BY c.created_at ASC
+                """
+
+            rows = await conn.fetch(query, *params)
+            return list(rows)
+
+    async def _pick_render_gpu(self, orchestrator: Any) -> int:
+        """Pick a single GPU to evict for rendering.
+
+        Strategy: choose the GPU with the most free memory (least valuable
+        endpoint to evict). If GPU query fails, default to the last GPU
+        (index 5 on a 6-GPU system) since baseline endpoints typically
+        occupy GPUs 0-3 and overflow endpoints use 4-5.
+        """
+        try:
+            from ..resources.gpu_monitor import get_gpu_memory_free
+
+            gpu_free = await get_gpu_memory_free()
+            if gpu_free:
+                # Pick GPU with most free memory (cheapest to evict)
+                best_gpu = max(gpu_free, key=gpu_free.get)  # type: ignore[arg-type]
+                logger.info(
+                    f"Selected GPU {best_gpu} for rendering "
+                    f"({gpu_free[best_gpu]:.1f} GB free)"
+                )
+                return best_gpu
+        except Exception as e:
+            logger.warning(f"GPU query failed, using default: {e}")
+
+        # Default: last GPU
+        total_gpus = getattr(
+            getattr(orchestrator, "resource_manager", None),
+            "total_gpus", 6,
+        )
+        return total_gpus - 1
 
 
 # Singleton instance

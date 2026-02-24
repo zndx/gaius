@@ -542,6 +542,7 @@ enum WorkloadType {
   WORKLOAD_INFERENCE = 2;
   WORKLOAD_EMBEDDING = 3;
   WORKLOAD_EVOLUTION = 4;
+  WORKLOAD_RENDERING = 5;
 }
 
 message BeginWorkloadRequest {
@@ -2702,6 +2703,44 @@ message ArticleCurateRequest {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Rendering (Blender Card Visualization)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum RenderPhase {
+  RENDER_PHASE_UNSPECIFIED = 0;
+  RENDER_PHASE_QUEUED = 1;          // Waiting for GPU resources
+  RENDER_PHASE_ALLOCATING = 2;      // Evicting endpoints for GPU memory
+  RENDER_PHASE_RENDERING = 3;       // Blender subprocess running
+  RENDER_PHASE_UPLOADING = 4;       // Uploading to R2
+  RENDER_PHASE_COMPLETE = 5;        // Card done
+  RENDER_PHASE_FAILED = 6;          // Card failed
+  RENDER_PHASE_BATCH_COMPLETE = 7;  // All cards done
+}
+
+message RenderCardsRequest {
+  string collection_slug = 1;       // Render all pending cards in collection (empty = all)
+  string card_id = 2;               // Render specific card (overrides collection)
+  int32 sample = 3;                 // Random sample N cards (0 = all matching)
+  repeated string variants = 4;     // ["display", "og"] (empty = all)
+  bool force = 5;                   // Re-render even if image_url exists
+  bool upload = 6;                  // Upload to R2 after rendering
+}
+
+message RenderCardEvent {
+  RenderPhase phase = 1;
+  string card_id = 2;               // Which card this event is for
+  string message = 3;
+  float progress = 4;               // 0.0-1.0 for overall batch progress
+  string variant = 5;               // Which variant just completed
+  string output_path = 6;           // Local path (on PHASE_COMPLETE)
+  string image_url = 7;             // R2 URL (on PHASE_UPLOADING complete)
+  int32 cards_done = 8;
+  int32 cards_total = 9;
+  int32 duration_ms = 10;
+  string error = 11;                // Guru code on PHASE_FAILED
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Service Definition
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2964,4 +3003,9 @@ service GaiusService {
   rpc ArticleStatus(ArticleStatusRequest) returns (ArticleStatusResponse);               // Situational awareness for /article sitrep
   rpc ArticleNew(ArticleNewRequest) returns (ArticleNewResponse);                        // Create article (engine writes to KB)
   rpc ArticleCurate(ArticleCurateRequest) returns (stream ArticleCurationEvent);         // Stream curation progress events
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Rendering (Blender Card Visualization via Workload Management)
+  // ─────────────────────────────────────────────────────────────────────────
+  rpc RenderCards(RenderCardsRequest) returns (stream RenderCardEvent);                   // Stream card rendering progress
 }

@@ -37,12 +37,13 @@ STEPS = {
     "base": {"number": 7, "progress": 0.80},
     "cards": {"number": 8, "progress": 0.85},
     "publish": {"number": 9, "progress": 0.90},
-    "card_summaries": {"number": 10, "progress": 0.97},
-    "complete": {"number": 11, "progress": 1.0},
+    "card_summaries": {"number": 10, "progress": 0.93},
+    "render_viz": {"number": 11, "progress": 0.97},
+    "complete": {"number": 12, "progress": 1.0},
     "failed": {"number": -1, "progress": -1.0},
 }
 
-TOTAL_STEPS = 11
+TOTAL_STEPS = 12
 
 
 def generate_run_id() -> str:
@@ -204,6 +205,16 @@ def emit_card_summaries(run_id: str, count: int) -> None:
         "card_summaries",
         f"Generated summaries for {count} cards",
         {"cards_summarized": count},
+    )
+
+
+def emit_render_viz(run_id: str, count: int) -> None:
+    """Emit visualization rendering event."""
+    emit_progress(
+        run_id,
+        "render_viz",
+        f"Rendered visualizations for {count} cards",
+        {"cards_rendered": count},
     )
 
 

@@ -654,6 +654,11 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.ArticleCurateRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.ArticleCurationEvent.FromString,
                 _registered_method=True)
+        self.RenderCards = channel.unary_stream(
+                '/gaius.engine.GaiusService/RenderCards',
+                request_serializer=gaius__service__pb2.RenderCardsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.RenderCardEvent.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
@@ -1535,6 +1540,16 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RenderCards(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Rendering (Blender Card Visualization via Workload Management)
+        ─────────────────────────────────────────────────────────────────────────
+        Stream card rendering progress
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2152,6 +2167,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.ArticleCurate,
                     request_deserializer=gaius__service__pb2.ArticleCurateRequest.FromString,
                     response_serializer=gaius__service__pb2.ArticleCurationEvent.SerializeToString,
+            ),
+            'RenderCards': grpc.unary_stream_rpc_method_handler(
+                    servicer.RenderCards,
+                    request_deserializer=gaius__service__pb2.RenderCardsRequest.FromString,
+                    response_serializer=gaius__service__pb2.RenderCardEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -5489,6 +5509,32 @@ class GaiusService(object):
             metadata,
             _registered_method=True)
 
+    @staticmethod
+    def RenderCards(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/RenderCards',
+            gaius__service__pb2.RenderCardsRequest.SerializeToString,
+            gaius__service__pb2.RenderCardEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
 # Async stub alias - same class works with grpc.aio.Channel
-# Type hints in .pyi declare this as a subclass for type checking
 GaiusServiceAsyncStub = GaiusServiceStub
