@@ -210,10 +210,8 @@ class ScheduledTaskProcessor(BaseDaemon):
 
             logger.info(f"Publishing {count} cards (slot: {slot})")
 
-            async with self._pool.acquire() as conn:
-                # Create a mini-pool for CollectionService
-                service = CollectionService(self._pool)
-                result = await service.publish_and_sync(count=count)
+            service = CollectionService(self._pool)
+            result = await service.publish_and_sync(count=count)
 
             logger.info(
                 f"Published {result.get('published_count', 0)} cards, "
@@ -250,7 +248,6 @@ class ScheduledTaskProcessor(BaseDaemon):
                     [
                         "uv", "run", "python", "-m",
                         "gaius.flows.article_curation.flow", "run",
-                        "--max_articles", "1",
                     ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -405,9 +402,14 @@ class ScheduledTaskProcessor(BaseDaemon):
             logger.error(f"Error processing notification: {e}")
 
     async def _execute_task(self, task_id: int) -> None:
-        """Pick up and execute a task."""
+        """Pick up and execute a task.
+
+        Connection management: acquire/release around DB operations only,
+        never hold a connection during handler execution. Handlers may need
+        their own connections from the same pool.
+        """
+        # 1. Atomically pick up task (short-lived connection)
         async with self._pool.acquire() as conn:
-            # Atomically pick up task
             row = await conn.fetchrow(
                 """
                 UPDATE scheduled_tasks
@@ -418,27 +420,29 @@ class ScheduledTaskProcessor(BaseDaemon):
                 task_id,
             )
 
-            if not row:
-                logger.debug(f"Task {task_id} already picked up or doesn't exist")
-                return
+        if not row:
+            logger.debug(f"Task {task_id} already picked up or doesn't exist")
+            return
 
-            task = ScheduledTask.from_row(row)
-            logger.info(f"Executing task {task_id}: {task.task_type}")
+        task = ScheduledTask.from_row(row)
+        logger.info(f"Executing task {task_id}: {task.task_type}")
 
-            handler = self._handlers.get(task.task_type)
-            if not handler:
-                await self._mark_task_error(
-                    task_id,
-                    f"No handler for task type: {task.task_type}",
-                )
-                return
+        handler = self._handlers.get(task.task_type)
+        if not handler:
+            await self._mark_task_error(
+                task_id,
+                f"No handler for task type: {task.task_type}",
+            )
+            return
 
-            try:
-                result = await handler(task)
-                self._tasks_processed += 1
-                self._last_task_at = datetime.now()
+        # 2. Execute handler (no connection held — handler manages its own)
+        try:
+            result = await handler(task)
+            self._tasks_processed += 1
+            self._last_task_at = datetime.now()
 
-                # Mark complete
+            # 3. Mark complete (short-lived connection)
+            async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     UPDATE scheduled_tasks
@@ -450,13 +454,14 @@ class ScheduledTaskProcessor(BaseDaemon):
                     json.dumps(result),
                 )
 
-                logger.info(f"Task {task_id} completed: {result}")
+            logger.info(f"Task {task_id} completed: {result}")
 
-            except Exception as e:
-                self._tasks_failed += 1
-                error_msg = str(e)
-                logger.error(f"Task {task_id} failed (#STP.00000002.TASKFAIL): {e}")
+        except Exception as e:
+            self._tasks_failed += 1
+            error_msg = str(e)
+            logger.error(f"Task {task_id} failed (#STP.00000002.TASKFAIL): {e}")
 
+            async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     UPDATE scheduled_tasks
