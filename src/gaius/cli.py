@@ -2758,7 +2758,9 @@ Answer:"""
         try:
             from .inference import get_search
             web_search = get_search()
-            has_api_key = bool(os.environ.get("BRAVE_API_KEY"))
+            from gaius.core.config import get_config as _get_cfg
+
+            has_api_key = bool(_get_cfg().providers.brave.api_key)
             diagnostics.append({
                 "component": "web_search",
                 "status": "available" if has_api_key else "no_api_key",
@@ -9109,7 +9111,7 @@ Generated: {now.isoformat()}
         except Exception as e:
             return {
                 "error": f"Failed to connect to engine: {e}",
-                "suggestion": "Run: devenv tasks run restart:clean",
+                "suggestion": "Run: just restart-clean",
             }
 
         include_sparklines = "sparklines" in parts
@@ -13309,7 +13311,9 @@ Examples:
         }
 
         # Get Grok collections
-        mgmt_key = os.environ.get("XAI_MANAGEMENT_KEY")
+        from gaius.core.config import get_config as _gcfg
+
+        mgmt_key = _gcfg().providers.xai.management_key
         if not mgmt_key:
             return {
                 **results,

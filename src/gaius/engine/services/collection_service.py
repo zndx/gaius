@@ -581,7 +581,9 @@ class CollectionService:
             })
 
         # Step 4: Create/find Grok collection via xai-sdk
-        mgmt_key = os.environ.get("XAI_MANAGEMENT_KEY")
+        from gaius.core.config import get_config
+
+        mgmt_key = get_config().providers.xai.management_key
         if not mgmt_key:
             raise RuntimeError(
                 "XAI_MANAGEMENT_KEY not configured — required for Grok Collections.\n"
@@ -1269,11 +1271,14 @@ class CollectionService:
         Raises:
             CollectionError: If credentials not configured
         """
-        # Get KV config from environment (prefer env vars over config)
+        # Get KV config from HOCON config (env vars resolved at config-load time)
         # Use CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID for collections (GAIUS_COLLECTIONS namespace)
         # This is distinct from CLOUDFLARE_KV_NAMESPACE_ID which is used for sessions (GAIUS_SESSIONS)
-        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", self._config.cf_account_id)
-        api_token = os.environ.get("CLOUDFLARE_API_TOKEN", self._config.cf_api_token)
+        from gaius.core.config import get_config
+
+        cf_cfg = get_config().cloudflare
+        account_id = cf_cfg.account_id or self._config.cf_account_id
+        api_token = cf_cfg.api_token or self._config.cf_api_token
         namespace_id = os.environ.get(
             "CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID",
             os.environ.get("CLOUDFLARE_KV_NAMESPACE_ID", self._config.cf_kv_namespace_id)
@@ -1439,12 +1444,23 @@ class CollectionService:
         # Publish cards first
         published = await self.publish_cards(count=count, collection_id=collection_id)
 
-        # Sync to KV — fail-fast, callers must know if KV sync fails
+        # Sync individual card detail pages to KV
+        card_sync_results = []
+        for card in published:
+            try:
+                result = await self.sync_card_to_kv(card.card_id)
+                card_sync_results.append({"card_id": card.card_id, "success": True})
+            except Exception as e:
+                logger.warning(f"Failed to sync card {card.card_id} to KV: {e}")
+                card_sync_results.append({"card_id": card.card_id, "success": False, "error": str(e)})
+
+        # Sync landing page card list to KV
         sync_result = await self.sync_to_kv()
 
         return {
             "published": [card.to_public_dict() for card in published],
             "published_count": len(published),
+            "card_syncs": card_sync_results,
             "kv_sync": sync_result,
         }
 
@@ -1980,6 +1996,8 @@ created_at: {now.isoformat()}
             from gaius.inference.engine_client import get_engine_client, Message as EngMsg
 
             engine = await get_engine_client()
+            # TECH DEBT: Uses model="instruct" (direct vLLM). Should use model="leader"
+            # to route through optillm for prompt optimization.
             result = await engine.complete(
                 [EngMsg(role="user", content=prompt)],
                 model="instruct",
@@ -2241,6 +2259,8 @@ created_at: {now.isoformat()}
                 f"Write for a technically literate audience. Use markdown formatting."
             )
 
+            # TECH DEBT: Uses model="instruct" (direct vLLM). Should use model="leader"
+            # to route through optillm for prompt optimization.
             result = await engine.complete(
                 [Message(role="user", content=prompt)],
                 model="instruct",
@@ -2904,7 +2924,7 @@ created_at: {now.isoformat()}
                 phase=RENDER_PHASE_FAILED,
                 message="Orchestrator not available — cannot manage GPU memory for rendering.\n"
                 "  #VIZ.00000012.NOORCH\n"
-                "  Try: devenv tasks run restart:clean",
+                "  Try: just restart-clean",
             )
             return
 

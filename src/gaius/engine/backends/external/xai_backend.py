@@ -6,7 +6,6 @@ Per-token pricing model with separate budget tracking.
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any, Optional
 
@@ -45,7 +44,9 @@ class XAIBackend(ExternalBackend):
         Args:
             model: Model to use (default: grok-4-1-fast)
         """
-        self._api_key = os.environ.get("XAI_API_KEY")
+        from gaius.core.config import get_config
+
+        self._api_key = get_config().providers.xai.api_key or None
         self._model = model or self.DEFAULT_MODEL
         self._client = None
 

@@ -17,7 +17,6 @@ Guru Meditation Codes:
 
 import base64
 import hashlib
-import os
 import secrets
 import urllib.parse
 from dataclasses import dataclass
@@ -48,28 +47,34 @@ class XOAuthConfig:
 
     @classmethod
     def from_env(cls) -> "XOAuthConfig":
-        """Load configuration from environment variables.
+        """Load configuration from HOCON config.
 
-        Environment variables:
-        - X_CLIENT_ID: OAuth 2.0 Client ID (required)
-        - X_CLIENT_SECRET: OAuth 2.0 Client Secret (required for confidential clients)
-        - X_REDIRECT_URI: Callback URL (default: https://gaius.zndx.org/x-callback)
+        Config paths (resolved from env vars at config-load time):
+        - x_bookmarks.client_id: OAuth 2.0 Client ID (required)
+        - x_bookmarks.client_secret: OAuth 2.0 Client Secret (required for confidential clients)
+        - x_bookmarks.callback_url: Callback URL
         """
-        client_id = os.environ.get("X_CLIENT_ID", "")
+        from gaius.core.config import get_config
+
+        cfg = get_config()
+        raw = cfg._raw
+        xb = raw.get("gaius.x_bookmarks", {}) if raw else {}
+
+        client_id = xb.get("client_id", "") if xb else ""
         if not client_id:
             raise XOAuthError(
-                "X_CLIENT_ID environment variable not set.\n"
+                "X_CLIENT_ID not configured.\n"
                 "  Get credentials at: https://developer.x.com/en/portal/dashboard\n"
-                "  Use OAuth 2.0 Client ID from 'Keys and tokens' tab",
+                "  Set X_CLIENT_ID env var or x_bookmarks.client_id in config",
                 guru_code="#XB.00000003.NOCLIENT",
             )
 
-        client_secret = os.environ.get("X_CLIENT_SECRET")
+        client_secret = xb.get("client_secret", "") if xb else ""
 
         return cls(
             client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=os.environ.get("X_REDIRECT_URI", "https://gaius.zndx.org/x-callback"),
+            client_secret=client_secret or None,
+            redirect_uri=xb.get("callback_url", "https://gaius.zndx.org/x-callback") if xb else "https://gaius.zndx.org/x-callback",
             scopes=["bookmark.read", "users.read", "tweet.read", "offline.access"],
         )
 

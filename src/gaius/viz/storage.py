@@ -3,19 +3,13 @@
 Uploads rendered PNG visualizations to Cloudflare R2 (S3-compatible)
 and updates the card's image_url in the database.
 
-Environment variables:
-    CF_R2_ACCESS_KEY_ID     — R2 API token access key
-    CF_R2_SECRET_ACCESS_KEY — R2 API token secret key
-    CF_R2_BUCKET            — R2 bucket name (default: gaius-viz)
-    CF_R2_ENDPOINT          — R2 endpoint URL (derived from account ID)
-    CF_R2_PUBLIC_URL        — Public URL prefix for uploaded objects
-    CLOUDFLARE_ACCOUNT_ID   — Cloudflare account ID (for endpoint construction)
+Configuration is read from HOCON config (config/base.conf) via get_config().
+Environment variables are resolved at config-load time via ${?VAR} substitution.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -23,35 +17,32 @@ logger = logging.getLogger(__name__)
 
 
 def _get_r2_config() -> dict[str, str]:
-    """Read R2 configuration from environment.
+    """Read R2 configuration from HOCON config.
 
     Raises:
         RuntimeError: If required credentials are missing (#VIZ.00000005.UPLOADFAIL)
     """
-    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-    endpoint = os.environ.get(
-        "CF_R2_ENDPOINT",
-        f"https://{account_id}.r2.cloudflarestorage.com" if account_id else "",
-    )
-    access_key = os.environ.get("CF_R2_ACCESS_KEY_ID", "")
-    secret_key = os.environ.get("CF_R2_SECRET_ACCESS_KEY", "")
-    bucket = os.environ.get("CF_R2_BUCKET", "gaius-viz")
-    public_url = os.environ.get("CF_R2_PUBLIC_URL", "")
+    from gaius.core.config import get_config
+
+    cfg = get_config().cloudflare
+    endpoint = cfg.r2_endpoint
+    access_key = cfg.r2.access_key_id
+    secret_key = cfg.r2.secret_access_key
 
     if not all([endpoint, access_key, secret_key]):
         raise RuntimeError(
             "R2 credentials not configured.\n"
             "  #VIZ.00000005.UPLOADFAIL\n"
             "  Set: CF_R2_ACCESS_KEY_ID, CF_R2_SECRET_ACCESS_KEY, CLOUDFLARE_ACCOUNT_ID\n"
-            "  Or:  CF_R2_ENDPOINT for custom endpoint"
+            "  Or configure cloudflare section in config/base.conf"
         )
 
     return {
         "endpoint": endpoint,
         "access_key": access_key,
         "secret_key": secret_key,
-        "bucket": bucket,
-        "public_url": public_url,
+        "bucket": cfg.r2.bucket,
+        "public_url": cfg.r2.public_url,
     }
 
 

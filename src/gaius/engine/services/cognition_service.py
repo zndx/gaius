@@ -2207,10 +2207,13 @@ Your summary note content"""
                 for row in rows
             ]
 
-            # Get Cloudflare credentials from environment
-            account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+            # Get Cloudflare credentials from config
+            from gaius.core.config import get_config
+
+            cf_cfg = get_config().cloudflare
+            account_id = cf_cfg.account_id
             namespace_id = os.environ.get("CLOUDFLARE_COLLECTIONS_KV_NAMESPACE_ID")
-            api_token = os.environ.get("CLOUDFLARE_API_TOKEN")
+            api_token = cf_cfg.api_token
 
             if not all([account_id, namespace_id, api_token]):
                 return {"success": False, "error": "missing_cloudflare_credentials"}

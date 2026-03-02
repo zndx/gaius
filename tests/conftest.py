@@ -16,6 +16,25 @@ import pytest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HOCON Config Validation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="session", autouse=True)
+def validate_hocon_config():
+    """Validate HOCON config loads and all sections are present."""
+    from gaius.core.config import load_config
+
+    config = load_config()
+    # Structural checks — all sections present
+    assert hasattr(config, "cloudflare"), "Missing cloudflare config section"
+    assert hasattr(config.cloudflare, "r2"), "Missing cloudflare.r2 config section"
+    assert hasattr(config.providers, "brave"), "Missing providers.brave config section"
+    assert hasattr(config.providers.xai, "management_key"), "Missing providers.xai.management_key"
+    # Note: values may be empty in CI — we check structure, not secrets
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CI Mode Detection
 # ─────────────────────────────────────────────────────────────────────────────
 

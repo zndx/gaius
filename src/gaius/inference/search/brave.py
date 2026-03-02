@@ -218,11 +218,14 @@ class BraveSearch:
             httpx.HTTPStatusError: If API returns an error
             RuntimeError: If BRAVE_ANSWERS_API_KEY is not available
         """
-        api_key = answers_api_key or os.environ.get("BRAVE_ANSWERS_API_KEY")
+        if not answers_api_key:
+            from gaius.core.config import get_config
+            answers_api_key = get_config().providers.brave.answers_api_key
+        api_key = answers_api_key
         if not api_key:
             raise RuntimeError(
                 "Brave Answers API key not available.\n"
-                "  Set: BRAVE_ANSWERS_API_KEY environment variable\n"
+                "  Set: BRAVE_ANSWERS_API_KEY environment variable or providers.brave.answers_api_key in HOCON config\n"
                 "  #COL.00000012.BRAVESUMFAIL"
             )
 

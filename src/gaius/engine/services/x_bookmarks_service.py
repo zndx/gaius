@@ -475,10 +475,12 @@ class XBookmarksService:
         Returns:
             Dict with user_id and username if auth completed, None otherwise.
         """
-        import os
+        from gaius.core.config import get_config
 
-        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
-        api_token = os.environ.get("CLOUDFLARE_API_TOKEN")
+        cf_cfg = get_config().cloudflare
+        account_id = cf_cfg.account_id
+        api_token = cf_cfg.api_token
+        import os
         namespace_id = os.environ.get("CLOUDFLARE_KV_NAMESPACE_ID")
 
         if not all([account_id, api_token, namespace_id]):
