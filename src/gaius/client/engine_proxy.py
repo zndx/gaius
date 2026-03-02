@@ -333,9 +333,10 @@ class SchedulerProxy:
         Returns:
             CompletionResult
         """
-        # Inference operations need longer timeout than default 30s.
-        # A 24B model with cot_reflection can take 60-90s for complex prompts.
-        inference_timeout = timeout or 120.0
+        # Wall-clock safety net. The real timeout protection is the idle-timeout
+        # in OptillmController that monitors vLLM metrics for forward progress.
+        # A 24B model with cot_reflection can take 120-300s for complex prompts.
+        inference_timeout = timeout or 600.0
 
         result = await self._client.call(
             "Scheduler",

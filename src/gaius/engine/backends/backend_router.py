@@ -220,12 +220,18 @@ class BackendRouter:
     ) -> InferenceResponse:
         """Route request to optillm backend.
 
+        Engine-First Architecture: Agents configured with backend="optillm"
+        MUST route through optillm. There is no fallback to direct vLLM.
+        If optillm is unhealthy, the request fails fast with an actionable
+        error. The OptillmController watchdog handles auto-restart; manual
+        recovery is available via /health fix optillm.
+
         Args:
             request: The inference request
             agent_config: Agent configuration
 
         Returns:
-            InferenceResponse from optillm
+            InferenceResponse from optillm (error set if unhealthy)
         """
         # Determine technique
         technique_str = request.technique or agent_config.optillm_technique

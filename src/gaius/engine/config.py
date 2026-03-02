@@ -99,7 +99,7 @@ class GunicornConfig:
     workers: int = 4
     worker_class: str = "gthread"
     threads: int = 2
-    timeout: int = 120
+    timeout: int = 600
     graceful_timeout: int = 30
     max_requests: int = 1000
     max_requests_jitter: int = 50
@@ -115,7 +115,8 @@ class OptillmConfig:
     base_url: str = "http://localhost:8000"
     backend_url: str = "http://localhost:8082/v1"  # vLLM instruct endpoint
     default_technique: str = "cot_reflection"
-    timeout: int = 120
+    timeout: int = 600  # Wall-clock safety net (idle_timeout is the real guard)
+    idle_timeout: int = 120  # No vLLM progress for this long = stalled
     use_gunicorn: bool = True
     gunicorn: GunicornConfig = field(default_factory=GunicornConfig)
 
@@ -418,7 +419,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
 
     optillm = OptillmConfig(
         enabled=optillm_conf.get("enabled", True) if hasattr(optillm_conf, "get") else True,
-        api_key=optillm_conf.get("api-key") if hasattr(optillm_conf, "get") else None,
+        api_key=optillm_conf.get("api-key", None) if hasattr(optillm_conf, "get") else None,
         base_url=optillm_conf.get("base-url", "http://localhost:8000")
         if hasattr(optillm_conf, "get")
         else "http://localhost:8000",
@@ -428,7 +429,8 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         default_technique=optillm_conf.get("default-technique", "cot_reflection")
         if hasattr(optillm_conf, "get")
         else "cot_reflection",
-        timeout=optillm_conf.get("timeout", 120) if hasattr(optillm_conf, "get") else 120,
+        timeout=optillm_conf.get("timeout", 600) if hasattr(optillm_conf, "get") else 600,
+        idle_timeout=optillm_conf.get("idle-timeout", 120) if hasattr(optillm_conf, "get") else 120,
         use_gunicorn=optillm_conf.get("use-gunicorn", True)
         if hasattr(optillm_conf, "get")
         else True,

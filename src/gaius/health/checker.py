@@ -1048,7 +1048,7 @@ class HealthChecker:
                     status=CheckStatus.WARN,
                     message=f"Not responding at {base_url}",
                     details={"url": base_url, "role": "primary"},
-                    suggestion="Start optillm: devenv up optillm",
+                    suggestion="optillm is engine-managed. Try: /health fix engine",
                 )
 
         except ImportError:

@@ -166,6 +166,16 @@ class OptillmController:
         self._stderr_buffer: deque = deque(maxlen=500)
         self._log_reader_task: Optional[asyncio.Task] = None
 
+        # Watchdog for crash detection and auto-restart
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._watchdog_interval = 10  # seconds between liveness checks
+
+        # vLLM heartbeat client for progress-aware idle timeout
+        self._vllm_metrics_url = self.optillm_config.backend_url.rsplit("/v1", 1)[0]
+        self._idle_timeout = getattr(self.optillm_config, "idle_timeout", 120)
+        self._heartbeat_poll_interval = 10  # seconds between vLLM metrics polls
+        self._vllm_metrics_client: Optional[httpx.AsyncClient] = None
+
         logger.info(
             f"OptillmController initialized: {self._base_url}, "
             f"default technique: {self._default_technique.value}, "
@@ -183,6 +193,12 @@ class OptillmController:
             },
         )
 
+        # Lightweight client for polling vLLM /metrics (short timeout, no auth)
+        self._vllm_metrics_client = httpx.AsyncClient(
+            base_url=self._vllm_metrics_url,
+            timeout=5.0,
+        )
+
         # Check if optillm is already running externally
         if await self.health_check():
             logger.info("optillm already running externally")
@@ -193,6 +209,11 @@ class OptillmController:
             await self._start_gunicorn_process()
         else:
             await self._start_optillm_process()
+        # Start watchdog for crash detection and auto-restart
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+            logger.info("optillm watchdog started")
+
         logger.info("OptillmController started")
 
     async def _start_optillm_process(self) -> bool:
@@ -428,8 +449,64 @@ class OptillmController:
 
         return False
 
+    async def _watchdog_loop(self) -> None:
+        """Monitor optillm subprocess and auto-restart on crash.
+
+        Checks both subprocess liveness (PID returncode) and HTTP health.
+        Uses existing restart() which tracks _recovery_attempts up to
+        _max_recovery_attempts (3).
+        """
+        while self._status not in (OptillmStatus.STOPPED, OptillmStatus.STOPPING):
+            try:
+                if self._process and self._process.returncode is not None:
+                    # Subprocess crashed — attempt auto-restart
+                    logger.warning(
+                        f"optillm subprocess exited (code={self._process.returncode}), "
+                        f"attempting auto-restart "
+                        f"(attempt {self._recovery_attempts + 1}/{self._max_recovery_attempts})"
+                    )
+                    self._healthy = False
+                    self._status = OptillmStatus.FAILED
+                    restarted = await self.restart()
+                    if not restarted:
+                        logger.error(
+                            "optillm auto-restart failed after max attempts. "
+                            "Guru Meditation: #OPT.00000001.WATCHDOG\n"
+                            "  Try: /health fix optillm"
+                        )
+                        break  # Stop watchdog — manual intervention needed
+                elif self._status == OptillmStatus.HEALTHY:
+                    # Periodic HTTP liveness probe
+                    if not await self.health_check():
+                        logger.warning(
+                            "optillm HTTP health check failed, attempting restart"
+                        )
+                        restarted = await self.restart()
+                        if not restarted:
+                            logger.error(
+                                "optillm restart failed after health check failure. "
+                                "Guru Meditation: #OPT.00000001.WATCHDOG\n"
+                                "  Try: /health fix optillm"
+                            )
+                            break
+            except Exception as e:
+                logger.debug(f"Watchdog error: {e}")
+
+            await asyncio.sleep(self._watchdog_interval)
+
+        logger.info("optillm watchdog stopped")
+
     async def stop(self) -> None:
         """Stop the controller and optillm subprocess."""
+        # Cancel watchdog task
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+            self._watchdog_task = None
+
         # Cancel log reader task
         if self._log_reader_task and not self._log_reader_task.done():
             self._log_reader_task.cancel()
@@ -470,6 +547,10 @@ class OptillmController:
         if self._client:
             await self._client.aclose()
             self._client = None
+
+        if self._vllm_metrics_client:
+            await self._vllm_metrics_client.aclose()
+            self._vllm_metrics_client = None
 
         self._healthy = False
         logger.info("OptillmController stopped")
@@ -658,6 +739,182 @@ class OptillmController:
 
         return self._healthy
 
+    async def _get_vllm_heartbeat(self) -> tuple[int, float]:
+        """Poll vLLM metrics for forward progress indicators.
+
+        Returns:
+            (num_requests_running, generation_tokens_total)
+            Returns (0, 0.0) if metrics unavailable.
+        """
+        if not self._vllm_metrics_client:
+            return (0, 0.0)
+
+        try:
+            resp = await self._vllm_metrics_client.get("/metrics")
+            running = 0
+            tokens = 0.0
+
+            for line in resp.text.split("\n"):
+                if line.startswith("vllm:num_requests_running{"):
+                    running = int(float(line.split()[-1]))
+                elif line.startswith("vllm:generation_tokens_total{"):
+                    tokens = float(line.split()[-1])
+
+            return (running, tokens)
+        except Exception:
+            # Metrics endpoint unavailable — don't stall the request
+            return (0, 0.0)
+
+    async def _complete_with_heartbeat(
+        self,
+        payload: dict,
+        model_name: str,
+        request: OptillmRequest,
+    ) -> OptillmResponse:
+        """Execute completion with vLLM heartbeat monitoring.
+
+        Runs the optillm HTTP POST concurrently with a vLLM metrics poller.
+        The request is cancelled only when vLLM shows no forward progress
+        (no running requests AND no new tokens) for idle_timeout seconds.
+
+        Guru Meditation: #OPT.00000010.STALLED
+        """
+        import time
+
+        start_time = datetime.now()
+        start_mono = time.monotonic()
+        idle_timeout = self._idle_timeout
+        poll_interval = self._heartbeat_poll_interval
+
+        # Snapshot vLLM baseline before request
+        _, baseline_tokens = await self._get_vllm_heartbeat()
+        last_progress_mono = start_mono
+        last_token_count = baseline_tokens
+
+        # Start the HTTP POST as a background task
+        post_task = asyncio.create_task(
+            self._client.post("/v1/chat/completions", json=payload)  # type: ignore[union-attr]
+        )
+
+        try:
+            while not post_task.done():
+                # Wait for either: task completion or next poll interval
+                done, _ = await asyncio.wait({post_task}, timeout=poll_interval)
+
+                if done:
+                    break
+
+                # Poll vLLM heartbeat
+                now = time.monotonic()
+                elapsed = now - start_mono
+                running, current_tokens = await self._get_vllm_heartbeat()
+
+                if current_tokens > last_token_count:
+                    # Token generation progressing
+                    tokens_delta = current_tokens - last_token_count
+                    tokens_total = current_tokens - baseline_tokens
+                    logger.info(
+                        f"optillm heartbeat: +{tokens_delta:.0f} tokens "
+                        f"(total: {tokens_total:.0f}, elapsed: {elapsed:.0f}s)"
+                    )
+                    last_progress_mono = now
+                    last_token_count = current_tokens
+                elif running > 0:
+                    # Request in vLLM pipeline (maybe prompt processing)
+                    logger.debug(
+                        f"optillm heartbeat: {running} running in vLLM, "
+                        f"elapsed: {elapsed:.0f}s"
+                    )
+                    last_progress_mono = now  # Activity = progress
+                else:
+                    idle_seconds = now - last_progress_mono
+                    if idle_seconds > idle_timeout:
+                        # No running requests AND no token progress = stalled
+                        tokens_total = current_tokens - baseline_tokens
+                        logger.error(
+                            f"optillm stalled (#OPT.00000010.STALLED): "
+                            f"no vLLM progress for {idle_seconds:.0f}s "
+                            f"(idle_timeout={idle_timeout}s, "
+                            f"tokens_generated={tokens_total:.0f})"
+                        )
+                        post_task.cancel()
+                        try:
+                            await post_task
+                        except asyncio.CancelledError:
+                            pass
+
+                        latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                        return OptillmResponse(
+                            content="",
+                            model=model_name,
+                            technique=request.technique.value,
+                            latency_ms=latency_ms,
+                            error=(
+                                f"Guru Meditation: #OPT.00000010.STALLED — "
+                                f"vLLM generation stalled for {idle_seconds:.0f}s "
+                                f"with {tokens_total:.0f} tokens generated. "
+                                f"Try: /health fix optillm"
+                            ),
+                        )
+                    elif idle_seconds > 30:
+                        # Warn but don't kill yet
+                        logger.warning(
+                            f"optillm heartbeat: idle {idle_seconds:.0f}s, "
+                            f"no vLLM activity (timeout at {idle_timeout}s)"
+                        )
+
+            # POST completed — parse response
+            response = post_task.result()
+            response.raise_for_status()
+
+            data = response.json()
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            tokens_total = last_token_count - baseline_tokens
+
+            choice = data.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            usage = data.get("usage", {})
+
+            logger.info(
+                f"optillm complete: {latency_ms}ms, "
+                f"vLLM tokens generated: {tokens_total:.0f}"
+            )
+
+            return OptillmResponse(
+                content=message.get("content", ""),
+                model=data.get("model", model_name),
+                technique=request.technique.value,
+                input_tokens=usage.get("prompt_tokens", 0),
+                output_tokens=usage.get("completion_tokens", 0),
+                latency_ms=latency_ms,
+            )
+
+        except httpx.HTTPStatusError as e:
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            logger.error(f"optillm request failed: {error_msg}")
+            return OptillmResponse(
+                content="",
+                model=model_name,
+                technique=request.technique.value,
+                latency_ms=latency_ms,
+                error=error_msg,
+            )
+
+        except asyncio.CancelledError:
+            raise  # Don't swallow cancellation
+
+        except Exception as e:
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            logger.error(f"optillm request error: {e}")
+            return OptillmResponse(
+                content="",
+                model=model_name,
+                technique=request.technique.value,
+                latency_ms=latency_ms,
+                error=str(e),
+            )
+
     def _build_model_name(
         self, base_model: str, technique: OptillmTechnique
     ) -> str:
@@ -673,7 +930,11 @@ class OptillmController:
     async def complete(
         self, request: OptillmRequest
     ) -> OptillmResponse:
-        """Complete a request through optillm.
+        """Complete a request through optillm with progress-aware idle timeout.
+
+        Uses vLLM metrics heartbeat monitoring instead of a wall-clock timeout.
+        The request is cancelled only if vLLM shows no forward progress
+        (no running requests AND no new tokens) for idle_timeout seconds.
 
         Args:
             request: The completion request
@@ -686,7 +947,7 @@ class OptillmController:
                 content="",
                 model=request.model,
                 technique=request.technique.value,
-                error="Controller not started",
+                error="Guru Meditation: #OPT.00000002.NOTSTARTED — optillm controller not started. Try: /health fix optillm",
             )
 
         if not self._healthy:
@@ -697,7 +958,7 @@ class OptillmController:
                     content="",
                     model=request.model,
                     technique=request.technique.value,
-                    error="optillm not healthy",
+                    error="Guru Meditation: #OPT.00000003.UNHEALTHY — optillm not healthy. Try: /health fix optillm",
                 )
 
         # Build model name with technique prefix
@@ -711,56 +972,7 @@ class OptillmController:
             "max_tokens": request.max_tokens,
         }
 
-        start_time = datetime.now()
-
-        try:
-            response = await self._client.post(
-                "/v1/chat/completions",
-                json=payload,
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-
-            # Parse OpenAI response format
-            choice = data.get("choices", [{}])[0]
-            message = choice.get("message", {})
-            usage = data.get("usage", {})
-
-            return OptillmResponse(
-                content=message.get("content", ""),
-                model=data.get("model", model_name),
-                technique=request.technique.value,
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-                latency_ms=latency_ms,
-            )
-
-        except httpx.HTTPStatusError as e:
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-            logger.error(f"optillm request failed: {error_msg}")
-
-            return OptillmResponse(
-                content="",
-                model=model_name,
-                technique=request.technique.value,
-                latency_ms=latency_ms,
-                error=error_msg,
-            )
-
-        except Exception as e:
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            logger.error(f"optillm request error: {e}")
-
-            return OptillmResponse(
-                content="",
-                model=model_name,
-                technique=request.technique.value,
-                latency_ms=latency_ms,
-                error=str(e),
-            )
+        return await self._complete_with_heartbeat(payload, model_name, request)
 
     async def complete_simple(
         self,

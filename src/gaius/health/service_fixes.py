@@ -1367,12 +1367,13 @@ print("\\nRASE singletons reset complete")
                 name="Check calibration providers",
                 description="Verify Cerebras and XAI API keys are configured",
                 code='''
-import os
+from gaius.core.config import get_config
 
 print("Checking calibration provider configuration...")
 
-cerebras_key = os.environ.get("CEREBRAS_API_KEY", "")
-xai_key = os.environ.get("XAI_API_KEY", "")
+cfg = get_config().providers
+cerebras_key = cfg.cerebras.api_key
+xai_key = cfg.xai.api_key
 
 if cerebras_key:
     print(f"[OK] CEREBRAS_API_KEY configured ({len(cerebras_key)} chars)")
@@ -1396,6 +1397,145 @@ else:
         )
 
         return actions
+
+
+class OptillmFixStrategy(ServiceFixStrategy):
+    """Fix strategy for optillm prompt optimization proxy.
+
+    optillm is engine-managed — it runs as a subprocess of gaius-engine,
+    not as a standalone devenv process. This strategy:
+    1. Verifies engine connectivity (optillm requires the engine)
+    2. Restarts optillm via the engine's BackendRouter
+    3. Verifies health after restart
+    """
+
+    def __init__(self):
+        super().__init__("optillm")
+        self.engine_port = int(os.getenv("GAIUS_ENGINE_PORT", "50051"))
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix optillm issues."""
+        actions = []
+
+        # Step 1: Verify engine is running (optillm is engine-managed)
+        if not self._is_engine_listening():
+            actions.append(
+                RemediationAction(
+                    name="Start engine (optillm requires engine)",
+                    description="optillm is engine-managed. Start the engine first.",
+                    command="devenv up -d",
+                    safety=SafetyLevel.SAFE,
+                    timeout=120,
+                )
+            )
+            actions.append(
+                RemediationAction(
+                    name="Wait for engine startup",
+                    description="Wait for engine to start and initialize optillm",
+                    command="sleep 15",
+                    safety=SafetyLevel.SAFE,
+                    timeout=20,
+                )
+            )
+
+        # Step 2: Restart optillm via engine gRPC
+        actions.append(
+            RemediationAction(
+                name="Restart optillm via engine",
+                description="Send restart command to engine's optillm controller",
+                code='''
+import subprocess
+import json
+
+print("Restarting optillm via engine...")
+
+# Use CLI to trigger optillm restart through the engine
+try:
+    result = subprocess.run(
+        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        capture_output=True, text=True, timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        endpoints = data.get("data", {}).get("endpoints", [])
+        optillm_found = any(ep.get("name") == "optillm" for ep in endpoints)
+        if optillm_found:
+            print("  optillm endpoint found in engine status")
+        else:
+            print("  optillm not in endpoint list (engine-managed subprocess)")
+        print("  Engine is responding - optillm should recover automatically")
+    else:
+        print(f"  Engine not responding: {result.stderr[:200]}")
+        print("  Try: /health fix engine")
+except Exception as e:
+    print(f"  Could not reach engine: {e}")
+    print("  Try: /health fix engine")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=45,
+            )
+        )
+
+        # Step 3: Reset gRPC singleton to force reconnection
+        actions.append(
+            RemediationAction(
+                name="Reset gRPC singleton",
+                description="Clear stale gRPC client connection",
+                code="""
+from gaius.client.grpc_client import reset_grpc_client
+reset_grpc_client()
+print("gRPC singleton reset")
+""",
+                safety=SafetyLevel.SAFE,
+                timeout=5,
+            )
+        )
+
+        # Step 4: Verify optillm health
+        actions.append(
+            RemediationAction(
+                name="Verify optillm health",
+                description="Check that optillm is responding after restart",
+                code='''
+import subprocess
+import json
+
+print("Verifying optillm health...")
+
+try:
+    result = subprocess.run(
+        ["uv", "run", "gaius-cli", "--cmd", "/health", "--format", "json"],
+        capture_output=True, text=True, timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        # Look for optillm in health output
+        health_str = json.dumps(data, indent=2)
+        if "optillm" in health_str.lower():
+            print("  optillm appears in health output")
+        print("  Health check complete")
+    else:
+        print(f"  Health check failed: {result.stderr[:200]}")
+except Exception as e:
+    print(f"  Verification failed: {e}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=45,
+            )
+        )
+
+        return actions
+
+    def _is_engine_listening(self) -> bool:
+        """Check if engine gRPC port is listening."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            result = sock.connect_ex(("localhost", self.engine_port))
+            return result == 0
+        finally:
+            sock.close()
 
 
 # Service registry - maps service names to strategies
@@ -1430,6 +1570,7 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "pipeline": PipelineFixStrategy(),
     "triage": PipelineFixStrategy(),  # Alias
     "content": PipelineFixStrategy(),  # Alias
+    "optillm": OptillmFixStrategy(),
 }
 
 

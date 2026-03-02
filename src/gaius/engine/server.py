@@ -1639,6 +1639,20 @@ class GaiusEngine:
             except Exception as e:
                 logger.debug(f"Failed to collect GPU metrics: {e}")
 
+        # Collect optillm health from BackendRouter
+        if self._backend_router:
+            try:
+                optillm_status = self._backend_router.optillm.get_status()
+                endpoints.append({
+                    "name": "optillm",
+                    "model": "optillm-proxy",
+                    "healthy": optillm_status.get("healthy", False),
+                    "requests_served": 0,
+                    "avg_latency_ms": 0.0,
+                })
+            except Exception as e:
+                logger.debug(f"Failed to collect optillm metrics: {e}")
+
         # Collect endpoint metrics from OrchestratorService
         if self._orchestrator_service:
             try:
