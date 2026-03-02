@@ -5,6 +5,11 @@ Tiered inference architecture:
 2. vLLM direct: Local fallback if optillm unavailable
 3. XAI Grok: Outsider model for objective evaluation/critique
 4. OpenAI: Last resort fallback
+
+TECH DEBT: InferenceClient creates direct AsyncOpenAI clients to optillm/vLLM
+endpoints (localhost:8080, 8082). All inference should route through the gRPC
+engine (port 50051) for centralized scheduling, metrics, and GPU management.
+See: engine-first architecture in CLAUDE.md
 """
 
 from dataclasses import dataclass

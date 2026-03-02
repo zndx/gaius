@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, help="Output PNG path")
     parser.add_argument("--samples", type=int, default=256, help="Render samples")
     parser.add_argument("--width", type=int, default=1400, help="Output width in pixels")
-    parser.add_argument("--height", type=int, default=600, help="Output height in pixels")
+    parser.add_argument("--height", type=int, default=300, help="Output height in pixels")
     return parser.parse_args(script_args)
 
 
@@ -678,7 +678,7 @@ def setup_world():
     links.new(vol.outputs["Volume"], output.inputs["Volume"])
 
 
-def setup_render(samples: int, output_path: str, width: int = 1400, height: int = 600):
+def setup_render(samples: int, output_path: str, width: int = 1400, height: int = 300):
     """Configure Cycles for glass-plasma rendering."""
     import bpy
 

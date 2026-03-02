@@ -5,6 +5,10 @@ Routes inference requests to appropriate models based on workflow phase:
 - synthesis: optillm with COT for deep reasoning
 - evaluation: Frontier model (Claude) for critical assessment
 
+TECH DEBT: EndpointRouter maintains a pool of direct AsyncOpenAI clients.
+All inference routing should go through the gRPC engine's BackendRouter
+for centralized observability and resource management.
+
 Usage:
     from gaius.inference.router import ModelRouter, WorkflowPhase
 

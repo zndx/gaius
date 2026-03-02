@@ -18,6 +18,11 @@ version_settings(constraint='>=0.22.2')
 # Allow RKE2 context (default context name for RKE2)
 allow_k8s_contexts(['default', 'kubernetes-admin@kubernetes'])
 
+# Optional components
+config.define_bool('argo', usage='Enable Argo Workflows deployment')
+cfg = config.parse()
+enable_argo = cfg.get('argo', False)
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -113,31 +118,30 @@ k8s_resource(
 )
 
 # ============================================================================
-# Argo Workflows (for K8s execution backend)
+# Argo Workflows (for K8s execution backend) — optional
 # ============================================================================
 
-helm_repo('argo', 'https://argoproj.github.io/argo-helm')
+if enable_argo:
+    helm_repo('argo', 'https://argoproj.github.io/argo-helm')
 
-helm_resource(
-    'argo-workflows',
-    'argo/argo-workflows',
-    flags=[
-        '--set', 'server.serviceType=ClusterIP',
-        '--set', 'controller.workflowNamespaces[0]=default',
-        '--set', 'controller.resources.requests.cpu=100m',
-        '--set', 'controller.resources.requests.memory=128Mi',
-    ],
-    labels=['argo'],
-)
+    helm_resource(
+        'argo-workflows',
+        'argo/argo-workflows',
+        flags=[
+            '--set', 'server.serviceType=ClusterIP',
+            '--set', 'controller.workflowNamespaces[0]=default',
+            '--set', 'controller.resources.requests.cpu=100m',
+            '--set', 'controller.resources.requests.memory=128Mi',
+        ],
+        labels=['argo'],
+    )
 
-# Note: argo-workflows helm chart creates the 'argo-workflows' resource
-# which includes both the controller and server. We just set labels here.
-k8s_resource(
-    'argo-workflows',
-    port_forwards=['2746:2746'],
-    links=[link('http://localhost:2746', 'Argo Workflows UI')],
-    labels=['argo'],
-)
+    k8s_resource(
+        'argo-workflows',
+        port_forwards=['2746:2746'],
+        links=[link('http://localhost:2746', 'Argo Workflows UI')],
+        labels=['argo'],
+    )
 
 # ============================================================================
 # Config File Generation
@@ -179,7 +183,8 @@ local_resource(
     # Keep alive
     wait
     ''',
-    resource_deps=['metaflow-service', 'metaflow-ui', 'metaflow-ui-static'],
+    resource_deps=['metaflow-service', 'metaflow-ui', 'metaflow-ui-static'] +
+                   (['argo-workflows'] if enable_argo else []),
     labels=['network'],
 )
 
@@ -197,7 +202,8 @@ if config.tilt_subcommand == 'up':
     print("  Metaflow Service: http://localhost:9080")
     print("  Metaflow UI:      http://localhost:3000")
     print("  Metaflow API:     http://localhost:9083")
-    print("  Argo Workflows:   http://localhost:2746")
+    if enable_argo:
+        print("  Argo Workflows:   http://localhost:2746")
     print("")
     print("External Access (LAN):")
     print("  Metaflow Service: http://<host-ip>:9080")

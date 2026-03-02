@@ -110,7 +110,7 @@ def render_card_luxcore(
     viz_data: CardVizData,
     output_path: str | Path,
     *,
-    resolution: tuple[int, int] = (1400, 600),
+    resolution: tuple[int, int] = (1400, 300),
     halt_time: int = 60,
     halt_samples: int = 512,
     gpu_id: int | None = None,

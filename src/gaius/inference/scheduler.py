@@ -15,6 +15,9 @@
     This client-side scheduler bypasses the gRPC security boundary and uses
     hardcoded model names that may not exist on the current vLLM deployment.
 
+TECH DEBT: Deprecated scheduler maintains direct vLLM/optillm clients.
+This module should be fully replaced by gRPC engine's SchedulerService.
+
 Core capability for Gaius that manages inference jobs across GPU endpoints.
 Provides:
 - Optimal job scheduling with OR-Tools CP-SAT

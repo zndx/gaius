@@ -47,7 +47,7 @@ async def render_card(
     *,
     timeout: int = RENDER_TIMEOUT,
     template: Path | None = None,
-    resolution: tuple[int, int] = (1400, 600),
+    resolution: tuple[int, int] = (1400, 300),
     gpu_id: int | None = None,
 ) -> Path:
     """Render a single card visualization via Blender subprocess.
@@ -300,7 +300,7 @@ async def render_card_luxcore_async(
     viz_data: CardVizData,
     output_path: Path | None = None,
     *,
-    resolution: tuple[int, int] = (1400, 600),
+    resolution: tuple[int, int] = (1400, 300),
     halt_time: int = LUXCORE_HALT_TIME,
     halt_samples: int = LUXCORE_HALT_SAMPLES,
     gpu_id: int | None = None,

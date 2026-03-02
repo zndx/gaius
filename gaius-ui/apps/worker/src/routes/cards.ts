@@ -354,36 +354,11 @@ function generateCardPageStyles(theme: Theme): string {
       color: var(--text-muted);
     }
 
-    /* Visualization panel (collapsed by default) */
-    .card-viz-details {
+    /* Visualization panel */
+    .card-viz {
       max-width: 1400px;
       margin: 0 auto;
       padding: 0 2rem 1rem;
-    }
-
-    .card-viz-toggle {
-      font-size: 0.75rem;
-      color: var(--text-secondary, #888);
-      cursor: pointer;
-      user-select: none;
-      list-style: none;
-      padding: 0.25rem 0;
-    }
-
-    .card-viz-toggle::-webkit-details-marker {
-      display: none;
-    }
-
-    .card-viz-toggle::before {
-      content: '▸ ';
-    }
-
-    .card-viz-details[open] .card-viz-toggle::before {
-      content: '▾ ';
-    }
-
-    .card-viz {
-      padding-top: 0.5rem;
     }
 
     .card-viz img {
@@ -398,7 +373,7 @@ function generateCardPageStyles(theme: Theme): string {
       .card-page-title { font-size: 1.35rem; }
       .page-header { padding: 1rem 1rem 0; }
       .card-brief { padding: 0 1rem 1rem; }
-      .card-viz-details { padding: 0 1rem 0.75rem; }
+      .card-viz { padding: 0 1rem 0.75rem; }
       .summaries-container { padding: 0 1rem; }
       .card-actions { padding: 1rem; }
       .card-nav { padding: 0.5rem 1rem 1rem; }
@@ -640,16 +615,13 @@ export async function handleCardPage(c: Context): Promise<Response> {
       </div>
 
       ${data.image_url ? `
-        <details class="card-viz-details">
-          <summary class="card-viz-toggle">Topology visualization</summary>
-          <div class="card-viz">
-            <img src="${escapeHtml(data.image_url)}"
-                 ${ogImageUrl ? `srcset="${escapeHtml(data.image_url)} 1400w, ${escapeHtml(ogImageUrl)} 1200w"` : ''}
-                 sizes="(max-width: 1400px) 100vw, 1400px"
-                 alt="Topological visualization of ${escapeHtml(data.title)}"
-                 loading="lazy" width="1400" height="300" />
-          </div>
-        </details>
+        <div class="card-viz">
+          <img src="${escapeHtml(data.image_url)}"
+               ${ogImageUrl ? `srcset="${escapeHtml(data.image_url)} 1400w, ${escapeHtml(ogImageUrl)} 1200w"` : ''}
+               sizes="(max-width: 1400px) 100vw, 1400px"
+               alt="Topological visualization of ${escapeHtml(data.title)}"
+               width="1400" height="300" />
+        </div>
       ` : ''}
 
       ${hasSummaries ? `

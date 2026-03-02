@@ -1,7 +1,8 @@
 {
   "METAFLOW_DEFAULT_METADATA": "service",
-  "METAFLOW_SERVICE_URL": "http://localhost:9080",
-  "METAFLOW_DEFAULT_DATASTORE": "s3",
+  "METAFLOW_SERVICE_URL": "http://localhost:30180",
+  "METAFLOW_DEFAULT_DATASTORE": "local",
+  "METAFLOW_DATASTORE_SYSROOT_LOCAL": "/raid/metaflow",
   "METAFLOW_DATASTORE_SYSROOT_S3": "s3://metaflow-artifacts/metaflow",
   "METAFLOW_S3_ENDPOINT_URL": "http://localhost:9010",
   "AWS_ACCESS_KEY_ID": "minioadmin",
