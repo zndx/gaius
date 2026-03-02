@@ -215,13 +215,13 @@ class ScheduledTaskProcessor(BaseDaemon):
 
             logger.info(
                 f"Published {result.get('published_count', 0)} cards, "
-                f"KV sync: {result.get('sync_result', {}).get('success', False)}"
+                f"KV sync: {result.get('kv_sync', {}).get('success', False)}"
             )
 
             return {
                 "slot": slot,
                 "published_count": result.get("published_count", 0),
-                "kv_sync_success": result.get("sync_result", {}).get("success", False),
+                "kv_sync_success": result.get("kv_sync", {}).get("success", False),
             }
 
         async def handle_article_curate(task: ScheduledTask) -> dict[str, Any]:
@@ -229,69 +229,81 @@ class ScheduledTaskProcessor(BaseDaemon):
 
             Triggers ArticleCurationFlow via Metaflow CLI.
 
-            Uses progress-based idle timeout: the subprocess must produce
+            Uses async subprocess to avoid blocking the event loop — the
+            previous blocking select.select() implementation deadlocked
+            the engine's gRPC server, preventing callback requests from
+            the flow subprocess (which calls Scheduler.complete for
+            cot_reflection inference).
+
+            Progress-based idle timeout: the subprocess must produce
             stdout within IDLE_TIMEOUT seconds or it's considered stalled.
-            There is no hard wall-clock limit — a flow that keeps printing
-            progress can run as long as it needs (render step alone can
-            take 15+ minutes for many cards).
+            No hard wall-clock limit — a flow that keeps printing progress
+            can run as long as it needs (render step alone can take 15+
+            minutes for many cards).
             """
-            import subprocess
-            import select
             import time
 
-            IDLE_TIMEOUT = 300  # 5 minutes without output = stalled
+            # Must exceed the engine's wall-clock timeout (600s) for
+            # cot_reflection calls, since the flow prints nothing during
+            # long gRPC calls. The engine's idle-timeout (120s) handles
+            # stall detection; this is just the subprocess safety net.
+            IDLE_TIMEOUT = 900  # 15 minutes without output
 
             logger.info("Triggering ArticleCurationFlow...")
 
+            # Propagate full environment to subprocess (API keys, etc.)
+            env = dict(os.environ)
+            has_xai = "XAI_API_KEY" in env
+            has_brave = "BRAVE_API_KEY" in env
+            logger.info(f"  Subprocess env: XAI_API_KEY={'present' if has_xai else 'MISSING'}, "
+                        f"BRAVE_API_KEY={'present' if has_brave else 'MISSING'}, "
+                        f"METAFLOW_HOME={env.get('METAFLOW_HOME', 'unset')}")
+
             try:
-                proc = subprocess.Popen(
-                    [
-                        "uv", "run", "python", "-m",
-                        "gaius.flows.article_curation.flow", "run",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+                proc = await asyncio.create_subprocess_exec(
+                    "uv", "run", "python", "-m",
+                    "gaius.flows.article_curation.flow", "run",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env=env,
                     cwd=os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius"),
                 )
 
                 last_output = time.monotonic()
                 output_lines: list[str] = []
-                stdout = proc.stdout
-                assert stdout is not None  # guaranteed by stdout=PIPE
 
                 while True:
-                    # Wait for output with idle timeout
-                    ready, _, _ = select.select(
-                        [stdout], [], [], IDLE_TIMEOUT
-                    )
-
-                    if ready:
-                        line = stdout.readline()
-                        if line:
-                            last_output = time.monotonic()
-                            output_lines.append(line.rstrip())
-                            logger.info(f"  ArticleCuration: {line.rstrip()}")
-                        elif proc.poll() is not None:
-                            # EOF + process exited
-                            break
-                    else:
-                        # No output within idle timeout
+                    try:
+                        # Async readline — yields control to event loop
+                        raw = await asyncio.wait_for(
+                            proc.stdout.readline(),
+                            timeout=IDLE_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
                         idle_s = time.monotonic() - last_output
-                        if proc.poll() is not None:
+                        if proc.returncode is not None:
                             break  # Already exited
                         logger.error(
                             f"ArticleCurationFlow stalled: no output for {idle_s:.0f}s"
                         )
                         proc.kill()
-                        proc.wait()
+                        await proc.wait()
                         return {
                             "status": "stalled",
                             "idle_seconds": idle_s,
                             "last_lines": output_lines[-10:],
                         }
 
-                retcode = proc.wait()
+                    if raw:
+                        line = raw.decode("utf-8", errors="replace").rstrip()
+                        last_output = time.monotonic()
+                        output_lines.append(line)
+                        logger.info(f"  ArticleCuration: {line}")
+                    else:
+                        # EOF — subprocess closed stdout
+                        break
+
+                retcode = await proc.wait()
                 if retcode == 0:
                     logger.info("ArticleCurationFlow completed successfully")
                     return {

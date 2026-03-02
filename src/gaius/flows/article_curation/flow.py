@@ -33,7 +33,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -216,7 +215,9 @@ class ArticleCurationFlow(TracedFlow, GaiusFlow):
         self.candidate_slugs = [c.slug for c in candidates]
 
         # Verify XAI is configured (required for Grok)
-        xai_key = os.environ.get("XAI_API_KEY")
+        from gaius.core.config import get_config
+
+        xai_key = get_config().providers.xai.api_key
         if not xai_key:
             error_msg = (
                 "XAI_API_KEY not configured - Grok is required for article curation.\n"
@@ -550,31 +551,30 @@ Respond with JSON:
 }}"""
 
         # Use engine's capability-based scheduling:
-        # - "instruct" agent has backend="vllm" with Devstral-24B model
-        # - Engine routes directly to vLLM instruct endpoint
-        # - NOTE: Using instruct (vLLM) instead of leader (optillm) due to optillm tokenizer issue
+        # - "leader" agent routes through optillm with cot_reflection technique
+        # - Provides better article selection via chain-of-thought reasoning
         try:
             client = await get_engine_client()
             response = await client.complete_simple(
                 prompt=prompt,
-                model="instruct",  # Use instruct agent (vLLM backend with Devstral)
+                model="leader",  # Route through optillm for cot_reflection
                 system_prompt="You are an editorial curator selecting articles for publication.",
                 temperature=0.7,  # Higher for exploration
-                max_tokens=2048,
+                max_tokens=4096,  # cot_reflection needs room for <thinking>+<output>
             )
         except Exception as e:
             raise RuntimeError(
                 f"Engine connection failed: {e}\n"
-                "  Guru Meditation: #ACF.00000005.NOOPTILLM\n"
-                "  Ensure engine is running: devenv tasks run restart:clean\n"
+                "  Guru Meditation: #ACF.00000005.ENGINEFAIL\n"
+                "  Ensure engine is running: /health fix engine\n"
                 "  Or specify single article with --article to bypass selection"
             ) from e
 
         if not response.content:
             raise RuntimeError(
                 f"Article selection failed: empty response\n"
-                "  Guru Meditation: #ACF.00000005.NOOPTILLM\n"
-                "  Check engine and optillm health: /health fix optillm"
+                "  Guru Meditation: #ACF.00000022.EMPTYRESPONSE\n"
+                "  Check engine health: /health fix optillm"
             )
 
         # Parse JSON from response
@@ -833,7 +833,7 @@ Respond with JSON:
                         },
                     ))
 
-                return sources[:self.max_sources]
+                return sources[:int(self.max_sources)]
 
         except httpx.RequestError as e:
             raise RuntimeError(
@@ -908,7 +908,7 @@ Respond with JSON:
                         },
                     ))
 
-                return sources[:self.max_sources]
+                return sources[:int(self.max_sources)]
 
         except httpx.RequestError as e:
             logger.warning(f"bioRxiv API request failed (optional source): {e}")
@@ -936,12 +936,13 @@ Respond with JSON:
             RuntimeError: If Brave API fails or BRAVE_API_KEY not set (fail-fast)
         """
         import httpx
-        import os
         import time
 
         from gaius.hx import ExchangeRecord, get_exchange_capture
 
-        api_key = os.environ.get("BRAVE_API_KEY")
+        from gaius.core.config import get_config as _get_config
+
+        api_key = _get_config().providers.brave.api_key
         if not api_key:
             raise RuntimeError(
                 "BRAVE_API_KEY not configured - REQUIRED for open web research.\n"
@@ -1057,7 +1058,7 @@ Respond with JSON:
                         )
                     logger.info(f"Captured Brave exchange: {len(sources)} results, {latency_ms}ms")
 
-                return sources[:self.max_sources]
+                return sources[:int(self.max_sources)]
 
         except httpx.RequestError as e:
             raise RuntimeError(
@@ -1219,7 +1220,9 @@ Respond with JSON:
         from xai_sdk import Client as XAIClient
         from xai_sdk.collections import FieldDefinition
 
-        mgmt_key = os.environ.get("XAI_MANAGEMENT_KEY")
+        from gaius.core.config import get_config as _get_cfg
+
+        mgmt_key = _get_cfg().providers.xai.management_key
         if not mgmt_key:
             raise RuntimeError(
                 "XAI_MANAGEMENT_KEY not configured - required for Grok Collections.\n"
@@ -2400,87 +2403,62 @@ Be concise - each summary should be 1-2 sentences max."""
         self.next(self.end)
 
     async def _render_visualizations_async(self) -> int:
-        """Render display + og variants via LuxCore for published cards.
+        """Render display + og variants via engine gRPC (workload-managed).
+
+        Delegates to the engine's RenderCards streaming RPC which handles
+        GPU eviction, LuxCore rendering, R2 upload, and endpoint restoration.
 
         Returns:
-            Number of cards successfully rendered (both variants)
+            Number of cards successfully rendered
         """
-        import asyncpg
-        from gaius.core.config import get_database_url
-        from gaius.engine.services.collection_service import CollectionService
-        from gaius.viz.data import extract_card_viz_data
+        from gaius.client.grpc_client import get_grpc_client, GrpcClientConfig
 
-        try:
-            from gaius.viz.renderer import render_card_variants_luxcore
-        except ImportError:
-            print("  pyluxcore not installed, skipping rendering")
-            print("  Fix: uv pip install pyluxcore --no-deps")
-            return 0
+        client = await get_grpc_client(GrpcClientConfig.for_cli())
 
-        from gaius.viz.storage import update_card_image_url, upload_card_variants
-
-        db_url = get_database_url()
+        collection_slug = self.selected_slug
         cards_rendered = 0
-        r2_configured = bool(os.environ.get("CF_R2_ACCESS_KEY_ID"))
 
-        async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
-            service = CollectionService(pool)
+        rendered_card_ids: list[str] = []
 
-            # Get published cards for this collection
-            cards = await service.get_published_cards(
-                collection_id=self.collection_id, limit=100
-            )
+        async for event in client.RenderCards(
+            collection_slug=collection_slug,
+            upload=True,
+        ):
+            # Log progress from the engine's render stream
+            if event.card_id and event.message:
+                print(f"  [{event.cards_done}/{event.cards_total}] {event.message}")
+            elif event.message:
+                print(f"  {event.message}")
 
-            for i, card in enumerate(cards):
-                card_label = f"[{i+1}/{len(cards)}] {card.title[:50]}"
-
-                # 1. Extract viz data (CPU to avoid GPU contention with vLLM)
-                try:
-                    viz_data = await extract_card_viz_data(
-                        pool, card.card_id, device="cpu"
-                    )
-                except Exception as e:
-                    print(f"  {card_label}: viz data FAILED - {e}")
-                    continue
-
-                print(
-                    f"  {card_label}: κ={viz_data.curvature:.2f} "
-                    f"π={viz_data.persistence:.2f} b1={viz_data.b1}"
-                )
-
-                # 2. Render display + og variants via LuxCore
-                try:
-                    card_output_dir = Path("build/viz") / card.card_id
-                    variant_paths = await render_card_variants_luxcore(
-                        viz_data,
-                        card_output_dir,
-                        halt_time=20,
-                        halt_samples=128,
-                    )
-                except Exception as e:
-                    print(f"  {card_label}: render FAILED - {e}")
-                    continue
-
-                # 3. Upload both variants to R2 if configured, otherwise local-only
-                if r2_configured:
-                    try:
-                        urls = await upload_card_variants(
-                            card.card_id, variant_paths
-                        )
-                        display_url = urls["display"]
-                        await update_card_image_url(
-                            pool, card.card_id, display_url
-                        )
-                        await service.sync_card_to_kv(card.card_id)
-                        print(f"  {card_label}: uploaded → {display_url}")
-                    except Exception as e:
-                        print(f"  {card_label}: upload FAILED - {e}")
-                        # Still count as rendered (local files exist)
-                else:
-                    for v, p in variant_paths.items():
-                        print(f"  {card_label}: saved {v} → {p}")
-
+            # Track completions
+            if event.image_url:
+                rendered_card_ids.append(event.card_id)
                 cards_rendered += 1
+
+            # Log errors
+            if event.error:
+                print(f"  RENDER ERROR: {event.error}")
+
+        # Sync KV so card pages on gaius.zndx.org pick up image_url
+        if rendered_card_ids:
+            import asyncpg
+            from gaius.core.config import get_database_url
+            from gaius.engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                for cid in rendered_card_ids:
+                    try:
+                        await service.sync_card_to_kv(cid)
+                    except Exception as e:
+                        print(f"  KV sync failed for {cid}: {e}")
+                if self.collection_id:
+                    col_result = await service.sync_collection_to_kv(self.collection_id)
+                    print(f"  KV sync: {col_result['cards_synced']} collection cards synced")
+                # Refresh landing page index with updated image_url values
+                idx_result = await service.sync_to_kv()
+                print(f"  KV sync: {idx_result['cards_synced']} total cards synced to landing page")
 
         return cards_rendered
 
