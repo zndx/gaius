@@ -16,15 +16,16 @@ uv run gaius
 uv run gaius-cli --cmd "/state" --format json
 
 # Engine management
-devenv tasks run restart:clean    # Full clean restart (preferred)
-devenv processes up               # Start all platform components
-devenv processes down             # Stop all platform components
+just restart-clean               # Full clean restart (preferred)
+just --list                      # Show all available tasks
+devenv processes up              # Start all platform components
+devenv processes down            # Stop all platform components
 
 # Check endpoint status
 uv run gaius-cli --cmd "/gpu status" --format json
 
 # Build documentation
-mdbook build docs
+just docs-build
 ```
 
 ## Module Structure
@@ -55,7 +56,71 @@ src/gaius/
 │   ├── content.py      # ContentPanel (right panel)
 │   └── command.py      # CommandInput (bottom)
 └── commands/           # Slash command implementations
+
+scripts/
+├── lib/
+│   ├── process-helpers.sh  # Shared: banner, check_disabled, wait_for_postgres, wait_for_aeron
+│   └── gpu-helpers.sh      # Shared: gpu_cleanup (used by engine + justfile)
+├── processes/              # Process startup scripts (exec'd by devenv process-compose)
+│   ├── aeron-driver.sh
+│   ├── gaius-engine.sh
+│   ├── gaius-worker.sh
+│   ├── metabase.sh
+│   ├── metaflow-bootstrap.sh
+│   ├── metaflow-db-setup.sh
+│   ├── metaflow-port-forwards.sh
+│   ├── metaflow-ui.sh
+│   └── nifi.sh
+└── restart-clean.sh        # Full cleanup and fresh restart
 ```
+
+## Process Script Architecture
+
+`devenv.nix` is a **pure service declaration file** — it defines packages, env vars, service configs, and process dependency graphs. All process startup bash lives in `scripts/processes/*.sh`.
+
+### devenv.nix → script pattern
+
+Each process block in devenv.nix is a one-liner that execs the script:
+
+```nix
+processes.gaius-engine = {
+  exec = ''
+    exec ${config.devenv.root}/scripts/processes/gaius-engine.sh
+  '';
+  process-compose = {
+    depends_on.aeron-driver.condition = "process_started";
+  };
+};
+```
+
+When a script needs Nix store paths (like `${pkgs.nifi}`), they're passed as env vars:
+
+```nix
+processes.nifi = {
+  exec = ''
+    export NIFI_PACKAGE="${pkgs.nifi}"
+    export DEVENV_ROOT="${config.devenv.root}"
+    exec ${config.devenv.root}/scripts/processes/nifi.sh
+  '';
+};
+```
+
+### KUBECONFIG in process scripts
+
+`enterShell` only runs for interactive shells, not process-compose processes. Scripts that need kubectl must set KUBECONFIG unconditionally from `$HOME`:
+
+```bash
+export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
+```
+
+Do NOT use fallback syntax (`${KUBECONFIG:-...}`) — the system KUBECONFIG may be set to a root-owned path that's unreadable.
+
+### Adding a new process
+
+1. Create `scripts/processes/<name>.sh` with `#!/usr/bin/env bash`, `set -euo pipefail`
+2. Source helpers: `source "$SCRIPT_DIR/../lib/process-helpers.sh"`
+3. Add process block to `devenv.nix` with one-liner exec
+4. Pass any Nix-only values as env vars in the exec block
 
 ## Key Components
 
@@ -165,7 +230,7 @@ Example:
 error_msg = (
     "DatasetService not initialized.\n"
     "  Try: /health fix dataset\n"
-    "  Or:  devenv tasks run restart:clean"
+    "  Or:  restart-clean"
 )
 ```
 
@@ -228,7 +293,7 @@ uv run gaius-cli --cmd "/health fix <service>"
 **Always prefer `/health fix` over manual remediation.** When encountering unhealthy services:
 
 1. **Run `/health fix <service>`** - Let Gaius attempt self-healing first
-2. **Only use manual commands** (`devenv tasks run restart:clean`, etc.) if self-healing fails
+2. **Only use manual commands** (`restart-clean`, etc.) if self-healing fails
 3. **Document failures** - If `/health fix` can't remediate, that's a bug to fix
 
 This principle ensures:
@@ -574,7 +639,7 @@ The Gaius Engine exposes a gRPC API defined in protobuf. Changes to the proto re
 
 2. **Regenerate bindings**:
    ```bash
-   devenv tasks run proto:generate
+   just proto-generate
    ```
 
 3. **Update generated exports** - Add new symbols to `src/gaius/engine/generated/__init__.py`:
@@ -593,7 +658,7 @@ The Gaius Engine exposes a gRPC API defined in protobuf. Changes to the proto re
 
 7. **Restart and test**:
    ```bash
-   devenv tasks run restart:clean
+   restart-clean
    ```
 
 ### Endpoint Status Values
@@ -630,7 +695,7 @@ done
 
 ```bash
 # Full clean restart (stops everything, cleans up, restarts)
-devenv tasks run restart:clean
+just restart-clean
 
 # Check if gRPC port is listening
 nc -zv localhost 50051
@@ -646,4 +711,4 @@ tail -f .devenv/processes.log | grep gaius-engine
 | Engine fails to start | Missing export in `__init__.py` | Add symbol to imports and `__all__` |
 | Port 50051 not listening | gRPC server didn't initialize | Check logs for import errors |
 | Status shows wrong value | Missing status mapping | Add to `_STATUS_MAP` |
-| `restart:clean` times out | Engine startup slow | Endpoints still loading, check `/gpu status` |
+| `just restart-clean` times out | Engine startup slow | Endpoints still loading, check `/gpu status` |

@@ -205,7 +205,7 @@ The `verify_recommendation` tool uses the RASE objective at `current/objectives/
 
 Recognized command patterns:
 - `/health fix <service>` - Automated remediation
-- `devenv tasks run <task>` - Infrastructure management
+- `just <recipe>` - Infrastructure management
 - `uv run gaius-cli --cmd "<command>"` - CLI operations
 
 ### Tool Calling Flow

@@ -86,7 +86,7 @@ class InferenceManager:
         if not self._use_engine:
             raise RuntimeError(
                 "Engine not available - GPU orchestration requires gaius-engine.\n"
-                "  Start with: devenv tasks run restart:clean\n"
+                "  Start with: just restart-clean\n"
                 "  Guru Meditation: #INF.00000001.NOENGINE"
             )
 

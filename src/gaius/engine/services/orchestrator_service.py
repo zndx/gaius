@@ -2881,7 +2881,7 @@ def get_orchestrator_service() -> OrchestratorService:
             "OrchestratorService not initialized.\n"
             "  The engine server must call set_orchestrator_service() during startup.\n"
             "  Guru Meditation: #ORCH.00000001.SVCNOTINIT\n"
-            "  Fix: Ensure the engine is running: devenv tasks run restart:clean"
+            "  Fix: Ensure the engine is running: just restart-clean"
         )
     return _orchestrator_service
 

@@ -131,7 +131,7 @@ class GaiusFlow(FlowSpec):
             error_msg = (
                 f"Lineage emission failed: {e}\n"
                 f"  Guru Meditation: #GF.00000001.LINEAGE\n"
-                f"  Fix: devenv tasks run restart:clean\n"
+                f"  Fix: just restart-clean\n"
                 f"  Or: PGPASSWORD=gaius psql -h localhost -p {os.environ.get('PGPORT', '5444')} -U gaius -d zndx_gaius"
             )
             raise RuntimeError(error_msg) from e
@@ -170,7 +170,7 @@ class GaiusFlow(FlowSpec):
             error_msg = (
                 f"Lineage emission failed: {e}\n"
                 f"  Guru Meditation: #GF.00000002.LINEAGE_COMPLETE\n"
-                f"  Fix: devenv tasks run restart:clean\n"
+                f"  Fix: just restart-clean\n"
                 f"  Or: PGPASSWORD=gaius psql -h localhost -p {os.environ.get('PGPORT', '5444')} -U gaius -d zndx_gaius"
             )
             raise RuntimeError(error_msg) from e
@@ -209,7 +209,7 @@ class GaiusFlow(FlowSpec):
             error_msg = (
                 f"Lineage emission failed: {e}\n"
                 f"  Guru Meditation: #GF.00000003.LINEAGE_FAIL\n"
-                f"  Fix: devenv tasks run restart:clean\n"
+                f"  Fix: just restart-clean\n"
                 f"  Or: PGPASSWORD=gaius psql -h localhost -p {os.environ.get('PGPORT', '5444')} -U gaius -d zndx_gaius"
             )
             raise RuntimeError(error_msg) from e

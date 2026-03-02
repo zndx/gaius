@@ -65,7 +65,7 @@ EVENT: research - Synthesizing 34 zettelkasten notes...
 
 Engine restart required to pick up changes:
 ```bash
-devenv tasks run restart:clean
+just restart-clean
 ```
 
 After restart, verify with:

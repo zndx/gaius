@@ -6,7 +6,7 @@ This package contains:
 - gaius_service_pb2.py: Gaius extension messages
 - gaius_service_pb2_grpc.py: Gaius service stubs
 
-Regenerate with: devenv tasks run proto:generate
+Regenerate with: just proto-generate
 """
 
 from .open_inference_grpc_pb2 import (

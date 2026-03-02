@@ -61,7 +61,7 @@ Recommended Action:
   /health fix endpoints
 
 If that fails:
-  devenv tasks run restart:clean
+  just restart-clean
 
 Prevention:
   Consider reducing tensor_parallel_size or using smaller model

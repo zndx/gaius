@@ -212,7 +212,7 @@ Verifies that MetaAgent audit recommendations meet quality standards.
 
 ## Syntactic Gate
 - Commands parse correctly
-- Follows `/health fix` or `devenv tasks run` patterns
+- Follows `/health fix` or `just` patterns
 
 ## Semantic Gate
 - References existing KB heuristics

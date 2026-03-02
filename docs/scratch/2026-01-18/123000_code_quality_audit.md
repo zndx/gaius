@@ -13,7 +13,7 @@
 ### [FIX-002] UpdateRecommendationResponse proto fields
 - File: `src/gaius/engine/proto/gaius_service.proto:1052-1056`
 - Change: Added `recommendation_id = 4` and `new_status = 5` fields to proto message
-- Proto regenerated with `devenv tasks run proto:generate`
+- Proto regenerated with `just proto-generate`
 
 ### [FIX-003] Recommendation ID type conversion
 - File: `src/gaius/engine/services/metaagent_service.py:508`

@@ -432,7 +432,7 @@ class GrpcEngineClient:
                             f"#GR.00000001.CONNFAIL: gRPC connection failed after {attempt} attempts.\n"
                             f"  Engine may not be running. Try:\n"
                             f"  1. Check engine status: devenv processes\n"
-                            f"  2. Restart engine: devenv tasks run restart:clean\n"
+                            f"  2. Restart engine: just restart-clean\n"
                             f"  3. Check logs: tail -f .devenv/processes.log"
                         )
                         logger.error(error_msg)
@@ -471,7 +471,7 @@ class GrpcEngineClient:
                             f"#GR.00000002.SVCUNAVAIL: gRPC service unavailable after {attempt} attempts.\n"
                             f"  Engine may have crashed or restarted. Try:\n"
                             f"  1. Check engine status: /health quick\n"
-                            f"  2. Restart engine: devenv tasks run restart:clean"
+                            f"  2. Restart engine: just restart-clean"
                         )
                         logger.error(error_msg)
                         raise ConnectionError(error_msg)
