@@ -803,6 +803,12 @@ class GaiusServicer(GaiusServiceServicer):
 
             latency_ms = (time.time() - start_time) * 1000
 
+            # Fail fast if backend returned an error
+            if result.error:
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(result.error)
+                return CompleteResponse(model=result.model, latency_ms=latency_ms)
+
             return CompleteResponse(
                 text=result.content,
                 tokens_used=result.output_tokens,
@@ -1148,7 +1154,7 @@ class GaiusServicer(GaiusServiceServicer):
                 context.set_details(
                     "VectorSearchService not available.\n"
                     "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
-                    "  Fix: devenv tasks run restart:clean"
+                    "  Fix: just restart-clean"
                 )
                 return SemanticSearchResponse()
 
@@ -1245,7 +1251,7 @@ class GaiusServicer(GaiusServiceServicer):
                 message="VectorSearchService not available",
                 progress_pct=0,
                 timestamp_ms=int(time.time() * 1000),
-                error="VectorSearchService not available.\n  Guru Meditation: #VS.00000001.SVCNOTINIT\n  Fix: devenv tasks run restart:clean",
+                error="VectorSearchService not available.\n  Guru Meditation: #VS.00000001.SVCNOTINIT\n  Fix: just restart-clean",
                 guru_code="#VS.00000001.SVCNOTINIT",
             )
             return
@@ -2743,7 +2749,7 @@ class GaiusServicer(GaiusServiceServicer):
                         f"LLM explanation failed: {llm_error}\n"
                         "Guru Meditation: #EXP.00000002.LLMFAIL\n"
                         "Check: /health endpoints\n"
-                        "Or: devenv tasks run restart:clean"
+                        "Or: just restart-clean"
                     ),
                     position=position,
                     x=cx, y=cy,
@@ -7367,7 +7373,7 @@ class GaiusServicer(GaiusServiceServicer):
             if service is None:
                 return CollectionSyncThemeResponse(
                     success=False,
-                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
                 )
 
             result = await service.sync_theme_config()
@@ -7404,7 +7410,7 @@ class GaiusServicer(GaiusServiceServicer):
             if service is None:
                 return ArticleStatusResponse(
                     success=False,
-                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
                 )
 
             status = await service.get_article_status()
@@ -7462,7 +7468,7 @@ class GaiusServicer(GaiusServiceServicer):
             if service is None:
                 return ArticleNewResponse(
                     success=False,
-                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
                 )
 
             result = await service.create_article(
@@ -7501,7 +7507,7 @@ class GaiusServicer(GaiusServiceServicer):
                     step_number=-1,
                     total_steps=9,
                     progress=-1.0,
-                    message="Collection service not initialized.\n  Try: /health fix engine\n  Or:  devenv tasks run restart:clean",
+                    message="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
                 )
                 return
 
@@ -7542,7 +7548,7 @@ class GaiusServicer(GaiusServiceServicer):
                     message="Collection service not initialized.\n"
                     "  #VIZ.00000010.SVCNOTINIT\n"
                     "  Try: /health fix engine\n"
-                    "  Or:  devenv tasks run restart:clean",
+                    "  Or:  just restart-clean",
                 )
                 return
 

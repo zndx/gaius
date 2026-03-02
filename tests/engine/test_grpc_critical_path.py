@@ -98,6 +98,7 @@ class MockCompletionResult:
     content: str = "Response from LLM"
     output_tokens: int = 50
     model: str = "test-model"
+    error: Optional[str] = None
 
 
 class MockServiceRegistry:
@@ -517,14 +518,14 @@ class TestComplete:
         assert response.tokens_used == 50
 
     @pytest.mark.asyncio
-    async def test_default_agent_is_fast(self, servicer, mock_services, grpc_context):
-        """Empty agent_alias defaults to 'fast'."""
+    async def test_default_agent_is_instruct(self, servicer, mock_services, grpc_context):
+        """Empty agent_alias defaults to 'instruct'."""
         request = CompleteRequest(prompt="Hello")
         await servicer.Complete(request, grpc_context)
 
-        # Verify backend was called with 'fast'
+        # Verify backend was called with 'instruct'
         call_kwargs = mock_services.backend_router.complete.call_args.kwargs
-        assert call_kwargs["agent_alias"] == "fast"
+        assert call_kwargs["agent_alias"] == "instruct"
 
 
 class TestCompleteEdgeCases:
@@ -624,14 +625,14 @@ class TestCompleteEdgeCases:
 # ─────────────────────────────────────────────────────────────────────────────
 # TIER 4: CleanStart
 # BDD: features/engine/engine.feature - Clean restart functionality
-# CLI: devenv tasks run restart:clean
+# CLI: just restart-clean
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestCleanStart:
     """Test GaiusService.CleanStart.
 
-    CLI: devenv tasks run restart:clean (calls CleanStart internally)
+    CLI: just restart-clean (calls CleanStart internally)
     """
 
     @pytest.mark.asyncio
