@@ -325,8 +325,181 @@ class ScheduledTaskProcessor(BaseDaemon):
                 logger.error(f"ArticleCurationFlow error: {e}")
                 return {"status": "error", "error": str(e)}
 
+        async def handle_prospects_check(task: ScheduledTask) -> dict[str, Any]:
+            """Handle prospects_check task — lightweight daily FMP check.
+
+            Creates a fresh ProspectsService, runs the check, and if updates
+            are recommended, schedules a prospects_update task with the
+            relevant symbols.
+            """
+            from .prospects_service import ProspectsService, ProspectsConfig
+
+            force = task.payload.get("force", False)
+            logger.info(f"Running prospects daily check (force={force})...")
+
+            # Create fresh service with shared pool
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = ProspectsConfig(kb_root=kb_root)
+            service = ProspectsService(pool=self._pool, config=config)
+            await service.start()
+
+            try:
+                result = await service.run_check(force=force)
+
+                # Mark cooldown state
+                async with self._pool.acquire() as conn:
+                    await conn.execute("SELECT meta.mark_prospects_check_started()")
+
+                logger.info(
+                    f"Prospects check complete: update_recommended={result.get('update_recommended')}, "
+                    f"reason={result.get('reason', 'none')}"
+                )
+
+                # If update recommended, schedule prospects_update task
+                # (only if no pending prospects_update task exists)
+                if result.get("update_recommended"):
+                    symbols = result.get("symbols_with_new_filings", [])
+                    # Also include symbols with pending analysis/synthesis
+                    pending_symbols = list(result.get("pending_analysis_by_symbol", {}).keys())
+                    synthesis_symbols = result.get("pending_synthesis_symbols", [])
+                    all_symbols = list(set(symbols + pending_symbols + synthesis_symbols))
+
+                    if all_symbols:
+                        async with self._pool.acquire() as conn:
+                            pending_count = await conn.fetchval(
+                                """
+                                SELECT COUNT(*) FROM scheduled_tasks
+                                WHERE task_type = 'prospects_update'
+                                  AND picked_up_at IS NULL
+                                  AND completed_at IS NULL
+                                """,
+                            )
+
+                            if pending_count == 0:
+                                await conn.execute(
+                                    """
+                                    INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                                    VALUES ('prospects_update', $1, 'prospects_check', NOW())
+                                    """,
+                                    json.dumps({"symbols": all_symbols}),
+                                )
+                                logger.info(
+                                    f"Scheduled prospects_update for {len(all_symbols)} symbols: "
+                                    f"{', '.join(all_symbols)}"
+                                )
+                            else:
+                                logger.info(
+                                    f"Skipping prospects_update scheduling: {pending_count} "
+                                    f"pending update task(s) already exist"
+                                )
+
+                return {
+                    "update_recommended": result.get("update_recommended", False),
+                    "reason": result.get("reason", ""),
+                    "new_filings_count": result.get("new_filings_count", 0),
+                    "symbols_checked": len(result.get("symbols_with_new_filings", [])),
+                }
+            finally:
+                await service.stop()
+
+        async def handle_prospects_update(task: ScheduledTask) -> dict[str, Any]:
+            """Handle prospects_update task — full billable analysis via subprocess.
+
+            Spawns ProspectsUpdateFlow via uv/Metaflow CLI.
+            Uses async subprocess with progress-based idle timeout
+            (same pattern as handle_article_curate).
+            """
+            import time
+
+            IDLE_TIMEOUT = 900  # 15 minutes without output
+
+            symbols = task.payload.get("symbols", [])
+            if not symbols:
+                logger.warning("prospects_update task has no symbols in payload")
+                return {"status": "skipped", "reason": "no symbols"}
+
+            symbols_csv = ",".join(symbols)
+            logger.info(f"Triggering ProspectsUpdateFlow for symbols: {symbols_csv}")
+
+            # Propagate full environment to subprocess (API keys, etc.)
+            env = dict(os.environ)
+            has_fmp = "FMP_API_KEY" in env
+            has_xai = "XAI_API_KEY" in env
+            logger.info(
+                f"  Subprocess env: FMP_API_KEY={'present' if has_fmp else 'MISSING'}, "
+                f"XAI_API_KEY={'present' if has_xai else 'MISSING'}"
+            )
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "uv", "run", "python", "-m",
+                    "gaius.flows.prospects.update_flow", "run",
+                    f"--symbols={symbols_csv}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env=env,
+                    cwd=os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius"),
+                )
+
+                last_output = time.monotonic()
+                output_lines: list[str] = []
+
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(
+                            proc.stdout.readline(),
+                            timeout=IDLE_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        idle_s = time.monotonic() - last_output
+                        if proc.returncode is not None:
+                            break
+                        logger.error(
+                            f"ProspectsUpdateFlow stalled: no output for {idle_s:.0f}s"
+                        )
+                        proc.kill()
+                        await proc.wait()
+                        return {
+                            "status": "stalled",
+                            "symbols": symbols,
+                            "idle_seconds": idle_s,
+                            "last_lines": output_lines[-10:],
+                        }
+
+                    if raw:
+                        line = raw.decode("utf-8", errors="replace").rstrip()
+                        last_output = time.monotonic()
+                        output_lines.append(line)
+                        logger.info(f"  ProspectsUpdate: {line}")
+                    else:
+                        break
+
+                retcode = await proc.wait()
+                if retcode == 0:
+                    logger.info("ProspectsUpdateFlow completed successfully")
+                    return {
+                        "status": "completed",
+                        "symbols": symbols,
+                        "returncode": 0,
+                        "last_lines": output_lines[-10:],
+                    }
+                else:
+                    logger.error(f"ProspectsUpdateFlow failed (exit {retcode})")
+                    return {
+                        "status": "failed",
+                        "symbols": symbols,
+                        "returncode": retcode,
+                        "last_lines": output_lines[-20:],
+                    }
+
+            except Exception as e:
+                logger.error(f"ProspectsUpdateFlow error: {e}")
+                return {"status": "error", "symbols": symbols, "error": str(e)}
+
         self.register_handler("publish_cards", handle_publish_cards)
         self.register_handler("article_curate", handle_article_curate)
+        self.register_handler("prospects_check", handle_prospects_check)
+        self.register_handler("prospects_update", handle_prospects_update)
 
     async def _listen_loop(self) -> None:
         """Main LISTEN loop with reconnection."""

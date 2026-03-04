@@ -248,9 +248,7 @@ class GaiusEngine:
         #     This runs before the ~240s vLLM preload so XB status is available immediately
         await self._init_x_bookmarks_service()
 
-        # 2.6 Start Prospects/Stewardship service EARLY (no GPU deps, lightweight status)
-        await self._init_prospects_service()
-
+        # 2.6 Prospects service moved to after db_pool is created (in _autonomous_start_cognition)
         # 2.7 Collections service moved to after db_pool is created (in _autonomous_start_cognition)
 
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
@@ -625,6 +623,9 @@ class GaiusEngine:
         # Initialize Collections service (requires db_pool which is now available)
         await self._init_collection_service()
 
+        # Initialize Prospects service (requires db_pool which is now available)
+        await self._init_prospects_service()
+
     async def _autonomous_start_flow_scheduler(self) -> None:
         """Start the flow scheduler daemon automatically.
 
@@ -784,20 +785,22 @@ class GaiusEngine:
         - KB artifact generation (Obsidian .base files)
 
         Runs via Metaflow flows triggered by gRPC RPCs.
+
+        MUST be called after self._db_pool is created (in _autonomous_start_cognition).
         """
+        if not getattr(self, "_db_pool", None):
+            logger.error(
+                "Cannot initialize Prospects service: shared db_pool not created.\n"
+                "  Guru Meditation: #PS.00000006.NOPOOL\n"
+                "  Prospects service requires _autonomous_start_cognition() to run first.\n"
+                "  Try: /health fix postgres"
+            )
+            return
+
         try:
             from .services.prospects_service import ProspectsService, ProspectsConfig
-            import asyncpg
 
             logger.info("Initializing Prospects/Stewardship service...")
-
-            # Get database pool from config
-            from gaius.core.config import get_database_url
-
-            db_url = get_database_url()
-
-            # Create database pool
-            pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
 
             # Create service config - profile/domain resolved from database at runtime
             kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
@@ -808,9 +811,9 @@ class GaiusEngine:
                 default_domain="",
             )
 
-            # Create and start service
+            # Create and start service — reuse shared db_pool
             self._prospects_service = ProspectsService(
-                pool=pool,
+                pool=self._db_pool,
                 config=config,
             )
 
@@ -827,7 +830,11 @@ class GaiusEngine:
         except ImportError as e:
             logger.warning(f"Prospects/Stewardship service not available: {e}")
         except Exception as e:
-            logger.error(f"Failed to initialize Prospects/Stewardship service: {e}")
+            logger.error(
+                f"Failed to initialize Prospects/Stewardship service: {e}\n"
+                "  Guru Meditation: #PS.00000007.INITFAIL\n"
+                "  Try: /health fix engine"
+            )
 
     async def _init_collection_service(self) -> None:
         """Initialize the Collections service for public landing page content.
@@ -1290,7 +1297,7 @@ class GaiusEngine:
             # Note: Don't start here - daemon registry will start it
             # This allows proper dependency ordering
 
-            logger.info("ScheduledTaskProcessor created (publish_cards, article_curate)")
+            logger.info("ScheduledTaskProcessor created (publish_cards, article_curate, prospects_check, prospects_update)")
 
         except ImportError as e:
             logger.warning(f"ScheduledTaskProcessor not available: {e}")
