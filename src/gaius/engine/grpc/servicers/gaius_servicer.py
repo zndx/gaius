@@ -14,6 +14,7 @@ functionality beyond the standard KServe OIP:
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
@@ -3401,8 +3402,9 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> ReindexResponse:
         """Reindex KB documents to Qdrant and compute grid projection.
 
-        This is the main heavy compute operation - runs embedding, projection,
-        and TDA computation on the Engine.
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
         """
         start_time = time.time()
         kb_root = request.kb_root or "build/dev"
@@ -3417,15 +3419,28 @@ class GaiusServicer(GaiusServiceServicer):
             from ....storage.grid_state import save_grid_state, get_current_generation
             import numpy as np
 
-            # Get managers (lazily initialized, kb_root passed at first call)
+            # 1. Index KB via VectorSearchService (GPU-coordinated)
+            vector_search = self._services.vector_search_service
+            if vector_search is None:
+                return ReindexResponse(
+                    success=False,
+                    message=(
+                        "VectorSearchService not available.\n"
+                        "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                        "  Fix: just restart-clean"
+                    ),
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+            await vector_search.index_kb(kb_root=kb_root)
+
+            # 2. Project to grid (CPU-only: reads from Qdrant + UMAP)
             grid_manager = get_grid_manager(kb_root=kb_root)
             tda_manager = get_tda_manager()
+            grid_manager.invalidate_cache()
 
-            # Run the reindex pipeline
-            # 1. Reindex KB to Qdrant and project to grid
             grid_data = await asyncio.get_event_loop().run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
 
             if not grid_data or grid_data.n_documents == 0:
@@ -3435,14 +3450,13 @@ class GaiusServicer(GaiusServiceServicer):
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
 
-            # 2. Compute TDA features from raw embeddings
+            # 3. Compute TDA features from raw embeddings
             tda_features = CoreTDAFeatures()
             geometry_features = None
             grid_coords = None
 
             raw_embeddings = grid_data.raw_embeddings
             if raw_embeddings is not None and len(raw_embeddings) > 0:
-                # Build grid_coords array from embedding_to_grid mapping
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
                     for i in range(len(raw_embeddings))
@@ -3456,10 +3470,10 @@ class GaiusServicer(GaiusServiceServicer):
                     )
                 )
 
-                # 3. Compute geometry features (curvature, gradients, divergence)
+                # 4. Compute geometry features (curvature, gradients, divergence)
                 try:
                     k_neighbors = min(15, len(raw_embeddings) - 1)
-                    if k_neighbors >= 2:  # Need at least 2 neighbors
+                    if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
                             raw_embeddings, grid_coords
@@ -3469,7 +3483,7 @@ class GaiusServicer(GaiusServiceServicer):
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
 
-            # 4. Save to Postgres (updates current_state table)
+            # 5. Save to Postgres (updates current_state table)
             embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
             snapshot_id = await save_grid_state(
                 kb_root=kb_root,
@@ -3477,11 +3491,10 @@ class GaiusServicer(GaiusServiceServicer):
                 tda_features=tda_features,
                 embedding_model=embedding_model,
                 projection_method=grid_data.method,
-                embedding_type="multi",  # ColNomic multi-vector
+                embedding_type="multi",
                 geometry_features=geometry_features,
             )
 
-            # Get new generation
             generation = await get_current_generation(kb_root)
 
             duration_ms = int((time.time() - start_time) * 1000)
@@ -3507,62 +3520,133 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> AsyncIterator[ReindexProgress]:
         """Streaming reindex with progress updates.
 
-        Yields progress events during the reindex pipeline.
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
         """
         kb_root = request.kb_root or "build/dev"
         client_id = request.client_id or "grpc"
+        force = request.force
 
         logger.info(f"ReindexStream: kb_root={kb_root} from {client_id}")
 
         try:
-            # Started
             yield ReindexProgress(
                 phase=ReindexProgress.Phase.STARTED,
                 progress=0.0,
                 message="Starting reindex...",
             )
 
-            # Scanning
-            yield ReindexProgress(
-                phase=ReindexProgress.Phase.SCANNING,
-                progress=0.1,
-                message="Scanning documents...",
-            )
-
             from ....core.projection import get_grid_manager
             from ....core.tda import get_tda_manager, TDAFeatures as CoreTDAFeatures
             from ....core.geometry import GeometryComputer
             from ....storage.grid_state import save_grid_state, get_current_generation
+            from ...services.vector_search_service import SearchPhase
             import numpy as np
+
+            # EMBEDDING — delegate to VectorSearchService for GPU coordination
+            vector_search = self._services.vector_search_service
+            if vector_search is None:
+                yield ReindexProgress(
+                    phase=ReindexProgress.Phase.ERROR,
+                    progress=0.0,
+                    message=(
+                        "VectorSearchService not available.\n"
+                        "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                        "  Fix: just restart-clean"
+                    ),
+                )
+                return
+
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.EMBEDDING,
+                progress=0.1,
+                message="Indexing KB via GPU-coordinated VectorSearchService...",
+            )
+
+            async for event in vector_search.index_kb_stream(kb_root=kb_root):
+                if event.phase == SearchPhase.REQUESTING_GPU:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.12,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.EVICTING_ENDPOINTS:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.15,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.LOADING_MODEL:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.2,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.INDEXING:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.3,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.ERROR:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.ERROR,
+                        progress=0.0,
+                        message=event.message,
+                    )
+                    return
+                elif event.phase == SearchPhase.COMPLETE:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.4,
+                        message=event.message,
+                    )
+
+            # PROJECTING — CPU-only: retrieve embeddings from Qdrant + UMAP
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.PROJECTING,
+                progress=0.45,
+                message="Projecting embeddings to 19x19 grid (UMAP)...",
+            )
 
             grid_manager = get_grid_manager(kb_root=kb_root)
             tda_manager = get_tda_manager()
+            loop = asyncio.get_event_loop()
 
-            # Embedding phase
-            yield ReindexProgress(
-                phase=ReindexProgress.Phase.EMBEDDING,
-                progress=0.2,
-                message="Computing embeddings...",
-            )
-
-            # Run reindex (this does embedding + projection)
-            grid_data = await asyncio.get_event_loop().run_in_executor(
+            grid_manager.invalidate_cache()
+            projection_task = loop.run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
+            heartbeat_count = 0
+            while True:
+                done, _ = await asyncio.wait(
+                    {projection_task}, timeout=15.0
+                )
+                if done:
+                    break
+                heartbeat_count += 1
+                elapsed_min = heartbeat_count * 15 / 60
+                yield ReindexProgress(
+                    phase=ReindexProgress.Phase.PROJECTING,
+                    progress=0.45 + min(0.09, heartbeat_count * 0.005),
+                    message=f"UMAP projection running ({elapsed_min:.1f}m elapsed)...",
+                )
+
+            grid_data = projection_task.result()
 
             if not grid_data or grid_data.n_documents == 0:
                 yield ReindexProgress(
                     phase=ReindexProgress.Phase.ERROR,
                     progress=0.0,
-                    message="No documents found",
+                    message="No documents found after projection",
                 )
                 return
 
-            # Projecting
             yield ReindexProgress(
                 phase=ReindexProgress.Phase.PROJECTING,
-                progress=0.6,
+                progress=0.55,
                 message=f"Projected {grid_data.n_documents} documents to grid",
                 documents_processed=grid_data.n_documents,
                 documents_total=grid_data.n_documents,
@@ -3571,7 +3655,7 @@ class GaiusServicer(GaiusServiceServicer):
             # TDA
             yield ReindexProgress(
                 phase=ReindexProgress.Phase.TDA,
-                progress=0.8,
+                progress=0.6,
                 message="Computing TDA features...",
             )
 
@@ -3585,7 +3669,7 @@ class GaiusServicer(GaiusServiceServicer):
                     grid_data.embedding_to_grid.get(i, (9, 9))
                     for i in range(len(raw_embeddings))
                 ])
-                tda_features = await asyncio.get_event_loop().run_in_executor(
+                tda_task = loop.run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
                         raw_embeddings,
@@ -3593,15 +3677,45 @@ class GaiusServicer(GaiusServiceServicer):
                         force_refresh=True
                     )
                 )
+                tda_heartbeat = 0
+                while True:
+                    done, _ = await asyncio.wait(
+                        {tda_task}, timeout=15.0
+                    )
+                    if done:
+                        break
+                    tda_heartbeat += 1
+                    elapsed_min = tda_heartbeat * 15 / 60
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.TDA,
+                        progress=0.6 + min(0.15, tda_heartbeat * 0.01),
+                        message=f"TDA computation running ({elapsed_min:.1f}m elapsed)...",
+                    )
+                tda_features = tda_task.result()
 
                 # Compute geometry features
                 try:
                     k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
-                        geometry_features = await gc.compute_features(
-                            raw_embeddings, grid_coords
+                        geom_task = loop.run_in_executor(
+                            None, lambda: asyncio.run(gc.compute_features(raw_embeddings, grid_coords))
                         )
+                        geom_heartbeat = 0
+                        while True:
+                            done, _ = await asyncio.wait(
+                                {geom_task}, timeout=15.0
+                            )
+                            if done:
+                                break
+                            geom_heartbeat += 1
+                            elapsed_min = geom_heartbeat * 15 / 60
+                            yield ReindexProgress(
+                                phase=ReindexProgress.Phase.TDA,
+                                progress=0.75 + min(0.1, geom_heartbeat * 0.005),
+                                message=f"Geometry computation running ({elapsed_min:.1f}m elapsed)...",
+                            )
+                        geometry_features = geom_task.result()
                         logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
@@ -3653,14 +3767,15 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> InitResponse:
         """Full initialization pipeline: index KB, project to grid, compute TDA.
 
-        This is the primary entry point for initializing a fresh Gaius instance
-        or forcing a complete rebuild of the KB index and grid projection.
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
 
         Pipeline:
-        1. Scan KB for documents
-        2. Compute ColNomic embeddings
-        3. Project to 19x19 grid via UMAP
-        4. Compute TDA features (H0/H1/H2)
+        1. Check Qdrant for existing data (skip embedding if present)
+        2. Compute ColNomic embeddings via VectorSearchService (GPU-coordinated)
+        3. Project to 19x19 grid via UMAP (CPU)
+        4. Compute TDA features (H0/H1/H2) (CPU)
         5. Save to Postgres (grid_snapshots + current_state)
         """
         start_time = time.time()
@@ -3699,15 +3814,43 @@ class GaiusServicer(GaiusServiceServicer):
                         duration_ms=int((time.time() - start_time) * 1000),
                     )
 
-            # Get managers
+            # 1. Check Qdrant for existing data
+            qdrant_has_data = False
+            try:
+                from qdrant_client import QdrantClient
+                qdrant_port = int(os.getenv("QDRANT_PORT", "6339"))
+                qc = QdrantClient(host="localhost", port=qdrant_port)
+                collection_name = "gaius_kb_colnomic"
+                info = qc.get_collection(collection_name)
+                qdrant_has_data = info.points_count > 0
+                logger.info(f"Qdrant has {info.points_count} points in {collection_name}")
+            except Exception as e:
+                logger.info(f"Qdrant check failed (will index): {e}")
+
+            # 2. Embed via VectorSearchService if needed
+            need_embedding = force or not qdrant_has_data
+            if need_embedding:
+                vector_search = self._services.vector_search_service
+                if vector_search is None:
+                    return InitResponse(
+                        success=False,
+                        message=(
+                            "VectorSearchService not available.\n"
+                            "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                            "  Fix: just restart-clean"
+                        ),
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+                await vector_search.index_kb(kb_root=kb_root)
+
+            # 3. Project to grid (CPU-only: reads from Qdrant + UMAP)
             grid_manager = get_grid_manager(method=projection_method, kb_root=kb_root)
             tda_manager = get_tda_manager()
+            grid_manager.invalidate_cache()
 
-            # Run the full pipeline
-            # 1. Reindex KB to Qdrant and project to grid
             grid_data = await asyncio.get_event_loop().run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
 
             if not grid_data or grid_data.n_documents == 0:
@@ -3717,7 +3860,7 @@ class GaiusServicer(GaiusServiceServicer):
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
 
-            # 2. Compute TDA features from raw embeddings
+            # 4. Compute TDA features from raw embeddings
             tda_features = CoreTDAFeatures()
             geometry_features = None
             grid_coords = None
@@ -3737,7 +3880,7 @@ class GaiusServicer(GaiusServiceServicer):
                     )
                 )
 
-                # 3. Compute geometry features (curvature, gradients, divergence)
+                # 5. Compute geometry features (curvature, gradients, divergence)
                 try:
                     k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
@@ -3750,7 +3893,7 @@ class GaiusServicer(GaiusServiceServicer):
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
 
-            # 4. Save to Postgres
+            # 6. Save to Postgres
             snapshot_id = await save_grid_state(
                 kb_root=kb_root,
                 grid_data=grid_data,
@@ -3761,7 +3904,6 @@ class GaiusServicer(GaiusServiceServicer):
                 geometry_features=geometry_features,
             )
 
-            # Get new generation
             generation = await get_current_generation(kb_root)
 
             duration_ms = int((time.time() - start_time) * 1000)
@@ -3792,6 +3934,10 @@ class GaiusServicer(GaiusServiceServicer):
 
         Yields progress events for each phase of the init pipeline,
         allowing TUI/CLI to show real-time progress during long operations.
+
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
         """
         kb_root = request.kb_root or "build/dev"
         client_id = request.client_id or "grpc"
@@ -3819,6 +3965,7 @@ class GaiusServicer(GaiusServiceServicer):
                 get_current_generation,
                 check_state_exists,
             )
+            from ...services.vector_search_service import SearchPhase
             import numpy as np
 
             # Check if state already exists (skip if not forcing)
@@ -3835,50 +3982,151 @@ class GaiusServicer(GaiusServiceServicer):
                     )
                     return
 
-            # SCANNING
+            # SCANNING — check Qdrant for existing embeddings
             yield InitProgress(
                 phase=InitProgress.Phase.SCANNING,
-                progress=0.1,
-                message="Scanning KB for documents...",
+                progress=0.05,
+                message="Checking Qdrant for existing embeddings...",
+            )
+
+            qdrant_has_data = False
+            try:
+                from qdrant_client import QdrantClient
+                qdrant_port = int(os.getenv("QDRANT_PORT", "6339"))
+                qc = QdrantClient(host="localhost", port=qdrant_port)
+                collection_name = "gaius_kb_colnomic"
+                info = qc.get_collection(collection_name)
+                qdrant_has_data = info.points_count > 0
+                if qdrant_has_data:
+                    logger.info(f"Qdrant has {info.points_count} points in {collection_name}")
+            except Exception as e:
+                logger.info(f"Qdrant check failed (will index): {e}")
+
+            # EMBEDDING — delegate to VectorSearchService for GPU coordination
+            need_embedding = force or not qdrant_has_data
+            if need_embedding:
+                vector_search = self._services.vector_search_service
+                if vector_search is None:
+                    yield InitProgress(
+                        phase=InitProgress.Phase.ERROR,
+                        progress=0.0,
+                        message=(
+                            "VectorSearchService not available.\n"
+                            "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                            "  Fix: just restart-clean"
+                        ),
+                    )
+                    return
+
+                yield InitProgress(
+                    phase=InitProgress.Phase.EMBEDDING,
+                    progress=0.1,
+                    message="Indexing KB via GPU-coordinated VectorSearchService...",
+                )
+
+                async for event in vector_search.index_kb_stream(kb_root=kb_root):
+                    # Map VectorSearchService progress events to InitProgress
+                    if event.phase == SearchPhase.REQUESTING_GPU:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.12,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.EVICTING_ENDPOINTS:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.15,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.LOADING_MODEL:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.2,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.INDEXING:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.3,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.ERROR:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.ERROR,
+                            progress=0.0,
+                            message=event.message,
+                        )
+                        return
+                    elif event.phase == SearchPhase.COMPLETE:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.4,
+                            message=event.message,
+                        )
+            else:
+                yield InitProgress(
+                    phase=InitProgress.Phase.EMBEDDING,
+                    progress=0.4,
+                    message=f"Qdrant already has embeddings, skipping indexing",
+                )
+
+            # PROJECTING — CPU-only: retrieve embeddings from Qdrant + UMAP
+            yield InitProgress(
+                phase=InitProgress.Phase.PROJECTING,
+                progress=0.45,
+                message="Projecting embeddings to 19x19 grid (UMAP)...",
             )
 
             grid_manager = get_grid_manager(method=projection_method, kb_root=kb_root)
             tda_manager = get_tda_manager()
 
-            # EMBEDDING
-            yield InitProgress(
-                phase=InitProgress.Phase.EMBEDDING,
-                progress=0.2,
-                message="Computing ColNomic embeddings...",
-            )
-
-            # Run reindex (embedding + projection in one call)
-            grid_data = await asyncio.get_event_loop().run_in_executor(
+            # project_kb() reads from Qdrant (CPU) + runs UMAP (CPU)
+            # It never touches the GPU embedder.
+            # UMAP on 98K+ points can take 30+ minutes — send heartbeats.
+            grid_manager.invalidate_cache()
+            loop = asyncio.get_event_loop()
+            projection_task = loop.run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
+            # Send heartbeat every 15s while projection runs
+            heartbeat_count = 0
+            while True:
+                done, _ = await asyncio.wait(
+                    {projection_task}, timeout=15.0
+                )
+                if done:
+                    break
+                heartbeat_count += 1
+                elapsed_min = heartbeat_count * 15 / 60
+                yield InitProgress(
+                    phase=InitProgress.Phase.PROJECTING,
+                    progress=0.45 + min(0.09, heartbeat_count * 0.005),
+                    message=f"UMAP projection running ({elapsed_min:.1f}m elapsed)...",
+                )
+
+            grid_data = projection_task.result()
 
             if not grid_data or grid_data.n_documents == 0:
                 yield InitProgress(
                     phase=InitProgress.Phase.ERROR,
                     progress=0.0,
-                    message="No documents found in KB",
+                    message="No documents found after projection",
                 )
                 return
 
-            # PROJECTING
             yield InitProgress(
                 phase=InitProgress.Phase.PROJECTING,
-                progress=0.5,
+                progress=0.55,
                 message=f"Projected {grid_data.n_documents} documents to grid",
                 documents_processed=grid_data.n_documents,
                 documents_total=grid_data.n_documents,
             )
 
-            # TDA
+            # TDA — also CPU-heavy, send heartbeats
             yield InitProgress(
                 phase=InitProgress.Phase.TDA,
-                progress=0.7,
+                progress=0.6,
                 message="Computing TDA features (H0/H1/H2)...",
             )
 
@@ -3892,7 +4140,7 @@ class GaiusServicer(GaiusServiceServicer):
                     grid_data.embedding_to_grid.get(i, (9, 9))
                     for i in range(len(raw_embeddings))
                 ])
-                tda_features = await asyncio.get_event_loop().run_in_executor(
+                tda_task = loop.run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
                         raw_embeddings,
@@ -3900,11 +4148,26 @@ class GaiusServicer(GaiusServiceServicer):
                         force_refresh=True
                     )
                 )
+                tda_heartbeat = 0
+                while True:
+                    done, _ = await asyncio.wait(
+                        {tda_task}, timeout=15.0
+                    )
+                    if done:
+                        break
+                    tda_heartbeat += 1
+                    elapsed_min = tda_heartbeat * 15 / 60
+                    yield InitProgress(
+                        phase=InitProgress.Phase.TDA,
+                        progress=0.6 + min(0.15, tda_heartbeat * 0.01),
+                        message=f"TDA computation running ({elapsed_min:.1f}m elapsed)...",
+                    )
+                tda_features = tda_task.result()
 
             # GEOMETRY (compute curvature, gradients, divergence)
             yield InitProgress(
                 phase=InitProgress.Phase.GEOMETRY,
-                progress=0.85,
+                progress=0.8,
                 message="Computing geometry features (curvature, gradients)...",
             )
 
@@ -3915,9 +4178,24 @@ class GaiusServicer(GaiusServiceServicer):
                     logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(raw_embeddings)}")
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
-                        geometry_features = await gc.compute_features(
-                            raw_embeddings, grid_coords
+                        geom_task = loop.run_in_executor(
+                            None, lambda: asyncio.run(gc.compute_features(raw_embeddings, grid_coords))
                         )
+                        geom_heartbeat = 0
+                        while True:
+                            done, _ = await asyncio.wait(
+                                {geom_task}, timeout=15.0
+                            )
+                            if done:
+                                break
+                            geom_heartbeat += 1
+                            elapsed_min = geom_heartbeat * 15 / 60
+                            yield InitProgress(
+                                phase=InitProgress.Phase.GEOMETRY,
+                                progress=0.8 + min(0.08, geom_heartbeat * 0.005),
+                                message=f"Geometry computation running ({elapsed_min:.1f}m elapsed)...",
+                            )
+                        geometry_features = geom_task.result()
                         logger.info(f"Computed geometry features: curvatures={len(geometry_features.curvatures)}, gradients={len(geometry_features.gradients)}")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")

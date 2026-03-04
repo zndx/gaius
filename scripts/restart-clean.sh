@@ -141,6 +141,23 @@ while [ $CYCLE -lt $MAX_CYCLES ]; do
     echo "║  ✓ ENGINE READY (background daemon)                          ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
     printf "║  Elapsed: %3ds | Cycles: %2d                                  ║\n" "$ELAPSED" "$CYCLE"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    # Phase 2: Wait for GPU endpoints to load models
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║  Waiting for GPU endpoints to load...                        ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+    uv run python scripts/lib/wait-for-endpoints.py --timeout 300 || {
+        echo ""
+        echo "  ⚠ Endpoints not fully loaded (check: uv run gaius-cli --cmd \"/gpu status\")"
+    }
+
+    echo ""
+    TOTAL_ELAPSED=$(($(date +%s) - START_TIME))
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    printf "║  Total time: %3ds                                            ║\n" "$TOTAL_ELAPSED"
     echo "╠══════════════════════════════════════════════════════════════╣"
     echo "║  Inspect:  just attach    (TUI — quit leaves daemon running) ║"
     echo "║  Logs:     tail -f .devenv/processes.log                     ║"

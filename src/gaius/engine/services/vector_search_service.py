@@ -44,6 +44,7 @@ class SearchPhase(Enum):
     EVICTING_ENDPOINTS = "evicting_endpoints"
     LOADING_MODEL = "loading_model"
     SEARCHING = "searching"
+    INDEXING = "indexing"
     COMPLETE = "complete"
     ERROR = "error"
 
@@ -272,6 +273,126 @@ class VectorSearchService:
                 progress_pct=0,
                 error=str(e),
                 guru_code="#VS.00000099.UNKNOWN",
+            )
+
+        finally:
+            self._schedule_idle_unload()
+
+    async def index_kb(
+        self,
+        kb_root: str = "build/dev",
+    ) -> int:
+        """Index KB documents into Qdrant with GPU coordination.
+
+        Uses the orchestrator's workload system to allocate a GPU for
+        ColNomic embedding, then indexes all KB documents.
+
+        Args:
+            kb_root: Root directory of the knowledge base
+
+        Returns:
+            Number of chunks indexed
+
+        Raises:
+            RuntimeError: If GPU cannot be allocated (fail-fast)
+        """
+        from pathlib import Path
+
+        async with self._lock:
+            await self._ensure_loaded()
+            self._cancel_idle_timer()
+
+        try:
+            # Set kb_root on the managed VectorSearchMulti
+            self._vector_search_multi.kb_root = Path(kb_root)
+
+            # Run indexing in executor (it's CPU+GPU bound)
+            loop = asyncio.get_event_loop()
+            count = await loop.run_in_executor(
+                None, self._vector_search_multi.index_kb
+            )
+
+            logger.info(f"VectorSearch indexed {count} chunks from {kb_root}")
+            return count
+        finally:
+            self._schedule_idle_unload()
+
+    async def index_kb_stream(
+        self,
+        kb_root: str = "build/dev",
+    ) -> AsyncIterator[SearchProgressEvent]:
+        """Index KB documents with streaming progress events.
+
+        Yields SearchProgressEvent objects for each phase:
+        1. REQUESTING_GPU - Requesting GPU allocation via orchestrator
+        2. EVICTING_ENDPOINTS - Evicting vLLM endpoints if needed
+        3. LOADING_MODEL - Loading ColNomic model onto GPU
+        4. INDEXING - Indexing KB documents into Qdrant
+        5. COMPLETE - Indexing done
+        6. ERROR - Error occurred (with guru code)
+        """
+        from pathlib import Path
+
+        try:
+            # Phase 1-3: Ensure model loaded (GPU allocation)
+            if self._vector_search_multi is not None:
+                yield SearchProgressEvent(
+                    phase=SearchPhase.INDEXING,
+                    message="ColNomic already loaded, starting indexing...",
+                    progress_pct=40,
+                )
+            else:
+                async for event in self._ensure_loaded_stream():
+                    yield event
+
+            self._cancel_idle_timer()
+
+            # Phase 4: Index KB
+            yield SearchProgressEvent(
+                phase=SearchPhase.INDEXING,
+                message=f"Indexing KB documents from {kb_root}...",
+                progress_pct=50,
+            )
+
+            self._vector_search_multi.kb_root = Path(kb_root)
+
+            loop = asyncio.get_event_loop()
+            count = await loop.run_in_executor(
+                None, self._vector_search_multi.index_kb
+            )
+
+            # Phase 5: Complete
+            yield SearchProgressEvent(
+                phase=SearchPhase.COMPLETE,
+                message=f"Indexed {count} chunks from {kb_root}",
+                progress_pct=100,
+            )
+
+        except RuntimeError as e:
+            error_str = str(e)
+            guru_code = None
+            if "Guru Meditation:" in error_str:
+                for line in error_str.split("\n"):
+                    if "Guru Meditation:" in line:
+                        guru_code = line.split("Guru Meditation:")[1].strip()
+                        break
+
+            yield SearchProgressEvent(
+                phase=SearchPhase.ERROR,
+                message=error_str.split("\n")[0],
+                progress_pct=0,
+                error=error_str,
+                guru_code=guru_code,
+            )
+
+        except Exception as e:
+            logger.error(f"VectorSearch index_kb_stream failed: {e}")
+            yield SearchProgressEvent(
+                phase=SearchPhase.ERROR,
+                message=str(e),
+                progress_pct=0,
+                error=str(e),
+                guru_code="#VS.00000004.INDEXFAIL",
             )
 
         finally:

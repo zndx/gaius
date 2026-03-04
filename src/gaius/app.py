@@ -998,11 +998,15 @@ class GaiusApp(App):
             return False
 
     async def _async_full_init(self) -> None:
-        """Async wrapper for _run_full_init with progress tracking."""
+        """Run full init pipeline via engine gRPC InitProgressStream.
+
+        All GPU work (ColNomic embedding) runs engine-side with proper
+        orchestrator GPU coordination. The TUI only streams progress
+        and reloads state from Postgres cache after completion.
+        """
         from datetime import datetime
         from .core.state import BackgroundTask
 
-        # Create background task
         task = BackgroundTask(
             id="init",
             name="Platform Init",
@@ -1011,188 +1015,61 @@ class GaiusApp(App):
         )
         self.state.background_tasks = [task]
 
-        # Force ThinkPanel refresh
         try:
             think_panel = self.query_one("#think-panel", ThinkPanel)
             think_panel.refresh()
         except Exception:
             pass
 
-        # Run in thread pool with stderr suppression
-        import asyncio
-        import sys
-        import io
+        try:
+            from .client.grpc_client import get_grpc_client
 
-        def run_init():
-            # Suppress stderr to prevent warnings from flooding the TUI
-            # (tokenizers, transformers, etc. write warnings to stderr)
-            old_stderr = sys.stderr
-            sys.stderr = io.StringIO()
+            task.message = "Connecting to engine..."
+            task.progress = 0.01
 
-            # Track workload for resource management
-            workload_id = None
+            client = await get_grpc_client()
 
-            try:
-                from .inference.search import get_vector_search
-                from .core.cache import save_cached_state
-                import numpy as np
+            async for progress in client.init_with_progress(
+                kb_root=self.config.kb.root,
+                force=True,
+                embedding_model=self.config.vector_store.colnomic_model,
+                projection_method=self.config.tda.projection_method,
+            ):
+                phase = progress["phase"]
+                task.progress = progress["progress"]
+                task.message = progress["message"]
 
-                # Request GPU resources from engine (triggers preemption if needed)
-                task.message = "Step 0/6: Requesting GPU resources..."
-                task.progress = 0.05
-                try:
-                    from .client.engine_proxy import (
-                        begin_workload_sync,
-                        complete_workload_sync,
-                        use_engine_proxy,
-                    )
-                    if use_engine_proxy():
-                        workload_id = f"init-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-                        result = begin_workload_sync(
-                            workload_id=workload_id,
-                            workload_type="INIT",
-                            required_capabilities=["TEXT_EMBEDDING"],
-                            priority="CRITICAL",
-                            estimated_duration_s=300,
-                            estimated_memory_mb=2000,
-                        )
-                        if result.evicted_endpoints:
-                            task.message = f"Evicted {len(result.evicted_endpoints)} endpoints for init"
-                except Exception as e:
-                    # If workload request fails, continue anyway (may still work)
-                    print(f"Workload request failed: {e}")
-
-                task.message = "Step 1/6: Indexing KB documents..."
-                task.progress = 0.1
-
-                vector_search = get_vector_search(self.config.kb.root)
-                vector_search.index_kb()
-
-                try:
-                    info = vector_search.client.get_collection(vector_search.collection_name)
-                    if info.points_count == 0:
-                        task.status = "failed"
-                        task.error = "No documents in Qdrant"
-                        return False
-                except Exception as e:
+                if phase == "error":
                     task.status = "failed"
-                    task.error = f"Qdrant error: {e}"
-                    return False
+                    task.error = progress["message"]
+                    break
 
-                task.message = "Step 2/5: Loading embeddings..."
-                task.progress = 0.25
+                if phase == "complete":
+                    task.progress = 1.0
+                    task.status = "completed"
+                    task.completed_at = datetime.now()
+                    task.message = progress["message"]
+                    break
 
-                grid_manager = get_grid_manager(
-                    method=self.config.tda.projection_method,
-                    kb_root=self.config.kb.root,
-                )
-                grid_manager.invalidate_cache()
-
-                task.message = "Step 3/5: Projecting to 19x19 grid (UMAP)..."
-                task.progress = 0.4
-                grid_data = grid_manager.reindex_and_project()
-
-                if grid_data.n_documents == 0:
+            # Reload state from Postgres (engine saved it)
+            if task.status == "completed":
+                from .storage.grid_state import load_current_state_fast
+                cached = await load_current_state_fast(self.config.kb.root)
+                if cached and cached.n_documents > 0:
+                    self._populate_state_from_cache(cached)
+                    self._refresh_grid()
+                else:
                     task.status = "failed"
-                    task.error = "Projection failed"
-                    return False
+                    task.error = "Engine completed but no cached state found"
 
-                if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) < 3:
-                    task.status = "failed"
-                    task.error = "No embeddings"
-                    return False
-
-                task.message = "Step 4/6: Computing TDA (H0/H1/H2)..."
-                task.progress = 0.6
-
-                from .core.tda import get_tda_manager
-                tda_manager = get_tda_manager()
-                tda_manager.invalidate_cache()
-
-                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                tda_features = tda_manager.compute_features(
-                    grid_data.raw_embeddings,
-                    grid_coords,
-                    force_refresh=True,
-                )
-
-                task.message = "Step 5/6: Computing differential geometry (κ, ∇)..."
-                task.progress = 0.75
-
-                # Compute geometry features
-                try:
-                    from .core.geometry import GeometryComputer
-                    geom_computer = GeometryComputer(k_neighbors=15)
-
-                    import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    geom_features = loop.run_until_complete(
-                        geom_computer.compute_features(
-                            grid_data.raw_embeddings,
-                            grid_coords
-                        )
-                    )
-                    loop.close()
-                except Exception as e:
-                    print(f"Geometry computation failed (skipping): {e}")
-                    geom_features = None
-
-                task.message = "Step 6/6: Saving to cache..."
-                task.progress = 0.9
-
-                save_cached_state(
-                    self.config.kb.root,
-                    grid_data,
-                    tda_features,
-                    self.config.vector_store.colnomic_model,
-                    self.config.tda.projection_method,
-                )
-
-                # Apply to state
-                self.state.black_stones = grid_data.document_positions
-                self.state.white_stones = grid_data.cluster_centers
-                self.state.allocations = grid_data.allocations
-                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
-                self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
-                self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
-                self.state.tda_entropy = tda_features.entropy
-                self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
-
-                # Populate geometry state
-                if geom_features:
-                    self._populate_geometry_state(geom_features, grid_data)
-
-                self._refresh_grid()
-
-                task.progress = 1.0
-                task.status = "completed"
-                task.completed_at = datetime.now()
-                task.message = f"Complete: {grid_data.n_documents} docs, entropy={tda_features.entropy:.2f}"
-                return True
-
-            except Exception as e:
-                task.status = "failed"
-                task.error = str(e)
-                task.completed_at = datetime.now()
-                return False
-            finally:
-                # Release workload resources (restores evicted endpoints)
-                if workload_id:
-                    try:
-                        complete_workload_sync(workload_id)
-                    except Exception:
-                        pass  # Best effort
-
-                # Restore stderr
-                sys.stderr = old_stderr
-
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, run_init)
+        except Exception as e:
+            task.status = "failed"
+            task.error = str(e)
+            task.completed_at = datetime.now()
 
         # Show result
         content = self.query_one("#info-panel", InfoPanel)
-        if success:
+        if task.status == "completed":
             content.show_file(
                 "init.txt",
                 f"Platform initialized!\n\n"
@@ -1206,7 +1083,6 @@ class GaiusApp(App):
         else:
             content.show_file("init.txt", f"Init failed: {task.error}")
 
-        # Keep task visible for a bit
         await asyncio.sleep(5)
         if task in self.state.background_tasks:
             self.state.background_tasks.remove(task)
@@ -1281,11 +1157,14 @@ class GaiusApp(App):
             return False
 
     async def _async_refresh_from_embeddings(self) -> None:
-        """Async wrapper for _refresh_from_embeddings with progress tracking."""
+        """Reindex KB via engine gRPC ReindexStream.
+
+        All GPU work runs engine-side with orchestrator GPU coordination.
+        The TUI streams progress and reloads state from Postgres cache.
+        """
         from datetime import datetime
         from .core.state import BackgroundTask
 
-        # Create background task
         task = BackgroundTask(
             id="reindex",
             name="Reindexing KB",
@@ -1294,101 +1173,60 @@ class GaiusApp(App):
         )
         self.state.background_tasks = [task]
 
-        # Force ThinkPanel refresh
         try:
             think_panel = self.query_one("#think-panel", ThinkPanel)
             think_panel.refresh()
         except Exception:
             pass
 
-        # Run in thread pool to avoid blocking
-        import asyncio
-        from functools import partial
+        try:
+            from .client.grpc_client import get_grpc_client
 
-        def run_reindex():
-            try:
-                task.message = "Step 1/4: Loading embeddings from Qdrant..."
-                task.progress = 0.1
+            task.message = "Connecting to engine..."
+            task.progress = 0.01
 
-                from .core.cache import save_cached_state
-                import numpy as np
+            client = await get_grpc_client()
 
-                grid_manager = get_grid_manager(
-                    method=self.config.tda.projection_method,
-                    kb_root=self.config.kb.root,
-                )
+            async for progress in client.reindex_with_progress(
+                kb_root=self.config.kb.root,
+                force=True,
+                embedding_model=self.config.vector_store.colnomic_model,
+            ):
+                phase = progress["phase"]
+                task.progress = progress["progress"]
+                task.message = progress["message"]
 
-                task.message = "Step 2/4: Projecting to 19x19 grid (UMAP)..."
-                task.progress = 0.3
-                grid_data = grid_manager.reindex_and_project()
-
-                if grid_data.n_documents == 0:
+                if phase == "error":
                     task.status = "failed"
-                    task.error = "No documents found"
-                    return False
+                    task.error = progress["message"]
+                    break
 
-                self.state.black_stones = grid_data.document_positions
-                self.state.allocations = grid_data.allocations
-                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
+                if phase == "complete":
+                    task.progress = 1.0
+                    task.status = "completed"
+                    task.completed_at = datetime.now()
+                    task.message = progress["message"]
+                    break
 
-                # Refresh TDA
-                task.message = "Step 3/4: Computing TDA features (H0/H1/H2)..."
-                task.progress = 0.6
+            # Reload state from Postgres (engine saved it)
+            if task.status == "completed":
+                from .storage.grid_state import load_current_state_fast
+                cached = await load_current_state_fast(self.config.kb.root)
+                if cached and cached.n_documents > 0:
+                    self._populate_state_from_cache(cached)
+                    self._refresh_grid()
+                else:
+                    task.status = "failed"
+                    task.error = "Engine completed but no cached state found"
 
-                tda_features = None
-                try:
-                    from .core.tda import get_tda_manager
-                    tda_manager = get_tda_manager()
-                    if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
-                        grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                        tda_features = tda_manager.compute_features(
-                            grid_data.raw_embeddings,
-                            grid_coords,
-                            force_refresh=True,
-                        )
-                        self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
-                        self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
-                        self.state.tda_entropy = tda_features.entropy
-                        self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
-                except Exception as e:
-                    task.error = f"TDA failed: {e}"
-
-                # Update cache
-                task.message = "Step 4/4: Saving to cache..."
-                task.progress = 0.9
-
-                if tda_features is not None:
-                    try:
-                        save_cached_state(
-                            self.config.kb.root,
-                            grid_data,
-                            tda_features,
-                            self.config.vector_store.colnomic_model,
-                            self.config.tda.projection_method,
-                        )
-                    except Exception:
-                        pass
-
-                self._refresh_grid()
-                task.progress = 1.0
-                task.status = "completed"
-                task.completed_at = datetime.now()
-                task.message = f"Complete: {grid_data.n_documents} docs, H1={len(self.state.h1_cycles)}"
-                return True
-
-            except Exception as e:
-                task.status = "failed"
-                task.error = str(e)
-                task.completed_at = datetime.now()
-                return False
-
-        # Run in thread pool
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, run_reindex)
+        except Exception as e:
+            task.status = "failed"
+            task.error = str(e)
+            task.completed_at = datetime.now()
 
         # Show result in content panel
         content = self.query_one("#info-panel", InfoPanel)
-        if success:
+        if task.status == "completed":
             content.show_file(
                 "reindex.txt",
                 f"Reindex complete!\n\n"
@@ -1401,7 +1239,6 @@ class GaiusApp(App):
         else:
             content.show_file("reindex.txt", f"Reindex failed: {task.error}")
 
-        # Keep task in history for a bit
         await asyncio.sleep(5)
         if task in self.state.background_tasks:
             self.state.background_tasks.remove(task)
