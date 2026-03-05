@@ -4,7 +4,7 @@
 # Starts the stack as a background daemon (devenv up -d). The daemon persists
 # independently of your terminal session. To inspect processes interactively:
 #
-#   just attach          # opens process-compose TUI; quitting leaves daemon running
+#   devenv up            # opens process-compose TUI; quitting leaves daemon running
 #
 # IMPORTANT: This script must run OUTSIDE the devenv environment (not from
 # `devenv shell` or after `eval "$(devenv print-dev-env)"`). The devenv
@@ -159,7 +159,7 @@ while [ $CYCLE -lt $MAX_CYCLES ]; do
     echo "╔══════════════════════════════════════════════════════════════╗"
     printf "║  Total time: %3ds                                            ║\n" "$TOTAL_ELAPSED"
     echo "╠══════════════════════════════════════════════════════════════╣"
-    echo "║  Inspect:  just attach    (TUI — quit leaves daemon running) ║"
+    echo "║  Inspect:  devenv up      (TUI — quit leaves daemon running) ║"
     echo "║  Logs:     tail -f .devenv/processes.log                     ║"
     echo "║  Stop:     devenv processes down                             ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
