@@ -232,6 +232,124 @@ viz-template:
       --output "$TEMPLATE_DIR/recursive_glass.blend"
     echo "✓ Template saved to $TEMPLATE_DIR/recursive_glass.blend"
 
+# Full teardown — stop everything, free GPUs, tear down K8s
+teardown:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║  TEARDOWN — Stopping all Gaius services and freeing GPUs    ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    # ── Phase 1: Stop devenv processes ──────────────────────────────
+    echo "Phase 1: Stopping devenv processes..."
+    devenv processes down 2>/dev/null || true
+    echo "  ✓ devenv processes stopped"
+    echo ""
+
+    # ── Phase 2: Kill GPU processes ─────────────────────────────────
+    echo "Phase 2: Cleaning GPU processes..."
+
+    # vLLM processes
+    pkill -9 -f "vllm serve" 2>/dev/null || true
+    pkill -9 -f "vllm.entrypoints" 2>/dev/null || true
+    pkill -9 -f "VLLM::" 2>/dev/null || true
+
+    # Ray (vLLM internal)
+    pkill -9 -f "ray::" 2>/dev/null || true
+    pkill -9 -f "raylet" 2>/dev/null || true
+    pkill -9 -f "gcs_server" 2>/dev/null || true
+
+    # Gaius engine/MCP
+    pkill -9 -f "gaius.engine.server" 2>/dev/null || true
+    pkill -9 -f "gaius.mcp_server" 2>/dev/null || true
+
+    # optillm
+    pkill -9 -f "gunicorn.*optillm" 2>/dev/null || true
+    pkill -9 -f "optillm" 2>/dev/null || true
+    fuser -k 8000/tcp 2>/dev/null || true
+
+    # Sweep any remaining GPU processes
+    if command -v nvidia-smi &>/dev/null; then
+      PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -s ' \n' ' ')
+      if [ -n "${PIDS// /}" ]; then
+        for pid in $PIDS; do
+          [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
+        done
+        sleep 1
+      fi
+    fi
+
+    echo "  ✓ GPU processes cleaned"
+    echo ""
+
+    # ── Phase 3: Tear down K8s resources (if RKE2 present) ─────────
+    KUBECONFIG_PATH="$HOME/.config/kube/rke2.yaml"
+    if [ -f "$KUBECONFIG_PATH" ]; then
+      export KUBECONFIG="$KUBECONFIG_PATH"
+
+      if kubectl cluster-info &>/dev/null; then
+        echo "Phase 3: Tearing down K8s resources..."
+
+        # Kill port-forwards first
+        pkill -f "kubectl.*port-forward" 2>/dev/null || true
+        echo "  ✓ Port-forwards killed"
+
+        # Tilt teardown (removes Helm releases + K8s objects it manages)
+        if command -v tilt &>/dev/null && [ -f "infra/tilt/Tiltfile" ]; then
+          echo "  Running tilt down..."
+          (cd infra/tilt && tilt down) || true
+          echo "  ✓ Tilt resources removed"
+        fi
+
+        # Delete devenv NodePort services (may already be gone from tilt down)
+        kubectl delete -f infra/k8s/devenv-services.yaml --ignore-not-found 2>/dev/null || true
+        echo "  ✓ DevEnv K8s services removed"
+
+        # Clean up any lingering Metaflow pods
+        kubectl delete pods -l app.kubernetes.io/name=metaflow-service --ignore-not-found --grace-period=5 2>/dev/null || true
+        kubectl delete pods -l app.kubernetes.io/name=metaflow-ui --ignore-not-found --grace-period=5 2>/dev/null || true
+        kubectl delete pods -l app.kubernetes.io/name=metaflow-ui-static --ignore-not-found --grace-period=5 2>/dev/null || true
+        echo "  ✓ Metaflow pods cleaned"
+        echo ""
+      else
+        echo "Phase 3: K8s cluster not reachable, skipping"
+        echo ""
+      fi
+    else
+      echo "Phase 3: No RKE2 kubeconfig found, skipping K8s teardown"
+      echo ""
+    fi
+
+    # ── Verification ────────────────────────────────────────────────
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║  Verification                                               ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+
+    # GPU status
+    if command -v nvidia-smi &>/dev/null; then
+      GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -cv "^$" || true)
+      if [ "$GPU_PROCS" -eq 0 ]; then
+        echo "║  GPUs:      ✓ All clear                                    ║"
+      else
+        echo "║  GPUs:      ⚠ $GPU_PROCS process(es) remaining                          ║"
+      fi
+    else
+      echo "║  GPUs:      - nvidia-smi not available                     ║"
+    fi
+
+    # Ports
+    BUSY_PORTS=$(ss -tlnp 2>/dev/null | grep -cE ':8000|:808[0-9]|:809[0-9]|:50051|:9080|:3000' || true)
+    if [ "$BUSY_PORTS" -eq 0 ]; then
+      echo "║  Ports:     ✓ All clear                                    ║"
+    else
+      echo "║  Ports:     ⚠ $BUSY_PORTS port(s) still bound                            ║"
+    fi
+
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "System is clear. GPUs and K8s resources are free."
+
 # ─── Kubernetes ──────────────────────────────────────────────────
 
 # Clean orphaned CNI IP allocations
