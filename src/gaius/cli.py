@@ -6064,7 +6064,7 @@ Respond with:
         if subcmd == "quick":
             report = await checker.run_quick()
             check_type = "quick"
-        elif subcmd in ("engine", "data", "cognition", "inference"):
+        elif subcmd in ("engine", "data", "cognition", "inference", "site", "pipeline", "periodic", "evolution"):
             report = await checker.run_category(subcmd)
             check_type = subcmd
         else:
@@ -6283,6 +6283,8 @@ Respond with:
             "s3": "data",
             "endpoints": "inference",
             "inference": "inference",
+            "site": "site",
+            "cards": "site",
         }
 
         category = service_to_category.get(service.lower(), "engine")
@@ -6586,11 +6588,81 @@ Respond with:
                         "remediation": "Check PostgreSQL connection: pg_isready -p 5444",
                     }
 
+            elif service in ("site", "cards"):
+                # Site content fix - diagnose and backfill
+                try:
+                    import asyncpg
+
+                    from .core.config import get_database_url
+
+                    db_url = get_database_url()
+                    conn = await asyncpg.connect(db_url)
+
+                    try:
+                        missing_images = await conn.fetchval("""
+                            SELECT COUNT(*) FROM collections.cards
+                            WHERE status = 'published'
+                              AND (image_url IS NULL OR image_url = '')
+                        """) or 0
+
+                        incomplete_summaries = await conn.fetchval("""
+                            WITH card_summary_counts AS (
+                                SELECT c.card_id,
+                                    COUNT(*) FILTER (WHERE cs.summary_type = 'frontier') AS has_frontier,
+                                    COUNT(*) FILTER (WHERE cs.summary_type = 'open_weights') AS has_open_weights,
+                                    COUNT(*) FILTER (WHERE cs.summary_type = 'cerebras') AS has_cerebras
+                                FROM collections.cards c
+                                LEFT JOIN collections.card_summaries cs ON c.card_id = cs.card_id
+                                WHERE c.status = 'published'
+                                GROUP BY c.card_id
+                            )
+                            SELECT COUNT(*) FROM card_summary_counts
+                            WHERE has_frontier = 0 OR has_open_weights = 0 OR has_cerebras = 0
+                        """) or 0
+
+                        await conn.close()
+
+                        if dry_run:
+                            return {
+                                "dry_run": True,
+                                "service": service,
+                                "missing_images": missing_images,
+                                "incomplete_summaries": incomplete_summaries,
+                                "would_run": [
+                                    "scripts/backfill_card_images.sh --all" if missing_images > 0 else None,
+                                    "uv run python scripts/remediate_card_summaries.py" if incomplete_summaries > 0 else None,
+                                ],
+                                "note": "Run without --dry-run to execute backfill",
+                            }
+
+                        return {
+                            "service": service,
+                            "missing_images": missing_images,
+                            "incomplete_summaries": incomplete_summaries,
+                            "remediation": [
+                                "scripts/backfill_card_images.sh --all" if missing_images > 0 else None,
+                                "uv run python scripts/remediate_card_summaries.py" if incomplete_summaries > 0 else None,
+                            ],
+                            "note": "Run the listed remediation commands to fix content gaps",
+                            "guru_meditation": "#SITE.00000001.CONTENTGAP",
+                        }
+
+                    finally:
+                        if not conn.is_closed():
+                            await conn.close()
+
+                except Exception as e:
+                    return {
+                        "error": f"Site fix failed: {e}",
+                        "guru_meditation": "#SITE.00000001.CONTENTGAP",
+                        "remediation": "Check PostgreSQL connection: pg_isready -p 5444",
+                    }
+
             else:
                 return {
                     "error": f"Unknown service: {service}",
-                    "available_services": ["endpoints", "evolution", "pipeline"],
-                    "usage": "/health fix [endpoints|evolution|pipeline|<issue#>] [--dry-run]",
+                    "available_services": ["endpoints", "evolution", "pipeline", "site"],
+                    "usage": "/health fix [endpoints|evolution|pipeline|site|<issue#>] [--dry-run]",
                     "note": "Use '/health fix' without args for full HealthObserver remediation, or '/health fix 42' for ACP investigation of GitHub issue #42",
                 }
 

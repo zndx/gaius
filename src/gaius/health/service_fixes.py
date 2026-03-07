@@ -1538,6 +1538,120 @@ except Exception as e:
             sock.close()
 
 
+class SiteFixStrategy(ServiceFixStrategy):
+    """Fix strategy for site content completeness issues.
+
+    Handles issues with:
+    - Missing card images (LuxCore visualizations)
+    - Incomplete card summaries (frontier, open_weights, cerebras)
+    - Degraded card briefs
+
+    Guru Meditation: #SITE.00000001.CONTENTGAP
+    """
+
+    def __init__(self):
+        super().__init__("site")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix site content issues."""
+        actions = []
+
+        # Step 1: Diagnose — query DB for missing content
+        actions.append(
+            RemediationAction(
+                name="Diagnose site content gaps",
+                description="Check for missing images, summaries, and brief quality",
+                code='''
+import asyncio
+import asyncpg
+from gaius.core.config import get_database_url
+
+async def diagnose():
+    db_url = get_database_url()
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        print("=== Site Content Status ===")
+
+        # Missing images
+        missing_images = await conn.fetchval("""
+            SELECT COUNT(*) FROM collections.cards
+            WHERE status = 'published'
+              AND (image_url IS NULL OR image_url = '')
+        """) or 0
+        print(f"Cards missing images: {missing_images}")
+
+        # Missing summaries by type
+        rows = await conn.fetch("""
+            WITH card_summary_counts AS (
+                SELECT
+                    c.card_id,
+                    COUNT(*) FILTER (WHERE cs.summary_type = 'frontier') AS has_frontier,
+                    COUNT(*) FILTER (WHERE cs.summary_type = 'open_weights') AS has_open_weights,
+                    COUNT(*) FILTER (WHERE cs.summary_type = 'cerebras') AS has_cerebras
+                FROM collections.cards c
+                LEFT JOIN collections.card_summaries cs ON c.card_id = cs.card_id
+                WHERE c.status = 'published'
+                GROUP BY c.card_id
+            )
+            SELECT
+                COUNT(*) FILTER (WHERE has_frontier = 0) AS missing_frontier,
+                COUNT(*) FILTER (WHERE has_open_weights = 0) AS missing_ow,
+                COUNT(*) FILTER (WHERE has_cerebras = 0) AS missing_cerebras
+            FROM card_summary_counts
+        """)
+        if rows:
+            r = rows[0]
+            print(f"Cards missing frontier summary: {r['missing_frontier']}")
+            print(f"Cards missing open_weights summary: {r['missing_ow']}")
+            print(f"Cards missing cerebras summary: {r['missing_cerebras']}")
+
+        # Brief quality
+        short_briefs = await conn.fetchval("""
+            SELECT COUNT(*) FROM collections.cards
+            WHERE status = 'published'
+              AND (summary IS NULL OR LENGTH(TRIM(summary)) < 20)
+        """) or 0
+        print(f"Cards with short/empty briefs: {short_briefs}")
+
+        await conn.close()
+    except Exception as e:
+        print(f"Diagnosis failed: {e}")
+
+asyncio.run(diagnose())
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 2: Backfill images
+        actions.append(
+            RemediationAction(
+                name="Backfill card images",
+                description="Render LuxCore visualizations for cards missing images",
+                command="scripts/backfill_card_images.sh --all",
+                safety=SafetyLevel.CAUTION,
+                timeout=600,
+            )
+        )
+
+        # Step 3: Backfill summaries
+        actions.append(
+            RemediationAction(
+                name="Backfill card summaries",
+                description="Generate missing frontier/open_weights/cerebras summaries",
+                command="uv run python scripts/remediate_card_summaries.py",
+                safety=SafetyLevel.CAUTION,
+                timeout=600,
+            )
+        )
+
+        return actions
+
+
 # Service registry - maps service names to strategies
 #
 # NOTE: With Engine Federation architecture, most remediation should go through
@@ -1571,6 +1685,8 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "triage": PipelineFixStrategy(),  # Alias
     "content": PipelineFixStrategy(),  # Alias
     "optillm": OptillmFixStrategy(),
+    "site": SiteFixStrategy(),
+    "cards": SiteFixStrategy(),  # Alias
 }
 
 

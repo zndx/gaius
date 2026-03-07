@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("remediate")
 
-TARGET_COLLECTIONS = ("ai-keiretsu", "cyber-physical-systems", "ai-reasoning-agents")
+TARGET_COLLECTIONS = ("ai-keiretsu", "cyber-physical-systems", "ai-reasoning-agents", "gaius-content-curation")
 
 
 async def get_cards_needing_summaries(

@@ -167,8 +167,10 @@ class GeometryComputer:
 
         for i in range(n_points):
             # Get k+1 nearest (including self), then exclude self
+            # Clamp kth to valid range (must be < n_points for argpartition)
             dists = distances_matrix[i]
-            nearest_indices = np.argpartition(dists, self.k + 1)[: self.k + 1]
+            kth = min(self.k + 1, n_points - 1)
+            nearest_indices = np.argpartition(dists, kth)[: kth + 1]
             nearest_indices = nearest_indices[nearest_indices != i][: self.k]
 
             for j, neighbor_idx in enumerate(nearest_indices):

@@ -3148,7 +3148,7 @@ Use `/evolve stop` to stop orchestrated evolution.
         if subcmd == "quick":
             title = "Quick Health Check"
             check_type = "quick"
-        elif subcmd in ("engine", "data", "cognition", "inference"):
+        elif subcmd in ("engine", "data", "cognition", "inference", "site", "pipeline", "periodic", "evolution"):
             title = f"{subcmd.title()} Health Check"
             check_type = subcmd
         else:
@@ -3204,7 +3204,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                 # Run appropriate checks with progress callback
                 if subcmd == "quick":
                     report = await checker.run_quick(progress_callback=on_progress)
-                elif subcmd in ("engine", "data", "cognition", "inference"):
+                elif subcmd in ("engine", "data", "cognition", "inference", "site", "pipeline", "periodic", "evolution"):
                     report = await checker.run_category(subcmd, progress_callback=on_progress)
                 else:
                     report = await checker.run_all(progress_callback=on_progress)

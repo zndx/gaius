@@ -1882,7 +1882,7 @@ IMPORTANT: In References, include <!-- ref_start:N ref_end:M --> comments with t
             sources_text.append(f"[{ref_num}] ({source_type}):\n{content[:600]}")
 
         prompt = f"""Generate brief 1-2 sentence summaries for each of the following source passages.
-For each, explain the key point that makes it relevant to AI research.
+For each, state the key contribution or finding in concrete terms.
 
 {chr(10).join(sources_text)}
 
@@ -2381,63 +2381,87 @@ Be concise - each summary should be 1-2 sentences max."""
         if published_count == 0:
             print("No published cards, skipping visualization rendering")
             self.cards_rendered = 0
+            self.render_errors = []
             self.next(self.end)
             return
 
         print(f"Rendering visualizations for {published_count} published cards...")
 
         try:
-            cards_rendered = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.get_event_loop().run_until_complete(
                 self._render_visualizations_async()
             )
         except RuntimeError:
-            cards_rendered = asyncio.new_event_loop().run_until_complete(
+            result = asyncio.new_event_loop().run_until_complete(
                 self._render_visualizations_async()
             )
+        except Exception as e:
+            print(f"  RENDER PIPELINE ERROR: {e}")
+            result = (0, [f"Pipeline error: {e}"])
+
+        if isinstance(result, tuple):
+            cards_rendered, render_errors = result
+        else:
+            cards_rendered, render_errors = result, []
 
         self.cards_rendered = cards_rendered
+        self.render_errors = render_errors
         print(f"Rendered visualizations for {cards_rendered} cards")
+        if render_errors:
+            print(f"  Render errors ({len(render_errors)}):")
+            for err in render_errors:
+                print(f"    - {err}")
 
         emit_render_viz(self.progress_run_id, cards_rendered)
 
         self.next(self.end)
 
-    async def _render_visualizations_async(self) -> int:
+    async def _render_visualizations_async(self) -> tuple[int, list[str]]:
         """Render display + og variants via engine gRPC (workload-managed).
 
         Delegates to the engine's RenderCards streaming RPC which handles
         GPU eviction, LuxCore rendering, R2 upload, and endpoint restoration.
 
         Returns:
-            Number of cards successfully rendered
+            Tuple of (cards_rendered, error_messages)
         """
         from gaius.client.grpc_client import get_grpc_client, GrpcClientConfig
 
-        client = await get_grpc_client(GrpcClientConfig.for_cli())
+        render_errors: list[str] = []
+
+        try:
+            client = await get_grpc_client(GrpcClientConfig.for_cli())
+        except Exception as e:
+            return (0, [f"gRPC connection failed: {e}"])
 
         collection_slug = self.selected_slug
         cards_rendered = 0
 
         rendered_card_ids: list[str] = []
 
-        async for event in client.RenderCards(
-            collection_slug=collection_slug,
-            upload=True,
-        ):
-            # Log progress from the engine's render stream
-            if event.card_id and event.message:
-                print(f"  [{event.cards_done}/{event.cards_total}] {event.message}")
-            elif event.message:
-                print(f"  {event.message}")
+        try:
+            async for event in client.RenderCards(
+                collection_slug=collection_slug,
+                upload=True,
+            ):
+                # Log progress from the engine's render stream
+                if event.card_id and event.message:
+                    print(f"  [{event.cards_done}/{event.cards_total}] {event.message}")
+                elif event.message:
+                    print(f"  {event.message}")
 
-            # Track completions
-            if event.image_url:
-                rendered_card_ids.append(event.card_id)
-                cards_rendered += 1
+                # Track completions
+                if event.image_url:
+                    rendered_card_ids.append(event.card_id)
+                    cards_rendered += 1
 
-            # Log errors
-            if event.error:
-                print(f"  RENDER ERROR: {event.error}")
+                # Collect errors for end-step summary
+                if event.error:
+                    render_errors.append(event.error)
+                    print(f"  RENDER ERROR: {event.error}")
+        except Exception as e:
+            render_errors.append(f"gRPC stream error: {e}")
+            print(f"  RENDER STREAM ERROR: {e}")
 
         # Sync KV so card pages on gaius.zndx.org pick up image_url
         if rendered_card_ids:
@@ -2460,7 +2484,7 @@ Be concise - each summary should be 1-2 sentences max."""
                 idx_result = await service.sync_to_kv()
                 print(f"  KV sync: {idx_result['cards_synced']} total cards synced to landing page")
 
-        return cards_rendered
+        return (cards_rendered, render_errors)
 
     @traced_step
     @step
@@ -2493,7 +2517,15 @@ Be concise - each summary should be 1-2 sentences max."""
             print(f"Cards created: {getattr(self, 'cards_created', 0)}")
             print(f"Cards published: {getattr(self, 'published_count', 0)}")
             print(f"Cards summarized: {getattr(self, 'cards_summarized', 0)}")
-            print(f"Cards rendered: {getattr(self, 'cards_rendered', 0)}")
+            cards_rendered = getattr(self, 'cards_rendered', 0)
+            published_count = getattr(self, 'published_count', 0)
+            print(f"Cards rendered: {cards_rendered}")
+            if cards_rendered < published_count and published_count > 0:
+                render_errors = getattr(self, 'render_errors', [])
+                print(f"  *** RENDER INCOMPLETE: {cards_rendered}/{published_count} cards ***")
+                if render_errors:
+                    for err in render_errors[:3]:
+                        print(f"  *** {err}")
             print(f"Grok sync: {'Success' if self.grok_sync_result.get('success') else 'Fallback mode'}")
 
         self.emit_event("article_curation.completed", {
@@ -2504,6 +2536,7 @@ Be concise - each summary should be 1-2 sentences max."""
             "published_count": getattr(self, "published_count", 0),
             "cards_summarized": getattr(self, "cards_summarized", 0),
             "cards_rendered": getattr(self, "cards_rendered", 0),
+            "render_errors": getattr(self, "render_errors", []),
         })
 
         # Emit progress: flow completed
