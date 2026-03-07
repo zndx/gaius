@@ -2818,14 +2818,14 @@ class HealthChecker:
                 if missing > 0:
                     return CheckResult(
                         name="Card Images",
-                        status=CheckStatus.WARN,
-                        message=f"{missing}/{total} published cards missing images",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000001.NOIMAGES: {missing}/{total} published cards missing images",
                         details={
                             "total_published": total,
                             "missing_images": missing,
                             "affected_cards": missing_ids,
                         },
-                        suggestion="Run: scripts/backfill_card_images.sh",
+                        suggestion="Run: scripts/backfill_card_images.sh --all\n  Then: uv run python scripts/remediate_card_summaries.py  (to sync KV)",
                     )
 
                 return CheckResult(
@@ -2932,8 +2932,8 @@ class HealthChecker:
 
                     return CheckResult(
                         name="Card Summaries",
-                        status=CheckStatus.WARN,
-                        message=f"{len(rows)} cards with incomplete summaries: {', '.join(parts)}",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000002.NOSUMMARIES: {len(rows)} cards with incomplete summaries: {', '.join(parts)}",
                         details={
                             "total_published": total,
                             "incomplete_cards": len(rows),
@@ -3059,15 +3059,12 @@ class HealthChecker:
                     details["formulaic_pct"] = round(pct, 1)
 
                 if issues:
-                    # Duplicates = FAIL (visitors see identical cards)
-                    # Formulaic/short = WARN (degraded but not broken)
-                    status = CheckStatus.FAIL if duplicate_count > 0 else CheckStatus.WARN
                     return CheckResult(
                         name="Card Briefs",
-                        status=status,
-                        message=f"Brief quality issues: {', '.join(issues)}",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000003.BRIEFS: {', '.join(issues)}",
                         details=details,
-                        suggestion="Review card briefs and re-run article curation",
+                        suggestion="Fix briefs in DB then re-sync KV:\n  uv run python scripts/remediate_card_summaries.py",
                     )
 
                 return CheckResult(
@@ -3168,8 +3165,8 @@ class HealthChecker:
                 if incomplete:
                     return CheckResult(
                         name="Collection Completeness",
-                        status=CheckStatus.WARN,
-                        message=f"{len(incomplete)}/{len(rows)} featured collections incomplete",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000004.INCOMPLETE: {len(incomplete)}/{len(rows)} featured collections incomplete",
                         details={
                             "total_collections": len(rows),
                             "incomplete": incomplete[:20],
@@ -3288,13 +3285,19 @@ class HealthChecker:
                             body = resp.text
                             has_image = "viz.gaius.zndx.org" in body
                             details["card_has_image_ref"] = has_image
+                            # KV coherence: DB has image_url but rendered page doesn't show it
+                            if sample_card.get("image_url") and not has_image:
+                                details["kv_stale_issue"] = (
+                                    f"KV stale: DB has image_url but card page missing image "
+                                    f"(card {sample_card['card_id']})"
+                                )
                         else:
                             details["card_page_issue"] = f"HTTP {resp.status_code}"
                     except Exception as e:
                         details["card_page_status"] = "error"
                         details["card_page_issue"] = str(e)[:80]
 
-                    # Probe 3: Image URL
+                    # Probe 3: Image URL — verify R2 asset exists
                     if sample_card.get("image_url"):
                         try:
                             resp = await client.head(sample_card["image_url"])
@@ -3323,9 +3326,10 @@ class HealthChecker:
             if issues:
                 return CheckResult(
                     name="Live Site",
-                    status=CheckStatus.WARN,
-                    message=f"{len(issues)} issue(s): {'; '.join(str(i) for i in issues[:3])}",
+                    status=CheckStatus.FAIL,
+                    message=f"#SITE.00000005.LIVEFAIL: {'; '.join(str(i) for i in issues[:3])}",
                     details=details,
+                    suggestion="Re-sync KV: uv run python scripts/remediate_card_summaries.py",
                 )
 
             return CheckResult(
