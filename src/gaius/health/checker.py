@@ -391,13 +391,14 @@ class HealthChecker:
                 check_fn="_check_task_queue",
                 heuristic_id="cognition/task_queue_stalled",
             ),
-            # Landing page pipeline checks
+            # Landing page pipeline checks (site category — public-facing)
             HealthCheck(
                 id="landing_page_pipeline",
                 name="Landing Page",
-                category="pipeline",
+                category="site",
                 description="Check article curation and card publishing pipeline health",
                 check_fn="_check_landing_page_pipeline",
+                heuristic_id="site/landing_page_stale",
             ),
             # Periodic task freshness
             HealthCheck(
@@ -448,6 +449,15 @@ class HealthChecker:
                 description="Verify live site renders content correctly (sample card page, image, KV data)",
                 check_fn="_check_site_live_verification",
                 heuristic_id="site/live_site_stale",
+            ),
+            # Content freshness — is the pipeline producing new cards?
+            HealthCheck(
+                id="site_content_freshness",
+                name="Content Freshness",
+                category="site",
+                description="Check that the site is receiving new published cards at expected cadence",
+                check_fn="_check_site_content_freshness",
+                heuristic_id="site/content_stale",
             ),
         ]
 
@@ -2552,21 +2562,20 @@ class HealthChecker:
 
                 await conn.close()
 
-                # Any failure = WARN for investigation (zero tolerance)
+                # Any failure = FAIL (pipeline errors degrade the live site)
                 if curate_failures > 0 or publish_failures > 0:
                     return CheckResult(
                         name="Landing Page",
-                        status=CheckStatus.WARN,
-                        message=f"Pipeline errors: {curate_failures} curate, {publish_failures} publish failures (24h)",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000007.EMPTYBACKLOG: Pipeline errors: {curate_failures} curate, {publish_failures} publish failures (24h)",
                         details={
                             "curate_failures": curate_failures,
                             "publish_failures": publish_failures,
                             "cards_published_today": cards_today,
                             "curations_this_week": curations_week,
                             "pending_cards": pending_cards,
-                            "action": "Investigate scheduled_tasks table for error details",
                         },
-                        suggestion="Check: SELECT * FROM scheduled_tasks WHERE task_type IN ('article_curate', 'publish_cards') AND (result::jsonb->>'success')::boolean = FALSE ORDER BY completed_at DESC LIMIT 5",
+                        suggestion="Run: /health fix pipeline",
                     )
 
                 # All operational metrics in details
@@ -2578,14 +2587,14 @@ class HealthChecker:
                     "expected_curations_per_week": 4,
                 }
 
-                # Check backlog level
+                # Empty backlog = pipeline has stopped feeding the site
                 if pending_cards == 0:
                     return CheckResult(
                         name="Landing Page",
-                        status=CheckStatus.WARN,
-                        message=f"Empty backlog: {cards_today} cards today, {curations_week} curations/week",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000007.EMPTYBACKLOG: {cards_today} cards today, {curations_week} curations/week, 0 pending",
                         details=details,
-                        suggestion="Schedule article curation to replenish backlog",
+                        suggestion="Run article curation to replenish backlog:\n  uv run gaius-cli --cmd \"/curate\"",
                     )
 
                 return CheckResult(
@@ -3345,4 +3354,138 @@ class HealthChecker:
                 status=CheckStatus.SKIP,
                 message=f"Verification skipped: {str(e)[:80]}",
                 details=details,
+            )
+
+    async def _check_site_content_freshness(self) -> CheckResult:
+        """Check that the site is receiving new published cards at expected cadence.
+
+        The site decays in relevance if no new content is being produced.
+        This check detects a stalled content pipeline by looking at card
+        creation timestamps — the most direct signal of pipeline health.
+        """
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                row = await conn.fetchrow("""
+                    SELECT
+                        MAX(created_at) AS last_created,
+                        COUNT(*) FILTER (
+                            WHERE created_at > NOW() - interval '48 hours'
+                        ) AS cards_48h,
+                        COUNT(*) FILTER (
+                            WHERE created_at > NOW() - interval '7 days'
+                        ) AS cards_7d,
+                        COUNT(*) AS total_published
+                    FROM collections.cards
+                    WHERE status = 'published'
+                """)
+
+                await conn.close()
+
+                if not row or row["total_published"] == 0:
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.FAIL,
+                        message="#SITE.00000006.STALE: No published cards exist",
+                        suggestion="Run article curation: uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                last_created = row["last_created"]
+                cards_48h = row["cards_48h"] or 0
+                cards_7d = row["cards_7d"] or 0
+                total = row["total_published"]
+
+                # Calculate age of most recent card
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                age = now - last_created.replace(tzinfo=timezone.utc) if last_created.tzinfo is None else now - last_created
+                age_hours = age.total_seconds() / 3600
+                age_days = age.total_seconds() / 86400
+
+                if age_days >= 1:
+                    age_str = f"{age_days:.1f}d"
+                else:
+                    age_str = f"{age_hours:.1f}h"
+
+                details = {
+                    "total_published": total,
+                    "last_card_created": last_created.isoformat(),
+                    "last_card_age": age_str,
+                    "cards_last_48h": cards_48h,
+                    "cards_last_7d": cards_7d,
+                }
+
+                # No cards in 48h = pipeline stalled
+                if cards_48h == 0:
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000006.STALE: No new cards in {age_str} (last: {last_created.strftime('%Y-%m-%d')})",
+                        details=details,
+                        suggestion="Content pipeline stalled. Run article curation:\n  uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                # Less than 1 card/day average over the week
+                if cards_7d < 7:
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000006.STALE: Only {cards_7d} cards in 7d ({cards_7d/7:.1f}/day, expected >= 1/day)",
+                        details=details,
+                        suggestion="Content cadence below minimum. Run article curation:\n  uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                return CheckResult(
+                    name="Content Freshness",
+                    status=CheckStatus.PASS,
+                    message=f"Content fresh: {cards_48h} cards in 48h, {cards_7d} in 7d (last: {age_str} ago)",
+                    details=details,
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Content Freshness",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            if "does not exist" in str(e):
+                return CheckResult(
+                    name="Content Freshness",
+                    status=CheckStatus.SKIP,
+                    message="Cards table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Content Freshness",
+                status=CheckStatus.FAIL,
+                message=f"Check failed: {str(e)[:80]}",
             )
