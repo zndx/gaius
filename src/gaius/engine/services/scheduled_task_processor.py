@@ -496,10 +496,64 @@ class ScheduledTaskProcessor(BaseDaemon):
                 logger.error(f"ProspectsUpdateFlow error: {e}")
                 return {"status": "error", "symbols": symbols, "error": str(e)}
 
+        async def handle_metabase_sync(task: ScheduledTask) -> dict[str, Any]:
+            """Handle metabase_sync task — sync Metabase models from PostgreSQL views."""
+            from .metaagent_service import get_metaagent_service
+
+            full_refresh = task.payload.get("full_refresh", False)
+            logger.info(f"Triggering Metabase sync (full_refresh={full_refresh})")
+
+            svc = get_metaagent_service()
+            resp = await svc.trigger_sync(full_refresh=full_refresh)
+
+            if resp.success:
+                logger.info(
+                    f"Metabase sync completed: {resp.models_synced} models, "
+                    f"{resp.dashboards_synced} dashboards"
+                )
+            else:
+                logger.error(f"Metabase sync failed: {resp.error}")
+
+            return {
+                "status": "completed" if resp.success else "failed",
+                "models_synced": resp.models_synced,
+                "dashboards_synced": resp.dashboards_synced,
+                "error": resp.error or None,
+            }
+
+        async def handle_metaagent_audit(task: ScheduledTask) -> dict[str, Any]:
+            """Handle metaagent_audit task — run MetaAgent LLM audit."""
+            from .metaagent_service import get_metaagent_service
+
+            scope = task.payload.get("scope", "full")
+            use_remote = task.payload.get("use_remote_llm", True)
+            logger.info(f"Triggering MetaAgent audit (scope={scope}, remote={use_remote})")
+
+            svc = get_metaagent_service()
+            resp = await svc.trigger_audit(scope=scope, use_remote_llm=use_remote)
+
+            if resp.success:
+                logger.info(
+                    f"MetaAgent audit completed: {len(resp.findings)} findings, "
+                    f"{len(resp.recommendations)} recommendations"
+                )
+            else:
+                logger.error(f"MetaAgent audit failed: {resp.error}")
+
+            return {
+                "status": "completed" if resp.success else "failed",
+                "audit_id": resp.audit_id,
+                "findings_count": len(resp.findings),
+                "recommendations_count": len(resp.recommendations),
+                "error": resp.error or None,
+            }
+
         self.register_handler("publish_cards", handle_publish_cards)
         self.register_handler("article_curate", handle_article_curate)
         self.register_handler("prospects_check", handle_prospects_check)
         self.register_handler("prospects_update", handle_prospects_update)
+        self.register_handler("metabase_sync", handle_metabase_sync)
+        self.register_handler("metaagent_audit", handle_metaagent_audit)
 
     async def _listen_loop(self) -> None:
         """Main LISTEN loop with reconnection."""
@@ -627,19 +681,37 @@ class ScheduledTaskProcessor(BaseDaemon):
             self._last_task_at = datetime.now()
 
             # 3. Mark complete (short-lived connection)
+            # If the handler reports failure in result, propagate to error column
+            # so health checks correctly identify failed tasks.
+            result_status = result.get("status", "completed") if isinstance(result, dict) else "completed"
+            error_msg = None
+            if result_status in ("failed", "error", "stalled"):
+                # Extract error from result for the error column
+                if isinstance(result, dict):
+                    last_lines = result.get("last_lines", [])
+                    error_msg = result.get("error") or (last_lines[-1] if last_lines else f"Handler returned status: {result_status}")
+                else:
+                    error_msg = f"Handler returned status: {result_status}"
+                self._tasks_failed += 1
+
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     UPDATE scheduled_tasks
                     SET completed_at = NOW(),
-                        result = $2
+                        result = $2,
+                        error = $3
                     WHERE id = $1
                     """,
                     task_id,
                     json.dumps(result),
+                    error_msg[:1000] if error_msg else None,
                 )
 
-            logger.info(f"Task {task_id} completed: {result}")
+            if error_msg:
+                logger.error(f"Task {task_id} handler failed: {error_msg}")
+            else:
+                logger.info(f"Task {task_id} completed: {result}")
 
         except Exception as e:
             self._tasks_failed += 1

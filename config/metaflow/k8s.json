@@ -6,6 +6,6 @@
   "METAFLOW_KUBERNETES_SECRETS": "devenv-minio-credentials",
   "METAFLOW_S3_ENDPOINT_URL": "http://devenv-minio:9010",
   "METAFLOW_SERVICE_INTERNAL_URL": "http://metaflow-service.default.svc.cluster.local:8080",
-  "METAFLOW_SERVICE_URL": "http://localhost:30180"
+  "METAFLOW_SERVICE_URL": "http://localhost:9080"
 }
 
