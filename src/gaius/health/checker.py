@@ -88,6 +88,42 @@ _STATUS_TO_PROTO: dict["CheckStatus", "ProtoCheckStatus"] = {
 
 _PROTO_TO_STATUS: dict["ProtoCheckStatus", "CheckStatus"] = {v: k for k, v in _STATUS_TO_PROTO.items()}
 
+# Expected cadences for periodic tasks: task_type -> (interval, label, catch-up hint)
+_PERIODIC_TASK_CADENCES: dict[str, tuple[timedelta, str, str]] = {
+    # Engine cognition cycle — core thinking loop
+    "cognition_cycle":       (timedelta(minutes=15), "Cognition cycle",       "Engine must be running: devenv processes up"),
+    "llm_triage":            (timedelta(hours=1),    "LLM triage",            "Engine must be running: devenv processes up"),
+    "content_processing":    (timedelta(hours=1),    "Content processing",    "Engine must be running: devenv processes up"),
+    "article_curation":      (timedelta(hours=6),    "Article curation",      "Engine must be running: devenv processes up"),
+    "card_publishing":       (timedelta(hours=6),    "Card publishing",       "Engine must be running: devenv processes up"),
+    "evolution_cycle":       (timedelta(hours=12),   "Evolution cycle",       "Engine must be running: devenv processes up"),
+    "card_upkeep":           (timedelta(hours=12),   "Card upkeep",           "Engine must be running: devenv processes up"),
+    # pg_cron SQL-only jobs (run even without engine)
+    "heuristic-triage":      (timedelta(hours=1),    "Heuristic triage",      "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%heuristic%'"),
+    "engine-audit":          (timedelta(hours=1),    "Engine audit",          "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%audit%'"),
+    "meta-consolidation":    (timedelta(hours=6),    "Meta consolidation",    "Check pg_cron: SELECT * FROM cron.job"),
+    "prospect-refresh":      (timedelta(hours=12),   "Prospect refresh",      "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%prospect%'"),
+    "calibration":           (timedelta(days=1),     "Calibration",           "Check pg_cron: SELECT * FROM cron.job WHERE jobname LIKE '%calibrat%'"),
+}
+
+
+def _format_timedelta(td: timedelta) -> str:
+    """Format timedelta as human-readable string (e.g., '2h 30m', '3d 4h')."""
+    total_seconds = int(td.total_seconds())
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "0m"
+
 
 @dataclass
 class CheckResult:
@@ -355,6 +391,74 @@ class HealthChecker:
                 check_fn="_check_task_queue",
                 heuristic_id="cognition/task_queue_stalled",
             ),
+            # Landing page pipeline checks (site category — public-facing)
+            HealthCheck(
+                id="landing_page_pipeline",
+                name="Landing Page",
+                category="site",
+                description="Check article curation and card publishing pipeline health",
+                check_fn="_check_landing_page_pipeline",
+                heuristic_id="site/landing_page_stale",
+            ),
+            # Periodic task freshness
+            HealthCheck(
+                id="periodic_task_freshness",
+                name="Periodic Tasks",
+                category="periodic",
+                description="Check periodic task completion cadence (cognition, triage, curation, evolution)",
+                check_fn="_check_periodic_task_freshness",
+            ),
+            # Site content completeness checks (DB-side)
+            HealthCheck(
+                id="site_card_images",
+                name="Card Images",
+                category="site",
+                description="Check all published cards have LuxCore visualization images",
+                check_fn="_check_site_card_images",
+                heuristic_id="site/card_images_missing",
+            ),
+            HealthCheck(
+                id="site_card_summaries",
+                name="Card Summaries",
+                category="site",
+                description="Check all published cards have frontier, open_weights, and cerebras summaries",
+                check_fn="_check_site_card_summaries",
+                heuristic_id="site/card_summaries_incomplete",
+            ),
+            HealthCheck(
+                id="site_card_briefs",
+                name="Card Briefs",
+                category="site",
+                description="Check all published cards have unique, substantive brief text",
+                check_fn="_check_site_card_briefs",
+                heuristic_id="site/card_briefs_degraded",
+            ),
+            HealthCheck(
+                id="site_collection_completeness",
+                name="Collection Completeness",
+                category="site",
+                description="Check active collections have published cards and all 3 summary types",
+                check_fn="_check_site_collection_completeness",
+                heuristic_id="site/collection_incomplete",
+            ),
+            # Live site verification (HTTP + KV)
+            HealthCheck(
+                id="site_live_verification",
+                name="Live Site",
+                category="site",
+                description="Verify live site renders content correctly (sample card page, image, KV data)",
+                check_fn="_check_site_live_verification",
+                heuristic_id="site/live_site_stale",
+            ),
+            # Content freshness — is the pipeline producing new cards?
+            HealthCheck(
+                id="site_content_freshness",
+                name="Content Freshness",
+                category="site",
+                description="Check that the site is receiving new published cards at expected cadence",
+                check_fn="_check_site_content_freshness",
+                heuristic_id="site/content_stale",
+            ),
         ]
 
     async def run_all(
@@ -502,12 +606,13 @@ class HealthChecker:
 
         # Essential service checks for quick view
         essential_ids = [
-            "grpc_connection",      # gRPC to engine
-            "optillm_service",      # Primary inference
-            "vllm_service",         # Fallback inference
-            "database_connection",  # PostgreSQL (critical)
-            "qdrant_service",       # Vector DB
-            "s3_minio_service",     # Object storage
+            "grpc_connection",         # gRPC to engine
+            "optillm_service",         # Primary inference
+            "vllm_service",            # Fallback inference
+            "database_connection",     # PostgreSQL (critical)
+            "qdrant_service",          # Vector DB
+            "s3_minio_service",        # Object storage
+            "landing_page_pipeline",   # Article curation / card publishing
         ]
 
         # Filter checks for quick view
@@ -693,11 +798,11 @@ class HealthChecker:
     async def _check_database(self) -> CheckResult:
         """Check database connectivity."""
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
             # Basic connectivity test - just run a simple query
@@ -721,7 +826,7 @@ class HealthChecker:
                 name="Database Connection",
                 status=CheckStatus.FAIL,
                 message="Connection timeout",
-                suggestion="Check PostgreSQL is running: pg_isready -p 5438",
+                suggestion="Check PostgreSQL is running: pg_isready -p 5444",
             )
         except Exception as e:
             return CheckResult(
@@ -995,7 +1100,7 @@ class HealthChecker:
                     status=CheckStatus.WARN,
                     message=f"Not responding at {base_url}",
                     details={"url": base_url, "role": "primary"},
-                    suggestion="Start optillm: devenv up optillm",
+                    suggestion="optillm is engine-managed. Try: /health fix engine",
                 )
 
         except ImportError:
@@ -2129,11 +2234,11 @@ class HealthChecker:
         - kb_write: Writing triaged content to KB
         """
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
 
@@ -2241,11 +2346,11 @@ class HealthChecker:
         - stuck_running: Tasks running too long without completion
         """
         try:
-            import os
-
             import asyncpg
 
-            db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
 
             conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
 
@@ -2378,5 +2483,1009 @@ class HealthChecker:
             return CheckResult(
                 name="Task Queue",
                 status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_landing_page_pipeline(self) -> CheckResult:
+        """Check landing page pipeline health.
+
+        Monitors article curation and card publishing pipeline:
+        - Task failures in last 24h (zero tolerance - any failure = WARN)
+        - Cards published today vs expected (~6/day)
+        - Curations this week vs expected (~4-5/week)
+        - Current backlog level
+
+        Any non-zero error rate surfaces as WARN for investigation.
+        """
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                # Check if collections schema exists
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Landing Page",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                # Count task failures in last 24h
+                curate_failures = await conn.fetchval("""
+                    SELECT COUNT(*) FROM scheduled_tasks
+                    WHERE task_type = 'article_curate'
+                      AND completed_at > NOW() - interval '24 hours'
+                      AND (result::jsonb->>'success')::boolean = FALSE
+                """) or 0
+
+                publish_failures = await conn.fetchval("""
+                    SELECT COUNT(*) FROM scheduled_tasks
+                    WHERE task_type = 'publish_cards'
+                      AND completed_at > NOW() - interval '24 hours'
+                      AND (result::jsonb->>'success')::boolean = FALSE
+                """) or 0
+
+                # Get cards published in last 24h
+                cards_today = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE published_at > NOW() - interval '24 hours'
+                """) or 0
+
+                # Get curations in last 7 days
+                curations_week = await conn.fetchval("""
+                    SELECT COUNT(*) FROM scheduled_tasks
+                    WHERE task_type = 'article_curate'
+                      AND completed_at > NOW() - interval '7 days'
+                      AND (result::jsonb->>'success')::boolean = TRUE
+                """) or 0
+
+                # Get current pending backlog
+                pending_cards = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards c
+                    JOIN collections.collections col ON c.collection_id = col.collection_id
+                    WHERE col.featured = TRUE AND c.status = 'pending'
+                """) or 0
+
+                await conn.close()
+
+                # Any failure = FAIL (pipeline errors degrade the live site)
+                if curate_failures > 0 or publish_failures > 0:
+                    return CheckResult(
+                        name="Landing Page",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000007.EMPTYBACKLOG: Pipeline errors: {curate_failures} curate, {publish_failures} publish failures (24h)",
+                        details={
+                            "curate_failures": curate_failures,
+                            "publish_failures": publish_failures,
+                            "cards_published_today": cards_today,
+                            "curations_this_week": curations_week,
+                            "pending_cards": pending_cards,
+                        },
+                        suggestion="Run: /health fix pipeline",
+                    )
+
+                # All operational metrics in details
+                details = {
+                    "cards_published_today": cards_today,
+                    "curations_this_week": curations_week,
+                    "pending_cards": pending_cards,
+                    "expected_cards_per_day": 6,
+                    "expected_curations_per_week": 4,
+                }
+
+                # Empty backlog = pipeline has stopped feeding the site
+                if pending_cards == 0:
+                    return CheckResult(
+                        name="Landing Page",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000007.EMPTYBACKLOG: {cards_today} cards today, {curations_week} curations/week, 0 pending",
+                        details=details,
+                        suggestion="Run article curation to replenish backlog:\n  uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                return CheckResult(
+                    name="Landing Page",
+                    status=CheckStatus.PASS,
+                    message=f"Pipeline OK: {cards_today} cards today, {curations_week}/wk, {pending_cards} pending",
+                    details=details,
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Landing Page",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str:
+                return CheckResult(
+                    name="Landing Page",
+                    status=CheckStatus.SKIP,
+                    message="Landing page tables not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Landing Page",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_periodic_task_freshness(self) -> CheckResult:
+        """Check periodic task completion cadence.
+
+        Answers: "Are my periodic processes actually completing on their
+        expected cadence?"  Uses _PERIODIC_TASK_CADENCES to compare last
+        successful completion time against expected intervals.
+
+        Ratio thresholds:
+          <= 1.0  → current (ok)
+          1–3×    → overdue (WARN)
+          > 3×    → critically overdue (FAIL)
+
+        Task types not present in scheduled_tasks are silently skipped
+        (no false positives for features not yet exercised).
+        """
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                rows = await conn.fetch("""
+                    SELECT
+                        task_type,
+                        MAX(completed_at) FILTER (WHERE error IS NULL) AS last_success,
+                        COUNT(*) FILTER (WHERE completed_at IS NULL) AS pending,
+                        COUNT(*) FILTER (WHERE error IS NOT NULL
+                                         AND completed_at > NOW() - interval '7 days') AS errors_7d
+                    FROM scheduled_tasks
+                    GROUP BY task_type
+                """)
+                await conn.close()
+            except Exception as e:
+                await conn.close()
+                raise e
+
+            from datetime import timezone
+
+            now = datetime.now(timezone.utc)
+            task_details: dict[str, dict[str, Any]] = {}
+            worst = CheckStatus.PASS
+            summary_parts: list[str] = []
+
+            for row in rows:
+                task_type = row["task_type"]
+                if task_type not in _PERIODIC_TASK_CADENCES:
+                    continue  # fail-open: skip unknown types
+
+                expected_interval, label, hint = _PERIODIC_TASK_CADENCES[task_type]
+                last_success = row["last_success"]
+                pending = row["pending"]
+                errors_7d = row["errors_7d"]
+
+                if last_success is None:
+                    status = "fail"
+                    age_str = "never"
+                    worst = CheckStatus.FAIL
+                    summary_parts.append(f"{label} NEVER")
+                else:
+                    # Ensure tz-aware comparison
+                    if last_success.tzinfo is None:
+                        last_success = last_success.replace(tzinfo=timezone.utc)
+                    age = now - last_success
+
+                    ratio = age / expected_interval
+                    age_str = _format_timedelta(age)
+
+                    if ratio <= 1.0:
+                        status = "ok"
+                    elif ratio <= 3.0:
+                        status = "warn"
+                        summary_parts.append(f"{label} {age_str}")
+                        if worst == CheckStatus.PASS:
+                            worst = CheckStatus.WARN
+                    else:
+                        status = "fail"
+                        summary_parts.append(f"{label} {age_str}")
+                        worst = CheckStatus.FAIL
+
+                entry: dict[str, Any] = {
+                    "status": status,
+                    "last_success": str(last_success) if last_success else None,
+                    "age": age_str,
+                    "expected_interval": _format_timedelta(expected_interval),
+                    "pending": pending,
+                    "errors_7d": errors_7d,
+                }
+                if status != "ok":
+                    entry["hint"] = hint
+                if errors_7d > 0:
+                    entry["note"] = f"{errors_7d} errors in last 7d"
+                task_details[task_type] = entry
+
+            if not task_details:
+                return CheckResult(
+                    name="Periodic Tasks",
+                    status=CheckStatus.SKIP,
+                    message="No periodic tasks found in scheduled_tasks table",
+                )
+
+            if worst == CheckStatus.PASS:
+                message = f"All {len(task_details)} periodic tasks current"
+            elif worst == CheckStatus.WARN:
+                message = f"Overdue: {', '.join(summary_parts)}"
+            else:
+                message = f"Critically overdue: {', '.join(summary_parts)}"
+
+            return CheckResult(
+                name="Periodic Tasks",
+                status=worst,
+                message=message,
+                details={"tasks": task_details},
+                suggestion="Engine must be running: devenv processes up" if worst != CheckStatus.PASS else None,
+            )
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Periodic Tasks",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "does not exist" in error_str:
+                return CheckResult(
+                    name="Periodic Tasks",
+                    status=CheckStatus.SKIP,
+                    message="scheduled_tasks table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Periodic Tasks",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    # =========================================================================
+    # Site Content Completeness Checks
+    # =========================================================================
+
+    async def _check_site_card_images(self) -> CheckResult:
+        """Check all published cards have LuxCore visualization images."""
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Card Images",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                total = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE status = 'published'
+                """) or 0
+
+                missing = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE status = 'published'
+                      AND (image_url IS NULL OR image_url = '')
+                """) or 0
+
+                missing_ids = []
+                if missing > 0:
+                    rows = await conn.fetch("""
+                        SELECT card_id FROM collections.cards
+                        WHERE status = 'published'
+                          AND (image_url IS NULL OR image_url = '')
+                        LIMIT 20
+                    """)
+                    missing_ids = [row["card_id"] for row in rows]
+
+                await conn.close()
+
+                if missing > 0:
+                    return CheckResult(
+                        name="Card Images",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000001.NOIMAGES: {missing}/{total} published cards missing images",
+                        details={
+                            "total_published": total,
+                            "missing_images": missing,
+                            "affected_cards": missing_ids,
+                        },
+                        suggestion="Run: scripts/backfill_card_images.sh --all\n  Then: uv run python scripts/remediate_card_summaries.py  (to sync KV)",
+                    )
+
+                return CheckResult(
+                    name="Card Images",
+                    status=CheckStatus.PASS,
+                    message=f"All {total} published cards have images",
+                    details={"total_published": total},
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Card Images",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            if "does not exist" in str(e):
+                return CheckResult(
+                    name="Card Images",
+                    status=CheckStatus.SKIP,
+                    message="Cards table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Card Images",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_site_card_summaries(self) -> CheckResult:
+        """Check all published cards have frontier, open_weights, and cerebras summaries."""
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Card Summaries",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                rows = await conn.fetch("""
+                    WITH card_summary_counts AS (
+                        SELECT
+                            c.card_id,
+                            COUNT(*) FILTER (WHERE cs.summary_type = 'frontier') AS has_frontier,
+                            COUNT(*) FILTER (WHERE cs.summary_type = 'open_weights') AS has_open_weights,
+                            COUNT(*) FILTER (WHERE cs.summary_type = 'cerebras') AS has_cerebras
+                        FROM collections.cards c
+                        LEFT JOIN collections.card_summaries cs ON c.card_id = cs.card_id
+                        WHERE c.status = 'published'
+                        GROUP BY c.card_id
+                    )
+                    SELECT
+                        card_id,
+                        has_frontier,
+                        has_open_weights,
+                        has_cerebras
+                    FROM card_summary_counts
+                    WHERE has_frontier = 0 OR has_open_weights = 0 OR has_cerebras = 0
+                    LIMIT 20
+                """)
+
+                total = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE status = 'published'
+                """) or 0
+
+                await conn.close()
+
+                if rows:
+                    missing_frontier = sum(1 for r in rows if r["has_frontier"] == 0)
+                    missing_ow = sum(1 for r in rows if r["has_open_weights"] == 0)
+                    missing_cerebras = sum(1 for r in rows if r["has_cerebras"] == 0)
+                    affected_cards = [r["card_id"] for r in rows]
+
+                    parts = []
+                    if missing_frontier:
+                        parts.append(f"{missing_frontier} missing frontier")
+                    if missing_ow:
+                        parts.append(f"{missing_ow} missing open_weights")
+                    if missing_cerebras:
+                        parts.append(f"{missing_cerebras} missing cerebras")
+
+                    return CheckResult(
+                        name="Card Summaries",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000002.NOSUMMARIES: {len(rows)} cards with incomplete summaries: {', '.join(parts)}",
+                        details={
+                            "total_published": total,
+                            "incomplete_cards": len(rows),
+                            "missing_frontier": missing_frontier,
+                            "missing_open_weights": missing_ow,
+                            "missing_cerebras": missing_cerebras,
+                            "affected_cards": affected_cards,
+                        },
+                        suggestion="Run: uv run python scripts/remediate_card_summaries.py",
+                    )
+
+                return CheckResult(
+                    name="Card Summaries",
+                    status=CheckStatus.PASS,
+                    message=f"All {total} published cards have all 3 summary types",
+                    details={"total_published": total},
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Card Summaries",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            if "does not exist" in str(e):
+                return CheckResult(
+                    name="Card Summaries",
+                    status=CheckStatus.SKIP,
+                    message="Card summaries table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Card Summaries",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_site_card_briefs(self) -> CheckResult:
+        """Check all published cards have unique, substantive brief text."""
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Card Briefs",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                total = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE status = 'published'
+                """) or 0
+
+                short_briefs = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE status = 'published'
+                      AND (summary IS NULL OR LENGTH(TRIM(summary)) < 20)
+                """) or 0
+
+                duplicate_rows = await conn.fetch("""
+                    SELECT summary, COUNT(*) as cnt
+                    FROM collections.cards
+                    WHERE status = 'published'
+                      AND summary IS NOT NULL
+                      AND LENGTH(TRIM(summary)) >= 20
+                    GROUP BY summary
+                    HAVING COUNT(*) > 1
+                    LIMIT 10
+                """)
+                duplicate_count = sum(r["cnt"] for r in duplicate_rows)
+
+                # Formulaic suffix detection — LLM-generated relevance
+                # justifications that make briefs feel robotic
+                formulaic_count = await conn.fetchval("""
+                    SELECT COUNT(*) FROM collections.cards
+                    WHERE status = 'published'
+                      AND summary IS NOT NULL
+                      AND summary ~* '(Relevant to AI|Key relevance:|Key for AI)'
+                """) or 0
+
+                await conn.close()
+
+                issues = []
+                details: dict[str, Any] = {"total_published": total}
+
+                if short_briefs > 0:
+                    issues.append(f"{short_briefs} short/empty briefs")
+                    details["short_briefs"] = short_briefs
+
+                if duplicate_count > 0:
+                    issues.append(f"{duplicate_count} cards with duplicate briefs")
+                    details["duplicate_briefs"] = duplicate_count
+                    details["duplicate_examples"] = [
+                        r["summary"][:60] for r in duplicate_rows[:3]
+                    ]
+
+                if formulaic_count > 0:
+                    pct = 100 * formulaic_count / total if total else 0
+                    issues.append(f"{formulaic_count}/{total} ({pct:.0f}%) with formulaic suffixes")
+                    details["formulaic_briefs"] = formulaic_count
+                    details["formulaic_pct"] = round(pct, 1)
+
+                if issues:
+                    return CheckResult(
+                        name="Card Briefs",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000003.BRIEFS: {', '.join(issues)}",
+                        details=details,
+                        suggestion="Fix briefs in DB then re-sync KV:\n  uv run python scripts/remediate_card_summaries.py",
+                    )
+
+                return CheckResult(
+                    name="Card Briefs",
+                    status=CheckStatus.PASS,
+                    message=f"All {total} published card briefs are unique and substantive",
+                    details=details,
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Card Briefs",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            if "does not exist" in str(e):
+                return CheckResult(
+                    name="Card Briefs",
+                    status=CheckStatus.SKIP,
+                    message="Cards table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Card Briefs",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_site_collection_completeness(self) -> CheckResult:
+        """Check active collections have published cards and all 3 summary types."""
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Collection Completeness",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                rows = await conn.fetch("""
+                    SELECT
+                        col.collection_id,
+                        col.slug,
+                        COUNT(DISTINCT c.card_id) FILTER (WHERE c.status = 'published') AS published_cards,
+                        COUNT(DISTINCT cs.card_id) FILTER (WHERE cs.summary_type = 'frontier') AS has_frontier,
+                        COUNT(DISTINCT cs.card_id) FILTER (WHERE cs.summary_type = 'open_weights') AS has_open_weights,
+                        COUNT(DISTINCT cs.card_id) FILTER (WHERE cs.summary_type = 'cerebras') AS has_cerebras
+                    FROM collections.collections col
+                    LEFT JOIN collections.cards c ON col.collection_id = c.collection_id
+                    LEFT JOIN collections.card_summaries cs ON c.card_id = cs.card_id
+                    WHERE col.featured = TRUE
+                    GROUP BY col.collection_id, col.slug
+                """)
+
+                await conn.close()
+
+                incomplete = []
+                for row in rows:
+                    issues = []
+                    if row["published_cards"] == 0:
+                        issues.append("no published cards")
+                    else:
+                        if row["has_frontier"] < row["published_cards"]:
+                            issues.append(f"frontier: {row['has_frontier']}/{row['published_cards']}")
+                        if row["has_open_weights"] < row["published_cards"]:
+                            issues.append(f"open_weights: {row['has_open_weights']}/{row['published_cards']}")
+                        if row["has_cerebras"] < row["published_cards"]:
+                            issues.append(f"cerebras: {row['has_cerebras']}/{row['published_cards']}")
+                    if issues:
+                        incomplete.append({
+                            "slug": row["slug"],
+                            "published_cards": row["published_cards"],
+                            "issues": issues,
+                        })
+
+                if incomplete:
+                    return CheckResult(
+                        name="Collection Completeness",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000004.INCOMPLETE: {len(incomplete)}/{len(rows)} featured collections incomplete",
+                        details={
+                            "total_collections": len(rows),
+                            "incomplete": incomplete[:20],
+                        },
+                        suggestion="Run: uv run python scripts/remediate_card_summaries.py",
+                    )
+
+                return CheckResult(
+                    name="Collection Completeness",
+                    status=CheckStatus.PASS,
+                    message=f"All {len(rows)} featured collections complete",
+                    details={"total_collections": len(rows)},
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Collection Completeness",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            if "does not exist" in str(e):
+                return CheckResult(
+                    name="Collection Completeness",
+                    status=CheckStatus.SKIP,
+                    message="Collections tables not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Collection Completeness",
+                status=CheckStatus.WARN,
+                message=f"Check failed: {str(e)[:80]}",
+            )
+
+    async def _check_site_live_verification(self) -> CheckResult:
+        """Verify live site renders content correctly.
+
+        Three probes:
+        1. Landing page — GET https://gaius.zndx.org/
+        2. Sample card page — most recently published card
+        3. Image URL — HEAD request to card's image_url
+        """
+        try:
+            import httpx
+        except ImportError:
+            return CheckResult(
+                name="Live Site",
+                status=CheckStatus.SKIP,
+                message="httpx not available",
+            )
+
+        details: dict[str, Any] = {}
+
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            # Get sample card from DB for probes 2 and 3
+            db_url = get_database_url()
+            sample_card = None
+            try:
+                conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+                try:
+                    row = await conn.fetchrow("""
+                        SELECT card_id, title, image_url
+                        FROM collections.cards
+                        WHERE status = 'published'
+                        ORDER BY published_at DESC NULLS LAST
+                        LIMIT 1
+                    """)
+                    if row:
+                        sample_card = {
+                            "card_id": row["card_id"],
+                            "title": row["title"],
+                            "image_url": row["image_url"],
+                        }
+                    await conn.close()
+                except Exception:
+                    await conn.close()
+            except Exception:
+                pass  # DB unavailable — still try landing page probe
+
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                # Probe 1: Landing page
+                try:
+                    resp = await client.get("https://gaius.zndx.org/")
+                    details["landing_status"] = resp.status_code
+                    if resp.status_code == 200:
+                        body = resp.text
+                        has_title = "<title>" in body.lower() or "<title " in body.lower()
+                        has_card_links = "/cards/card_" in body
+                        details["landing_has_title"] = has_title
+                        details["landing_has_card_links"] = has_card_links
+                        if not has_card_links:
+                            details["landing_issue"] = "No card links found on landing page"
+                    else:
+                        details["landing_issue"] = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    details["landing_status"] = "error"
+                    details["landing_issue"] = str(e)[:80]
+
+                # Probe 2: Sample card page
+                if sample_card:
+                    details["card_id_tested"] = sample_card["card_id"]
+                    try:
+                        card_url = f"https://gaius.zndx.org/cards/{sample_card['card_id']}"
+                        resp = await client.get(card_url)
+                        details["card_page_status"] = resp.status_code
+                        if resp.status_code == 200:
+                            body = resp.text
+                            has_image = "viz.gaius.zndx.org" in body
+                            details["card_has_image_ref"] = has_image
+                            # KV coherence: DB has image_url but rendered page doesn't show it
+                            if sample_card.get("image_url") and not has_image:
+                                details["kv_stale_issue"] = (
+                                    f"KV stale: DB has image_url but card page missing image "
+                                    f"(card {sample_card['card_id']})"
+                                )
+                        else:
+                            details["card_page_issue"] = f"HTTP {resp.status_code}"
+                    except Exception as e:
+                        details["card_page_status"] = "error"
+                        details["card_page_issue"] = str(e)[:80]
+
+                    # Probe 3: Image URL — verify R2 asset exists
+                    if sample_card.get("image_url"):
+                        try:
+                            resp = await client.head(sample_card["image_url"])
+                            details["image_status"] = resp.status_code
+                            content_type = resp.headers.get("content-type", "")
+                            details["image_content_type"] = content_type
+                            if resp.status_code != 200:
+                                details["image_issue"] = f"HTTP {resp.status_code}"
+                            elif "image/" not in content_type:
+                                details["image_issue"] = f"Unexpected content-type: {content_type}"
+                        except Exception as e:
+                            details["image_status"] = "error"
+                            details["image_issue"] = str(e)[:80]
+
+            # Determine overall status
+            issues = [v for k, v in details.items() if k.endswith("_issue")]
+
+            if details.get("landing_status") == "error" and not sample_card:
+                return CheckResult(
+                    name="Live Site",
+                    status=CheckStatus.SKIP,
+                    message="Site unreachable (external network may be unavailable)",
+                    details=details,
+                )
+
+            if issues:
+                return CheckResult(
+                    name="Live Site",
+                    status=CheckStatus.FAIL,
+                    message=f"#SITE.00000005.LIVEFAIL: {'; '.join(str(i) for i in issues[:3])}",
+                    details=details,
+                    suggestion="Re-sync KV: uv run python scripts/remediate_card_summaries.py",
+                )
+
+            return CheckResult(
+                name="Live Site",
+                status=CheckStatus.PASS,
+                message="Live site verified (landing + card page + image)",
+                details=details,
+            )
+
+        except Exception as e:
+            return CheckResult(
+                name="Live Site",
+                status=CheckStatus.SKIP,
+                message=f"Verification skipped: {str(e)[:80]}",
+                details=details,
+            )
+
+    async def _check_site_content_freshness(self) -> CheckResult:
+        """Check that the site is receiving new published cards at expected cadence.
+
+        The site decays in relevance if no new content is being produced.
+        This check detects a stalled content pipeline by looking at card
+        creation timestamps — the most direct signal of pipeline health.
+        """
+        try:
+            import asyncpg
+
+            from ..core.config import get_database_url
+
+            db_url = get_database_url()
+            conn = await asyncio.wait_for(asyncpg.connect(db_url), timeout=5)
+
+            try:
+                schema_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata
+                        WHERE schema_name = 'collections'
+                    )
+                """)
+
+                if not schema_exists:
+                    await conn.close()
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.SKIP,
+                        message="Collections schema not configured (run migration)",
+                        suggestion="Run: dbmate up",
+                    )
+
+                row = await conn.fetchrow("""
+                    SELECT
+                        MAX(created_at) AS last_created,
+                        COUNT(*) FILTER (
+                            WHERE created_at > NOW() - interval '48 hours'
+                        ) AS cards_48h,
+                        COUNT(*) FILTER (
+                            WHERE created_at > NOW() - interval '7 days'
+                        ) AS cards_7d,
+                        COUNT(*) AS total_published
+                    FROM collections.cards
+                    WHERE status = 'published'
+                """)
+
+                await conn.close()
+
+                if not row or row["total_published"] == 0:
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.FAIL,
+                        message="#SITE.00000006.STALE: No published cards exist",
+                        suggestion="Run article curation: uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                last_created = row["last_created"]
+                cards_48h = row["cards_48h"] or 0
+                cards_7d = row["cards_7d"] or 0
+                total = row["total_published"]
+
+                # Calculate age of most recent card
+                from datetime import datetime, timezone
+
+                now = datetime.now(timezone.utc)
+                age = now - last_created.replace(tzinfo=timezone.utc) if last_created.tzinfo is None else now - last_created
+                age_hours = age.total_seconds() / 3600
+                age_days = age.total_seconds() / 86400
+
+                if age_days >= 1:
+                    age_str = f"{age_days:.1f}d"
+                else:
+                    age_str = f"{age_hours:.1f}h"
+
+                details = {
+                    "total_published": total,
+                    "last_card_created": last_created.isoformat(),
+                    "last_card_age": age_str,
+                    "cards_last_48h": cards_48h,
+                    "cards_last_7d": cards_7d,
+                }
+
+                # No cards in 48h = pipeline stalled
+                if cards_48h == 0:
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000006.STALE: No new cards in {age_str} (last: {last_created.strftime('%Y-%m-%d')})",
+                        details=details,
+                        suggestion="Content pipeline stalled. Run article curation:\n  uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                # Less than 1 card/day average over the week
+                if cards_7d < 7:
+                    return CheckResult(
+                        name="Content Freshness",
+                        status=CheckStatus.FAIL,
+                        message=f"#SITE.00000006.STALE: Only {cards_7d} cards in 7d ({cards_7d/7:.1f}/day, expected >= 1/day)",
+                        details=details,
+                        suggestion="Content cadence below minimum. Run article curation:\n  uv run gaius-cli --cmd \"/curate\"",
+                    )
+
+                return CheckResult(
+                    name="Content Freshness",
+                    status=CheckStatus.PASS,
+                    message=f"Content fresh: {cards_48h} cards in 48h, {cards_7d} in 7d (last: {age_str} ago)",
+                    details=details,
+                )
+
+            except Exception as e:
+                await conn.close()
+                raise e
+
+        except asyncio.TimeoutError:
+            return CheckResult(
+                name="Content Freshness",
+                status=CheckStatus.FAIL,
+                message="Database connection timeout",
+                suggestion="Check PostgreSQL is running",
+            )
+        except Exception as e:
+            if "does not exist" in str(e):
+                return CheckResult(
+                    name="Content Freshness",
+                    status=CheckStatus.SKIP,
+                    message="Cards table not yet created",
+                    suggestion="Run: dbmate up",
+                )
+            return CheckResult(
+                name="Content Freshness",
+                status=CheckStatus.FAIL,
                 message=f"Check failed: {str(e)[:80]}",
             )

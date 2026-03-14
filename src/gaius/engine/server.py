@@ -105,11 +105,23 @@ class GaiusEngine:
         # Prospects/Stewardship service (FMP-based financial intelligence)
         self._prospects_service = None
 
+        # Collections service (public landing page content)
+        self._collection_service = None
+
         # Ambient computing workload service
         self._ambient_service = None
 
         # Vector search service (orchestrator-managed ColNomic)
         self._vector_search_service = None
+
+        # MetaAgent service (Metabase sync, audits, budget)
+        self._metaagent_service = None
+
+        # ThetaAgent service (situational awareness, consolidation)
+        self._theta_service = None
+
+        # Scheduled task processor (LISTEN/NOTIFY for pg_cron tasks)
+        self._scheduled_task_processor = None
 
         # Health service (basic metrics)
         self._health_service = None
@@ -236,8 +248,8 @@ class GaiusEngine:
         #     This runs before the ~240s vLLM preload so XB status is available immediately
         await self._init_x_bookmarks_service()
 
-        # 2.6 Start Prospects/Stewardship service EARLY (no GPU deps, lightweight status)
-        await self._init_prospects_service()
+        # 2.6 Prospects service moved to after db_pool is created (in _autonomous_start_cognition)
+        # 2.7 Collections service moved to after db_pool is created (in _autonomous_start_cognition)
 
         # 3. Initialize telemetry (disabled via OTEL_SDK_DISABLED=true env var)
         await self._init_telemetry()
@@ -282,6 +294,9 @@ class GaiusEngine:
 
         # Always start dataset service (lightweight, fail-fast by design)
         await self._init_dataset_service()
+
+        # NOTE: Collections service is initialized in _autonomous_start_cognition()
+        # after the db_pool is created (requires db_pool for database operations)
 
         # Initialize ambient computing workload service
         await self._init_ambient_service()
@@ -534,10 +549,9 @@ class GaiusEngine:
         try:
             import asyncpg
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from gaius.core.config import get_database_url
+
+            database_url = get_database_url()
             self._db_pool = await asyncpg.create_pool(
                 database_url,
                 min_size=2,
@@ -605,6 +619,12 @@ class GaiusEngine:
                 self._grpc_server.update_service("topology_service", self._topology_service)
         except Exception as e:
             logger.warning(f"Failed to initialize topology service: {e}")
+
+        # Initialize Collections service (requires db_pool which is now available)
+        await self._init_collection_service()
+
+        # Initialize Prospects service (requires db_pool which is now available)
+        await self._init_prospects_service()
 
     async def _autonomous_start_flow_scheduler(self) -> None:
         """Start the flow scheduler daemon automatically.
@@ -697,10 +717,9 @@ class GaiusEngine:
             logger.info("Initializing X Bookmarks service...")
 
             # Get database pool from config
-            db_url = os.environ.get(
-                "DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
 
             # Create database pool
             pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
@@ -766,21 +785,22 @@ class GaiusEngine:
         - KB artifact generation (Obsidian .base files)
 
         Runs via Metaflow flows triggered by gRPC RPCs.
+
+        MUST be called after self._db_pool is created (in _autonomous_start_cognition).
         """
+        if not getattr(self, "_db_pool", None):
+            logger.error(
+                "Cannot initialize Prospects service: shared db_pool not created.\n"
+                "  Guru Meditation: #PS.00000006.NOPOOL\n"
+                "  Prospects service requires _autonomous_start_cognition() to run first.\n"
+                "  Try: /health fix postgres"
+            )
+            return
+
         try:
             from .services.prospects_service import ProspectsService, ProspectsConfig
-            import asyncpg
 
             logger.info("Initializing Prospects/Stewardship service...")
-
-            # Get database pool from config
-            db_url = os.environ.get(
-                "DATABASE_URL",
-                "postgres://gaius:gaius@localhost:5438/zndx_gaius?sslmode=disable"
-            )
-
-            # Create database pool
-            pool = await asyncpg.create_pool(db_url, min_size=2, max_size=5)
 
             # Create service config - profile/domain resolved from database at runtime
             kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
@@ -791,9 +811,9 @@ class GaiusEngine:
                 default_domain="",
             )
 
-            # Create and start service
+            # Create and start service — reuse shared db_pool
             self._prospects_service = ProspectsService(
-                pool=pool,
+                pool=self._db_pool,
                 config=config,
             )
 
@@ -810,7 +830,50 @@ class GaiusEngine:
         except ImportError as e:
             logger.warning(f"Prospects/Stewardship service not available: {e}")
         except Exception as e:
-            logger.error(f"Failed to initialize Prospects/Stewardship service: {e}")
+            logger.error(
+                f"Failed to initialize Prospects/Stewardship service: {e}\n"
+                "  Guru Meditation: #PS.00000007.INITFAIL\n"
+                "  Try: /health fix engine"
+            )
+
+    async def _init_collection_service(self) -> None:
+        """Initialize the Collections service for public landing page content.
+
+        The CollectionService manages curated content collections:
+        - Create/manage collections with sources and cards
+        - Publish cards to Cloudflare KV for landing page
+        - Cards link to external PUBLIC sources (arXiv, HuggingFace, etc.)
+        """
+        try:
+            from .services.collection_service import CollectionService, CollectionConfig
+
+            # Get database pool
+            if not self._db_pool:
+                logger.warning("Collections service disabled - no database pool")
+                return
+
+            # Create KB root directory if needed
+            kb_root = os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            config = CollectionConfig(kb_root=kb_root)
+
+            # Create service (no start() needed - all operations use pool)
+            self._collection_service = CollectionService(
+                pool=self._db_pool,
+                config=config,
+            )
+            logger.info("Collections service initialized")
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "collection_service", self._collection_service
+                )
+                logger.info("Collections service registered with gRPC")
+
+        except ImportError as e:
+            logger.warning(f"Collections service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Collections service: {e}")
 
     async def _init_ambient_service(self) -> None:
         """Initialize the Ambient Computing Workload service.
@@ -975,6 +1038,15 @@ class GaiusEngine:
         # 3. Initialize Reconciliation (REQUIRED, depends on health_observer)
         await self._create_reconciliation_daemon()
 
+        # 4. Initialize MetaAgent (OPTIONAL, depends on health_observer for db_pool)
+        await self._create_metaagent_daemon()
+
+        # 5. Initialize ThetaAgent (NORMAL, no background loop - passive service)
+        await self._create_theta_service()
+
+        # 6. Initialize ScheduledTaskProcessor (OPTIONAL, landing page tasks)
+        await self._create_scheduled_task_processor()
+
         # Register daemons with dependency ordering
         if self._health_observer_service:
             self._daemon_registry.register(self._health_observer_service, after=[])
@@ -987,6 +1059,16 @@ class GaiusEngine:
         if self._reconciliation_service:
             self._daemon_registry.register(
                 self._reconciliation_service, after=["health_observer"]
+            )
+
+        if self._metaagent_service:
+            self._daemon_registry.register(
+                self._metaagent_service, after=["health_observer"]
+            )
+
+        if self._scheduled_task_processor:
+            self._daemon_registry.register(
+                self._scheduled_task_processor, after=[]
             )
 
         # Wire cross-references between daemons BEFORE starting
@@ -1120,6 +1202,107 @@ class GaiusEngine:
             logger.warning(f"Reconciliation service not available: {e}")
         except Exception as e:
             logger.error(f"Failed to create Reconciliation daemon: {e}")
+
+    async def _create_metaagent_daemon(self) -> None:
+        """Create MetaAgent daemon instance (doesn't start it).
+
+        MetaAgent provides:
+        - Metabase model sync (hourly via pg_cron)
+        - Weekly LLM audits with pooled budget
+        - Quality assessments for synthetic data
+        - Audit recommendations tracking
+        """
+        try:
+            from .services.metaagent_service import MetaAgentService
+
+            logger.info("Creating MetaAgent daemon...")
+
+            # Create service with db_pool for direct DB access
+            self._metaagent_service = MetaAgentService(db_pool=self._db_pool)
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "metaagent_service", self._metaagent_service
+                )
+
+            logger.info("MetaAgent daemon created (Metabase sync, audits, budget)")
+
+        except ImportError as e:
+            logger.warning(f"MetaAgent service not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create MetaAgent daemon: {e}")
+
+    async def _create_theta_service(self) -> None:
+        """Create ThetaService for situational awareness and consolidation.
+
+        ThetaService wraps ThetaAgent with Engine-First gRPC integration.
+        It's a passive service (NORMAL criticality) that responds to requests,
+        not a background daemon that polls for work.
+
+        Provides:
+        - /sitrep: Situational awareness reports
+        - /consolidate: NVAR-mediated temporal consolidation
+        - Consolidation statistics
+        """
+        try:
+            import os
+            from .services.theta_service import ThetaService, ThetaConfig
+
+            logger.info("Creating ThetaService...")
+
+            # Get KB root from environment or use default
+            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+
+            # Create service with config
+            self._theta_service = ThetaService(
+                config=ThetaConfig(kb_root=kb_root),
+                db_pool=self._db_pool,
+            )
+
+            # Start the service (marks it as running)
+            await self._theta_service.start()
+
+            # Update gRPC service registry
+            if self._grpc_server:
+                self._grpc_server.update_service(
+                    "theta_service", self._theta_service
+                )
+
+            logger.info("ThetaService created (sitrep, consolidation)")
+
+        except ImportError as e:
+            logger.warning(f"ThetaService not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create ThetaService: {e}")
+
+    async def _create_scheduled_task_processor(self) -> None:
+        """Create ScheduledTaskProcessor for pg_cron task execution.
+
+        Listens on 'scheduled_task_ready' channel for tasks inserted by pg_cron.
+        Handles:
+        - publish_cards: Publish pending cards to Cloudflare KV
+        - article_curate: Trigger ArticleCurationFlow
+
+        OPTIONAL criticality - landing page tasks aren't critical to engine.
+        No automatic catch-up - stale tasks require manual intervention.
+        """
+        try:
+            from .services.scheduled_task_processor import ScheduledTaskProcessor
+
+            logger.info("Creating ScheduledTaskProcessor...")
+
+            self._scheduled_task_processor = ScheduledTaskProcessor()
+
+            # Note: Don't start here - daemon registry will start it
+            # This allows proper dependency ordering
+
+            logger.info("ScheduledTaskProcessor created (publish_cards, article_curate, prospects_check, prospects_update)")
+
+        except ImportError as e:
+            logger.warning(f"ScheduledTaskProcessor not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create ScheduledTaskProcessor: {e}")
 
     async def _create_agenda_tracker(self) -> None:
         """Create and wire AgendaTracker for workload-centric incident tracking.
@@ -1463,6 +1646,20 @@ class GaiusEngine:
             except Exception as e:
                 logger.debug(f"Failed to collect GPU metrics: {e}")
 
+        # Collect optillm health from BackendRouter
+        if self._backend_router:
+            try:
+                optillm_status = self._backend_router.optillm.get_status()
+                endpoints.append({
+                    "name": "optillm",
+                    "model": "optillm-proxy",
+                    "healthy": optillm_status.get("healthy", False),
+                    "requests_served": 0,
+                    "avg_latency_ms": 0.0,
+                })
+            except Exception as e:
+                logger.debug(f"Failed to collect optillm metrics: {e}")
+
         # Collect endpoint metrics from OrchestratorService
         if self._orchestrator_service:
             try:
@@ -1759,6 +1956,7 @@ class GaiusEngine:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     technique=technique,
+                    task_type="engine_inference",
                 )
 
                 return Response.success(

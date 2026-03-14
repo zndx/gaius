@@ -14,6 +14,7 @@ functionality beyond the standard KServe OIP:
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
@@ -154,10 +155,29 @@ from ...generated import (
     DatasetLineageResponse,
     LineageNode,
     LineageEdge,
-    # MetaAgent
+    # MetaAgent (Analytics Query)
     MetaAgentQueryRequest,
     MetaAgentQueryResponse,
     MetaAgentEvent,
+    # MetaAgent Service (Sync, Audit, Budget)
+    MetaAgentStatusRequest,
+    MetaAgentStatusResponse,
+    MetabaseSyncRequest,
+    MetabaseSyncResponse,
+    MetaAgentAuditRequest,
+    MetaAgentAuditResponse,
+    AuditFinding,
+    AuditRecommendation,
+    PooledBudgetStatus,
+    GetPooledBudgetRequest,
+    GetPooledBudgetResponse,
+    QualityAssessment,
+    GetQualitySummaryRequest,
+    GetQualitySummaryResponse,
+    ListRecommendationsRequest,
+    ListRecommendationsResponse,
+    UpdateRecommendationRequest,
+    UpdateRecommendationResponse,
     # ThetaAgent
     ThetaSitrepRequest,
     ThetaSitrepResponse,
@@ -269,6 +289,40 @@ from ...generated import (
     ProspectsCheckResponse,
     ProspectsUpdateRequest,
     ProspectsUpdateEvent,
+    # Collections (Public Content Landing Page)
+    CollectionInfo,
+    CardInfo,
+    CollectionStatusRequest,
+    CollectionStatusResponse,
+    CollectionListRequest,
+    CollectionListResponse,
+    CollectionCreateRequest,
+    CollectionCreateResponse,
+    CollectionSetFeaturedRequest,
+    CollectionSetFeaturedResponse,
+    CollectionAddCardRequest,
+    CollectionAddCardResponse,
+    CollectionListCardsRequest,
+    CollectionListCardsResponse,
+    CollectionPublishCardsRequest,
+    CollectionPublishCardsResponse,
+    CollectionPublishVizRequest,
+    CollectionPublishVizResponse,
+    CollectionSyncThemeRequest,
+    CollectionSyncThemeResponse,
+    # Article Curation (gRPC-First)
+    ArticleInfo,
+    CurationRunInfo,
+    ArticleStatusRequest,
+    ArticleStatusResponse,
+    ArticleNewRequest,
+    ArticleNewResponse,
+    ArticleCurationEvent,
+    ArticleCurateRequest,
+    # Rendering (Blender Card Visualization)
+    RenderCardsRequest,
+    RenderCardEvent,
+    RENDER_PHASE_FAILED,
     # Multi-Phase Search Flow
     SearchFlowRequest,
     WebSearchResult,
@@ -288,6 +342,7 @@ from ...metrics import record_exception_caught
 
 if TYPE_CHECKING:
     from ..server import ServiceRegistry
+    from ...services.research_workload_service import ResearchWorkloadService
 
 logger = logging.getLogger(__name__)
 
@@ -743,9 +798,17 @@ class GaiusServicer(GaiusServiceServicer):
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
+                technique=request.technique or None,
+                task_type="scheduler_complete",
             )
 
             latency_ms = (time.time() - start_time) * 1000
+
+            # Fail fast if backend returned an error
+            if result.error:
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(result.error)
+                return CompleteResponse(model=result.model, latency_ms=latency_ms)
 
             return CompleteResponse(
                 text=result.content,
@@ -855,6 +918,7 @@ class GaiusServicer(GaiusServiceServicer):
                 ProtoWorkloadType.WORKLOAD_INFERENCE: WorkloadType.INFERENCE,
                 ProtoWorkloadType.WORKLOAD_EMBEDDING: WorkloadType.EMBEDDING,
                 ProtoWorkloadType.WORKLOAD_EVOLUTION: WorkloadType.EVOLUTION,
+                ProtoWorkloadType.WORKLOAD_RENDERING: WorkloadType.RENDERING,
             }
             workload_type = workload_type_map.get(
                 request.workload_type, WorkloadType.INFERENCE
@@ -1091,7 +1155,7 @@ class GaiusServicer(GaiusServiceServicer):
                 context.set_details(
                     "VectorSearchService not available.\n"
                     "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
-                    "  Fix: devenv tasks run restart:clean"
+                    "  Fix: just restart-clean"
                 )
                 return SemanticSearchResponse()
 
@@ -1188,7 +1252,7 @@ class GaiusServicer(GaiusServiceServicer):
                 message="VectorSearchService not available",
                 progress_pct=0,
                 timestamp_ms=int(time.time() * 1000),
-                error="VectorSearchService not available.\n  Guru Meditation: #VS.00000001.SVCNOTINIT\n  Fix: devenv tasks run restart:clean",
+                error="VectorSearchService not available.\n  Guru Meditation: #VS.00000001.SVCNOTINIT\n  Fix: just restart-clean",
                 guru_code="#VS.00000001.SVCNOTINIT",
             )
             return
@@ -1404,6 +1468,12 @@ class GaiusServicer(GaiusServiceServicer):
                         system_prompt=role_def.system_prompt or "",
                         temperature=role_def.temperature,
                         max_tokens=role_def.max_tokens,
+                        source_context={
+                            "agent_alias": f"swarm_{role_name}",
+                            "task_type": "swarm_analysis",
+                            "role_name": role_name,
+                            "domain": domain,
+                        },
                     )
 
                     agent_result = {
@@ -2662,6 +2732,7 @@ class GaiusServicer(GaiusServiceServicer):
                     agent_alias="instruct",  # Use instruct endpoint for explain
                     temperature=0.7,
                     max_tokens=max_tokens,
+                    task_type="grid_explain",
                 )
 
                 if result.error:
@@ -2679,7 +2750,7 @@ class GaiusServicer(GaiusServiceServicer):
                         f"LLM explanation failed: {llm_error}\n"
                         "Guru Meditation: #EXP.00000002.LLMFAIL\n"
                         "Check: /health endpoints\n"
-                        "Or: devenv tasks run restart:clean"
+                        "Or: just restart-clean"
                     ),
                     position=position,
                     x=cx, y=cy,
@@ -3331,8 +3402,9 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> ReindexResponse:
         """Reindex KB documents to Qdrant and compute grid projection.
 
-        This is the main heavy compute operation - runs embedding, projection,
-        and TDA computation on the Engine.
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
         """
         start_time = time.time()
         kb_root = request.kb_root or "build/dev"
@@ -3347,15 +3419,28 @@ class GaiusServicer(GaiusServiceServicer):
             from ....storage.grid_state import save_grid_state, get_current_generation
             import numpy as np
 
-            # Get managers (lazily initialized, kb_root passed at first call)
+            # 1. Index KB via VectorSearchService (GPU-coordinated)
+            vector_search = self._services.vector_search_service
+            if vector_search is None:
+                return ReindexResponse(
+                    success=False,
+                    message=(
+                        "VectorSearchService not available.\n"
+                        "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                        "  Fix: just restart-clean"
+                    ),
+                    duration_ms=int((time.time() - start_time) * 1000),
+                )
+            await vector_search.index_kb(kb_root=kb_root)
+
+            # 2. Project to grid (CPU-only: reads from Qdrant + UMAP)
             grid_manager = get_grid_manager(kb_root=kb_root)
             tda_manager = get_tda_manager()
+            grid_manager.invalidate_cache()
 
-            # Run the reindex pipeline
-            # 1. Reindex KB to Qdrant and project to grid
             grid_data = await asyncio.get_event_loop().run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
 
             if not grid_data or grid_data.n_documents == 0:
@@ -3365,14 +3450,13 @@ class GaiusServicer(GaiusServiceServicer):
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
 
-            # 2. Compute TDA features from raw embeddings
+            # 3. Compute TDA features from raw embeddings
             tda_features = CoreTDAFeatures()
             geometry_features = None
             grid_coords = None
 
             raw_embeddings = grid_data.raw_embeddings
             if raw_embeddings is not None and len(raw_embeddings) > 0:
-                # Build grid_coords array from embedding_to_grid mapping
                 grid_coords = np.array([
                     grid_data.embedding_to_grid.get(i, (9, 9))
                     for i in range(len(raw_embeddings))
@@ -3386,10 +3470,10 @@ class GaiusServicer(GaiusServiceServicer):
                     )
                 )
 
-                # 3. Compute geometry features (curvature, gradients, divergence)
+                # 4. Compute geometry features (curvature, gradients, divergence)
                 try:
                     k_neighbors = min(15, len(raw_embeddings) - 1)
-                    if k_neighbors >= 2:  # Need at least 2 neighbors
+                    if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
                         geometry_features = await gc.compute_features(
                             raw_embeddings, grid_coords
@@ -3399,7 +3483,7 @@ class GaiusServicer(GaiusServiceServicer):
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
 
-            # 4. Save to Postgres (updates current_state table)
+            # 5. Save to Postgres (updates current_state table)
             embedding_model = request.embedding_model or "nomic-ai/colnomic-embed-multimodal-7b"
             snapshot_id = await save_grid_state(
                 kb_root=kb_root,
@@ -3407,11 +3491,10 @@ class GaiusServicer(GaiusServiceServicer):
                 tda_features=tda_features,
                 embedding_model=embedding_model,
                 projection_method=grid_data.method,
-                embedding_type="multi",  # ColNomic multi-vector
+                embedding_type="multi",
                 geometry_features=geometry_features,
             )
 
-            # Get new generation
             generation = await get_current_generation(kb_root)
 
             duration_ms = int((time.time() - start_time) * 1000)
@@ -3437,62 +3520,133 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> AsyncIterator[ReindexProgress]:
         """Streaming reindex with progress updates.
 
-        Yields progress events during the reindex pipeline.
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
         """
         kb_root = request.kb_root or "build/dev"
         client_id = request.client_id or "grpc"
+        force = request.force
 
         logger.info(f"ReindexStream: kb_root={kb_root} from {client_id}")
 
         try:
-            # Started
             yield ReindexProgress(
                 phase=ReindexProgress.Phase.STARTED,
                 progress=0.0,
                 message="Starting reindex...",
             )
 
-            # Scanning
-            yield ReindexProgress(
-                phase=ReindexProgress.Phase.SCANNING,
-                progress=0.1,
-                message="Scanning documents...",
-            )
-
             from ....core.projection import get_grid_manager
             from ....core.tda import get_tda_manager, TDAFeatures as CoreTDAFeatures
             from ....core.geometry import GeometryComputer
             from ....storage.grid_state import save_grid_state, get_current_generation
+            from ...services.vector_search_service import SearchPhase
             import numpy as np
+
+            # EMBEDDING — delegate to VectorSearchService for GPU coordination
+            vector_search = self._services.vector_search_service
+            if vector_search is None:
+                yield ReindexProgress(
+                    phase=ReindexProgress.Phase.ERROR,
+                    progress=0.0,
+                    message=(
+                        "VectorSearchService not available.\n"
+                        "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                        "  Fix: just restart-clean"
+                    ),
+                )
+                return
+
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.EMBEDDING,
+                progress=0.1,
+                message="Indexing KB via GPU-coordinated VectorSearchService...",
+            )
+
+            async for event in vector_search.index_kb_stream(kb_root=kb_root):
+                if event.phase == SearchPhase.REQUESTING_GPU:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.12,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.EVICTING_ENDPOINTS:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.15,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.LOADING_MODEL:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.2,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.INDEXING:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.3,
+                        message=event.message,
+                    )
+                elif event.phase == SearchPhase.ERROR:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.ERROR,
+                        progress=0.0,
+                        message=event.message,
+                    )
+                    return
+                elif event.phase == SearchPhase.COMPLETE:
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.EMBEDDING,
+                        progress=0.4,
+                        message=event.message,
+                    )
+
+            # PROJECTING — CPU-only: retrieve embeddings from Qdrant + UMAP
+            yield ReindexProgress(
+                phase=ReindexProgress.Phase.PROJECTING,
+                progress=0.45,
+                message="Projecting embeddings to 19x19 grid (UMAP)...",
+            )
 
             grid_manager = get_grid_manager(kb_root=kb_root)
             tda_manager = get_tda_manager()
+            loop = asyncio.get_event_loop()
 
-            # Embedding phase
-            yield ReindexProgress(
-                phase=ReindexProgress.Phase.EMBEDDING,
-                progress=0.2,
-                message="Computing embeddings...",
-            )
-
-            # Run reindex (this does embedding + projection)
-            grid_data = await asyncio.get_event_loop().run_in_executor(
+            grid_manager.invalidate_cache()
+            projection_task = loop.run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
+            heartbeat_count = 0
+            while True:
+                done, _ = await asyncio.wait(
+                    {projection_task}, timeout=15.0
+                )
+                if done:
+                    break
+                heartbeat_count += 1
+                elapsed_min = heartbeat_count * 15 / 60
+                yield ReindexProgress(
+                    phase=ReindexProgress.Phase.PROJECTING,
+                    progress=0.45 + min(0.09, heartbeat_count * 0.005),
+                    message=f"UMAP projection running ({elapsed_min:.1f}m elapsed)...",
+                )
+
+            grid_data = projection_task.result()
 
             if not grid_data or grid_data.n_documents == 0:
                 yield ReindexProgress(
                     phase=ReindexProgress.Phase.ERROR,
                     progress=0.0,
-                    message="No documents found",
+                    message="No documents found after projection",
                 )
                 return
 
-            # Projecting
             yield ReindexProgress(
                 phase=ReindexProgress.Phase.PROJECTING,
-                progress=0.6,
+                progress=0.55,
                 message=f"Projected {grid_data.n_documents} documents to grid",
                 documents_processed=grid_data.n_documents,
                 documents_total=grid_data.n_documents,
@@ -3501,7 +3655,7 @@ class GaiusServicer(GaiusServiceServicer):
             # TDA
             yield ReindexProgress(
                 phase=ReindexProgress.Phase.TDA,
-                progress=0.8,
+                progress=0.6,
                 message="Computing TDA features...",
             )
 
@@ -3515,7 +3669,7 @@ class GaiusServicer(GaiusServiceServicer):
                     grid_data.embedding_to_grid.get(i, (9, 9))
                     for i in range(len(raw_embeddings))
                 ])
-                tda_features = await asyncio.get_event_loop().run_in_executor(
+                tda_task = loop.run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
                         raw_embeddings,
@@ -3523,15 +3677,45 @@ class GaiusServicer(GaiusServiceServicer):
                         force_refresh=True
                     )
                 )
+                tda_heartbeat = 0
+                while True:
+                    done, _ = await asyncio.wait(
+                        {tda_task}, timeout=15.0
+                    )
+                    if done:
+                        break
+                    tda_heartbeat += 1
+                    elapsed_min = tda_heartbeat * 15 / 60
+                    yield ReindexProgress(
+                        phase=ReindexProgress.Phase.TDA,
+                        progress=0.6 + min(0.15, tda_heartbeat * 0.01),
+                        message=f"TDA computation running ({elapsed_min:.1f}m elapsed)...",
+                    )
+                tda_features = tda_task.result()
 
                 # Compute geometry features
                 try:
                     k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
-                        geometry_features = await gc.compute_features(
-                            raw_embeddings, grid_coords
+                        geom_task = loop.run_in_executor(
+                            None, lambda: asyncio.run(gc.compute_features(raw_embeddings, grid_coords))
                         )
+                        geom_heartbeat = 0
+                        while True:
+                            done, _ = await asyncio.wait(
+                                {geom_task}, timeout=15.0
+                            )
+                            if done:
+                                break
+                            geom_heartbeat += 1
+                            elapsed_min = geom_heartbeat * 15 / 60
+                            yield ReindexProgress(
+                                phase=ReindexProgress.Phase.TDA,
+                                progress=0.75 + min(0.1, geom_heartbeat * 0.005),
+                                message=f"Geometry computation running ({elapsed_min:.1f}m elapsed)...",
+                            )
+                        geometry_features = geom_task.result()
                         logger.info(f"Computed geometry features for {len(raw_embeddings)} points")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
@@ -3583,14 +3767,15 @@ class GaiusServicer(GaiusServiceServicer):
     ) -> InitResponse:
         """Full initialization pipeline: index KB, project to grid, compute TDA.
 
-        This is the primary entry point for initializing a fresh Gaius instance
-        or forcing a complete rebuild of the KB index and grid projection.
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
 
         Pipeline:
-        1. Scan KB for documents
-        2. Compute ColNomic embeddings
-        3. Project to 19x19 grid via UMAP
-        4. Compute TDA features (H0/H1/H2)
+        1. Check Qdrant for existing data (skip embedding if present)
+        2. Compute ColNomic embeddings via VectorSearchService (GPU-coordinated)
+        3. Project to 19x19 grid via UMAP (CPU)
+        4. Compute TDA features (H0/H1/H2) (CPU)
         5. Save to Postgres (grid_snapshots + current_state)
         """
         start_time = time.time()
@@ -3629,15 +3814,43 @@ class GaiusServicer(GaiusServiceServicer):
                         duration_ms=int((time.time() - start_time) * 1000),
                     )
 
-            # Get managers
+            # 1. Check Qdrant for existing data
+            qdrant_has_data = False
+            try:
+                from qdrant_client import QdrantClient
+                qdrant_port = int(os.getenv("QDRANT_PORT", "6339"))
+                qc = QdrantClient(host="localhost", port=qdrant_port)
+                collection_name = "gaius_kb_colnomic"
+                info = qc.get_collection(collection_name)
+                qdrant_has_data = info.points_count > 0
+                logger.info(f"Qdrant has {info.points_count} points in {collection_name}")
+            except Exception as e:
+                logger.info(f"Qdrant check failed (will index): {e}")
+
+            # 2. Embed via VectorSearchService if needed
+            need_embedding = force or not qdrant_has_data
+            if need_embedding:
+                vector_search = self._services.vector_search_service
+                if vector_search is None:
+                    return InitResponse(
+                        success=False,
+                        message=(
+                            "VectorSearchService not available.\n"
+                            "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                            "  Fix: just restart-clean"
+                        ),
+                        duration_ms=int((time.time() - start_time) * 1000),
+                    )
+                await vector_search.index_kb(kb_root=kb_root)
+
+            # 3. Project to grid (CPU-only: reads from Qdrant + UMAP)
             grid_manager = get_grid_manager(method=projection_method, kb_root=kb_root)
             tda_manager = get_tda_manager()
+            grid_manager.invalidate_cache()
 
-            # Run the full pipeline
-            # 1. Reindex KB to Qdrant and project to grid
             grid_data = await asyncio.get_event_loop().run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
 
             if not grid_data or grid_data.n_documents == 0:
@@ -3647,7 +3860,7 @@ class GaiusServicer(GaiusServiceServicer):
                     duration_ms=int((time.time() - start_time) * 1000),
                 )
 
-            # 2. Compute TDA features from raw embeddings
+            # 4. Compute TDA features from raw embeddings
             tda_features = CoreTDAFeatures()
             geometry_features = None
             grid_coords = None
@@ -3667,7 +3880,7 @@ class GaiusServicer(GaiusServiceServicer):
                     )
                 )
 
-                # 3. Compute geometry features (curvature, gradients, divergence)
+                # 5. Compute geometry features (curvature, gradients, divergence)
                 try:
                     k_neighbors = min(15, len(raw_embeddings) - 1)
                     if k_neighbors >= 2:
@@ -3680,7 +3893,7 @@ class GaiusServicer(GaiusServiceServicer):
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
                     geometry_features = None
 
-            # 4. Save to Postgres
+            # 6. Save to Postgres
             snapshot_id = await save_grid_state(
                 kb_root=kb_root,
                 grid_data=grid_data,
@@ -3691,7 +3904,6 @@ class GaiusServicer(GaiusServiceServicer):
                 geometry_features=geometry_features,
             )
 
-            # Get new generation
             generation = await get_current_generation(kb_root)
 
             duration_ms = int((time.time() - start_time) * 1000)
@@ -3722,6 +3934,10 @@ class GaiusServicer(GaiusServiceServicer):
 
         Yields progress events for each phase of the init pipeline,
         allowing TUI/CLI to show real-time progress during long operations.
+
+        GPU-coordinated: Embedding is delegated to VectorSearchService
+        which handles GPU allocation/eviction via the orchestrator.
+        Projection, TDA, and geometry are CPU-only operations.
         """
         kb_root = request.kb_root or "build/dev"
         client_id = request.client_id or "grpc"
@@ -3749,6 +3965,7 @@ class GaiusServicer(GaiusServiceServicer):
                 get_current_generation,
                 check_state_exists,
             )
+            from ...services.vector_search_service import SearchPhase
             import numpy as np
 
             # Check if state already exists (skip if not forcing)
@@ -3765,50 +3982,151 @@ class GaiusServicer(GaiusServiceServicer):
                     )
                     return
 
-            # SCANNING
+            # SCANNING — check Qdrant for existing embeddings
             yield InitProgress(
                 phase=InitProgress.Phase.SCANNING,
-                progress=0.1,
-                message="Scanning KB for documents...",
+                progress=0.05,
+                message="Checking Qdrant for existing embeddings...",
+            )
+
+            qdrant_has_data = False
+            try:
+                from qdrant_client import QdrantClient
+                qdrant_port = int(os.getenv("QDRANT_PORT", "6339"))
+                qc = QdrantClient(host="localhost", port=qdrant_port)
+                collection_name = "gaius_kb_colnomic"
+                info = qc.get_collection(collection_name)
+                qdrant_has_data = info.points_count > 0
+                if qdrant_has_data:
+                    logger.info(f"Qdrant has {info.points_count} points in {collection_name}")
+            except Exception as e:
+                logger.info(f"Qdrant check failed (will index): {e}")
+
+            # EMBEDDING — delegate to VectorSearchService for GPU coordination
+            need_embedding = force or not qdrant_has_data
+            if need_embedding:
+                vector_search = self._services.vector_search_service
+                if vector_search is None:
+                    yield InitProgress(
+                        phase=InitProgress.Phase.ERROR,
+                        progress=0.0,
+                        message=(
+                            "VectorSearchService not available.\n"
+                            "  Guru Meditation: #VS.00000001.SVCNOTINIT\n"
+                            "  Fix: just restart-clean"
+                        ),
+                    )
+                    return
+
+                yield InitProgress(
+                    phase=InitProgress.Phase.EMBEDDING,
+                    progress=0.1,
+                    message="Indexing KB via GPU-coordinated VectorSearchService...",
+                )
+
+                async for event in vector_search.index_kb_stream(kb_root=kb_root):
+                    # Map VectorSearchService progress events to InitProgress
+                    if event.phase == SearchPhase.REQUESTING_GPU:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.12,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.EVICTING_ENDPOINTS:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.15,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.LOADING_MODEL:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.2,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.INDEXING:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.3,
+                            message=event.message,
+                        )
+                    elif event.phase == SearchPhase.ERROR:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.ERROR,
+                            progress=0.0,
+                            message=event.message,
+                        )
+                        return
+                    elif event.phase == SearchPhase.COMPLETE:
+                        yield InitProgress(
+                            phase=InitProgress.Phase.EMBEDDING,
+                            progress=0.4,
+                            message=event.message,
+                        )
+            else:
+                yield InitProgress(
+                    phase=InitProgress.Phase.EMBEDDING,
+                    progress=0.4,
+                    message=f"Qdrant already has embeddings, skipping indexing",
+                )
+
+            # PROJECTING — CPU-only: retrieve embeddings from Qdrant + UMAP
+            yield InitProgress(
+                phase=InitProgress.Phase.PROJECTING,
+                progress=0.45,
+                message="Projecting embeddings to 19x19 grid (UMAP)...",
             )
 
             grid_manager = get_grid_manager(method=projection_method, kb_root=kb_root)
             tda_manager = get_tda_manager()
 
-            # EMBEDDING
-            yield InitProgress(
-                phase=InitProgress.Phase.EMBEDDING,
-                progress=0.2,
-                message="Computing ColNomic embeddings...",
-            )
-
-            # Run reindex (embedding + projection in one call)
-            grid_data = await asyncio.get_event_loop().run_in_executor(
+            # project_kb() reads from Qdrant (CPU) + runs UMAP (CPU)
+            # It never touches the GPU embedder.
+            # UMAP on 98K+ points can take 30+ minutes — send heartbeats.
+            grid_manager.invalidate_cache()
+            loop = asyncio.get_event_loop()
+            projection_task = loop.run_in_executor(
                 None,
-                grid_manager.reindex_and_project
+                lambda: grid_manager.get_grid_data(force_refresh=True)
             )
+            # Send heartbeat every 15s while projection runs
+            heartbeat_count = 0
+            while True:
+                done, _ = await asyncio.wait(
+                    {projection_task}, timeout=15.0
+                )
+                if done:
+                    break
+                heartbeat_count += 1
+                elapsed_min = heartbeat_count * 15 / 60
+                yield InitProgress(
+                    phase=InitProgress.Phase.PROJECTING,
+                    progress=0.45 + min(0.09, heartbeat_count * 0.005),
+                    message=f"UMAP projection running ({elapsed_min:.1f}m elapsed)...",
+                )
+
+            grid_data = projection_task.result()
 
             if not grid_data or grid_data.n_documents == 0:
                 yield InitProgress(
                     phase=InitProgress.Phase.ERROR,
                     progress=0.0,
-                    message="No documents found in KB",
+                    message="No documents found after projection",
                 )
                 return
 
-            # PROJECTING
             yield InitProgress(
                 phase=InitProgress.Phase.PROJECTING,
-                progress=0.5,
+                progress=0.55,
                 message=f"Projected {grid_data.n_documents} documents to grid",
                 documents_processed=grid_data.n_documents,
                 documents_total=grid_data.n_documents,
             )
 
-            # TDA
+            # TDA — also CPU-heavy, send heartbeats
             yield InitProgress(
                 phase=InitProgress.Phase.TDA,
-                progress=0.7,
+                progress=0.6,
                 message="Computing TDA features (H0/H1/H2)...",
             )
 
@@ -3822,7 +4140,7 @@ class GaiusServicer(GaiusServiceServicer):
                     grid_data.embedding_to_grid.get(i, (9, 9))
                     for i in range(len(raw_embeddings))
                 ])
-                tda_features = await asyncio.get_event_loop().run_in_executor(
+                tda_task = loop.run_in_executor(
                     None,
                     lambda: tda_manager.compute_features(
                         raw_embeddings,
@@ -3830,11 +4148,26 @@ class GaiusServicer(GaiusServiceServicer):
                         force_refresh=True
                     )
                 )
+                tda_heartbeat = 0
+                while True:
+                    done, _ = await asyncio.wait(
+                        {tda_task}, timeout=15.0
+                    )
+                    if done:
+                        break
+                    tda_heartbeat += 1
+                    elapsed_min = tda_heartbeat * 15 / 60
+                    yield InitProgress(
+                        phase=InitProgress.Phase.TDA,
+                        progress=0.6 + min(0.15, tda_heartbeat * 0.01),
+                        message=f"TDA computation running ({elapsed_min:.1f}m elapsed)...",
+                    )
+                tda_features = tda_task.result()
 
             # GEOMETRY (compute curvature, gradients, divergence)
             yield InitProgress(
                 phase=InitProgress.Phase.GEOMETRY,
-                progress=0.85,
+                progress=0.8,
                 message="Computing geometry features (curvature, gradients)...",
             )
 
@@ -3845,9 +4178,24 @@ class GaiusServicer(GaiusServiceServicer):
                     logger.info(f"Geometry: k_neighbors={k_neighbors}, len(raw_embeddings)={len(raw_embeddings)}")
                     if k_neighbors >= 2:
                         gc = GeometryComputer(k_neighbors=k_neighbors)
-                        geometry_features = await gc.compute_features(
-                            raw_embeddings, grid_coords
+                        geom_task = loop.run_in_executor(
+                            None, lambda: asyncio.run(gc.compute_features(raw_embeddings, grid_coords))
                         )
+                        geom_heartbeat = 0
+                        while True:
+                            done, _ = await asyncio.wait(
+                                {geom_task}, timeout=15.0
+                            )
+                            if done:
+                                break
+                            geom_heartbeat += 1
+                            elapsed_min = geom_heartbeat * 15 / 60
+                            yield InitProgress(
+                                phase=InitProgress.Phase.GEOMETRY,
+                                progress=0.8 + min(0.08, geom_heartbeat * 0.005),
+                                message=f"Geometry computation running ({elapsed_min:.1f}m elapsed)...",
+                            )
+                        geometry_features = geom_task.result()
                         logger.info(f"Computed geometry features: curvatures={len(geometry_features.curvatures)}, gradients={len(geometry_features.gradients)}")
                 except Exception as geom_err:
                     logger.warning(f"Geometry computation failed (non-fatal): {geom_err}")
@@ -3924,6 +4272,7 @@ class GaiusServicer(GaiusServiceServicer):
                         system_prompt=system,
                         temperature=temperature,
                         max_tokens=4096,
+                        task_type="metaagent_query",
                     )
                     return result.content or ""
                 return ""
@@ -4022,6 +4371,7 @@ class GaiusServicer(GaiusServiceServicer):
                         system_prompt=system,
                         temperature=temperature,
                         max_tokens=4096,
+                        task_type="metaagent_query_stream",
                     )
                     return result.content or ""
                 return ""
@@ -4094,15 +4444,52 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaSitrepRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaSitrepResponse:
-        """Generate situational awareness report."""
+        """Generate situational awareness report.
+
+        Delegates to ThetaService if available, otherwise falls back to
+        direct ThetaAgent instantiation for backward compatibility.
+        """
         try:
+            horizon = request.horizon or "day"
+
+            # Prefer ThetaService if available (Engine-First architecture)
+            theta_service = self._services.theta_service
+            if theta_service:
+                result = await theta_service.sitrep(horizon=horizon)
+
+                if not result.get("success"):
+                    return ThetaSitrepResponse(
+                        success=False,
+                        error=result.get("error", "Unknown error"),
+                    )
+
+                report = result.get("report", {})
+                return ThetaSitrepResponse(
+                    success=True,
+                    horizon=horizon,
+                    generated_at_ms=int(
+                        report.get("generated_at_ms", 0)
+                        or (report.get("generated_at", 0) * 1000 if isinstance(report.get("generated_at"), float) else 0)
+                    ),
+                    healthy=report.get("system_status", {}).get("healthy", False),
+                    status_text=report.get("system_status", {}).get("status_text", ""),
+                    gpu_count=report.get("system_status", {}).get("gpu_count", 0),
+                    endpoint_count=report.get("system_status", {}).get("endpoint_count", 0),
+                    priority_count=len(report.get("priorities", [])),
+                    thought_count=len(report.get("thoughts", [])),
+                    objective_count=len(report.get("objectives", [])),
+                    project_count=report.get("project_count", 0),
+                    report_json=json.dumps(report).encode(),
+                    ascii_format=result.get("ascii_format", ""),
+                )
+
+            # Fallback: direct ThetaAgent instantiation
             import os
             from ....agents.theta import ThetaAgent
 
             kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
             agent = ThetaAgent(kb_root=kb_root)
 
-            horizon = request.horizon or "day"
             report = await agent.sitrep(horizon=horizon)
             report_dict = report.to_dict()
 
@@ -4133,8 +4520,37 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidateRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidateResponse:
-        """Run NVAR-mediated consolidation cycle."""
+        """Run NVAR-mediated consolidation cycle.
+
+        Delegates to ThetaService if available, otherwise falls back to
+        direct ThetaAgent instantiation for backward compatibility.
+        """
         try:
+            temporal_slice = request.temporal_slice or None
+            max_candidates = request.max_candidates or 10
+
+            # Prefer ThetaService if available (Engine-First architecture)
+            theta_service = self._services.theta_service
+            if theta_service:
+                result = await theta_service.run_consolidation(
+                    temporal_slice=temporal_slice,
+                    max_candidates=max_candidates,
+                )
+
+                signal = result.get("signal", {}) or {}
+                return ThetaConsolidateResponse(
+                    success=result.get("success", False),
+                    slice_id=result.get("slice_id", ""),
+                    urgency=signal.get("urgency", 0.0),
+                    drift=signal.get("drift", 0.0),
+                    candidates_evaluated=result.get("candidates_evaluated", 0),
+                    candidates_selected=result.get("candidates_selected", 0),
+                    documents_augmented=result.get("documents_augmented", 0),
+                    error=result.get("error", ""),
+                    guru_meditation=result.get("guru_code", ""),
+                )
+
+            # Fallback: direct ThetaAgent instantiation
             import os
             from ....agents.theta import ThetaAgent
             from ....agents.theta.subsumption import DeepOntoNotAvailableError
@@ -4146,8 +4562,8 @@ class GaiusServicer(GaiusServiceServicer):
             )
 
             result = await agent.run_consolidation(
-                temporal_slice=request.temporal_slice or None,
-                max_candidates=request.max_candidates or 10,
+                temporal_slice=temporal_slice,
+                max_candidates=max_candidates,
             )
 
             return ThetaConsolidateResponse(
@@ -4164,7 +4580,7 @@ class GaiusServicer(GaiusServiceServicer):
             error_msg = str(e)
             guru = ""
             if "DEEPONTO_UNAVAILABLE" in error_msg:
-                guru = "#THETA.00000001.DEEPONTO_UNAVAILABLE"
+                guru = "#THETA.00000001.DEEPONTO"
 
             logger.exception(f"ThetaConsolidate failed: {e}")
             return ThetaConsolidateResponse(
@@ -4178,14 +4594,24 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidationStatsRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidationStatsResponse:
-        """Get consolidation statistics."""
-        try:
-            import os
-            from ....agents.theta import ThetaAgent
+        """Get consolidation statistics.
 
-            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
-            agent = ThetaAgent(kb_root=kb_root)
-            stats = agent.get_consolidation_stats()
+        Delegates to ThetaService if available, otherwise falls back to
+        direct ThetaAgent instantiation for backward compatibility.
+        """
+        try:
+            # Prefer ThetaService if available (Engine-First architecture)
+            theta_service = self._services.theta_service
+            if theta_service:
+                stats = theta_service.get_consolidation_stats()
+            else:
+                # Fallback: direct ThetaAgent instantiation
+                import os
+                from ....agents.theta import ThetaAgent
+
+                kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
+                agent = ThetaAgent(kb_root=kb_root)
+                stats = agent.get_consolidation_stats()
 
             return ThetaConsolidationStatsResponse(
                 # NVAR dynamics
@@ -6675,4 +7101,750 @@ class GaiusServicer(GaiusServiceServicer):
                 success=False,
                 message="",
                 error=result.get("error", "Unknown error"),
+            )
+
+    # =========================================================================
+    # MetaAgent Service (Sync, Audit, Budget)
+    # =========================================================================
+
+    async def MetaAgentStatus(
+        self,
+        request: MetaAgentStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetaAgentStatusResponse:
+        """Get MetaAgent service status including sync and budget info."""
+        service = self._services.metaagent_service
+        if service is None:
+            return MetaAgentStatusResponse(
+                running=False,
+                metabase_connected=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            status = await service.get_status()
+            return status
+        except Exception as e:
+            logger.error(f"MetaAgentStatus error: {e}")
+            return MetaAgentStatusResponse(
+                running=False,
+                metabase_connected=False,
+                error=str(e),
+            )
+
+    async def MetabaseSyncTrigger(
+        self,
+        request: MetabaseSyncRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetabaseSyncResponse:
+        """Trigger Metabase model sync."""
+        service = self._services.metaagent_service
+        if service is None:
+            return MetabaseSyncResponse(
+                success=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.trigger_sync(full_refresh=request.full_refresh)
+            return result
+        except Exception as e:
+            logger.error(f"MetabaseSyncTrigger error: {e}")
+            return MetabaseSyncResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def MetaAgentAuditTrigger(
+        self,
+        request: MetaAgentAuditRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> MetaAgentAuditResponse:
+        """Trigger a MetaAgent audit with optional remote LLM."""
+        service = self._services.metaagent_service
+        if service is None:
+            return MetaAgentAuditResponse(
+                success=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.trigger_audit(
+                scope=request.scope or "full",
+                use_remote_llm=request.use_remote_llm,
+            )
+            return result
+        except Exception as e:
+            logger.error(f"MetaAgentAuditTrigger error: {e}")
+            return MetaAgentAuditResponse(
+                success=False,
+                error=str(e),
+            )
+
+    async def GetPooledBudget(
+        self,
+        request: GetPooledBudgetRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetPooledBudgetResponse:
+        """Get current pooled budget status."""
+        service = self._services.metaagent_service
+        if service is None:
+            return GetPooledBudgetResponse(
+                budget=PooledBudgetStatus(
+                    weekly_limit=0,
+                    weekly_used=0,
+                    weekly_remaining=0,
+                    budget_health="unknown",
+                ),
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            budget_status = await service.budget_manager.get_status()
+            return GetPooledBudgetResponse(budget=budget_status, error="")
+        except Exception as e:
+            logger.error(f"GetPooledBudget error: {e}")
+            return GetPooledBudgetResponse(
+                budget=PooledBudgetStatus(
+                    weekly_limit=0,
+                    weekly_used=0,
+                    weekly_remaining=0,
+                    budget_health="error",
+                ),
+                error=str(e),
+            )
+
+    async def GetQualitySummary(
+        self,
+        request: GetQualitySummaryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> GetQualitySummaryResponse:
+        """Get quality assessment summary by source type."""
+        service = self._services.metaagent_service
+        if service is None:
+            return GetQualitySummaryResponse(error="MetaAgent service not initialized")
+
+        try:
+            summary = await service.get_quality_summary(
+                source_type=request.source_type if request.source_type else None,
+            )
+            return summary
+        except Exception as e:
+            logger.error(f"GetQualitySummary error: {e}")
+            return GetQualitySummaryResponse(error=str(e))
+
+    async def ListRecommendations(
+        self,
+        request: ListRecommendationsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ListRecommendationsResponse:
+        """List audit recommendations with optional filters."""
+        service = self._services.metaagent_service
+        if service is None:
+            return ListRecommendationsResponse(
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.list_recommendations(
+                status_filter=request.status_filter if request.status_filter else None,
+                severity_filter=request.severity_filter if request.severity_filter else None,
+                limit=request.limit if request.limit > 0 else 20,
+            )
+            return result
+        except Exception as e:
+            logger.error(f"ListRecommendations error: {e}")
+            return ListRecommendationsResponse(error=str(e))
+
+    async def UpdateRecommendation(
+        self,
+        request: UpdateRecommendationRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> UpdateRecommendationResponse:
+        """Update a recommendation status (accept/reject/implement/verify)."""
+        service = self._services.metaagent_service
+        if service is None:
+            return UpdateRecommendationResponse(
+                success=False,
+                error="MetaAgent service not initialized",
+            )
+
+        try:
+            result = await service.update_recommendation(
+                recommendation_id=request.recommendation_id,
+                new_status=request.new_status,
+            )
+            return result
+        except Exception as e:
+            logger.error(f"UpdateRecommendation error: {e}")
+            return UpdateRecommendationResponse(
+                success=False,
+                error=str(e),
+            )
+
+    # =========================================================================
+    # Collections (Public Content Landing Page)
+    # =========================================================================
+
+    async def CollectionStatus(
+        self,
+        request: CollectionStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionStatusResponse:
+        """Get collection statistics."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionStatusResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            stats = await service.get_stats()
+            featured = await service.get_featured_collection()
+
+            featured_info = None
+            if featured:
+                featured_cards = await service.list_cards(featured.collection_id)
+                pending = sum(1 for c in featured_cards if c.status == "pending")
+                published = sum(1 for c in featured_cards if c.status == "published")
+                featured_info = CollectionInfo(
+                    collection_id=featured.collection_id,
+                    slug=featured.slug,
+                    name=featured.name,
+                    description=featured.description,
+                    status=featured.status,
+                    featured=featured.featured,
+                    total_cards=len(featured_cards),
+                    pending_cards=pending,
+                    published_cards=published,
+                    created_at=featured.created_at.isoformat() if featured.created_at else "",
+                )
+
+            return CollectionStatusResponse(
+                success=True,
+                total_collections=stats.get("total_collections", 0),
+                total_cards=stats.get("total_cards", 0),
+                pending_cards=stats.get("pending_cards", 0),
+                published_cards=stats.get("published_cards", 0),
+                featured_collection=featured_info,
+            )
+        except Exception as e:
+            logger.exception(f"CollectionStatus failed: {e}")
+            return CollectionStatusResponse(success=False, error=str(e))
+
+    async def CollectionList(
+        self,
+        request: CollectionListRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionListResponse:
+        """List all collections."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionListResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            status_filter = request.status if request.status else None
+            limit = request.limit if request.limit > 0 else 50
+            collections = await service.list_collections(status=status_filter, limit=limit)
+
+            collection_infos = []
+            for col in collections:
+                cards = await service.list_cards(col.collection_id)
+                pending = sum(1 for c in cards if c.status == "pending")
+                published = sum(1 for c in cards if c.status == "published")
+                collection_infos.append(CollectionInfo(
+                    collection_id=col.collection_id,
+                    slug=col.slug,
+                    name=col.name,
+                    description=col.description,
+                    status=col.status,
+                    featured=col.featured,
+                    total_cards=len(cards),
+                    pending_cards=pending,
+                    published_cards=published,
+                    created_at=col.created_at.isoformat() if col.created_at else "",
+                ))
+
+            return CollectionListResponse(success=True, collections=collection_infos)
+        except Exception as e:
+            logger.exception(f"CollectionList failed: {e}")
+            return CollectionListResponse(success=False, error=str(e))
+
+    async def CollectionCreate(
+        self,
+        request: CollectionCreateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionCreateResponse:
+        """Create a new collection."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionCreateResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.create_collection(
+                slug=request.slug,
+                name=request.name,
+                description=request.description,
+                featured=request.featured,
+            )
+
+            return CollectionCreateResponse(
+                success=True,
+                collection=CollectionInfo(
+                    collection_id=collection.collection_id,
+                    slug=collection.slug,
+                    name=collection.name,
+                    description=collection.description,
+                    status=collection.status,
+                    featured=collection.featured,
+                    total_cards=0,
+                    pending_cards=0,
+                    published_cards=0,
+                    created_at=collection.created_at.isoformat() if collection.created_at else "",
+                ),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionCreate failed: {e}")
+            return CollectionCreateResponse(success=False, error=str(e))
+
+    async def CollectionSetFeatured(
+        self,
+        request: CollectionSetFeaturedRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionSetFeaturedResponse:
+        """Set a collection as featured."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionSetFeaturedResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.get_collection_by_slug(request.slug)
+            if not collection:
+                return CollectionSetFeaturedResponse(
+                    success=False,
+                    error=f"Collection not found: {request.slug}",
+                )
+
+            await service.set_featured(collection.collection_id)
+            # Refresh to get updated state
+            collection = await service.get_collection(collection.collection_id)
+
+            return CollectionSetFeaturedResponse(
+                success=True,
+                collection=CollectionInfo(
+                    collection_id=collection.collection_id,
+                    slug=collection.slug,
+                    name=collection.name,
+                    description=collection.description,
+                    status=collection.status,
+                    featured=collection.featured,
+                    total_cards=0,
+                    pending_cards=0,
+                    published_cards=0,
+                    created_at=collection.created_at.isoformat() if collection.created_at else "",
+                ),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionSetFeatured failed: {e}")
+            return CollectionSetFeaturedResponse(success=False, error=str(e))
+
+    async def CollectionAddCard(
+        self,
+        request: CollectionAddCardRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionAddCardResponse:
+        """Add a card to a collection."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionAddCardResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.get_collection_by_slug(request.slug)
+            if not collection:
+                return CollectionAddCardResponse(
+                    success=False,
+                    error=f"Collection not found: {request.slug}",
+                )
+
+            card = await service.add_card(
+                collection_id=collection.collection_id,
+                title=request.title,
+                summary=request.summary,
+                source_url=request.source_url,
+                source_type=request.source_type,
+                image_url=request.image_url if request.image_url else None,
+            )
+
+            return CollectionAddCardResponse(
+                success=True,
+                card=CardInfo(
+                    card_id=card.card_id,
+                    title=card.title,
+                    summary=card.summary,
+                    source_url=card.source_url,
+                    source_type=card.source_type,
+                    image_url=card.image_url or "",
+                    status=card.status,
+                    published_at=card.published_at.isoformat() if card.published_at else "",
+                    sequence=card.sequence or 0,
+                ),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionAddCard failed: {e}")
+            return CollectionAddCardResponse(success=False, error=str(e))
+
+    async def CollectionListCards(
+        self,
+        request: CollectionListCardsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionListCardsResponse:
+        """List cards in a collection."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionListCardsResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            collection = await service.get_collection_by_slug(request.slug)
+            if not collection:
+                return CollectionListCardsResponse(
+                    success=False,
+                    error=f"Collection not found: {request.slug}",
+                )
+
+            status_filter = request.status if request.status else None
+            limit = request.limit if request.limit > 0 else 100
+            cards = await service.list_cards(
+                collection_id=collection.collection_id,
+                status=status_filter,
+                limit=limit,
+            )
+
+            card_infos = [
+                CardInfo(
+                    card_id=c.card_id,
+                    title=c.title,
+                    summary=c.summary,
+                    source_url=c.source_url,
+                    source_type=c.source_type,
+                    image_url=c.image_url or "",
+                    status=c.status,
+                    published_at=c.published_at.isoformat() if c.published_at else "",
+                    sequence=c.sequence or 0,
+                )
+                for c in cards
+            ]
+
+            return CollectionListCardsResponse(
+                success=True,
+                cards=card_infos,
+                total=len(cards),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionListCards failed: {e}")
+            return CollectionListCardsResponse(success=False, error=str(e))
+
+    async def CollectionPublishCards(
+        self,
+        request: CollectionPublishCardsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionPublishCardsResponse:
+        """Publish pending cards."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionPublishCardsResponse(
+                    success=False,
+                    error="Collection service not initialized",
+                )
+
+            count = request.count if request.count > 0 else 3
+            collection_id = None
+
+            if request.collection_slug:
+                collection = await service.get_collection_by_slug(request.collection_slug)
+                if not collection:
+                    return CollectionPublishCardsResponse(
+                        success=False,
+                        error=f"Collection not found: {request.collection_slug}",
+                    )
+                collection_id = collection.collection_id
+
+            # Use publish_and_sync to publish cards and sync to Cloudflare KV
+            result = await service.publish_and_sync(count=count, collection_id=collection_id)
+
+            card_infos = [
+                CardInfo(
+                    card_id=c["card_id"],
+                    title=c["title"],
+                    summary=c["summary"],
+                    source_url=c["source_url"],
+                    source_type=c["source_type"],
+                    image_url=c.get("image_url") or "",
+                    status=c.get("status") or "published",
+                    published_at=c.get("published_at") or "",
+                    sequence=c.get("sequence") or 0,
+                )
+                for c in result.get("published", [])
+            ]
+
+            kv_sync = result.get("kv_sync", {})
+            kv_status = "synced" if kv_sync.get("success") else "not synced"
+
+            # Use error field to communicate KV sync status (no kv_synced field in proto)
+            error_msg = ""
+            if not kv_sync.get("success"):
+                error_msg = f"Cards published but KV sync failed: {kv_status}"
+
+            return CollectionPublishCardsResponse(
+                success=True,
+                published_cards=card_infos,
+                published_count=result.get("published_count", len(card_infos)),
+                error=error_msg,
+            )
+        except Exception as e:
+            logger.exception(f"CollectionPublishCards failed: {e}")
+            return CollectionPublishCardsResponse(success=False, error=str(e))
+
+    async def CollectionPublishViz(
+        self,
+        request: CollectionPublishVizRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionPublishVizResponse:
+        """Publish 3D visualization data to Cloudflare KV."""
+        try:
+            # TODO: Implement when Cloudflare KV integration is added
+            return CollectionPublishVizResponse(
+                success=True,
+                points_count=0,
+                clusters_count=0,
+                published_at="",
+                error="Not yet implemented - Cloudflare KV integration pending",
+            )
+        except Exception as e:
+            logger.exception(f"CollectionPublishViz failed: {e}")
+            return CollectionPublishVizResponse(success=False, error=str(e))
+
+    async def CollectionSyncTheme(
+        self,
+        request: CollectionSyncThemeRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CollectionSyncThemeResponse:
+        """Sync theme configuration from HOCON to Cloudflare KV."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return CollectionSyncThemeResponse(
+                    success=False,
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
+                )
+
+            result = await service.sync_theme_config()
+
+            return CollectionSyncThemeResponse(
+                success=result.get("success", False),
+                theme_id=result.get("theme_id", ""),
+                title=result.get("title", ""),
+                namespace_id=result.get("namespace_id", ""),
+            )
+        except Exception as e:
+            logger.exception(f"CollectionSyncTheme failed: {e}")
+            return CollectionSyncThemeResponse(success=False, error=str(e))
+
+    # =========================================================================
+    # Article Curation (gRPC-First, Engine Owns Filesystem)
+    # =========================================================================
+
+    async def ArticleStatus(
+        self,
+        request: ArticleStatusRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ArticleStatusResponse:
+        """Get article curation situational awareness.
+
+        Returns status for /article sitrep display including:
+        - Is curation flow currently running?
+        - List of pending articles with zk counts
+        - Recent curation completions
+        - Pending/published card counts
+        """
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return ArticleStatusResponse(
+                    success=False,
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
+                )
+
+            status = await service.get_article_status()
+
+            # Convert articles to proto
+            articles = [
+                ArticleInfo(
+                    slug=a["slug"],
+                    title=a["title"],
+                    status=a["status"],
+                    zk_count=a.get("zk_count", 0),
+                    sources_count=a.get("sources_count", 0),
+                )
+                for a in status.get("articles_list", [])
+            ]
+
+            # Convert recent curations to proto
+            recent = [
+                CurationRunInfo(
+                    run_id=r["run_id"],
+                    slug=r.get("slug", ""),
+                    completed_at=r.get("completed_at", ""),
+                    cards_created=r.get("cards_created", 0),
+                )
+                for r in status.get("recent_curations", [])
+            ]
+
+            return ArticleStatusResponse(
+                success=True,
+                running=status.get("running", False),
+                current_run_id=status.get("current_run_id") or "",
+                current_step=status.get("current_step") or "",
+                articles_pending=status.get("articles_pending", 0),
+                articles=articles,
+                recent_curations=recent,
+                total_cards_pending=status.get("total_cards_pending", 0),
+                total_cards_published=status.get("total_cards_published", 0),
+            )
+        except Exception as e:
+            logger.exception(f"ArticleStatus failed: {e}")
+            return ArticleStatusResponse(success=False, error=str(e))
+
+    async def ArticleNew(
+        self,
+        request: ArticleNewRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ArticleNewResponse:
+        """Create new article directory structure.
+
+        Engine owns KB filesystem - clients MUST NOT write directly.
+        Creates directory structure, article.md, and database record.
+        """
+        try:
+            service = self._services.collection_service
+            if service is None:
+                return ArticleNewResponse(
+                    success=False,
+                    error="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
+                )
+
+            result = await service.create_article(
+                slug=request.slug,
+                title=request.title or "",
+            )
+
+            return ArticleNewResponse(
+                success=True,
+                slug=result.get("slug", ""),
+                title=result.get("title", ""),
+                kb_path=result.get("kb_path", ""),
+                article_id=result.get("article_id", ""),
+                collection_id=result.get("collection_id", ""),
+                message=result.get("message", ""),
+            )
+        except Exception as e:
+            logger.exception(f"ArticleNew failed: {e}")
+            return ArticleNewResponse(success=False, error=str(e))
+
+    async def ArticleCurate(
+        self,
+        request: ArticleCurateRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[ArticleCurationEvent]:
+        """Stream article curation progress events.
+
+        Starts ArticleCurationFlow and streams progress via pg_notify.
+        """
+        try:
+            service = self._services.collection_service
+            if service is None:
+                yield ArticleCurationEvent(
+                    run_id="",
+                    step="failed",
+                    step_number=-1,
+                    total_steps=9,
+                    progress=-1.0,
+                    message="Collection service not initialized.\n  Try: /health fix engine\n  Or:  just restart-clean",
+                )
+                return
+
+            async for event in service.article_curate_stream(
+                slug=request.slug or "",
+            ):
+                yield ArticleCurationEvent(
+                    run_id=event.run_id,
+                    step=event.step,
+                    step_number=event.step_number,
+                    total_steps=event.total_steps,
+                    progress=event.progress,
+                    message=event.message,
+                )
+
+        except Exception as e:
+            logger.exception(f"ArticleCurate failed: {e}")
+            yield ArticleCurationEvent(
+                run_id="",
+                step="failed",
+                step_number=-1,
+                total_steps=9,
+                progress=-1.0,
+                message=f"ArticleCurate error: {e}",
+            )
+
+    async def RenderCards(
+        self,
+        request: RenderCardsRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> AsyncIterator[RenderCardEvent]:
+        """Stream card rendering progress events."""
+        try:
+            service = self._services.collection_service
+            if service is None:
+                yield RenderCardEvent(
+                    phase=RENDER_PHASE_FAILED,
+                    message="Collection service not initialized.\n"
+                    "  #VIZ.00000010.SVCNOTINIT\n"
+                    "  Try: /health fix engine\n"
+                    "  Or:  just restart-clean",
+                )
+                return
+
+            async for event in service.render_cards_stream(
+                collection_slug=request.collection_slug,
+                card_id=request.card_id,
+                sample=request.sample,
+                variants=list(request.variants),
+                force=request.force,
+                upload=request.upload,
+                orchestrator=self._services.orchestrator_service,
+            ):
+                yield event
+
+        except Exception as e:
+            logger.exception(f"RenderCards failed: {e}")
+            yield RenderCardEvent(
+                phase=RENDER_PHASE_FAILED,
+                message=f"RenderCards error: {e}",
+                error=str(e),
             )

@@ -49,8 +49,8 @@ This validates our 64K context deployment:
 ## Command Used
 
 ```bash
-GAIUS_DATABASE_URL="postgres://localhost:5438/zndx_gaius?sslmode=disable" \
-DATABASE_URL="postgres://localhost:5438/zndx_gaius?sslmode=disable" \
+GAIUS_DATABASE_URL="postgres://localhost:5444/zndx_gaius?sslmode=disable" \
+DATABASE_URL="postgres://localhost:5444/zndx_gaius?sslmode=disable" \
 HF_HOME=/raid/cache/huggingface \
 uv run python -m behave features/content_pipeline.feature --tags="@tier-4" --no-capture
 ```

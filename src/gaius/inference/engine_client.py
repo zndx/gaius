@@ -81,6 +81,7 @@ class EngineInferenceClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         technique: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> CompletionResult:
         """Complete a chat message sequence.
 
@@ -92,6 +93,7 @@ class EngineInferenceClient:
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             technique: Optional optillm technique
+            timeout: gRPC timeout in seconds (default 120s for inference)
 
         Returns:
             CompletionResult with response
@@ -131,6 +133,7 @@ class EngineInferenceClient:
             temperature=temperature,
             max_tokens=max_tokens,
             technique=technique,
+            timeout=timeout,
         )
 
         return result
@@ -143,6 +146,7 @@ class EngineInferenceClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         technique: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> CompletionResult:
         """Simple completion with a single prompt.
 
@@ -153,6 +157,7 @@ class EngineInferenceClient:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             technique: Optional optillm technique
+            timeout: gRPC timeout in seconds (default 120s for inference)
 
         Returns:
             CompletionResult
@@ -168,6 +173,7 @@ class EngineInferenceClient:
             temperature=temperature,
             max_tokens=max_tokens,
             technique=technique,
+            timeout=timeout,
         )
 
     async def evaluate(

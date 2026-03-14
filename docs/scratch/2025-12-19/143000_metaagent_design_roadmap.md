@@ -32,7 +32,7 @@ The NiFi SoM/ToM dataset generation pipeline (completed 2025-12-19) provides the
           ▼                 ▼                      ▼
     ┌──────────┐     ┌───────────┐         ┌─────────────┐
     │   NiFi   │     │ PostgreSQL│         │ MinIO/S3    │
-    │ (8450)   │     │  (5438)   │         │ (9000)      │
+    │ (8450)   │     │  (5444)   │         │ (9000)      │
     │ Canvas   │     │ meta.*    │         │ Datasets    │
     └──────────┘     └───────────┘         └─────────────┘
           │                │

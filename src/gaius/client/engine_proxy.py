@@ -317,6 +317,7 @@ class SchedulerProxy:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         technique: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> CompletionResult:
         """Complete a prompt.
 
@@ -327,10 +328,16 @@ class SchedulerProxy:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             technique: Optional optillm technique
+            timeout: gRPC timeout in seconds (default 120s for inference)
 
         Returns:
             CompletionResult
         """
+        # Wall-clock safety net. The real timeout protection is the idle-timeout
+        # in OptillmController that monitors vLLM metrics for forward progress.
+        # A 24B model with cot_reflection can take 120-300s for complex prompts.
+        inference_timeout = timeout or 600.0
+
         result = await self._client.call(
             "Scheduler",
             "complete",
@@ -342,6 +349,7 @@ class SchedulerProxy:
                 "max_tokens": max_tokens,
                 "technique": technique,
             },
+            timeout=inference_timeout,
         )
 
         # gRPC CompleteResponse uses 'text' field, not 'content'
@@ -376,6 +384,7 @@ class SchedulerProxy:
                 "prompt": prompt,
                 "force_xai": force_xai,
             },
+            timeout=120.0,
         )
 
         return CompletionResult(

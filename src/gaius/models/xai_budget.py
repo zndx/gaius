@@ -7,7 +7,6 @@ Integrates with the agent_evaluations table for tracking.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,8 +29,9 @@ def check_xai_budget(purpose: str = "evaluation") -> bool:
     Returns:
         True if budget is available, False otherwise
     """
-    # Check environment for API key first
-    api_key = os.environ.get("XAI_API_KEY", "")
+    from gaius.core.config import get_config
+
+    api_key = get_config().providers.xai.api_key
     if not api_key:
         logger.debug("XAI API key not configured, budget check returns False")
         return False
@@ -50,7 +50,9 @@ async def check_xai_budget_async(purpose: str = "evaluation") -> bool:
     Returns:
         True if budget is available, False otherwise
     """
-    api_key = os.environ.get("XAI_API_KEY", "")
+    from gaius.core.config import get_config
+
+    api_key = get_config().providers.xai.api_key
     if not api_key:
         return False
 

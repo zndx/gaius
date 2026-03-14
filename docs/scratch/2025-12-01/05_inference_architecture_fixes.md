@@ -14,7 +14,7 @@ Fixed the inference architecture to be properly local-first with XAI as the outs
 **Problem:** `.env` file had quoted DATABASE_URL causing asyncpg to fail with "invalid DSN: scheme is expected to be either 'postgresql' or 'postgres', got ''"
 
 **Solution:**
-- Fixed `.env` to use unquoted value: `DATABASE_URL=postgres://localhost:5438/zndx_gaius?sslmode=disable`
+- Fixed `.env` to use unquoted value: `DATABASE_URL=postgres://localhost:5444/zndx_gaius?sslmode=disable`
 - Added defensive quote stripping in `core/config.py`:
   ```python
   db_url = g.get("database.url", ...)

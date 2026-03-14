@@ -3,6 +3,10 @@
 Distributes LLM calls across multiple vLLM endpoints for maximum throughput.
 Used by the evolution daemon for overnight optimization runs.
 
+TECH DEBT: ParallelInferenceClient creates direct AsyncOpenAI clients to
+evolution endpoints. Should route through gRPC engine's scheduler for
+GPU-aware workload management.
+
 Usage:
     client = ParallelInferenceClient()
     await client.start(["evo0", "evo1", "evo2", "evo3", "evo4", "evo5"])

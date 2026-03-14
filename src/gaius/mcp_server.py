@@ -63,6 +63,12 @@ Exposes full Gaius capabilities to Claude Code and other MCP clients:
 - theta_consolidate: Run NVAR-mediated consolidation cycle
 - theta_consolidation_stats: Get consolidation statistics
 
+**Bases Feature Store (Dataview-style DQL)**
+- bases_list: List available bases (snapshot, historical, registry)
+- bases_query: Execute DQL query against a base
+- bases_entity_history: Get event-sourced history for an entity
+- bases_health: Check feature store health
+
 **Development**
 - reload_modules: Hot-reload Python modules without restart
 
@@ -5568,6 +5574,1075 @@ Domain: {domain or 'general'}
             return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Metabase Read Operations ---
+    # Read-only access to Metabase for situational awareness
+
+    @server.tool()
+    async def metabase_status() -> str:
+        """Get Metabase connection status and summary.
+
+        Returns connection status and counts of dashboards, models, questions.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({
+                    "error": "Metabase not configured",
+                    "hint": "Set METABASE_URL, METABASE_API_KEY, METABASE_DATABASE_ID"
+                }, indent=2)
+
+            await client.test_connection()
+            status = await client.get_status()
+            return json.dumps(status, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_list_dashboards() -> str:
+        """List all Metabase dashboards.
+
+        Returns list of dashboards with id, name, and description.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            dashboards = await client.list_dashboards()
+            return json.dumps({
+                "count": len(dashboards),
+                "dashboards": [
+                    {"id": d["id"], "name": d["name"], "description": d.get("description")}
+                    for d in dashboards
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_get_dashboard(dashboard_id: int) -> str:
+        """Get details of a specific Metabase dashboard.
+
+        Args:
+            dashboard_id: The dashboard ID to retrieve
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            dashboard = await client.get_dashboard(dashboard_id)
+            if not dashboard:
+                return json.dumps({"error": f"Dashboard {dashboard_id} not found"}, indent=2)
+
+            return json.dumps({
+                "id": dashboard["id"],
+                "name": dashboard["name"],
+                "description": dashboard.get("description"),
+                "cards": [
+                    {"id": c.get("card", {}).get("id"), "name": c.get("card", {}).get("name")}
+                    for c in dashboard.get("dashcards", [])
+                    if c.get("card")
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_list_models() -> str:
+        """List all Metabase models (semantic layer).
+
+        Returns list of models with id, name, and description.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            models = await client.list_cards(filter_type="model")
+            return json.dumps({
+                "count": len(models),
+                "models": [
+                    {"id": m["id"], "name": m["name"], "description": m.get("description")}
+                    for m in models
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_list_questions() -> str:
+        """List all Metabase questions (saved queries).
+
+        Returns list of questions with id, name, and display type.
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            questions = await client.list_cards(filter_type="question")
+            return json.dumps({
+                "count": len(questions),
+                "questions": [
+                    {"id": q["id"], "name": q["name"], "display": q.get("display")}
+                    for q in questions
+                ]
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metabase_get_card(card_id: int) -> str:
+        """Get details of a specific Metabase card (model or question).
+
+        Args:
+            card_id: The card ID to retrieve
+        """
+        try:
+            from .engine.services.metabase_sync import get_metabase_client
+
+            client = get_metabase_client()
+            if not client.is_configured:
+                return json.dumps({"error": "Metabase not configured"}, indent=2)
+
+            await client.test_connection()
+            card = await client.get_card(card_id)
+            if not card:
+                return json.dumps({"error": f"Card {card_id} not found"}, indent=2)
+
+            return json.dumps({
+                "id": card["id"],
+                "name": card["name"],
+                "type": card.get("type"),
+                "description": card.get("description"),
+                "display": card.get("display"),
+                "database_id": card.get("database_id"),
+                "query": card.get("dataset_query"),
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Metaflow Operational Insights ---
+    # Read-only access to Metaflow run history for situational awareness
+
+    @server.tool()
+    async def metaflow_status() -> str:
+        """Get Metaflow operational status summary.
+
+        Returns flow types, recent activity, running flows, and failures.
+        Provides situational awareness for pipeline operations.
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            status = await client.get_status_summary()
+            return json.dumps(status, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_list_types() -> str:
+        """List all Metaflow flow types with run counts.
+
+        Returns available flow types with statistics on completions and failures.
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            flow_types = await client.list_flow_types()
+            return json.dumps({
+                "count": len(flow_types),
+                "flow_types": flow_types,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_list_runs(
+        flow_type: str = "",
+        status: str = "",
+        limit: int = 20,
+    ) -> str:
+        """List recent Metaflow runs with optional filtering.
+
+        Args:
+            flow_type: Filter by flow type (e.g., "research", "arxiv")
+            status: Filter by status (completed, failed, running)
+            limit: Maximum runs to return (default 20)
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            runs = await client.list_recent_runs(
+                flow_type=flow_type if flow_type else None,
+                status=status if status else None,
+                limit=limit,
+            )
+            return json.dumps({
+                "count": len(runs),
+                "runs": runs,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_get_run(run_id: str) -> str:
+        """Get detailed information about a specific Metaflow run.
+
+        Args:
+            run_id: UUID of the flow run
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            run = await client.get_run_details(run_id)
+            if not run:
+                return json.dumps({"error": f"Run {run_id} not found"}, indent=2)
+            return json.dumps(run, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def metaflow_stats(flow_type: str = "", hours: int = 24) -> str:
+        """Get Metaflow statistics over a time period.
+
+        Args:
+            flow_type: Specific flow type or empty for all
+            hours: Time window in hours (default 24)
+
+        Returns:
+            Statistics including success rates, durations, throughput
+        """
+        try:
+            from .engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            stats = await client.get_flow_stats(
+                flow_type=flow_type if flow_type else None,
+                hours=hours,
+            )
+            return json.dumps(stats, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    # --- Observability / Prometheus Metrics ---
+    # Read-only access to OTel metrics via Prometheus for situational awareness
+
+    @server.tool()
+    async def observe_status() -> str:
+        """Get full observability dashboard status.
+
+        Returns system metrics including latency, error rates, GPU utilization,
+        and healing status via the engine's Observe service.
+        """
+        try:
+            from .client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call("Observe", "status", {
+                "include_sparklines": False,
+                "sparkline_points": 0,
+            })
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def observe_metrics(include_sparklines: bool = False) -> str:
+        """Get current OTel metrics with optional time series.
+
+        Args:
+            include_sparklines: Include time series data for trending
+
+        Returns:
+            Metrics dashboard with values and optional sparkline data
+        """
+        try:
+            from .client import get_grpc_client
+
+            client = await get_grpc_client()
+            result = await client.call("Observe", "status", {
+                "include_sparklines": include_sparklines,
+                "sparkline_points": 20 if include_sparklines else 0,
+            })
+            return json.dumps({
+                "metrics": result.get("metrics", []),
+                "timestamp": result.get("timestamp"),
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prometheus_query(query: str) -> str:
+        """Execute a PromQL instant query against Prometheus.
+
+        Args:
+            query: PromQL query string (e.g., "gaius_gaius_inference_count_total")
+
+        Returns:
+            Query result with current value and labels
+        """
+        try:
+            from .observability.sources.prometheus import get_prometheus_source
+
+            source = get_prometheus_source()
+            result = await source.query_instant(query)
+            if result is None:
+                return json.dumps({
+                    "query": query,
+                    "result": None,
+                    "message": "No data returned",
+                }, indent=2)
+
+            return json.dumps({
+                "query": query,
+                "value": result.value,
+                "timestamp": result.timestamp.isoformat(),
+                "labels": result.labels,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prometheus_query_range(
+        query: str,
+        duration_seconds: int = 300,
+        step_seconds: int = 15,
+    ) -> str:
+        """Execute a PromQL range query for time series data.
+
+        Args:
+            query: PromQL query string
+            duration_seconds: How far back to query (default 5 minutes)
+            step_seconds: Resolution between points (default 15s)
+
+        Returns:
+            Time series with values suitable for trending analysis
+        """
+        try:
+            from .observability.sources.prometheus import get_prometheus_source
+
+            source = get_prometheus_source()
+            series = await source.query_range(
+                query=query,
+                duration_seconds=duration_seconds,
+                step_seconds=step_seconds,
+            )
+
+            return json.dumps({
+                "query": query,
+                "duration_seconds": duration_seconds,
+                "step_seconds": step_seconds,
+                "count": len(series.values),
+                "values": [
+                    {"value": v.value, "timestamp": v.timestamp.isoformat()}
+                    for v in series.values
+                ],
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def prometheus_health() -> str:
+        """Check Prometheus availability.
+
+        Returns whether Prometheus is reachable and accepting queries.
+        """
+        try:
+            from .observability.sources.prometheus import get_prometheus_source
+
+            source = get_prometheus_source()
+            healthy = await source.health_check()
+            return json.dumps({
+                "healthy": healthy,
+                "url": source.base_url,
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e), "healthy": False}, indent=2)
+
+    # =========================================================================
+    # Bases Feature Store (Dataview-style DQL over feature bases)
+    # =========================================================================
+
+    @server.tool()
+    async def bases_list(
+        base_type: str = "all",
+        tags: str = "",
+    ) -> str:
+        """List available bases in the feature store.
+
+        Bases are named views over features/entities with Dataview-style
+        query semantics. Types include snapshot (real-time), historical
+        (event-sourced), and registry (metadata).
+
+        Args:
+            base_type: Filter by type ("snapshot", "historical", "registry", "all")
+            tags: Comma-separated tags to filter by (matches ANY)
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+            bases = await service.list_bases(base_type=base_type, tags=tag_list)
+
+            return json.dumps({
+                "count": len(bases),
+                "bases": [
+                    {
+                        "name": b.name,
+                        "display_name": b.display_name,
+                        "description": b.description,
+                        "base_type": b.base_type,
+                        "entity_type": b.entity_type,
+                        "feature_groups": b.feature_groups,
+                        "tags": b.tags,
+                        "default_dql": b.default_dql,
+                    }
+                    for b in bases
+                ],
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def bases_query(
+        base_name: str,
+        dql: str = "",
+        timeout_ms: int = 30000,
+        max_rows: int = 1000,
+    ) -> str:
+        """Execute a DQL query against a base.
+
+        DQL (Dataview Query Language) supports:
+        - WHERE: Filter conditions (field = value, AND, OR, NOT, IN, LIKE)
+        - ORDER BY: Sorting (field ASC/DESC)
+        - LIMIT: Row limit
+        - AS OF: Point-in-time query for historical bases
+        - GROUP BY: Aggregation
+
+        Examples:
+            bases_query("_entity_types")
+            bases_query("holdings_snapshot", "WHERE ticker IN ('AAPL', 'MSFT') ORDER BY value DESC LIMIT 10")
+            bases_query("trades_historical", "WHERE entity_id = 'user_123' AS OF '2024-01-01' LIMIT 100")
+
+        Fluent API (preferred for programmatic use):
+            bases_query("events", 'where(col("age") > 30).order_by("created_at", desc=True).limit(10)')
+
+        Args:
+            base_name: Name of the base to query
+            dql: DQL query string (WHERE, ORDER BY, LIMIT, AS OF, GROUP BY)
+            timeout_ms: Query timeout in milliseconds
+            max_rows: Maximum rows to return
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            # Detect fluent syntax vs DQL
+            is_fluent = dql and ('col(' in dql or 'term(' in dql)
+
+            result = await service.query_base(
+                base_name=base_name,
+                dql=None if is_fluent else (dql or None),
+                fluent=dql if is_fluent else None,
+                options={
+                    "timeout_ms": timeout_ms,
+                    "max_rows": max_rows,
+                },
+            )
+
+            return json.dumps({
+                "base_name": base_name,
+                "row_count": result.row_count,
+                "truncated": result.truncated,
+                "query_time_ms": result.query_time_ms,
+                "backend": result.backend,
+                "columns": [
+                    {"name": c.name, "type": c.data_type, "nullable": c.nullable}
+                    for c in result.columns
+                ],
+                "rows": result.rows,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def bases_entity_history(
+        entity_id: str,
+        entity_type: str = "",
+        base_name: str = "",
+        max_events: int = 1000,
+        include_deleted: bool = False,
+    ) -> str:
+        """Get event-sourced history for an entity.
+
+        Retrieves the full event history from a historical base, showing
+        how an entity's state changed over time (INSERT, UPDATE, DELETE).
+
+        Args:
+            entity_id: The entity identifier to query
+            entity_type: Entity type (e.g., "holding", "trade") - required if base_name not provided
+            base_name: Specific historical base to query (optional)
+            max_events: Maximum events to return
+            include_deleted: Include DELETE operations in results
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            result = await service.get_entity_history(
+                entity_id=entity_id,
+                entity_type=entity_type or None,
+                base_name=base_name or None,
+                options={
+                    "max_events": max_events,
+                    "include_deleted": include_deleted,
+                },
+            )
+
+            return json.dumps({
+                "entity_id": result.entity_id,
+                "entity_type": result.entity_type,
+                "total_events": result.total_events,
+                "time_range": [
+                    str(result.time_range[0]) if result.time_range else None,
+                    str(result.time_range[1]) if result.time_range else None,
+                ],
+                "events": result.events,
+            }, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def bases_health() -> str:
+        """Check Bases feature store health.
+
+        Returns service status, query statistics, and backend availability.
+        """
+        try:
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+
+            health = await service.health_check()
+            return json.dumps(health, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e), "healthy": False}, indent=2)
+
+    # --- Collection Tools ---
+    # Curated content collections for public landing page
+
+    @server.tool()
+    async def collection_status() -> str:
+        """Get collection statistics.
+
+        Shows total collections, cards, and featured collection status.
+        Cost: $0 - pure database operation.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "status", {})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_list(status: str = "") -> str:
+        """List all collections.
+
+        Args:
+            status: Filter by status (draft, active, archived). Empty = all.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "list_collections", {"status": status})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_create(slug: str, name: str, description: str = "", featured: bool = False) -> str:
+        """Create a new collection.
+
+        Args:
+            slug: URL-friendly identifier (e.g., "ai-reasoning")
+            name: Display name
+            description: Optional description
+            featured: Set as the featured collection (only one allowed)
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "create_collection", {
+                "slug": slug,
+                "name": name,
+                "description": description,
+                "featured": featured,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_set_featured(slug: str) -> str:
+        """Set a collection as featured.
+
+        The featured collection appears on the public landing page.
+        Only one collection can be featured at a time.
+
+        Args:
+            slug: Collection slug to feature
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "set_featured", {"slug": slug})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_add_card(
+        slug: str,
+        title: str,
+        summary: str,
+        source_url: str,
+        source_type: str = "web",
+        image_url: str = "",
+    ) -> str:
+        """Add a card to a collection.
+
+        Cards link to PUBLIC sources only (arXiv, HuggingFace, etc.) - never KB paths.
+
+        Args:
+            slug: Collection slug
+            title: Card title
+            summary: 1-2 sentence summary for card display
+            source_url: Link to original PUBLIC source
+            source_type: Type: arxiv, huggingface, cloudera, web, x_bookmark, sec_filing, research
+            image_url: Optional image URL for card display
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "add_card", {
+                "slug": slug,
+                "title": title,
+                "summary": summary,
+                "source_url": source_url,
+                "source_type": source_type,
+                "image_url": image_url,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_list_cards(slug: str, status: str = "") -> str:
+        """List cards in a collection.
+
+        Args:
+            slug: Collection slug
+            status: Filter by status (pending, published, archived). Empty = all.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "list_cards", {
+                "slug": slug,
+                "status": status,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_publish_cards(count: int = 3, collection_slug: str = "") -> str:
+        """Publish pending cards to the landing page.
+
+        Publishes cards from the featured collection (or specified collection)
+        to Cloudflare KV for display on gaius.zndx.org.
+
+        Args:
+            count: Number of cards to publish (default: 3)
+            collection_slug: Specific collection slug (empty = featured collection)
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "publish_cards", {
+                "count": count,
+                "collection_slug": collection_slug,
+            })
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_publish_viz() -> str:
+        """Update 3D visualization data in Cloudflare KV.
+
+        Generates UMAP projection data for the landing page 3D visualization.
+        """
+        try:
+            from .client.grpc_client import get_grpc_client
+            client = await get_grpc_client()
+            result = await client.call("Collection", "publish_viz", {})
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_generate_summaries(slug: str) -> str:
+        """Generate AI summaries for a collection (frontier + open-weights).
+
+        Creates dual-model summaries for the collection page:
+        - Frontier: Uses xAI Grok for high-quality synthesis
+        - Open-weights: Uses reasoning model for alternative perspective
+
+        Stores full outputs in Iceberg HX for provenance, with denormalized
+        summaries in PostgreSQL for fast KV sync.
+
+        Cost: ~$0.01-0.05 per summary (token-based pricing).
+
+        Args:
+            slug: Collection slug to generate summaries for
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+
+                # Resolve slug to collection_id
+                collection = await service.get_collection_by_slug(slug)
+                if not collection:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Collection not found: {slug}",
+                    }, indent=2)
+
+                # Generate both summaries — fail-fast, no partial success.
+                # If either fails, the entire operation fails.
+                frontier = await service.generate_collection_summary(
+                    collection.collection_id, "frontier"
+                )
+                open_weights = await service.generate_collection_summary(
+                    collection.collection_id, "open_weights"
+                )
+
+                return json.dumps({
+                    "success": True,
+                    "collection_id": collection.collection_id,
+                    "slug": slug,
+                    "summaries": {
+                        "frontier": frontier,
+                        "open_weights": open_weights,
+                    },
+                }, indent=2, default=str)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def collection_sync_page(slug: str = "") -> str:
+        """Sync collection page data to Cloudflare KV.
+
+        If slug is provided, syncs that specific collection.
+        If empty, syncs all active collections and the index page.
+
+        Pushes collection metadata, summaries, cards, and zettle aliases
+        to KV for the Cloudflare Worker to render at /collections/:id.
+
+        Cost: $0 - pure API operations.
+
+        Args:
+            slug: Collection slug to sync (empty = sync all + index)
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+
+                if slug:
+                    # Sync specific collection
+                    collection = await service.get_collection_by_slug(slug)
+                    if not collection:
+                        return json.dumps({
+                            "success": False,
+                            "error": f"Collection not found: {slug}",
+                        }, indent=2)
+
+                    result = await service.sync_collection_to_kv(collection.collection_id)
+                    return json.dumps(result, indent=2, default=str)
+
+                else:
+                    # Sync all active collections + index
+                    collections = await service.list_collections(status="active")
+                    results = []
+
+                    for coll in collections:
+                        try:
+                            r = await service.sync_collection_to_kv(coll.collection_id)
+                            results.append(r)
+                        except Exception as e:
+                            results.append({
+                                "success": False,
+                                "collection_id": coll.collection_id,
+                                "slug": coll.slug,
+                                "error": str(e),
+                            })
+
+                    # Sync the index
+                    index_result = await service.sync_collections_index_to_kv()
+
+                    return json.dumps({
+                        "success": True,
+                        "collections_synced": results,
+                        "index": index_result,
+                    }, indent=2, default=str)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    # --- Article Curation ---
+
+    @server.tool()
+    async def article_list() -> str:
+        """List articles available for curation.
+
+        Returns articles with their status, zettelkasten note counts,
+        and readiness for the curation pipeline.
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                articles = await service.list_articles(limit=50)
+
+                return json.dumps({
+                    "success": True,
+                    "articles": [a.to_dict() for a in articles],
+                    "count": len(articles),
+                }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def article_status() -> str:
+        """Get detailed status of article curation pipeline.
+
+        Shows which articles have been curated, their draft versions,
+        and card creation status.
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                stats = await service.get_stats()
+                articles = await service.list_articles(limit=20)
+                featured = await service.get_featured_collection()
+
+                return json.dumps({
+                    "success": True,
+                    "stats": stats,
+                    "featured_collection": featured.to_dict() if featured else None,
+                    "recent_articles": [a.to_dict() for a in articles[:10]],
+                }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def article_curate() -> str:
+        """Run article curation pipeline.
+
+        Executes the full ArticleCurationFlow:
+        1. Research synthesis from zettelkasten notes
+        2. External source acquisition (arXiv, web)
+        3. Draft generation with Grok
+        4. .base file creation with semantic references
+        5. Card creation (all pending)
+
+        This is a long-running operation (2-5 minutes).
+        Progress events are collected and returned.
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            events: list[dict] = []
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+
+                async for event in service.article_curate_stream():
+                    events.append(event.to_dict())
+
+            # Return final result with all events
+            final = events[-1] if events else {}
+            return json.dumps({
+                "success": final.get("step") == "complete",
+                "step": final.get("step", "unknown"),
+                "message": final.get("message", ""),
+                "events": events,
+                "events_count": len(events),
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def article_new(slug: str, title: str = "") -> str:
+        """Create a new article directory.
+
+        Creates the article structure in KB with zk/ subdirectory
+        for zettelkasten notes.
+
+        Architecture compliance: MCP -> gRPC -> Engine -> KB filesystem
+        The engine owns the KB filesystem - MCP MUST NOT write directly.
+
+        Args:
+            slug: URL-friendly identifier (e.g., "my-new-article")
+            title: Display title (defaults to slug if not provided)
+        """
+        try:
+            from gaius.client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+            response = await client.ArticleNew(slug=slug, title=title)
+
+            if not response.success:
+                return json.dumps({
+                    "success": False,
+                    "error": response.error or "Failed to create article",
+                }, indent=2)
+
+            return json.dumps({
+                "success": True,
+                "slug": response.slug,
+                "title": response.title,
+                "path": response.kb_path,
+                "article_id": response.article_id,
+                "collection_id": response.collection_id,
+                "next_steps": [
+                    "Add arxiv_categories, keywords, news_queries to article.md frontmatter",
+                    "Add zettelkasten notes to zk/",
+                    f"Run curation: /article curate {response.slug}",
+                ],
+            }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+
+    @server.tool()
+    async def publish_cards(count: int = 3) -> str:
+        """Publish pending cards to the landing page.
+
+        Publishes N cards from the pending queue to Cloudflare KV
+        for display on gaius.zndx.org.
+
+        Args:
+            count: Number of cards to publish (default: 3)
+        """
+        import asyncpg
+        from .core.config import get_database_url
+
+        try:
+            from .engine.services.collection_service import CollectionService
+
+            db_url = get_database_url()
+
+            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                service = CollectionService(pool)
+                result = await service.publish_and_sync(count=count)
+
+                published = result.get("published", [])
+                kv_sync = result.get("kv_sync", {})
+
+                return json.dumps({
+                    "success": True,
+                    "published_count": len(published),
+                    "published_cards": published,
+                    "kv_sync": kv_sync,
+                }, indent=2)
+
+        except Exception as e:
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
 
     # --- KB Resources ---
     # Expose KB entries as MCP resources for direct browsing

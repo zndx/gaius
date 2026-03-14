@@ -45,7 +45,7 @@ Uses HOCON configuration with environment variable overrides.
 
 ```bash
 # Required
-export DATABASE_URL="postgres://localhost:5438/zndx_gaius?sslmode=disable"
+export DATABASE_URL="postgres://localhost:5444/zndx_gaius?sslmode=disable"
 
 # Optional inference
 export OPTILLM_API_KEY="sk-optillm"

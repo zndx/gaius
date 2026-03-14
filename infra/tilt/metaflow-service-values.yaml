@@ -3,9 +3,9 @@
 
 metadatadb:
   host: devenv-postgres
-  port: "5438"
-  user: postgres
-  password: ""  # Empty password for devenv postgres (no auth required)
+  port: "5444"
+  user: gaius
+  password: "gaius"
   database: metaflow
 
 image:
@@ -20,8 +20,7 @@ resources:
     cpu: 500m
     memory: 512Mi
 
-# Extra env vars needed because the chart only sets MF_METADATA_DB_PSWD if password is non-empty
-# but the init container requires it to exist
+# Extra env vars for init container compatibility
 env:
   - name: MF_METADATA_DB_PSWD
-    value: ""
+    value: "gaius"

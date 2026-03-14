@@ -317,8 +317,8 @@ class VLLMController:
             )
             self._processes[agent_alias] = proc
 
-        # Start outside lock
-        success = await self._start_vllm_process(proc)
+        # Start outside lock (pass endpoint config for per-endpoint flags)
+        success = await self._start_vllm_process(proc, endpoint_config=agent_config.endpoint)
 
         if success:
             # Update allocation state with PID for orphan detection
@@ -402,6 +402,7 @@ class VLLMController:
         proc: VLLMProcess,
         serve_command: list[str] | None = None,
         extra_env: dict[str, str] | None = None,
+        endpoint_config: "EndpointConfig | None" = None,
     ) -> bool:
         """Start the actual vLLM subprocess.
 
@@ -409,7 +410,10 @@ class VLLMController:
             proc: VLLMProcess state object
             serve_command: Optional custom command (uses default vLLM command if None)
             extra_env: Optional extra environment variables to merge
+            endpoint_config: Per-endpoint settings (enforce_eager, swap_space, etc.)
         """
+        from gaius.engine.config import EndpointConfig as _EndpointConfig  # noqa: F811
+
         # Build environment
         gpu_str = ",".join(str(g) for g in proc.gpu_ids)
         env = os.environ.copy()
@@ -423,6 +427,13 @@ class VLLMController:
         if serve_command:
             cmd = serve_command
         else:
+            ep = endpoint_config or _EndpointConfig()
+
+            # Per-endpoint gpu-memory-utilization overrides global default
+            gpu_mem_util = ep.gpu_memory_utilization if ep.gpu_memory_utilization else self._gpu_memory_util
+            # Per-endpoint dtype overrides global default
+            dtype = ep.dtype if ep.dtype else self._dtype
+
             # Build default vLLM command
             cmd = [
                 self._binary,
@@ -431,13 +442,13 @@ class VLLMController:
                 "--port",
                 str(proc.port),
                 "--gpu-memory-utilization",
-                str(self._gpu_memory_util),
+                str(gpu_mem_util),
                 "--max-model-len",
                 str(proc.context_length),
                 "--max-num-seqs",
                 str(proc.max_num_seqs),
                 "--dtype",
-                self._dtype,
+                dtype,
             ]
 
             # Add task if not default (generate)
@@ -449,6 +460,12 @@ class VLLMController:
             # Add tensor parallelism if needed
             if proc.tensor_parallel > 1:
                 cmd.extend(["--tensor-parallel-size", str(proc.tensor_parallel)])
+
+            # Per-endpoint flags from agents.conf
+            if ep.enforce_eager:
+                cmd.append("--enforce-eager")
+            if ep.swap_space is not None:
+                cmd.extend(["--swap-space", str(ep.swap_space)])
 
             # Add extra args from config
             cmd.extend(self._extra_args)

@@ -252,6 +252,10 @@ class ParallelSynthesizer:
                 provider="xai",
                 max_tokens=4096,
                 temperature=0.7,
+                source_context={
+                    "agent_alias": "parallel_synthesizer",
+                    "task_type": "frontier_synthesis",
+                },
             )
 
             latency = int((time.time() - start) * 1000)

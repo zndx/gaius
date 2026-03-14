@@ -134,9 +134,10 @@ def create_raw_content_table(
     try:
         # Check if table exists
         if if_not_exists:
+            from pyiceberg.exceptions import NoSuchTableError
             try:
                 return catalog.load_table(table_id)
-            except Exception:
+            except NoSuchTableError:
                 pass  # Table doesn't exist, create it
 
         schema = get_raw_content_schema()
@@ -204,6 +205,172 @@ def evolve_table_schema(table: Table) -> bool:
     return True
 
 
+def get_llm_generation_schema():
+    """Get the schema for LLM generation storage.
+
+    Stores full LLM outputs including thinking traces for future distillation,
+    RL training, and dataset creation. Used by collection summary generation
+    and other LLM-backed features.
+
+    Returns:
+        PyIceberg Schema for llm.generations table.
+    """
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import (
+        LongType,
+        NestedField,
+        StringType,
+        TimestamptzType,
+    )
+
+    return Schema(
+        NestedField(1, "id", StringType(), required=True, doc="UUID of the generation record"),
+        NestedField(2, "collection_id", StringType(), required=False, doc="Associated collection ID"),
+        NestedField(3, "summary_type", StringType(), required=True, doc="Generation type (frontier, open_weights, cerebras)"),
+        NestedField(4, "prompt", StringType(), required=True, doc="Full prompt sent to the model"),
+        NestedField(5, "output", StringType(), required=True, doc="Model output text"),
+        NestedField(6, "thinking_trace", StringType(), required=False, doc="Chain-of-thought reasoning trace"),
+        NestedField(7, "model_name", StringType(), required=True, doc="Model identifier used for generation"),
+        NestedField(8, "input_tokens", LongType(), required=False, doc="Input token count"),
+        NestedField(9, "output_tokens", LongType(), required=False, doc="Output token count"),
+        NestedField(10, "latency_ms", LongType(), required=False, doc="Generation latency in milliseconds"),
+        NestedField(11, "generated_at", TimestamptzType(), required=True, doc="When the generation was created"),
+    )
+
+
+def get_llm_generation_partition_spec():
+    """Get the partition specification for LLM generations.
+
+    Partitions by:
+    - summary_type: Separate files per generation type (frontier, open_weights, cerebras)
+    - generation_month: Monthly partitions for time-based queries
+
+    Returns:
+        PyIceberg PartitionSpec.
+    """
+    from pyiceberg.partitioning import PartitionField, PartitionSpec
+    from pyiceberg.transforms import IdentityTransform, MonthTransform
+
+    return PartitionSpec(
+        PartitionField(
+            source_id=3,  # summary_type field
+            field_id=1000,
+            transform=IdentityTransform(),
+            name="summary_type_part",
+        ),
+        PartitionField(
+            source_id=11,  # generated_at field
+            field_id=1001,
+            transform=MonthTransform(),
+            name="generation_month",
+        ),
+    )
+
+
+def get_llm_generation_sort_order():
+    """Get the sort order for LLM generations.
+
+    Sorts by generated_at descending for efficient recent-first queries.
+
+    Returns:
+        PyIceberg SortOrder.
+    """
+    from pyiceberg.table.sorting import SortDirection, SortField, SortOrder
+
+    return SortOrder(
+        SortField(source_id=11, direction=SortDirection.DESC),  # generated_at DESC
+    )
+
+
+def create_llm_generation_table(
+    catalog: Catalog,
+    namespace: str = "llm",
+    table_name: str = "generations",
+    if_not_exists: bool = True,
+) -> Table:
+    """Create the LLM generation Iceberg table.
+
+    Args:
+        catalog: PyIceberg catalog instance.
+        namespace: Namespace for the table.
+        table_name: Name of the table.
+        if_not_exists: If True, don't error if table exists.
+
+    Returns:
+        PyIceberg Table instance.
+    """
+    from pyiceberg.exceptions import TableAlreadyExistsError
+
+    table_id = f"{namespace}.{table_name}"
+
+    try:
+        if if_not_exists:
+            from pyiceberg.exceptions import NoSuchTableError
+            try:
+                return catalog.load_table(table_id)
+            except NoSuchTableError:
+                pass  # Table doesn't exist, create it
+
+        schema = get_llm_generation_schema()
+        partition_spec = get_llm_generation_partition_spec()
+        sort_order = get_llm_generation_sort_order()
+
+        logger.info(f"Creating Iceberg table: {table_id}")
+
+        table = catalog.create_table(
+            identifier=table_id,
+            schema=schema,
+            partition_spec=partition_spec,
+            sort_order=sort_order,
+            properties={
+                "write.parquet.compression-codec": "zstd",
+                "write.parquet.compression-level": "3",
+                "write.metadata.delete-after-commit.enabled": "true",
+                "write.metadata.previous-versions-max": "10",
+            },
+        )
+
+        logger.info(f"Created Iceberg table: {table_id}")
+        return table
+
+    except TableAlreadyExistsError:
+        if if_not_exists:
+            logger.debug(f"Table already exists: {table_id}")
+            return catalog.load_table(table_id)
+        raise
+
+
+def get_llm_generation_table(
+    catalog: Catalog,
+    namespace: str = "llm",
+    table_name: str = "generations",
+) -> Table:
+    """Get the LLM generation table, creating if necessary.
+
+    Args:
+        catalog: PyIceberg catalog instance.
+        namespace: Namespace for the table.
+        table_name: Name of the table.
+
+    Returns:
+        PyIceberg Table instance.
+    """
+    from pyiceberg.exceptions import NoSuchTableError
+
+    table_id = f"{namespace}.{table_name}"
+
+    try:
+        table = catalog.load_table(table_id)
+        return table
+    except NoSuchTableError:
+        return create_llm_generation_table(
+            catalog,
+            namespace=namespace,
+            table_name=table_name,
+            if_not_exists=True,
+        )
+
+
 def get_raw_content_table(
     catalog: Catalog,
     namespace: str = "raw",
@@ -221,6 +388,8 @@ def get_raw_content_table(
     Returns:
         PyIceberg Table instance.
     """
+    from pyiceberg.exceptions import NoSuchTableError
+
     table_id = f"{namespace}.{table_name}"
 
     try:
@@ -228,7 +397,7 @@ def get_raw_content_table(
         # Evolve schema if needed (adds missing columns)
         evolve_table_schema(table)
         return table
-    except Exception:
+    except NoSuchTableError:
         return create_raw_content_table(
             catalog,
             namespace=namespace,

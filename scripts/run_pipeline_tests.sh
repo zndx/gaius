@@ -113,7 +113,7 @@ echo ""
 
 # Service management via devenv
 DEVENV_PG_DATA="$PROJECT_ROOT/.devenv/state/postgres"
-DEVENV_PG_PORT=5438
+DEVENV_PG_PORT=5444
 MINIO_PORT=9010
 
 check_postgres() {

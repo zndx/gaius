@@ -178,7 +178,7 @@ async def validate_e2e():
 
     # 1. Infrastructure
     results["postgres"] = subprocess.run(
-        ["pg_isready", "-h", "localhost", "-p", "5438"],
+        ["pg_isready", "-h", "localhost", "-p", "5444"],
         capture_output=True
     ).returncode == 0
 

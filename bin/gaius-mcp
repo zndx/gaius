@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 # Ensure devenv services are running (postgres, minio, qdrant)
 # Check if postgres is already running to avoid duplicate starts
-if ! pg_isready -h localhost -p 5438 > /dev/null 2>&1; then
+if ! pg_isready -h localhost -p ${PGPORT:-5444} > /dev/null 2>&1; then
     echo "[gaius-mcp] Starting devenv services (postgres, minio, qdrant)..." >&2
 
     # Start services in background (gaius-mcp process is disabled in devenv.nix)
@@ -17,7 +17,7 @@ if ! pg_isready -h localhost -p 5438 > /dev/null 2>&1; then
     # Wait for postgres to be ready (up to 5 seconds)
     echo "[gaius-mcp] Waiting for PostgreSQL..." >&2
     for i in {1..10}; do
-        if pg_isready -h localhost -p 5438 > /dev/null 2>&1; then
+        if pg_isready -h localhost -p ${PGPORT:-5444} > /dev/null 2>&1; then
             echo "[gaius-mcp] Services ready" >&2
             break
         fi

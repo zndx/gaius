@@ -29,11 +29,9 @@ When projected onto the grid, these become visible warnings: regions to investig
 
 ## Agentic Amplification
 
-A single human perspective is insufficient for complex domains. Gaius deploys specialized agents—Risk, Optimizer, Critic, Adversary—each bringing a distinct analytical lens. Their outputs aren't just text; they're positions in embedding space, projected onto the grid as colored stones.
+A single human perspective is insufficient for complex domains. Gaius deploys autonomous agents that explore, evolve, and consolidate knowledge. Each agent brings a distinct analytical lens, and their capabilities improve through RLVR (Reinforcement Learning with Verifiable Reward) training.
 
-Watch the swarm converge. See where agents cluster (consensus). Notice where they scatter (uncertainty). Observe who stands alone (contrarian insight).
-
-The grid becomes a map of collective intelligence.
+Agent outputs are embedded and projected onto the grid. Watch agents converge on consensus. Notice where they scatter (uncertainty). Observe who stands alone (contrarian insight). The grid becomes a map of collective intelligence.
 
 ## Design Principles
 
@@ -43,7 +41,7 @@ Every action available via keyboard. Mouse optional. This isn't nostalgia—it's
 
 ### 2. Progressive Disclosure
 
-Launch with `uv run python src/gaius/app.py` and get a clean TUI instantly. Add `--swarm` for agents. Add `--tda` for topology. Complexity arrives when requested.
+Launch with `uv run gaius` and get a clean TUI instantly. Three interfaces — TUI, CLI, MCP — offer increasing levels of automation. Complexity arrives when requested.
 
 ### 3. Modal Operation
 

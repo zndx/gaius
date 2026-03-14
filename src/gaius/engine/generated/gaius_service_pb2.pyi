@@ -77,6 +77,7 @@ class WorkloadType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     WORKLOAD_INFERENCE: _ClassVar[WorkloadType]
     WORKLOAD_EMBEDDING: _ClassVar[WorkloadType]
     WORKLOAD_EVOLUTION: _ClassVar[WorkloadType]
+    WORKLOAD_RENDERING: _ClassVar[WorkloadType]
 
 class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -91,6 +92,17 @@ class AmbientPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AMBIENT_PHASE_FETCH_CONTENT: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_SUMMARIZATION: _ClassVar[AmbientPhase]
     AMBIENT_PHASE_BUFFER_ANALYSIS: _ClassVar[AmbientPhase]
+
+class RenderPhase(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    RENDER_PHASE_UNSPECIFIED: _ClassVar[RenderPhase]
+    RENDER_PHASE_QUEUED: _ClassVar[RenderPhase]
+    RENDER_PHASE_ALLOCATING: _ClassVar[RenderPhase]
+    RENDER_PHASE_RENDERING: _ClassVar[RenderPhase]
+    RENDER_PHASE_UPLOADING: _ClassVar[RenderPhase]
+    RENDER_PHASE_COMPLETE: _ClassVar[RenderPhase]
+    RENDER_PHASE_FAILED: _ClassVar[RenderPhase]
+    RENDER_PHASE_BATCH_COMPLETE: _ClassVar[RenderPhase]
 PROCESS_STATUS_UNSPECIFIED: ProcessStatus
 PROCESS_STATUS_STOPPED: ProcessStatus
 PROCESS_STATUS_STARTING: ProcessStatus
@@ -137,6 +149,7 @@ WORKLOAD_SWARM: WorkloadType
 WORKLOAD_INFERENCE: WorkloadType
 WORKLOAD_EMBEDDING: WorkloadType
 WORKLOAD_EVOLUTION: WorkloadType
+WORKLOAD_RENDERING: WorkloadType
 AMBIENT_PHASE_UNSPECIFIED: AmbientPhase
 AMBIENT_PHASE_BASELINE_HEALTH: AmbientPhase
 AMBIENT_PHASE_BASELINE_WORKLOAD: AmbientPhase
@@ -148,6 +161,14 @@ AMBIENT_PHASE_ERROR: AmbientPhase
 AMBIENT_PHASE_FETCH_CONTENT: AmbientPhase
 AMBIENT_PHASE_SUMMARIZATION: AmbientPhase
 AMBIENT_PHASE_BUFFER_ANALYSIS: AmbientPhase
+RENDER_PHASE_UNSPECIFIED: RenderPhase
+RENDER_PHASE_QUEUED: RenderPhase
+RENDER_PHASE_ALLOCATING: RenderPhase
+RENDER_PHASE_RENDERING: RenderPhase
+RENDER_PHASE_UPLOADING: RenderPhase
+RENDER_PHASE_COMPLETE: RenderPhase
+RENDER_PHASE_FAILED: RenderPhase
+RENDER_PHASE_BATCH_COMPLETE: RenderPhase
 
 class FailureModeMapping(_message.Message):
     __slots__ = ("fmea_id", "heuristic_path", "check_name_pattern", "endpoint_pattern")
@@ -346,20 +367,22 @@ class EnsureEndpointResponse(_message.Message):
     def __init__(self, healthy: bool = ..., status: _Optional[str] = ..., port: _Optional[int] = ..., gpu_ids: _Optional[_Iterable[int]] = ..., message: _Optional[str] = ...) -> None: ...
 
 class CompleteRequest(_message.Message):
-    __slots__ = ("agent_alias", "prompt", "system_prompt", "max_tokens", "temperature", "priority")
+    __slots__ = ("agent_alias", "prompt", "system_prompt", "max_tokens", "temperature", "priority", "technique")
     AGENT_ALIAS_FIELD_NUMBER: _ClassVar[int]
     PROMPT_FIELD_NUMBER: _ClassVar[int]
     SYSTEM_PROMPT_FIELD_NUMBER: _ClassVar[int]
     MAX_TOKENS_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    TECHNIQUE_FIELD_NUMBER: _ClassVar[int]
     agent_alias: str
     prompt: str
     system_prompt: str
     max_tokens: int
     temperature: float
     priority: str
-    def __init__(self, agent_alias: _Optional[str] = ..., prompt: _Optional[str] = ..., system_prompt: _Optional[str] = ..., max_tokens: _Optional[int] = ..., temperature: _Optional[float] = ..., priority: _Optional[str] = ...) -> None: ...
+    technique: str
+    def __init__(self, agent_alias: _Optional[str] = ..., prompt: _Optional[str] = ..., system_prompt: _Optional[str] = ..., max_tokens: _Optional[int] = ..., temperature: _Optional[float] = ..., priority: _Optional[str] = ..., technique: _Optional[str] = ...) -> None: ...
 
 class CompleteResponse(_message.Message):
     __slots__ = ("text", "tokens_used", "latency_ms", "model", "job_id")
@@ -2297,6 +2320,308 @@ class MetaAgentQueryResponse(_message.Message):
     error: str
     def __init__(self, success: bool = ..., answer: _Optional[str] = ..., dot_graph: _Optional[str] = ..., markdown_tables: _Optional[_Iterable[str]] = ..., agent_insights: _Optional[_Mapping[str, bytes]] = ..., queries_executed: _Optional[_Iterable[str]] = ..., agents_used: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
 
+class MetaAgentStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class MetaAgentStatusResponse(_message.Message):
+    __slots__ = ("running", "metabase_connected", "last_sync_at", "last_audit_at", "next_audit_at", "budget", "models_synced", "dashboards_synced", "error")
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    METABASE_CONNECTED_FIELD_NUMBER: _ClassVar[int]
+    LAST_SYNC_AT_FIELD_NUMBER: _ClassVar[int]
+    LAST_AUDIT_AT_FIELD_NUMBER: _ClassVar[int]
+    NEXT_AUDIT_AT_FIELD_NUMBER: _ClassVar[int]
+    BUDGET_FIELD_NUMBER: _ClassVar[int]
+    MODELS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    DASHBOARDS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    running: bool
+    metabase_connected: bool
+    last_sync_at: str
+    last_audit_at: str
+    next_audit_at: str
+    budget: PooledBudgetStatus
+    models_synced: int
+    dashboards_synced: int
+    error: str
+    def __init__(self, running: bool = ..., metabase_connected: bool = ..., last_sync_at: _Optional[str] = ..., last_audit_at: _Optional[str] = ..., next_audit_at: _Optional[str] = ..., budget: _Optional[_Union[PooledBudgetStatus, _Mapping]] = ..., models_synced: _Optional[int] = ..., dashboards_synced: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class MetabaseSyncRequest(_message.Message):
+    __slots__ = ("full_refresh", "tables", "sync_dashboards")
+    FULL_REFRESH_FIELD_NUMBER: _ClassVar[int]
+    TABLES_FIELD_NUMBER: _ClassVar[int]
+    SYNC_DASHBOARDS_FIELD_NUMBER: _ClassVar[int]
+    full_refresh: bool
+    tables: _containers.RepeatedScalarFieldContainer[str]
+    sync_dashboards: bool
+    def __init__(self, full_refresh: bool = ..., tables: _Optional[_Iterable[str]] = ..., sync_dashboards: bool = ...) -> None: ...
+
+class MetabaseSyncResponse(_message.Message):
+    __slots__ = ("success", "models_created", "models_updated", "models_failed", "dashboards_synced", "duration_ms", "errors", "error", "models_synced", "dashboards_failed")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    MODELS_CREATED_FIELD_NUMBER: _ClassVar[int]
+    MODELS_UPDATED_FIELD_NUMBER: _ClassVar[int]
+    MODELS_FAILED_FIELD_NUMBER: _ClassVar[int]
+    DASHBOARDS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERRORS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    MODELS_SYNCED_FIELD_NUMBER: _ClassVar[int]
+    DASHBOARDS_FAILED_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    models_created: int
+    models_updated: int
+    models_failed: int
+    dashboards_synced: int
+    duration_ms: int
+    errors: _containers.RepeatedScalarFieldContainer[str]
+    error: str
+    models_synced: int
+    dashboards_failed: int
+    def __init__(self, success: bool = ..., models_created: _Optional[int] = ..., models_updated: _Optional[int] = ..., models_failed: _Optional[int] = ..., dashboards_synced: _Optional[int] = ..., duration_ms: _Optional[int] = ..., errors: _Optional[_Iterable[str]] = ..., error: _Optional[str] = ..., models_synced: _Optional[int] = ..., dashboards_failed: _Optional[int] = ...) -> None: ...
+
+class MetaAgentAuditRequest(_message.Message):
+    __slots__ = ("scope", "use_remote_llm", "lookback_days", "dry_run")
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    USE_REMOTE_LLM_FIELD_NUMBER: _ClassVar[int]
+    LOOKBACK_DAYS_FIELD_NUMBER: _ClassVar[int]
+    DRY_RUN_FIELD_NUMBER: _ClassVar[int]
+    scope: str
+    use_remote_llm: bool
+    lookback_days: int
+    dry_run: bool
+    def __init__(self, scope: _Optional[str] = ..., use_remote_llm: bool = ..., lookback_days: _Optional[int] = ..., dry_run: bool = ...) -> None: ...
+
+class AuditFinding(_message.Message):
+    __slots__ = ("category", "severity", "title", "description", "suggested_action", "evidence", "affected_component")
+    CATEGORY_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SUGGESTED_ACTION_FIELD_NUMBER: _ClassVar[int]
+    EVIDENCE_FIELD_NUMBER: _ClassVar[int]
+    AFFECTED_COMPONENT_FIELD_NUMBER: _ClassVar[int]
+    category: str
+    severity: str
+    title: str
+    description: str
+    suggested_action: str
+    evidence: bytes
+    affected_component: str
+    def __init__(self, category: _Optional[str] = ..., severity: _Optional[str] = ..., title: _Optional[str] = ..., description: _Optional[str] = ..., suggested_action: _Optional[str] = ..., evidence: _Optional[bytes] = ..., affected_component: _Optional[str] = ...) -> None: ...
+
+class AuditRecommendation(_message.Message):
+    __slots__ = ("id", "audit_id", "category", "severity", "title", "description", "suggested_implementation", "status", "created_at")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
+    CATEGORY_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    SUGGESTED_IMPLEMENTATION_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    audit_id: str
+    category: str
+    severity: str
+    title: str
+    description: str
+    suggested_implementation: str
+    status: str
+    created_at: str
+    def __init__(self, id: _Optional[str] = ..., audit_id: _Optional[str] = ..., category: _Optional[str] = ..., severity: _Optional[str] = ..., title: _Optional[str] = ..., description: _Optional[str] = ..., suggested_implementation: _Optional[str] = ..., status: _Optional[str] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class MetaAgentAuditResponse(_message.Message):
+    __slots__ = ("success", "audit_id", "scope", "summary", "findings", "recommendations", "kb_path", "tokens_used", "provider", "duration_ms", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
+    SCOPE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    FINDINGS_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATIONS_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    TOKENS_USED_FIELD_NUMBER: _ClassVar[int]
+    PROVIDER_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    audit_id: str
+    scope: str
+    summary: str
+    findings: _containers.RepeatedCompositeFieldContainer[AuditFinding]
+    recommendations: _containers.RepeatedCompositeFieldContainer[AuditRecommendation]
+    kb_path: str
+    tokens_used: int
+    provider: str
+    duration_ms: int
+    error: str
+    def __init__(self, success: bool = ..., audit_id: _Optional[str] = ..., scope: _Optional[str] = ..., summary: _Optional[str] = ..., findings: _Optional[_Iterable[_Union[AuditFinding, _Mapping]]] = ..., recommendations: _Optional[_Iterable[_Union[AuditRecommendation, _Mapping]]] = ..., kb_path: _Optional[str] = ..., tokens_used: _Optional[int] = ..., provider: _Optional[str] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class PooledBudgetStatus(_message.Message):
+    __slots__ = ("weekly_limit", "weekly_used", "weekly_remaining", "grok_calls", "cerebras_calls", "week_start", "last_reset", "usage_pct", "budget_health")
+    WEEKLY_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    WEEKLY_USED_FIELD_NUMBER: _ClassVar[int]
+    WEEKLY_REMAINING_FIELD_NUMBER: _ClassVar[int]
+    GROK_CALLS_FIELD_NUMBER: _ClassVar[int]
+    CEREBRAS_CALLS_FIELD_NUMBER: _ClassVar[int]
+    WEEK_START_FIELD_NUMBER: _ClassVar[int]
+    LAST_RESET_FIELD_NUMBER: _ClassVar[int]
+    USAGE_PCT_FIELD_NUMBER: _ClassVar[int]
+    BUDGET_HEALTH_FIELD_NUMBER: _ClassVar[int]
+    weekly_limit: int
+    weekly_used: int
+    weekly_remaining: int
+    grok_calls: int
+    cerebras_calls: int
+    week_start: str
+    last_reset: str
+    usage_pct: float
+    budget_health: str
+    def __init__(self, weekly_limit: _Optional[int] = ..., weekly_used: _Optional[int] = ..., weekly_remaining: _Optional[int] = ..., grok_calls: _Optional[int] = ..., cerebras_calls: _Optional[int] = ..., week_start: _Optional[str] = ..., last_reset: _Optional[str] = ..., usage_pct: _Optional[float] = ..., budget_health: _Optional[str] = ...) -> None: ...
+
+class GetPooledBudgetRequest(_message.Message):
+    __slots__ = ("pool_id",)
+    POOL_ID_FIELD_NUMBER: _ClassVar[int]
+    pool_id: str
+    def __init__(self, pool_id: _Optional[str] = ...) -> None: ...
+
+class GetPooledBudgetResponse(_message.Message):
+    __slots__ = ("success", "budget", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    BUDGET_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    budget: PooledBudgetStatus
+    error: str
+    def __init__(self, success: bool = ..., budget: _Optional[_Union[PooledBudgetStatus, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class QualityAssessment(_message.Message):
+    __slots__ = ("id", "source_type", "source_id", "coherence_score", "coverage_score", "novelty_score", "weighted_reward", "is_textbook_quality", "evaluator_type", "created_at")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    COHERENCE_SCORE_FIELD_NUMBER: _ClassVar[int]
+    COVERAGE_SCORE_FIELD_NUMBER: _ClassVar[int]
+    NOVELTY_SCORE_FIELD_NUMBER: _ClassVar[int]
+    WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
+    IS_TEXTBOOK_QUALITY_FIELD_NUMBER: _ClassVar[int]
+    EVALUATOR_TYPE_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    source_type: str
+    source_id: str
+    coherence_score: float
+    coverage_score: float
+    novelty_score: float
+    weighted_reward: float
+    is_textbook_quality: bool
+    evaluator_type: str
+    created_at: str
+    def __init__(self, id: _Optional[int] = ..., source_type: _Optional[str] = ..., source_id: _Optional[str] = ..., coherence_score: _Optional[float] = ..., coverage_score: _Optional[float] = ..., novelty_score: _Optional[float] = ..., weighted_reward: _Optional[float] = ..., is_textbook_quality: bool = ..., evaluator_type: _Optional[str] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class GetQualitySummaryRequest(_message.Message):
+    __slots__ = ("source_type", "limit")
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    source_type: str
+    limit: int
+    def __init__(self, source_type: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class QualitySourceSummary(_message.Message):
+    __slots__ = ("source_type", "total_assessments", "textbook_quality_count", "textbook_quality_pct", "avg_coherence", "avg_coverage", "avg_novelty", "avg_weighted_reward")
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_PCT_FIELD_NUMBER: _ClassVar[int]
+    AVG_COHERENCE_FIELD_NUMBER: _ClassVar[int]
+    AVG_COVERAGE_FIELD_NUMBER: _ClassVar[int]
+    AVG_NOVELTY_FIELD_NUMBER: _ClassVar[int]
+    AVG_WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
+    source_type: str
+    total_assessments: int
+    textbook_quality_count: int
+    textbook_quality_pct: float
+    avg_coherence: float
+    avg_coverage: float
+    avg_novelty: float
+    avg_weighted_reward: float
+    def __init__(self, source_type: _Optional[str] = ..., total_assessments: _Optional[int] = ..., textbook_quality_count: _Optional[int] = ..., textbook_quality_pct: _Optional[float] = ..., avg_coherence: _Optional[float] = ..., avg_coverage: _Optional[float] = ..., avg_novelty: _Optional[float] = ..., avg_weighted_reward: _Optional[float] = ...) -> None: ...
+
+class GetQualitySummaryResponse(_message.Message):
+    __slots__ = ("success", "total_assessments", "textbook_quality_count", "textbook_quality_pct", "avg_coherence", "avg_coverage", "avg_novelty", "avg_weighted_reward", "recent", "error", "assessments")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    TEXTBOOK_QUALITY_PCT_FIELD_NUMBER: _ClassVar[int]
+    AVG_COHERENCE_FIELD_NUMBER: _ClassVar[int]
+    AVG_COVERAGE_FIELD_NUMBER: _ClassVar[int]
+    AVG_NOVELTY_FIELD_NUMBER: _ClassVar[int]
+    AVG_WEIGHTED_REWARD_FIELD_NUMBER: _ClassVar[int]
+    RECENT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    ASSESSMENTS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    total_assessments: int
+    textbook_quality_count: int
+    textbook_quality_pct: float
+    avg_coherence: float
+    avg_coverage: float
+    avg_novelty: float
+    avg_weighted_reward: float
+    recent: _containers.RepeatedCompositeFieldContainer[QualityAssessment]
+    error: str
+    assessments: _containers.RepeatedCompositeFieldContainer[QualitySourceSummary]
+    def __init__(self, success: bool = ..., total_assessments: _Optional[int] = ..., textbook_quality_count: _Optional[int] = ..., textbook_quality_pct: _Optional[float] = ..., avg_coherence: _Optional[float] = ..., avg_coverage: _Optional[float] = ..., avg_novelty: _Optional[float] = ..., avg_weighted_reward: _Optional[float] = ..., recent: _Optional[_Iterable[_Union[QualityAssessment, _Mapping]]] = ..., error: _Optional[str] = ..., assessments: _Optional[_Iterable[_Union[QualitySourceSummary, _Mapping]]] = ...) -> None: ...
+
+class ListRecommendationsRequest(_message.Message):
+    __slots__ = ("status", "audit_id", "limit", "status_filter", "severity_filter")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    AUDIT_ID_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FILTER_FIELD_NUMBER: _ClassVar[int]
+    SEVERITY_FILTER_FIELD_NUMBER: _ClassVar[int]
+    status: str
+    audit_id: str
+    limit: int
+    status_filter: str
+    severity_filter: str
+    def __init__(self, status: _Optional[str] = ..., audit_id: _Optional[str] = ..., limit: _Optional[int] = ..., status_filter: _Optional[str] = ..., severity_filter: _Optional[str] = ...) -> None: ...
+
+class ListRecommendationsResponse(_message.Message):
+    __slots__ = ("success", "recommendations", "total_count", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_COUNT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    recommendations: _containers.RepeatedCompositeFieldContainer[AuditRecommendation]
+    total_count: int
+    error: str
+    def __init__(self, success: bool = ..., recommendations: _Optional[_Iterable[_Union[AuditRecommendation, _Mapping]]] = ..., total_count: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class UpdateRecommendationRequest(_message.Message):
+    __slots__ = ("recommendation_id", "new_status")
+    RECOMMENDATION_ID_FIELD_NUMBER: _ClassVar[int]
+    NEW_STATUS_FIELD_NUMBER: _ClassVar[int]
+    recommendation_id: str
+    new_status: str
+    def __init__(self, recommendation_id: _Optional[str] = ..., new_status: _Optional[str] = ...) -> None: ...
+
+class UpdateRecommendationResponse(_message.Message):
+    __slots__ = ("success", "recommendation", "error", "recommendation_id", "new_status")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    RECOMMENDATION_ID_FIELD_NUMBER: _ClassVar[int]
+    NEW_STATUS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    recommendation: AuditRecommendation
+    error: str
+    recommendation_id: str
+    new_status: str
+    def __init__(self, success: bool = ..., recommendation: _Optional[_Union[AuditRecommendation, _Mapping]] = ..., error: _Optional[str] = ..., recommendation_id: _Optional[str] = ..., new_status: _Optional[str] = ...) -> None: ...
+
 class CLTExtractRequest(_message.Message):
     __slots__ = ("text", "layer_indices", "top_k", "model_name", "device")
     TEXT_FIELD_NUMBER: _ClassVar[int]
@@ -3404,3 +3729,381 @@ class ProspectsUpdateEvent(_message.Message):
     data: bytes
     sitrep_path: str
     def __init__(self, type: _Optional[_Union[ProspectsUpdateEvent.Type, str]] = ..., timestamp_ms: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ..., symbol: _Optional[str] = ..., filing_type: _Optional[str] = ..., data: _Optional[bytes] = ..., sitrep_path: _Optional[str] = ...) -> None: ...
+
+class CollectionInfo(_message.Message):
+    __slots__ = ("collection_id", "slug", "name", "description", "status", "featured", "total_cards", "pending_cards", "published_cards", "created_at")
+    COLLECTION_ID_FIELD_NUMBER: _ClassVar[int]
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    FEATURED_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PENDING_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_CARDS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    collection_id: str
+    slug: str
+    name: str
+    description: str
+    status: str
+    featured: bool
+    total_cards: int
+    pending_cards: int
+    published_cards: int
+    created_at: str
+    def __init__(self, collection_id: _Optional[str] = ..., slug: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., status: _Optional[str] = ..., featured: bool = ..., total_cards: _Optional[int] = ..., pending_cards: _Optional[int] = ..., published_cards: _Optional[int] = ..., created_at: _Optional[str] = ...) -> None: ...
+
+class CardInfo(_message.Message):
+    __slots__ = ("card_id", "title", "summary", "source_url", "source_type", "image_url", "status", "published_at", "sequence")
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_URL_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_URL_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_AT_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_FIELD_NUMBER: _ClassVar[int]
+    card_id: str
+    title: str
+    summary: str
+    source_url: str
+    source_type: str
+    image_url: str
+    status: str
+    published_at: str
+    sequence: int
+    def __init__(self, card_id: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ..., source_url: _Optional[str] = ..., source_type: _Optional[str] = ..., image_url: _Optional[str] = ..., status: _Optional[str] = ..., published_at: _Optional[str] = ..., sequence: _Optional[int] = ...) -> None: ...
+
+class CollectionStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CollectionStatusResponse(_message.Message):
+    __slots__ = ("success", "total_collections", "total_cards", "pending_cards", "published_cards", "featured_collection", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_COLLECTIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PENDING_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_CARDS_FIELD_NUMBER: _ClassVar[int]
+    FEATURED_COLLECTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    total_collections: int
+    total_cards: int
+    pending_cards: int
+    published_cards: int
+    featured_collection: CollectionInfo
+    error: str
+    def __init__(self, success: bool = ..., total_collections: _Optional[int] = ..., total_cards: _Optional[int] = ..., pending_cards: _Optional[int] = ..., published_cards: _Optional[int] = ..., featured_collection: _Optional[_Union[CollectionInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionListRequest(_message.Message):
+    __slots__ = ("status", "limit")
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    status: str
+    limit: int
+    def __init__(self, status: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class CollectionListResponse(_message.Message):
+    __slots__ = ("success", "collections", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    COLLECTIONS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    collections: _containers.RepeatedCompositeFieldContainer[CollectionInfo]
+    error: str
+    def __init__(self, success: bool = ..., collections: _Optional[_Iterable[_Union[CollectionInfo, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionCreateRequest(_message.Message):
+    __slots__ = ("slug", "name", "description", "featured")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    FEATURED_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    name: str
+    description: str
+    featured: bool
+    def __init__(self, slug: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., featured: bool = ...) -> None: ...
+
+class CollectionCreateResponse(_message.Message):
+    __slots__ = ("success", "collection", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    collection: CollectionInfo
+    error: str
+    def __init__(self, success: bool = ..., collection: _Optional[_Union[CollectionInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionSetFeaturedRequest(_message.Message):
+    __slots__ = ("slug",)
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    def __init__(self, slug: _Optional[str] = ...) -> None: ...
+
+class CollectionSetFeaturedResponse(_message.Message):
+    __slots__ = ("success", "collection", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    collection: CollectionInfo
+    error: str
+    def __init__(self, success: bool = ..., collection: _Optional[_Union[CollectionInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionAddCardRequest(_message.Message):
+    __slots__ = ("slug", "title", "summary", "source_url", "source_type", "image_url")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_URL_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_TYPE_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_URL_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    title: str
+    summary: str
+    source_url: str
+    source_type: str
+    image_url: str
+    def __init__(self, slug: _Optional[str] = ..., title: _Optional[str] = ..., summary: _Optional[str] = ..., source_url: _Optional[str] = ..., source_type: _Optional[str] = ..., image_url: _Optional[str] = ...) -> None: ...
+
+class CollectionAddCardResponse(_message.Message):
+    __slots__ = ("success", "card", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    CARD_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    card: CardInfo
+    error: str
+    def __init__(self, success: bool = ..., card: _Optional[_Union[CardInfo, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionListCardsRequest(_message.Message):
+    __slots__ = ("slug", "status", "limit")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    status: str
+    limit: int
+    def __init__(self, slug: _Optional[str] = ..., status: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class CollectionListCardsResponse(_message.Message):
+    __slots__ = ("success", "cards", "total", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    CARDS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    cards: _containers.RepeatedCompositeFieldContainer[CardInfo]
+    total: int
+    error: str
+    def __init__(self, success: bool = ..., cards: _Optional[_Iterable[_Union[CardInfo, _Mapping]]] = ..., total: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionPublishCardsRequest(_message.Message):
+    __slots__ = ("count", "collection_slug")
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_SLUG_FIELD_NUMBER: _ClassVar[int]
+    count: int
+    collection_slug: str
+    def __init__(self, count: _Optional[int] = ..., collection_slug: _Optional[str] = ...) -> None: ...
+
+class CollectionPublishCardsResponse(_message.Message):
+    __slots__ = ("success", "published_cards", "published_count", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_CARDS_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    published_cards: _containers.RepeatedCompositeFieldContainer[CardInfo]
+    published_count: int
+    error: str
+    def __init__(self, success: bool = ..., published_cards: _Optional[_Iterable[_Union[CardInfo, _Mapping]]] = ..., published_count: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionPublishVizRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CollectionPublishVizResponse(_message.Message):
+    __slots__ = ("success", "points_count", "clusters_count", "published_at", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    POINTS_COUNT_FIELD_NUMBER: _ClassVar[int]
+    CLUSTERS_COUNT_FIELD_NUMBER: _ClassVar[int]
+    PUBLISHED_AT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    points_count: int
+    clusters_count: int
+    published_at: str
+    error: str
+    def __init__(self, success: bool = ..., points_count: _Optional[int] = ..., clusters_count: _Optional[int] = ..., published_at: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class CollectionSyncThemeRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class CollectionSyncThemeResponse(_message.Message):
+    __slots__ = ("success", "theme_id", "title", "namespace_id", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    THEME_ID_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    NAMESPACE_ID_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    theme_id: str
+    title: str
+    namespace_id: str
+    error: str
+    def __init__(self, success: bool = ..., theme_id: _Optional[str] = ..., title: _Optional[str] = ..., namespace_id: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ArticleInfo(_message.Message):
+    __slots__ = ("slug", "title", "status", "zk_count", "sources_count")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    ZK_COUNT_FIELD_NUMBER: _ClassVar[int]
+    SOURCES_COUNT_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    title: str
+    status: str
+    zk_count: int
+    sources_count: int
+    def __init__(self, slug: _Optional[str] = ..., title: _Optional[str] = ..., status: _Optional[str] = ..., zk_count: _Optional[int] = ..., sources_count: _Optional[int] = ...) -> None: ...
+
+class CurationRunInfo(_message.Message):
+    __slots__ = ("run_id", "slug", "completed_at", "cards_created")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_AT_FIELD_NUMBER: _ClassVar[int]
+    CARDS_CREATED_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    slug: str
+    completed_at: str
+    cards_created: int
+    def __init__(self, run_id: _Optional[str] = ..., slug: _Optional[str] = ..., completed_at: _Optional[str] = ..., cards_created: _Optional[int] = ...) -> None: ...
+
+class ArticleStatusRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ArticleStatusResponse(_message.Message):
+    __slots__ = ("success", "running", "current_run_id", "current_step", "articles_pending", "articles", "recent_curations", "total_cards_pending", "total_cards_published", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_STEP_FIELD_NUMBER: _ClassVar[int]
+    ARTICLES_PENDING_FIELD_NUMBER: _ClassVar[int]
+    ARTICLES_FIELD_NUMBER: _ClassVar[int]
+    RECENT_CURATIONS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_PENDING_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_CARDS_PUBLISHED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    running: bool
+    current_run_id: str
+    current_step: str
+    articles_pending: int
+    articles: _containers.RepeatedCompositeFieldContainer[ArticleInfo]
+    recent_curations: _containers.RepeatedCompositeFieldContainer[CurationRunInfo]
+    total_cards_pending: int
+    total_cards_published: int
+    error: str
+    def __init__(self, success: bool = ..., running: bool = ..., current_run_id: _Optional[str] = ..., current_step: _Optional[str] = ..., articles_pending: _Optional[int] = ..., articles: _Optional[_Iterable[_Union[ArticleInfo, _Mapping]]] = ..., recent_curations: _Optional[_Iterable[_Union[CurationRunInfo, _Mapping]]] = ..., total_cards_pending: _Optional[int] = ..., total_cards_published: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ArticleNewRequest(_message.Message):
+    __slots__ = ("slug", "title")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    title: str
+    def __init__(self, slug: _Optional[str] = ..., title: _Optional[str] = ...) -> None: ...
+
+class ArticleNewResponse(_message.Message):
+    __slots__ = ("success", "slug", "title", "kb_path", "article_id", "collection_id", "message", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    KB_PATH_FIELD_NUMBER: _ClassVar[int]
+    ARTICLE_ID_FIELD_NUMBER: _ClassVar[int]
+    COLLECTION_ID_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    slug: str
+    title: str
+    kb_path: str
+    article_id: str
+    collection_id: str
+    message: str
+    error: str
+    def __init__(self, success: bool = ..., slug: _Optional[str] = ..., title: _Optional[str] = ..., kb_path: _Optional[str] = ..., article_id: _Optional[str] = ..., collection_id: _Optional[str] = ..., message: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class ArticleCurationEvent(_message.Message):
+    __slots__ = ("run_id", "step", "step_number", "total_steps", "progress", "message")
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_FIELD_NUMBER: _ClassVar[int]
+    STEP_NUMBER_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_STEPS_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    run_id: str
+    step: str
+    step_number: int
+    total_steps: int
+    progress: float
+    message: str
+    def __init__(self, run_id: _Optional[str] = ..., step: _Optional[str] = ..., step_number: _Optional[int] = ..., total_steps: _Optional[int] = ..., progress: _Optional[float] = ..., message: _Optional[str] = ...) -> None: ...
+
+class ArticleCurateRequest(_message.Message):
+    __slots__ = ("slug", "skip_grok", "max_sources")
+    SLUG_FIELD_NUMBER: _ClassVar[int]
+    SKIP_GROK_FIELD_NUMBER: _ClassVar[int]
+    MAX_SOURCES_FIELD_NUMBER: _ClassVar[int]
+    slug: str
+    skip_grok: bool
+    max_sources: int
+    def __init__(self, slug: _Optional[str] = ..., skip_grok: bool = ..., max_sources: _Optional[int] = ...) -> None: ...
+
+class RenderCardsRequest(_message.Message):
+    __slots__ = ("collection_slug", "card_id", "sample", "variants", "force", "upload")
+    COLLECTION_SLUG_FIELD_NUMBER: _ClassVar[int]
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_FIELD_NUMBER: _ClassVar[int]
+    VARIANTS_FIELD_NUMBER: _ClassVar[int]
+    FORCE_FIELD_NUMBER: _ClassVar[int]
+    UPLOAD_FIELD_NUMBER: _ClassVar[int]
+    collection_slug: str
+    card_id: str
+    sample: int
+    variants: _containers.RepeatedScalarFieldContainer[str]
+    force: bool
+    upload: bool
+    def __init__(self, collection_slug: _Optional[str] = ..., card_id: _Optional[str] = ..., sample: _Optional[int] = ..., variants: _Optional[_Iterable[str]] = ..., force: bool = ..., upload: bool = ...) -> None: ...
+
+class RenderCardEvent(_message.Message):
+    __slots__ = ("phase", "card_id", "message", "progress", "variant", "output_path", "image_url", "cards_done", "cards_total", "duration_ms", "error")
+    PHASE_FIELD_NUMBER: _ClassVar[int]
+    CARD_ID_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    VARIANT_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_PATH_FIELD_NUMBER: _ClassVar[int]
+    IMAGE_URL_FIELD_NUMBER: _ClassVar[int]
+    CARDS_DONE_FIELD_NUMBER: _ClassVar[int]
+    CARDS_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    phase: RenderPhase
+    card_id: str
+    message: str
+    progress: float
+    variant: str
+    output_path: str
+    image_url: str
+    cards_done: int
+    cards_total: int
+    duration_ms: int
+    error: str
+    def __init__(self, phase: _Optional[_Union[RenderPhase, str]] = ..., card_id: _Optional[str] = ..., message: _Optional[str] = ..., progress: _Optional[float] = ..., variant: _Optional[str] = ..., output_path: _Optional[str] = ..., image_url: _Optional[str] = ..., cards_done: _Optional[int] = ..., cards_total: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...

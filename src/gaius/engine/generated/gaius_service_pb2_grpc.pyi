@@ -185,6 +185,22 @@ class GaiusServiceStub:
     ─────────────────────────────────────────────────────────────────────────
     """
     MetaAgentQueryStream: grpc.UnaryStreamMultiCallable[gaius_service_pb2.MetaAgentQueryRequest, gaius_service_pb2.MetaAgentEvent]
+    MetaAgentStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentStatusRequest, gaius_service_pb2.MetaAgentStatusResponse]
+    """MetaAgent Service (Metabase Sync & Weekly Audit)
+    Daemon status
+    """
+    MetabaseSyncTrigger: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetabaseSyncRequest, gaius_service_pb2.MetabaseSyncResponse]
+    """Manual sync trigger"""
+    MetaAgentAuditTrigger: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentAuditRequest, gaius_service_pb2.MetaAgentAuditResponse]
+    """Manual audit trigger"""
+    GetPooledBudget: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetPooledBudgetRequest, gaius_service_pb2.GetPooledBudgetResponse]
+    """Budget status"""
+    GetQualitySummary: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetQualitySummaryRequest, gaius_service_pb2.GetQualitySummaryResponse]
+    """Quality metrics"""
+    ListRecommendations: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ListRecommendationsRequest, gaius_service_pb2.ListRecommendationsResponse]
+    """Audit recommendations"""
+    UpdateRecommendation: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.UpdateRecommendationRequest, gaius_service_pb2.UpdateRecommendationResponse]
+    """Update rec status"""
     CLTExtract: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CLTExtractRequest, gaius_service_pb2.CLTExtractResponse]
     """─────────────────────────────────────────────────────────────────────────
     CLT (Cross-Layer Transcoders)
@@ -278,6 +294,38 @@ class GaiusServiceStub:
     """Daily check with local LLM"""
     ProspectsUpdate: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ProspectsUpdateRequest, gaius_service_pb2.ProspectsUpdateEvent]
     """Full billable analysis (streaming)"""
+    CollectionStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionStatusRequest, gaius_service_pb2.CollectionStatusResponse]
+    """─────────────────────────────────────────────────────────────────────────
+    Collections (Public Content Landing Page)
+    ─────────────────────────────────────────────────────────────────────────
+    Get overall statistics
+    """
+    CollectionList: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListRequest, gaius_service_pb2.CollectionListResponse]
+    """List all collections"""
+    CollectionCreate: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionCreateRequest, gaius_service_pb2.CollectionCreateResponse]
+    """Create new collection"""
+    CollectionSetFeatured: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSetFeaturedRequest, gaius_service_pb2.CollectionSetFeaturedResponse]
+    """Set featured collection"""
+    CollectionAddCard: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionAddCardRequest, gaius_service_pb2.CollectionAddCardResponse]
+    """Add card to collection"""
+    CollectionListCards: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListCardsRequest, gaius_service_pb2.CollectionListCardsResponse]
+    """List cards in collection"""
+    CollectionPublishCards: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishCardsRequest, gaius_service_pb2.CollectionPublishCardsResponse]
+    """Publish pending cards"""
+    CollectionPublishViz: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishVizRequest, gaius_service_pb2.CollectionPublishVizResponse]
+    """Update 3D viz data"""
+    CollectionSyncTheme: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSyncThemeRequest, gaius_service_pb2.CollectionSyncThemeResponse]
+    """Sync HOCON theme to KV"""
+    ArticleStatus: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleStatusRequest, gaius_service_pb2.ArticleStatusResponse]
+    """─────────────────────────────────────────────────────────────────────────
+    Article Curation (gRPC-First, Engine Owns Filesystem)
+    ─────────────────────────────────────────────────────────────────────────
+    Situational awareness for /article sitrep
+    """
+    ArticleNew: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleNewRequest, gaius_service_pb2.ArticleNewResponse]
+    """Create article (engine writes to KB)"""
+    ArticleCurate: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ArticleCurateRequest, gaius_service_pb2.ArticleCurationEvent]
+    """Stream curation progress events"""
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -436,6 +484,22 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     ─────────────────────────────────────────────────────────────────────────
     """
     MetaAgentQueryStream: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.MetaAgentQueryRequest, gaius_service_pb2.MetaAgentEvent]  # type: ignore[assignment]
+    MetaAgentStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentStatusRequest, gaius_service_pb2.MetaAgentStatusResponse]  # type: ignore[assignment]
+    """MetaAgent Service (Metabase Sync & Weekly Audit)
+    Daemon status
+    """
+    MetabaseSyncTrigger: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetabaseSyncRequest, gaius_service_pb2.MetabaseSyncResponse]  # type: ignore[assignment]
+    """Manual sync trigger"""
+    MetaAgentAuditTrigger: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentAuditRequest, gaius_service_pb2.MetaAgentAuditResponse]  # type: ignore[assignment]
+    """Manual audit trigger"""
+    GetPooledBudget: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetPooledBudgetRequest, gaius_service_pb2.GetPooledBudgetResponse]  # type: ignore[assignment]
+    """Budget status"""
+    GetQualitySummary: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetQualitySummaryRequest, gaius_service_pb2.GetQualitySummaryResponse]  # type: ignore[assignment]
+    """Quality metrics"""
+    ListRecommendations: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ListRecommendationsRequest, gaius_service_pb2.ListRecommendationsResponse]  # type: ignore[assignment]
+    """Audit recommendations"""
+    UpdateRecommendation: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.UpdateRecommendationRequest, gaius_service_pb2.UpdateRecommendationResponse]  # type: ignore[assignment]
+    """Update rec status"""
     CLTExtract: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CLTExtractRequest, gaius_service_pb2.CLTExtractResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
     CLT (Cross-Layer Transcoders)
@@ -529,6 +593,38 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Daily check with local LLM"""
     ProspectsUpdate: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ProspectsUpdateRequest, gaius_service_pb2.ProspectsUpdateEvent]  # type: ignore[assignment]
     """Full billable analysis (streaming)"""
+    CollectionStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionStatusRequest, gaius_service_pb2.CollectionStatusResponse]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Collections (Public Content Landing Page)
+    ─────────────────────────────────────────────────────────────────────────
+    Get overall statistics
+    """
+    CollectionList: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListRequest, gaius_service_pb2.CollectionListResponse]  # type: ignore[assignment]
+    """List all collections"""
+    CollectionCreate: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionCreateRequest, gaius_service_pb2.CollectionCreateResponse]  # type: ignore[assignment]
+    """Create new collection"""
+    CollectionSetFeatured: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSetFeaturedRequest, gaius_service_pb2.CollectionSetFeaturedResponse]  # type: ignore[assignment]
+    """Set featured collection"""
+    CollectionAddCard: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionAddCardRequest, gaius_service_pb2.CollectionAddCardResponse]  # type: ignore[assignment]
+    """Add card to collection"""
+    CollectionListCards: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionListCardsRequest, gaius_service_pb2.CollectionListCardsResponse]  # type: ignore[assignment]
+    """List cards in collection"""
+    CollectionPublishCards: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishCardsRequest, gaius_service_pb2.CollectionPublishCardsResponse]  # type: ignore[assignment]
+    """Publish pending cards"""
+    CollectionPublishViz: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionPublishVizRequest, gaius_service_pb2.CollectionPublishVizResponse]  # type: ignore[assignment]
+    """Update 3D viz data"""
+    CollectionSyncTheme: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CollectionSyncThemeRequest, gaius_service_pb2.CollectionSyncThemeResponse]  # type: ignore[assignment]
+    """Sync HOCON theme to KV"""
+    ArticleStatus: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleStatusRequest, gaius_service_pb2.ArticleStatusResponse]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Article Curation (gRPC-First, Engine Owns Filesystem)
+    ─────────────────────────────────────────────────────────────────────────
+    Situational awareness for /article sitrep
+    """
+    ArticleNew: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ArticleNewRequest, gaius_service_pb2.ArticleNewResponse]  # type: ignore[assignment]
+    """Create article (engine writes to KB)"""
+    ArticleCurate: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ArticleCurateRequest, gaius_service_pb2.ArticleCurationEvent]  # type: ignore[assignment]
+    """Stream curation progress events"""
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     """═══════════════════════════════════════════════════════════════════════════
@@ -1058,6 +1154,64 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
     ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.MetaAgentEvent], collections.abc.AsyncIterator[gaius_service_pb2.MetaAgentEvent]]: ...
 
     @abc.abstractmethod
+    def MetaAgentStatus(
+        self,
+        request: gaius_service_pb2.MetaAgentStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.MetaAgentStatusResponse, collections.abc.Awaitable[gaius_service_pb2.MetaAgentStatusResponse]]:
+        """MetaAgent Service (Metabase Sync & Weekly Audit)
+        Daemon status
+        """
+
+    @abc.abstractmethod
+    def MetabaseSyncTrigger(
+        self,
+        request: gaius_service_pb2.MetabaseSyncRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.MetabaseSyncResponse, collections.abc.Awaitable[gaius_service_pb2.MetabaseSyncResponse]]:
+        """Manual sync trigger"""
+
+    @abc.abstractmethod
+    def MetaAgentAuditTrigger(
+        self,
+        request: gaius_service_pb2.MetaAgentAuditRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.MetaAgentAuditResponse, collections.abc.Awaitable[gaius_service_pb2.MetaAgentAuditResponse]]:
+        """Manual audit trigger"""
+
+    @abc.abstractmethod
+    def GetPooledBudget(
+        self,
+        request: gaius_service_pb2.GetPooledBudgetRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.GetPooledBudgetResponse, collections.abc.Awaitable[gaius_service_pb2.GetPooledBudgetResponse]]:
+        """Budget status"""
+
+    @abc.abstractmethod
+    def GetQualitySummary(
+        self,
+        request: gaius_service_pb2.GetQualitySummaryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.GetQualitySummaryResponse, collections.abc.Awaitable[gaius_service_pb2.GetQualitySummaryResponse]]:
+        """Quality metrics"""
+
+    @abc.abstractmethod
+    def ListRecommendations(
+        self,
+        request: gaius_service_pb2.ListRecommendationsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ListRecommendationsResponse, collections.abc.Awaitable[gaius_service_pb2.ListRecommendationsResponse]]:
+        """Audit recommendations"""
+
+    @abc.abstractmethod
+    def UpdateRecommendation(
+        self,
+        request: gaius_service_pb2.UpdateRecommendationRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.UpdateRecommendationResponse, collections.abc.Awaitable[gaius_service_pb2.UpdateRecommendationResponse]]:
+        """Update rec status"""
+
+    @abc.abstractmethod
     def CLTExtract(
         self,
         request: gaius_service_pb2.CLTExtractRequest,
@@ -1401,5 +1555,109 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ProspectsUpdateEvent], collections.abc.AsyncIterator[gaius_service_pb2.ProspectsUpdateEvent]]:
         """Full billable analysis (streaming)"""
+
+    @abc.abstractmethod
+    def CollectionStatus(
+        self,
+        request: gaius_service_pb2.CollectionStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionStatusResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionStatusResponse]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Collections (Public Content Landing Page)
+        ─────────────────────────────────────────────────────────────────────────
+        Get overall statistics
+        """
+
+    @abc.abstractmethod
+    def CollectionList(
+        self,
+        request: gaius_service_pb2.CollectionListRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionListResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionListResponse]]:
+        """List all collections"""
+
+    @abc.abstractmethod
+    def CollectionCreate(
+        self,
+        request: gaius_service_pb2.CollectionCreateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionCreateResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionCreateResponse]]:
+        """Create new collection"""
+
+    @abc.abstractmethod
+    def CollectionSetFeatured(
+        self,
+        request: gaius_service_pb2.CollectionSetFeaturedRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionSetFeaturedResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionSetFeaturedResponse]]:
+        """Set featured collection"""
+
+    @abc.abstractmethod
+    def CollectionAddCard(
+        self,
+        request: gaius_service_pb2.CollectionAddCardRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionAddCardResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionAddCardResponse]]:
+        """Add card to collection"""
+
+    @abc.abstractmethod
+    def CollectionListCards(
+        self,
+        request: gaius_service_pb2.CollectionListCardsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionListCardsResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionListCardsResponse]]:
+        """List cards in collection"""
+
+    @abc.abstractmethod
+    def CollectionPublishCards(
+        self,
+        request: gaius_service_pb2.CollectionPublishCardsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionPublishCardsResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionPublishCardsResponse]]:
+        """Publish pending cards"""
+
+    @abc.abstractmethod
+    def CollectionPublishViz(
+        self,
+        request: gaius_service_pb2.CollectionPublishVizRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionPublishVizResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionPublishVizResponse]]:
+        """Update 3D viz data"""
+
+    @abc.abstractmethod
+    def CollectionSyncTheme(
+        self,
+        request: gaius_service_pb2.CollectionSyncThemeRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CollectionSyncThemeResponse, collections.abc.Awaitable[gaius_service_pb2.CollectionSyncThemeResponse]]:
+        """Sync HOCON theme to KV"""
+
+    @abc.abstractmethod
+    def ArticleStatus(
+        self,
+        request: gaius_service_pb2.ArticleStatusRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ArticleStatusResponse, collections.abc.Awaitable[gaius_service_pb2.ArticleStatusResponse]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Article Curation (gRPC-First, Engine Owns Filesystem)
+        ─────────────────────────────────────────────────────────────────────────
+        Situational awareness for /article sitrep
+        """
+
+    @abc.abstractmethod
+    def ArticleNew(
+        self,
+        request: gaius_service_pb2.ArticleNewRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ArticleNewResponse, collections.abc.Awaitable[gaius_service_pb2.ArticleNewResponse]]:
+        """Create article (engine writes to KB)"""
+
+    @abc.abstractmethod
+    def ArticleCurate(
+        self,
+        request: gaius_service_pb2.ArticleCurateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ArticleCurationEvent], collections.abc.AsyncIterator[gaius_service_pb2.ArticleCurationEvent]]:
+        """Stream curation progress events"""
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

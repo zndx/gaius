@@ -9,7 +9,7 @@ Extended the content pipeline BDD test infrastructure to support tier-1 (DB only
 ```
 ./scripts/run_pipeline_tests.sh --tier 2
 
-✓ PostgreSQL already running on port 5438
+✓ PostgreSQL already running on port 5444
 ✓ MinIO already running on port 9010
 
 1 feature passed, 0 failed, 0 skipped
@@ -56,7 +56,7 @@ The tier-2 tests use simplified in-test scoring until a schema migration adds th
 
 ## Test Isolation
 
-- **PostgreSQL**: Uses devenv postgres on port 5438
+- **PostgreSQL**: Uses devenv postgres on port 5444
 - **MinIO**: Uses `zndx-gaius-test` bucket with per-scenario prefixes
 - **KB**: Creates isolated directories under `build/test/scratch/{date}/{scenario_id}/`
 

@@ -998,11 +998,15 @@ class GaiusApp(App):
             return False
 
     async def _async_full_init(self) -> None:
-        """Async wrapper for _run_full_init with progress tracking."""
+        """Run full init pipeline via engine gRPC InitProgressStream.
+
+        All GPU work (ColNomic embedding) runs engine-side with proper
+        orchestrator GPU coordination. The TUI only streams progress
+        and reloads state from Postgres cache after completion.
+        """
         from datetime import datetime
         from .core.state import BackgroundTask
 
-        # Create background task
         task = BackgroundTask(
             id="init",
             name="Platform Init",
@@ -1011,188 +1015,61 @@ class GaiusApp(App):
         )
         self.state.background_tasks = [task]
 
-        # Force ThinkPanel refresh
         try:
             think_panel = self.query_one("#think-panel", ThinkPanel)
             think_panel.refresh()
         except Exception:
             pass
 
-        # Run in thread pool with stderr suppression
-        import asyncio
-        import sys
-        import io
+        try:
+            from .client.grpc_client import get_grpc_client
 
-        def run_init():
-            # Suppress stderr to prevent warnings from flooding the TUI
-            # (tokenizers, transformers, etc. write warnings to stderr)
-            old_stderr = sys.stderr
-            sys.stderr = io.StringIO()
+            task.message = "Connecting to engine..."
+            task.progress = 0.01
 
-            # Track workload for resource management
-            workload_id = None
+            client = await get_grpc_client()
 
-            try:
-                from .inference.search import get_vector_search
-                from .core.cache import save_cached_state
-                import numpy as np
+            async for progress in client.init_with_progress(
+                kb_root=self.config.kb.root,
+                force=True,
+                embedding_model=self.config.vector_store.colnomic_model,
+                projection_method=self.config.tda.projection_method,
+            ):
+                phase = progress["phase"]
+                task.progress = progress["progress"]
+                task.message = progress["message"]
 
-                # Request GPU resources from engine (triggers preemption if needed)
-                task.message = "Step 0/6: Requesting GPU resources..."
-                task.progress = 0.05
-                try:
-                    from .client.engine_proxy import (
-                        begin_workload_sync,
-                        complete_workload_sync,
-                        use_engine_proxy,
-                    )
-                    if use_engine_proxy():
-                        workload_id = f"init-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-                        result = begin_workload_sync(
-                            workload_id=workload_id,
-                            workload_type="INIT",
-                            required_capabilities=["TEXT_EMBEDDING"],
-                            priority="CRITICAL",
-                            estimated_duration_s=300,
-                            estimated_memory_mb=2000,
-                        )
-                        if result.evicted_endpoints:
-                            task.message = f"Evicted {len(result.evicted_endpoints)} endpoints for init"
-                except Exception as e:
-                    # If workload request fails, continue anyway (may still work)
-                    print(f"Workload request failed: {e}")
-
-                task.message = "Step 1/6: Indexing KB documents..."
-                task.progress = 0.1
-
-                vector_search = get_vector_search(self.config.kb.root)
-                vector_search.index_kb()
-
-                try:
-                    info = vector_search.client.get_collection(vector_search.collection_name)
-                    if info.points_count == 0:
-                        task.status = "failed"
-                        task.error = "No documents in Qdrant"
-                        return False
-                except Exception as e:
+                if phase == "error":
                     task.status = "failed"
-                    task.error = f"Qdrant error: {e}"
-                    return False
+                    task.error = progress["message"]
+                    break
 
-                task.message = "Step 2/5: Loading embeddings..."
-                task.progress = 0.25
+                if phase == "complete":
+                    task.progress = 1.0
+                    task.status = "completed"
+                    task.completed_at = datetime.now()
+                    task.message = progress["message"]
+                    break
 
-                grid_manager = get_grid_manager(
-                    method=self.config.tda.projection_method,
-                    kb_root=self.config.kb.root,
-                )
-                grid_manager.invalidate_cache()
-
-                task.message = "Step 3/5: Projecting to 19x19 grid (UMAP)..."
-                task.progress = 0.4
-                grid_data = grid_manager.reindex_and_project()
-
-                if grid_data.n_documents == 0:
+            # Reload state from Postgres (engine saved it)
+            if task.status == "completed":
+                from .storage.grid_state import load_current_state_fast
+                cached = await load_current_state_fast(self.config.kb.root)
+                if cached and cached.n_documents > 0:
+                    self._populate_state_from_cache(cached)
+                    self._refresh_grid()
+                else:
                     task.status = "failed"
-                    task.error = "Projection failed"
-                    return False
+                    task.error = "Engine completed but no cached state found"
 
-                if grid_data.raw_embeddings is None or len(grid_data.raw_embeddings) < 3:
-                    task.status = "failed"
-                    task.error = "No embeddings"
-                    return False
-
-                task.message = "Step 4/6: Computing TDA (H0/H1/H2)..."
-                task.progress = 0.6
-
-                from .core.tda import get_tda_manager
-                tda_manager = get_tda_manager()
-                tda_manager.invalidate_cache()
-
-                grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                tda_features = tda_manager.compute_features(
-                    grid_data.raw_embeddings,
-                    grid_coords,
-                    force_refresh=True,
-                )
-
-                task.message = "Step 5/6: Computing differential geometry (κ, ∇)..."
-                task.progress = 0.75
-
-                # Compute geometry features
-                try:
-                    from .core.geometry import GeometryComputer
-                    geom_computer = GeometryComputer(k_neighbors=15)
-
-                    import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    geom_features = loop.run_until_complete(
-                        geom_computer.compute_features(
-                            grid_data.raw_embeddings,
-                            grid_coords
-                        )
-                    )
-                    loop.close()
-                except Exception as e:
-                    print(f"Geometry computation failed (skipping): {e}")
-                    geom_features = None
-
-                task.message = "Step 6/6: Saving to cache..."
-                task.progress = 0.9
-
-                save_cached_state(
-                    self.config.kb.root,
-                    grid_data,
-                    tda_features,
-                    self.config.vector_store.colnomic_model,
-                    self.config.tda.projection_method,
-                )
-
-                # Apply to state
-                self.state.black_stones = grid_data.document_positions
-                self.state.white_stones = grid_data.cluster_centers
-                self.state.allocations = grid_data.allocations
-                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
-                self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
-                self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
-                self.state.tda_entropy = tda_features.entropy
-                self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
-
-                # Populate geometry state
-                if geom_features:
-                    self._populate_geometry_state(geom_features, grid_data)
-
-                self._refresh_grid()
-
-                task.progress = 1.0
-                task.status = "completed"
-                task.completed_at = datetime.now()
-                task.message = f"Complete: {grid_data.n_documents} docs, entropy={tda_features.entropy:.2f}"
-                return True
-
-            except Exception as e:
-                task.status = "failed"
-                task.error = str(e)
-                task.completed_at = datetime.now()
-                return False
-            finally:
-                # Release workload resources (restores evicted endpoints)
-                if workload_id:
-                    try:
-                        complete_workload_sync(workload_id)
-                    except Exception:
-                        pass  # Best effort
-
-                # Restore stderr
-                sys.stderr = old_stderr
-
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, run_init)
+        except Exception as e:
+            task.status = "failed"
+            task.error = str(e)
+            task.completed_at = datetime.now()
 
         # Show result
         content = self.query_one("#info-panel", InfoPanel)
-        if success:
+        if task.status == "completed":
             content.show_file(
                 "init.txt",
                 f"Platform initialized!\n\n"
@@ -1206,7 +1083,6 @@ class GaiusApp(App):
         else:
             content.show_file("init.txt", f"Init failed: {task.error}")
 
-        # Keep task visible for a bit
         await asyncio.sleep(5)
         if task in self.state.background_tasks:
             self.state.background_tasks.remove(task)
@@ -1281,11 +1157,14 @@ class GaiusApp(App):
             return False
 
     async def _async_refresh_from_embeddings(self) -> None:
-        """Async wrapper for _refresh_from_embeddings with progress tracking."""
+        """Reindex KB via engine gRPC ReindexStream.
+
+        All GPU work runs engine-side with orchestrator GPU coordination.
+        The TUI streams progress and reloads state from Postgres cache.
+        """
         from datetime import datetime
         from .core.state import BackgroundTask
 
-        # Create background task
         task = BackgroundTask(
             id="reindex",
             name="Reindexing KB",
@@ -1294,101 +1173,60 @@ class GaiusApp(App):
         )
         self.state.background_tasks = [task]
 
-        # Force ThinkPanel refresh
         try:
             think_panel = self.query_one("#think-panel", ThinkPanel)
             think_panel.refresh()
         except Exception:
             pass
 
-        # Run in thread pool to avoid blocking
-        import asyncio
-        from functools import partial
+        try:
+            from .client.grpc_client import get_grpc_client
 
-        def run_reindex():
-            try:
-                task.message = "Step 1/4: Loading embeddings from Qdrant..."
-                task.progress = 0.1
+            task.message = "Connecting to engine..."
+            task.progress = 0.01
 
-                from .core.cache import save_cached_state
-                import numpy as np
+            client = await get_grpc_client()
 
-                grid_manager = get_grid_manager(
-                    method=self.config.tda.projection_method,
-                    kb_root=self.config.kb.root,
-                )
+            async for progress in client.reindex_with_progress(
+                kb_root=self.config.kb.root,
+                force=True,
+                embedding_model=self.config.vector_store.colnomic_model,
+            ):
+                phase = progress["phase"]
+                task.progress = progress["progress"]
+                task.message = progress["message"]
 
-                task.message = "Step 2/4: Projecting to 19x19 grid (UMAP)..."
-                task.progress = 0.3
-                grid_data = grid_manager.reindex_and_project()
-
-                if grid_data.n_documents == 0:
+                if phase == "error":
                     task.status = "failed"
-                    task.error = "No documents found"
-                    return False
+                    task.error = progress["message"]
+                    break
 
-                self.state.black_stones = grid_data.document_positions
-                self.state.allocations = grid_data.allocations
-                self.state.iso_features = grid_data.iso_features  # Multi-vector TDA
+                if phase == "complete":
+                    task.progress = 1.0
+                    task.status = "completed"
+                    task.completed_at = datetime.now()
+                    task.message = progress["message"]
+                    break
 
-                # Refresh TDA
-                task.message = "Step 3/4: Computing TDA features (H0/H1/H2)..."
-                task.progress = 0.6
+            # Reload state from Postgres (engine saved it)
+            if task.status == "completed":
+                from .storage.grid_state import load_current_state_fast
+                cached = await load_current_state_fast(self.config.kb.root)
+                if cached and cached.n_documents > 0:
+                    self._populate_state_from_cache(cached)
+                    self._refresh_grid()
+                else:
+                    task.status = "failed"
+                    task.error = "Engine completed but no cached state found"
 
-                tda_features = None
-                try:
-                    from .core.tda import get_tda_manager
-                    tda_manager = get_tda_manager()
-                    if grid_data.raw_embeddings is not None and len(grid_data.raw_embeddings) >= 3:
-                        grid_coords = np.array([(p.x, p.y) for p in grid_data.points])
-                        tda_features = tda_manager.compute_features(
-                            grid_data.raw_embeddings,
-                            grid_coords,
-                            force_refresh=True,
-                        )
-                        self.state.h1_cycles = [dl.to_tuple() for dl in tda_features.h1_cycles]
-                        self.state.h2_voids = [v.to_tuple() for v in tda_features.h2_voids]
-                        self.state.tda_entropy = tda_features.entropy
-                        self._compute_risk_map(tda_features, grid_data.embedding_to_grid)
-                except Exception as e:
-                    task.error = f"TDA failed: {e}"
-
-                # Update cache
-                task.message = "Step 4/4: Saving to cache..."
-                task.progress = 0.9
-
-                if tda_features is not None:
-                    try:
-                        save_cached_state(
-                            self.config.kb.root,
-                            grid_data,
-                            tda_features,
-                            self.config.vector_store.colnomic_model,
-                            self.config.tda.projection_method,
-                        )
-                    except Exception:
-                        pass
-
-                self._refresh_grid()
-                task.progress = 1.0
-                task.status = "completed"
-                task.completed_at = datetime.now()
-                task.message = f"Complete: {grid_data.n_documents} docs, H1={len(self.state.h1_cycles)}"
-                return True
-
-            except Exception as e:
-                task.status = "failed"
-                task.error = str(e)
-                task.completed_at = datetime.now()
-                return False
-
-        # Run in thread pool
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, run_reindex)
+        except Exception as e:
+            task.status = "failed"
+            task.error = str(e)
+            task.completed_at = datetime.now()
 
         # Show result in content panel
         content = self.query_one("#info-panel", InfoPanel)
-        if success:
+        if task.status == "completed":
             content.show_file(
                 "reindex.txt",
                 f"Reindex complete!\n\n"
@@ -1401,7 +1239,6 @@ class GaiusApp(App):
         else:
             content.show_file("reindex.txt", f"Reindex failed: {task.error}")
 
-        # Keep task in history for a bit
         await asyncio.sleep(5)
         if task in self.state.background_tasks:
             self.state.background_tasks.remove(task)
@@ -2263,7 +2100,7 @@ class GaiusApp(App):
                         "Engine not available.\n"
                         "Guru Meditation: #EXP.00000001.NOENGINE\n"
                         "Try: /health fix engine\n"
-                        "Or: devenv tasks run restart:clean"
+                        "Or: just restart-clean"
                     )
 
                 # Update status - generating
@@ -3190,7 +3027,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                 if not client:
                     raise RuntimeError(
                         "Engine not available.\n"
-                        "  Try: devenv tasks run restart:clean"
+                        "  Try: just restart-clean"
                     )
 
                 result = await client.call(
@@ -3267,7 +3104,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                 content.show_file(
                     "sitrep_error.md",
                     f"# Sitrep Error\n\n{e}\n\n"
-                    f"Try: `devenv tasks run restart:clean`"
+                    f"Try: `just restart-clean`"
                 )
 
         asyncio.create_task(run_sitrep())
@@ -3311,7 +3148,7 @@ Use `/evolve stop` to stop orchestrated evolution.
         if subcmd == "quick":
             title = "Quick Health Check"
             check_type = "quick"
-        elif subcmd in ("engine", "data", "cognition", "inference"):
+        elif subcmd in ("engine", "data", "cognition", "inference", "site", "pipeline", "periodic", "evolution"):
             title = f"{subcmd.title()} Health Check"
             check_type = subcmd
         else:
@@ -3367,7 +3204,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                 # Run appropriate checks with progress callback
                 if subcmd == "quick":
                     report = await checker.run_quick(progress_callback=on_progress)
-                elif subcmd in ("engine", "data", "cognition", "inference"):
+                elif subcmd in ("engine", "data", "cognition", "inference", "site", "pipeline", "periodic", "evolution"):
                     report = await checker.run_category(subcmd, progress_callback=on_progress)
                 else:
                     report = await checker.run_all(progress_callback=on_progress)
@@ -3646,7 +3483,7 @@ Use `/evolve stop` to stop orchestrated evolution.
                         "error.txt",
                         "Engine not available.\n"
                         "Guru Meditation: #EXP.00000001.NOENGINE\n"
-                        "Try: devenv tasks run restart:clean"
+                        "Try: just restart-clean"
                     )
                     return
 
@@ -4563,7 +4400,7 @@ Generated by TUI `/health fix` | {f'KB Note: `{kb_note_path}`' if kb_note_path e
                         "error.txt",
                         "Engine not available.\n"
                         "Guru Meditation: #EXP.00000001.NOENGINE\n"
-                        "Try: devenv tasks run restart:clean"
+                        "Try: just restart-clean"
                     )
                     return
 
@@ -6337,6 +6174,690 @@ Use `/models kb` to see all KB models.
                 content.show_file("prospects.md", f"# Error\n\n{e}")
 
         asyncio.create_task(run_update())
+
+    def _handle_dataview_command(self, args: str) -> None:
+        """Handle /dataview command for Bases feature store queries.
+
+        Usage:
+            /dataview                     - List available bases
+            /dataview list [type]         - List bases (snapshot|historical|registry|all)
+            /dataview <base>              - Query base with default settings
+            /dataview <base> <fluent>     - Query with fluent syntax
+            /dataview health              - Check feature store health
+            /dataview help                - Show help
+        """
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        # Help
+        if subcmd == "help":
+            content.show_file("dataview.md", """# Dataview Command
+
+**Kudu-backed feature store with fluent query API.**
+
+## Usage
+
+- `/dataview` - List available bases
+- `/dataview list [type]` - List bases (snapshot|historical|registry|all)
+- `/dataview <base>` - Query base with default settings
+- `/dataview <base> <fluent>` - Query with fluent syntax
+- `/dataview health` - Check feature store health
+- `/dv` - Shortcut alias
+
+## Fluent Syntax
+
+```python
+where(col("age") > 30)                   # Column filter
+where(term("BFO:site") == "NYC")         # Ontology-grounded filter
+select("name", "email")                  # Project columns
+order_by("created_at", desc=True)        # Sort results
+limit(100)                               # Limit rows
+```
+
+## Examples
+
+```
+/dataview list                           # List all bases
+/dataview _entity_types                  # Query registry base
+/dataview events where(col("age") > 30).limit(10)
+/dataview positions where(term("BFO:0000040") == "USER-123")
+```
+
+## Ontology Grounding
+
+- `term("BFO:0000040")` - Material entity (entity_id)
+- `term("BFO:site")` - Spatial region (location)
+- `term("BFO:temporal_region")` - Timestamp column
+""")
+            return
+
+        # Show initial loading state
+        content.show_file("dataview.md", "# Dataview\n\n*Loading...*")
+
+        async def run_dataview():
+            from .bases.service import get_bases_service, BasesConfig
+            from .storage.database import get_pool
+
+            try:
+                pool = await get_pool()
+                service = get_bases_service(BasesConfig(), pool)
+
+                if not service.is_running:
+                    await service.start()
+            except Exception as e:
+                content.show_file("dataview.md", f"# Error\n\n**Failed to initialize BasesService:**\n\n{e}\n\n---\n\nTry: `/health fix postgres`")
+                return
+
+            # List bases (default)
+            if subcmd in ("", "list"):
+                base_type_filter = parts[1].lower() if len(parts) > 1 else "all"
+                try:
+                    bases = await service.list_bases(
+                        base_type=base_type_filter if base_type_filter != "all" else None
+                    )
+
+                    if not bases:
+                        content.show_file("dataview.md", f"""# Dataview - Bases
+
+**Type:** {base_type_filter}
+**Count:** 0
+
+*No bases found.*
+
+---
+
+Use `/dataview help` for usage information.
+""")
+                        return
+
+                    lines = [
+                        "# Dataview - Bases",
+                        "",
+                        f"**Type:** {base_type_filter}",
+                        f"**Count:** {len(bases)}",
+                        "",
+                        "| Base ID | Type | Description |",
+                        "|---------|------|-------------|",
+                    ]
+                    for b in bases:
+                        desc = (b.description or "")[:40]
+                        lines.append(f"| {b.base_id} | {b.base_type.value} | {desc} |")
+
+                    lines.append("")
+                    lines.append("---")
+                    lines.append("`/dataview <base_id>` to query")
+
+                    content.show_file("dataview.md", "\n".join(lines))
+                except Exception as e:
+                    content.show_file("dataview.md", f"# Error\n\n{e}")
+                return
+
+            # Health check
+            if subcmd == "health":
+                try:
+                    health = await service.health_check()
+                    healthy = health.get("healthy", False)
+                    message = health.get("message", "")
+                    details = health.get("details", {})
+
+                    lines = [
+                        "# Dataview - Health",
+                        "",
+                        f"**Status:** {'✓ Healthy' if healthy else '✗ Unhealthy'}",
+                        f"**Message:** {message}",
+                        "",
+                        "## Details",
+                        "",
+                        f"- Query count: {details.get('query_count', 0)}",
+                        f"- Error count: {details.get('error_count', 0)}",
+                        f"- Iceberg enabled: {details.get('iceberg_enabled', False)}",
+                        f"- Pinot enabled: {details.get('pinot_enabled', False)}",
+                    ]
+
+                    content.show_file("dataview.md", "\n".join(lines))
+                except Exception as e:
+                    content.show_file("dataview.md", f"# Error\n\n{e}")
+                return
+
+            # Query a base
+            base_name = subcmd
+            query_str = parts[1] if len(parts) > 1 else ""
+
+            try:
+                result = await service.query_base(
+                    base_name=base_name,
+                    dql=query_str,
+                )
+
+                # Format result
+                lines = [
+                    f"# {base_name}",
+                    "",
+                    f"**Rows:** {result.row_count}",
+                    f"**Time:** {result.execution_time_ms:.1f}ms",
+                    f"**Query:** `{query_str or '(default)'}`",
+                    "",
+                ]
+
+                # Table header
+                if result.columns:
+                    lines.append("| " + " | ".join(result.columns) + " |")
+                    lines.append("| " + " | ".join(["---"] * len(result.columns)) + " |")
+
+                    # Limit rows for display
+                    display_rows = result.rows[:50]
+                    for row in display_rows:
+                        row_vals = [str(row.get(c, ""))[:30] for c in result.columns]
+                        lines.append("| " + " | ".join(row_vals) + " |")
+
+                    if result.row_count > 50:
+                        lines.append("")
+                        lines.append(f"*Showing 50 of {result.row_count} rows*")
+
+                content.show_file("dataview.md", "\n".join(lines))
+            except Exception as e:
+                content.show_file("dataview.md", f"# Error\n\n**Base:** {base_name}\n**Query:** `{query_str}`\n\n{e}")
+
+        asyncio.create_task(run_dataview())
+
+    def _handle_article_command(self, args: str) -> None:
+        """Handle /article command - dispatch to subcommand handlers.
+
+        Usage:
+            /article              - Situational awareness (like /ambient)
+            /article list         - List articles
+            /article curate       - Run curation with streaming progress
+            /article status       - Show article status
+            /article new <slug>   - Create new article
+            /article help         - Show help
+        """
+        content = self.query_one("#info-panel", InfoPanel)
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else ""
+
+        if subcmd == "curate":
+            self._article_curate(content, parts[1:])
+        elif subcmd == "list":
+            self._article_list(content)
+        elif subcmd == "status":
+            self._article_status(content)
+        elif subcmd == "new":
+            self._article_new(content, parts[1:])
+        elif subcmd == "help":
+            self._article_help(content)
+        else:
+            # Default: situational awareness (like /ambient)
+            self._article_sitrep(content)
+
+    def _article_sitrep(self, content: "InfoPanel") -> None:
+        """Show article curation situational awareness (like /ambient status)."""
+        import asyncio
+
+        async def run():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                response = await client.ArticleStatus()
+
+                if not response.success:
+                    content.show_file("article.md", f"# Article Curation\n\n**Error:** {response.error}")
+                    return
+
+                # Format like /ambient: monospace alignment, minimal chrome
+                running = response.running
+                run_state = "RUNNING" if running else "IDLE"
+                current_step = response.current_step or "--"
+
+                # Use non-breaking spaces for alignment (Bloomberg Terminal aesthetic)
+                lines = [
+                    "# Article Curation",
+                    "",
+                    f"Status\u00a0\u00a0\u00a0\u00a0\u00a0{run_state}  ",
+                ]
+                if running:
+                    lines.append(f"Step\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0{current_step}  ")
+
+                lines.extend([
+                    "",
+                    "---",
+                    "",
+                    f"Pending\u00a0\u00a0\u00a0\u00a0{response.articles_pending} articles  ",
+                    f"Cards\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0{response.total_cards_pending} pending / {response.total_cards_published} published  ",
+                ])
+
+                # List pending articles
+                if response.articles:
+                    lines.extend(["", "## Articles", ""])
+                    for a in list(response.articles)[:5]:
+                        status_icon = {
+                            "pending": "[P]",
+                            "researching": "[R]",
+                            "drafting": "[D]",
+                            "published": "[+]",
+                        }.get(a.status, "[-]")
+                        lines.append(f"- {status_icon} **{a.slug}**: {a.title[:35]} ({a.zk_count} notes)")
+
+                # Recent activity
+                if response.recent_curations:
+                    lines.extend(["", "## Recent Activity", ""])
+                    for r in list(response.recent_curations)[:3]:
+                        lines.append(f"- {r.slug}: {r.cards_created} cards ({r.completed_at[:10] if r.completed_at else ''})")
+
+                # Available commands
+                lines.extend([
+                    "",
+                    "---",
+                    "",
+                    "`/article curate [slug]`  ",
+                    "`/article list`  ",
+                    "`/article new <slug>`  ",
+                    "`/article help`  ",
+                ])
+
+                content.show_file("article.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Article Curation\n\n**Error:** {e}")
+
+        content.show_file("article.md", "# Article Curation\n\n*Loading...*")
+        asyncio.create_task(run())
+
+    def _article_help(self, content: "InfoPanel") -> None:
+        """Show article command help."""
+        content.show_file("article.md", """# Article Commands
+
+**Manage KB article curation pipeline.**
+
+## Usage
+
+- `/article` - Situational awareness (status, pending, recent activity)
+- `/article list` - List articles with status
+- `/article curate [slug]` - Run curation with streaming progress
+- `/article status` - Show detailed pipeline status
+- `/article new <slug>` - Create new article directory
+- `/article help` - Show this help
+
+## Curation Pipeline
+
+The `/article curate` command runs a multi-step pipeline:
+
+1. **Research** - Synthesize zettelkasten notes with Grok
+2. **Select** - Choose article (optillm or explicit)
+3. **Acquire** - Fetch external sources (arXiv, Brave, bioRxiv)
+4. **Summarize** - Generate brief summaries
+5. **Draft** - Create article draft with Grok
+6. **Base** - Generate .base file with references
+7. **Cards** - Create collection cards (all pending)
+
+Progress is streamed in real-time via pg_notify.
+""")
+
+    def _article_curate(self, content: "InfoPanel", args: list[str]) -> None:
+        """Run article curation with streaming progress via gRPC.
+
+        Architecture compliance: TUI -> gRPC -> Engine -> Metaflow
+        """
+        import asyncio
+        import time
+
+        # Parse optional slug
+        slug = args[0] if args else ""
+
+        # Initial display
+        content.show_file("article.md", "# Article Curation\n\n*Connecting to engine...*")
+
+        UPDATE_INTERVAL = 0.2  # 200ms debounce
+        last_update = 0.0
+        lines: list[str] = ["# Article Curation", ""]
+
+        # Step indicators (ASCII, no emojis)
+        step_labels = {
+            "start": "[START]",
+            "select": "[SELECT]",
+            "research": "[RESEARCH]",
+            "acquire": "[ACQUIRE]",
+            "summarize": "[SUMMARIZE]",
+            "draft": "[DRAFT]",
+            "base": "[BASE]",
+            "cards": "[CARDS]",
+            "complete": "[DONE]",
+            "failed": "[FAIL]",
+        }
+
+        async def run_curate():
+            nonlocal last_update, lines
+
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+
+                async for event in client.ArticleCurate(slug=slug):
+                    label = step_labels.get(event.step, f"[{event.step.upper()}]")
+                    message = event.message
+
+                    # Format progress line
+                    if event.step == "complete":
+                        lines.append("")
+                        lines.append(f"**{label}** {message}")
+                    elif event.step == "failed":
+                        lines.append(f"{label} {message}")
+                    else:
+                        # Show step number if available
+                        if event.total_steps > 0:
+                            step_info = f"({event.step_number}/{event.total_steps})"
+                            lines.append(f"{label} {step_info} {message}")
+                        else:
+                            lines.append(f"{label} {message}")
+
+                    # Debounced UI update
+                    now = time.monotonic()
+                    if now - last_update >= UPDATE_INTERVAL:
+                        display_lines = lines[-15:]  # Keep last 15
+                        if 0 < event.progress < 1.0:
+                            # ASCII progress bar
+                            bar_width = 20
+                            filled = int(bar_width * event.progress)
+                            bar = "[" + "=" * filled + "-" * (bar_width - filled) + "]"
+                            display_lines.append(f"\n{bar} {event.progress:.0%}")
+                        content.show_file("article.md", "\n".join(display_lines))
+                        last_update = now
+                        await asyncio.sleep(0)  # Yield to TUI
+
+                # Final update
+                content.show_file("article.md", "\n".join(lines[-20:]))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Article Curation\n\n**Error:** {e}")
+
+        asyncio.create_task(run_curate())
+
+    def _article_list(self, content: "InfoPanel") -> None:
+        """List articles (quick database query)."""
+        import asyncio
+
+        async def run_list():
+            try:
+                import asyncpg
+                from .core.config import get_database_url
+                from .engine.services.collection_service import CollectionService
+
+                db_url = get_database_url()
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    articles = await service.list_articles(limit=50)
+
+                    if not articles:
+                        content.show_file("article.md", "# Articles\n\nNo articles found.\n\nCreate one with: `/article new <slug>`")
+                        return
+
+                    lines = ["# Articles", "", "| Slug | Title | Status | ZK | Sources |", "|------|-------|--------|-----|---------|"]
+                    for a in articles:
+                        lines.append(f"| {a.slug} | {a.title[:30]} | {a.status} | {a.zk_count} | {a.sources_count} |")
+
+                    content.show_file("article.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Error\n\n{e}")
+
+        content.show_file("article.md", "# Articles\n\n*Loading...*")
+        asyncio.create_task(run_list())
+
+    def _article_status(self, content: "InfoPanel") -> None:
+        """Show article pipeline status (quick database query)."""
+        import asyncio
+
+        async def run_status():
+            try:
+                import asyncpg
+                from .core.config import get_database_url
+                from .engine.services.collection_service import CollectionService
+
+                db_url = get_database_url()
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    stats = await service.get_stats()
+
+                    lines = [
+                        "# Article Pipeline Status",
+                        "",
+                        f"**Collections:** {stats.get('total_collections', 0)}",
+                        f"**Featured:** {'Yes' if stats.get('featured_count', 0) > 0 else 'No'}",
+                        "",
+                        "## Cards",
+                        f"- Total: {stats.get('total_cards', 0)}",
+                        f"- Pending: {stats.get('pending_cards', 0)}",
+                        f"- Published: {stats.get('published_cards', 0)}",
+                    ]
+
+                    content.show_file("article.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("article.md", f"# Error\n\n{e}")
+
+        content.show_file("article.md", "# Status\n\n*Loading...*")
+        asyncio.create_task(run_status())
+
+    def _article_new(self, content: "InfoPanel", args: list[str]) -> None:
+        """Create new article directory via gRPC.
+
+        Engine owns KB filesystem - clients MUST NOT write directly.
+        """
+        import asyncio
+
+        if not args:
+            content.show_file("article.md", "# New Article\n\n**Usage:** `/article new <slug>`\n\nExample: `/article new ai-reasoning-weekly`")
+            return
+
+        slug = args[0]
+        title = " ".join(args[1:]) if len(args) > 1 else ""
+
+        async def run_new():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                response = await client.ArticleNew(slug=slug, title=title)
+
+                if not response.success:
+                    content.show_file("article.md", f"# Error\n\n{response.error}")
+                    return
+
+                content.show_file("article.md", f"""# Article Created
+
+**Slug:** `{response.slug}`
+**Title:** {response.title}
+**Path:** `{response.kb_path}`
+
+## Database Records
+
+- Article ID: `{response.article_id}`
+- Collection ID: `{response.collection_id}`
+
+## Next Steps
+
+1. Add research hints to `article.md` frontmatter:
+   - `arxiv_categories: [cs.AI, cs.LG, ...]`
+   - `keywords: [reasoning, transformers, ...]`
+   - `news_queries: ["AI reasoning research", ...]`
+
+2. Add zettelkasten notes to `zk/`
+
+3. Run curation: `/article curate {response.slug}`
+""")
+
+            except Exception as e:
+                content.show_file("article.md", f"# Error\n\n{e}")
+
+        content.show_file("article.md", f"# Creating Article\n\n*Creating `{slug}`...*")
+        asyncio.create_task(run_new())
+
+    def _handle_publish_command(self, args: str) -> None:
+        """Handle /publish command - publish pending cards to landing page.
+
+        Usage:
+            /publish              - Publish 3 pending cards (default)
+            /publish cards        - Same as above
+            /publish cards 5      - Publish 5 cards
+            /publish -n 5         - Same as above
+        """
+        import asyncio
+        content = self.query_one("#info-panel", InfoPanel)
+
+        # Parse count from args
+        parts = args.split() if args else []
+        count = 3  # default
+
+        for i, part in enumerate(parts):
+            if part == "-n" and i + 1 < len(parts):
+                try:
+                    count = int(parts[i + 1])
+                except ValueError:
+                    pass
+            elif part.isdigit():
+                count = int(part)
+
+        async def run_publish():
+            try:
+                import asyncpg
+                from .core.config import get_database_url
+                from .engine.services.collection_service import CollectionService
+
+                db_url = get_database_url()
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+
+                    # Publish and sync to Cloudflare KV
+                    result = await service.publish_and_sync(count=count)
+
+                    published = result.get("published", [])
+                    kv_sync = result.get("kv_sync", {})
+
+                    if not published:
+                        content.show_file("publish.md", "# Publish\n\nNo pending cards to publish.\n\nRun `/article curate` to create more cards.")
+                        return
+
+                    lines = [
+                        "# Published Cards",
+                        "",
+                        f"**Count:** {len(published)}",
+                        f"**KV Sync:** {'✓ Success' if kv_sync.get('success') else '✗ Failed'}",
+                        "",
+                    ]
+
+                    for card in published:
+                        lines.append(f"- **{card.get('title', 'Untitled')}**")
+                        lines.append(f"  - [{card.get('source_type', 'web')}]({card.get('source_url', '')})")
+                        lines.append("")
+
+                    content.show_file("publish.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("publish.md", f"# Error\n\n{e}")
+
+        content.show_file("publish.md", f"# Publish\n\n*Publishing {count} cards...*")
+        asyncio.create_task(run_publish())
+
+    def _handle_collection_command(self, args: str) -> None:
+        """Handle /collection command - manage content collections.
+
+        Usage:
+            /collection           - Show status
+            /collection status    - Show status
+            /collection list      - List collections
+            /collection featured  - Show featured collection
+        """
+        import asyncio
+        content = self.query_one("#info-panel", InfoPanel)
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        async def run_status():
+            try:
+                import asyncpg
+                from .core.config import get_database_url
+                from .engine.services.collection_service import CollectionService
+
+                db_url = get_database_url()
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    stats = await service.get_stats()
+                    featured = await service.get_featured_collection()
+
+                    lines = [
+                        "# Collection Status",
+                        "",
+                        f"**Total Collections:** {stats.get('total_collections', 0)}",
+                        f"**Featured:** {featured.name if featured else 'None'}",
+                        "",
+                        "## Cards",
+                        f"- Total: {stats.get('total_cards', 0)}",
+                        f"- Pending: {stats.get('pending_cards', 0)}",
+                        f"- Published: {stats.get('published_cards', 0)}",
+                    ]
+
+                    if featured:
+                        lines.extend([
+                            "",
+                            "## Featured Collection",
+                            f"- **Slug:** {featured.slug}",
+                            f"- **Name:** {featured.name}",
+                            f"- **Status:** {featured.status}",
+                        ])
+
+                    content.show_file("collection.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("collection.md", f"# Error\n\n{e}")
+
+        async def run_list():
+            try:
+                import asyncpg
+                from .core.config import get_database_url
+                from .engine.services.collection_service import CollectionService
+
+                db_url = get_database_url()
+
+                async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+                    service = CollectionService(pool)
+                    collections = await service.list_collections()
+
+                    if not collections:
+                        content.show_file("collection.md", "# Collections\n\nNo collections found.")
+                        return
+
+                    lines = [
+                        "# Collections",
+                        "",
+                        "| Slug | Name | Status | Featured |",
+                        "|------|------|--------|----------|",
+                    ]
+
+                    for c in collections:
+                        featured = "★" if c.featured else ""
+                        lines.append(f"| {c.slug} | {c.name} | {c.status} | {featured} |")
+
+                    content.show_file("collection.md", "\n".join(lines))
+
+            except Exception as e:
+                content.show_file("collection.md", f"# Error\n\n{e}")
+
+        content.show_file("collection.md", f"# Collection\n\n*Loading...*")
+
+        if subcmd == "list":
+            asyncio.create_task(run_list())
+        else:
+            asyncio.create_task(run_status())
 
     def _handle_iso_command(self, args: str, content: "InfoPanel") -> None:
         """Handle /iso command for Iso view mode control.
@@ -8762,6 +9283,18 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "prospects":
             # Capital stewardship / prospects analysis
             self._handle_prospects_command(args)
+        elif command in ("dataview", "dv"):
+            # Bases feature store queries
+            self._handle_dataview_command(args)
+        elif command == "article":
+            # Article curation (delegates to CLI)
+            self._handle_article_command(args)
+        elif command == "publish":
+            # Publish cards to landing page (delegates to CLI)
+            self._handle_publish_command(args)
+        elif command == "collection":
+            # Collection management (delegates to CLI)
+            self._handle_collection_command(args)
         elif command in ("quit", "q", "exit"):
             self.exit()
         else:

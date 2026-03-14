@@ -151,30 +151,41 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         # Resolve profile/domain from database if not specified
         # Database provides: common profile with 'open' domain (Open World Assumption)
         # Fallbacks only apply if database unavailable
-        if not self.profile or not self.domain:
+        #
+        # Note: Metaflow Parameters are immutable after init, so resolved
+        # values are stored as data artifacts (_resolved_profile/_resolved_domain)
+        # and accessed via the resolved_profile/resolved_domain properties.
+        resolved_profile = self.profile
+        resolved_domain = self.domain
+
+        if not resolved_profile or not resolved_domain:
             from gaius.storage.profile_ops import get_default_profile_and_domain_sync
             db_profile, db_domain = get_default_profile_and_domain_sync()
 
-            if not self.profile:
+            if not resolved_profile:
                 # Use database default (is_default=TRUE), fallback to "common"
-                self.profile = db_profile or "common"
-                print(f"Using database default profile: {self.profile}")
+                resolved_profile = db_profile or "common"
+                print(f"Using database default profile: {resolved_profile}")
 
-            if not self.domain:
+            if not resolved_domain:
                 # Use database active domain for profile
                 # 'open' = explicit Open World Assumption (extensible ontology)
                 # NULL would mean absence of constraint (different semantics)
-                self.domain = db_domain or "open"
-                print(f"Using database active domain: {self.domain}")
+                resolved_domain = db_domain or "open"
+                print(f"Using database active domain: {resolved_domain}")
+
+        # Store as data artifacts (mutable, unlike Parameters)
+        self._resolved_profile = resolved_profile
+        self._resolved_domain = resolved_domain
 
         self.emit_event("prospects.update.started", {
-            "profile": self.profile,
-            "domain": self.domain,
+            "profile": self._resolved_profile,
+            "domain": self._resolved_domain,
             "force": self.force,
             "correlation_id": self.get_correlation_id(),
         })
 
-        print(f"Prospects update starting for profile={self.profile}, domain={self.domain}")
+        print(f"Prospects update starting for profile={self._resolved_profile}, domain={self._resolved_domain}")
         print(f"Filings per symbol limit: {self.filings_per_symbol}")
 
         # Load watchlist
@@ -207,7 +218,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
     @step
     def fetch_comprehensive_data(self):
         """Fetch comprehensive FMP data for all symbols using FMPClient."""
-        source_context = {"profile": self.profile, "domain": self.domain, "flow": "update"}
+        source_context = {"profile": self._resolved_profile, "domain": self._resolved_domain, "flow": "update"}
 
         self.data_by_symbol: dict[str, dict] = {}
         self.filings_metadata: list[dict] = []  # For sync step
@@ -344,7 +355,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             print(f"  Errors: {len(self.sync_result.errors)}")
 
         self.emit_event("prospects.sync.completed", {
-            "profile": self.profile,
+            "profile": self._resolved_profile,
             "filings_checked": self.sync_result.filings_checked,
             "filings_fetched": self.sync_result.filings_fetched,
             "filings_skipped": self.sync_result.filings_skipped,
@@ -438,7 +449,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             loop.close()
 
         self.emit_event("prospects.extraction.completed", {
-            "profile": self.profile,
+            "profile": self._resolved_profile,
             "filings_extracted": self.extraction_count,
         })
 
@@ -588,7 +599,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         )
 
         self.emit_event("prospects.analysis.completed", {
-            "profile": self.profile,
+            "profile": self._resolved_profile,
             "symbols_analyzed": len(self.analyses),
             "total_filings": total_analyzed,
             "new_filings_analyzed": new_analyzed,
@@ -650,7 +661,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
                     print(f"    [OK] {s}")
 
             self.emit_event("prospects.synthesis.skipped", {
-                "profile": self.profile,
+                "profile": self._resolved_profile,
                 "reason": "kb_already_exists",
                 "symbols_skipped": symbols_skipped_exists,
             })
@@ -740,7 +751,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
         total_cost = sum(s.cost_usd for s in self.syntheses.values())
 
         self.emit_event("prospects.synthesis.completed", {
-            "profile": self.profile,
+            "profile": self._resolved_profile,
             "symbols_synthesized": len(self.syntheses),
             "total_cost_usd": total_cost,
             "errors": len(self.synthesis_errors),
@@ -927,7 +938,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             loop.close()
 
         self.emit_event("prospects.base_generation.completed", {
-            "profile": self.profile,
+            "profile": self._resolved_profile,
             "base_files_generated": self.base_files_generated,
             "base_files_fallback": self.base_files_fallback,
             "base_generation_cost_usd": getattr(self, 'base_generation_cost_usd', 0.0),
@@ -1246,8 +1257,8 @@ _This is a daily log entry. See the curated content above for the full analysis.
         return {
             "correlation_id": self.get_correlation_id(),
             "run_id": str(current.run_id) if current.run_id else "unknown",
-            "profile": self.profile,
-            "domain": self.domain,
+            "profile": self._resolved_profile,
+            "domain": self._resolved_domain,
             "symbols_processed": len(self.syntheses),
             "symbols_total": len(self.analyses),
             "filings_analyzed": filings_analyzed,
@@ -1409,8 +1420,8 @@ run_id: "{metrics['run_id']}"
         from metaflow.cards import Markdown, Table
 
         self.emit_event("prospects.update.completed", {
-            "profile": self.profile,
-            "domain": self.domain,
+            "profile": self._resolved_profile,
+            "domain": self._resolved_domain,
             "symbols_processed": len(self.symbol_list),
             "kb_artifacts": len(self.kb_paths),
             "correlation_id": self.get_correlation_id(),
@@ -1422,8 +1433,8 @@ run_id: "{metrics['run_id']}"
 
         # Build summary card
         current.card.append(Markdown("# Prospects Update Summary"))
-        current.card.append(Markdown(f"**Profile:** {self.profile}"))
-        current.card.append(Markdown(f"**Domain:** {self.domain}"))
+        current.card.append(Markdown(f"**Profile:** {self._resolved_profile}"))
+        current.card.append(Markdown(f"**Domain:** {self._resolved_domain}"))
         current.card.append(Markdown(f"**Symbols Processed:** {len(self.symbol_list)}"))
 
         if self.kb_paths:
@@ -1472,8 +1483,8 @@ run_id: "{metrics['run_id']}"
         print("=" * 60)
         print("  Prospects Update Complete")
         print("=" * 60)
-        print(f"  Profile:            {self.profile}")
-        print(f"  Domain:             {self.domain}")
+        print(f"  Profile:            {self._resolved_profile}")
+        print(f"  Domain:             {self._resolved_domain}")
         print(f"  Symbols processed:  {len(self.symbol_list)}")
         print(f"  Filings analyzed:   {total_filings_analyzed}")
         print(f"  Positions synth'd:  {len(self.syntheses)}")

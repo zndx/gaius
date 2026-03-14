@@ -8,6 +8,7 @@ Traditional software development follows a clear separation: humans design, huma
 
 This isn't "AI-assisted coding" in the conventional sense. It's a symbiotic development process where:
 
+
 1. **The human provides vision and judgment** — strategic direction, quality assessment, architectural taste
 2. **The code agent provides implementation velocity** — exploring codebases, generating code, maintaining consistency
 3. **The system evolves through dialogue** — features emerge from conversation, not specification documents
@@ -116,7 +117,7 @@ When interfaces drift apart:
 Gaius addresses this through:
 
 1. **Shared core functions** — CLI and TUI call the same underlying methods
-2. **MCP as the comprehensive API** — 80+ tools covering all operations
+2. **MCP as the comprehensive API** — 163 tools covering all operations
 3. **Regular parity audits** — Tracking gaps in `[[current/commands/index]]`
 
 ### The Parity Matrix

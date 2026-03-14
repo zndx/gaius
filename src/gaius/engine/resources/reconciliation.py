@@ -1113,6 +1113,15 @@ async def remediate(
 
     # UNHEALTHY: Restart if we have orchestrator
     if actual_state == EndpointState.UNHEALTHY and orchestrator_service:
+        # Skip remediation for endpoints currently evicted by active workloads.
+        # The workload's complete_workload() will handle restoration.
+        evicted = getattr(orchestrator_service, "_evicted_endpoints", set())
+        if obs.name in evicted:
+            logger.info(
+                f"Skipping remediation for {obs.name}: "
+                f"evicted by active workload (will be restored on completion)"
+            )
+            return None
         logger.info(f"Remediating unhealthy endpoint {obs.name}")
         return await remediate_unhealthy(obs, orchestrator_service)
 

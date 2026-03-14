@@ -22,12 +22,17 @@ SELECT cron.schedule('content-processing', '45 */2 * * *',
 
 -- Task watchdog: every 15 minutes at :10,:25,:40,:55
 -- Resets stuck tasks that have been running too long
+-- Long-running tasks (article_curate, prospects_update) get 60-min timeout
 SELECT cron.schedule('task-watchdog', '10,25,40,55 * * * *',
     $$UPDATE scheduled_tasks
       SET picked_up_at = NULL, error = 'reset by watchdog: stuck running'
       WHERE picked_up_at IS NOT NULL
         AND completed_at IS NULL
-        AND picked_up_at < NOW() - interval '15 minutes'$$);
+        AND CASE
+          WHEN task_type IN ('article_curate', 'prospects_update')
+            THEN picked_up_at < NOW() - interval '60 minutes'
+          ELSE picked_up_at < NOW() - interval '15 minutes'
+        END$$);
 
 -- migrate:down
 

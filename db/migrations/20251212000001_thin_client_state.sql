@@ -2,6 +2,19 @@
 -- Thin TUI Architecture: State management tables for instant startup
 -- Supports TUI/CLI/MCP unified state with idempotent operations
 
+-- Create grid_snapshots table if it doesn't exist
+CREATE TABLE IF NOT EXISTS grid_snapshots (
+    id SERIAL PRIMARY KEY,
+    kb_root TEXT NOT NULL,
+    snapshot_data JSONB NOT NULL DEFAULT '{}',
+    document_count INT DEFAULT 0,
+    cluster_count INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_grid_snapshots_kb_root
+    ON grid_snapshots(kb_root);
+
 -- Add generation tracking to grid_snapshots for sync protocol
 ALTER TABLE grid_snapshots ADD COLUMN IF NOT EXISTS generation BIGINT DEFAULT 0;
 ALTER TABLE grid_snapshots ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
@@ -149,3 +162,5 @@ DROP TABLE IF EXISTS current_state;
 DROP INDEX IF EXISTS idx_grid_snapshots_generation;
 ALTER TABLE grid_snapshots DROP COLUMN IF EXISTS updated_at;
 ALTER TABLE grid_snapshots DROP COLUMN IF EXISTS generation;
+DROP INDEX IF EXISTS idx_grid_snapshots_kb_root;
+DROP TABLE IF EXISTS grid_snapshots;

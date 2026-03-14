@@ -349,6 +349,41 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.MetaAgentQueryRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.MetaAgentEvent.FromString,
                 _registered_method=True)
+        self.MetaAgentStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetaAgentStatus',
+                request_serializer=gaius__service__pb2.MetaAgentStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentStatusResponse.FromString,
+                _registered_method=True)
+        self.MetabaseSyncTrigger = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetabaseSyncTrigger',
+                request_serializer=gaius__service__pb2.MetabaseSyncRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetabaseSyncResponse.FromString,
+                _registered_method=True)
+        self.MetaAgentAuditTrigger = channel.unary_unary(
+                '/gaius.engine.GaiusService/MetaAgentAuditTrigger',
+                request_serializer=gaius__service__pb2.MetaAgentAuditRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.MetaAgentAuditResponse.FromString,
+                _registered_method=True)
+        self.GetPooledBudget = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetPooledBudget',
+                request_serializer=gaius__service__pb2.GetPooledBudgetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetPooledBudgetResponse.FromString,
+                _registered_method=True)
+        self.GetQualitySummary = channel.unary_unary(
+                '/gaius.engine.GaiusService/GetQualitySummary',
+                request_serializer=gaius__service__pb2.GetQualitySummaryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.GetQualitySummaryResponse.FromString,
+                _registered_method=True)
+        self.ListRecommendations = channel.unary_unary(
+                '/gaius.engine.GaiusService/ListRecommendations',
+                request_serializer=gaius__service__pb2.ListRecommendationsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ListRecommendationsResponse.FromString,
+                _registered_method=True)
+        self.UpdateRecommendation = channel.unary_unary(
+                '/gaius.engine.GaiusService/UpdateRecommendation',
+                request_serializer=gaius__service__pb2.UpdateRecommendationRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.UpdateRecommendationResponse.FromString,
+                _registered_method=True)
         self.CLTExtract = channel.unary_unary(
                 '/gaius.engine.GaiusService/CLTExtract',
                 request_serializer=gaius__service__pb2.CLTExtractRequest.SerializeToString,
@@ -558,6 +593,71 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/ProspectsUpdate',
                 request_serializer=gaius__service__pb2.ProspectsUpdateRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.ProspectsUpdateEvent.FromString,
+                _registered_method=True)
+        self.CollectionStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionStatus',
+                request_serializer=gaius__service__pb2.CollectionStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionStatusResponse.FromString,
+                _registered_method=True)
+        self.CollectionList = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionList',
+                request_serializer=gaius__service__pb2.CollectionListRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionListResponse.FromString,
+                _registered_method=True)
+        self.CollectionCreate = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionCreate',
+                request_serializer=gaius__service__pb2.CollectionCreateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionCreateResponse.FromString,
+                _registered_method=True)
+        self.CollectionSetFeatured = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionSetFeatured',
+                request_serializer=gaius__service__pb2.CollectionSetFeaturedRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionSetFeaturedResponse.FromString,
+                _registered_method=True)
+        self.CollectionAddCard = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionAddCard',
+                request_serializer=gaius__service__pb2.CollectionAddCardRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionAddCardResponse.FromString,
+                _registered_method=True)
+        self.CollectionListCards = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionListCards',
+                request_serializer=gaius__service__pb2.CollectionListCardsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionListCardsResponse.FromString,
+                _registered_method=True)
+        self.CollectionPublishCards = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionPublishCards',
+                request_serializer=gaius__service__pb2.CollectionPublishCardsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionPublishCardsResponse.FromString,
+                _registered_method=True)
+        self.CollectionPublishViz = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionPublishViz',
+                request_serializer=gaius__service__pb2.CollectionPublishVizRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionPublishVizResponse.FromString,
+                _registered_method=True)
+        self.CollectionSyncTheme = channel.unary_unary(
+                '/gaius.engine.GaiusService/CollectionSyncTheme',
+                request_serializer=gaius__service__pb2.CollectionSyncThemeRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CollectionSyncThemeResponse.FromString,
+                _registered_method=True)
+        self.ArticleStatus = channel.unary_unary(
+                '/gaius.engine.GaiusService/ArticleStatus',
+                request_serializer=gaius__service__pb2.ArticleStatusRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ArticleStatusResponse.FromString,
+                _registered_method=True)
+        self.ArticleNew = channel.unary_unary(
+                '/gaius.engine.GaiusService/ArticleNew',
+                request_serializer=gaius__service__pb2.ArticleNewRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ArticleNewResponse.FromString,
+                _registered_method=True)
+        self.ArticleCurate = channel.unary_stream(
+                '/gaius.engine.GaiusService/ArticleCurate',
+                request_serializer=gaius__service__pb2.ArticleCurateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ArticleCurationEvent.FromString,
+                _registered_method=True)
+        self.RenderCards = channel.unary_stream(
+                '/gaius.engine.GaiusService/RenderCards',
+                request_serializer=gaius__service__pb2.RenderCardsRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.RenderCardEvent.FromString,
                 _registered_method=True)
 
 
@@ -1007,6 +1107,56 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MetaAgentStatus(self, request, context):
+        """MetaAgent Service (Metabase Sync & Weekly Audit)
+        Daemon status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetabaseSyncTrigger(self, request, context):
+        """Manual sync trigger
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MetaAgentAuditTrigger(self, request, context):
+        """Manual audit trigger
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetPooledBudget(self, request, context):
+        """Budget status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetQualitySummary(self, request, context):
+        """Quality metrics
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListRecommendations(self, request, context):
+        """Audit recommendations
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateRecommendation(self, request, context):
+        """Update rec status
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def CLTExtract(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
         CLT (Cross-Layer Transcoders)
@@ -1295,6 +1445,106 @@ class GaiusServiceServicer(object):
 
     def ProspectsUpdate(self, request, context):
         """Full billable analysis (streaming)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Collections (Public Content Landing Page)
+        ─────────────────────────────────────────────────────────────────────────
+        Get overall statistics
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionList(self, request, context):
+        """List all collections
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionCreate(self, request, context):
+        """Create new collection
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionSetFeatured(self, request, context):
+        """Set featured collection
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionAddCard(self, request, context):
+        """Add card to collection
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionListCards(self, request, context):
+        """List cards in collection
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionPublishCards(self, request, context):
+        """Publish pending cards
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionPublishViz(self, request, context):
+        """Update 3D viz data
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CollectionSyncTheme(self, request, context):
+        """Sync HOCON theme to KV
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ArticleStatus(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Article Curation (gRPC-First, Engine Owns Filesystem)
+        ─────────────────────────────────────────────────────────────────────────
+        Situational awareness for /article sitrep
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ArticleNew(self, request, context):
+        """Create article (engine writes to KB)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ArticleCurate(self, request, context):
+        """Stream curation progress events
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RenderCards(self, request, context):
+        """─────────────────────────────────────────────────────────────────────────
+        Rendering (Blender Card Visualization via Workload Management)
+        ─────────────────────────────────────────────────────────────────────────
+        Stream card rendering progress
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1613,6 +1863,41 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.MetaAgentQueryRequest.FromString,
                     response_serializer=gaius__service__pb2.MetaAgentEvent.SerializeToString,
             ),
+            'MetaAgentStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetaAgentStatus,
+                    request_deserializer=gaius__service__pb2.MetaAgentStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentStatusResponse.SerializeToString,
+            ),
+            'MetabaseSyncTrigger': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetabaseSyncTrigger,
+                    request_deserializer=gaius__service__pb2.MetabaseSyncRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetabaseSyncResponse.SerializeToString,
+            ),
+            'MetaAgentAuditTrigger': grpc.unary_unary_rpc_method_handler(
+                    servicer.MetaAgentAuditTrigger,
+                    request_deserializer=gaius__service__pb2.MetaAgentAuditRequest.FromString,
+                    response_serializer=gaius__service__pb2.MetaAgentAuditResponse.SerializeToString,
+            ),
+            'GetPooledBudget': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetPooledBudget,
+                    request_deserializer=gaius__service__pb2.GetPooledBudgetRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetPooledBudgetResponse.SerializeToString,
+            ),
+            'GetQualitySummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetQualitySummary,
+                    request_deserializer=gaius__service__pb2.GetQualitySummaryRequest.FromString,
+                    response_serializer=gaius__service__pb2.GetQualitySummaryResponse.SerializeToString,
+            ),
+            'ListRecommendations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListRecommendations,
+                    request_deserializer=gaius__service__pb2.ListRecommendationsRequest.FromString,
+                    response_serializer=gaius__service__pb2.ListRecommendationsResponse.SerializeToString,
+            ),
+            'UpdateRecommendation': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateRecommendation,
+                    request_deserializer=gaius__service__pb2.UpdateRecommendationRequest.FromString,
+                    response_serializer=gaius__service__pb2.UpdateRecommendationResponse.SerializeToString,
+            ),
             'CLTExtract': grpc.unary_unary_rpc_method_handler(
                     servicer.CLTExtract,
                     request_deserializer=gaius__service__pb2.CLTExtractRequest.FromString,
@@ -1822,6 +2107,71 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.ProspectsUpdate,
                     request_deserializer=gaius__service__pb2.ProspectsUpdateRequest.FromString,
                     response_serializer=gaius__service__pb2.ProspectsUpdateEvent.SerializeToString,
+            ),
+            'CollectionStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionStatus,
+                    request_deserializer=gaius__service__pb2.CollectionStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionStatusResponse.SerializeToString,
+            ),
+            'CollectionList': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionList,
+                    request_deserializer=gaius__service__pb2.CollectionListRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionListResponse.SerializeToString,
+            ),
+            'CollectionCreate': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionCreate,
+                    request_deserializer=gaius__service__pb2.CollectionCreateRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionCreateResponse.SerializeToString,
+            ),
+            'CollectionSetFeatured': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionSetFeatured,
+                    request_deserializer=gaius__service__pb2.CollectionSetFeaturedRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionSetFeaturedResponse.SerializeToString,
+            ),
+            'CollectionAddCard': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionAddCard,
+                    request_deserializer=gaius__service__pb2.CollectionAddCardRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionAddCardResponse.SerializeToString,
+            ),
+            'CollectionListCards': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionListCards,
+                    request_deserializer=gaius__service__pb2.CollectionListCardsRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionListCardsResponse.SerializeToString,
+            ),
+            'CollectionPublishCards': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionPublishCards,
+                    request_deserializer=gaius__service__pb2.CollectionPublishCardsRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionPublishCardsResponse.SerializeToString,
+            ),
+            'CollectionPublishViz': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionPublishViz,
+                    request_deserializer=gaius__service__pb2.CollectionPublishVizRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionPublishVizResponse.SerializeToString,
+            ),
+            'CollectionSyncTheme': grpc.unary_unary_rpc_method_handler(
+                    servicer.CollectionSyncTheme,
+                    request_deserializer=gaius__service__pb2.CollectionSyncThemeRequest.FromString,
+                    response_serializer=gaius__service__pb2.CollectionSyncThemeResponse.SerializeToString,
+            ),
+            'ArticleStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ArticleStatus,
+                    request_deserializer=gaius__service__pb2.ArticleStatusRequest.FromString,
+                    response_serializer=gaius__service__pb2.ArticleStatusResponse.SerializeToString,
+            ),
+            'ArticleNew': grpc.unary_unary_rpc_method_handler(
+                    servicer.ArticleNew,
+                    request_deserializer=gaius__service__pb2.ArticleNewRequest.FromString,
+                    response_serializer=gaius__service__pb2.ArticleNewResponse.SerializeToString,
+            ),
+            'ArticleCurate': grpc.unary_stream_rpc_method_handler(
+                    servicer.ArticleCurate,
+                    request_deserializer=gaius__service__pb2.ArticleCurateRequest.FromString,
+                    response_serializer=gaius__service__pb2.ArticleCurationEvent.SerializeToString,
+            ),
+            'RenderCards': grpc.unary_stream_rpc_method_handler(
+                    servicer.RenderCards,
+                    request_deserializer=gaius__service__pb2.RenderCardsRequest.FromString,
+                    response_serializer=gaius__service__pb2.RenderCardEvent.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -3513,6 +3863,195 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def MetaAgentStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentStatus',
+            gaius__service__pb2.MetaAgentStatusRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetabaseSyncTrigger(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetabaseSyncTrigger',
+            gaius__service__pb2.MetabaseSyncRequest.SerializeToString,
+            gaius__service__pb2.MetabaseSyncResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MetaAgentAuditTrigger(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/MetaAgentAuditTrigger',
+            gaius__service__pb2.MetaAgentAuditRequest.SerializeToString,
+            gaius__service__pb2.MetaAgentAuditResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetPooledBudget(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetPooledBudget',
+            gaius__service__pb2.GetPooledBudgetRequest.SerializeToString,
+            gaius__service__pb2.GetPooledBudgetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetQualitySummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/GetQualitySummary',
+            gaius__service__pb2.GetQualitySummaryRequest.SerializeToString,
+            gaius__service__pb2.GetQualitySummaryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListRecommendations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ListRecommendations',
+            gaius__service__pb2.ListRecommendationsRequest.SerializeToString,
+            gaius__service__pb2.ListRecommendationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateRecommendation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/UpdateRecommendation',
+            gaius__service__pb2.UpdateRecommendationRequest.SerializeToString,
+            gaius__service__pb2.UpdateRecommendationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def CLTExtract(request,
             target,
             options=(),
@@ -4646,6 +5185,356 @@ class GaiusService(object):
             metadata,
             _registered_method=True)
 
+    @staticmethod
+    def CollectionStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionStatus',
+            gaius__service__pb2.CollectionStatusRequest.SerializeToString,
+            gaius__service__pb2.CollectionStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionList(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionList',
+            gaius__service__pb2.CollectionListRequest.SerializeToString,
+            gaius__service__pb2.CollectionListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionCreate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionCreate',
+            gaius__service__pb2.CollectionCreateRequest.SerializeToString,
+            gaius__service__pb2.CollectionCreateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionSetFeatured(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionSetFeatured',
+            gaius__service__pb2.CollectionSetFeaturedRequest.SerializeToString,
+            gaius__service__pb2.CollectionSetFeaturedResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionAddCard(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionAddCard',
+            gaius__service__pb2.CollectionAddCardRequest.SerializeToString,
+            gaius__service__pb2.CollectionAddCardResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionListCards(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionListCards',
+            gaius__service__pb2.CollectionListCardsRequest.SerializeToString,
+            gaius__service__pb2.CollectionListCardsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionPublishCards(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionPublishCards',
+            gaius__service__pb2.CollectionPublishCardsRequest.SerializeToString,
+            gaius__service__pb2.CollectionPublishCardsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionPublishViz(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionPublishViz',
+            gaius__service__pb2.CollectionPublishVizRequest.SerializeToString,
+            gaius__service__pb2.CollectionPublishVizResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CollectionSyncTheme(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CollectionSyncTheme',
+            gaius__service__pb2.CollectionSyncThemeRequest.SerializeToString,
+            gaius__service__pb2.CollectionSyncThemeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArticleStatus(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ArticleStatus',
+            gaius__service__pb2.ArticleStatusRequest.SerializeToString,
+            gaius__service__pb2.ArticleStatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArticleNew(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ArticleNew',
+            gaius__service__pb2.ArticleNewRequest.SerializeToString,
+            gaius__service__pb2.ArticleNewResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ArticleCurate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ArticleCurate',
+            gaius__service__pb2.ArticleCurateRequest.SerializeToString,
+            gaius__service__pb2.ArticleCurationEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RenderCards(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/gaius.engine.GaiusService/RenderCards',
+            gaius__service__pb2.RenderCardsRequest.SerializeToString,
+            gaius__service__pb2.RenderCardEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
 # Async stub alias - same class works with grpc.aio.Channel
-# Type hints in .pyi declare this as a subclass for type checking
 GaiusServiceAsyncStub = GaiusServiceStub

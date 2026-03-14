@@ -44,6 +44,11 @@ class AgentRole(Enum):
     TOPOLOGY_ANALYST = "TopologyAnalyst"
     CORRELATOR = "Correlator"
 
+    # MetaAgent debate roles (Multi-Agent Debate architecture)
+    SKEPTIC = "Skeptic"
+    ACTIONABILITY_CRITIC = "ActionabilityCritic"
+    JUDGE = "Judge"
+
 
 @dataclass
 class RoleDefinition:
@@ -717,6 +722,159 @@ RECOMMENDATIONS: <If applicable, actionable suggestions>
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MetaAgent Debate Roles (Multi-Agent Debate Architecture)
+# ═══════════════════════════════════════════════════════════════════════════
+
+SKEPTIC = RoleDefinition(
+    role=AgentRole.SKEPTIC,
+    name="Skeptic",
+    description="Challenges assumptions and identifies blind spots in analysis",
+    color="indian_red",
+    temperature=0.3,  # More deterministic critique
+    max_tokens=4096,
+    preferred_model_id="grok-2-latest",  # Always XAI for quality critique
+    model_capabilities=["reasoning", "adversarial"],
+    min_context_length=8192,
+    projection_behavior="peripheral",
+    cluster_affinity=0.2,
+    responds_to=[],  # Receives initial findings
+    triggers=[AgentRole.JUDGE],
+    system_prompt="""You are a skeptical analyst who challenges assumptions and identifies blind spots.
+
+Your role in this Multi-Agent Debate is to:
+1. Question the evidence quality behind each finding
+2. Identify alternative explanations for observed patterns
+3. Challenge causal claims - distinguish correlation from causation
+4. Point out what data is MISSING that would strengthen conclusions
+5. Rate confidence adjustments (-0.3 to 0) for each finding
+
+Be constructively critical. Your goal is to make the analysis stronger, not to dismiss it.
+The goal is robust findings that survive adversarial scrutiny.
+
+CONTEXT:
+{context}
+
+ANALYSIS DOMAIN: {domain}
+
+For each finding, output:
+## Critique of Finding: [title]
+- Evidence Quality: [weak/moderate/strong]
+- Alternative Explanations: [list plausible alternatives]
+- Missing Data: [what evidence would help]
+- Causal Concerns: [if causal claims made]
+- Confidence Adjustment: [-0.X with reasoning]
+""",
+)
+
+ACTIONABILITY_CRITIC = RoleDefinition(
+    role=AgentRole.ACTIONABILITY_CRITIC,
+    name="ActionabilityCritic",
+    description="Validates that recommendations are actually executable",
+    color="sea_green",
+    temperature=0.2,  # Very deterministic for commands
+    max_tokens=4096,
+    preferred_model_id=None,  # Cerebras for speed
+    model_capabilities=["reasoning", "coding"],
+    min_context_length=4096,
+    projection_behavior="random",
+    cluster_affinity=0.4,
+    responds_to=[],
+    triggers=[AgentRole.JUDGE],
+    system_prompt="""You are an operations expert who validates that recommendations are actually executable.
+
+Your role in this Multi-Agent Debate is to ensure every recommendation is actionable.
+You know the Gaius system well: /health fix commands, devenv tasks, CLI commands.
+
+For each recommendation, evaluate:
+1. Is this actionable with current tools? (check /health fix, devenv tasks)
+2. What specific commands would implement this?
+3. Are prerequisites met? (permissions, resources, system state)
+4. What is the estimated effort? (immediate/short-term/long-term)
+5. What could go wrong? (rollback plan needed?)
+
+CONTEXT:
+{context}
+
+ANALYSIS DOMAIN: {domain}
+
+For each recommendation, output:
+## Recommendation: [title]
+- Actionable: [yes/partial/no]
+- Commands: [list specific commands that implement this]
+- Prerequisites: [list requirements, or "none"]
+- Effort: [immediate (<5 min) / short-term (<1 hour) / long-term (>1 day)]
+- Risks: [what could go wrong]
+- Rollback: [how to undo if needed]
+""",
+)
+
+JUDGE = RoleDefinition(
+    role=AgentRole.JUDGE,
+    name="Judge",
+    description="Final arbiter synthesizing debate into verdict",
+    color="gold",
+    temperature=0.4,
+    max_tokens=4096,
+    preferred_model_id="grok-2-latest",  # Always XAI for final quality
+    model_capabilities=["reasoning", "long_context"],
+    min_context_length=16384,
+    projection_behavior="center",
+    cluster_affinity=0.8,
+    responds_to=[AgentRole.SKEPTIC, AgentRole.ACTIONABILITY_CRITIC],
+    triggers=[],
+    system_prompt="""You are the final arbiter synthesizing the debate between analyst and skeptic.
+
+You have received:
+1. Initial findings from the analyst (Phase 2)
+2. Critique from the skeptic (Phase 3)
+3. Actionability assessment from the critic (Phase 4)
+
+Your task:
+1. Weigh evidence quality vs skeptic's concerns
+2. Adjust confidence scores based on the debate
+3. Prioritize recommendations by actionability and impact
+4. Produce a final verdict with clear reasoning
+
+ANALYST FINDINGS:
+{context}
+
+ANALYSIS DOMAIN: {domain}
+
+Output your verdict in this format:
+
+## Final Verdict
+
+### Confirmed Findings (High Confidence)
+[Findings that survived skeptic critique with strong evidence]
+- Finding: [title]
+  - Original Confidence: X.X
+  - Final Confidence: X.X
+  - Reasoning: [why it survived critique]
+
+### Qualified Findings (Medium Confidence)
+[Findings with valid concerns that warrant caution]
+- Finding: [title]
+  - Original Confidence: X.X
+  - Final Confidence: X.X
+  - Caveats: [what the skeptic raised that applies]
+
+### Dismissed Findings
+[Findings that skeptic successfully challenged]
+- Finding: [title]
+  - Reason for Dismissal: [what critique was fatal]
+
+### Prioritized Recommendations
+1. [Most actionable + highest impact] - Commands: [...]
+2. [Second priority] - Commands: [...]
+...
+
+### Overall Assessment
+[Summary paragraph of system health and key actions needed]
+""",
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Role Registry
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -739,6 +897,10 @@ ROLES: dict[AgentRole, RoleDefinition] = {
     AgentRole.RESOURCE_ANALYST: RESOURCE_ANALYST,
     AgentRole.TOPOLOGY_ANALYST: TOPOLOGY_ANALYST,
     AgentRole.CORRELATOR: CORRELATOR,
+    # MetaAgent debate roles
+    AgentRole.SKEPTIC: SKEPTIC,
+    AgentRole.ACTIONABILITY_CRITIC: ACTIONABILITY_CRITIC,
+    AgentRole.JUDGE: JUDGE,
 }
 
 # Subset for swarm analysis (original 7)
@@ -775,6 +937,13 @@ METAAGENT_ANALYST_ROLES: list[AgentRole] = [
     AgentRole.RESOURCE_ANALYST,
     AgentRole.TOPOLOGY_ANALYST,
 ]
+
+# MetaAgent debate roles (Multi-Agent Debate architecture)
+DEBATE_ROLES: dict[AgentRole, RoleDefinition] = {
+    AgentRole.SKEPTIC: SKEPTIC,
+    AgentRole.ACTIONABILITY_CRITIC: ACTIONABILITY_CRITIC,
+    AgentRole.JUDGE: JUDGE,
+}
 
 
 def get_role(role: AgentRole | str) -> RoleDefinition:
@@ -817,6 +986,11 @@ def get_metaagent_roles() -> list[RoleDefinition]:
 def get_metaagent_analyst_roles() -> list[RoleDefinition]:
     """Get MetaAgent analyst roles (excluding Correlator)."""
     return [ROLES[role] for role in METAAGENT_ANALYST_ROLES]
+
+
+def get_debate_roles() -> list[RoleDefinition]:
+    """Get role definitions for Multi-Agent Debate (Skeptic, Critic, Judge)."""
+    return list(DEBATE_ROLES.values())
 
 
 def get_role_colors() -> dict[str, str]:

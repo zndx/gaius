@@ -333,7 +333,7 @@ storage {
     }
 
     database {
-        url = "postgresql://gaius:gaius@localhost:5432/gaius"
+        url = "postgresql://gaius:gaius@localhost:5444/zndx_gaius"
         pool_size = 10
     }
 }

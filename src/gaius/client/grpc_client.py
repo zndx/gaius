@@ -101,12 +101,41 @@ from ..engine.generated import (
     ProspectsCheckResponse,
     ProspectsUpdateRequest,
     ProspectsUpdateEvent,
+    # Collections (Public Content Landing Page)
+    CollectionStatusRequest,
+    CollectionStatusResponse,
+    CollectionListRequest,
+    CollectionListResponse,
+    CollectionCreateRequest,
+    CollectionCreateResponse,
+    CollectionSetFeaturedRequest,
+    CollectionSetFeaturedResponse,
+    CollectionAddCardRequest,
+    CollectionAddCardResponse,
+    CollectionListCardsRequest,
+    CollectionListCardsResponse,
+    CollectionPublishCardsRequest,
+    CollectionPublishCardsResponse,
+    CollectionPublishVizRequest,
+    CollectionPublishVizResponse,
+    CollectionSyncThemeRequest,
+    CollectionSyncThemeResponse,
     # Multi-Phase Search Flow
     SearchFlowRequest,
     SearchFlowEvent,
     # Deep Research Flow (MemRL)
     ResearchFlowRequest,
     ResearchFlowEvent,
+    # Article Curation
+    ArticleStatusRequest,
+    ArticleStatusResponse,
+    ArticleNewRequest,
+    ArticleNewResponse,
+    ArticleCurateRequest,
+    ArticleCurationEvent,
+    # Rendering (Blender Card Visualization)
+    RenderCardsRequest,
+    RenderCardEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -403,7 +432,7 @@ class GrpcEngineClient:
                             f"#GR.00000001.CONNFAIL: gRPC connection failed after {attempt} attempts.\n"
                             f"  Engine may not be running. Try:\n"
                             f"  1. Check engine status: devenv processes\n"
-                            f"  2. Restart engine: devenv tasks run restart:clean\n"
+                            f"  2. Restart engine: just restart-clean\n"
                             f"  3. Check logs: tail -f .devenv/processes.log"
                         )
                         logger.error(error_msg)
@@ -442,7 +471,7 @@ class GrpcEngineClient:
                             f"#GR.00000002.SVCUNAVAIL: gRPC service unavailable after {attempt} attempts.\n"
                             f"  Engine may have crashed or restarted. Try:\n"
                             f"  1. Check engine status: /health quick\n"
-                            f"  2. Restart engine: devenv tasks run restart:clean"
+                            f"  2. Restart engine: just restart-clean"
                         )
                         logger.error(error_msg)
                         raise ConnectionError(error_msg)
@@ -904,6 +933,10 @@ class GrpcEngineClient:
             return await self._call_prospects(action, params, timeout)
         elif service == "ResearchFlow":
             return await self._call_research_flow(action, params, timeout)
+        elif service == "Collection":
+            return await self._call_collection(action, params, timeout)
+        elif service == "Article":
+            return await self._call_article(action, params, timeout)
         else:
             raise ValueError(f"Unknown service: {service}")
 
@@ -1017,6 +1050,7 @@ class GrpcEngineClient:
                 max_tokens=params.get("max_tokens", 2048),
                 temperature=params.get("temperature", 0.7),
                 priority=params.get("priority", "normal"),
+                technique=params.get("technique", ""),
             )
             response = await self._stub.Complete(request, timeout=timeout)
             return MessageToDict(response, preserving_proto_field_name=True)
@@ -2715,6 +2749,217 @@ class GrpcEngineClient:
                 f"Unknown ResearchFlow action: {action}. "
                 f"For 'research_stream', use stream() method instead of call()."
             )
+
+    async def _call_collection(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Collection service calls via gRPC.
+
+        Actions:
+            status: Get collection statistics
+            list_collections: List all collections
+            create_collection: Create new collection
+            set_featured: Set featured collection
+            add_card: Add card to collection
+            list_cards: List cards in collection
+            publish_cards: Publish pending cards
+            publish_viz: Update 3D visualization data
+
+        Args:
+            action: Action to perform
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with collection/card data
+        """
+        if action == "status":
+            request = CollectionStatusRequest()
+            response = await self._stub.CollectionStatus(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "list_collections":
+            request = CollectionListRequest(
+                status=params.get("status", ""),
+                limit=params.get("limit", 50),
+            )
+            response = await self._stub.CollectionList(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "create_collection":
+            request = CollectionCreateRequest(
+                slug=params.get("slug", ""),
+                name=params.get("name", ""),
+                description=params.get("description", ""),
+                featured=params.get("featured", False),
+            )
+            response = await self._stub.CollectionCreate(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "set_featured":
+            request = CollectionSetFeaturedRequest(slug=params.get("slug", ""))
+            response = await self._stub.CollectionSetFeatured(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "add_card":
+            request = CollectionAddCardRequest(
+                slug=params.get("slug", ""),
+                title=params.get("title", ""),
+                summary=params.get("summary", ""),
+                source_url=params.get("source_url", ""),
+                source_type=params.get("source_type", "web"),
+                image_url=params.get("image_url", ""),
+            )
+            response = await self._stub.CollectionAddCard(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "list_cards":
+            request = CollectionListCardsRequest(
+                slug=params.get("slug", ""),
+                status=params.get("status", ""),
+                limit=params.get("limit", 100),
+            )
+            response = await self._stub.CollectionListCards(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "publish_cards":
+            request = CollectionPublishCardsRequest(
+                count=params.get("count", 3),
+                collection_slug=params.get("collection_slug", ""),
+            )
+            response = await self._stub.CollectionPublishCards(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "publish_viz":
+            request = CollectionPublishVizRequest()
+            response = await self._stub.CollectionPublishViz(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "sync_theme":
+            request = CollectionSyncThemeRequest()
+            response = await self._stub.CollectionSyncTheme(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(f"Unknown Collection action: {action}")
+
+    async def _call_article(self, action: str, params: dict, timeout: float) -> dict:
+        """Handle Article service calls via gRPC.
+
+        Article curation pipeline for landing page content.
+
+        Args:
+            action: Action to perform (status, new, curate)
+            params: Action parameters
+            timeout: Request timeout
+
+        Returns:
+            Result dict with article data
+        """
+        if action == "status":
+            request = ArticleStatusRequest()
+            response = await self._stub.ArticleStatus(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        elif action == "new":
+            request = ArticleNewRequest(
+                slug=params.get("slug", ""),
+                title=params.get("title", ""),
+            )
+            response = await self._stub.ArticleNew(request, timeout=timeout)
+            return MessageToDict(response, preserving_proto_field_name=True)
+
+        else:
+            raise ValueError(f"Unknown Article action: {action}")
+
+    async def ArticleStatus(self) -> ArticleStatusResponse:
+        """Get article curation situational awareness.
+
+        Direct gRPC call for TUI/CLI use.
+
+        Returns:
+            ArticleStatusResponse with articles list and metrics
+        """
+        request = ArticleStatusRequest()
+        response = await self._stub.ArticleStatus(request)
+        return response
+
+    async def ArticleNew(self, slug: str, title: str = "") -> ArticleNewResponse:
+        """Create new article via gRPC.
+
+        Architecture compliance: Client -> gRPC -> Engine -> KB filesystem
+        The engine owns the KB filesystem - clients MUST NOT write directly.
+
+        Args:
+            slug: URL-friendly identifier
+            title: Display title (defaults to slug if not provided)
+
+        Returns:
+            ArticleNewResponse with created article info
+        """
+        request = ArticleNewRequest(slug=slug, title=title)
+        response = await self._stub.ArticleNew(request)
+        return response
+
+    async def ArticleCurate(
+        self,
+        slug: str = "",
+        skip_grok: bool = False,
+        max_sources: int = 10,
+    ) -> AsyncIterator[ArticleCurationEvent]:
+        """Run article curation pipeline via gRPC streaming.
+
+        Architecture compliance: Client -> gRPC -> Engine -> Metaflow
+        NOT: Client -> subprocess.run() -> Metaflow
+
+        Args:
+            slug: Specific article to curate (empty = all pending)
+            skip_grok: Skip Grok synthesis for testing
+            max_sources: Maximum external sources per article
+
+        Yields:
+            ArticleCurationEvent stream with progress updates
+        """
+        request = ArticleCurateRequest(
+            slug=slug,
+            skip_grok=skip_grok,
+            max_sources=max_sources,
+        )
+        async for event in self._stub.ArticleCurate(request):
+            yield event
+
+    async def RenderCards(
+        self,
+        collection_slug: str = "",
+        card_id: str = "",
+        sample: int = 0,
+        variants: list[str] | None = None,
+        force: bool = False,
+        upload: bool = True,
+    ) -> AsyncIterator[RenderCardEvent]:
+        """Stream card rendering progress via gRPC.
+
+        Architecture compliance: Client -> gRPC -> Engine -> Blender subprocess
+
+        Args:
+            collection_slug: Render cards in this collection (empty = all)
+            card_id: Render specific card (overrides collection)
+            sample: Random sample N cards (0 = all matching)
+            variants: Resolution variants to render (empty = all)
+            force: Re-render even if image exists
+            upload: Upload to R2 after rendering
+
+        Yields:
+            RenderCardEvent stream with progress updates
+        """
+        request = RenderCardsRequest(
+            collection_slug=collection_slug,
+            card_id=card_id,
+            sample=sample,
+            variants=variants or [],
+            force=force,
+            upload=upload,
+        )
+        async for event in self._stub.RenderCards(request):
+            yield event
 
     async def _call_init(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Init/Reindex service calls via gRPC.

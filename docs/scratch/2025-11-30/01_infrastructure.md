@@ -7,7 +7,7 @@
 │                         devenv services                          │
 ├──────────────┬──────────────┬──────────────┬───────────────────┤
 │  PostgreSQL  │    MinIO     │    Qdrant    │   optillm/vLLM    │
-│    :5438     │ :9010/:9011  │ :6339/:6340  │   :8080/:8088     │
+│    :5444     │ :9010/:9011  │ :6339/:6340  │   :8080/:8088     │
 ├──────────────┼──────────────┼──────────────┼───────────────────┤
 │ Admin DB     │ Object Store │ Vector DB    │ Local LLM         │
 │ pg_cron      │ RAID storage │ Embeddings   │ Qwen3-Coder-30B   │
@@ -19,7 +19,7 @@
 
 | Service    | Port(s)       | Purpose                    |
 |------------|---------------|----------------------------|
-| PostgreSQL | 5438          | Admin DB (non-default)     |
+| PostgreSQL | 5444          | Admin DB (non-default)     |
 | MinIO API  | 9010          | S3-compatible object store |
 | MinIO Console | 9011       | Web UI                     |
 | Qdrant HTTP | 6339         | REST API                   |
@@ -51,7 +51,7 @@ services.postgres = {
   enable = true;
   package = pkgs.postgresql_16;
   extensions = ext: [ ext.pg_cron ];
-  port = 5438;
+  port = 5444;
   settings = {
     shared_preload_libraries = "pg_cron";
     "cron.database_name" = "zndx_gaius";

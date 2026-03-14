@@ -90,8 +90,10 @@ accesslog = "{accesslog}"
 proc_name = "{proc_name}"
 
 # Environment variables for optillm
+# NOTE: Do NOT set OPTILLM_API_KEY - that triggers local inference mode which
+# tries to load model tokenizers. Instead, set OPENAI_API_KEY to use the
+# OpenAI-compatible proxy path with base_url.
 raw_env = [
-    "OPTILLM_API_KEY={optillm_api_key}",
     "OPENAI_API_KEY={optillm_api_key}",
     "OPTILLM_APPROACH={optillm_approach}",
     "OPTILLM_BASE_URL={optillm_base_url}",
@@ -121,6 +123,47 @@ def worker_int(worker):
 def worker_abort(worker):
     """Called when a worker receives SIGABRT."""
     print(f"[optillm-gunicorn] Worker {{worker.pid}} aborted")
+
+
+def post_fork(server, worker):
+    """Called after a worker is forked - configure optillm server_config from env vars.
+
+    This is necessary because optillm only reads OPTILLM_BASE_URL in main(),
+    which is not called when running via gunicorn.
+    """
+    import os
+    import sys
+    try:
+        from optillm import server as optillm_server
+
+        # Patch server_config with environment variables
+        base_url = os.environ.get("OPTILLM_BASE_URL", "")
+        api_key = os.environ.get("OPENAI_API_KEY", "")  # Use OPENAI_API_KEY, not OPTILLM_API_KEY
+        approach = os.environ.get("OPTILLM_APPROACH", "none")
+
+        # Debug: write to file to verify hook runs
+        with open("/tmp/gaius/optillm_postfork.log", "a") as f:
+            f.write(f"post_fork: pid={{worker.pid}} base_url={{base_url}} api_key={{api_key}} approach={{approach}}\\n")
+
+        if base_url:
+            optillm_server.server_config["base_url"] = base_url
+            print(f"[optillm-gunicorn] Worker {{worker.pid}} configured base_url={{base_url}}", file=sys.stderr)
+
+        if api_key:
+            optillm_server.server_config["optillm_api_key"] = api_key
+            print(f"[optillm-gunicorn] Worker {{worker.pid}} configured api_key={{api_key}}", file=sys.stderr)
+
+        if approach:
+            optillm_server.server_config["approach"] = approach
+
+        # Re-initialize the OpenAI client with the correct base_url
+        if base_url:
+            from openai import OpenAI
+            optillm_server.default_client = OpenAI(api_key=api_key or "dummy", base_url=base_url)
+            print(f"[optillm-gunicorn] Worker {{worker.pid}} initialized OpenAI client with base_url={{base_url}}", file=sys.stderr)
+
+    except Exception as e:
+        print(f"[optillm-gunicorn] Worker {{worker.pid}} config error: {{e}}")
 '''
 
 

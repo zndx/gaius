@@ -35,10 +35,15 @@ BDD Alignment:
 import asyncio
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
 
+from ..metrics import (
+    record_pipeline_task_completion,
+)
 from .base_daemon import (
     BaseDaemon,
     DaemonCriticality,
@@ -343,6 +348,8 @@ class CognitionService(BaseDaemon):
             "tda_computation": self._run_tda_computation,
             "held_out_refresh": self._run_held_out_refresh,
             "feed_check": self._run_feed_check,
+            # Landing page pipeline tasks
+            "article_curate": self._run_article_curate,
         }
 
         try:
@@ -1321,11 +1328,10 @@ class CognitionService(BaseDaemon):
             from ...workers.db import Database
             import os
 
-            # Get database URL from environment or config
-            db_url = os.getenv(
-                "GAIUS_DATABASE_URL",
-                os.getenv("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            # Get database URL from config
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
 
             # Create minimal worker config
             config = WorkerConfig(db_url=db_url)
@@ -1879,6 +1885,158 @@ Your summary note content"""
         except Exception as e:
             logger.error(f"Feed check failed: {e}")
             return {"error": str(e)}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Landing Page Pipeline Tasks
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _run_article_curate(self, payload: dict) -> dict:
+        """Run article curation flow via Metaflow subprocess.
+
+        Spawns ArticleCurationFlow which:
+        - Selects article to curate (fairness-aware)
+        - Synthesizes zk/ notes with Grok
+        - Acquires external sources
+        - Creates cards for landing page
+
+        Args:
+            payload: Task payload with optional check_cooldown flag
+
+        Returns:
+            Result dict with flow outcome
+        """
+        import subprocess
+
+        start_time = time.time()
+
+        # Check cooldown if requested (36-hour interval)
+        if payload.get("check_cooldown") and self._db_pool:
+            try:
+                async with self._db_pool.acquire() as conn:
+                    should_run = await conn.fetchval(
+                        "SELECT collections.should_run_curation()"
+                    )
+                    if not should_run:
+                        return {
+                            "success": False,
+                            "skipped": True,
+                            "reason": "cooldown_active",
+                            "message": "Less than 36 hours since last curation",
+                        }
+            except Exception as e:
+                logger.warning(f"Cooldown check failed, proceeding anyway: {e}")
+
+        # Mark curation started
+        if self._db_pool:
+            try:
+                async with self._db_pool.acquire() as conn:
+                    await conn.execute("SELECT collections.mark_curation_started()")
+            except Exception as e:
+                logger.warning(f"Failed to mark curation started: {e}")
+
+        # Run Metaflow flow as subprocess with progress-based idle timeout.
+        # No hard wall-clock limit — the render step alone can take 15+ min
+        # for many cards. The flow must produce stdout within IDLE_TIMEOUT
+        # or it's considered stalled.
+        import select
+
+        IDLE_TIMEOUT = 300  # 5 minutes without output = stalled
+
+        cmd = [
+            "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
+            "run",
+        ]
+
+        logger.info(f"Starting article curation: {' '.join(cmd)}")
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=os.environ.get("GAIUS_PROJECT_ROOT", os.getcwd()),
+            )
+
+            last_output = time.time()
+            output_lines: list[str] = []
+            stdout = proc.stdout
+            assert stdout is not None  # guaranteed by stdout=PIPE
+
+            while True:
+                ready, _, _ = select.select(
+                    [stdout], [], [], IDLE_TIMEOUT
+                )
+
+                if ready:
+                    line = stdout.readline()
+                    if line:
+                        last_output = time.time()
+                        output_lines.append(line.rstrip())
+                        logger.info(f"  ArticleCuration: {line.rstrip()}")
+                    elif proc.poll() is not None:
+                        break
+                else:
+                    idle_s = time.time() - last_output
+                    if proc.poll() is not None:
+                        break
+                    logger.error(
+                        f"Article curation stalled: no output for {idle_s:.0f}s"
+                    )
+                    proc.kill()
+                    proc.wait()
+                    duration_ms = (time.time() - start_time) * 1000
+                    record_pipeline_task_completion(
+                        task_type="article_curate",
+                        success=False,
+                        duration_ms=duration_ms,
+                    )
+                    return {
+                        "success": False,
+                        "error": f"stalled: no output for {idle_s:.0f}s",
+                        "last_lines": output_lines[-10:],
+                        "duration_ms": duration_ms,
+                    }
+
+            retcode = proc.wait()
+            duration_ms = (time.time() - start_time) * 1000
+
+            if retcode == 0:
+                logger.info("Article curation completed successfully")
+                record_pipeline_task_completion(
+                    task_type="article_curate",
+                    success=True,
+                    duration_ms=duration_ms,
+                    items_processed=1,
+                )
+                return {
+                    "success": True,
+                    "stdout": "\n".join(output_lines[-50:]),
+                    "duration_ms": duration_ms,
+                }
+            else:
+                logger.error(f"Article curation failed (exit {retcode})")
+                record_pipeline_task_completion(
+                    task_type="article_curate",
+                    success=False,
+                    duration_ms=duration_ms,
+                )
+                return {
+                    "success": False,
+                    "error": "\n".join(output_lines[-20:]),
+                    "returncode": retcode,
+                    "duration_ms": duration_ms,
+                }
+
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error(f"Article curation failed: {e}")
+            record_pipeline_task_completion(
+                task_type="article_curate",
+                success=False,
+                duration_ms=duration_ms,
+            )
+            return {"success": False, "error": str(e), "duration_ms": duration_ms}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Engine Metrics Collection

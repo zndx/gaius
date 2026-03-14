@@ -1018,6 +1018,8 @@ model_id: {state.model_id}
             return {"error": "No HuggingFace data available. Call model_fetch_hf first."}
 
         # Get coding endpoint
+        # TECH DEBT: Hardcoded localhost:8082/v1. Should use engine gRPC client
+        # for endpoint discovery and health-aware routing.
         check = await check_coding_endpoint(8082)
         if check.get("healthy"):
             endpoint_url = "http://localhost:8082/v1"

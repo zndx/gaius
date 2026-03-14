@@ -65,6 +65,7 @@ class ExchangeRecord:
         request_params: Parameters (temperature, max_tokens, etc.)
         response_content: Full response text
         response_model: Actual model used (may differ from requested)
+        response_reasoning: Chain-of-thought reasoning from reasoning models (GLM-4.7)
         input_tokens: Input token count
         output_tokens: Output token count
         latency_ms: Request latency in milliseconds
@@ -77,6 +78,7 @@ class ExchangeRecord:
     response_content: str
     request_params: dict = field(default_factory=dict)
     response_model: str | None = None
+    response_reasoning: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: int = 0
@@ -112,6 +114,7 @@ class ExchangeRecord:
             "latency_ms": self.latency_ms,
             "created_at": self.created_at,
             "source_context": json.dumps(self.source_context),
+            "response_reasoning": self.response_reasoning,
         }
 
 
@@ -455,6 +458,7 @@ class ExchangeCapture:
             pa.field("latency_ms", pa.int64(), nullable=True),
             pa.field("created_at", pa.timestamp("us", tz="UTC"), nullable=False),
             pa.field("source_context", pa.string(), nullable=True),
+            pa.field("response_reasoning", pa.string(), nullable=True),
         ])
 
         # Ensure timestamps are timezone-aware

@@ -53,10 +53,13 @@ def _get_asyncpg():
 
 
 def get_database_url() -> str:
-    """Get database URL from environment."""
-    return os.getenv(
-        "DATABASE_URL", "postgresql://gaius:gaius@localhost:5432/gaius"
-    )
+    """Get database URL from config.
+
+    Delegates to gaius.core.config.get_database_url() for centralized
+    database URL resolution.
+    """
+    from ..core.config import get_database_url as _core_get_database_url
+    return _core_get_database_url()
 
 
 class RoutingOutcome(Enum):

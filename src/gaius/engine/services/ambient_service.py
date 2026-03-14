@@ -1224,6 +1224,7 @@ class AmbientWorkloadService:
                     agent_alias="instruct",
                     max_tokens=buffer_cfg.summarize_max_tokens,
                     temperature=0.7,
+                    task_type="ambient_summarization",
                 ),
                 timeout=30,
             )
@@ -1433,6 +1434,7 @@ Output exactly 3 search queries, one per line, no numbering or bullets:"""
                     system_prompt=task.system_prompt or None,
                     max_tokens=256,  # Short responses for testing
                     temperature=0.7,
+                    task_type="ambient_warmup",
                 ),
                 timeout=task.timeout_secs,
             )

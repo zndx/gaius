@@ -221,6 +221,89 @@ OBSERVE_METRICS: list[MetricDefinition] = [
         critical_threshold=3,
         precision=0,
     ),
+    # --- Landing Page Pipeline Metrics ---
+    # Cards published per day (expected: ~6/day at current 4x schedule)
+    MetricDefinition(
+        id="cards_per_day",
+        name="Cards/day",
+        source="prometheus",
+        query='increase(gaius_gaius_pipeline_cards_published_total[24h])',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=3,  # Below expected throughput
+        threshold_direction="below",
+        precision=0,
+    ),
+    # Curations per week (expected: ~4-5/week at 36h cadence)
+    MetricDefinition(
+        id="curations_per_week",
+        name="Curate/wk",
+        source="prometheus",
+        query='increase(gaius_gaius_pipeline_articles_curated_total[7d])',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=2,  # Below expected throughput
+        threshold_direction="below",
+        precision=0,
+    ),
+    # Minimum daily cards in backlog (tune if approaching 0)
+    MetricDefinition(
+        id="min_daily_backlog",
+        name="Min backlog",
+        source="prometheus",
+        query='min_over_time(gaius_gaius_pipeline_pending_cards[24h])',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=5,  # Warn if backlog gets low
+        critical_threshold=0,  # Critical if empty
+        threshold_direction="below",
+        precision=0,
+    ),
+    # Current pending cards gauge
+    MetricDefinition(
+        id="pending_cards",
+        name="Backlog",
+        source="prometheus",
+        query='gaius_gaius_pipeline_pending_cards',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=5,
+        critical_threshold=0,
+        threshold_direction="below",
+        precision=0,
+    ),
+    # Pipeline task failures (zero tolerance)
+    MetricDefinition(
+        id="pipeline_failures",
+        name="Pipe Fail",
+        source="prometheus",
+        query='sum(increase(gaius_gaius_pipeline_task_failure_total[24h])) or vector(0)',
+        display=MetricDisplay.COUNTER,
+        unit="",
+        warning_threshold=1,  # ANY failure = warning
+        critical_threshold=3,
+        precision=0,
+    ),
+    # Error attribution - % of pipeline failures from article_curate
+    MetricDefinition(
+        id="curate_error_pct",
+        name="Curate Err%",
+        source="prometheus",
+        query='(sum(gaius_gaius_pipeline_task_failure_total{task_type="article_curate"}) or vector(0)) / (sum(gaius_gaius_pipeline_task_failure_total) + 0.0001) * 100',
+        display=MetricDisplay.PERCENTAGE,
+        unit="%",
+        precision=0,
+    ),
+    # Error attribution - % of pipeline failures from publish_cards
+    MetricDefinition(
+        id="publish_error_pct",
+        name="Publish Err%",
+        source="prometheus",
+        query='(sum(gaius_gaius_pipeline_task_failure_total{task_type="publish_cards"}) or vector(0)) / (sum(gaius_gaius_pipeline_task_failure_total) + 0.0001) * 100',
+        display=MetricDisplay.PERCENTAGE,
+        unit="%",
+        precision=0,
+    ),
 ]
 
 

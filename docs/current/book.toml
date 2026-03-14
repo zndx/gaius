@@ -1,6 +1,24 @@
 [book]
 authors = ["Ryan Hill"]
 language = "en"
-multilingual = false
 src = "src"
-title = "Gaius CLI"
+title = "Gaius"
+
+[preprocessor.d2]
+path = "d2"
+layout = "elk"
+inline = false
+output-dir = "d2"
+
+# Disabled: mdbook-katex 0.9.4 (nixpkgs) incompatible with mdbook 0.5.2
+# Re-enable when nixpkgs updates the package
+# [preprocessor.katex]
+
+[output.html]
+default-theme = "light"
+site-url = "/gaius/"
+additional-css = ["theme/custom.css"]
+additional-js = ["theme/diagrams.js"]
+
+[output.html.print]
+enable = true

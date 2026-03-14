@@ -65,7 +65,7 @@ class KBConfig:
 class DatabaseConfig:
     """Database connection configuration."""
 
-    url: str = "postgres://localhost:5438/zndx_gaius?sslmode=disable"
+    url: str = "postgres://localhost:5444/zndx_gaius?sslmode=disable"
     pool_size: int = 10
 
 
@@ -337,6 +337,7 @@ class XAIConfig:
     enabled: bool = True
     api_key: str = ""
     api_base: str = "https://api.x.ai/v1"
+    management_key: str = ""
 
 
 @dataclass
@@ -349,12 +350,48 @@ class CerebrasConfig:
 
 
 @dataclass
+class BraveConfig:
+    """Brave Search API configuration."""
+
+    enabled: bool = True
+    api_key: str = ""
+    answers_api_key: str = ""
+
+
+@dataclass
+class R2Config:
+    """Cloudflare R2 storage configuration."""
+
+    access_key_id: str = ""
+    secret_access_key: str = ""
+    bucket: str = "gaius-viz"
+    public_url: str = ""
+
+
+@dataclass
+class CloudflareConfig:
+    """Cloudflare services configuration."""
+
+    account_id: str = ""
+    api_token: str = ""
+    r2: R2Config = field(default_factory=R2Config)
+
+    @property
+    def r2_endpoint(self) -> str:
+        """Derive R2 endpoint from account_id."""
+        if self.account_id:
+            return f"https://{self.account_id}.r2.cloudflarestorage.com"
+        return ""
+
+
+@dataclass
 class ProvidersConfig:
     """Cloud GPU providers configuration."""
 
     lambdalabs: LambdaLabsConfig = field(default_factory=LambdaLabsConfig)
     xai: XAIConfig = field(default_factory=XAIConfig)
     cerebras: CerebrasConfig = field(default_factory=CerebrasConfig)
+    brave: BraveConfig = field(default_factory=BraveConfig)
 
 
 @dataclass
@@ -419,6 +456,7 @@ class GaiusConfig:
     hx: HxConfig = field(default_factory=HxConfig)
     summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    cloudflare: CloudflareConfig = field(default_factory=CloudflareConfig)
 
     # Raw HOCON tree for accessing custom settings
     _raw: ConfigTree | None = field(default=None, repr=False)
@@ -456,7 +494,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     )
 
     # Strip quotes from database URL if present (common .env issue)
-    db_url = g.get("database.url", "postgres://localhost:5438/zndx_gaius?sslmode=disable")
+    db_url = g.get("database.url", "postgres://localhost:5444/zndx_gaius?sslmode=disable")
     if isinstance(db_url, str):
         db_url = db_url.strip('"').strip("'")
 
@@ -649,6 +687,13 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         enabled=g.get("providers.xai.enabled", True),
         api_key=g.get("providers.xai.api_key", ""),
         api_base=g.get("providers.xai.api_base", "https://api.x.ai/v1"),
+        management_key=g.get("providers.xai.management_key", ""),
+    )
+
+    brave = BraveConfig(
+        enabled=g.get("providers.brave.enabled", True),
+        api_key=g.get("providers.brave.api_key", ""),
+        answers_api_key=g.get("providers.brave.answers_api_key", ""),
     )
 
     cerebras = CerebrasConfig(
@@ -661,6 +706,21 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         lambdalabs=lambdalabs,
         xai=xai,
         cerebras=cerebras,
+        brave=brave,
+    )
+
+    # Cloudflare services
+    r2 = R2Config(
+        access_key_id=g.get("cloudflare.r2.access_key_id", ""),
+        secret_access_key=g.get("cloudflare.r2.secret_access_key", ""),
+        bucket=g.get("cloudflare.r2.bucket", "gaius-viz"),
+        public_url=g.get("cloudflare.r2.public_url", ""),
+    )
+
+    cloudflare = CloudflareConfig(
+        account_id=g.get("cloudflare.account_id", ""),
+        api_token=g.get("cloudflare.api_token", ""),
+        r2=r2,
     )
 
     return GaiusConfig(
@@ -684,6 +744,7 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
         hx=hx,
         summarization=summarization,
         providers=providers,
+        cloudflare=cloudflare,
         _raw=tree,
     )
 

@@ -201,6 +201,11 @@ class OrchestratorService:
         # Lazily initialized to avoid circular imports
         self._phase_observer: Optional["PhaseChangeObserver"] = None
 
+        # Endpoints currently evicted by active workloads.
+        # The reconciliation loop must skip these to avoid
+        # conflicting with workload-managed restore.
+        self._evicted_endpoints: set[str] = set()
+
         logger.info("OrchestratorService initialized")
 
     async def start(self) -> None:
@@ -1620,6 +1625,7 @@ class OrchestratorService:
         for name in evicted:
             try:
                 logger.info(f"Evicting endpoint {name} for transient workload {workload_id}")
+                self._evicted_endpoints.add(name)
                 await self.stop_endpoint(name)
                 self._unregister_capability(name)
             except Exception as e:
@@ -1857,6 +1863,7 @@ class OrchestratorService:
         for endpoint_name in workload.result.restore_plan:
             try:
                 logger.info(f"Restoring evicted endpoint: {endpoint_name}")
+                self._evicted_endpoints.discard(endpoint_name)
                 await self.start_endpoint(endpoint_name)
             except Exception as e:
                 restore_success = False
@@ -2547,10 +2554,9 @@ class OrchestratorService:
         try:
             import asyncpg
 
-            db_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                os.environ.get("DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
-            )
+            from gaius.core.config import get_database_url
+
+            db_url = get_database_url()
             conn = await asyncpg.connect(db_url)
 
             try:
@@ -2875,7 +2881,7 @@ def get_orchestrator_service() -> OrchestratorService:
             "OrchestratorService not initialized.\n"
             "  The engine server must call set_orchestrator_service() during startup.\n"
             "  Guru Meditation: #ORCH.00000001.SVCNOTINIT\n"
-            "  Fix: Ensure the engine is running: devenv tasks run restart:clean"
+            "  Fix: Ensure the engine is running: just restart-clean"
         )
     return _orchestrator_service
 

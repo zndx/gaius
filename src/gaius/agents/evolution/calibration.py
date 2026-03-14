@@ -332,7 +332,9 @@ class CalibrationOracle:
             import httpx
             import json
 
-            api_key = os.environ.get("XAI_API_KEY", "")
+            from gaius.core.config import get_config
+
+            api_key = get_config().providers.xai.api_key
             if not api_key:
                 logger.debug("XAI API key not configured")
                 return None, ""

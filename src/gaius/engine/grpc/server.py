@@ -84,6 +84,9 @@ class ServiceRegistry:
     # Prospects/Stewardship service for FMP-based intelligence
     prospects_service: Any = None
 
+    # Collections service for public landing page content
+    collection_service: Any = None
+
     # Ambient computing workload service
     ambient_service: Any = None
 
@@ -92,6 +95,12 @@ class ServiceRegistry:
 
     # Vector search service (orchestrator-managed ColNomic)
     vector_search_service: Any = None
+
+    # MetaAgent service for Metabase sync, audits, budget
+    metaagent_service: Any = None
+
+    # ThetaAgent service for situational awareness and consolidation
+    theta_service: Any = None
 
     # Engine config
     config: Any = None

@@ -355,12 +355,21 @@ def get_baseline_registry() -> BaselineRegistry:
     """Get the global singleton BaselineRegistry.
 
     Thread-safe lazy initialization.
+
+    Raises:
+        RuntimeError: If registry initialization fails (should never happen)
     """
     global _registry
     if _registry is None:
         with _registry_lock:
             if _registry is None:
                 _registry = BaselineRegistry()
+    # Fail-fast: _registry is guaranteed to be non-None after the block above
+    if _registry is None:
+        raise RuntimeError(
+            "BaselineRegistry initialization failed unexpectedly\n"
+            "  Guru Meditation: #BL.00000001.INITFAIL"
+        )
     return _registry
 
 

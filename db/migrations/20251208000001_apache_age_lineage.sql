@@ -82,15 +82,15 @@ CREATE TABLE IF NOT EXISTS lineage_events (
 );
 
 -- Indexes for lineage queries
-CREATE INDEX idx_lineage_run ON lineage_events(run_id);
-CREATE INDEX idx_lineage_job ON lineage_events(job_namespace, job_name);
-CREATE INDEX idx_lineage_time ON lineage_events(event_time DESC);
-CREATE INDEX idx_lineage_unprocessed ON lineage_events(created_at) WHERE NOT processed;
-CREATE INDEX idx_lineage_parent ON lineage_events(parent_run_id) WHERE parent_run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_lineage_run ON lineage_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_lineage_job ON lineage_events(job_namespace, job_name);
+CREATE INDEX IF NOT EXISTS idx_lineage_time ON lineage_events(event_time DESC);
+CREATE INDEX IF NOT EXISTS idx_lineage_unprocessed ON lineage_events(created_at) WHERE NOT processed;
+CREATE INDEX IF NOT EXISTS idx_lineage_parent ON lineage_events(parent_run_id) WHERE parent_run_id IS NOT NULL;
 
 -- GIN index for JSONB queries on inputs/outputs
-CREATE INDEX idx_lineage_inputs ON lineage_events USING GIN (inputs);
-CREATE INDEX idx_lineage_outputs ON lineage_events USING GIN (outputs);
+CREATE INDEX IF NOT EXISTS idx_lineage_inputs ON lineage_events USING GIN (inputs);
+CREATE INDEX IF NOT EXISTS idx_lineage_outputs ON lineage_events USING GIN (outputs);
 
 COMMENT ON TABLE lineage_events IS 'OpenLineage standard events for data lineage tracking';
 COMMENT ON COLUMN lineage_events.job_namespace IS 'Job namespace (e.g., gaius.fetch, gaius.summarize)';

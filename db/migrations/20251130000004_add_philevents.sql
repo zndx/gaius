@@ -1,35 +1,13 @@
--- migrate:up
+-- migrate:up transaction:false
 
--- Add philevents source type and source entry
+-- Add philevents source type (enum value only)
+-- NOTE: ALTER TYPE ADD VALUE cannot run inside a transaction
+-- NOTE: The INSERT using this value must be in a SEPARATE migration
+-- because PostgreSQL doesn't allow using new enum values in the same session
 
--- Add philevents to source_type enum
 ALTER TYPE source_type ADD VALUE IF NOT EXISTS 'philevents';
 
--- Add philevents source (only if not exists)
-INSERT INTO feed_sources (name, source_type, base_url, config, fetch_interval_minutes, active)
-SELECT
-    'philevents',
-    'philevents',
-    'https://philevents.org',
-    '{
-        "topics": [577, 578, 576, 574, 634, 599],
-        "max_results": 50
-    }'::jsonb,
-    1440,  -- Daily (events don't change that frequently)
-    true
-WHERE NOT EXISTS (SELECT 1 FROM feed_sources WHERE name = 'philevents');
-
--- Update existing philevents source to new type
-UPDATE feed_sources
-SET source_type = 'philevents',
-    config = '{
-        "topics": [577, 578, 576, 574, 634, 599],
-        "max_results": 50
-    }'::jsonb,
-    fetch_interval_minutes = 1440
-WHERE name = 'philevents' AND source_type != 'philevents';
-
--- Topic reference:
+-- Topic reference for future migration:
 -- 576 - Epistemology
 -- 577 - Metaphysics
 -- 578 - Philosophy of Mind
@@ -38,6 +16,4 @@ WHERE name = 'philevents' AND source_type != 'philevents';
 -- 599 - Philosophy of Cognitive Science
 
 -- migrate:down
-
-DELETE FROM feed_sources WHERE name = 'philevents';
 -- Note: Cannot easily remove enum value in PostgreSQL

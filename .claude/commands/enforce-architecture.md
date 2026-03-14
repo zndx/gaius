@@ -78,14 +78,14 @@ grep "async def [A-Z]" src/gaius/engine/grpc/servicers/gaius_servicer.py | sort
 When finding a violation, the fix pattern is:
 
 1. **Add proto messages** to `src/gaius/engine/proto/gaius_service.proto`
-2. **Regenerate bindings**: `devenv tasks run proto:generate`
+2. **Regenerate bindings**: `just proto-generate`
 3. **Update exports** in `src/gaius/engine/generated/__init__.py`
 4. **Add servicer method** in `src/gaius/engine/grpc/servicers/gaius_servicer.py`
 5. **Add client dispatch** in `src/gaius/client/grpc_client.py`
 6. **Update CLI** to use `await client.call(service, action, params)`
 7. **Update TUI** to use gRPC client
 8. **Update MCP** to use gRPC client
-9. **Restart engine**: `devenv tasks run restart:clean`
+9. **Restart engine**: `just restart-clean`
 10. **Verify via CLI**: `uv run gaius-cli --cmd "/command" --format json`
 
 ## Report Format

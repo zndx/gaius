@@ -36,6 +36,7 @@ class InferenceRequest:
         temperature: Sampling temperature
         max_tokens: Maximum tokens to generate
         technique: optillm technique (for optillm backend)
+        source_context: Provenance context for HX exchange tracking (external backends)
     """
 
     messages: list[dict[str, str]]
@@ -43,6 +44,7 @@ class InferenceRequest:
     temperature: float = 0.7
     max_tokens: int = 2048
     technique: Optional[str] = None
+    source_context: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -58,6 +60,8 @@ class InferenceResponse:
         latency_ms: Request latency in milliseconds
         technique: optillm technique if used
         error: Error message if request failed
+        exchange_id: UUID of captured exchange (external backends only)
+        request_hash: SHA-256 hash for lineage linking (external backends only)
     """
 
     content: str
@@ -68,6 +72,8 @@ class InferenceResponse:
     latency_ms: int = 0
     technique: Optional[str] = None
     error: Optional[str] = None
+    exchange_id: Optional[str] = None
+    request_hash: Optional[str] = None
 
     @property
     def success(self) -> bool:
@@ -175,7 +181,15 @@ class BackendRouter:
             # Determine backend
             backend = agent_config.backend.lower()
 
-            if backend == "optillm":
+            # If technique is specified, route through optillm for optimization
+            # optillm acts as a proxy that applies the technique then forwards to vLLM
+            if request.technique and backend == "vllm":
+                logger.info(
+                    f"Routing {request.agent_alias} through optillm "
+                    f"(technique={request.technique})"
+                )
+                response = await self._route_to_optillm(request, agent_config)
+            elif backend == "optillm":
                 response = await self._route_to_optillm(request, agent_config)
             elif backend == "vllm":
                 response = await self._route_to_vllm(request, agent_config)
@@ -206,12 +220,18 @@ class BackendRouter:
     ) -> InferenceResponse:
         """Route request to optillm backend.
 
+        Engine-First Architecture: Agents configured with backend="optillm"
+        MUST route through optillm. There is no fallback to direct vLLM.
+        If optillm is unhealthy, the request fails fast with an actionable
+        error. The OptillmController watchdog handles auto-restart; manual
+        recovery is available via /health fix optillm.
+
         Args:
             request: The inference request
             agent_config: Agent configuration
 
         Returns:
-            InferenceResponse from optillm
+            InferenceResponse from optillm (error set if unhealthy)
         """
         # Determine technique
         technique_str = request.technique or agent_config.optillm_technique
@@ -281,6 +301,7 @@ class BackendRouter:
                 model=model,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                source_context=request.source_context,
             )
 
             latency_ms = int((time.time() - start_time) * 1000)
@@ -293,6 +314,8 @@ class BackendRouter:
                 output_tokens=response.output_tokens,
                 latency_ms=latency_ms,
                 error=response.error,
+                exchange_id=response.exchange_id,
+                request_hash=response.request_hash,
             )
 
         except Exception as e:
@@ -416,6 +439,8 @@ class BackendRouter:
         temperature: float = 0.7,
         max_tokens: int = 2048,
         technique: Optional[str] = None,
+        source_context: Optional[dict[str, Any]] = None,
+        task_type: Optional[str] = None,
     ) -> InferenceResponse:
         """Convenience method for simple completions.
 
@@ -426,14 +451,23 @@ class BackendRouter:
             temperature: Sampling temperature
             max_tokens: Maximum tokens
             technique: Optional optillm technique
+            source_context: Full provenance context for HX exchange tracking
+            task_type: Convenience - auto-builds source_context if not provided
 
         Returns:
-            InferenceResponse
+            InferenceResponse with exchange_id/request_hash for external backends
         """
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+
+        # Auto-build source_context if task_type provided but not full context
+        if source_context is None and task_type:
+            source_context = {
+                "agent_alias": agent_alias,
+                "task_type": task_type,
+            }
 
         request = InferenceRequest(
             messages=messages,
@@ -441,6 +475,7 @@ class BackendRouter:
             temperature=temperature,
             max_tokens=max_tokens,
             technique=technique,
+            source_context=source_context,
         )
 
         return await self.route(request)

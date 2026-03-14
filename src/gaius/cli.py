@@ -300,6 +300,27 @@ class GaiusCLI:
                 # Prospects - FMP-based prospect intelligence
                 elif command == "prospects" or command == "pro":
                     result["data"] = self._run_async(self._cmd_prospects(args))
+                # Metabase - Read-only Metabase API passthrough
+                elif command == "metabase" or command == "mb":
+                    result["data"] = self._run_async(self._cmd_metabase(args))
+                # Metaflow - Read-only operational insights into flow runs
+                elif command == "metaflow" or command == "mf":
+                    result["data"] = self._run_async(self._cmd_metaflow_ops(args))
+                # Dataview - Bases feature store queries (Kudu SDK-style fluent API)
+                elif command == "dataview" or command == "dv":
+                    result["data"] = self._run_async(self._cmd_dataview(args))
+                # Publish - Collection card publishing for landing page
+                elif command == "publish" or command == "pub":
+                    result["data"] = self._run_async(self._cmd_publish(args))
+                # Collections - Collection management
+                elif command == "collection" or command == "col":
+                    result["data"] = self._run_async(self._cmd_collection(args))
+                # Article Curation - KB article research and publication pipeline
+                elif command == "article" or command == "art":
+                    result["data"] = self._run_async(self._cmd_article(args))
+                # Rendering - Blender card visualization via engine workload
+                elif command == "render":
+                    result["data"] = self._run_async(self._cmd_render(args))
                 else:
                     result["success"] = False
                     result["error"] = f"Unknown command: {command}"
@@ -1304,6 +1325,8 @@ class GaiusCLI:
                 "exec <cmd> [args]": "Execute via Engine's CommandService",
                 # ThetaAgent situational awareness
                 "sitrep [horizon]": "Situational report (day, week, quarter, open)",
+                # Dataview - Bases feature store
+                "dataview [cmd]": "Bases feature store (list, <base>, health)",
             },
             "tagline": "/sitrep to start your day! Use /ask for queries, /thoughts for cognition.",
         }
@@ -2735,7 +2758,9 @@ Answer:"""
         try:
             from .inference import get_search
             web_search = get_search()
-            has_api_key = bool(os.environ.get("BRAVE_API_KEY"))
+            from gaius.core.config import get_config as _get_cfg
+
+            has_api_key = bool(_get_cfg().providers.brave.api_key)
             diagnostics.append({
                 "component": "web_search",
                 "status": "available" if has_api_key else "no_api_key",
@@ -6039,7 +6064,7 @@ Respond with:
         if subcmd == "quick":
             report = await checker.run_quick()
             check_type = "quick"
-        elif subcmd in ("engine", "data", "cognition", "inference"):
+        elif subcmd in ("engine", "data", "cognition", "inference", "site", "pipeline", "periodic", "evolution"):
             report = await checker.run_category(subcmd)
             check_type = subcmd
         else:
@@ -6258,6 +6283,8 @@ Respond with:
             "s3": "data",
             "endpoints": "inference",
             "inference": "inference",
+            "site": "site",
+            "cards": "site",
         }
 
         category = service_to_category.get(service.lower(), "engine")
@@ -6437,13 +6464,11 @@ Respond with:
                 # Pipeline fix - schedule triage tasks and reset stuck tasks
                 try:
                     import json
-                    import os
 
                     import asyncpg
+                    from .core.config import get_database_url
 
-                    db_url = os.environ.get(
-                        "GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius"
-                    )
+                    db_url = get_database_url()
                     conn = await asyncpg.connect(db_url)
 
                     try:
@@ -6560,14 +6585,84 @@ Respond with:
                     return {
                         "error": f"Pipeline fix failed: {e}",
                         "guru_meditation": "#PIPE.00000001.STALLED",
-                        "remediation": "Check PostgreSQL connection: pg_isready -p 5438",
+                        "remediation": "Check PostgreSQL connection: pg_isready -p 5444",
+                    }
+
+            elif service in ("site", "cards"):
+                # Site content fix - diagnose and backfill
+                try:
+                    import asyncpg
+
+                    from .core.config import get_database_url
+
+                    db_url = get_database_url()
+                    conn = await asyncpg.connect(db_url)
+
+                    try:
+                        missing_images = await conn.fetchval("""
+                            SELECT COUNT(*) FROM collections.cards
+                            WHERE status = 'published'
+                              AND (image_url IS NULL OR image_url = '')
+                        """) or 0
+
+                        incomplete_summaries = await conn.fetchval("""
+                            WITH card_summary_counts AS (
+                                SELECT c.card_id,
+                                    COUNT(*) FILTER (WHERE cs.summary_type = 'frontier') AS has_frontier,
+                                    COUNT(*) FILTER (WHERE cs.summary_type = 'open_weights') AS has_open_weights,
+                                    COUNT(*) FILTER (WHERE cs.summary_type = 'cerebras') AS has_cerebras
+                                FROM collections.cards c
+                                LEFT JOIN collections.card_summaries cs ON c.card_id = cs.card_id
+                                WHERE c.status = 'published'
+                                GROUP BY c.card_id
+                            )
+                            SELECT COUNT(*) FROM card_summary_counts
+                            WHERE has_frontier = 0 OR has_open_weights = 0 OR has_cerebras = 0
+                        """) or 0
+
+                        await conn.close()
+
+                        if dry_run:
+                            return {
+                                "dry_run": True,
+                                "service": service,
+                                "missing_images": missing_images,
+                                "incomplete_summaries": incomplete_summaries,
+                                "would_run": [
+                                    "scripts/backfill_card_images.sh --all" if missing_images > 0 else None,
+                                    "uv run python scripts/remediate_card_summaries.py" if incomplete_summaries > 0 else None,
+                                ],
+                                "note": "Run without --dry-run to execute backfill",
+                            }
+
+                        return {
+                            "service": service,
+                            "missing_images": missing_images,
+                            "incomplete_summaries": incomplete_summaries,
+                            "remediation": [
+                                "scripts/backfill_card_images.sh --all" if missing_images > 0 else None,
+                                "uv run python scripts/remediate_card_summaries.py" if incomplete_summaries > 0 else None,
+                            ],
+                            "note": "Run the listed remediation commands to fix content gaps",
+                            "guru_meditation": "#SITE.00000001.CONTENTGAP",
+                        }
+
+                    finally:
+                        if not conn.is_closed():
+                            await conn.close()
+
+                except Exception as e:
+                    return {
+                        "error": f"Site fix failed: {e}",
+                        "guru_meditation": "#SITE.00000001.CONTENTGAP",
+                        "remediation": "Check PostgreSQL connection: pg_isready -p 5444",
                     }
 
             else:
                 return {
                     "error": f"Unknown service: {service}",
-                    "available_services": ["endpoints", "evolution", "pipeline"],
-                    "usage": "/health fix [endpoints|evolution|pipeline|<issue#>] [--dry-run]",
+                    "available_services": ["endpoints", "evolution", "pipeline", "site"],
+                    "usage": "/health fix [endpoints|evolution|pipeline|site|<issue#>] [--dry-run]",
                     "note": "Use '/health fix' without args for full HealthObserver remediation, or '/health fix 42' for ACP investigation of GitHub issue #42",
                 }
 
@@ -8686,7 +8781,14 @@ fingerprint: "{incident.get('fingerprint', 'unknown')}"
     def format_output(self, result: dict) -> str:
         """Format result based on output format."""
         if self.format == "json":
-            return json.dumps(result, indent=2)
+            from datetime import datetime, date, timedelta
+            def json_serializer(obj):
+                if isinstance(obj, (datetime, date)):
+                    return obj.isoformat()
+                if isinstance(obj, timedelta):
+                    return obj.total_seconds()
+                raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+            return json.dumps(result, indent=2, default=json_serializer)
         else:
             # Text format
             if not result["success"]:
@@ -9081,7 +9183,7 @@ Generated: {now.isoformat()}
         except Exception as e:
             return {
                 "error": f"Failed to connect to engine: {e}",
-                "suggestion": "Run: devenv tasks run restart:clean",
+                "suggestion": "Run: just restart-clean",
             }
 
         include_sparklines = "sparklines" in parts
@@ -10731,10 +10833,8 @@ Examples:
         """Show topology service status."""
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
                 async with pool.acquire() as conn:
@@ -10824,10 +10924,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -10914,10 +11012,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -10989,10 +11085,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -11050,10 +11144,8 @@ Examples:
 
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             from .engine.services.topology_service import TopologyService
 
@@ -11174,10 +11266,8 @@ Examples:
         """Show NG-RC model status for all domains."""
         try:
             import asyncpg
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            from .core.config import get_database_url
+            database_url = get_database_url()
 
             async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
                 async with pool.acquire() as conn:
@@ -11271,11 +11361,9 @@ Examples:
         try:
             import asyncpg
             from gaius.engine.services.ngrc import NGRCPredictor
+            from .core.config import get_database_url
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            database_url = get_database_url()
 
             import numpy as np
 
@@ -11386,11 +11474,9 @@ Examples:
         try:
             import asyncpg
             from gaius.engine.services.ngrc import NGRCPredictor
+            from .core.config import get_database_url
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            database_url = get_database_url()
 
             import numpy as np
 
@@ -11478,11 +11564,9 @@ Examples:
         try:
             import asyncpg
             from gaius.engine.services.ngrc import NGRCPredictor
+            from .core.config import get_database_url
 
-            database_url = os.environ.get(
-                "GAIUS_DATABASE_URL",
-                "postgres://localhost:5438/zndx_gaius?sslmode=disable"
-            )
+            database_url = get_database_url()
 
             async with asyncpg.create_pool(database_url, min_size=1, max_size=2) as pool:
                 async with pool.acquire() as conn:
@@ -12542,6 +12626,1245 @@ Examples:
             "error": f"Unknown prospects subcommand: {subcmd}",
             "usage": "/prospects [status|check|update|help] ...",
         }
+
+    async def _cmd_metabase(self, args: str) -> dict:
+        """Metabase - Read-only API passthrough for situational awareness.
+
+        Query Metabase to understand dashboards, models, questions, and collections.
+        This is read-only for the MetaAgent Judge (Grok) situational awareness.
+
+        Usage:
+            /metabase              - Show connection status and counts
+            /metabase status       - Same as above
+            /metabase dashboards   - List all dashboards
+            /metabase dashboard N  - Get details of dashboard ID N
+            /metabase models       - List all models (semantic layer)
+            /metabase questions    - List all saved questions
+            /metabase card N       - Get details of card (model/question) ID N
+            /metabase collections  - List all collections
+            /metabase databases    - List all databases
+
+        Environment:
+            METABASE_URL         - Metabase instance URL (e.g., http://localhost:3000)
+            METABASE_API_KEY     - API key for authentication
+            METABASE_DATABASE_ID - Database ID for meta schema
+
+        Examples:
+            /metabase status       # Check connection
+            /metabase dashboards   # List dashboards
+            /metabase models       # List semantic models
+            /metabase card 42      # Get card details
+        """
+        from gaius.engine.services.metabase_sync import get_metabase_client
+
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+        subargs = parts[1:] if len(parts) > 1 else []
+
+        # Help is always available, even when not configured
+        if subcmd == "help":
+            return {
+                "command": "metabase",
+                "help": self._cmd_metabase.__doc__,
+            }
+
+        client = get_metabase_client()
+
+        if not client.is_configured:
+            return {
+                "error": "Metabase not configured",
+                "hint": "Set METABASE_URL, METABASE_API_KEY, METABASE_DATABASE_ID",
+            }
+
+        connected = await client.test_connection()
+        if not connected:
+            return {"error": "Failed to connect to Metabase"}
+
+        # Status (default)
+        if subcmd in ("", "status"):
+            status = await client.get_status()
+            return {
+                "command": "metabase",
+                "action": "status",
+                **status,
+            }
+
+        # List dashboards
+        if subcmd == "dashboards":
+            dashboards = await client.list_dashboards()
+            return {
+                "command": "metabase",
+                "action": "dashboards",
+                "count": len(dashboards),
+                "dashboards": [
+                    {"id": d["id"], "name": d["name"], "description": d.get("description")}
+                    for d in dashboards
+                ],
+            }
+
+        # Get single dashboard
+        if subcmd == "dashboard":
+            if not subargs:
+                return {"error": "Usage: /metabase dashboard <id>"}
+            try:
+                dashboard_id = int(subargs[0])
+            except ValueError:
+                return {"error": f"Invalid dashboard ID: {subargs[0]}"}
+            dashboard = await client.get_dashboard(dashboard_id)
+            if not dashboard:
+                return {"error": f"Dashboard {dashboard_id} not found"}
+            return {
+                "command": "metabase",
+                "action": "dashboard",
+                "id": dashboard["id"],
+                "name": dashboard["name"],
+                "description": dashboard.get("description"),
+                "cards": [
+                    {"id": c.get("id"), "name": c.get("card", {}).get("name")}
+                    for c in dashboard.get("dashcards", [])
+                    if c.get("card")
+                ],
+            }
+
+        # List models
+        if subcmd == "models":
+            models = await client.list_cards(filter_type="model")
+            return {
+                "command": "metabase",
+                "action": "models",
+                "count": len(models),
+                "models": [
+                    {"id": m["id"], "name": m["name"], "description": m.get("description")}
+                    for m in models
+                ],
+            }
+
+        # List questions
+        if subcmd == "questions":
+            questions = await client.list_cards(filter_type="question")
+            return {
+                "command": "metabase",
+                "action": "questions",
+                "count": len(questions),
+                "questions": [
+                    {"id": q["id"], "name": q["name"], "display": q.get("display")}
+                    for q in questions
+                ],
+            }
+
+        # Get single card
+        if subcmd == "card":
+            if not subargs:
+                return {"error": "Usage: /metabase card <id>"}
+            try:
+                card_id = int(subargs[0])
+            except ValueError:
+                return {"error": f"Invalid card ID: {subargs[0]}"}
+            card = await client.get_card(card_id)
+            if not card:
+                return {"error": f"Card {card_id} not found"}
+            return {
+                "command": "metabase",
+                "action": "card",
+                "id": card["id"],
+                "name": card["name"],
+                "type": card.get("type"),
+                "description": card.get("description"),
+                "display": card.get("display"),
+                "database_id": card.get("database_id"),
+                "query": card.get("dataset_query"),
+            }
+
+        # List collections
+        if subcmd == "collections":
+            collections = await client.list_collections()
+            return {
+                "command": "metabase",
+                "action": "collections",
+                "count": len(collections),
+                "collections": [
+                    {"id": c["id"], "name": c["name"], "location": c.get("location")}
+                    for c in collections
+                ],
+            }
+
+        # List databases
+        if subcmd == "databases":
+            databases = await client.list_databases()
+            return {
+                "command": "metabase",
+                "action": "databases",
+                "count": len(databases),
+                "databases": [
+                    {"id": d["id"], "name": d["name"], "engine": d.get("engine")}
+                    for d in databases
+                ],
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown metabase subcommand: {subcmd}",
+            "usage": "/metabase [status|dashboards|dashboard|models|questions|card|collections|databases|help]",
+        }
+
+    async def _cmd_metaflow_ops(self, args: str) -> dict:
+        """Metaflow - Read-only operational insights into flow runs.
+
+        Provides situational awareness for Metaflow pipeline operations
+        including run history, statistics, and failure analysis.
+
+        Usage:
+            /metaflow              - Show operational status summary
+            /metaflow status       - Same as above
+            /metaflow types        - List all flow types with run counts
+            /metaflow runs [type]  - List recent runs (optionally filter by type)
+            /metaflow run <id>     - Get details of a specific run
+            /metaflow stats [type] - Get statistics (optionally for specific type)
+            /metaflow failed       - List recent failed runs
+            /metaflow running      - List currently running flows
+            /metaflow help         - Show this help
+
+        Examples:
+            /metaflow                    # Overall status
+            /metaflow runs research      # Recent research flow runs
+            /metaflow stats arxiv 48     # Arxiv stats for last 48 hours
+            /metaflow failed             # Recent failures for triage
+        """
+        from .engine.services.metaflow_query import get_metaflow_client
+
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        # Help - show before client operations
+        if subcmd == "help":
+            return {"command": "metaflow", "help": self._cmd_metaflow_ops.__doc__}
+
+        client = get_metaflow_client()
+
+        # Status - overall summary
+        if subcmd == "status" or not args.strip():
+            status = await client.get_status_summary()
+            return {
+                "command": "metaflow",
+                "action": "status",
+                **status,
+            }
+
+        # Types - list all flow types
+        if subcmd == "types":
+            flow_types = await client.list_flow_types()
+            return {
+                "command": "metaflow",
+                "action": "types",
+                "count": len(flow_types),
+                "flow_types": flow_types,
+            }
+
+        # Runs - list recent runs
+        if subcmd == "runs":
+            flow_type = parts[1] if len(parts) > 1 else None
+            limit = int(parts[2]) if len(parts) > 2 else 20
+            runs = await client.list_recent_runs(
+                flow_type=flow_type,
+                limit=limit,
+            )
+            return {
+                "command": "metaflow",
+                "action": "runs",
+                "flow_type": flow_type or "all",
+                "count": len(runs),
+                "runs": runs,
+            }
+
+        # Run - get specific run details
+        if subcmd == "run":
+            if len(parts) < 2:
+                return {"error": "Usage: /metaflow run <run_id>"}
+            run_id = parts[1]
+            run = await client.get_run_details(run_id)
+            if not run:
+                return {"error": f"Run {run_id} not found"}
+            return {
+                "command": "metaflow",
+                "action": "run",
+                **run,
+            }
+
+        # Stats - flow statistics
+        if subcmd == "stats":
+            flow_type = parts[1] if len(parts) > 1 else None
+            hours = int(parts[2]) if len(parts) > 2 else 24
+            stats = await client.get_flow_stats(
+                flow_type=flow_type,
+                hours=hours,
+            )
+            return {
+                "command": "metaflow",
+                "action": "stats",
+                **stats,
+            }
+
+        # Failed - recent failures
+        if subcmd == "failed":
+            limit = int(parts[1]) if len(parts) > 1 else 10
+            runs = await client.list_recent_runs(status="failed", limit=limit)
+            return {
+                "command": "metaflow",
+                "action": "failed",
+                "count": len(runs),
+                "runs": runs,
+            }
+
+        # Running - currently running
+        if subcmd == "running":
+            runs = await client.list_recent_runs(status="running", limit=20)
+            return {
+                "command": "metaflow",
+                "action": "running",
+                "count": len(runs),
+                "runs": runs,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown metaflow subcommand: {subcmd}",
+            "usage": "/metaflow [status|types|runs|run|stats|failed|running|help]",
+        }
+
+    async def _cmd_dataview(self, args: str) -> dict:
+        """Dataview - Kudu-backed feature store with fluent query API.
+
+        Query bases using Kudu SDK-style fluent syntax with BFO ontology grounding.
+        Storage is backed by Apache Kudu via PostgreSQL FDW (currently PostgreSQL stub).
+
+        Usage:
+            /dataview                     - List available bases
+            /dataview list [type]         - List bases (snapshot|historical|registry|all)
+            /dataview <base>              - Query base with default settings
+            /dataview <base> <fluent>     - Query with fluent syntax
+            /dataview health              - Check feature store health
+            /dataview help                - Show this help
+
+        Fluent Syntax:
+            where(col("age") > 30)                   - Column filter
+            where(term("BFO:site") == "NYC")         - Ontology-grounded filter
+            select("name", "email")                  - Project columns
+            order_by("created_at", desc=True)        - Sort results
+            limit(100)                               - Limit rows
+
+        Examples:
+            /dataview list                           # List all bases
+            /dataview _entity_types                  # Query registry base
+            /dataview events where(col("age") > 30).limit(10)
+            /dataview positions where(term("BFO:0000040") == "USER-123")
+            /dataview trades_historical WHERE entity_id = 'user_123' LIMIT 100
+
+        Ontology Grounding:
+            term("BFO:0000040")      - Material entity (entity_id)
+            term("BFO:site")         - Spatial region (location)
+            term("BFO:temporal_region") - Timestamp column
+
+        Aliases: /dataview, /dv
+        """
+        from .bases.service import get_bases_service, BasesConfig
+        from .storage.database import get_pool
+
+        parts = args.strip().split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        # Help - show before service operations
+        if subcmd == "help":
+            return {"command": "dataview", "help": self._cmd_dataview.__doc__}
+
+        # Get database pool and service
+        try:
+            pool = await get_pool()
+            service = get_bases_service(BasesConfig(), pool)
+
+            if not service.is_running:
+                await service.start()
+        except Exception as e:
+            return {
+                "command": "dataview",
+                "error": f"Failed to initialize BasesService: {e}",
+                "hint": "Try: /health fix postgres",
+            }
+
+        # List bases (default)
+        if subcmd == "list" or not args.strip():
+            base_type_filter = parts[1].lower() if len(parts) > 1 else "all"
+            try:
+                bases = await service.list_bases(base_type=base_type_filter)
+                return {
+                    "command": "dataview",
+                    "action": "list",
+                    "base_type": base_type_filter,
+                    "count": len(bases),
+                    "bases": [
+                        {
+                            "name": b.name,
+                            "display_name": b.display_name,
+                            "base_type": b.base_type,
+                            "description": b.description,
+                            "tags": b.tags,
+                        }
+                        for b in bases
+                    ],
+                }
+            except Exception as e:
+                return {"command": "dataview", "error": str(e)}
+
+        # Health check
+        if subcmd == "health":
+            try:
+                health = await service.health_check()
+                return {
+                    "command": "dataview",
+                    "action": "health",
+                    **health,
+                }
+            except Exception as e:
+                return {"command": "dataview", "error": str(e)}
+
+        # Query a base
+        base_name = subcmd
+        query_str = parts[1] if len(parts) > 1 else ""
+
+        try:
+            # Execute query (service auto-detects fluent vs SQL syntax)
+            result = await service.query_base(
+                base_name=base_name,
+                dql=query_str,
+            )
+            return {
+                "command": "dataview",
+                "action": "query",
+                "base": base_name,
+                "query": query_str or "(default)",
+                "row_count": result.row_count,
+                "columns": [c.to_dict() for c in result.columns],
+                "rows": result.rows[:100],  # Limit output for CLI
+                "truncated": result.row_count > 100,
+                "query_time_ms": result.query_time_ms,
+            }
+        except Exception as e:
+            return {
+                "command": "dataview",
+                "error": str(e),
+                "base": base_name,
+                "query": query_str,
+            }
+
+    async def _cmd_publish(self, args: str) -> dict:
+        """Publish - Publish pending cards to the landing page.
+
+        Publishes cards from the featured collection to Cloudflare KV
+        for display on the public landing page at gaius.zndx.org.
+
+        Usage:
+            /publish                  - Publish 3 pending cards (default)
+            /publish cards            - Same as above
+            /publish cards -N 5       - Publish 5 pending cards
+            /publish viz              - Update 3D visualization data in KV
+            /publish theme            - Sync theme config from HOCON to KV
+            /publish status           - Show collection/card statistics
+            /publish help             - Show this help
+
+        Options:
+            -N, --count <num>    Number of cards to publish (default: 3)
+            --collection <slug>  Specific collection (default: featured)
+
+        Theme Configuration (config/base.conf):
+            gaius.landing.theme_id    - Theme to use (keiretsu-dark, solarized-dark, etc.)
+            gaius.landing.title       - Site title
+            gaius.landing.subtitle    - Site subtitle
+
+        Examples:
+            /publish                    # Publish 3 cards from featured
+            /publish cards -N 5         # Publish 5 cards
+            /publish theme              # Sync HOCON theme to landing page
+            /publish status             # Show stats
+
+        Cost: $0 - pure database + KV operations
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "cards"
+
+        client = await get_grpc_client()
+
+        # Default / cards: publish pending cards
+        if subcmd in ("", "cards"):
+            count = 3
+            collection_slug = None
+
+            # Parse options
+            i = 1
+            while i < len(parts):
+                part = parts[i]
+                if part in ("-N", "--count") and i + 1 < len(parts):
+                    try:
+                        count = int(parts[i + 1])
+                        i += 1
+                    except ValueError:
+                        pass
+                elif part in ("--collection", "-c") and i + 1 < len(parts):
+                    collection_slug = parts[i + 1]
+                    i += 1
+                i += 1
+
+            result = await client.call("Collection", "publish_cards", {
+                "count": count,
+                "collection_slug": collection_slug,
+            })
+
+            return {
+                "command": "publish",
+                "action": "cards",
+                "count_requested": count,
+                **result,
+            }
+
+        # Viz: update 3D visualization data
+        if subcmd == "viz":
+            result = await client.call("Collection", "publish_viz", {})
+            return {
+                "command": "publish",
+                "action": "viz",
+                **result,
+            }
+
+        # Theme: sync HOCON theme config to Cloudflare KV
+        if subcmd == "theme":
+            result = await client.call("Collection", "sync_theme", {})
+            return {
+                "command": "publish",
+                "action": "theme",
+                **result,
+            }
+
+        # Status: show collection statistics
+        if subcmd == "status":
+            result = await client.call("Collection", "status", {})
+            return {
+                "command": "publish",
+                "action": "status",
+                **result,
+            }
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "publish",
+                "help": self._cmd_publish.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown publish subcommand: {subcmd}",
+            "usage": "/publish [cards|viz|theme|status|help] ...",
+        }
+
+    async def _cmd_collection(self, args: str) -> dict:
+        """Collection - Manage curated content collections.
+
+        Collections organize public research content for the landing page.
+        Each collection contains cards linking to external sources (arXiv,
+        HuggingFace, etc.) - never internal KB paths.
+
+        Usage:
+            /collection                       - List all collections
+            /collection list                  - Same as above
+            /collection create <slug> <name>  - Create new collection
+            /collection feature <slug>        - Set as featured collection
+            /collection add <slug> <title> <url> [--type <type>] [--summary <text>]
+                                              - Add card to collection
+            /collection cards <slug>          - List cards in collection
+            /collection status                - Show overall statistics
+            /collection reconcile-grok        - Sync grok_collection_id from xAI to DB
+            /collection help                  - Show this help
+
+        Options:
+            --type <type>     Card source type: arxiv, huggingface, cloudera,
+                              web, x_bookmark, sec_filing, research
+            --summary <text>  Card summary (1-2 sentences)
+            --image <url>     Optional image URL
+
+        Examples:
+            /collection create ai-reasoning "AI Reasoning Research"
+            /collection feature ai-reasoning
+            /collection add ai-reasoning "Attention Paper" "https://arxiv.org/abs/1706.03762" --type arxiv
+            /collection cards ai-reasoning
+
+        Note: The featured collection is what appears on the landing page.
+        """
+        from .client.grpc_client import get_grpc_client
+
+        parts = args.split() if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        client = await get_grpc_client()
+
+        # Default / list: show all collections
+        if subcmd in ("", "list"):
+            result = await client.call("Collection", "list_collections", {})
+            return {
+                "command": "collection",
+                "action": "list",
+                **result,
+            }
+
+        # Create: create new collection
+        if subcmd == "create":
+            if len(parts) < 3:
+                return {
+                    "error": "create requires: <slug> <name>",
+                    "usage": "/collection create <slug> <name> [--description <text>]",
+                }
+            slug = parts[1]
+            # Join remaining parts as name (supports quoted names)
+            name = " ".join(parts[2:])
+            # Extract description if provided with --description
+            description = ""
+            if "--description" in parts:
+                desc_idx = parts.index("--description")
+                if desc_idx + 1 < len(parts):
+                    description = parts[desc_idx + 1]
+                    name = " ".join(parts[2:desc_idx])
+
+            result = await client.call("Collection", "create_collection", {
+                "slug": slug,
+                "name": name,
+                "description": description,
+            })
+            return {
+                "command": "collection",
+                "action": "create",
+                "slug": slug,
+                "name": name,
+                **result,
+            }
+
+        # Feature: set as featured collection
+        if subcmd == "feature":
+            if len(parts) < 2:
+                return {
+                    "error": "feature requires: <slug>",
+                    "usage": "/collection feature <slug>",
+                }
+            slug = parts[1]
+            result = await client.call("Collection", "set_featured", {
+                "slug": slug,
+            })
+            return {
+                "command": "collection",
+                "action": "feature",
+                "slug": slug,
+                **result,
+            }
+
+        # Add: add card to collection
+        if subcmd == "add":
+            if len(parts) < 4:
+                return {
+                    "error": "add requires: <slug> <title> <url>",
+                    "usage": "/collection add <slug> <title> <url> [--type <type>] [--summary <text>]",
+                }
+            slug = parts[1]
+            title = parts[2]
+            source_url = parts[3]
+
+            # Parse options
+            source_type = "web"
+            summary = ""
+            image_url = None
+            i = 4
+            while i < len(parts):
+                part = parts[i]
+                if part == "--type" and i + 1 < len(parts):
+                    source_type = parts[i + 1]
+                    i += 1
+                elif part == "--summary" and i + 1 < len(parts):
+                    summary = parts[i + 1]
+                    i += 1
+                elif part == "--image" and i + 1 < len(parts):
+                    image_url = parts[i + 1]
+                    i += 1
+                i += 1
+
+            result = await client.call("Collection", "add_card", {
+                "slug": slug,
+                "title": title,
+                "source_url": source_url,
+                "source_type": source_type,
+                "summary": summary,
+                "image_url": image_url,
+            })
+            return {
+                "command": "collection",
+                "action": "add",
+                "slug": slug,
+                "title": title,
+                **result,
+            }
+
+        # Cards: list cards in collection
+        if subcmd == "cards":
+            if len(parts) < 2:
+                return {
+                    "error": "cards requires: <slug>",
+                    "usage": "/collection cards <slug> [--status <status>]",
+                }
+            slug = parts[1]
+            status = None
+            if "--status" in parts:
+                status_idx = parts.index("--status")
+                if status_idx + 1 < len(parts):
+                    status = parts[status_idx + 1]
+
+            result = await client.call("Collection", "list_cards", {
+                "slug": slug,
+                "status": status,
+            })
+            return {
+                "command": "collection",
+                "action": "cards",
+                "slug": slug,
+                **result,
+            }
+
+        # Status: overall statistics
+        if subcmd == "status":
+            result = await client.call("Collection", "status", {})
+            return {
+                "command": "collection",
+                "action": "status",
+                **result,
+            }
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "collection",
+                "help": self._cmd_collection.__doc__,
+            }
+
+        # Reconcile-grok: sync grok_collection_id from xAI to PostgreSQL
+        if subcmd == "reconcile-grok":
+            return await self._reconcile_grok_collections()
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown collection subcommand: {subcmd}",
+            "usage": "/collection [list|create|feature|add|cards|status|reconcile-grok|help] ...",
+        }
+
+    async def _reconcile_grok_collections(self) -> dict:
+        """Reconcile grok_collection_id from xAI to PostgreSQL.
+
+        One-time reconciliation that:
+        1. Lists all Grok collections via xai-sdk
+        2. Matches by name pattern `gaius-article-{slug}`
+        3. Updates PostgreSQL with grok_collection_id for matches
+
+        Returns:
+            Dict with reconciliation results
+        """
+        import os
+        import asyncpg
+
+        results = {
+            "command": "collection",
+            "action": "reconcile-grok",
+            "matched": [],
+            "unmatched_grok": [],
+            "unmatched_local": [],
+        }
+
+        # Get Grok collections
+        from gaius.core.config import get_config as _gcfg
+
+        mgmt_key = _gcfg().providers.xai.management_key
+        if not mgmt_key:
+            return {
+                **results,
+                "error": "XAI_MANAGEMENT_KEY not configured",
+                "guru_code": "#ACF.00000011.NOMGMTKEY",
+            }
+
+        try:
+            from xai_sdk import Client as XAIClient
+            client = XAIClient(management_api_key=mgmt_key)
+            try:
+                grok_collections = {}
+                for c in client.collections.list().collections:
+                    if c.collection_name.startswith("gaius-article-"):
+                        slug = c.collection_name.replace("gaius-article-", "")
+                        grok_collections[slug] = c.collection_id
+            finally:
+                client.close()
+        except Exception as e:
+            return {
+                **results,
+                "error": f"Failed to list Grok collections: {e}",
+                "guru_code": "#COL.00000004.GROKFAIL",
+            }
+
+        # Get local collections from database
+        from .core.config import get_database_url
+        db_url = get_database_url()
+
+        try:
+            pool = await asyncpg.create_pool(db_url, min_size=1, max_size=1)
+            try:
+                from gaius.engine.services.collection_service import CollectionService
+                service = CollectionService(pool)
+
+                # Get all collections from database
+                local_collections = await service.list_collections(limit=100)
+                local_by_slug = {c.slug: c for c in local_collections}
+
+                # Match and update
+                for slug, grok_id in grok_collections.items():
+                    if slug in local_by_slug:
+                        local = local_by_slug[slug]
+                        if local.grok_collection_id != grok_id:
+                            await service.update_grok_collection_id(
+                                collection_id=local.collection_id,
+                                grok_collection_id=grok_id,
+                            )
+                            results["matched"].append({
+                                "slug": slug,
+                                "collection_id": local.collection_id,
+                                "grok_collection_id": grok_id,
+                                "action": "updated",
+                            })
+                        else:
+                            results["matched"].append({
+                                "slug": slug,
+                                "collection_id": local.collection_id,
+                                "grok_collection_id": grok_id,
+                                "action": "already_synced",
+                            })
+                    else:
+                        results["unmatched_grok"].append({
+                            "slug": slug,
+                            "grok_collection_id": grok_id,
+                        })
+
+                # Find local collections without Grok match
+                for slug, local in local_by_slug.items():
+                    if slug not in grok_collections and not local.grok_collection_id:
+                        results["unmatched_local"].append({
+                            "slug": slug,
+                            "collection_id": local.collection_id,
+                        })
+
+            finally:
+                await pool.close()
+
+        except Exception as e:
+            return {
+                **results,
+                "error": f"Database error: {e}",
+                "guru_code": "#COL.00000002.DBFAIL",
+            }
+
+        results["success"] = True
+        results["summary"] = (
+            f"Matched {len(results['matched'])} collections, "
+            f"{len(results['unmatched_grok'])} orphan Grok, "
+            f"{len(results['unmatched_local'])} local without Grok"
+        )
+        return results
+
+    async def _cmd_article(self, args: str) -> dict:
+        """Article Curation - KB article research and publication pipeline.
+
+        Articles live in KB at current/articles/{slug}/ with:
+        - article.md (current draft)
+        - zk/ (zettelkasten research notes)
+        - hx/ (draft history)
+        - sources/ (acquired external sources)
+        - manifest.yaml (collection manifest)
+        - base.md (BFO-grounded reference file)
+
+        Usage:
+            /article                          - List articles ready for curation
+            /article list                     - Same as above
+            /article new <slug> <title>       - Create new article directory
+            /article status [slug]            - Show article status
+            /article curate [slug]            - Run ArticleCurationFlow pipeline
+            /article help                     - Show this help
+
+        Curation Pipeline Steps:
+            1. Scan KB for articles with zk/ notes
+            2. Research Phase - gather KB context (BM25 + vector search)
+            3. Grok summary - synthesize into zettelkasten
+            4. Article selection - optillm selects article (Atropos-RL)
+            5. ACP acquisition - fetch external sources
+            6. Update manifest with sources
+            7. Sync to Grok Collections API
+            8. Create draft, archive current to hx/
+            9. Generate BFO Base file with ref_start/ref_end offsets
+
+        Examples:
+            /article new gaius-content-curation "Gaius: AI-Powered Content Curation"
+            /article status gaius-content-curation
+            /article curate gaius-content-curation
+        """
+        from pathlib import Path
+
+        parts = args.strip().split() if args else []
+        subcmd = parts[0].lower() if parts else "list"
+
+        kb_root = Path(self.config.kb.root)
+
+        # List: show articles ready for curation
+        if subcmd in ("", "list"):
+            return await self._article_list(kb_root)
+
+        # New: create new article directory
+        if subcmd == "new":
+            if len(parts) < 3:
+                return {
+                    "error": "new requires: <slug> <title>",
+                    "usage": "/article new <slug> <title>",
+                }
+            slug = parts[1]
+            title = " ".join(parts[2:])
+            return await self._article_new(kb_root, slug, title)
+
+        # Status: show article status
+        if subcmd == "status":
+            slug = parts[1] if len(parts) > 1 else None
+            return await self._article_status(kb_root, slug)
+
+        # Curate: run ArticleCurationFlow
+        if subcmd == "curate":
+            slug = parts[1] if len(parts) > 1 else None
+            # Parse options
+            dry_run = "--dry-run" in parts or "-n" in parts
+            skip_grok = "--skip-grok" in parts
+            max_sources = 10
+            for p in parts:
+                if p.startswith("--max-sources="):
+                    try:
+                        max_sources = int(p.split("=")[1])
+                    except ValueError:
+                        pass
+            return await self._article_curate(kb_root, slug, dry_run, skip_grok, max_sources)
+
+        # Help
+        if subcmd == "help":
+            return {
+                "command": "article",
+                "help": self._cmd_article.__doc__,
+            }
+
+        # Unknown subcommand
+        return {
+            "error": f"Unknown article subcommand: {subcmd}",
+            "usage": "/article [list|new|status|curate|help] ...",
+        }
+
+    async def _article_list(self, kb_root: Path) -> dict:
+        """List articles ready for curation."""
+        try:
+            from gaius.flows.article_curation.common import scan_articles
+
+            candidates = scan_articles(kb_root)
+            articles = []
+            for c in candidates:
+                articles.append({
+                    "slug": c.slug,
+                    "title": c.title,
+                    "status": c.status.value,
+                    "zk_count": c.zk_count,
+                    "version": c.current_version,
+                    "kb_path": c.kb_path,
+                })
+
+            return {
+                "command": "article",
+                "action": "list",
+                "articles": articles,
+                "total": len(articles),
+                "message": f"Found {len(articles)} article(s) ready for curation" if articles else "No articles found. Create one with /article new <slug> <title>",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _article_new(self, kb_root: Path, slug: str, title: str) -> dict:
+        """Create new article directory structure via gRPC.
+
+        Architecture compliance: CLI -> gRPC -> Engine -> KB filesystem
+        The engine owns the KB filesystem - CLI MUST NOT write directly.
+        """
+        from .client.grpc_client import get_grpc_client
+
+        try:
+            client = await get_grpc_client()
+            response = await client.ArticleNew(slug=slug, title=title)
+
+            if not response.success:
+                return {
+                    "error": response.error or "Failed to create article",
+                    "slug": slug,
+                }
+
+            return {
+                "command": "article",
+                "action": "new",
+                "slug": response.slug,
+                "title": response.title,
+                "kb_path": response.kb_path,
+                "article_id": response.article_id,
+                "collection_id": response.collection_id,
+                "message": response.message or f"Created article '{response.title}'. Add research notes to zk/ then run /article curate {response.slug}",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _article_status(self, kb_root: Path, slug: str | None) -> dict:
+        """Show article status."""
+        from gaius.flows.article_curation.common import scan_articles, ArticleCandidate
+
+        try:
+            if slug:
+                # Single article status
+                article_dir = kb_root / "current" / "articles" / slug
+                candidate = ArticleCandidate.from_kb_path(article_dir)
+                if not candidate:
+                    return {
+                        "error": f"Article not found: {slug}",
+                        "kb_path": str(article_dir),
+                    }
+
+                # Count files in subdirectories
+                hx_count = len(list((article_dir / "hx").glob("*.md"))) if (article_dir / "hx").exists() else 0
+                sources_count = len(list((article_dir / "sources").glob("*.md"))) if (article_dir / "sources").exists() else 0
+                has_manifest = (article_dir / "manifest.yaml").exists()
+                has_base = (article_dir / "base.md").exists()
+
+                return {
+                    "command": "article",
+                    "action": "status",
+                    "slug": candidate.slug,
+                    "title": candidate.title,
+                    "status": candidate.status.value,
+                    "version": candidate.current_version,
+                    "zk_count": candidate.zk_count,
+                    "hx_count": hx_count,
+                    "sources_count": sources_count,
+                    "has_manifest": has_manifest,
+                    "has_base": has_base,
+                    "kb_path": candidate.kb_path,
+                    "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
+                    "updated_at": candidate.updated_at.isoformat() if candidate.updated_at else None,
+                }
+            else:
+                # Overview of all articles
+                candidates = scan_articles(kb_root)
+                by_status = {}
+                for c in candidates:
+                    status = c.status.value
+                    if status not in by_status:
+                        by_status[status] = []
+                    by_status[status].append(c.slug)
+
+                # Also check DB for additional article records
+                try:
+                    from gaius.storage.db import get_pool
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch("""
+                            SELECT status, COUNT(*) as count
+                            FROM collections.articles
+                            GROUP BY status
+                        """)
+                        db_stats = {row["status"]: row["count"] for row in rows}
+                except Exception:
+                    db_stats = {}
+
+                return {
+                    "command": "article",
+                    "action": "status",
+                    "kb_articles": by_status,
+                    "db_stats": db_stats,
+                    "total_in_kb": len(candidates),
+                }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _article_curate(
+        self,
+        kb_root: Path,
+        slug: str | None,
+        dry_run: bool,
+        skip_grok: bool,
+        max_sources: int,
+    ) -> dict:
+        """Run ArticleCurationFlow pipeline via gRPC streaming.
+
+        Architecture compliance: CLI -> gRPC -> Engine -> Metaflow
+        NOT: CLI -> subprocess.run() -> Metaflow
+        """
+        try:
+            if dry_run:
+                return {
+                    "command": "article",
+                    "action": "curate",
+                    "dry_run": True,
+                    "slug": slug,
+                    "message": "Would run article curation flow via gRPC",
+                }
+
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            events = []
+            async for event in client.ArticleCurate(
+                slug=slug or "",
+                skip_grok=skip_grok,
+                max_sources=max_sources,
+            ):
+                events.append({
+                    "run_id": event.run_id,
+                    "step": event.step,
+                    "step_number": event.step_number,
+                    "progress": event.progress,
+                    "message": event.message,
+                })
+                # Print progress for CLI users
+                print(f"[{event.step}] {event.message}")
+
+            final = events[-1] if events else {}
+            success = final.get("step") == "complete"
+
+            return {
+                "command": "article",
+                "action": "curate",
+                "slug": slug,
+                "success": success,
+                "events_count": len(events),
+                "final_step": final.get("step", ""),
+                "message": final.get("message", ""),
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _cmd_render(self, args: str) -> dict:
+        """Render card visualizations via engine workload management.
+
+        Usage:
+            /render                              Render all cards without images
+            /render --collection <slug>          Render cards in collection
+            /render --card <id>                  Render single card
+            /render --sample 5                   Random sample of 5 cards
+            /render --force                      Re-render even if image exists
+            /render --variants display           Only display variant
+            /render --no-upload                  Don't upload to R2
+            /render help                         Show this help
+        """
+        parts = args.strip().split() if args else []
+
+        if parts and parts[0] == "help":
+            return {
+                "command": "render",
+                "help": self._cmd_render.__doc__,
+            }
+
+        # Parse flags
+        collection_slug = ""
+        card_id = ""
+        sample = 0
+        variants: list[str] = []
+        force = False
+        upload = True
+
+        i = 0
+        while i < len(parts):
+            flag = parts[i]
+            if flag == "--collection" and i + 1 < len(parts):
+                collection_slug = parts[i + 1]
+                i += 2
+            elif flag == "--card" and i + 1 < len(parts):
+                card_id = parts[i + 1]
+                i += 2
+            elif flag == "--sample" and i + 1 < len(parts):
+                sample = int(parts[i + 1])
+                i += 2
+            elif flag == "--variants" and i + 1 < len(parts):
+                variants = parts[i + 1].split(",")
+                i += 2
+            elif flag == "--force":
+                force = True
+                i += 1
+            elif flag == "--no-upload":
+                upload = False
+                i += 1
+            else:
+                i += 1
+
+        try:
+            from .client.grpc_client import get_grpc_client
+
+            client = await get_grpc_client()
+
+            events = []
+            async for event in client.RenderCards(
+                collection_slug=collection_slug,
+                card_id=card_id,
+                sample=sample,
+                variants=variants or None,
+                force=force,
+                upload=upload,
+            ):
+                events.append({
+                    "phase": event.phase,
+                    "card_id": event.card_id,
+                    "message": event.message,
+                    "progress": event.progress,
+                    "variant": event.variant,
+                    "output_path": event.output_path,
+                    "image_url": event.image_url,
+                    "cards_done": event.cards_done,
+                    "cards_total": event.cards_total,
+                    "duration_ms": event.duration_ms,
+                    "error": event.error,
+                })
+                # Print progress for CLI users
+                # Map phase numbers to readable labels
+                phase_labels = {
+                    1: "queued", 2: "allocating", 3: "rendering",
+                    4: "uploading", 5: "complete", 6: "failed",
+                    7: "batch_complete",
+                }
+                label = phase_labels.get(event.phase, f"phase_{event.phase}")
+                if event.image_url:
+                    print(f"[{label}] {event.card_id} -> {event.image_url}")
+                elif event.error:
+                    print(f"[{label}] {event.message} ({event.error})")
+                else:
+                    print(f"[{label}] {event.message}")
+
+            final = events[-1] if events else {}
+            return {
+                "command": "render",
+                "success": final.get("phase") == 7,  # BATCH_COMPLETE
+                "events_count": len(events),
+                "message": final.get("message", ""),
+                "cards_done": final.get("cards_done", 0),
+                "cards_total": final.get("cards_total", 0),
+                "duration_ms": final.get("duration_ms", 0),
+            }
+
+        except Exception as e:
+            return {"command": "render", "error": str(e)}
 
 
 def main():

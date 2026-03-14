@@ -42,6 +42,7 @@ class WorkloadType(Enum):
     EMBEDDING = auto()  # Embedding generation
     EVOLUTION = auto()  # Agent evolution/optimization
     FLOW = auto()  # Metaflow pipeline execution (docling, etc.)
+    RENDERING = auto()  # Blender card visualization
 
 
 @dataclass

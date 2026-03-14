@@ -115,6 +115,14 @@ class EngineMetrics:
         self._operation_heartbeat: Any = None
         self._operation_anomaly: Any = None
 
+        # Landing page pipeline metrics
+        self._pipeline_task_duration: Any = None  # Histogram
+        self._pipeline_task_success: Any = None  # Counter (by task_type label)
+        self._pipeline_task_failure: Any = None  # Counter (by task_type label)
+        self._pipeline_cards_published: Any = None  # Counter
+        self._pipeline_articles_curated: Any = None  # Counter
+        self._pipeline_pending_cards: Any = None  # Gauge
+
         self._init_instruments()
 
     def _init_instruments(self) -> None:
@@ -140,8 +148,8 @@ class EngineMetrics:
 
             # Check if we got a real meter (not NoOpMeter)
             if hasattr(self._meter, "__class__") and "NoOp" in self._meter.__class__.__name__:
-                logger.debug("OTel not initialized yet, engine metrics deferred")
-                # Don't mark as initialized - we'll retry later
+                logger.debug("OTel not initialized, engine metrics will be no-ops")
+                self._initialized = True
                 return
 
             # Create instruments
@@ -155,6 +163,7 @@ class EngineMetrics:
             self._create_general_instruments()
             self._create_exception_instruments()
             self._create_operation_instruments()
+            self._create_pipeline_instruments()
 
             self._initialized = True
             logger.info("Engine OTel metrics instruments created")
@@ -411,6 +420,50 @@ class EngineMetrics:
             unit="1",
         )
 
+    def _create_pipeline_instruments(self) -> None:
+        """Create landing page pipeline instruments.
+
+        Tracks article curation and card publishing pipeline metrics:
+        - Task duration histogram (by task_type)
+        - Task success/failure counters (by task_type)
+        - Cards published counter
+        - Articles curated counter
+        - Pending cards gauge (backlog)
+        """
+        if not self._meter:
+            return
+
+        self._pipeline_task_duration = self._meter.create_histogram(
+            "gaius.pipeline.task_duration",
+            description="Pipeline task execution duration in milliseconds",
+            unit="ms",
+        )
+        self._pipeline_task_success = self._meter.create_counter(
+            "gaius.pipeline.task_success",
+            description="Successful pipeline task completions",
+            unit="1",
+        )
+        self._pipeline_task_failure = self._meter.create_counter(
+            "gaius.pipeline.task_failure",
+            description="Failed pipeline task completions",
+            unit="1",
+        )
+        self._pipeline_cards_published = self._meter.create_counter(
+            "gaius.pipeline.cards_published",
+            description="Total cards published to landing page",
+            unit="1",
+        )
+        self._pipeline_articles_curated = self._meter.create_counter(
+            "gaius.pipeline.articles_curated",
+            description="Total article curations completed",
+            unit="1",
+        )
+        self._pipeline_pending_cards = self._meter.create_gauge(
+            "gaius.pipeline.pending_cards",
+            description="Current pending cards in backlog",
+            unit="1",
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Recording Methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -439,10 +492,11 @@ class EngineMetrics:
             provider: Provider name (cerebras, xai, local) for filtering
         """
         if not self._inference_count:
-            logger.warning(
-                f"record_inference called but _inference_count is None "
-                f"(initialized={self._initialized}, model={model})"
-            )
+            if not self._initialized:
+                logger.warning(
+                    f"record_inference called but _inference_count is None "
+                    f"(initialized={self._initialized}, model={model})"
+                )
             return
 
         attrs = {"model": model}
@@ -817,6 +871,69 @@ class EngineMetrics:
             f"duration={duration_s:.1f}s Z={z_score:.2f}"
         )
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pipeline Recording Methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def record_pipeline_task_completion(
+        self,
+        task_type: str,
+        success: bool,
+        duration_ms: float,
+        items_processed: int = 0,
+    ) -> None:
+        """Record a pipeline task completion.
+
+        Args:
+            task_type: Type of task (article_curate, publish_cards)
+            success: Whether the task succeeded
+            duration_ms: Task execution duration in milliseconds
+            items_processed: Number of items processed (cards published, etc.)
+        """
+        attrs = {"task_type": task_type}
+
+        # Record duration histogram
+        if self._pipeline_task_duration:
+            self._pipeline_task_duration.record(duration_ms, attrs)
+
+        # Record success/failure counter
+        if success:
+            if self._pipeline_task_success:
+                self._pipeline_task_success.add(1, attrs)
+            # Also record specific counters for curations
+            if task_type == "article_curate" and self._pipeline_articles_curated:
+                self._pipeline_articles_curated.add(1)
+        else:
+            if self._pipeline_task_failure:
+                self._pipeline_task_failure.add(1, attrs)
+
+        logger.debug(
+            f"Pipeline task completed: type={task_type} success={success} "
+            f"duration={duration_ms:.0f}ms items={items_processed}"
+        )
+
+    def record_cards_published(self, count: int) -> None:
+        """Record cards published to landing page.
+
+        Args:
+            count: Number of cards published
+        """
+        if not self._pipeline_cards_published:
+            return
+        self._pipeline_cards_published.add(count)
+        logger.debug(f"Recorded {count} cards published")
+
+    def record_pipeline_backlog(self, pending_cards: int) -> None:
+        """Record current pending cards backlog.
+
+        Args:
+            pending_cards: Current number of pending cards
+        """
+        if not self._pipeline_pending_cards:
+            return
+        self._pipeline_pending_cards.set(pending_cards)
+        logger.debug(f"Pipeline backlog: {pending_cards} pending cards")
+
     @classmethod
     def get_instance(cls) -> "EngineMetrics":
         """Get the singleton metrics instance."""
@@ -902,3 +1019,40 @@ def record_incident_change(delta: int, status: str = "active") -> None:
         status: Current incident status (active, recovering, manual_required)
     """
     EngineMetrics.get_instance().record_incident_change(delta, status)
+
+
+def record_pipeline_task_completion(
+    task_type: str,
+    success: bool,
+    duration_ms: float,
+    items_processed: int = 0,
+) -> None:
+    """Record a pipeline task completion.
+
+    Args:
+        task_type: Type of task (article_curate, publish_cards)
+        success: Whether the task succeeded
+        duration_ms: Task execution duration in milliseconds
+        items_processed: Number of items processed (cards published, etc.)
+    """
+    EngineMetrics.get_instance().record_pipeline_task_completion(
+        task_type, success, duration_ms, items_processed
+    )
+
+
+def record_cards_published(count: int) -> None:
+    """Record cards published to landing page.
+
+    Args:
+        count: Number of cards published
+    """
+    EngineMetrics.get_instance().record_cards_published(count)
+
+
+def record_pipeline_backlog(pending_cards: int) -> None:
+    """Record current pending cards backlog.
+
+    Args:
+        pending_cards: Current number of pending cards
+    """
+    EngineMetrics.get_instance().record_pipeline_backlog(pending_cards)

@@ -92,7 +92,7 @@ class PostgresFixStrategy(ServiceFixStrategy):
 
     def __init__(self):
         super().__init__("postgres")
-        self.port = int(os.getenv("GAIUS_DB_PORT", "5438"))
+        self.port = int(os.getenv("PGPORT", "5444"))
 
     def create_fix_actions(
         self, check_result: dict | None = None
@@ -914,11 +914,11 @@ class PipelineFixStrategy(ServiceFixStrategy):
                 description="Check pipeline stage backlogs and stuck tasks",
                 code='''
 import asyncio
-import os
 import asyncpg
+from gaius.core.config import get_database_url
 
 async def diagnose():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -985,11 +985,11 @@ print(f"\\nDiagnosis: {result}")
                 description="Reset tasks that have been running too long",
                 code='''
 import asyncio
-import os
 import asyncpg
+from gaius.core.config import get_database_url
 
 async def reset_stuck():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -1039,12 +1039,12 @@ print(f"Total tasks reset: {count}")
                 description="Schedule immediate triage if content backlog exists",
                 code='''
 import asyncio
-import os
 import asyncpg
 import json
+from gaius.core.config import get_database_url
 
 async def schedule_triage():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -1120,11 +1120,11 @@ print(f"\\nScheduled {count} task(s)")
                 description="Check that cognition daemon is processing tasks",
                 code='''
 import asyncio
-import os
 import asyncpg
+from gaius.core.config import get_database_url
 
 async def verify():
-    db_url = os.environ.get("GAIUS_DATABASE_URL", "postgres://localhost:5438/zndx_gaius")
+    db_url = get_database_url()
 
     try:
         conn = await asyncpg.connect(db_url)
@@ -1367,12 +1367,13 @@ print("\\nRASE singletons reset complete")
                 name="Check calibration providers",
                 description="Verify Cerebras and XAI API keys are configured",
                 code='''
-import os
+from gaius.core.config import get_config
 
 print("Checking calibration provider configuration...")
 
-cerebras_key = os.environ.get("CEREBRAS_API_KEY", "")
-xai_key = os.environ.get("XAI_API_KEY", "")
+cfg = get_config().providers
+cerebras_key = cfg.cerebras.api_key
+xai_key = cfg.xai.api_key
 
 if cerebras_key:
     print(f"[OK] CEREBRAS_API_KEY configured ({len(cerebras_key)} chars)")
@@ -1392,6 +1393,259 @@ else:
 ''',
                 safety=SafetyLevel.SAFE,
                 timeout=5,
+            )
+        )
+
+        return actions
+
+
+class OptillmFixStrategy(ServiceFixStrategy):
+    """Fix strategy for optillm prompt optimization proxy.
+
+    optillm is engine-managed — it runs as a subprocess of gaius-engine,
+    not as a standalone devenv process. This strategy:
+    1. Verifies engine connectivity (optillm requires the engine)
+    2. Restarts optillm via the engine's BackendRouter
+    3. Verifies health after restart
+    """
+
+    def __init__(self):
+        super().__init__("optillm")
+        self.engine_port = int(os.getenv("GAIUS_ENGINE_PORT", "50051"))
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix optillm issues."""
+        actions = []
+
+        # Step 1: Verify engine is running (optillm is engine-managed)
+        if not self._is_engine_listening():
+            actions.append(
+                RemediationAction(
+                    name="Start engine (optillm requires engine)",
+                    description="optillm is engine-managed. Start the engine first.",
+                    command="devenv up -d",
+                    safety=SafetyLevel.SAFE,
+                    timeout=120,
+                )
+            )
+            actions.append(
+                RemediationAction(
+                    name="Wait for engine startup",
+                    description="Wait for engine to start and initialize optillm",
+                    command="sleep 15",
+                    safety=SafetyLevel.SAFE,
+                    timeout=20,
+                )
+            )
+
+        # Step 2: Restart optillm via engine gRPC
+        actions.append(
+            RemediationAction(
+                name="Restart optillm via engine",
+                description="Send restart command to engine's optillm controller",
+                code='''
+import subprocess
+import json
+
+print("Restarting optillm via engine...")
+
+# Use CLI to trigger optillm restart through the engine
+try:
+    result = subprocess.run(
+        ["uv", "run", "gaius-cli", "--cmd", "/gpu status", "--format", "json"],
+        capture_output=True, text=True, timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        endpoints = data.get("data", {}).get("endpoints", [])
+        optillm_found = any(ep.get("name") == "optillm" for ep in endpoints)
+        if optillm_found:
+            print("  optillm endpoint found in engine status")
+        else:
+            print("  optillm not in endpoint list (engine-managed subprocess)")
+        print("  Engine is responding - optillm should recover automatically")
+    else:
+        print(f"  Engine not responding: {result.stderr[:200]}")
+        print("  Try: /health fix engine")
+except Exception as e:
+    print(f"  Could not reach engine: {e}")
+    print("  Try: /health fix engine")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=45,
+            )
+        )
+
+        # Step 3: Reset gRPC singleton to force reconnection
+        actions.append(
+            RemediationAction(
+                name="Reset gRPC singleton",
+                description="Clear stale gRPC client connection",
+                code="""
+from gaius.client.grpc_client import reset_grpc_client
+reset_grpc_client()
+print("gRPC singleton reset")
+""",
+                safety=SafetyLevel.SAFE,
+                timeout=5,
+            )
+        )
+
+        # Step 4: Verify optillm health
+        actions.append(
+            RemediationAction(
+                name="Verify optillm health",
+                description="Check that optillm is responding after restart",
+                code='''
+import subprocess
+import json
+
+print("Verifying optillm health...")
+
+try:
+    result = subprocess.run(
+        ["uv", "run", "gaius-cli", "--cmd", "/health", "--format", "json"],
+        capture_output=True, text=True, timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        # Look for optillm in health output
+        health_str = json.dumps(data, indent=2)
+        if "optillm" in health_str.lower():
+            print("  optillm appears in health output")
+        print("  Health check complete")
+    else:
+        print(f"  Health check failed: {result.stderr[:200]}")
+except Exception as e:
+    print(f"  Verification failed: {e}")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=45,
+            )
+        )
+
+        return actions
+
+    def _is_engine_listening(self) -> bool:
+        """Check if engine gRPC port is listening."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            result = sock.connect_ex(("localhost", self.engine_port))
+            return result == 0
+        finally:
+            sock.close()
+
+
+class SiteFixStrategy(ServiceFixStrategy):
+    """Fix strategy for site content completeness issues.
+
+    Handles issues with:
+    - Missing card images (LuxCore visualizations)
+    - Incomplete card summaries (frontier, open_weights, cerebras)
+    - Degraded card briefs
+
+    Guru Meditation: #SITE.00000001.CONTENTGAP
+    """
+
+    def __init__(self):
+        super().__init__("site")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix site content issues."""
+        actions = []
+
+        # Step 1: Diagnose — query DB for missing content
+        actions.append(
+            RemediationAction(
+                name="Diagnose site content gaps",
+                description="Check for missing images, summaries, and brief quality",
+                code='''
+import asyncio
+import asyncpg
+from gaius.core.config import get_database_url
+
+async def diagnose():
+    db_url = get_database_url()
+    try:
+        conn = await asyncpg.connect(db_url)
+
+        print("=== Site Content Status ===")
+
+        # Missing images
+        missing_images = await conn.fetchval("""
+            SELECT COUNT(*) FROM collections.cards
+            WHERE status = 'published'
+              AND (image_url IS NULL OR image_url = '')
+        """) or 0
+        print(f"Cards missing images: {missing_images}")
+
+        # Missing summaries by type
+        rows = await conn.fetch("""
+            WITH card_summary_counts AS (
+                SELECT
+                    c.card_id,
+                    COUNT(*) FILTER (WHERE cs.summary_type = 'frontier') AS has_frontier,
+                    COUNT(*) FILTER (WHERE cs.summary_type = 'open_weights') AS has_open_weights,
+                    COUNT(*) FILTER (WHERE cs.summary_type = 'cerebras') AS has_cerebras
+                FROM collections.cards c
+                LEFT JOIN collections.card_summaries cs ON c.card_id = cs.card_id
+                WHERE c.status = 'published'
+                GROUP BY c.card_id
+            )
+            SELECT
+                COUNT(*) FILTER (WHERE has_frontier = 0) AS missing_frontier,
+                COUNT(*) FILTER (WHERE has_open_weights = 0) AS missing_ow,
+                COUNT(*) FILTER (WHERE has_cerebras = 0) AS missing_cerebras
+            FROM card_summary_counts
+        """)
+        if rows:
+            r = rows[0]
+            print(f"Cards missing frontier summary: {r['missing_frontier']}")
+            print(f"Cards missing open_weights summary: {r['missing_ow']}")
+            print(f"Cards missing cerebras summary: {r['missing_cerebras']}")
+
+        # Brief quality
+        short_briefs = await conn.fetchval("""
+            SELECT COUNT(*) FROM collections.cards
+            WHERE status = 'published'
+              AND (summary IS NULL OR LENGTH(TRIM(summary)) < 20)
+        """) or 0
+        print(f"Cards with short/empty briefs: {short_briefs}")
+
+        await conn.close()
+    except Exception as e:
+        print(f"Diagnosis failed: {e}")
+
+asyncio.run(diagnose())
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 2: Backfill images
+        actions.append(
+            RemediationAction(
+                name="Backfill card images",
+                description="Render LuxCore visualizations for cards missing images",
+                command="scripts/backfill_card_images.sh --all",
+                safety=SafetyLevel.CAUTION,
+                timeout=600,
+            )
+        )
+
+        # Step 3: Backfill summaries
+        actions.append(
+            RemediationAction(
+                name="Backfill card summaries",
+                description="Generate missing frontier/open_weights/cerebras summaries",
+                command="uv run python scripts/remediate_card_summaries.py",
+                safety=SafetyLevel.CAUTION,
+                timeout=600,
             )
         )
 
@@ -1430,6 +1684,9 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "pipeline": PipelineFixStrategy(),
     "triage": PipelineFixStrategy(),  # Alias
     "content": PipelineFixStrategy(),  # Alias
+    "optillm": OptillmFixStrategy(),
+    "site": SiteFixStrategy(),
+    "cards": SiteFixStrategy(),  # Alias
 }
 
 

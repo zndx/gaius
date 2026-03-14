@@ -99,7 +99,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
-          - 5438:5432
+          - 5444:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -112,7 +112,7 @@ jobs:
           - 6339:6333
 
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5438/zndx_gaius?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@localhost:5444/zndx_gaius?sslmode=disable
       QDRANT_URL: http://localhost:6339
 
     steps:
