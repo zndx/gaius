@@ -16,6 +16,7 @@ output-dir = "d2"
 
 [output.html]
 default-theme = "light"
+site-url = "/gaius/"
 additional-css = ["theme/custom.css"]
 additional-js = ["theme/diagrams.js"]
 

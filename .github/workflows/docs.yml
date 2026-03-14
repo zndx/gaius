@@ -3,7 +3,7 @@ name: Deploy Documentation
 on:
   push:
     branches:
-      - main
+      - trunk
     paths:
       - 'docs/current/**'
       - '.github/workflows/docs.yml'
