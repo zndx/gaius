@@ -12,6 +12,8 @@ Step types for article curation:
 - draft: Draft generation
 - base: .base file creation
 - cards: Card creation
+- enrich: Card enrichment (summaries + images)
+- publish: Card publishing + KV sync
 - complete: Flow completed
 - failed: Flow failed
 """
@@ -36,14 +38,13 @@ STEPS = {
     "draft": {"number": 6, "progress": 0.65},
     "base": {"number": 7, "progress": 0.80},
     "cards": {"number": 8, "progress": 0.85},
-    "publish": {"number": 9, "progress": 0.90},
-    "card_summaries": {"number": 10, "progress": 0.93},
-    "render_viz": {"number": 11, "progress": 0.97},
-    "complete": {"number": 12, "progress": 1.0},
+    "enrich": {"number": 9, "progress": 0.88},
+    "publish": {"number": 10, "progress": 0.95},
+    "complete": {"number": 11, "progress": 1.0},
     "failed": {"number": -1, "progress": -1.0},
 }
 
-TOTAL_STEPS = 12
+TOTAL_STEPS = 11
 
 
 def generate_run_id() -> str:
@@ -198,23 +199,13 @@ def emit_publish(run_id: str, published_count: int) -> None:
     )
 
 
-def emit_card_summaries(run_id: str, count: int) -> None:
-    """Emit card summaries generation event."""
+def emit_enrich(run_id: str, enriched: int, failed: int) -> None:
+    """Emit card enrichment event (summaries + images)."""
     emit_progress(
         run_id,
-        "card_summaries",
-        f"Generated summaries for {count} cards",
-        {"cards_summarized": count},
-    )
-
-
-def emit_render_viz(run_id: str, count: int) -> None:
-    """Emit visualization rendering event."""
-    emit_progress(
-        run_id,
-        "render_viz",
-        f"Rendered visualizations for {count} cards",
-        {"cards_rendered": count},
+        "enrich",
+        f"Enriched {enriched} cards ({failed} failed)",
+        {"cards_enriched": enriched, "cards_failed": failed},
     )
 
 

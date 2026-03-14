@@ -204,13 +204,33 @@ class ScheduledTaskProcessor(BaseDaemon):
         from .collection_service import CollectionService
 
         async def handle_publish_cards(task: ScheduledTask) -> dict[str, Any]:
-            """Handle publish_cards task."""
+            """Handle publish_cards task.
+
+            Enriches unenriched pending cards before publishing so the
+            pg_cron critical path is self-sustaining — cards created by
+            the curation flow (or backfills) that failed enrichment get
+            retried here before each publish slot.
+            """
             count = task.payload.get("count", 3)
             slot = task.payload.get("slot", "unknown")
 
-            logger.info(f"Publishing {count} cards (slot: {slot})")
-
             service = CollectionService(self._pool)
+
+            # Enrich unenriched pending cards first (summaries + images)
+            # This ensures the enrichment gate in publish_cards() has
+            # candidates to select from, even if the curation flow's
+            # enrichment step partially failed or cards were backfilled.
+            enrich_result = await service.enrich_pending_cards(limit=count * 2)
+            enrich_count = enrich_result.get("enriched_count", 0)
+            enrich_failed = enrich_result.get("failed_count", 0)
+            if enrich_count or enrich_failed:
+                logger.info(
+                    f"Pre-publish enrichment (slot={slot}): "
+                    f"{enrich_count} enriched, {enrich_failed} failed"
+                )
+
+            # Now publish (only fully enriched cards pass the gate)
+            logger.info(f"Publishing {count} cards (slot: {slot})")
             result = await service.publish_and_sync(count=count)
 
             logger.info(
@@ -220,6 +240,8 @@ class ScheduledTaskProcessor(BaseDaemon):
 
             return {
                 "slot": slot,
+                "enriched_count": enrich_count,
+                "enriched_failed": enrich_failed,
                 "published_count": result.get("published_count", 0),
                 "kv_sync_success": result.get("kv_sync", {}).get("success", False),
             }

@@ -1,6 +1,6 @@
 """ArticleCurationFlow - Metaflow pipeline for article research and publication.
 
-This flow implements a 10-step pipeline that automates article curation:
+This flow implements an 11-step pipeline that automates article curation:
 1. start: Find unpublished articles in KB
 2. grok_research_summary: Synthesize zettelkasten notes with Grok
 3. select_article: Select article (optillm or explicit)
@@ -9,10 +9,14 @@ This flow implements a 10-step pipeline that automates article curation:
 6. create_draft: Generate draft with Grok, archive to hx/
 7. create_base: BFO-grounded Base file with ref_start/ref_end
 8. create_cards: Create collection cards from .base references (all pending)
-9. publish_batch: Publish cards, sync all KV stores
-10. generate_card_summaries: Dual-model summaries + card page KV sync
-11. render_visualizations: Procedural Blender viz from embedding geometry
-12. end: Emit lineage, report results
+9. enrich_cards: Generate summaries + render images (fail-fast per card)
+10. publish_batch: Publish enriched cards, sync all KV stores
+11. end: Emit lineage, report results
+
+Enrichment before publish: Cards are enriched (summaries + images) BEFORE
+being published to the site. Only fully enriched cards get published. Failed
+cards stay 'pending' for the next run. This prevents cards with missing
+content from appearing on gaius.zndx.org.
 
 PRIVACY: This flow does NOT search the KB to avoid exposing private materials
 in published articles. Only the article's own zk/ notes are used.
@@ -64,13 +68,12 @@ from gaius.flows.card_upkeep.common import (
 from gaius.flows.article_curation.progress import (
     emit_acquire,
     emit_base,
-    emit_card_summaries,
     emit_cards,
     emit_complete,
     emit_draft,
+    emit_enrich,
     emit_failed,
     emit_publish,
-    emit_render_viz,
     emit_research,
     emit_select,
     emit_start,
@@ -1957,7 +1960,8 @@ Be concise - each summary should be 1-2 sentences max."""
 
         if not self.base_path or self.dry_run:
             self.cards_created = 0
-            self.next(self.publish_batch)
+            self.created_card_ids = []
+            self.next(self.enrich_cards)
             return
 
         try:
@@ -1970,6 +1974,7 @@ Be concise - each summary should be 1-2 sentences max."""
             )
 
         self.cards_created = len(card_ids)
+        self.created_card_ids = card_ids
         print(f"Created {self.cards_created} cards (all pending)")
 
         # Update .base file: unknown -> pending
@@ -1987,7 +1992,7 @@ Be concise - each summary should be 1-2 sentences max."""
         # Emit progress: cards created
         emit_cards(self.progress_run_id, self.cards_created)
 
-        self.next(self.publish_batch)
+        self.next(self.enrich_cards)
 
     async def _create_cards_async(self) -> tuple[list[str], list[str]]:
         """Create cards with full provenance via CollectionService.
@@ -2182,41 +2187,184 @@ Be concise - each summary should be 1-2 sentences max."""
 
     @traced_step
     @step
-    def publish_batch(self):
-        """Publish created cards and sync all KV stores.
+    def enrich_cards(self):
+        """Enrich cards with summaries and images BEFORE publishing.
 
-        This step promotes pending cards to published status and syncs
-        Cloudflare KV so content appears on gaius.zndx.org immediately.
+        For each card created in this run:
+        1. Generate 3 summary types (frontier, open_weights, cerebras)
+        2. Render LuxCore visualization via gRPC RenderCards
+
+        Cards that pass all enrichment are tracked in self.enriched_card_ids.
+        Cards that fail any enrichment step stay pending (not published).
+
+        Fail-fast: If ALL cards fail enrichment, the step raises with
+        #ACF.00000022.NOENRICHED. Partial success is OK.
+        """
+        created_card_ids = getattr(self, "created_card_ids", [])
+
+        if not created_card_ids or self.dry_run:
+            print("No cards to enrich, skipping enrich_cards")
+            self.enriched_card_ids = []
+            self.enrichment_failures = {}
+            self.next(self.publish_batch)
+            return
+
+        print(f"Enriching {len(created_card_ids)} cards (summaries + images)...")
+
+        try:
+            enriched, failures = asyncio.get_event_loop().run_until_complete(
+                self._enrich_cards_async(created_card_ids)
+            )
+        except RuntimeError:
+            enriched, failures = asyncio.new_event_loop().run_until_complete(
+                self._enrich_cards_async(created_card_ids)
+            )
+
+        self.enriched_card_ids = enriched
+        self.enrichment_failures = failures
+
+        print(f"Enrichment complete: {len(enriched)} enriched, {len(failures)} failed")
+        if failures:
+            for cid, reason in failures.items():
+                print(f"  FAILED {cid}: {reason}")
+
+        # Fail-fast if ALL cards failed enrichment
+        if not enriched and created_card_ids:
+            raise RuntimeError(
+                f"All {len(created_card_ids)} cards failed enrichment.\n"
+                "  Guru Meditation: #ACF.00000022.NOENRICHED\n"
+                "  Try: /health fix endpoints\n"
+                f"  Failures: {failures}"
+            )
+
+        emit_enrich(self.progress_run_id, len(enriched), len(failures))
+
+        self.next(self.publish_batch)
+
+    async def _enrich_cards_async(
+        self, card_ids: list[str]
+    ) -> tuple[list[str], dict[str, str]]:
+        """Enrich cards with summaries and images.
+
+        For each card:
+        1. Generate all 3 summary types — if ANY fails, card is marked failed
+        2. Render image via gRPC RenderCards for this specific card
+
+        Args:
+            card_ids: Card IDs to enrich
+
+        Returns:
+            Tuple of (enriched_card_ids, failures dict of card_id → reason)
+        """
+        import asyncpg
+        from gaius.core.config import get_database_url
+        from gaius.engine.services.collection_service import CollectionService
+
+        db_url = get_database_url()
+        enriched: list[str] = []
+        failures: dict[str, str] = {}
+
+        async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
+            service = CollectionService(pool)
+
+            for i, card_id in enumerate(card_ids):
+                card_label = f"[{i + 1}/{len(card_ids)}] {card_id[:12]}"
+                card_failed = False
+
+                # --- Summaries ---
+                for summary_type in ("frontier", "open_weights", "cerebras"):
+                    try:
+                        await service.generate_card_summary(card_id, summary_type)
+                        print(f"  {card_label}: {summary_type} OK")
+                    except Exception as e:
+                        print(f"  {card_label}: {summary_type} FAILED - {e}")
+                        failures[card_id] = f"{summary_type}: {e}"
+                        card_failed = True
+                        break  # Skip remaining summary types for this card
+
+                if card_failed:
+                    continue
+
+                # --- Image rendering via gRPC ---
+                try:
+                    await self._render_card_image(card_id, card_label)
+                except Exception as e:
+                    print(f"  {card_label}: render FAILED - {e}")
+                    failures[card_id] = f"render: {e}"
+                    continue
+
+                # --- Sync card page to KV (summaries + image now present) ---
+                try:
+                    await service.sync_card_to_kv(card_id)
+                    print(f"  {card_label}: KV sync OK")
+                except Exception as e:
+                    # KV sync failure is non-fatal for enrichment — card content is in DB
+                    print(f"  {card_label}: KV sync FAILED (non-fatal) - {e}")
+
+                enriched.append(card_id)
+
+        return enriched, failures
+
+    async def _render_card_image(self, card_id: str, card_label: str) -> None:
+        """Render a single card's image via gRPC RenderCards.
+
+        Args:
+            card_id: Card to render
+            card_label: Label for log messages
+
+        Raises:
+            Exception: If rendering fails
+        """
+        from gaius.client.grpc_client import get_grpc_client, GrpcClientConfig
+
+        client = await get_grpc_client(GrpcClientConfig.for_cli())
+
+        async for event in client.RenderCards(
+            card_id=card_id,
+            upload=True,
+        ):
+            if event.message:
+                print(f"  {card_label}: render - {event.message}")
+            if event.error:
+                raise RuntimeError(f"Render error: {event.error}")
+            if event.image_url:
+                print(f"  {card_label}: image OK ({event.image_url})")
+
+    @traced_step
+    @step
+    def publish_batch(self):
+        """Publish enriched cards and sync all KV stores.
+
+        Only cards that passed enrichment (summaries + images) get published.
+        This ensures no cards with missing content appear on gaius.zndx.org.
 
         Operations (all fail-fast):
-        1. publish_cards() — promote pending cards from this run
+        1. publish_cards_by_ids() — promote enriched cards to published
         2. sync_to_kv() — update landing page published_cards key
         3. sync_collection_to_kv() — update collection detail page
         4. sync_collections_index_to_kv() — update /collections index
-
-        If no cards were created (dry_run or no base_path), skips publishing.
         """
-        cards_created = getattr(self, "cards_created", 0)
+        enriched_card_ids = getattr(self, "enriched_card_ids", [])
 
-        if cards_created == 0:
-            print("No cards to publish, skipping publish_batch")
+        if not enriched_card_ids:
+            print("No enriched cards to publish, skipping publish_batch")
             self.published_count = 0
-            self.next(self.generate_card_summaries)
+            self.next(self.end)
             return
 
-        print(f"Publishing {cards_created} cards and syncing KV stores...")
+        print(f"Publishing {len(enriched_card_ids)} enriched cards and syncing KV stores...")
 
         try:
             published_count = asyncio.get_event_loop().run_until_complete(
-                self._publish_batch_async(cards_created)
+                self._publish_batch_async(enriched_card_ids)
             )
         except RuntimeError:
             published_count = asyncio.new_event_loop().run_until_complete(
-                self._publish_batch_async(cards_created)
+                self._publish_batch_async(enriched_card_ids)
             )
 
         self.published_count = published_count
-        print(f"Published {published_count} cards, KV stores synced")
+        print(f"Published {published_count} enriched cards, KV stores synced")
 
         self.emit_event("article_curation.published", {
             "slug": self.selected_slug,
@@ -2225,13 +2373,13 @@ Be concise - each summary should be 1-2 sentences max."""
 
         emit_publish(self.progress_run_id, published_count)
 
-        self.next(self.generate_card_summaries)
+        self.next(self.end)
 
-    async def _publish_batch_async(self, cards_created: int) -> int:
-        """Publish cards and sync KV stores.
+    async def _publish_batch_async(self, enriched_card_ids: list[str]) -> int:
+        """Publish enriched cards by ID and sync KV stores.
 
         Args:
-            cards_created: Number of cards to publish
+            enriched_card_ids: Card IDs that passed enrichment
 
         Returns:
             Number of cards actually published
@@ -2248,13 +2396,10 @@ Be concise - each summary should be 1-2 sentences max."""
         async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
             service = CollectionService(pool)
 
-            # 1. Publish pending cards from this collection
-            published = await service.publish_cards(
-                count=cards_created,
-                collection_id=self.collection_id,
-            )
+            # 1. Publish only enriched cards by explicit IDs
+            published = await service.publish_cards_by_ids(enriched_card_ids)
             published_count = len(published)
-            print(f"  publish_cards: {published_count} cards promoted to published")
+            print(f"  publish_cards_by_ids: {published_count} cards promoted to published")
 
             # 2. Sync landing page KV (published_cards key)
             sync_result = await service.sync_to_kv()
@@ -2269,222 +2414,6 @@ Be concise - each summary should be 1-2 sentences max."""
             print(f"  sync_collections_index_to_kv: {idx_result.get('collections_synced', 0)} collections")
 
             return published_count
-
-    @traced_step
-    @step
-    def generate_card_summaries(self):
-        """Generate tri-model summaries for published cards.
-
-        For each card published in this run:
-        1. Generate frontier summary (Brave Summarizer)
-        2. Generate open-weights summary (reasoning model)
-        3. Generate cerebras summary (GLM-4.7 thinking)
-        4. Sync card page to KV (card:{card_id})
-
-        Unlike core pipeline steps, card summary generation logs failures
-        and continues. Cards are already published — summaries are enrichment
-        that can be regenerated via MCP.
-        """
-        published_count = getattr(self, "published_count", 0)
-        if published_count == 0:
-            print("No published cards, skipping card summary generation")
-            self.cards_summarized = 0
-            self.next(self.render_visualizations)
-            return
-
-        print(f"Generating summaries for {published_count} published cards...")
-
-        try:
-            cards_summarized = asyncio.get_event_loop().run_until_complete(
-                self._generate_card_summaries_async()
-            )
-        except RuntimeError:
-            cards_summarized = asyncio.new_event_loop().run_until_complete(
-                self._generate_card_summaries_async()
-            )
-
-        self.cards_summarized = cards_summarized
-        print(f"Generated summaries for {cards_summarized} cards")
-
-        emit_card_summaries(self.progress_run_id, cards_summarized)
-
-        self.next(self.render_visualizations)
-
-    async def _generate_card_summaries_async(self) -> int:
-        """Generate summaries and sync KV for published cards.
-
-        Returns:
-            Number of cards successfully summarized
-        """
-        import asyncpg
-        from gaius.core.config import get_database_url
-        from gaius.engine.services.collection_service import CollectionService
-
-        db_url = get_database_url()
-        cards_summarized = 0
-
-        async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
-            service = CollectionService(pool)
-
-            # Get published cards for this collection
-            cards = await service.get_published_cards(
-                collection_id=self.collection_id, limit=100
-            )
-
-            for i, card in enumerate(cards):
-                card_label = f"[{i+1}/{len(cards)}] {card.title[:50]}"
-                try:
-                    # Generate frontier summary
-                    await service.generate_card_summary(card.card_id, "frontier")
-                    print(f"  {card_label}: frontier OK")
-                except Exception as e:
-                    print(f"  {card_label}: frontier FAILED - {e}")
-
-                try:
-                    # Generate open-weights summary
-                    await service.generate_card_summary(card.card_id, "open_weights")
-                    print(f"  {card_label}: open_weights OK")
-                except Exception as e:
-                    print(f"  {card_label}: open_weights FAILED - {e}")
-
-                try:
-                    # Generate cerebras thinking summary
-                    await service.generate_card_summary(card.card_id, "cerebras")
-                    print(f"  {card_label}: cerebras OK")
-                except Exception as e:
-                    print(f"  {card_label}: cerebras FAILED - {e}")
-
-                try:
-                    # Sync card page to KV
-                    await service.sync_card_to_kv(card.card_id)
-                    cards_summarized += 1
-                except Exception as e:
-                    print(f"  {card_label}: KV sync FAILED - {e}")
-
-        return cards_summarized
-
-    @traced_step
-    @step
-    def render_visualizations(self):
-        """Render LuxCore glass visualizations for published cards.
-
-        For each published card:
-        1. Extract viz data from embedding geometry (CPU, avoids GPU contention)
-        2. Render display (1400x300) + og (1200x630) variants via LuxCore
-        3. If R2 configured: upload both variants + update card image_url + sync KV
-        4. Otherwise: save to build/viz/{card_id}/{variant}.png (local-only)
-
-        Non-fatal enrichment — cards are already published. Failures are
-        logged and skipped, same as card summaries.
-        """
-        published_count = getattr(self, "published_count", 0)
-        if published_count == 0:
-            print("No published cards, skipping visualization rendering")
-            self.cards_rendered = 0
-            self.render_errors = []
-            self.next(self.end)
-            return
-
-        print(f"Rendering visualizations for {published_count} published cards...")
-
-        try:
-            result = asyncio.get_event_loop().run_until_complete(
-                self._render_visualizations_async()
-            )
-        except RuntimeError:
-            result = asyncio.new_event_loop().run_until_complete(
-                self._render_visualizations_async()
-            )
-        except Exception as e:
-            print(f"  RENDER PIPELINE ERROR: {e}")
-            result = (0, [f"Pipeline error: {e}"])
-
-        if isinstance(result, tuple):
-            cards_rendered, render_errors = result
-        else:
-            cards_rendered, render_errors = result, []
-
-        self.cards_rendered = cards_rendered
-        self.render_errors = render_errors
-        print(f"Rendered visualizations for {cards_rendered} cards")
-        if render_errors:
-            print(f"  Render errors ({len(render_errors)}):")
-            for err in render_errors:
-                print(f"    - {err}")
-
-        emit_render_viz(self.progress_run_id, cards_rendered)
-
-        self.next(self.end)
-
-    async def _render_visualizations_async(self) -> tuple[int, list[str]]:
-        """Render display + og variants via engine gRPC (workload-managed).
-
-        Delegates to the engine's RenderCards streaming RPC which handles
-        GPU eviction, LuxCore rendering, R2 upload, and endpoint restoration.
-
-        Returns:
-            Tuple of (cards_rendered, error_messages)
-        """
-        from gaius.client.grpc_client import get_grpc_client, GrpcClientConfig
-
-        render_errors: list[str] = []
-
-        try:
-            client = await get_grpc_client(GrpcClientConfig.for_cli())
-        except Exception as e:
-            return (0, [f"gRPC connection failed: {e}"])
-
-        collection_slug = self.selected_slug
-        cards_rendered = 0
-
-        rendered_card_ids: list[str] = []
-
-        try:
-            async for event in client.RenderCards(
-                collection_slug=collection_slug,
-                upload=True,
-            ):
-                # Log progress from the engine's render stream
-                if event.card_id and event.message:
-                    print(f"  [{event.cards_done}/{event.cards_total}] {event.message}")
-                elif event.message:
-                    print(f"  {event.message}")
-
-                # Track completions
-                if event.image_url:
-                    rendered_card_ids.append(event.card_id)
-                    cards_rendered += 1
-
-                # Collect errors for end-step summary
-                if event.error:
-                    render_errors.append(event.error)
-                    print(f"  RENDER ERROR: {event.error}")
-        except Exception as e:
-            render_errors.append(f"gRPC stream error: {e}")
-            print(f"  RENDER STREAM ERROR: {e}")
-
-        # Sync KV so card pages on gaius.zndx.org pick up image_url
-        if rendered_card_ids:
-            import asyncpg
-            from gaius.core.config import get_database_url
-            from gaius.engine.services.collection_service import CollectionService
-
-            db_url = get_database_url()
-            async with asyncpg.create_pool(db_url, min_size=1, max_size=3) as pool:
-                service = CollectionService(pool)
-                for cid in rendered_card_ids:
-                    try:
-                        await service.sync_card_to_kv(cid)
-                    except Exception as e:
-                        print(f"  KV sync failed for {cid}: {e}")
-                if self.collection_id:
-                    col_result = await service.sync_collection_to_kv(self.collection_id)
-                    print(f"  KV sync: {col_result['cards_synced']} collection cards synced")
-                # Refresh landing page index with updated image_url values
-                idx_result = await service.sync_to_kv()
-                print(f"  KV sync: {idx_result['cards_synced']} total cards synced to landing page")
-
-        return (cards_rendered, render_errors)
 
     @traced_step
     @step
@@ -2514,18 +2443,17 @@ Be concise - each summary should be 1-2 sentences max."""
                 print(f"Draft version: {self.draft_entry.version}")
                 print(f"Word count: {self.draft_entry.word_count}")
             print(f"Base file: {self.base_path}")
-            print(f"Cards created: {getattr(self, 'cards_created', 0)}")
-            print(f"Cards published: {getattr(self, 'published_count', 0)}")
-            print(f"Cards summarized: {getattr(self, 'cards_summarized', 0)}")
-            cards_rendered = getattr(self, 'cards_rendered', 0)
+            cards_created = getattr(self, 'cards_created', 0)
+            enriched_count = len(getattr(self, 'enriched_card_ids', []))
+            failures = getattr(self, 'enrichment_failures', {})
             published_count = getattr(self, 'published_count', 0)
-            print(f"Cards rendered: {cards_rendered}")
-            if cards_rendered < published_count and published_count > 0:
-                render_errors = getattr(self, 'render_errors', [])
-                print(f"  *** RENDER INCOMPLETE: {cards_rendered}/{published_count} cards ***")
-                if render_errors:
-                    for err in render_errors[:3]:
-                        print(f"  *** {err}")
+            print(f"Cards created: {cards_created}")
+            print(f"Cards enriched: {enriched_count}")
+            if failures:
+                print(f"Cards failed enrichment: {len(failures)}")
+                for cid, reason in list(failures.items())[:3]:
+                    print(f"  {cid}: {reason}")
+            print(f"Cards published: {published_count}")
             print(f"Grok sync: {'Success' if self.grok_sync_result.get('success') else 'Fallback mode'}")
 
         self.emit_event("article_curation.completed", {
@@ -2533,10 +2461,9 @@ Be concise - each summary should be 1-2 sentences max."""
             "sources_count": len(self.acquired_sources),
             "draft_version": self.draft_entry.version if self.draft_entry else None,
             "cards_created": getattr(self, "cards_created", 0),
+            "cards_enriched": len(getattr(self, "enriched_card_ids", [])),
+            "enrichment_failures": len(getattr(self, "enrichment_failures", {})),
             "published_count": getattr(self, "published_count", 0),
-            "cards_summarized": getattr(self, "cards_summarized", 0),
-            "cards_rendered": getattr(self, "cards_rendered", 0),
-            "render_errors": getattr(self, "render_errors", []),
         })
 
         # Emit progress: flow completed

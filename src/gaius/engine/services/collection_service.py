@@ -30,6 +30,7 @@ Guru Meditation Codes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -1109,21 +1110,31 @@ class CollectionService:
             if collection_id:
                 # Publish from specific collection with diversity
                 # Round-robin across articles and source types for varied content
+                # Only select cards that are fully enriched (3 summaries + image)
                 rows = await conn.fetch(
                     """
-                    WITH pending_ranked AS (
+                    WITH enriched_filter AS (
+                        -- Only cards with complete enrichment: image + 3 summaries
+                        SELECT c.card_id
+                        FROM collections.cards c
+                        WHERE c.collection_id = $1 AND c.status = 'pending'
+                          AND c.image_url IS NOT NULL AND c.image_url != ''
+                          AND (SELECT count(*) FROM collections.card_summaries cs
+                               WHERE cs.card_id = c.card_id) = 3
+                    ),
+                    pending_ranked AS (
                         -- Rank cards within each article/source_type combo
                         -- to enable round-robin selection across diverse sources
                         SELECT
-                            card_id,
-                            article_id,
-                            source_type,
+                            c.card_id,
+                            c.article_id,
+                            c.source_type,
                             ROW_NUMBER() OVER (
-                                PARTITION BY article_id, source_type
-                                ORDER BY created_at ASC
+                                PARTITION BY c.article_id, c.source_type
+                                ORDER BY c.created_at ASC
                             ) as rank_in_group
-                        FROM collections.cards
-                        WHERE collection_id = $1 AND status = 'pending'
+                        FROM collections.cards c
+                        WHERE c.card_id IN (SELECT card_id FROM enriched_filter)
                     ),
                     diverse_pending AS (
                         -- Select round-robin: one from each article/type combo before repeating
@@ -1143,11 +1154,22 @@ class CollectionService:
             else:
                 # Publish from featured collection with diversity
                 # Round-robin across articles and source types for varied landing page
+                # Only select cards that are fully enriched (3 summaries + image)
                 rows = await conn.fetch(
                     """
                     WITH featured_col AS (
                         SELECT collection_id FROM collections.collections
                         WHERE featured = TRUE
+                    ),
+                    enriched_filter AS (
+                        -- Only cards with complete enrichment: image + 3 summaries
+                        SELECT c.card_id
+                        FROM collections.cards c
+                        JOIN featured_col fc ON c.collection_id = fc.collection_id
+                        WHERE c.status = 'pending'
+                          AND c.image_url IS NOT NULL AND c.image_url != ''
+                          AND (SELECT count(*) FROM collections.card_summaries cs
+                               WHERE cs.card_id = c.card_id) = 3
                     ),
                     pending_ranked AS (
                         -- Rank cards within each article/source_type combo
@@ -1160,8 +1182,7 @@ class CollectionService:
                                 ORDER BY c.created_at ASC
                             ) as rank_in_group
                         FROM collections.cards c
-                        JOIN featured_col fc ON c.collection_id = fc.collection_id
-                        WHERE c.status = 'pending'
+                        WHERE c.card_id IN (SELECT card_id FROM enriched_filter)
                     ),
                     diverse_pending AS (
                         -- Select round-robin: one from each article/type combo before repeating
@@ -1181,6 +1202,29 @@ class CollectionService:
 
             published = [self._row_to_card(row) for row in rows]
 
+            # Log unenriched cards that were skipped by the enrichment gate
+            target_col = collection_id
+            if not target_col:
+                target_col = await conn.fetchval(
+                    "SELECT collection_id FROM collections.collections WHERE featured = TRUE"
+                )
+            if target_col:
+                unenriched = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM collections.cards c
+                    WHERE c.collection_id = $1 AND c.status = 'pending'
+                      AND (c.image_url IS NULL OR c.image_url = ''
+                           OR (SELECT count(*) FROM collections.card_summaries cs
+                               WHERE cs.card_id = c.card_id) < 3)
+                    """,
+                    target_col,
+                )
+                if unenriched:
+                    logger.info(
+                        f"Enrichment gate: {unenriched} pending cards skipped "
+                        f"(missing image or summaries)"
+                    )
+
             # Auto-activate collection on first publish
             # Collections start as 'draft' and must be 'active' to appear
             # in sync_collections_index_to_kv() which filters WHERE status = 'active'
@@ -1198,6 +1242,188 @@ class CollectionService:
 
             logger.info(f"Published {len(published)} cards (diversity-aware)")
             return published
+
+    async def publish_cards_by_ids(self, card_ids: list[str]) -> list[Card]:
+        """Publish specific cards by ID.
+
+        Only publishes cards that are currently 'pending'. Auto-activates
+        the collection on first publish (same as publish_cards).
+
+        Args:
+            card_ids: Explicit list of card IDs to publish
+
+        Returns:
+            List of newly published cards
+        """
+        if not card_ids:
+            return []
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                UPDATE collections.cards
+                SET status = 'published', published_at = NOW(), updated_at = NOW()
+                WHERE card_id = ANY($1) AND status = 'pending'
+                RETURNING *
+                """,
+                card_ids,
+            )
+
+            published = [self._row_to_card(row) for row in rows]
+
+            # Auto-activate collection on first publish
+            if published:
+                col_ids = {card.collection_id for card in published}
+                for cid in col_ids:
+                    await conn.execute(
+                        """
+                        UPDATE collections.collections
+                        SET status = 'active', updated_at = NOW()
+                        WHERE collection_id = $1 AND status = 'draft'
+                        """,
+                        cid,
+                    )
+
+            logger.info(f"Published {len(published)} cards by explicit IDs")
+            return published
+
+    async def enrich_pending_cards(
+        self,
+        limit: int = 6,
+        collection_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Enrich unenriched pending cards (summaries + images).
+
+        Finds pending cards that are missing summaries or images and
+        enriches them so they become eligible for publish_cards().
+
+        This is the autonomous enrichment path — called by the pg_cron
+        publish handler to ensure cards don't stay unenriched forever.
+
+        Args:
+            limit: Max cards to enrich per invocation (default: 6)
+            collection_id: Collection to target (default: featured)
+
+        Returns:
+            Dict with enriched_count, failed_count, and details
+        """
+        async with self._pool.acquire() as conn:
+            # Resolve collection
+            col_id = collection_id
+            if not col_id:
+                col_id = await conn.fetchval(
+                    "SELECT collection_id FROM collections.collections WHERE featured = TRUE"
+                )
+            if not col_id:
+                return {"enriched_count": 0, "failed_count": 0, "error": "no_collection"}
+
+            # Find unenriched pending cards
+            rows = await conn.fetch(
+                """
+                SELECT c.card_id, c.title,
+                       c.image_url IS NOT NULL AND c.image_url != '' AS has_image,
+                       (SELECT count(*) FROM collections.card_summaries cs
+                        WHERE cs.card_id = c.card_id) AS summary_count
+                FROM collections.cards c
+                WHERE c.collection_id = $1 AND c.status = 'pending'
+                  AND (c.image_url IS NULL OR c.image_url = ''
+                       OR (SELECT count(*) FROM collections.card_summaries cs
+                           WHERE cs.card_id = c.card_id) < 3)
+                ORDER BY c.created_at ASC
+                LIMIT $2
+                """,
+                col_id, limit,
+            )
+
+        if not rows:
+            return {"enriched_count": 0, "failed_count": 0, "message": "all_cards_enriched"}
+
+        logger.info(f"Enriching {len(rows)} unenriched pending cards")
+
+        enriched = 0
+        failed = 0
+        details: list[dict[str, Any]] = []
+
+        for row in rows:
+            card_id = row["card_id"]
+            has_image = row["has_image"]
+            summary_count = row["summary_count"]
+            card_failed = False
+
+            # --- Summaries (skip types already generated) ---
+            existing_types: set[str] = set()
+            if summary_count > 0:
+                async with self._pool.acquire() as conn:
+                    existing = await conn.fetch(
+                        "SELECT summary_type FROM collections.card_summaries WHERE card_id = $1",
+                        card_id,
+                    )
+                    existing_types = {r["summary_type"] for r in existing}
+
+            for summary_type in ("frontier", "open_weights", "cerebras"):
+                if summary_type in existing_types:
+                    continue
+                try:
+                    await self.generate_card_summary(card_id, summary_type)
+                    logger.info(f"Enrich {card_id[:12]}: {summary_type} OK")
+                except Exception as e:
+                    logger.warning(f"Enrich {card_id[:12]}: {summary_type} FAILED - {e}")
+                    details.append({"card_id": card_id, "step": summary_type, "error": str(e)})
+                    card_failed = True
+                    break
+
+            if card_failed:
+                failed += 1
+                continue
+
+            # --- Image rendering via gRPC ---
+            if not has_image:
+                try:
+                    await self._enrich_render_card(card_id)
+                    logger.info(f"Enrich {card_id[:12]}: render OK")
+                except Exception as e:
+                    logger.warning(f"Enrich {card_id[:12]}: render FAILED - {e}")
+                    details.append({"card_id": card_id, "step": "render", "error": str(e)})
+                    failed += 1
+                    continue
+
+            # --- Sync card page to KV ---
+            try:
+                await self.sync_card_to_kv(card_id)
+            except Exception as e:
+                logger.warning(f"Enrich {card_id[:12]}: KV sync failed (non-fatal) - {e}")
+
+            enriched += 1
+
+        logger.info(f"Enrichment complete: {enriched} enriched, {failed} failed")
+        return {
+            "enriched_count": enriched,
+            "failed_count": failed,
+            "details": details,
+        }
+
+    async def _enrich_render_card(self, card_id: str) -> None:
+        """Render a single card's image via gRPC RenderCards.
+
+        Uses the gRPC client (same as the curation flow) so rendering
+        goes through proper GPU workload management.
+
+        Args:
+            card_id: Card to render
+
+        Raises:
+            RuntimeError: If rendering fails
+        """
+        from gaius.client.grpc_client import get_grpc_client, GrpcClientConfig
+
+        client = await get_grpc_client(GrpcClientConfig.for_cli())
+
+        async for event in client.RenderCards(
+            card_id=card_id,
+            upload=True,
+        ):
+            if event.error:
+                raise RuntimeError(f"Render error: {event.error}")
 
     async def get_cards_for_kv(self, limit: int = 200) -> list[dict[str, Any]]:
         """Get all published cards across active collections for Cloudflare KV.
@@ -2227,9 +2453,33 @@ created_at: {now.isoformat()}
 
         if summary_type == "frontier":
             # Use Brave Answers API for grounded, web-cited summaries
+            # Retry with exponential backoff — Brave rate-limits sequential calls
             from gaius.inference.search.brave import BraveSearch
-            async with BraveSearch("unused", capture_exchanges=self._capture_exchanges_enabled()) as brave:
-                result = await brave.summarize_topic(card.title, card.summary)
+            max_attempts = 3
+            result = None  # type: ignore[assignment]  # set in retry loop or raise
+            last_error: Exception | None = None
+            for attempt in range(max_attempts):
+                try:
+                    async with BraveSearch("unused", capture_exchanges=self._capture_exchanges_enabled()) as brave:
+                        result = await brave.summarize_topic(card.title, card.summary)
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_attempts - 1:
+                        backoff = 2 ** (attempt + 1)  # 2s, 4s
+                        logger.warning(
+                            f"Brave summarize attempt {attempt + 1}/{max_attempts} failed for "
+                            f"{card.title[:50]}: {e}. Retrying in {backoff}s..."
+                        )
+                        await asyncio.sleep(backoff)
+            if last_error is not None:
+                raise CollectionError(
+                    f"Brave Summarizer failed after {max_attempts} attempts: {last_error}\n"
+                    f"  Card: {card.title[:60]}\n"
+                    f"  Try: Wait and retry, or check Brave API quota",
+                    guru_code="#COL.00000014.BRAVERETRYFAIL",
+                )
             summary_text = result.summary_text
             model_label = "brave answers"
             input_tokens = result.input_tokens
