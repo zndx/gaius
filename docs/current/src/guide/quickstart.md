@@ -1,148 +1,41 @@
 # Getting Started
 
-## Installation
+Gaius is a CLI-first terminal interface for navigating complex, graph-oriented data domains. It renders high-dimensional embeddings and topological structures onto a constrained 19x19 grid, transforming abstract complexity into spatial intuition.
 
-Gaius requires Python 3.12+ and uses `uv` for dependency management.
+There are three ways to interact with Gaius:
+
+- **TUI** -- a full terminal interface with grid, panels, and keyboard navigation (`uv run gaius`)
+- **CLI** -- a non-interactive command runner for scripting and automation (`uv run gaius-cli`)
+- **MCP** -- 163 tools exposed to Claude Code and other MCP-compatible clients (`uv run gaius-mcp`)
+
+## Quick Path
+
+If you already have devenv and Nix installed, you can be running in under a minute:
 
 ```bash
-# Clone the repository
-git clone https://github.com/zndx/gaius.git
 cd gaius
-
-# Install dependencies
+devenv shell
 uv sync
+devenv processes up -d
+uv run gaius
 ```
 
-## First Launch
+This starts the platform services (PostgreSQL, Qdrant, gRPC engine, NiFi) and launches the TUI. You will see a 19x19 grid with a cursor at the center.
 
-Start with the pure UI mode for instant feedback:
+## What to Read Next
 
-```bash
-uv run python src/gaius/app.py
-```
+If this is your first time:
 
-You should see:
-```
-Pure GoBoard TUI mode – no external deps, instant start
-```
+1. **[Installation](./installation.md)** -- prerequisites and environment setup
+2. **[First Launch](./first-launch.md)** -- what happens when you start Gaius and what to try first
 
-And a 19×19 grid with a cursor at the center.
+Once you are comfortable with the basics:
 
-## Basic Navigation
+- **[The TUI](./tui.md)** -- understanding the five interface components
+- **[Navigation](./navigation.md)** -- cursor movement, view modes, and workflow patterns
+- **[The CLI](./cli.md)** -- non-interactive commands for scripting
+- **[MCP Integration](./mcp.md)** -- connecting Gaius to Claude Code
 
-```
-┌─────────────────────────────────────────┐
-│  h ← left    l → right                   │
-│  j ↓ down    k ↑ up                      │
-│                                          │
-│  q   quit                                │
-│  ?   help (when implemented)             │
-└─────────────────────────────────────────┘
-```
+## Three Interfaces, One Engine
 
-Try moving the cursor. The `✛` marker follows your navigation.
-
-## View Modes
-
-Press `v` to toggle between:
-
-- **Pension Mode**: Density heatmap (▓▒░·) showing allocation intensities
-- **Go Mode**: Black and white stones on intersections
-
-## Overlays
-
-Press `o` to cycle through overlay modes:
-
-1. **none**: Clean grid, no overlays
-2. **risk**: (Future) Risk surface visualization
-3. **h1**: TDA death loops (requires `--tda`)
-4. **swarm**: Agent positions (requires `--swarm`)
-
-## Candidates
-
-Press `c` to toggle candidate markers. These appear as lowercase letters (a-i) at suggested positions.
-
-## Panels
-
-Press `t` to toggle the side panel visibility. The panel shows:
-- Log of recent operations
-- Swarm agent outputs
-- Status messages
-
-## Enabling Features
-
-### TDA Mode
-
-```bash
-uv run python src/gaius/app.py --tda
-```
-
-Enables topological data analysis. Requires `giotto-tda`:
-```bash
-uv add giotto-tda
-```
-
-### Swarm Mode
-
-```bash
-uv run python src/gaius/app.py --swarm
-```
-
-Enables multi-agent analysis. Requires:
-```bash
-uv add langchain langchain-openai deepagents agentlightning[apo]
-```
-
-And an OpenAI API key in your environment:
-```bash
-export OPENAI_API_KEY="sk-..."
-```
-
-### Full Mode
-
-```bash
-uv run python src/gaius/app.py --tda --swarm --domain "your domain here"
-```
-
-## Running a Swarm Round
-
-With `--swarm` enabled:
-
-1. Press `s` to trigger a swarm round
-2. Watch the log panel fill with agent responses
-3. Observe agent positions appear on the grid
-4. Press `o` to cycle to swarm overlay for clear visualization
-
-## Changing Domain
-
-With `--swarm` enabled:
-
-1. Press `d` to open the domain modal
-2. Type a new domain (e.g., "supply chain logistics")
-3. Press Enter
-4. The swarm rewires and runs an initial round
-
-## Keyboard Reference
-
-| Key | Action |
-|-----|--------|
-| `h` | Move cursor left |
-| `j` | Move cursor down |
-| `k` | Move cursor up |
-| `l` | Move cursor right |
-| `o` | Cycle overlay mode |
-| `c` | Toggle candidates |
-| `t` | Toggle panels |
-| `v` | Toggle Go/Pension mode |
-| `s` | Run swarm round |
-| `d` | Open domain modal |
-| `1` | PORT page |
-| `5` | OPT page |
-| `0` | TDA page |
-| `q` | Quit |
-
-## Next Steps
-
-- Read [Navigation & Modes](./navigation.md) for detailed navigation patterns
-- Learn about [Slash Commands](./commands.md) for advanced interaction
-- Explore [Overlays & Visualization](./overlays.md) for visual interpretation
+All three interfaces communicate with the same gRPC engine on port 50051. A `/health` command run from the CLI produces the same result as the `health_observer_status` MCP tool or pressing `/` and typing `health` in the TUI. Choose the interface that fits your context: TUI for exploration, CLI for automation, MCP for AI-assisted workflows.

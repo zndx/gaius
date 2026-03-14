@@ -57,7 +57,7 @@ Gaius plans Acme-inspired text execution for the log panel.
 Since 1981, Bloomberg has defined professional data interfaces:
 
 - **Information density**: Every pixel works
-- **Keyboard-first**: <GO> commands, function keys, minimal mouse
+- **Keyboard-first**: `<GO>` commands, function keys, minimal mouse
 - **Consistent vocabulary**: Familiar patterns across thousands of functions
 - **Real-time updates**: Live data as the base state
 

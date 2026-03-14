@@ -1,26 +1,26 @@
 # Core Concepts
 
-Gaius integrates three conceptual pillars: **spatial representation**, **topological analysis**, and **agentic collaboration**. This section introduces the foundational ideas; subsequent chapters explore each in depth.
+Gaius integrates several conceptual pillars: **spatial representation**, **topological analysis**, **autonomous agents**, and **self-healing infrastructure**. This section introduces the foundational ideas; subsequent chapters explore each in depth.
 
 ## The Grid
 
-At the center of Gaius is a 19×19 board. This isn't a chart or a dashboard—it's a **canvas for projection**.
+At the center of Gaius is a 19x19 board. This isn't a chart or a dashboard — it's a **canvas for projection**.
 
 High-dimensional data (embeddings, agent states, risk surfaces) gets compressed onto 361 addressable points. The compression is lossy by design: it forces salience. What survives projection is what matters.
 
 The grid supports multiple visualization modes:
 - **Point markers**: Individual data points as stones
-- **Density heatmaps**: Aggregate intensity via shading (▓▒░·)
+- **Density heatmaps**: Aggregate intensity via shading
 - **Topology overlays**: Death loops and persistent features
-- **Agent positions**: Swarm state projected from embedding space
+- **Agent positions**: Agent state projected from embedding space
 
 See [The Grid Metaphor](./concepts/grid.md) for the full treatment.
 
 ## Embeddings
 
-Modern ML represents entities as vectors in high-dimensional space. Text, images, users, documents—all become points in a geometric landscape where distance encodes similarity.
+Modern ML represents entities as vectors in high-dimensional space. Text, images, users, documents — all become points in a geometric landscape where distance encodes similarity.
 
-Gaius consumes these embeddings directly. Agent utterances become vectors. Domain entities become vectors. The relationships between them—cosine similarities, clusters, outliers—become spatial relationships on the grid.
+Gaius consumes these embeddings directly. Agent utterances become vectors. Domain entities become vectors. Cards, articles, and knowledge base entries occupy positions in embedding space. The relationships between them — cosine similarities, clusters, outliers — become spatial relationships on the grid.
 
 See [Embeddings & Point Clouds](./concepts/embeddings.md) for details on how Gaius handles vector representations.
 
@@ -31,54 +31,45 @@ Traditional statistics describe data's *distribution*. Topology describes its *s
 Persistent homology asks: as we vary the scale of observation, what features persist?
 
 - **H0 features** (connected components): Clusters that remain distinct
-- **H1 features** (loops): Cycles that don't collapse—the "death loops"
+- **H1 features** (loops): Cycles that don't collapse — the "death loops"
 - **H2 features** (voids): Empty regions bounded by surfaces
 
 These topological features often reveal structure invisible to statistical methods: feedback loops in systems, circular dependencies in code, liquidity traps in markets.
 
 See [Persistent Homology](./concepts/homology.md) for the mathematical foundations and practical applications.
 
-## Multi-Agent Swarms
+## Autonomous Agents
 
-Complex domains benefit from multiple analytical perspectives. Gaius instantiates specialized agents:
+Gaius agents are not static analyzers — they evolve. Through RLVR (Reinforcement Learning with Verifiable Reward) training, agents improve their capabilities over time. The agent system includes:
 
-| Agent | Role |
-|-------|------|
-| Leader | Orchestrates strategy, synthesizes insights |
-| Risk | Identifies threats, failure modes, tail events |
-| Optimizer | Seeks opportunities, efficiency gains |
-| Planner | Constructs long-term trajectories |
-| Critic | Challenges assumptions, stress-tests conclusions |
-| Executor | Simulates actions, projects outcomes |
-| Adversary | Actively attempts to break the plan |
+- **Evolution**: Task ideation, training runs, and capability evaluation
+- **Cognition**: Self-observation and action planning
+- **Theta consolidation**: Memory compression inspired by hippocampal replay
+- **CLT memory**: Cognitive Load Theory-based knowledge structuring
 
-Each agent's outputs are embedded and projected onto the grid. Their positions reveal consensus and disagreement, convergence and divergence.
+See [Agent System](./architecture/agents.md) for implementation details.
 
-See [Multi-Agent Swarms](./architecture/swarms.md) for implementation details.
+## Self-Healing
 
-## Vector Memory
+Gaius implements autonomous health monitoring based on FMEA (Failure Mode and Effects Analysis). Every failure mode has:
 
-Agent utterances accumulate in a vector store. This enables:
+- A **Guru Meditation Code** for unique identification (e.g., `#DS.00000001.SVCNOTINIT`)
+- An **automated fix strategy** that can diagnose, repair, and verify
+- An **escalation path** to ACP (Agent Client Protocol) when self-healing fails
 
-- **Semantic search**: Find past insights by meaning, not keywords
-- **Scene graphs**: Build relationship networks from embedding similarity
-- **Temporal analysis**: Track how the swarm's collective understanding evolves
+Errors are never silenced. The system either fixes itself or tells you exactly what's wrong and how to fix it.
 
-The memory isn't just storage—it's the substrate from which topological features emerge.
-
-See [Vector Memory](./architecture/memory.md) for the technical architecture.
+See [Fail-Fast & Self-Healing](./concepts/fail-fast.md) for the design principles.
 
 ## Putting It Together
 
 A typical Gaius session:
 
-1. **Initialize** with a domain: `--domain "pension asset allocation"`
-2. **Observe** the initial grid state—random or seeded from prior data
-3. **Run a swarm round** (`s`): Agents analyze, their positions update
-4. **Overlay topology** (`o`): See where death loops emerge
-5. **Navigate** (`hjkl`): Explore regions of interest
-6. **Query** (slash commands): Ask specific questions
-7. **Iterate**: Each round refines the collective understanding
+1. **Launch** the TUI: `uv run gaius`
+2. **Observe** the grid state — entity positions projected from embedding space
+3. **Navigate** (`hjkl`): Explore regions of interest
+4. **Overlay** (`o`): See topology, risk, or agent state
+5. **Command** (`/`): Run slash commands for deeper analysis
+6. **Monitor** (`/health`): Check system health, let self-healing handle issues
 
-The grid becomes a living map of your domain's complexity—updated in real-time as agents explore and topology reveals hidden structure.
-
+The grid becomes a living map of your domain's complexity — updated as agents explore and topology reveals hidden structure.

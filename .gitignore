@@ -30,6 +30,7 @@ dist/
 
 # mdbook
 docs/book/
+docs/current/book/
 resources/audit/
 resources/prod/
 docs/*.md

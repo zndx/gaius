@@ -195,11 +195,11 @@ gpu-deep-cleanup:
 
 # Build mdbook documentation
 docs-build:
-    mdbook build docs
+    mdbook build docs/current
 
 # Build and open mdbook documentation
 docs-open:
-    mdbook build docs --open
+    mdbook build docs/current --open
 
 # ─── Third-party ─────────────────────────────────────────────────
 

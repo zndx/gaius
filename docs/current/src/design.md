@@ -32,7 +32,7 @@ Critics of modes cite "mode errors" (typing in wrong mode). Gaius addresses this
 
 New users see a clean grid. They navigate with `hjkl`, toggle modes, quit with `q`. Nothing confusing.
 
-Power users add flags (`--tda`, `--swarm`) to unlock layers. Slash commands provide precise control. Custom projections enable domain-specific visualization.
+Power users access deeper functionality through slash commands, MCP tools, and CLI scripting. Three interfaces — TUI, CLI, MCP — offer increasing levels of automation.
 
 Complexity is opt-in, not mandatory.
 

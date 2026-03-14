@@ -4,155 +4,73 @@ Overlays are Gaius's mechanism for layering multiple data dimensions onto a sing
 
 ## Overlay Philosophy
 
-A grid has 361 cells. Naively, that's one data point per cell. But complex domains have many dimensions. Overlays solve this by:
+A grid has 361 cells. Naively, that is one data point per cell. But complex domains have many dimensions. Overlays solve this by:
 
-1. **Layering**: Multiple data types occupy the same space
-2. **Cycling**: Focus shifts between layers via `o` key
-3. **Compositing**: Some layers blend (e.g., density + markers)
+1. **Layering**: multiple data types occupy the same space
+2. **Cycling**: focus shifts between layers via the `o` key
+3. **Compositing**: some layers blend (e.g., density + markers)
 
 ## Available Overlays
+
+Press `o` to cycle through overlay modes. The current set is based on differential geometry concepts:
 
 ### None
 
 The cleanest view. Shows only:
-- Base grid (· or mode-specific symbols)
-- Cursor position (✛)
-- Candidate markers (a-i) if toggled
+- Base grid (view-mode-specific symbols)
+- Cursor position
+- Candidate markers (a-i) if toggled with `c`
 
 Use this for uncluttered observation of the base state.
 
-### Risk (Planned)
+### Topology
 
-Visualizes risk surface across the grid:
+Displays persistent homology features at three scales:
+- **H0**: connected components -- clusters of related data points
+- **H1**: loops -- cycles in the embedding space (feedback loops, circular dependencies)
+- **H2**: voids -- higher-dimensional cavities (structural gaps)
 
-```
-High risk:    [on red]█[/]
-Medium risk:  [on yellow]▓[/]
-Low risk:     [on green]░[/]
-Neutral:      ·
-```
+Topological features that persist across scales are significant. Transient features are noise. The overlay highlights those that survive, revealing the true shape of the data.
 
-Risk is computed from:
-- Agent assessments
-- Historical volatility (if data available)
-- Topological features (death loops correlate with systemic risk)
+### Geometry
 
-### H1 (Death Loops)
+Curvature heatmap showing semantic boundaries versus interiors. High curvature regions mark transitions between conceptual domains. Low curvature indicates the interior of a coherent cluster. This overlay helps identify where one topic ends and another begins.
 
-Displays persistent homology H1 features—topological loops that survive across scales.
+### Dynamics
 
-```
-   A B C D E F G H J K L M N O P Q R S T
-19 · · · · · · · · · · · · · · · · · · ·
-18 · · · ⚠ ⚠ · · · · · · · · · · · · · ·
-17 · · ⚠ · · ⚠ · · · · · · · · · · · · ·
-16 · · · ⚠ ⚠ · · · · · · · · · · · · · ·
-...
-```
+Gradient vector field showing the direction and magnitude of semantic change. Arrows or indicators point toward regions of increasing density or relevance. Divergence patterns reveal sources (generating new content) and sinks (absorbing attention). This overlay captures how the data landscape is evolving.
 
-The `⚠` markers indicate where the underlying embedding space has persistent cycles. In domain terms, these often represent:
+### Agents
 
-- **Feedback loops**: Self-reinforcing dynamics
-- **Circular dependencies**: A→B→C→A
-- **Liquidity traps**: Capital that can't exit
-- **Regulatory arbitrage**: Rules that reference each other
+Agent positions projected from embedding space onto the grid. Each active agent occupies a position determined by its current focus within the data. Watch for:
 
-### Swarm
-
-Agent positions projected from embedding space:
-
-```
-   A B C D E F G H J K L M N O P Q R S T
-19 · · · · · · · · · · · · · · · · · · ·
-18 · · · · · [green]●[/] · · · · · · · · · · · · ·
-17 · · · · · · · · · · [yellow]●[/] · · · · · · · ·
-16 · · · [red]●[/] · · · · · · · · · · · · · · ·
-...
-```
-
-Color encoding:
-| Color | Agent |
-|-------|-------|
-| Red | Leader |
-| Green | Risk |
-| Blue | Optimizer |
-| Yellow | Planner |
-| Magenta | Critic |
-| Cyan | Executor |
-| White | Adversary |
-
-Watch for:
-- **Clustering**: Agents in agreement
-- **Scattering**: Genuine uncertainty
-- **Opposition**: Agents on opposite corners (tension)
-- **Isolation**: Single agent in a region (unique insight)
+- **Clustering**: agents in agreement, converging on the same region
+- **Scattering**: genuine uncertainty or broad exploration
+- **Opposition**: agents on opposite sides of the grid (tension, disagreement)
+- **Isolation**: a single agent in a region (unique insight worth investigating)
 
 ## Reading Composite Views
 
 When multiple features occupy a cell, priority determines display:
 
-1. Overlay markers (⚠, colored ●) — highest
+1. Overlay markers -- highest priority
 2. Candidate letters (a-i)
-3. Cursor (✛)
-4. Stones/density (●, ○, ▓▒░)
-5. Empty (·) — lowest
-
-A cell showing `⚠` might also contain an agent position, but the warning takes visual priority.
-
-## Density Interpretation
-
-In Pension Mode, density shading encodes value intensity:
-
-```
-▓▓▓▓  High concentration — major allocation
-▒▒▒▒  Moderate — significant but not dominant
-░░░░  Low — minor presence
-····  Minimal — negligible or empty
-```
-
-Combined with cursor navigation, you can:
-1. See the macro pattern (stand back, observe density)
-2. Investigate regions (navigate to high-density)
-3. Query specifics (`/info` at position)
-
-## Overlay Transitions
-
-Pressing `o` cycles through overlays. The transition is immediate—no animation (yet). Future enhancements may include:
-
-- Fade transitions between overlays
-- Overlay blending (semi-transparent layers)
-- Custom overlay ordering
-
-## Creating Mental Models
-
-Effective overlay use develops intuition:
-
-**Pattern**: Death loops cluster in one corner, agents cluster in another
-**Interpretation**: Risk is localized but agents haven't fully explored it yet. Run another swarm round.
-
-**Pattern**: Agents scattered uniformly, no visible loops
-**Interpretation**: Either genuine complexity with no dominant structure, or insufficient swarm rounds. Check entropy.
-
-**Pattern**: Dense region in center, loops at edges
-**Interpretation**: Core activity is well-understood; edge cases pose topological risk.
+3. Cursor
+4. Stones/density (view-mode symbols)
+5. Empty (dot) -- lowest priority
 
 ## Overlay as Situational Awareness
 
 Each overlay provides a different "sense":
 
-- **None**: Clean visual baseline
-- **Risk**: Threat perception
-- **H1**: Structural awareness
-- **Swarm**: Team state awareness
+- **None**: clean visual baseline
+- **Topology**: structural awareness (what shapes exist)
+- **Geometry**: boundary awareness (where things change)
+- **Dynamics**: momentum awareness (where things are going)
+- **Agents**: team state awareness (where agents are looking)
 
-Cycling overlays is like shifting attention between modalities—a form of augmented situational awareness.
+Cycling overlays is like shifting attention between modalities -- a form of augmented situational awareness. The OODA loop pattern (Observe, Orient, Decide, Act) maps naturally: observe with None, orient with Topology or Geometry, decide based on Dynamics, act on Agent positions.
 
-## Future Overlays
+## Combining with View Modes
 
-Planned overlay types:
-
-- **Temporal**: Show change over time (heat trails)
-- **Attention**: Highlight where swarm has focused
-- **Conflict**: Show positions with agent disagreement
-- **Uncertainty**: Visualize confidence intervals
-- **Custom**: User-defined overlay functions
+Overlays compose with view modes (`v`). A Topology overlay on Go mode shows homology features atop stone positions. The same overlay on Theta mode shows features atop density shading. Experiment with combinations to find the perspective that reveals what you need.

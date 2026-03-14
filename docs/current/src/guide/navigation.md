@@ -4,126 +4,75 @@ Gaius draws inspiration from modal editors like Vim and compositional systems li
 
 ## Modal Philosophy
 
-Unlike modeless interfaces where every key always does the same thing, Gaius uses modes to provide context-sensitive behavior. This isn't complexity—it's power through focus.
+Gaius uses modes to provide context-sensitive behavior. This is not complexity -- it is power through focus.
 
-**Normal Mode** (default): Navigate, observe, toggle views
-**Command Mode** (planned): Enter slash commands
-**Visual Mode** (planned): Select regions for bulk operations
+- **Normal Mode** (default): navigate, observe, toggle views
+- **Command Mode**: enter slash commands via the command bar (`/`)
 
 ## Cursor Navigation
 
-The cursor is your focus point on the grid. It determines:
-- What position commands act upon
-- The center of local context
-- The reference point for relative addressing
+The cursor is your focus point on the grid. It determines what position commands act upon, the center of local context, and the reference point for the MiniGrid projections.
 
 ### Basic Movement
 
 ```
        k
-       ↑
-   h ← ✛ → l
-       ↓
+       |
+   h --+-- l
+       |
        j
 ```
 
-Vim-style navigation: `h`/`j`/`k`/`l` for left/down/up/right.
+Vim-style navigation: `h`/`j`/`k`/`l` for left/down/up/right. These keys sit on the home row so your fingers never leave typing position.
 
-### Why HJKL?
+### Tenuki
 
-These keys are on the home row. Your fingers never leave typing position. This isn't a quirk—it's 50 years of refinement from vi to vim to modern modal interfaces.
-
-### Planned Navigation Extensions
-
-**Jump to position**: `G` + coordinate (e.g., `GK10` jumps to K10)
-**Edge navigation**: `0` for column A, `$` for column T
-**Star points**: `*` cycles through star points (D4, D10, D16, K4, K10, etc.)
-**Search**: `/` enters search mode for semantic grid search
+Press `t` to jump to the point of highest strategic interest -- a concept borrowed from Go, where tenuki means "playing elsewhere." The engine evaluates all grid positions and moves your cursor to the most strategically relevant one.
 
 ## View Modes
 
-Press `v` to toggle between visualization modes:
-
-### Pension Mode (Default)
-The grid displays allocation intensity:
-
-| Symbol | Meaning | Value Range |
-|--------|---------|-------------|
-| `▓` | High density | >75% |
-| `▒` | Medium density | 50-75% |
-| `░` | Low density | 20-50% |
-| `·` | Minimal | <20% |
-
-This view reveals where capital concentrates.
+Press `v` to cycle through visualization modes:
 
 ### Go Mode
-Traditional Go stones on intersections:
+Traditional Go stones on intersections. Black and white stones mark occupied positions. Empty intersections show as dots.
 
-| Symbol | Meaning |
-|--------|---------|
-| `●` | Black stone |
-| `○` | White stone |
-| `·` | Empty intersection |
+### Theta Mode
+Information density visualization named after theta waves, which facilitate memory consolidation. This mode renders allocation intensity and data density across the grid.
 
-Useful for understanding the underlying Go metaphor and for actual game analysis.
+### Swarm Mode
+Agent-centric view showing multi-agent positions and activity across the grid.
 
 ## Overlay Modes
 
-Press `o` to cycle overlays. Overlays add visual information without changing the base view:
+Press `o` to cycle overlays. Overlays add visual information on top of the current view mode without changing the base rendering:
 
-### None
-Clean grid. No additional markers.
+| Overlay | Key concept | What it shows |
+|---------|-------------|---------------|
+| **None** | Clean slate | Base grid only |
+| **Topology** | Persistent homology | H0/H1/H2 features (components, loops, voids) |
+| **Geometry** | Curvature | Semantic boundaries vs. interiors |
+| **Dynamics** | Gradient field | Direction of semantic change, divergence |
+| **Agents** | Team state | Agent positions on the grid |
 
-### Risk (Planned)
-Heat map of risk surface. Red regions indicate elevated risk.
+See [Overlays](./overlays.md) for detailed interpretation guidance.
 
-### H1 (Requires --tda)
-Death loop markers (`⚠`) appear where persistent homology detects H1 features—topological loops in the point cloud.
+## Iso View Modes
 
-### Swarm (Requires --swarm)
-Agent positions rendered as colored stones:
-- Red: Leader
-- Green: Risk
-- Blue: Optimizer
-- Yellow: Planner
-- Magenta: Critic
-- Cyan: Executor
-- White: Adversary
+Press `i` to cycle through Iso view modes, which change the interpretation of the MiniGrid projections below the main grid. These provide different mathematical lenses on the same data.
 
 ## Panel Management
 
-Press `t` to toggle the side panel. The panel displays:
+| Key | Action |
+|-----|--------|
+| `[` | Toggle left panel (FileTree) |
+| `]` | Toggle right panel (ContentPanel) |
+| `\` | Toggle both panels simultaneously |
 
-- **Log**: Recent operations and messages
-- **Swarm output**: Agent responses during rounds
-- **TDA metrics**: Entropy and feature counts
+Hide panels to maximize grid visibility. Restore them to review details and navigate the knowledge base.
 
-In complex sessions, toggle panels off to maximize grid visibility, then back on to review details.
+## Graph View
 
-## Pages
-
-Numeric keys switch context pages:
-
-| Key | Page | Content |
-|-----|------|---------|
-| `1` | PORT | Portfolio/allocation view |
-| `5` | OPT | Optimizer recommendations |
-| `0` | TDA | Topological analysis display |
-
-Pages update the log panel with relevant information and may adjust the grid overlay.
-
-## Status Line
-
-The bottom status bar shows:
-- Current mode
-- Active features (TDA on, Swarm on)
-- Current domain (if swarm enabled)
-- Key hint for available actions
-
-Example:
-```
-Ready | TDA on | Swarm (pension asset allocation) | hjkl=move o=overlay
-```
+Press `g` to cycle the center panel between modes. This toggles between the standard grid view and a graph/wiki-link visualization, providing different perspectives on the same underlying data.
 
 ## Flow Patterns
 
@@ -131,19 +80,16 @@ Ready | TDA on | Swarm (pension asset allocation) | hjkl=move o=overlay
 1. Navigate with `hjkl` to survey the grid
 2. Cycle overlays (`o`) to see different data layers
 3. Toggle candidates (`c`) to see suggested positions
-4. Use pages (`1`, `5`, `0`) to dive into specific analyses
+4. Press `t` for tenuki to jump to high-interest points
 
 ### Analysis Flow
-1. Set domain (`d`) if needed
-2. Run swarm round (`s`)
-3. Watch agent outputs in panel
-4. Observe agent positions on grid
-5. Cycle to H1 overlay to see topology
-6. Repeat rounds to deepen analysis
+1. Press `/` to enter command mode
+2. Run `/health` to check system state
+3. Use overlays to compare topology, geometry, and dynamics
+4. Review output in the ContentPanel
 
 ### Focused Flow
-1. Hide panels (`t`)
-2. Navigate to region of interest
-3. Toggle to relevant overlay
-4. Study the concentrated view
-5. Restore panels for logging
+1. Hide panels (`\`) for maximum grid space
+2. Navigate to a region of interest
+3. Switch overlays to study different dimensions
+4. Restore panels when you need detailed context
