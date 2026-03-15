@@ -11,17 +11,17 @@ Named after the Roman polymath Pliny the Elder, whose *Naturalis Historia* attem
 
 Traditional terminals present information as streams of text. Dashboards present it as isolated charts. Neither captures the *shape* of data — the loops, clusters, and voids that reveal hidden structure.
 
-Gaius takes a different approach:
+Gaius implements the following core capabilities:
 
-1. **The Grid as Canvas**: A 19x19 board (inspired by Go) serves as the primary visualization surface. Every point is addressable. Every region has meaning.
+1. **Low-Dimensional Projection onto a Discrete Lattice**: High-dimensional embeddings are mapped onto a regular 19×19 integer lattice via a dimensionality-reduction procedure (UMAP with fixed hyperparameters). Each lattice point is uniquely addressable and carries local geometric meaning derived from the ambient Riemannian structure.
 
-2. **Topological Awareness**: Persistent homology reveals the *death loops* — cycles in your data that persist across scales. These aren't decorations; they're early warnings of systemic risk.
+2. **Computation of Persistent Topological Features**: Persistent homology is computed over a Vietoris–Rips filtration of the embedded point cloud. This produces a barcode whose long-lived generators of the first homology group H₁ (persistent 1-cycles) serve as scale-invariant topological invariants. These features quantify robust loops and potential redundancies or bottlenecks in the underlying data manifold.
 
-3. **Autonomous Agents**: Agents explore domains, evolve through RLVR training, and consolidate knowledge via theta-wave-inspired memory compression. Their state projects onto the grid.
+3. **Autonomous Exploration Agents**: A population of agents performs reinforcement learning with verifiable rewards (RLVR) on the filtered complex. Knowledge consolidation occurs through periodic replay of trajectories, yielding a compressed latent representation projected back onto the lattice.
 
-4. **Modal Navigation**: Like Vim, like Plan 9, Gaius rewards mastery. `hjkl` navigation, slash commands, overlay modes — all keyboard-driven for flow state operation.
+4. **Modal Keyboard-Driven Interface**: The interface follows a strictly modal paradigm (in the tradition of Vim and Plan 9 acme) with `hjkl` motion, slash-command dispatch, and overlay toggles, enabling efficient navigation of both the lattice and the underlying gRPC service graph.
 
-5. **Self-Healing Infrastructure**: FMEA-based health monitoring with automated remediation. When something breaks, Gaius diagnoses and fixes itself before you notice.
+5. **Health Monitoring via Failure-Mode and Effects Analysis (FMEA)**: A background observer daemon continuously evaluates system components using FMEA scoring and escalates via an automated corrective protocol (ACP) when thresholds are exceeded.
 
 ## The Platform
 
@@ -32,7 +32,7 @@ Gaius has grown from a TUI prototype into a full platform:
 - **6 NVIDIA GPUs** running vLLM inference with makespan scheduling
 - **Metaflow pipelines** for article curation, evaluation, and rendering
 - **LuxCore path tracer** for procedural card visualizations
-- **Health Observer** daemon with FMEA scoring and ACP escalation
+- **FMEA-based Health Observer** daemon with automated corrective protocol escalation
 - **Bases feature store** with temporal entity queries
 - **RASE metamodel** for verifiable agent training
 
@@ -51,4 +51,4 @@ uv run gaius-cli --cmd "/gpu status" --format json
 
 Navigate with `hjkl`. Cycle overlays with `o`. Toggle modes with `v`. Press `?` for help.
 
-Welcome to a new way of seeing.
+Gaius thereby supplies a unified topological interface for the systematic exploration of complex information landscapes.
