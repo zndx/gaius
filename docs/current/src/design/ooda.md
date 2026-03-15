@@ -6,19 +6,21 @@ Boyd's OODA (Observe-Orient-Decide-Act) loop describes competitive decision-maki
 
 ### Observe
 
-The grid displays current system state. Health checks, agent positions, and topology overlays provide immediate perception without requiring sequential reading.
+The grid displays current system state at a glance. Persistent homology overlays reveal structural features (H1 death loops mark feedback cycles). Curvature heatmaps show where topic clusters have clear boundaries (positive κ) versus ambiguous transitions (negative κ). Agent positions indicate where each analytical lens is focused.
 
-**Tools**: Grid view, `/health`, `/gpu status`, overlay modes
+**Tools**: Grid view, `/health`, `/gpu status`, overlay modes (`o`), MiniGrid Iso views
 
 ### Orient
 
-Context-building through overlays, memory search, and agent analysis. Multiple perspectives (risk, topology, temporal) help frame observations.
+Context-building by cycling overlays without leaving your position. The topology overlay reveals structural relationships. The geometry overlay shows curvature. The dynamics overlay shows gradient flow direction. Each overlay reframes the same data — the same position means something different in each frame.
 
-**Tools**: Overlay cycling (`o`), `/search`, `/sitrep`, MiniGrid projections
+The MiniGrids provide three orthographic projections centered on the cursor, updated with each movement. Scalar fields (curvature κ, persistence π, complexity σ, boundary β) are interpolated via IDW and rendered as elevation maps.
+
+**Tools**: Overlay cycling (`o`), `/search`, `/sitrep`, MiniGrid projections, Iso mode cycling
 
 ### Decide
 
-Slash commands, domain changes, and focus actions translate understanding into intent.
+Slash commands, domain changes, and focus actions translate understanding into intent. Tenuki (`t`) jumps the cursor to a strategically significant position — borrowed from Go, where playing away from the current fight is sometimes the strongest move.
 
 **Tools**: Command input (`/`), tenuki (`t`), mode cycling (`v`)
 

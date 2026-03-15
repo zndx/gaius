@@ -20,7 +20,23 @@ devenv processes up -d
 uv run gaius
 ```
 
-This starts the platform services (PostgreSQL, Qdrant, gRPC engine, NiFi) and launches the TUI. You will see a 19x19 grid with a cursor at the center.
+This starts the platform services (PostgreSQL, Qdrant, gRPC engine, NiFi) and launches the TUI.
+
+## What You See
+
+The initial screen shows a 19x19 grid with a cursor (`✛`) at the center position (K10). Star points (hoshi) mark the standard Go board reference positions. If knowledge base content has been indexed, entity positions appear as stones projected from the 768-dimensional Nomic embedding space via UMAP.
+
+Try these first interactions:
+
+| Key | Action |
+|-----|--------|
+| `hjkl` | Move the cursor -- watch the MiniGrids update with local context |
+| `o` | Cycle overlays: topology → geometry → dynamics → agents |
+| `v` | Cycle view modes: Go → Theta → Swarm |
+| `/health` | Check system health (in the command bar) |
+| `?` | Show the full key binding reference |
+
+The three 9x9 MiniGrids below the main board show orthographic projections centered on your cursor: an embedding neighborhood view, a scalar field elevation map, and a temporal evolution view.
 
 ## What to Read Next
 

@@ -1,17 +1,17 @@
 # GPU Management
 
-Gaius manages 6 NVIDIA GPUs across vLLM inference, LuxCore rendering, and embedding workloads.
+Gaius manages 6 NVIDIA RTX 4090 GPUs (24GB VRAM each, 144GB total) across vLLM inference, LuxCore rendering, and embedding workloads.
 
 ## GPU Allocation
 
-| GPU | Typical Use |
-|-----|-------------|
-| 0-1 | Reasoning endpoint (tensor_parallel=2) |
-| 2-3 | Coding endpoint (tensor_parallel=2) |
-| 4 | Embedding endpoint |
-| 5 | Available for rendering/evolution |
+| GPU | Typical Use | VRAM | Notes |
+|-----|-------------|------|-------|
+| 0-1 | Reasoning endpoint (24B model) | 2 × 24GB | tensor_parallel=2, CoT reflection |
+| 2-3 | Coding endpoint (24B model) | 2 × 24GB | tensor_parallel=2 |
+| 4 | Embedding endpoint (Nomic 768-dim) | 24GB | ColNomic multi-vector |
+| 5 | Rendering / Evolution | 24GB | Dynamically assigned |
 
-Allocation is managed by the Orchestrator. GPUs can be temporarily reassigned for rendering or evolution workloads via makespan scheduling.
+The Orchestrator manages allocation via capability-based scheduling (OR-Tools CP-SAT). GPUs can be temporarily reassigned for LuxCore rendering or evolution training via makespan scheduling — the Orchestrator evicts a low-priority endpoint, runs the workload, then restores the endpoint.
 
 ## Status Monitoring
 

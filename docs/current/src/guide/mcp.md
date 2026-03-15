@@ -16,24 +16,30 @@ This starts a stdio-based MCP server that communicates with Claude Code over sta
 
 ## What You Can Do
 
-With MCP integration, Claude Code can:
+With MCP integration, Claude Code can operate across the full Gaius stack:
 
-- **Diagnose issues**: query health status, check endpoint state, review incident history
-- **Manage agents**: view evolution status, trigger training, promote agent versions
-- **Search knowledge**: query the knowledge base, perform semantic search, explore lineage
-- **Run inference**: submit prompts to the scheduler, evaluate outputs, manage XAI budget
-- **Monitor systems**: read Prometheus metrics, check Metabase dashboards, view GPU health
-- **Create content**: trigger article curation, render card visualizations, manage collections
+| Category | Tools | Examples |
+|----------|-------|---------|
+| Health & Diagnostics | 15 tools | `health_observer_check`, `fmea_catalog`, `gpu_health` |
+| Agent Management | 12 tools | `optimize_agent`, `save_agent_version`, `run_swarm` |
+| Knowledge Base | 10 tools | `search_kb`, `semantic_search`, `create_kb` |
+| Inference & Scheduling | 8 tools | `ask_reasoning`, `evaluate_with_xai`, `scheduler_submit` |
+| Observability | 8 tools | `prometheus_query`, `observe_metrics`, `metabase_get_dashboard` |
+| Content Pipeline | 12 tools | `article_curate`, `collection_publish_cards`, `publish_cards` |
+| Evolution & Training | 10 tools | `trigger_evolution`, `run_daily_evaluation`, `get_evolution_trend` |
+| Topology & Geometry | 6 tools | `compute_tda`, `explain_grid_position`, `calibrate_understanding` |
 
 ## Architecture
 
-The MCP server is a thin wrapper over the same services available through the CLI. Each MCP tool maps to an internal command or service call. The server handles serialization (JSON arguments and responses) and error propagation.
+The MCP server is a thin client over the same gRPC engine used by the TUI and CLI. Each MCP tool maps to an engine service call or direct database/HTTP query. The server handles JSON serialization and error propagation.
 
 ```
 Claude Code  <--stdio-->  gaius-mcp  <--gRPC-->  Engine (port 50051)
                                      <--HTTP-->  Services (Metabase, Prometheus, etc.)
                                      <--SQL-->   PostgreSQL (port 5444)
 ```
+
+This architecture means MCP tools have exactly the same capabilities as CLI commands — no degraded mode, no subset API.
 
 ## Next Steps
 

@@ -20,15 +20,15 @@ The choice depends on the task. Health monitoring is best scripted via CLI. Rese
 
 ### [Research Workflow](./workflow-research.md)
 
-End-to-end knowledge synthesis: define a topic, curate articles from the web, create cards with enriched metadata, and publish a collection. This is the primary content pipeline.
+End-to-end knowledge synthesis: define a topic, curate articles from the web (via Brave search), create cards with enriched metadata and topology features, render LuxCore visualizations, and publish a collection. Each run produces ~20 cards in under 2 minutes. The pipeline flows through NiFi ingestion → Metaflow processing → Nomic embedding → Qdrant indexing → PostgreSQL storage → R2 rendering.
 
 ### [Health Workflow](./workflow-health.md)
 
-System diagnosis and remediation: run health checks, interpret failures, apply self-healing fixes, and monitor recovery. This workflow is critical for keeping the platform operational.
+System diagnosis and remediation: run health checks, interpret Guru Meditation Codes, apply self-healing fixes, and monitor recovery. The Health Observer daemon runs continuously, scoring incidents via FMEA (Severity × Occurrence × Detection). When RPN exceeds threshold, it escalates to Mistral Vibe via the Agent Client Protocol.
 
 ### [Evolution Workflow](./workflow-evolution.md)
 
-Agent improvement cycle: check evolution status, generate training tasks, trigger evaluation, promote successful agents. This is how Gaius agents get better over time.
+Agent improvement cycle: generate training tasks (from ideation, calibration, or held-out queries), trigger evaluation against a ground-truth oracle, compare candidates via the DaemonOracle, and promote successful agents. Evolution runs opportunistically during GPU idle periods (<30% utilization). Methods include APO and GEPA optimization with TIES/DARE parameter-space merging.
 
 ## Workflow Principles
 

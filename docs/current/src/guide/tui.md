@@ -14,13 +14,36 @@ The interface is composed of five primary widgets:
 
 ### MainGrid
 
-The 19x19 grid occupies the center of the screen. It is the primary workspace -- a spatial representation of high-dimensional data projected onto a Go board layout. Grid positions correspond to embedded data points, and the cursor indicates your current focus.
+The 19x19 grid occupies the center of the screen. It is the primary workspace -- a spatial representation of high-dimensional data projected onto a Go board layout via UMAP (cosine metric, k=15, min_dist=0.1). Grid positions correspond to embedded data points, and the cursor (`✛`) indicates your current focus.
 
-The grid supports three **view modes** (cycled with `v`): Go, Theta, and Swarm. Each mode changes how the underlying data is rendered. Four **overlay modes** (cycled with `o`) layer additional information on top: topology, geometry, dynamics, and agent positions.
+Three **view modes** (cycled with `v`):
+
+| Mode | What it shows |
+|------|---------------|
+| **Go** | Entity positions as stones on a standard Go board with star points (hoshi) |
+| **Theta** | Information density view -- temporal knowledge consolidation state |
+| **Swarm** | Agent positions and cluster dynamics during multi-agent analysis |
+
+Four **overlay modes** (cycled with `o`) layer additional information:
+
+| Overlay | What it reveals |
+|---------|----------------|
+| **Topology** | H0/H1/H2 persistent homology features -- death loops (`⚠`) mark persistent 1-cycles |
+| **Geometry** | Ollivier-Ricci curvature heatmap -- positive (cluster interior) vs. negative (boundary) |
+| **Dynamics** | Gradient vector field showing direction of semantic change |
+| **Agents** | Agent positions colored by role (Leader, Risk, Optimizer, etc.) |
 
 ### MiniGridPanel
 
-Below the MainGrid sit three 9x9 orthographic projections. These are CAD-style views that show the data from different angles -- like top, front, and side views of a 3D object. They update automatically as you move the cursor, providing spatial context around your current position.
+Three 9x9 orthographic projections update as you move the cursor:
+
+| View | Content | Visualization |
+|------|---------|---------------|
+| **Embed** | Local cosine-similarity neighborhood around the cursor | Density shading (`█▓▒░·`) |
+| **Iso** | Scalar field rendered as elevation map via IDW interpolation (power=2) | Height-mapped shading |
+| **Temporal** | Time-series evolution of the cursor's neighborhood | Change over time |
+
+The Iso view cycles through four scalar fields (curvature κ, total persistence π, complexity σ, boundary participation β) each revealing different aspects of the local topological structure.
 
 ### FileTree (Left Panel)
 
@@ -43,6 +66,34 @@ Toggle panels to adjust the layout to your task:
 - **Research mode**: hide left panel with `[` -- more room for content output
 - **Navigation mode**: hide right panel with `]` -- focus on the file tree and grid
 
+### Center Auxiliary Panel
+
+The center panel cycles through five modes:
+
+| Mode | Content |
+|------|---------|
+| **Graph** | Wiki-link graph visualization of KB connections |
+| **Think** | Reasoning traces and agent thinking during inference |
+| **Evolution** | Evolution daemon monitoring (agent improvement cycles) |
+| **Observe** | Operational health metrics from Prometheus and engine |
+| **None** | Hidden -- maximizes main grid space |
+
+## Density Shading
+
+Scalar values map to block characters for high-bandwidth visual perception:
+
+| Symbol | Value range | Meaning |
+|--------|------------|---------|
+| `█` | > 0.8 | High intensity |
+| `▓` | 0.6 -- 0.8 | Medium-high |
+| `▒` | 0.4 -- 0.6 | Medium |
+| `░` | 0.2 -- 0.4 | Low |
+| `·` | 0.05 -- 0.2 | Minimal |
+
+This vocabulary is consistent across the MainGrid, MiniGrids, and overlays.
+
 ## Design Principles
 
 The TUI is keyboard-first. Every action is reachable without a mouse. Information density is high by design -- the interface shows as much relevant data as possible without requiring navigation to separate screens. Modes and overlays let you shift perspective without losing your place.
+
+The visual vocabulary is consistent: the same shading characters mean the same intensities everywhere. Death loops (`⚠`) always indicate persistent H1 features. Agent colors are stable across sessions.
