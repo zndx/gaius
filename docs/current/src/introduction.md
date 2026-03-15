@@ -12,7 +12,9 @@ Named after Gaius Plinius Secundus (Pliny the Elder), whose *Naturalis Historia*
 
 3. **Ollivier–Ricci Curvature**: Discrete Ricci curvature is computed on a k-nearest-neighbor graph (k=15, cosine metric) constructed from the embedding space, using the OTD method with α=0.5. Per-node curvature is the mean of incident edge curvatures. The resulting curvature field, gradient vectors (finite-difference approximation), and divergence values are projected to the Iso mini-grid. Positive curvature indicates regions where neighborhoods overlap (cluster interiors); negative curvature indicates diverging neighborhoods (transition regions between topics).
 
-4. **Multi-Agent Exploration**: Seven agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary) navigate the lattice with role-specific positioning behaviors (center-seeking, peripheral, random) and cluster affinities. Agent training uses the RASE framework (Rapid Agentic Systems Engineering), where constraints are composed declaratively via AllOf/AnyOf/Not and evaluated by a ground-truth oracle to produce verifiable reward signals.
+4. **Multi-Agent Exploration**: Seven agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary) navigate the lattice with role-specific positioning behaviors and cluster affinities. Leader seeks cluster centroids (positive curvature regions); Risk positions at semantic boundaries (negative curvature); Adversary samples uniformly. Persistent homology features and Ricci curvature values are available as grid state, directly informing agent trajectory selection and the Planner's constraint-satisfaction decisions.
+
+    Agent training uses the RASE framework (Rapid Agentic Systems Engineering), where constraints are composed declaratively via AllOf/AnyOf/Not and evaluated by a ground-truth oracle to produce verifiable reward signals — not learned proxies.
 
 5. **Modal Interface**: Vim-style modal navigation (`hjkl` motion, slash-command dispatch, overlay toggles) over both the lattice and the underlying gRPC service graph.
 
@@ -26,14 +28,14 @@ The following pipeline is implemented end-to-end:
 2. **Project** — UMAP maps the embedding space to 2D; coordinates are rounded to the 19×19 integer lattice.
 3. **Filtration** — Vietoris–Rips filtration over the cosine distance matrix of original embeddings; Ripser computes persistence barcodes for H₀, H₁, H₂. Significant intervals (persistence > 0.1) produce topological overlays.
 4. **Curvature** — Ollivier–Ricci curvature on the k-NN graph (k=15, α=0.5, OTD); curvature, gradient, and divergence fields are interpolated onto the 9×9 Iso mini-grid via IDW.
-5. **Exploration** — Agents operate on the lattice; topological features and curvature values are available as grid state for trajectory selection.
+5. **Exploration** — Agents operate on the lattice using persistent features and curvature fields as state; the RASE oracle evaluates trajectories against topological invariants to produce verifiable rewards.
 6. **Rendering** — LuxCore path-traces procedural card visualizations from the computed geometric features.
 
 The lattice serves as both a visualization surface and a discrete approximation of the data manifold, integrating persistent homology, discrete curvature, and agent-based exploration.
 
 ## Architecture
 
-- **Inference** — gRPC control plane with 37 services coordinating 6 NVIDIA GPUs via makespan-scheduled vLLM
+- **Inference** — gRPC control plane with 37 services coordinating 6 NVIDIA GPUs via OR-Tools CP-SAT constraint programming for priority-preemptive scheduling and makespan optimization across inference, rendering, and evolution workloads
 - **Interfaces** — TUI, CLI, and MCP server (163 tools), all communicating with the engine via shared gRPC protocol
 - **Pipelines** — Metaflow orchestration for article curation, agent evaluation, and batch rendering
 - **Visualization** — LuxCore PATHOCL engine with GPU-accelerated rendering driven by a CFDG-inspired grammar
