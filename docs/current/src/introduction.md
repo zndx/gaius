@@ -16,7 +16,7 @@ Named after Gaius Plinius Secundus (Pliny the Elder), whose *Naturalis Historia*
 
 5. **Modal Interface**: Vim-style modal navigation (`hjkl` motion, slash-command dispatch, overlay toggles) over both the lattice and the underlying gRPC service graph.
 
-6. **FMEA Health Observer**: A background daemon scores system components on Severity × Occurrence × Detection and escalates via the automated corrective protocol (ACP) when risk priority numbers exceed configured thresholds.
+6. **FMEA Health Observer**: A background daemon scores system components on Severity × Occurrence × Detection. When risk priority numbers exceed configured thresholds, it escalates to an agent via the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) for FMEA-mediated intervention.
 
 ## Computational Pipeline
 
@@ -37,7 +37,7 @@ The lattice serves as both a visualization surface and a discrete approximation 
 - **Interfaces** — TUI, CLI, and MCP server (163 tools), all communicating with the engine via shared gRPC protocol
 - **Pipelines** — Metaflow orchestration for article curation, agent evaluation, and batch rendering
 - **Visualization** — LuxCore PATHOCL engine with GPU-accelerated rendering driven by a CFDG-inspired grammar
-- **Observability** — FMEA-scored health observer with automated corrective protocol escalation
+- **Observability** — FMEA-scored health observer with [ACP](https://agentclientprotocol.com/)-mediated agent intervention
 - **Storage** — Bases feature store with a domain query language compiled to SQL via AST-based guardrails; RASE metamodel for agent verification
 
 ## Getting Started
