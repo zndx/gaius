@@ -1,8 +1,8 @@
 # RASE Metamodel
 
-RASE (Rapid Agentic Systems Engineering) is a Python-native MBSE metamodel for verifiable agent training. It implements SysML v2-like semantics (Friedenthal et al., 2014) using Pydantic models, without requiring external MBSE tooling.
+RASE (Rapid Agentic Systems Engineering) is a Python-native MBSE (Model-Based Systems Engineering) metamodel for verifiable agent training. It implements SysML v2-like semantics using Pydantic models, without requiring external MBSE tooling.
 
-## Core Principle: RLVR
+## Core Principle: RLVR (Reinforcement Learning with Verifiable Reward)
 
 The reward signal comes from **verifiable computation**, not human feedback or learned approximations. The verifier is a first-class artifact — specified, reviewed, tested, and versioned alongside the agent it trains.
 
@@ -42,7 +42,7 @@ The constraint system is generic over `SystemState` via `Constraint[S]` — the 
 
 ## Reward Computation
 
-Verification produces a `VerdictKind` (PASS, FAIL, INCONCLUSIVE, ERROR) and an accuracy score (0.0–1.0, proportion of constraints satisfied). Two reward strategies translate this into RL training signals:
+Verification produces a `VerdictKind` (PASS, FAIL, INCONCLUSIVE, ERROR) and an accuracy score (0.0–1.0): the fraction of constraints satisfied, computed as |{c in C : pass(c)}| / |C| with uniform weighting. Two reward strategies translate this into RL training signals:
 
 | Strategy | Signal | Use Case |
 |----------|--------|----------|
@@ -76,8 +76,8 @@ src/gaius/rase/
 └── vm/                   # Verifier Model (requirements, oracle, rewards)
 ```
 
-## Safety-Critical Infrastructure
+## Verification Discipline
 
-The verifier is maintained with the same rigor as production code. All constraints are immutable, return structured results, and support declarative composition. The oracle is the single source of truth for reward computation — it consults the system API, not the UI observation trace. This separation ensures that UI-level errors in the training data do not corrupt the reward signal.
+All constraints are immutable (`frozen=True`), return structured `ConstraintResult` objects, and support declarative composition. The oracle consults the system API for reward computation — not the UI observation trace. This separation ensures that UI-level errors in training data do not corrupt the reward signal.
 
 See [Verification](./verification.md) for the full reward computation pipeline, and [RASE Models](./rase-models.md) for detailed model documentation.

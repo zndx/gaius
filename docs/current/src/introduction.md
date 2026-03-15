@@ -1,16 +1,16 @@
 # Gaius
 
-**Gaius** is a terminal interface for navigating graph-oriented data domains. It projects high-dimensional embeddings onto a discrete lattice via UMAP, computes persistent homology and Ollivier–Ricci curvature over the embedding space, and renders the results as interactive overlays on the lattice.
+**Gaius** is a terminal interface for navigating high-dimensional embedding spaces. It computes persistent homology and Ollivier–Ricci curvature on the original embeddings, projects the results onto a discrete 19×19 lattice via UMAP, and renders topological and geometric features as interactive overlays.
 
 Named after Gaius Plinius Secundus (Pliny the Elder), whose *Naturalis Historia* cataloged the natural world across 37 books.
 
 ## Capabilities
 
-1. **Lattice Projection**: UMAP (cosine metric, k=15 neighbors, min_dist=0.1) maps embedding vectors to continuous 2D coordinates. These are quantized to a 19×19 integer lattice by rounding and clipping to [0, 18]. The main lattice is accompanied by two 9×9 orthographic mini-grids centered on the cursor: an **Embed** view showing the local cosine-similarity neighborhood, and an **Iso** view rendering scalar fields (curvature, persistence, complexity) as elevation maps via inverse-distance-weighted interpolation (power=2).
+1. **Lattice Projection**: UMAP (cosine metric, k=15 neighbors, min_dist=0.1) maps embedding vectors to continuous 2D coordinates. These are quantized to a 19×19 integer lattice by rounding and clipping to [0, 18]. The main lattice is accompanied by two 9×9 orthographic mini-grids centered on the cursor: an **Embed** view showing the local cosine-similarity neighborhood, and an **Iso** view rendering scalar fields (curvature, total persistence, complexity) as elevation maps via inverse-distance-weighted interpolation (power=2). Complexity is the mean cosine distance to k-nearest neighbors, normalized across the collection — a proxy for local topological isolation.
 
-2. **Persistent Homology (H₀–H₂)**: Ripser computes a Vietoris–Rips filtration over the cosine distance matrix of the original high-dimensional embeddings (not the projected coordinates), producing persistence barcodes for dimensions 0 through 2. Intervals with persistence > 0.1 are marked significant. H₀ captures connected components, H₁ captures 1-cycles, and H₂ captures 2-dimensional voids. Barcodes are rendered as overlays on the lattice, with persistent generators mapped to their lattice positions via the UMAP projection.
+2. **Persistent Homology (H₀–H₂)**: Ripser computes a Vietoris–Rips filtration over the cosine distance matrix of the original high-dimensional embeddings (not the projected coordinates), producing persistence barcodes for dimensions 0 through 2. Intervals with persistence > 0.1 are marked significant (a heuristic threshold; no stability analysis is applied). H₀ captures connected components, H₁ captures 1-cycles, and H₂ captures 2-dimensional voids. Barcodes are rendered as overlays on the lattice, with persistent generators mapped to their lattice positions via the UMAP projection.
 
-3. **Ollivier–Ricci Curvature**: Discrete Ricci curvature is computed on a k-nearest-neighbor graph (k=15, cosine metric) constructed from the embedding space, using the OTD method with α=0.5. Per-node curvature is the mean of incident edge curvatures. The resulting curvature field, gradient vectors (finite-difference approximation), and divergence values are projected to the Iso mini-grid. Positive curvature indicates cluster interiors; negative curvature indicates semantic boundaries.
+3. **Ollivier–Ricci Curvature**: Discrete Ricci curvature is computed on a k-nearest-neighbor graph (k=15, cosine metric) constructed from the embedding space, using the OTD method with α=0.5. Per-node curvature is the mean of incident edge curvatures. The resulting curvature field, gradient vectors (finite-difference approximation), and divergence values are projected to the Iso mini-grid. Positive curvature indicates regions where neighborhoods overlap (cluster interiors); negative curvature indicates diverging neighborhoods (transition regions between topics).
 
 4. **Multi-Agent Exploration**: Seven agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary) navigate the lattice with role-specific positioning behaviors (center-seeking, peripheral, random) and cluster affinities. Agent training uses the RASE framework (Rapid Agentic Systems Engineering), where constraints are composed declaratively via AllOf/AnyOf/Not and evaluated by a ground-truth oracle to produce verifiable reward signals.
 
@@ -29,7 +29,7 @@ The following pipeline is implemented end-to-end:
 5. **Exploration** — Agents operate on the lattice; topological features and curvature values are available as grid state for trajectory selection.
 6. **Rendering** — LuxCore path-traces procedural card visualizations from the computed geometric features.
 
-The lattice serves as both a visualization surface and a discrete approximation of the data manifold, coupling persistent homology, differential geometry, and agent-based exploration in one interactive system.
+The lattice serves as both a visualization surface and a discrete approximation of the data manifold, integrating persistent homology, discrete curvature, and agent-based exploration.
 
 ## Architecture
 

@@ -1,6 +1,6 @@
 # System Overview
 
-Gaius is a platform for navigating complex, graph-oriented data domains. It projects high-dimensional embeddings and topological structures onto a 19x19 grid, augmented by autonomous agents, self-healing infrastructure, and production data pipelines.
+Gaius projects high-dimensional embeddings and their topological/geometric structure onto a 19x19 lattice. The system integrates persistent homology, Ollivier-Ricci curvature, agent orchestration, FMEA-based health monitoring, and LuxCore visualization.
 
 ## Layer Architecture
 
@@ -8,7 +8,7 @@ The system is organized in layers with strict dependency direction:
 
 | Layer | Components | Responsibility |
 |-------|-----------|----------------|
-| L1 - Core | TDA, geometry, projection, telemetry | Mathematical foundations |
+| L1 - Core | Persistent homology, Ricci curvature, UMAP projection, telemetry | Mathematical foundations |
 | L2 - Transport | gRPC client, PostgreSQL, Qdrant, Iceberg | Persistence and communication |
 | L3 - Engine | gRPC server, 37 registered services | Business logic, orchestration |
 | L4 - Inference | vLLM, optillm, embeddings, models | GPU workload execution |
@@ -51,7 +51,7 @@ The core layer (L1) provides the mathematical primitives that other layers consu
 
 **Persistent homology**: Ripser computes a Vietoris-Rips filtration over the cosine distance matrix of the original high-dimensional embeddings (not the projected coordinates). Persistence barcodes for H0 (components), H1 (loops), and H2 (voids) are computed. Intervals with persistence > 0.1 are marked significant.
 
-**Ollivier-Ricci curvature**: Discrete curvature on the k-NN graph (k=15, cosine metric, alpha=0.5, OTD method). Per-node curvature is the mean of incident edge curvatures. Positive curvature indicates cluster interiors; negative indicates semantic boundaries. Gradient fields and divergence values are projected to the 9x9 Iso mini-grid via inverse-distance-weighted interpolation (power=2).
+**Ollivier-Ricci curvature**: Discrete curvature on the k-NN graph (k=15, cosine metric, alpha=0.5, OTD method). Per-node curvature is the mean of incident edge curvatures. Positive curvature indicates overlapping neighborhoods (cluster interiors); negative indicates diverging neighborhoods (transition regions). Gradient fields and divergence values are projected to the 9x9 Iso mini-grid via inverse-distance-weighted interpolation (power=2).
 
 These three computations feed into multiple downstream systems:
 
@@ -69,7 +69,7 @@ These three computations feed into multiple downstream systems:
 
 **Agent evolution**: Engine daemon → `EvolutionService.daemon_loop()` → check GPU idle (<30%) → select next agent → optimize → evaluate → save version.
 
-**Theta consolidation**: `/sitrep` → `ThetaAgent.consolidate()` → NVAR drift detection → BERTSubs inference → KG selection → wikilink injection.
+**Theta consolidation**: `/sitrep` → `ThetaAgent.consolidate()` → NVAR (Nonlinear Vector AutoRegression) drift detection → BERTSubs subsumption inference → Knowledge Gradient selection → wikilink injection.
 
 ## Key Numbers
 
@@ -81,7 +81,7 @@ These three computations feed into multiple downstream systems:
 | CLI commands | 63 |
 | MCP tools | 163 |
 | GPUs | 6 (NVIDIA) |
-| FMEA failure modes | 34 |
+| FMEA (Failure Mode and Effects Analysis) modes | 34 |
 | gRPC port | 50051 |
 | PostgreSQL port | 5444 |
 
@@ -94,7 +94,7 @@ src/gaius/
 ├── mcp_server.py       # MCP server (163 tools)
 ├── core/               # TDA, geometry, projection, state
 ├── engine/             # gRPC engine (central nervous system)
-├── health/             # FMEA-based self-healing
+├── health/             # FMEA-based health monitoring and self-healing
 ├── agents/             # Swarm, theta, evolution, cognition
 ├── inference/          # Multi-backend routing
 ├── rase/               # MBSE metamodel (agent verification)

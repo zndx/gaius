@@ -1,12 +1,12 @@
 # FMEA Framework
 
-FMEA (Failure Mode and Effects Analysis) replaces simple severity classification with quantitative risk assessment. Originally from manufacturing engineering, Gaius adapts it for software systems.
+FMEA (Failure Mode and Effects Analysis) replaces simple severity classification with structured ordinal risk assessment (Stamatis, 2003). Originally from manufacturing engineering, Gaius adapts it for software systems.
 
 ## Risk Priority Number
 
 Each failure mode is scored on three dimensions:
 
-**RPN = S x O x D** (range 1-1000)
+**RPN = S x O x D** (integer scores, range 1–1000)
 
 | Dimension | Meaning | Scale |
 |-----------|---------|-------|
@@ -14,7 +14,7 @@ Each failure mode is scored on three dimensions:
 | **O** (Occurrence) | Probability of recurrence | 1 (rare) to 10 (frequent) |
 | **D** (Detection) | Ability to detect before impact | 1 (always caught) to 10 (invisible) |
 
-Higher RPN means higher risk. The worst possible score (10 x 10 x 10 = 1000) indicates a severe, frequent, and invisible failure.
+Higher RPN means higher risk. The worst possible score (10 x 10 x 10 = 1000) indicates a severe, frequent, and undetectable failure. S, O, and D are ordinal scales — their product is a ranking heuristic, not a probability.
 
 ## Action Thresholds
 

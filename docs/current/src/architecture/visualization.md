@@ -1,6 +1,6 @@
 # Visualization
 
-The visualization pipeline generates unique procedural images for collection cards using LuxCore path tracing. Each card's image is deterministic — derived from the differential geometry and algebraic topology of its embedding neighborhood.
+The visualization pipeline generates procedural card images using LuxCore path tracing. Each card's image is deterministic — seeded by the card ID and parameterized by features extracted from the embedding space's geometry and topology.
 
 ## Pipeline
 
@@ -28,16 +28,16 @@ Nomic Embeddings (768-dim)
 
 ## Mathematical Grounding
 
-Visualizations are driven by intrinsic geometric properties of the embedding space, not arbitrary aesthetic choices:
+Visualization parameters are computed from the embedding space's intrinsic geometry:
 
-- **Ollivier-Ricci curvature** controls glass color temperature and petal count. Positive curvature (cluster interior) produces warmer, simpler forms. Negative curvature (semantic boundary) produces cooler, complex structures.
-- **Persistent homology** (H0, H1, H2) controls recursion depth, toroidal rings, and void chambers. Topologically richer collections produce deeper nesting.
-- **Gradient fields** position the key light along the direction of steepest semantic change. Divergence magnitude controls glass boundary emission and volume absorption density.
-- **Complexity** (local topological isolation — average cosine distance to k-nearest neighbors) controls surface subdivision and branching probability.
+- **Ollivier-Ricci curvature**: Computed on the k-NN graph (k=15, cosine metric, alpha=0.5, OTD method) via `GraphRicciCurvature`. For adjacent nodes x, y: kappa(x,y) = 1 - W1(mu_x, mu_y) / d(x,y), where W1 is the 1-Wasserstein distance between neighborhood distributions. Per-node curvature is the mean over incident edges. Controls glass color temperature (warm at positive kappa, cool at negative) and petal count.
+- **Persistent homology**: Vietoris-Rips filtration via ripser over cosine distances (max_dim=2, coefficients in Z/2). Total persistence (sum of interval lengths, normalized via tanh) controls recursion depth. Persistent Betti numbers b1 (rank of H1 at the median filtration value) generate toroidal rings (0-3). b2 generates void chambers (0-2). Individual persistence intervals spawn filament structures whose scale encodes interval lifetime.
+- **Gradient fields**: The curvature gradient (nabla kappa) is approximated by finite differences on the k-NN graph, projected to 2D via PCA. Positions the key light source. Divergence (nabla dot nabla kappa) controls glass boundary emission.
+- **Complexity**: Mean cosine distance to k-nearest neighbors, normalized across the collection. Controls surface subdivision and branching probability — isolated cards produce finer geometry.
 
 ## Grammar Engine
 
-`grammar.py` implements a CFDG-inspired recursive expansion system (Horigan, 2004). The core mechanism: at each expansion step, the grammar chooses among alternative productions with probabilities derived from the card's feature vector. Transforms compose multiplicatively, producing self-similar structures at decreasing scales.
+`grammar.py` implements a CFDG-inspired recursive expansion system (Horigan, 2004; Context Free Design Grammars). The core mechanism: at each expansion step, the grammar chooses among alternative productions with probabilities derived from the card's feature vector. Transforms compose multiplicatively, producing self-similar structures at decreasing scales.
 
 **Deterministic seeding**: `sha256(card_id)` seeds the RNG, so the same card always produces the same visualization regardless of when or where it is rendered.
 
