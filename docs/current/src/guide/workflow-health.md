@@ -64,7 +64,7 @@ done
 
 ## Step 5: Escalation
 
-If `/health fix` does not resolve the issue, the Health Observer can escalate via ACP (Agent Client Protocol) to Claude Code for deeper analysis. This happens automatically when:
+If `/health fix` does not resolve the issue, the Health Observer can escalate via ACP (Agent Client Protocol) to Mistral Vibe for deeper analysis. This happens automatically when:
 
 1. An incident exceeds the configured FMEA RPN threshold
 2. Local remediation has failed

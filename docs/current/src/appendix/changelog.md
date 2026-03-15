@@ -22,7 +22,7 @@ Notable changes and milestones in Gaius development.
 
 ## 2026-01
 
-- ACP (Agent Client Protocol) for Claude Code integration
+- ACP (Agent Client Protocol) for Mistral Vibe integration
 - Health Observer daemon with ACP escalation
 - Guru Meditation Code system
 - Content sanitization for ACP security

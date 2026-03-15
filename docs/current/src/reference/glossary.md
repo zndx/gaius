@@ -1,6 +1,6 @@
 # Glossary
 
-**ACP** — Agent Client Protocol. Integration layer for Claude Code to perform autonomous health maintenance.
+**ACP** — Agent Client Protocol. Integration layer for Mistral Vibe to perform autonomous health maintenance.
 
 **AgendaTracker** — Tracks scheduled endpoint transitions for makespan operations, preventing false-positive health incidents.
 
