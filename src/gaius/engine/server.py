@@ -172,7 +172,7 @@ class GaiusEngine:
             # (ACP is valuable but not strictly required for engine operation)
             logger.warning(
                 "ACP security config not found.\n"
-                "  Escalation to Claude Code will be unavailable.\n"
+                "  Escalation via ACP will be unavailable.\n"
                 "  Create config at: ~/.config/gaius/acp.conf\n"
                 "  Guru: #ACP.00000011.NOCONFIG"
             )
@@ -201,12 +201,12 @@ class GaiusEngine:
             logger.warning(
                 "ACP module not available (pyhocon not installed).\n"
                 "  Install with: uv sync --extra acp\n"
-                "  Escalation to Claude Code will be unavailable."
+                "  Escalation via ACP will be unavailable."
             )
         except Exception as e:
             logger.error(
                 f"Failed to validate ACP config: {e}\n"
-                "  Escalation to Claude Code may be unavailable.\n"
+                "  Escalation via ACP may be unavailable.\n"
                 "  Guru: #ACP.00000013.CONFIGFAIL"
             )
 
@@ -1016,7 +1016,7 @@ class GaiusEngine:
             cognition (CRITICAL, after health_observer)
             reconciliation (REQUIRED, after health_observer)
 
-        CRITICAL failures put engine in DEGRADED mode (doesn't exit) so ACP-Claude
+        CRITICAL failures put engine in DEGRADED mode (doesn't exit) so the ACP agent
         can investigate accumulated error states.
         """
         from .services.base_daemon import EngineState
@@ -1099,7 +1099,7 @@ class GaiusEngine:
             logger.error(
                 f"Engine in DEGRADED mode - CRITICAL daemons failed: "
                 f"{status.critical_failures}\n"
-                "  ACP-Claude should investigate. Error states preserved for analysis."
+                "  The ACP agent should investigate. Error states preserved for analysis."
             )
 
         # Wire daemon registry to HealthObserver for continuous monitoring

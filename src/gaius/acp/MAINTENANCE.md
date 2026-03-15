@@ -56,7 +56,7 @@ Key characteristics:
 - **Tool integration**: Agents access system capabilities via MCP servers
 - **Streaming**: Real-time output for long-running operations
 
-Supported agents include Claude Code, Gemini CLI, OpenHands, and Goose. The Gaius implementation specifically targets Claude Code via the `claude-code-acp` adapter, enabling autonomous investigation and remediation of health incidents.
+Supported agents include Mistral Vibe, Gemini CLI, OpenHands, and Goose. The Gaius implementation targets Mistral Vibe via the vibe-acp adapter, enabling autonomous investigation and remediation of health incidents.
 
 ### 1.3 Contributions
 
@@ -164,7 +164,7 @@ Each new observation updates the opinion, with uncertainty decreasing as evidenc
 The current Gaius implementation uses crisp RPN (Risk Priority Number) values for escalation decisions. The RPN transformation to escalation tier represents an **implicit opinion projection**. Making this explicit through Subjective Logic enables:
 
 1. **Uncertainty-Aware Escalation**: High uncertainty in any FMEA factor triggers conservative escalation
-2. **Multi-Agent Fusion**: When local LLM and Claude Code analyze the same incident, their opinions can be formally combined
+2. **Multi-Agent Fusion**: When local LLM and the ACP agent analyze the same incident, their opinions can be formally combined
 3. **Evidence Accumulation**: Healing events update opinions through cumulative fusion
 4. **Trust Transitivity**: The RCA abstraction ladder can be formalized as trust discounting across inference steps
 
@@ -203,7 +203,7 @@ The health maintenance system implements three tiers of escalation, each corresp
 graph TB
     subgraph "Tier 0: Heroic Intervention (CMMI L1)"
         T0[Incident Defies Procedure]
-        T0I[Interactive Claude Code Session]
+        T0I[Interactive ACP Agent Session]
         T0S[Speculative Investigation]
         T0R[Ad-hoc Remediation]
         T0 --> T0I --> T0S --> T0R
@@ -238,7 +238,7 @@ graph TB
 
 Tier 0 represents **heroic ad-hoc professional intervention**—the foundational capability upon which all systematic process improvement builds. This corresponds to CMMI Level 1's "Initial" maturity where success depends entirely on individual competence rather than documented process.
 
-In the Gaius context, Tier 0 manifests as an interactive Claude Code session where a skilled operator conducts speculative investigation and remediation. The operator brings domain expertise, intuition, and creative problem-solving to incidents that defy procedural resolution.
+In the Gaius context, Tier 0 manifests as an interactive ACP agent session where a skilled operator conducts speculative investigation and remediation. The operator brings domain expertise, intuition, and creative problem-solving to incidents that defy procedural resolution.
 
 **Characteristics:**
 - Ad-hoc investigation driven by operator judgment
@@ -247,7 +247,7 @@ In the Gaius context, Tier 0 manifests as an interactive Claude Code session whe
 - Outcomes may or may not be documented
 - Knowledge remains tacit unless explicitly captured
 
-**Example**: Novel failure mode → operator launches Claude Code session → speculative investigation using MCP tools → creative remediation attempt → manual verification → optional documentation of findings.
+**Example**: Novel failure mode → operator launches ACP agent session → speculative investigation using MCP tools → creative remediation attempt → manual verification → optional documentation of findings.
 
 **Critical Insight**: Tier 0 is not a failure state but a **necessary foundation**. Every systematic process (Tiers 1-2) originated from heroic intervention that was subsequently codified. The framework's value lies not in eliminating Tier 0, but in progressively reducing its frequency through systematic learning.
 
@@ -269,7 +269,7 @@ Tier 1 introduces local LLM analysis for diagnostic reasoning. The agent correla
 
 #### 3.1.3 Tier 2: ACP Meta-Escalation (CMMI L4-5)
 
-Tier 2 escalates to Claude Code via ACP for investigation and **framework evolution**. This tier uniquely has the capability to:
+Tier 2 escalates to the ACP agent (Mistral Vibe) for investigation and **framework evolution**. This tier uniquely has the capability to:
 
 1. Create GitHub issues for tracking
 2. Implement new FixStrategy classes
@@ -277,8 +277,8 @@ Tier 2 escalates to Claude Code via ACP for investigation and **framework evolut
 4. Commit changes for human review
 
 **Characteristics:**
-- Full Claude Code capabilities via MCP tool access
-- Read/write access to codebase (constrained to acp-claude branch)
+- Full ACP agent capabilities via MCP tool access
+- Read/write access to codebase (constrained to acp/health-fix branch)
 - GitHub integration for issue tracking and code review
 - Knowledge base access for heuristic generation
 
@@ -352,7 +352,7 @@ sequenceDiagram
     participant FMEA as FMEAEngine
     participant DB as healing_events
     participant ACP as ACPClient
-    participant CC as Claude Code
+    participant CC as ACP Agent
     participant MCP as MCP Server
     participant GH as GitHub
     participant KB as Knowledge Base
@@ -368,7 +368,7 @@ sequenceDiagram
     Note over HO: RPN exceeds Tier 2 threshold
 
     HO->>ACP: connect()
-    ACP->>CC: spawn via claude-code-acp
+    ACP->>CC: spawn via vibe-acp
     CC-->>ACP: session_id=abc123
 
     HO->>ACP: prompt(investigation_prompt)
@@ -393,7 +393,7 @@ sequenceDiagram
 
     CC->>KB: create_kb(heuristic path, content)
     CC->>FS: Edit service_fixes.py
-    CC->>FS: git checkout acp-claude/health-fix
+    CC->>FS: git checkout acp/health-fix
     CC->>FS: git commit -m "feat(health): add NewFixStrategy"
     CC->>GH: gh issue comment #42
 
@@ -407,7 +407,7 @@ sequenceDiagram
 
 #### 3.3.1 Investigation Prompt Structure
 
-The prompt provided to Claude Code follows a structured format:
+The prompt provided to the ACP agent follows a structured format:
 
 ```markdown
 ## Incident Context
@@ -430,7 +430,7 @@ The prompt provided to Claude Code follows a structured format:
 2. If existing FixStrategy inadequate, implement enhancement
 3. Create GitHub issue for tracking
 4. Generate KB heuristic if novel pattern discovered
-5. All code changes on acp-claude/health-fix branch
+5. All code changes on acp/health-fix branch
 ```
 
 #### 3.3.2 Session Management
@@ -459,11 +459,11 @@ All ACP-generated changes follow a controlled workflow designed to maintain code
 
 ```
 trunk (protected)
-  └── acp-claude/health-fix (ACP working branch)
+  └── acp/health-fix (ACP working branch)
         └── PRs require human approval
 ```
 
-Claude Code **never commits directly to trunk**. All changes target the `acp-claude/health-fix` branch, which requires human review before merge.
+The ACP agent **never commits directly to trunk**. All changes target the `acp/health-fix` branch, which requires human review before merge.
 
 #### 3.4.2 Issue-Driven Development
 
@@ -510,7 +510,7 @@ incidents. Triggered by ACP investigation of repeated failures.
 
 Closes #42
 
-🤖 Generated with Claude Code (claude.ai/code)
+🤖 Generated by Gaius ACP (Mistral Vibe)
 
 Co-Authored-By: Gaius ACP <acp@gaius.local>
 ```
@@ -600,7 +600,7 @@ detection = Opinion(b=0.8, d=0.1, u=0.1, a=0.3)   # Confident: good monitoring
 
 ### 4.3 Multi-Agent Opinion Fusion
 
-When both Tier 1 (local LLM) and Tier 2 (Claude Code) analyze an incident, their diagnoses can be formally combined:
+When both Tier 1 (local LLM) and Tier 2 (ACP agent) analyze an incident, their diagnoses can be formally combined:
 
 ```python
 def consensus_fusion(omega_a: Opinion, omega_b: Opinion) -> Opinion:
@@ -1222,7 +1222,7 @@ Gaius uses unique failure mode identifiers inspired by the Amiga's memorable err
 # ~/.config/gaius/acp.conf
 acp {
   # Agent adapter command
-  adapter = "claude-code-acp"
+  adapter = "vibe-acp"
   adapter = ${?GAIUS_ACP_ADAPTER}
 
   # GitHub integration

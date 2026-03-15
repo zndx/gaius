@@ -7,7 +7,7 @@ Internal programmatic access to MCP tool operations. Provides a Python API for a
 ```mermaid
 graph TB
     subgraph "External"
-        CC[Claude Code]
+        CC[MCP Client]
         MCP_SRV[MCP Server]
     end
 
@@ -146,7 +146,7 @@ class AgentOutput:
 
 ## Relationship to MCP Server
 
-The `mcp_server.py` exposes tools to Claude Code. The `mcp/operations.py` module provides the same functionality as a Python API for internal use:
+The `mcp_server.py` exposes tools to MCP clients. The `mcp/operations.py` module provides the same functionality as a Python API for internal use:
 
 | MCP Tool | Internal Function |
 |----------|-------------------|
@@ -184,7 +184,7 @@ mcp_server.py:@mcp.tool("ask_reasoning")
 ```mermaid
 graph TB
     subgraph External["External Caller"]
-        CC[Claude Code via MCP]
+        CC[MCP Client]
         IA[Internal Agent]
         THETA[ThetaAgent]
     end

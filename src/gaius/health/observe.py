@@ -2,7 +2,7 @@
 
 Implements continuous observability following the EvolutionDaemon pattern.
 Integrates with ACP (Agent Client Protocol) to delegate complex diagnosis
-and remediation to Claude Code.
+and remediation via ACP.
 
 Aligned with OTel terminology:
 - Observer: Watches system health metrics
@@ -14,7 +14,7 @@ Usage:
     await daemon.start()
 
     # Runs in background, polling health every poll_interval seconds
-    # On failure: calculate RPN, attempt self-healing, escalate to Claude Code
+    # On failure: calculate RPN, attempt self-healing, escalate via ACP
 
     await daemon.stop()  # Graceful shutdown
 """
@@ -157,11 +157,11 @@ class HealthObserver:
     Implements the Observer pattern with OTel-aligned terminology:
     - Continuous health observation via HealthChecker
     - FMEA-based RPN scoring for risk assessment
-    - Tiered self-healing with escalation to Claude Code via ACP
+    - Tiered self-healing with escalation via ACP
     - Event-sourced healing audit trail
     - GitHub issue tracking for persistent incidents
 
-    The observer integrates with Claude Code through ACP, delegating:
+    The observer integrates with Mistral Vibe through ACP, delegating:
     - Complex root cause analysis
     - Remediation planning
     - GitHub issue management
@@ -632,7 +632,7 @@ class HealthObserver:
 
         Tier 0: Auto-remediate immediately via SelfHealingCoordinator
         Tier 1: Auto-remediate with local agent validation
-        Tier 2: Escalate to Claude Code via ACP for approval
+        Tier 2: Escalate via ACP for approval
         Manual: Create GitHub issue and notify
 
         Args:
@@ -659,7 +659,7 @@ class HealthObserver:
                 result = await self._tier1_remediate(incident)
 
             elif tier == EscalationTier.TIER_2:
-                # Escalate to Claude Code
+                # Escalate via ACP
                 result = await self._tier2_remediate_acp(incident)
 
             else:  # MANUAL
@@ -757,9 +757,9 @@ class HealthObserver:
         return result
 
     async def _tier2_remediate_acp(self, incident: HealthIncident) -> HealingResult:
-        """Tier 2 ACP escalation to Claude Code.
+        """Tier 2 ACP escalation.
 
-        Delegates complex diagnosis and remediation to Claude Code
+        Delegates complex diagnosis and remediation to the ACP agent
         via the Agent Client Protocol.
 
         Args:
@@ -777,7 +777,7 @@ class HealthObserver:
 
         start_time = time.time()
 
-        # Build prompt and context for Claude Code
+        # Build prompt and context for ACP agent
         prompt = self._build_acp_prompt(incident)
         context_summary = self._build_context_summary(incident)
 
@@ -811,14 +811,14 @@ class HealthObserver:
                 self._acp_client = GaiusACPClient(
                     ACPConfig(
                         prompt_timeout=self.config.acp_timeout,
-                        auto_approve_terminal=False,  # Claude Code needs approval for shell
+                        auto_approve_terminal=False,  # ACP agent needs approval for shell
                     )
                 )
                 await self._acp_client.connect()
 
             self._acp_escalations += 1
 
-            # Send to Claude Code
+            # Send to ACP agent
             response = await self._acp_client.prompt(
                 message=prompt,
                 context={
@@ -918,10 +918,10 @@ class HealthObserver:
         return "; ".join(reasons) if reasons else "Escalation triggered by tier progression"
 
     def _extract_response_details(self, response: str) -> tuple[str | None, str | None]:
-        """Extract diagnosis and remediation from Claude Code response.
+        """Extract diagnosis and remediation from ACP agent response.
 
         Args:
-            response: Full response from Claude Code
+            response: Full response from ACP agent
 
         Returns:
             Tuple of (diagnosis, remediation_applied)
@@ -961,13 +961,13 @@ class HealthObserver:
         return diagnosis, remediation
 
     def _build_acp_prompt(self, incident: HealthIncident) -> str:
-        """Build prompt for Claude Code via ACP.
+        """Build prompt for ACP escalation.
 
         Args:
             incident: The incident to diagnose
 
         Returns:
-            Prompt string for Claude Code
+            Prompt string for ACP agent
         """
         return f"""## Health Incident Requiring Diagnosis
 
@@ -999,7 +999,7 @@ Begin your investigation now."""
         """Parse ACP response for success indicator.
 
         Args:
-            response: Claude Code response text
+            response: ACP agent response text
 
         Returns:
             True if remediation appears successful
@@ -1139,7 +1139,7 @@ Begin your investigation now."""
         This catches logic errors where incidents slip through normal remediation
         and recovery flows - the kind of silent failures that can go unnoticed.
 
-        Escalates to ACP with a diagnostic prompt asking Claude Code to:
+        Escalates via ACP with a diagnostic prompt asking the agent to:
         1. Analyze why the incident is stuck
         2. Identify any bugs in the health observer logic
         3. Propose fixes or manual remediation

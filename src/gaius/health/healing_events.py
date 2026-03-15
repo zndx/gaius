@@ -790,7 +790,7 @@ class HealingEventRecorder:
         prompt_sent: str | None = None,
         context_summary: str | None = None,
     ) -> HealingEvent | None:
-        """Record start of ACP escalation to Claude Code.
+        """Record start of ACP escalation.
 
         Args:
             sequence_id: The healing sequence
@@ -802,14 +802,14 @@ class HealingEventRecorder:
             prior_tiers: List of tiers attempted before escalation
             escalation_reason: Why escalation was triggered
             incident_age_seconds: How long the incident has been active
-            prompt_sent: The prompt sent to Claude Code (truncated)
+            prompt_sent: The prompt sent to the ACP agent (truncated)
             context_summary: Summary of health context sent
         """
         payload = {
             "incident_fingerprint": incident_fingerprint,
             "rpn_score": rpn_score,
             "prior_attempts": prior_attempts,
-            "narrative": f"Escalating to Claude Code after {prior_attempts} failed attempts",
+            "narrative": f"Escalating via ACP after {prior_attempts} failed attempts",
         }
         if prior_tiers:
             payload["prior_tiers"] = prior_tiers
@@ -863,18 +863,18 @@ class HealingEventRecorder:
             sequence_id: The healing sequence
             endpoint: Affected endpoint
             session_id: ACP session identifier
-            result_summary: Brief summary of Claude Code's response
+            result_summary: Brief summary of the ACP agent's response
             duration_ms: Time taken for ACP interaction
-            success: Whether Claude Code determined remediation succeeded
-            actions_taken: List of actions Claude Code performed
-            tools_used: List of MCP tools Claude Code used
+            success: Whether the ACP agent determined remediation succeeded
+            actions_taken: List of actions the ACP agent performed
+            tools_used: List of MCP tools the ACP agent used
             full_response: Full response text (truncated)
-            diagnosis: Claude Code's diagnosis of the issue
+            diagnosis: The ACP agent's diagnosis of the issue
             remediation_applied: What remediation was applied
         """
         # Build narrative
         duration_str = self._format_duration(duration_ms // 1000) if duration_ms else "unknown"
-        narrative = f"Claude Code completed analysis in {duration_str}"
+        narrative = f"ACP agent completed analysis in {duration_str}"
         if success:
             narrative += " - remediation successful"
         else:

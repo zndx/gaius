@@ -10,7 +10,7 @@ Key concepts:
 - Frontmatter enables discovery and machine-readability
 - Body provides detailed instructions (pulled on demand)
 
-Schema follows Claude Code Skills format:
+Schema follows Skills format:
 ---
 name: research-synthesis-verification
 description: Verify synthesized KB entries ground claims in sources

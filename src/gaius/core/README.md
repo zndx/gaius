@@ -330,7 +330,7 @@ def _detect_entry_point() -> str:
 |-------------|--------------|----------|
 | `gaius-tui` | gaius-tui | Interactive TUI session |
 | `gaius-cli` | gaius-cli | Non-interactive commands |
-| `gaius-mcp` | gaius-mcp | MCP server for Claude Code |
+| `gaius-mcp` | gaius-mcp | MCP server for external clients |
 | `gaius-engine` | gaius-engine | gRPC daemon |
 | `gaius-worker` | gaius-worker | Fetch worker pool |
 

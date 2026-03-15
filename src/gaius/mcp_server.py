@@ -1,6 +1,6 @@
 """Gaius MCP Server.
 
-Exposes full Gaius capabilities to Claude Code and other MCP clients:
+Exposes full Gaius capabilities to MCP clients:
 
 **KB Operations**
 - search_kb, read_kb, create_kb, update_kb, delete_kb, list_kb
@@ -76,7 +76,7 @@ Usage:
     # Start the server
     uv run gaius-mcp
 
-    # Configure in Claude Code's .mcp.json:
+    # Configure in your MCP client's settings:
     {
       "mcpServers": {
         "gaius": {

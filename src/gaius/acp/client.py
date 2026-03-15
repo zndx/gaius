@@ -126,7 +126,7 @@ class ACPConfig:
     include_gaius_mcp: bool = True  # Include Gaius MCP server in session
     github_repo: str = "zndx/gaius-acp"  # GitHub repo for issue tracking
     stream_callback: StreamCallback | None = None  # Streaming to TUI panel
-    buffer_limit: int = 16 * 1024 * 1024  # 16MB buffer for large Claude Code responses
+    buffer_limit: int = 16 * 1024 * 1024  # 16MB buffer for large ACP agent responses
     security_config_path: Path | None = None  # HOCON config for GitHub security
     # NOTE: verify_github_security removed - security is MANDATORY, not optional
 
@@ -506,7 +506,7 @@ class GaiusACPClient:
             start_time = datetime.now()
             self._prompts_sent += 1
 
-            # Send prompt - no timeout by default, let Claude Code run to completion
+            # Send prompt - no timeout by default, let the ACP agent run to completion
             # Response text comes via session_update callbacks, not the return value
             effective_timeout = timeout if timeout is not None else self.config.prompt_timeout
 
@@ -518,7 +518,7 @@ class GaiusACPClient:
                         session_id=self._session_id,
                     )
             else:
-                # No timeout - let Claude Code run until natural completion
+                # No timeout - let the ACP agent run until natural completion
                 await self._connection.prompt(
                     prompt=[text_block(full_prompt)],
                     session_id=self._session_id,

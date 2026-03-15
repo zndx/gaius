@@ -1,13 +1,13 @@
 """Agent Client Protocol (ACP) integration for Gaius.
 
-Provides ACP client for connecting to Claude Code via the claude-code-acp adapter,
+Provides ACP client for connecting to Mistral Vibe via the vibe-acp adapter,
 enabling autonomous health maintenance and complex task delegation.
 
 ACP (Agent Client Protocol) is JSON-RPC 2.0 over stdio, standardizing:
 - Where the agent lives in your workflow (unlike MCP which covers data/tools access)
 - Bidirectional communication between clients and AI agents
 
-Supported agents: Claude Code, Gemini CLI, OpenHands, Goose
+Supported agents: Mistral Vibe, Gemini CLI, OpenHands, Goose
 Supported clients: Zed, Neovim, Toad (Textual-based TUI)
 
 Usage:

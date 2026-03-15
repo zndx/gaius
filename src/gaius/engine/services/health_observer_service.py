@@ -10,7 +10,7 @@ This service runs IN THE ENGINE (not client layer) ensuring:
 - Engine can perform autonomous healing even when no clients are connected
 
 Implements BaseDaemon protocol with CRITICAL criticality - engine enters
-DEGRADED mode if this daemon fails to start (not exit), allowing ACP-Claude
+DEGRADED mode if this daemon fails to start (not exit), allowing the ACP agent
 to investigate accumulated error states.
 
 Architecture:
@@ -23,7 +23,7 @@ Architecture:
     │                                                  │                  │
     │                                         ┌────────▼────────┐         │
     │                                         │  ACP Client     │         │
-    │                                         │  (Claude Code)  │         │
+    │                                         │  (ACP agent)    │         │
     │                                         └─────────────────┘         │
     └─────────────────────────────────────────────────────────────────────┘
 
@@ -32,7 +32,7 @@ BDD Alignment:
 - Observer polls health continuously (configurable interval)
 - Incidents trigger FMEA-based RPN scoring
 - Remediation follows tiered escalation (Tier 0 → Tier 1 → Tier 2 → Manual)
-- ACP escalation spawns Claude Code for complex diagnosis
+- ACP escalation spawns the ACP agent for complex diagnosis
 """
 
 import asyncio
@@ -101,7 +101,7 @@ class ObserverConfig:
 
     # ACP integration
     escalate_to_acp: bool = True
-    # No timeout - let Claude Code run until natural completion (issue resolved or GH issue created)
+    # No timeout - let the ACP agent run until natural completion (issue resolved or GH issue created)
 
     # GitHub integration - reads from git remote 'internal' by default
     # Supports full URL format for on-prem: github.example.com/org/repo
@@ -199,7 +199,7 @@ class HealthObserverService(BaseDaemon):
     """Engine service for autonomous health monitoring and remediation.
 
     Implements BaseDaemon with CRITICAL criticality - if this daemon fails,
-    engine enters DEGRADED mode to allow ACP-Claude investigation.
+    engine enters DEGRADED mode to allow ACP investigation.
 
     Runs as part of gaius-engine daemon, ensuring health monitoring
     persists regardless of client connections.
@@ -207,12 +207,12 @@ class HealthObserverService(BaseDaemon):
     Features:
     - Continuous health observation via HealthChecker
     - FMEA-based RPN scoring for risk assessment
-    - Tiered self-healing with escalation to Claude Code via ACP
+    - Tiered self-healing with escalation via ACP
     - Event-sourced healing audit trail
     - GitHub issue tracking for persistent incidents
     - Daemon registry integration for lifecycle monitoring
 
-    The observer integrates with Claude Code through ACP, delegating:
+    The observer integrates with Mistral Vibe via ACP, delegating:
     - Complex root cause analysis
     - Remediation planning
     - GitHub issue management
@@ -247,7 +247,7 @@ class HealthObserverService(BaseDaemon):
         self._orchestrator = orchestrator_service
         self._health_service = health_service
 
-        # ACP client for Claude Code escalation
+        # ACP client for escalation via ACP
         self._acp_client: Any = None
         self._acp_lock = asyncio.Lock()
 
@@ -901,7 +901,7 @@ class HealthObserverService(BaseDaemon):
 
         Tier 0: Auto-remediate immediately (restart endpoint)
         Tier 1: Auto-remediate with local agent validation
-        Tier 2: Escalate to Claude Code via ACP for approval
+        Tier 2: Escalate via ACP for approval
         Manual: Create GitHub issue and notify
 
         After successful remediation, runs RCA phase to analyze root cause
@@ -1136,9 +1136,9 @@ class HealthObserverService(BaseDaemon):
         return await self._tier0_remediate(incident)
 
     async def _tier2_remediate_acp(self, incident: HealthIncident) -> bool:
-        """Tier 2 ACP escalation to Claude Code.
+        """Tier 2 ACP escalation.
 
-        Delegates complex diagnosis and remediation to Claude Code
+        Delegates complex diagnosis and remediation to the ACP agent
         via the Agent Client Protocol.
 
         Args:
@@ -1158,7 +1158,7 @@ class HealthObserverService(BaseDaemon):
 
                     self._acp_client = GaiusACPClient(
                         ACPConfig(
-                            # No timeout - let Claude Code run until natural completion
+                            # No timeout - let the ACP agent run until natural completion
                             auto_approve_terminal=True,  # Allow Bash for health investigation
                         )
                     )
@@ -1166,10 +1166,10 @@ class HealthObserverService(BaseDaemon):
 
             self._acp_escalations += 1
 
-            # Build prompt for Claude Code
+            # Build prompt for ACP agent
             prompt = self._build_acp_prompt(incident)
 
-            # Send to Claude Code - no timeout, let it run until natural completion
+            # Send to ACP agent - no timeout, let it run until natural completion
             response = await self._acp_client.prompt(
                 message=prompt,
                 context={
@@ -1194,13 +1194,13 @@ class HealthObserverService(BaseDaemon):
             return False
 
     def _build_acp_prompt(self, incident: HealthIncident) -> str:
-        """Build prompt for Claude Code via ACP.
+        """Build prompt for ACP agent.
 
         Args:
             incident: The incident to diagnose
 
         Returns:
-            Prompt string for Claude Code
+            Prompt string for ACP agent
         """
         display_endpoint = friendly_endpoint_name(incident.endpoint)
         return f"""## Health Incident Requiring Diagnosis
@@ -1233,7 +1233,7 @@ Begin your investigation now."""
         """Parse ACP response for success indicator.
 
         Args:
-            response: Claude Code response text
+            response: ACP agent response text
 
         Returns:
             True if remediation appears successful
@@ -1348,7 +1348,7 @@ Begin your investigation now."""
             # The ACP client's prompt() method doesn't accept system_prompt separately
             full_message = f"{system_prompt}\n\n---\n\n{rca_prompt}"
 
-            # Send to Claude Code
+            # Send to ACP agent
             response = await self._acp_client.prompt(
                 message=full_message,
                 context={
@@ -1414,13 +1414,13 @@ Begin your investigation now."""
             return None
 
     def _parse_rca_response(self, response: str) -> dict[str, Any] | None:
-        """Parse Claude Code's RCA response.
+        """Parse ACP agent's RCA response.
 
         Extracts the JSON block from the response containing classification,
         observations, constraint violations, and proposed fix.
 
         Args:
-            response: Claude Code response text
+            response: ACP agent response text
 
         Returns:
             Parsed RCA result dict or None on parse failure
@@ -1604,8 +1604,8 @@ Begin your investigation now."""
     async def _create_github_issue(self, incident: HealthIncident) -> None:
         """Create GitHub issue for manual incidents using gh CLI.
 
-        ACP-Claude can then pick up these issues and investigate using
-        the full power of Claude Code with MCP tools.
+        The ACP agent can then pick up these issues and investigate using
+        the full power of the ACP agent using MCP tools.
 
         Args:
             incident: The incident requiring manual intervention
@@ -2029,7 +2029,7 @@ Begin your investigation now."""
 
         This is the key mechanism for ensuring ACP escalation happens for
         incidents that are stuck - whether due to false positives, recovery
-        detection bugs, or genuine issues that need Claude Code investigation.
+        detection bugs, or genuine issues that need ACP investigation.
 
         Stale incident criteria:
         - Status is "active" (not healing, recovering, or manual_required)

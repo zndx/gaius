@@ -390,11 +390,11 @@ flowchart TB
     T2 --> LEARN
 ```
 
-## ACP Escalation (Claude Code Integration)
+## ACP Escalation (Mistral Vibe Integration)
 
 When the self-healing system encounters issues beyond its capability, it can
-escalate to Claude Code via the Agent Client Protocol (ACP). This enables
-**meta-level maintenance**—Claude Code evolves the `/health fix` framework
+escalate to Mistral Vibe via the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP). This enables
+**meta-level maintenance**—the ACP agent evolves the `/health fix` framework
 itself rather than just fixing individual issues.
 
 ### HealthObserver Daemon
@@ -424,7 +424,7 @@ sequenceDiagram
     participant FMEA as FMEA Engine
     participant SH as Self-Healer
     participant ACP as ACP Client
-    participant CC as Claude Code
+    participant AG as ACP Agent
 
     HO->>FMEA: Detect issue, calculate RPN
     FMEA-->>HO: RPN > 300 (high risk)
@@ -435,18 +435,18 @@ sequenceDiagram
     end
 
     HO->>ACP: Escalate incident
-    ACP->>CC: Connect via claude-code-acp
+    ACP->>AG: Connect via vibe-acp
 
-    CC->>CC: Analyze with MCP tools
-    CC->>CC: Identify framework gap
+    AG->>AG: Analyze with MCP tools
+    AG->>AG: Identify framework gap
 
     alt Gap found
-        CC->>CC: Implement FixStrategy
-        CC->>CC: Add KB heuristic
-        CC->>CC: Commit to acp-claude/health-fix
+        AG->>AG: Implement FixStrategy
+        AG->>AG: Add KB heuristic
+        AG->>AG: Commit to acp/health-fix
     end
 
-    CC-->>ACP: Resolution report
+    AG-->>ACP: Resolution report
     ACP-->>HO: Mark incident resolved
 ```
 
@@ -473,7 +473,7 @@ ACP escalation enforces mandatory security checks:
 - GitHub repo must be in HOCON allowlist
 - Repo must have private visibility
 - Content is sanitized before issue creation
-- All changes go to `acp-claude/health-fix` branch
+- All changes go to `acp/health-fix` branch
 
 See [ACP README](../acp/README.md) for full security documentation.
 
@@ -487,7 +487,7 @@ See [ACP README](../acp/README.md) for full security documentation.
 | `AdaptiveLearner` | database | fmea.engine | `update_from_outcome()` |
 | `SERVICE_STRATEGIES` | various services | cli, mcp_server | `/health fix <service>` |
 | `HealthObserver` | health, acp, database | mcp_server | `start()`, `stop()` |
-| `GaiusACPClient` | claude-code-acp | HealthObserver | `prompt()` |
+| `GaiusACPClient` | vibe-acp | HealthObserver | `prompt()` |
 
 ## See Also
 
@@ -531,7 +531,7 @@ cross_module_calls:
     purpose: Skip incident creation for endpoints in scheduled makespan operations
   - from: observe.HealthObserver._tier2_remediate_acp
     to: acp.GaiusACPClient.prompt
-    purpose: Escalate complex issues to Claude Code for meta-level framework evolution
+    purpose: Escalate complex issues to the ACP agent for meta-level framework evolution
   - from: observe.HealthObserver._check_recoveries
     to: healing_events.HealingEventRecorder.complete_sequence
     purpose: Record incident resolution in audit trail

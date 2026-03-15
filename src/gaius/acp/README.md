@@ -1,7 +1,8 @@
 # Agent Client Protocol (ACP) Integration
 
-This package provides ACP client integration for connecting Gaius to Claude Code,
-enabling autonomous health maintenance and framework evolution.
+This package provides ACP client integration for connecting Gaius to the ACP agent
+(currently Mistral Vibe via the vibe-acp adapter), enabling autonomous health
+maintenance and framework evolution.
 
 ## Overview
 
@@ -10,14 +11,14 @@ standardizes communication between AI agent clients and hosts. Unlike MCP
 (Model Context Protocol) which focuses on data and tools access, ACP defines
 where the agent lives in your workflow and how it communicates bidirectionally.
 
-**Key Insight**: ACP-Claude acts as a *meta-level maintainer*. Rather than
+**Key Insight**: The ACP agent acts as a *meta-level maintainer*. Rather than
 just fixing issues one-off, it evolves the `/health fix` framework itself—
 teaching Gaius to heal autonomously.
 
 ## Architecture
 
 The HealthObserver runs inside the gaius-engine daemon, enabling autonomous
-self-healing even when no clients are connected. Claude Code interacts with
+self-healing even when no clients are connected. The ACP agent interacts with
 the engine via the MCP server's gRPC thin client.
 
 ```mermaid
@@ -43,15 +44,15 @@ flowchart TB
         CLI -->|gRPC| Engine
     end
 
-    subgraph Claude["Claude Code (External)"]
-        Adapter["claude-code-acp adapter"]
-        Model["Claude Sonnet/Opus"]
+    subgraph Agent["ACP Agent (External)"]
+        Adapter["vibe-acp adapter"]
+        Model["Mistral Vibe"]
 
         Adapter --> Model
     end
 
     ACPClient <-->|"ACP/JSON-RPC over stdio"| Adapter
-    Model -->|"Anthropic API"| Model
+    Model -->|"Mistral API"| Model
     Model -->|"MCP tools"| MCP
 ```
 
@@ -59,13 +60,13 @@ flowchart TB
 - HealthObserver lives in the engine daemon, not in thin clients
 - Engine can self-heal autonomously via `devenv up` without any client
 - MCP tools call engine via gRPC (thin client architecture)
-- Claude Code accesses engine services through MCP's gRPC calls
+- The ACP agent accesses engine services through MCP's gRPC calls
 
 ## Components
 
 ### `client.py` - ACP Client
 
-The `GaiusACPClient` manages the connection to Claude Code:
+The `GaiusACPClient` manages the connection to the ACP agent:
 
 ```python
 from gaius.acp import GaiusACPClient, ACPConfig
@@ -77,7 +78,7 @@ async with GaiusACPClient() as client:
 ```
 
 **Key Features**:
-- Spawns Claude Code via the `@zed-industries/claude-code-acp` adapter
+- Spawns the ACP agent via the vibe-acp adapter
 - Auto-configures Gaius MCP server in the session
 - Handles filesystem and terminal permissions
 - Streams responses via configurable callback
@@ -85,7 +86,7 @@ async with GaiusACPClient() as client:
 
 ### `prompts.py` - System Prompts and Workflow
 
-Defines how Claude Code should behave as the health maintenance agent:
+Defines how the ACP agent should behave as the health maintenance agent:
 
 ```python
 from gaius.acp import WorkflowMode, build_system_prompt
@@ -108,7 +109,7 @@ prompt = build_system_prompt(
 - Max 3 GitHub issues per 24 hours
 - Min 5 minutes between restart attempts
 - Max 3 restarts per endpoint per hour
-- All changes on `acp-claude/health-fix` branch
+- All changes on `acp/health-fix` branch
 
 ### `security.py` - GitHub Security Controls
 
@@ -157,9 +158,8 @@ acp {
 
 ### Environment
 
-The ACP client automatically removes `ANTHROPIC_API_KEY` from the spawned
-process environment to ensure Claude Code uses subscription authentication
-instead of API credits.
+The ACP client automatically removes sensitive API keys from the spawned
+process environment to prevent credential leakage to the adapter process.
 
 ## Usage Patterns
 
@@ -174,7 +174,7 @@ When an incident exceeds FMEA thresholds, the engine spawns an ACP session:
 
 class HealthObserverService:
     async def _escalate_to_acp(self, incident: HealthIncident) -> None:
-        """Escalate to Claude Code when Tier 0/1 remediation fails."""
+        """Escalate to ACP agent when Tier 0/1 remediation fails."""
         from gaius.acp import GaiusACPClient, build_incident_prompt
 
         prompt = build_incident_prompt(
@@ -184,7 +184,7 @@ class HealthObserverService:
 
         async with GaiusACPClient() as client:
             analysis = await client.prompt(prompt)
-            # Claude Code uses MCP tools to diagnose and fix
+            # ACP agent uses MCP tools to diagnose and fix
 ```
 
 ### Monitoring via MCP Tools
@@ -230,7 +230,7 @@ async with GaiusACPClient(config) as client:
 
 ### Framework Evolution Workflow
 
-The primary mission of ACP-Claude is to evolve the `/health fix` framework:
+The primary mission of the ACP agent is to evolve the `/health fix` framework:
 
 ```mermaid
 flowchart TD
@@ -239,10 +239,13 @@ flowchart TD
     B -->|No| D[Open GitHub issue on zndx/gaius-acp]
     D --> E[Implement FixStrategy + KB heuristic]
     E --> F[Test with /health fix service]
-    F --> G[Commit to acp-claude/health-fix branch]
+    F --> G[Commit to acp/health-fix branch]
     G --> H[Close GitHub issue]
     H --> I[Framework capability expanded]
 ```
+
+Note: The `acp/health-fix` branch naming reflects that the ACP agent (currently
+Mistral Vibe) operates on an isolated branch for human review before merge.
 
 ## Security Considerations
 
@@ -282,7 +285,7 @@ title = validate_issue_title("[HEALTH-FIX] GPU_001: Implement OOM fix")
 ## Dependencies
 
 - `agent-client-protocol` - ACP Python SDK
-- `@zed-industries/claude-code-acp` - Node.js adapter (npm)
+- `vibe-acp` - ACP adapter for Mistral Vibe
 - `gh` - GitHub CLI for API operations
 - `pyhocon` (optional) - HOCON config parsing
 
@@ -290,7 +293,7 @@ title = validate_issue_title("[HEALTH-FIX] GPU_001: Implement OOM fix")
 
 | Code | Description |
 |------|-------------|
-| `#ACP.00000001.CONNFAIL` | Connection to Claude Code failed |
+| `#ACP.00000001.CONNFAIL` | Connection to ACP agent failed |
 | `#ACP.00000002.TIMEOUT` | Connection timeout |
 | `#ACP.00000003.NOTCONN` | Operation on disconnected client |
 | `#ACP.00000004.PROMPTTIMEOUT` | Prompt response timeout |
@@ -303,18 +306,18 @@ title = validate_issue_title("[HEALTH-FIX] GPU_001: Implement OOM fix")
 ## References
 
 - [Agent Client Protocol Specification](https://github.com/anthropics/agent-client-protocol)
-- [claude-code-acp Adapter](https://github.com/zed-industries/claude-code-acp)
+- [vibe-acp Adapter](https://github.com/zndx/vibe-acp)
 - [Gaius Health Framework](../health/README.md)
 - [FMEA Failure Mode Catalog](../health/fmea/README.md)
 
 ## Development
 
-All ACP-Claude code changes should go to the `acp-claude/health-fix` branch
+All ACP agent code changes should go to the `acp/health-fix` branch
 for human review before merging to trunk.
 
 ```bash
 # Switch to development branch
-git checkout acp-claude/health-fix
+git checkout acp/health-fix
 
 # Test ACP connection
 uv run python -c "
@@ -347,10 +350,10 @@ grpc_services: []
 cross_module_calls:
   - from: health.observe.HealthObserver._tier2_remediate_acp
     to: acp.GaiusACPClient.prompt
-    purpose: Escalate complex health incidents to Claude Code for framework evolution
+    purpose: Escalate complex health incidents to ACP agent for framework evolution
   - from: health.observe.HealthObserver._tier2_remediate_acp
     to: acp.build_incident_prompt
-    purpose: Format incident details for Claude Code analysis
+    purpose: Format incident details for ACP agent analysis
   - from: health.healing_events.HealingEventRecorder.record_acp_escalation_*
     to: storage.database.get_pool
     purpose: Persist verbose ACP session history for narrative reports

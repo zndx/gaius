@@ -1,4 +1,4 @@
-"""Command input widget (Claude Code style)."""
+"""Command input widget (slash command style)."""
 
 from textual.widget import Widget
 from textual.widgets import Input

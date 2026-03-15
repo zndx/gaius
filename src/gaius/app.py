@@ -3697,7 +3697,7 @@ Use `/evolve stop` to stop orchestrated evolution.
             try:
                 async with GaiusACPClient(config) as acp_client:
                     # Update to show we're running ACP
-                    lines[-1] = "- *ACP session active - Claude Code investigating...*"
+                    lines[-1] = "- *ACP session active - Mistral Vibe investigating...*"
                     update_panel()
                     await asyncio.sleep(0)
 

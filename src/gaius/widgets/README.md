@@ -151,7 +151,7 @@ panel = ContentPanel(state=app_state)
 
 ### CommandInput
 
-Slash command input following Claude Code conventions:
+Slash command input following slash-command conventions:
 
 ```python
 from gaius.widgets.command import CommandInput, CommandSubmitted

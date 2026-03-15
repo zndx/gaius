@@ -47,7 +47,7 @@ src/gaius/
 ├── health/             # Self-healing infrastructure
 │   ├── observe.py      # HealthObserver daemon
 │   └── service_fixes.py # Automated remediation strategies
-├── acp/                # Agent Client Protocol (Claude Code integration)
+├── acp/                # Agent Client Protocol (Mistral Vibe integration)
 ├── rase/               # RASE metamodel (agent training verification)
 ├── widgets/            # TUI widgets
 │   ├── grid.py         # MainGrid (19×19)
@@ -132,7 +132,7 @@ Do NOT use fallback syntax (`${KUBECONFIG:-...}`) — the system KUBECONFIG may 
 
 **ContentPanel**: Displays file contents, agent output, and position context.
 
-**CommandInput**: Claude Code-style slash commands with history.
+**CommandInput**: Slash commands with history.
 
 ### Key Bindings
 
@@ -479,23 +479,23 @@ When extending the metamodel, consult `docs/scratch/2025-12-19/150000_rase_mbse_
 
 ## ACP Integration (Agent Client Protocol)
 
-The `gaius.acp` package provides integration with Claude Code for autonomous health maintenance. **This is security-critical infrastructure** with mandatory multi-layer protections.
+The `gaius.acp` package provides integration with Mistral Vibe for autonomous health maintenance. **This is security-critical infrastructure** with mandatory multi-layer protections.
 
 ### Architecture Overview
 
 ```
 HealthObserver → detects incident → exceeds FMEA threshold?
        ↓                                    ↓ Yes
-  Log & self-heal ←── No ──┘     Escalate via ACP → Claude Code
+  Log & self-heal ←── No ──┘     Escalate via ACP → Mistral Vibe
                                             ↓
-                              Claude Code analyzes via MCP tools
+                              ACP agent analyzes via MCP tools
                                             ↓
                               Implements /health fix enhancement
                                             ↓
-                              Commits to acp-claude/health-fix branch
+                              Commits to acp/health-fix branch
 ```
 
-**Key Insight**: ACP-Claude is a *meta-level maintainer*. It evolves the `/health fix` framework itself, teaching Gaius to heal autonomously.
+**Key Insight**: The ACP agent is a *meta-level maintainer*. It evolves the `/health fix` framework itself, teaching Gaius to heal autonomously.
 
 ### Security Model (MANDATORY - No Bypass)
 
@@ -564,13 +564,13 @@ To prevent runaway automation:
 - Max 3 GitHub issues per 24 hours
 - Min 5 minutes between restart attempts
 - Max 3 restarts per endpoint per hour
-- All changes on `acp-claude/health-fix` branch for human review
+- All changes on `acp/health-fix` branch for human review
 
 ### Guru Meditation Codes
 
 | Code | Description |
 |------|-------------|
-| `#ACP.00000001.CONNFAIL` | Connection to Claude Code failed |
+| `#ACP.00000001.CONNFAIL` | Connection to ACP agent failed |
 | `#ACP.00000002.TIMEOUT` | Connection timeout |
 | `#ACP.00000003.NOTCONN` | Operation on disconnected client |
 | `#ACP.00000004.PROMPTTIMEOUT` | Prompt response timeout |
@@ -586,7 +586,7 @@ All ACP-related code changes should go through human review:
 
 ```bash
 # Switch to the ACP development branch
-git checkout acp-claude/health-fix
+git checkout acp/health-fix
 
 # Test ACP connection
 uv run python -c "

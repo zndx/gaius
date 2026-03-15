@@ -67,7 +67,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A[Claude Code] --> B[mcp_server.py]
+    A[MCP Client] --> B[mcp_server.py]
     B --> C["@mcp.tool handler"]
     C --> D[gaius.mcp.operations]
     D --> E[inference.client]
@@ -160,7 +160,7 @@ flowchart TD
 
 | Module | Layer | Singleton | Key Types | Description |
 |--------|-------|-----------|-----------|-------------|
-| [`acp/`](acp/README.md) | L5 | — | `GaiusACPClient` | Claude Code integration via ACP |
+| [`acp/`](acp/README.md) | L5 | — | `GaiusACPClient` | ACP agent integration (Mistral Vibe) |
 | [`mcp/`](mcp/README.md) | L5 | — | — | Programmatic MCP tool access |
 | [`providers/`](providers/README.md) | L4 | — | `CerebrasClient` | Cloud GPU providers |
 

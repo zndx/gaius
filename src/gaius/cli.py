@@ -6751,7 +6751,7 @@ Respond with:
 
             # Step 4: Process incidents with GitHub issues via ACP
             # This is the key demo feature: iterate ALL incidents with GitHub issues
-            # and have ACP-Claude add diagnostic comments for situational awareness
+            # and have the ACP agent add diagnostic comments for situational awareness
             incidents_with_issues = [
                 inc for inc in active_incidents
                 if inc.get("github_issue")
@@ -6822,7 +6822,7 @@ Respond with:
 
         Flow:
         1. Look up incident by GitHub issue number
-        2. Send comprehensive prompt to ACP-Claude
+        2. Send comprehensive prompt to ACP agent
         3. Create zettelkasten note with results (best effort)
         4. Add comment to GitHub issue (ALWAYS try, even if local note fails)
 
@@ -6868,17 +6868,17 @@ Respond with:
         # Step 3: Run ACP session - MUST succeed (fail-fast if ACP unavailable)
         from .acp import GaiusACPClient, ACPConfig, ACPConnectionError
 
-        # Use generous timeouts - ACP sessions with Claude Code can take
+        # Use generous timeouts - ACP sessions can take
         # significant time for complex health investigations
         config = ACPConfig(
             include_gaius_mcp=True,
-            connection_timeout=120.0,  # 2 min for Claude Code + MCP startup
-            prompt_timeout=None,  # No timeout - let Claude Code run to completion
+            connection_timeout=120.0,  # 2 min for ACP agent + MCP startup
+            prompt_timeout=None,  # No timeout - let the ACP agent run to completion
         )
 
         try:
             async with GaiusACPClient(config) as client:
-                # No timeout - let Claude Code run to completion
+                # No timeout - let the ACP agent run to completion
                 acp_response = await client.prompt(prompt)
         except ACPConnectionError as e:
             # ACP connection failure is a critical Ops Error - fail-fast
@@ -6895,7 +6895,7 @@ Respond with:
                 "error": f"ACP connection failed for issue #{issue_number}",
                 "guru_meditation": "#HF.00000002.ACPFAIL",
                 "acp_error": str(e),
-                "remediation": "Check Claude Code installation and ACP adapter availability",
+                "remediation": "Check ACP adapter installation and availability",
             }
         except Exception as e:
             # Any other ACP failure is also critical Ops Error
@@ -6943,13 +6943,13 @@ Respond with:
         """Process ALL incidents with GitHub issues via ACP for situational awareness.
 
         This is the key feature for the Crusoe.ai demo: iterate all active incidents
-        that have GitHub issues and have ACP-Claude add diagnostic comments for
+        that have GitHub issues and have the ACP agent add diagnostic comments for
         NOC engineers reviewing incidents at 2am.
 
         Flow for each incident:
         1. Get current system state via gRPC
         2. Build ACP prompt with system context
-        3. Send to ACP (Claude Code) for diagnosis
+        3. Send to ACP agent for diagnosis
         4. Add NOC-friendly GitHub comment (ALWAYS - this is the primary deliverable)
         5. Create KB note for audit trail
         6. If --close: resolve incident via gRPC and close GitHub issue
@@ -6995,7 +6995,7 @@ Respond with:
                 config = ACPConfig(
                     include_gaius_mcp=True,
                     connection_timeout=120.0,
-                    prompt_timeout=None,  # Let Claude Code run to completion
+                    prompt_timeout=None,  # Let the ACP agent run to completion
                 )
 
                 async with GaiusACPClient(config) as client:
@@ -7351,7 +7351,7 @@ The GitHub issue remained open, likely due to a race condition during prior reso
     def _build_noc_diagnosis_prompt(self, incident: dict, system_state: dict) -> str:
         """Build ACP prompt for NOC-friendly incident diagnosis.
 
-        This prompt instructs Claude Code to:
+        This prompt instructs the ACP agent to:
         1. Analyze current system state
         2. Diagnose if incident is still relevant or obsolete
         3. Add a GitHub comment with findings (the key deliverable)
@@ -7739,8 +7739,8 @@ Retried 3 times with exponential backoff (60s, 120s, 240s) before giving up.
             # Use generous timeouts for close verification
             config = ACPConfig(
                 include_gaius_mcp=True,
-                connection_timeout=120.0,  # 2 min for Claude Code + MCP startup
-                prompt_timeout=None,  # No timeout - let Claude Code run to completion
+                connection_timeout=120.0,  # 2 min for ACP agent + MCP startup
+                prompt_timeout=None,  # No timeout - let the ACP agent run to completion
             )
             async with GaiusACPClient(config) as client:
                 response = await client.prompt(prompt)
@@ -7783,7 +7783,7 @@ Retried 3 times with exponential backoff (60s, 120s, 240s) before giving up.
             incident: Incident details from observer
 
         Returns:
-            Comprehensive prompt for ACP-Claude investigation
+            Comprehensive prompt for ACP investigation
         """
         fingerprint = incident.get("fingerprint", "unknown")
         failure_mode = incident.get("failure_mode_id", "unknown")
@@ -7834,7 +7834,7 @@ Be thorough but concise. Your response will be added as a comment to GitHub issu
             incident: Incident details from observer
 
         Returns:
-            Brief prompt for ACP-Claude to verify health status
+            Brief prompt for ACP agent to verify health status
         """
         fingerprint = incident.get("fingerprint", "unknown")
         endpoint = incident.get("endpoint", "unknown")

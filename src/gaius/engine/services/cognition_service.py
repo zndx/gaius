@@ -5,7 +5,7 @@ running cognition cycles and engine audits when triggered by pg_cron
 or delta detection.
 
 Implements BaseDaemon protocol with CRITICAL criticality - engine enters
-DEGRADED mode if this daemon fails to start (not exit), allowing ACP-Claude
+DEGRADED mode if this daemon fails to start (not exit), allowing the ACP agent
 to investigate accumulated error states.
 
 Task Types Handled:
@@ -82,7 +82,7 @@ class CognitionService(BaseDaemon):
     """Cognition daemon for scheduled thought generation.
 
     Implements BaseDaemon with CRITICAL criticality - if this daemon fails,
-    engine enters DEGRADED mode to allow ACP-Claude investigation.
+    engine enters DEGRADED mode to allow ACP investigation.
 
     Monitors the scheduled_tasks table and processes cognition-related
     tasks when they become due. Integrates with the CognitionAgent

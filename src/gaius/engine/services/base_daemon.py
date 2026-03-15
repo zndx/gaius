@@ -5,7 +5,7 @@ this protocol to enable centralized lifecycle management with FAIL-FAST
 semantics.
 
 Key Design Decisions:
-- CRITICAL daemons: Engine enters DEGRADED mode (doesn't exit) so ACP-Claude
+- CRITICAL daemons: Engine enters DEGRADED mode (doesn't exit) so the ACP agent
   can investigate accumulated error states
 - REQUIRED daemons: Engine starts but logs ERROR with Guru code
 - OPTIONAL daemons: Engine starts with WARNING

@@ -33,8 +33,6 @@ class ModelAttribution:
 # Map adapter command prefixes to model attribution
 MODEL_ATTRIBUTION_MAP: dict[str, ModelAttribution] = {
     "vibe-acp": ModelAttribution("Mistral", "🌀", "https://mistral.ai"),
-    "claude-code": ModelAttribution("Claude", "🤖", "https://anthropic.com"),
-    "claude": ModelAttribution("Claude", "🤖", "https://anthropic.com"),
     "codex": ModelAttribution("Codex", "🧠", "https://openai.com"),
     "ollama": ModelAttribution("Local LLM", "🏠", None),
     "llamafile": ModelAttribution("Local LLM", "🏠", None),
