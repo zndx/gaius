@@ -1,6 +1,6 @@
 # Interfaces: TUI, CLI, MCP
 
-Gaius provides three access paths to the engine. Each serves a different use case but all communicate via the same gRPC protocol.
+Gaius provides three access paths to the engine. All three are thin clients — they contain no business logic, performing zero computation beyond display formatting. Every operation routes through gRPC to the engine, which is the single source of truth.
 
 ## TUI (Terminal User Interface)
 
@@ -11,15 +11,16 @@ uv run gaius
 ```
 
 **Components**:
-- **MainGrid**: 19x19 Go board for spatial visualization
-- **MiniGridPanel**: Three 9x9 orthographic projections (CAD-style views)
-- **FileTree**: Plan 9-inspired navigation with agents as files
-- **ContentPanel**: Right panel displaying context and output
-- **CommandInput**: Slash command input with history
+- **MainGrid**: 19x19 Go board for spatial visualization of embedding topology
+- **MiniGridPanel**: Three 9x9 orthographic projections (CAD-style views showing topology, embeddings, and temporal evolution)
+- **FileTree**: Plan 9-inspired navigation where agents appear as files under `/agents/`
+- **ContentPanel**: Right panel displaying file contents, agent output, and position context
+- **CommandInput**: Slash command input with history and tab completion
+- **ObservePanel**: Real-time metrics with 15-second refresh, sparklines showing 5 minutes of history
+
+**Design inspirations**: Go board (spatial metaphor, tenuki), Bloomberg Terminal (information density), Plan 9/Acme (everything is a file), CAD orthographic views (multiple projections updating together).
 
 **Best for**: Interactive exploration, spatial navigation, visual pattern recognition.
-
-See [The TUI](../guide/tui.md) for the user guide.
 
 ## CLI (Command Line Interface)
 
@@ -39,15 +40,15 @@ for i in $(seq 1 15); do
 done
 ```
 
-**63 slash commands** covering health, agents, inference, evolution, knowledge base, visualization, and more.
+**63 slash commands** spanning health diagnostics, agent management, inference control, evolution monitoring, knowledge base operations, visualization rendering, observability, and more. Every command available in the TUI is available in the CLI with identical semantics.
+
+The CLI is the primary testing interface. After every code change, the CLI verifies that the product works — it is the product, not a wrapper around it.
 
 **Best for**: Scripting, CI/CD integration, automated monitoring, quick status checks.
 
-See [The CLI](../guide/cli.md) for the user guide.
-
 ## MCP (Model Context Protocol)
 
-Programmatic interface exposing 163 tools to AI assistants like Claude Code.
+Programmatic interface exposing 163 tools to AI assistants.
 
 ```json
 {
@@ -61,11 +62,11 @@ Programmatic interface exposing 163 tools to AI assistants like Claude Code.
 }
 ```
 
-**163 MCP tools** organized by domain: health, agents, inference, knowledge base, observability, evolution, visualization, bases, and more.
+**163 MCP tools** organized by domain: health (diagnostics, observer, incidents, fixes), agents (evolution, swarm, latent memory, CLT), inference (scheduler, ask, evaluate), knowledge base (search, read, create, sync), observability (metrics, prometheus, status), visualization (render, collections), and bases (entity queries, lineage).
 
-**Best for**: AI-assisted operations, autonomous health maintenance, Claude Code integration.
+The MCP server enables AI-assisted operations — an external agent can monitor health, trigger evolution cycles, query the knowledge base, and manage infrastructure through the same gRPC protocol as human-operated interfaces.
 
-See [MCP Integration](../guide/mcp.md) for setup and usage.
+**Best for**: AI-assisted operations, autonomous health maintenance, programmatic integration.
 
 ## Interface Comparison
 
@@ -76,23 +77,21 @@ See [MCP Integration](../guide/mcp.md) for setup and usage.
 | JSON output | No | Yes | Yes |
 | Scriptable | No | Yes | Yes |
 | AI-accessible | No | No | Yes |
-| Slash commands | Yes | Yes | N/A |
+| Slash commands | 63 | 63 | N/A (163 tools) |
 | Streaming output | Yes | No | No |
 
-## Shared Protocol
+## Engine-First Architecture
 
 All three interfaces use the same gRPC client library (`gaius.client`) to communicate with the engine:
 
-```python
-from gaius.client import GrpcClient, GrpcClientConfig
-
-config = GrpcClientConfig(
-    host="localhost",
-    port=50051,
-    timeout=30,  # default; inference calls use 120s
-)
-client = GrpcClient(config)
-result = await client.call("GetHealthStatus")
+```
+TUI ─┐
+CLI ──┼── gRPC (port 50051) ──→ Engine ──→ Services, Backends, Storage
+MCP ─┘
 ```
 
-The default timeout is 30 seconds. Inference calls (completions, evaluations) use 120 seconds. These can be overridden via the `GAIUS_ENGINE_TIMEOUT` environment variable.
+The engine is the single source of truth for metric export, state management, and inference routing. Clients never access GPUs, databases, or external APIs directly. This architecture means:
+
+- Adding a new capability requires only an engine service + gRPC method — all three clients get it automatically
+- Testing via CLI validates the same code path as TUI and MCP
+- Observability instrumentation happens once, in the engine, tagged with the originating service (`gaius-tui`, `gaius-cli`, `gaius-mcp`, `gaius-engine`, `gaius-worker`)
