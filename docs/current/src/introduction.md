@@ -1,54 +1,44 @@
 # Gaius
 
-> *"True glory consists in doing what deserves to be written, in writing what deserves to be read."*
-> — Gaius Plinius Secundus (Pliny the Elder)
+**Gaius** is a terminal interface for navigating graph-oriented data domains. It projects high-dimensional embeddings onto a discrete lattice via UMAP, computes persistent homology and Ollivier–Ricci curvature over the embedding space, and renders the results as interactive overlays on the lattice.
 
-**Gaius** is a CLI-first terminal interface for navigating complex, graph-oriented data domains. It renders high-dimensional embeddings and topological structures onto a constrained grid — transforming abstract complexity into spatial intuition.
+Named after Gaius Plinius Secundus (Pliny the Elder), whose *Naturalis Historia* cataloged the natural world across 37 books.
 
-Named after the Roman polymath Pliny the Elder, whose *Naturalis Historia* attempted to catalog all knowledge of the natural world, Gaius embodies a similar ambition: to provide a unified interface through which the modern polymath can perceive, navigate, and reason about interconnected information landscapes.
+## Capabilities
 
-## What Makes Gaius Different
+1. **Lattice Projection**: UMAP (cosine metric, k=15 neighbors, min_dist=0.1) maps embedding vectors to continuous 2D coordinates. These are quantized to a 19×19 integer lattice by rounding and clipping to [0, 18]. The main lattice is accompanied by two 9×9 orthographic mini-grids centered on the cursor: an **Embed** view showing the local cosine-similarity neighborhood, and an **Iso** view rendering scalar fields (curvature, persistence, complexity) as elevation maps via inverse-distance-weighted interpolation (power=2).
 
-Traditional terminals present information as streams of text. Dashboards present it as isolated charts. Neither captures the *shape* of data — the loops, clusters, and voids that reveal hidden structure.
+2. **Persistent Homology (H₀–H₂)**: Ripser computes a Vietoris–Rips filtration over the cosine distance matrix of the original high-dimensional embeddings (not the projected coordinates), producing persistence barcodes for dimensions 0 through 2. Intervals with persistence > 0.1 are marked significant. H₀ captures connected components, H₁ captures 1-cycles, and H₂ captures 2-dimensional voids. Barcodes are rendered as overlays on the lattice, with persistent generators mapped to their lattice positions via the UMAP projection.
 
-Gaius implements the following core capabilities:
+3. **Ollivier–Ricci Curvature**: Discrete Ricci curvature is computed on a k-nearest-neighbor graph (k=15, cosine metric) constructed from the embedding space, using the OTD method with α=0.5. Per-node curvature is the mean of incident edge curvatures. The resulting curvature field, gradient vectors (finite-difference approximation), and divergence values are projected to the Iso mini-grid. Positive curvature indicates cluster interiors; negative curvature indicates semantic boundaries.
 
-1. **Low-Dimensional Projection onto a Discrete Lattice**: High-dimensional embeddings are mapped onto a regular 19×19 integer lattice via UMAP quantization, with multiple orthogonal layout modes. The main lattice is accompanied by a dual system of 9×9 orthographic mini-grids: an **Embed** view showing the local cosine-similarity neighborhood around the cursor, and an **Iso** view rendering discrete Ricci curvature as an elevation map over the projected manifold. Together these provide simultaneous access to global topology and local differential geometry.
+4. **Multi-Agent Exploration**: Seven agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary) navigate the lattice with role-specific positioning behaviors (center-seeking, peripheral, random) and cluster affinities. Agent training uses the RASE framework (Rapid Agentic Systems Engineering), where constraints are composed declaratively via AllOf/AnyOf/Not and evaluated by a ground-truth oracle to produce verifiable reward signals.
 
-2. **Persistent Homology (H₀–H₂) over the Projected Lattice**: Persistent homology is computed over a Vietoris–Rips filtration of the UMAP-projected point cloud, producing persistence barcodes across dimensions zero through two. Long-lived generators of H₁ (persistent 1-cycles) serve as the primary scale-invariant topological invariants, quantifying robust loops and structural redundancies in the underlying data manifold. H₀ captures connected components; H₂ identifies higher-dimensional voids.
+5. **Modal Interface**: Vim-style modal navigation (`hjkl` motion, slash-command dispatch, overlay toggles) over both the lattice and the underlying gRPC service graph.
 
-3. **Discrete Ricci Curvature on the Semantic Manifold**: Ollivier–Ricci curvature is estimated over a k-nearest-neighbor graph constructed from the embedding space. The resulting curvature field, gradient vectors, and divergence values are projected onto the lattice and rendered in the Iso mini-grid, revealing regions of semantic convergence (positive curvature) and divergence (negative curvature).
+6. **FMEA Health Observer**: A background daemon scores system components on Severity × Occurrence × Detection and escalates via the automated corrective protocol (ACP) when risk priority numbers exceed configured thresholds.
 
-4. **Structured Multi-Agent Exploration**: A swarm of seven specialized agents (Leader, Risk, Optimizer, Planner, Critic, Executor, Adversary) operates directly on the filtered complex with parallel execution and consensus synthesis. Agent training follows the RASE (Rapid Agentic Systems Engineering) framework, which provides intrinsically verifiable rewards via a formal constraint-satisfaction oracle rather than learned approximations.
+## Computational Pipeline
 
-5. **Modal Keyboard-Driven Interface**: The interface follows a strictly modal paradigm (in the tradition of Vim and Plan 9 acme) with `hjkl` motion, slash-command dispatch, and overlay toggles, enabling efficient navigation of both the lattice and the underlying gRPC service graph.
+The following pipeline is implemented end-to-end:
 
-6. **Health Monitoring via Failure-Mode and Effects Analysis (FMEA)**: A background observer daemon continuously evaluates system components using FMEA scoring (Severity × Occurrence × Detection) and escalates via the automated corrective protocol (ACP) when risk priority thresholds are exceeded.
+1. **Embed** — Documents are encoded as multi-vector embeddings (ColNomic, GPU-accelerated) and indexed.
+2. **Project** — UMAP maps the embedding space to 2D; coordinates are rounded to the 19×19 integer lattice.
+3. **Filtration** — Vietoris–Rips filtration over the cosine distance matrix of original embeddings; Ripser computes persistence barcodes for H₀, H₁, H₂. Significant intervals (persistence > 0.1) produce topological overlays.
+4. **Curvature** — Ollivier–Ricci curvature on the k-NN graph (k=15, α=0.5, OTD); curvature, gradient, and divergence fields are interpolated onto the 9×9 Iso mini-grid via IDW.
+5. **Exploration** — Agents operate on the lattice; topological features and curvature values are available as grid state for trajectory selection.
+6. **Rendering** — LuxCore path-traces procedural card visualizations from the computed geometric features.
 
-## Core Mathematical Pipeline
+The lattice serves as both a visualization surface and a discrete approximation of the data manifold, coupling persistent homology, differential geometry, and agent-based exploration in one interactive system.
 
-The following pipeline is fully implemented in the current prototype:
+## Architecture
 
-1. **Embedding** — Documents are encoded as multi-vector embeddings (ColNomic, GPU-accelerated) and stored in a vector index.
-2. **Lattice projection** — UMAP maps the high-dimensional embedding space onto the 19×19 integer lattice, with layout variants for different analytical perspectives.
-3. **Persistent homology** — A Vietoris–Rips filtration is constructed over the projected point cloud; persistence barcodes are computed for H₀, H₁, and H₂, yielding topological overlays on the lattice.
-4. **Discrete Ricci curvature** — Ollivier–Ricci curvature is estimated on the k-NN graph of the embedding space, producing curvature, gradient, and divergence fields rendered in the orthographic Iso mini-grid.
-5. **Agent exploration** — The seven-role agent swarm operates on the filtered complex; topological features and curvature values inform agent state, trajectory selection, and Zettelkasten knowledge capture.
-6. **Visualization** — LuxCore path-traced renderings of card topology are generated procedurally from the computed geometric features.
-
-The lattice thus serves simultaneously as a visualization surface and a discrete approximation of the underlying data manifold, bridging persistent homology, manifold geometry, and agent-based exploration in a single interactive system.
-
-## The Platform
-
-The computational pipeline above is embedded within a broader systems architecture:
-
-- **gRPC inference control plane** — 37 registered services coordinating 6 NVIDIA GPUs with makespan-scheduled vLLM inference
-- **Three isomorphic interfaces** — TUI (interactive exploration), CLI (scripting and automation), MCP (163 tools for AI-assisted workflows), all communicating with the engine via a shared gRPC protocol
-- **Metaflow pipelines** — Orchestrated data flows for article curation, agent evaluation, and batch rendering
-- **LuxCore path tracer** — Procedural card visualizations driven by the grammar engine, with GPU-accelerated rendering via PATHOCL
-- **FMEA-based Health Observer** — Background daemon scoring system components on Severity × Occurrence × Detection, escalating via the automated corrective protocol when risk priority thresholds are exceeded
-- **Bases feature store** — Temporal entity queries with a domain query language compiled to SQL via AST-based guardrails
-- **RASE metamodel** — Formal verification framework for agent training: constraints are specified declaratively, composed via AllOf/AnyOf/Not, and evaluated by a ground-truth oracle to produce verifiable reward signals
+- **Inference** — gRPC control plane with 37 services coordinating 6 NVIDIA GPUs via makespan-scheduled vLLM
+- **Interfaces** — TUI, CLI, and MCP server (163 tools), all communicating with the engine via shared gRPC protocol
+- **Pipelines** — Metaflow orchestration for article curation, agent evaluation, and batch rendering
+- **Visualization** — LuxCore PATHOCL engine with GPU-accelerated rendering driven by a CFDG-inspired grammar
+- **Observability** — FMEA-scored health observer with automated corrective protocol escalation
+- **Storage** — Bases feature store with a domain query language compiled to SQL via AST-based guardrails; RASE metamodel for agent verification
 
 ## Getting Started
 
@@ -64,5 +54,3 @@ uv run gaius-cli --cmd "/gpu status" --format json
 ```
 
 Navigate with `hjkl`. Cycle overlays with `o`. Toggle modes with `v`. Press `?` for help.
-
-The end-to-end pipeline — from high-dimensional embeddings through lattice projection, filtration, curvature estimation, and multi-agent exploration — is operational in the current prototype, providing a unified topological interface for the systematic investigation of complex information landscapes.

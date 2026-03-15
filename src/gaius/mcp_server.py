@@ -4668,8 +4668,9 @@ Domain: {domain or 'general'}
     ) -> str:
         """Evaluate agent output using tiered strategy.
 
-        Uses local model by default, XAI only if budget allows
-        and force_xai=True or for promotion decisions.
+        Routes through the gRPC engine's ExternalInferenceRouter when
+        force_xai=True, which uses the latest Grok model (grok-4-1-fast).
+        Falls back to local instruct model otherwise.
 
         Args:
             agent_output: The output to evaluate
@@ -4678,29 +4679,80 @@ Domain: {domain or 'general'}
             force_xai: Force XAI evaluation (budget-permitting)
         """
         try:
-            from .models.tiered_evaluation import get_tiered_evaluator
+            if force_xai:
+                # Route directly through ExternalInferenceRouter for latest Grok
+                from .engine.backends.external.router import get_external_router
 
-            evaluator = get_tiered_evaluator()
+                router = get_external_router()
 
-            tier = "xai" if force_xai else "auto"
-            result = await evaluator.evaluate(
-                agent_output=agent_output,
-                task_prompt=task_prompt,
-                context=context,
-                use_tier=tier,
-            )
+                system_prompt = (
+                    "You are an expert evaluator. Assess the provided output "
+                    "against the task prompt. Provide: a summary assessment, "
+                    "specific strengths, specific weaknesses, and actionable "
+                    "improvement suggestions. Be direct and specific."
+                )
 
-            return json.dumps(
-                {
-                    "overall_score": result.overall_score,
-                    "dimension_scores": result.dimension_scores,
-                    "summary": result.summary,
-                    "evaluator_model": result.evaluator_model,
-                    "tier_used": "xai" if "grok" in result.evaluator_model else "local",
-                    "budget_after": evaluator.get_budget_status(),
-                },
-                indent=2,
-            )
+                prompt_text = (
+                    f"## Task\n{task_prompt}\n\n"
+                    f"## Context\n{context}\n\n" if context else
+                    f"## Task\n{task_prompt}\n\n"
+                )
+                prompt_text += f"## Output to Evaluate\n{agent_output}"
+
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt_text},
+                ]
+
+                response = await router.complete(
+                    messages=messages,
+                    provider="xai",
+                    max_tokens=4096,
+                    temperature=0.3,
+                )
+
+                if response.error:
+                    return json.dumps({"error": response.error}, indent=2)
+
+                return json.dumps(
+                    {
+                        "evaluation": response.content,
+                        "model": response.model,
+                        "provider": response.provider,
+                        "input_tokens": response.input_tokens,
+                        "output_tokens": response.output_tokens,
+                        "latency_ms": response.latency_ms,
+                    },
+                    indent=2,
+                )
+            else:
+                # Use local model via gRPC scheduler
+                from .client.engine_proxy import get_scheduler_proxy
+
+                scheduler = await get_scheduler_proxy()
+
+                prompt_text = (
+                    f"Evaluate this output against the task.\n\n"
+                    f"Task: {task_prompt}\n\n"
+                    f"Output:\n{agent_output}"
+                )
+
+                result = await scheduler.complete(
+                    prompt=prompt_text,
+                    system_prompt="You are an expert evaluator. Provide a brief assessment.",
+                    max_tokens=2048,
+                )
+
+                return json.dumps(
+                    {
+                        "evaluation": result.content,
+                        "model": "local:instruct",
+                        "provider": "local",
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                    },
+                    indent=2,
+                )
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
