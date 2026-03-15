@@ -21,7 +21,7 @@ When a health check detects an issue:
    - **RPN < 100** (Tier 0): Automatic procedural restart
    - **RPN 100-200** (Tier 1): Agent-assisted remediation
    - **RPN > 200** (Tier 2): Requires user approval
-   - **RPN > 300**: Escalates to ACP (Claude Code) for meta-level intervention
+   - **RPN > 300**: Escalates via ACP (Mistral Vibe) for meta-level intervention
 4. Outcomes feed back into the adaptive learner, adjusting future risk scores
 
 ## Health Check Categories
@@ -50,15 +50,23 @@ uv run gaius-cli --cmd "/health fix engine" --format json
 uv run gaius-cli --cmd "/fmea" --format json
 ```
 
-## Self-Healing First
+## HealthObserver Daemon
 
-When encountering unhealthy services, always try `/health fix` before manual intervention:
+The `HealthObserver` (`health/observe.py`) runs as a background daemon with a configurable poll interval (default 60s). On each cycle it executes all health checks, maps failures to FMEA failure modes, and manages a set of active incidents.
 
-1. **`/health fix <service>`** — Let Gaius attempt self-healing
-2. **`just restart-clean`** — Only if self-healing fails
-3. **Manual investigation** — Last resort
+**Incident lifecycle**:
 
-This ensures the self-healing system gets exercised and improved over time.
+1. **Detection** — Health check fails; FMEA engine maps to a failure mode and computes RPN
+2. **Active** — Incident is created with a fingerprint (failure mode + endpoint). Duplicate fingerprints are deduplicated
+3. **Healing** — Self-healer applies the appropriate tier. Tier 0 restarts are immediate; Tier 1 uses a healthy endpoint for diagnosis; Tier 2 queues for approval
+4. **Recovering** — Spontaneous recovery detected (health check passes without intervention). The observer distinguishes this from healed-by-intervention
+5. **Resolved** — Outcome recorded. The adaptive learner adjusts S/O/D scores based on whether the fix succeeded, how long it took, and whether the issue was user-reported or auto-detected
+
+**Healing event audit trail**: Every remediation attempt is recorded in the `healing_events` PostgreSQL table — including ACP escalations, which log the full prompt/response exchange. This provides a complete audit trail for post-incident analysis and for training the adaptive learner.
+
+**Scheduled transition awareness**: The observer consults the `AgendaTracker` before creating incidents. Endpoints currently in a makespan-scheduled transition (e.g., model swap during GPU eviction) are excluded from incident creation, preventing false positives during planned operations.
+
+**ACP escalation**: When an incident exceeds RPN 300 or fails three local remediation attempts, the observer escalates to Mistral Vibe via the Agent Client Protocol. The ACP agent analyzes the failure using MCP tools, identifies gaps in the `/health fix` framework, and commits improvements to the `acp/health-fix` branch for human review. Cadence limits (max 3 issues/24h, min 5 min between restarts) prevent runaway automation.
 
 ## Subchapters
 
