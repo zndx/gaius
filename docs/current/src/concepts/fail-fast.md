@@ -80,7 +80,7 @@ When services are unhealthy, Gaius follows a remediation hierarchy:
 2. **Manual commands** (`just restart-clean`, etc.) — Only if self-healing fails
 3. **ACP escalation** — For novel failures that need human or AI intervention
 
-The Health Observer daemon continuously monitors all system components. When an incident exceeds the configured FMEA RPN (Risk Priority Number) threshold, it escalates through ACP to Claude Code for meta-level intervention.
+The Health Observer daemon continuously monitors all system components. When an incident exceeds the configured FMEA RPN (Risk Priority Number) threshold, it escalates through ACP to Mistral Vibe for meta-level intervention.
 
 ## Heuristics and KB
 

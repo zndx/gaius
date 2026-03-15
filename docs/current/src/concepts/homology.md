@@ -15,7 +15,7 @@ Cloud A:          Cloud B:
   ● ●               ●   ●
 ```
 
-Same mean. Same variance. Same point count. But Cloud A is a filled disk; Cloud B is a ring with a hole. The hole is *topologically* significant—it represents something absent, something that might matter.
+Same mean. Same variance. Same point count. But Cloud A is a filled disk; Cloud B is a ring with a hole. The hole is *topologically* significant — it represents something absent, something that might matter.
 
 Persistent homology is the mathematics of detecting such shapes.
 
@@ -41,7 +41,7 @@ As ε increases:
 
 Each topological feature has a **birth** time (the ε at which it appears) and a **death** time (the ε at which it vanishes).
 
-Features that persist across a wide range of ε are considered *significant*—they reflect genuine structure rather than noise.
+Features that persist across a wide range of ε are considered *significant* — they reflect genuine structure rather than noise.
 
 ```
 Persistence Diagram:
@@ -57,34 +57,42 @@ Persistence Diagram:
 
 Points far from the diagonal represent persistent features.
 
-## Death Loops (H1)
+## Gaius Implementation
 
-In Gaius, **H1 features** receive special attention as "death loops." These represent:
-
-- **Cycles in data flow**: Feedback loops, circular dependencies
-- **Systemic risks**: Self-reinforcing failure modes
-- **Market structures**: Liquidity cycles, regulatory arbitrage loops
-
-When projected onto the grid, death loops appear as `⚠` markers in regions where the underlying embedding space exhibits persistent 1-dimensional holes.
-
-## Practical Application
+The `TDAComputer` (`core/tda.py`) computes persistent homology via ripser on the cosine distance matrix of Nomic 768-dimensional embeddings:
 
 ```python
-from gtda.homology import VietorisRipsPersistence
-from gtda.diagrams import PersistenceEntropy
-
-# Compute persistence diagrams
-vr = VietorisRipsPersistence(homology_dimensions=[0, 1, 2])
-diagrams = vr.fit_transform([point_cloud])
-
-# Quantify topological complexity
-entropy = PersistenceEntropy()
-ent = entropy.fit_transform(diagrams)
-
-# Extract significant H1 features
-h1_features = diagrams[0][diagrams[0][:, 0] == 1]
-persistent_loops = h1_features[h1_features[:, 2] - h1_features[:, 1] > threshold]
+computer = TDAComputer(max_dimension=2, method="rips")
+features = computer.compute(embeddings, grid_coords)
 ```
+
+**Key parameters:**
+- Distance metric: cosine (on the original 768-dim embeddings, not projected coordinates)
+- Max dimension: 2 (H0, H1, H2)
+- Significance threshold: persistence > 0.1 (a heuristic separating signal from noise)
+- Subsampling: random sample when point count exceeds `config.tda.max_points` (ripser is O(n³) worst case)
+
+The output `TDAFeatures` contains raw `PersistenceInterval` objects (birth, death, dimension, representative indices) plus grid-projected `BoundingBox` regions for visualization overlays.
+
+## How Gaius Uses Each Dimension
+
+**H0** (connected components): How the collection fragments into clusters at different distance thresholds. The Betti number b₀ counts distinct topological components. In the visualization pipeline, b₀ determines the number of disconnected shape groups.
+
+**H1** (loops / "death loops"): 1-cycles that persist across a range of filtration values indicate circular or cyclic structure — topics that loop back on themselves. In the grid overlay, H1 features appear as `⚠` markers. In the visualization pipeline, b₁ generates toroidal glass rings (0-3 per card).
+
+**H2** (voids): 2-cycles that enclose empty regions — higher-order cavities in the embedding space where no cards exist despite being topologically surrounded. In the visualization pipeline, b₂ generates inverted-normal void spheres (0-2 per card).
+
+## From Topology to Visualization
+
+The persistence diagram feeds directly into the grammar engine's feature-to-rule mapping:
+
+| Topological Feature | Visual Encoding |
+|---------------------|----------------|
+| Total persistence (normalized via tanh) | Recursion depth (3-7 levels) |
+| b₁ count | Toroidal glass ring count |
+| b₂ count | Void chamber count |
+| Individual persistence intervals | Filament structures — scale encodes lifetime, z-position encodes birth value |
+| Persistence entropy | Used for temporal change detection (regime change signals) |
 
 ## Entropy as Summary
 
@@ -93,7 +101,7 @@ persistent_loops = h1_features[h1_features[:, 2] - h1_features[:, 1] > threshold
 - **Low entropy**: Few dominant features (simple structure)
 - **High entropy**: Many features of similar persistence (complex, fractal-like)
 
-Gaius tracks entropy over time. Sudden entropy spikes may indicate regime changes in your domain.
+Gaius tracks entropy over time. Sudden entropy spikes may indicate regime changes in the underlying domain.
 
 ## Interpreting Grid Overlays
 
@@ -119,4 +127,4 @@ Domain expertise is required to interpret topological features. Gaius surfaces t
 
 - *Computational Topology* by Edelsbrunner and Harer
 - *Topological Data Analysis* by Carlsson
-- giotto-tda documentation: [giotto-ai.github.io](https://giotto-ai.github.io/gtda-docs/)
+- ripser documentation: [ripser.scikit-tda.org](https://ripser.scikit-tda.org/)

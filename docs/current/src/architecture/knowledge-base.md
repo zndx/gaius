@@ -30,7 +30,7 @@ build/dev/
 
 ## MCP Tools
 
-The KB is fully accessible through MCP tools, enabling Claude Code and other agents to read, write, and search the knowledge base:
+The KB is fully accessible through MCP tools, enabling AI assistants and agents to read, write, and search the knowledge base:
 
 | Tool | Operation |
 |------|-----------|

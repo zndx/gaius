@@ -1,6 +1,6 @@
 # Engine Services
 
-The engine hosts 37 services organized into four groups: resource management, intelligence, data, and external integration.
+The engine hosts 37 services organized into four groups: resource management, intelligence, data, and external integration. All services run in a single daemon process, enabling zero-cost inter-service calls and shared access to GPU resources.
 
 ## Service Groups
 
@@ -8,39 +8,66 @@ The engine hosts 37 services organized into four groups: resource management, in
 
 | Service | Purpose |
 |---------|---------|
-| OrchestratorService | vLLM endpoint lifecycle and GPU allocation |
-| SchedulerService | Priority-based job queue with XAI budget |
-| HealthService | GPU and endpoint health monitoring |
-| AgendaTracker | Tracks scheduled endpoint transitions for makespan operations |
+| OrchestratorService | vLLM endpoint lifecycle, GPU allocation, capability-based scheduling |
+| SchedulerService | Priority job queue (CRITICAL→EVOLUTION), OR-Tools makespan optimization, XAI budget |
+| HealthService | GPU health via pynvml, endpoint liveness, FMEA score computation |
+| AgendaTracker | Tracks scheduled endpoint transitions to suppress false-positive health incidents |
 
 ### Intelligence
 
 | Service | Purpose |
 |---------|---------|
-| EvolutionService | Agent prompt optimization via APO |
-| CognitionService | Autonomous thought generation (every 4h) |
-| CLTService | Cross-Layer Transcoder feature extraction |
-| TopologyService | Semantic attractor detection and drift |
-| NGRCPredictor | Reservoir computing for temporal prediction |
+| EvolutionService | Agent prompt optimization via APO/GEPA during GPU idle periods |
+| CognitionService | Autonomous thought generation — pattern, connection, curiosity, self-observation |
+| CLTService | Cross-Layer Transcoder sparse feature extraction (20,480-dim, ~115 active) |
+| TopologyService | Semantic attractor detection, drift monitoring via CLT features |
+| NGRCPredictor | Reservoir computing (NVAR) for temporal prediction of embedding trajectories |
 
 ### Data
 
 | Service | Purpose |
 |---------|---------|
-| DatasetService | NiFi SoM dataset generation |
-| FlowSchedulerService | Metaflow pipeline scheduling |
+| DatasetService | NiFi SoM dataset generation for agent training |
+| FlowSchedulerService | Metaflow pipeline scheduling and execution |
 | KBService | Knowledge base CRUD operations |
-| LineageService | Provenance tracking |
+| LineageService | OpenLineage event materialization into Apache AGE graph |
 
 ### External Integration
 
 | Service | Purpose |
 |---------|---------|
-| XBookmarksService | X (Twitter) bookmark synchronization |
+| XBookmarksService | X (Twitter) bookmark synchronization with folder-first sync |
 
-## Service Registration
+## Background Tasks
 
-Services register with the engine during startup. Each service implements a standard lifecycle:
+Several services run scheduled background tasks without external cron:
+
+| Task | Service | Schedule | Purpose |
+|------|---------|----------|---------|
+| `cognition_cycle` | CognitionService | Every 4h | Detect patterns across recent KB entries |
+| `self_observation` | CognitionService | Every 8h | Meta-cognitive reflection on thought quality |
+| `engine_audit` | CognitionService | Every 12h | System health patterns, resource utilization |
+| Evolution cycle | EvolutionService | GPU idle (<30% for 60s) | Agent prompt optimization via APO/GEPA |
+| Health check | HealthService | Every 30s | Endpoint liveness polling |
+| X bookmark sync | XBookmarksService | Configurable | Folder-first bookmark synchronization |
+
+## Service Dependencies
+
+Services form a directed dependency graph. The orchestrator and scheduler are foundational:
+
+```
+OrchestratorService → VLLMController → GPU Pool (6x NVIDIA)
+SchedulerService → OrchestratorService → BackendRouter
+EvolutionService → SchedulerService (submits jobs at EVOLUTION priority)
+CognitionService → SchedulerService (submits jobs at NORMAL priority)
+HealthService → GPU Pool (via pynvml, not via orchestrator)
+TopologyService → CLTService → circuit-tracer (BluelightAI)
+NGRCPredictor → TopologyService (embedding centroid trajectories)
+```
+
+## Service Lifecycle
+
+Each service implements a standard lifecycle:
 
 ```python
 class SomeService:
@@ -53,31 +80,10 @@ class SomeService:
         ...
 ```
 
-## Background Tasks
+Services are registered at engine startup and torn down in reverse order. Background tasks use `asyncio.create_task()` with structured cancellation on shutdown.
 
-Several services run scheduled background tasks:
+## See Also
 
-| Task | Service | Schedule | Purpose |
-|------|---------|----------|---------|
-| `cognition_cycle` | CognitionService | Every 4h | Pattern detection in KB activity |
-| `self_observation` | CognitionService | Every 8h | Meta-cognitive reflection |
-| `engine_audit` | CognitionService | Every 12h | System health analysis |
-| Evolution cycle | EvolutionService | GPU idle | Agent prompt optimization |
-| Health check | HealthService | Every 30s | Endpoint liveness |
-
-## Service Dependencies
-
-Services form a dependency graph. The orchestrator and scheduler are foundational — most other services depend on them for inference access:
-
-```
-OrchestratorService → vLLM Controller → GPU Pool
-SchedulerService → OrchestratorService
-EvolutionService → SchedulerService
-CognitionService → SchedulerService
-HealthService → GPU Pool (via pynvml)
-TopologyService → CLTService
-```
-
-See the individual service chapters for implementation details:
-- [Orchestrator](./orchestrator.md)
-- [Scheduler](./scheduler.md)
+- [Orchestrator](./orchestrator.md) — GPU allocation and endpoint lifecycle
+- [Scheduler](./scheduler.md) — Priority queue and makespan optimization
+- [vLLM Controller](./vllm.md) — Process management and health monitoring
