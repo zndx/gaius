@@ -130,7 +130,6 @@
     jq
     k9s
     kubectl
-    llama-cpp
     metabase
     mdbook
     mdbook-d2
