@@ -1,8 +1,13 @@
 # Runtime Artifacts
 result
+.qdrant-initialized
 
 # Metaflow
 .metaflow
+metaflow.s3.*/
+
+# Blender backups
+*.blend1
 
 # Metabase
 plugins/
@@ -67,8 +72,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
