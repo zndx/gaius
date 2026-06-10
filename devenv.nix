@@ -108,6 +108,7 @@
   # builtins.getEnv "HOME" is empty in daemon mode).
   enterShell = ''
     export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
+    export METAFLOW_SERVICE_URL="http://localhost:30180"
   '';
 
   # https://devenv.sh/packages/

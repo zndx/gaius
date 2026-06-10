@@ -6,22 +6,16 @@ The Metaflow metadata service runs in Kubernetes and enables local flow executio
 
 Metaflow service is deployed via Tilt in `infra/tilt/`.
 
-## Port Forwarding
+## Network Access
 
-The service runs in-cluster and needs port-forwarding for local access:
-
-```bash
-kubectl port-forward svc/metaflow-service 8180:8080
-```
-
-This is handled automatically by the `metaflow-port-forwards.sh` process script.
+The service is exposed via K8s NodePort (30180) for local access. The `metaflow-port-forwards.sh` process script patches the service to NodePort automatically on startup.
 
 ## Environment
 
 Set the service URL for flow runs:
 
 ```bash
-export METAFLOW_SERVICE_URL=http://localhost:8180
+export METAFLOW_SERVICE_URL=http://localhost:30180
 ```
 
 This is set automatically by `enterShell` in devenv.nix.

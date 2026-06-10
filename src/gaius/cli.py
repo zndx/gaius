@@ -6153,6 +6153,15 @@ Respond with:
                 if check.heuristic_id:
                     md_report += f"**Heuristic:** `{check.heuristic_id}`\n\n"
 
+        # Add RCA notices if any
+        if report.rca_notices:
+            md_report += "\n## Root Cause Analysis\n\n"
+            for notice in report.rca_notices:
+                affected = ", ".join(sorted(notice.affected_checks))
+                md_report += f"**{notice.root_cause}**: {notice.message}\n"
+                md_report += f"  - Affected checks: {affected}\n"
+                md_report += f"  - Escalation: {notice.escalation}\n\n"
+
         # Add interventions if any
         if report.interventions:
             md_report += "\n## Recommended Interventions\n\n"
@@ -6249,6 +6258,7 @@ Respond with:
             "skipped": report.skipped,
             "checks": checks,
             "interventions": report.interventions,
+            "rca_notices": [n.to_dict() for n in report.rca_notices] if report.rca_notices else None,
             "metrics": report.metrics if report.metrics else None,
             "self_healing": healing_info,
             "active_incidents": active_incidents if active_incidents else None,
@@ -6658,11 +6668,61 @@ Respond with:
                         "remediation": "Check PostgreSQL connection: pg_isready -p 5444",
                     }
 
+            elif service in ("metaflow", "k8s"):
+                # Metaflow/K8s stack fix via service_fixes framework
+                from .health.remediation import (
+                    RemediationExecutor,
+                    RemediationPlan,
+                )
+                from .health.service_fixes import get_strategy
+
+                strategy = get_strategy(service)
+                if not strategy:
+                    return {"error": f"No fix strategy for: {service}"}
+
+                actions = strategy.create_fix_actions()
+                plan = RemediationPlan(
+                    service=service,
+                    actions=actions,
+                    heuristic_id="infrastructure/metaflow_stack_down",
+                )
+
+                if dry_run:
+                    return {
+                        "dry_run": True,
+                        "service": service,
+                        "steps": [
+                            {"name": a.name, "description": a.description}
+                            for a in actions
+                        ],
+                        "note": "Run without --dry-run to execute",
+                    }
+
+                executor = RemediationExecutor()
+                result = await executor.execute(plan)
+                return {
+                    "service": service,
+                    "success": result.success,
+                    "steps_completed": sum(1 for r in result.action_results if r.success),
+                    "steps_total": len(result.action_results),
+                    "results": [
+                        {
+                            "name": r.action.name,
+                            "success": r.success,
+                            "output": r.output[:500] if r.output else None,
+                            "error": r.error[:200] if r.error else None,
+                        }
+                        for r in result.action_results
+                    ],
+                }
+
             else:
+                from .health.service_fixes import list_services
+
                 return {
                     "error": f"Unknown service: {service}",
-                    "available_services": ["endpoints", "evolution", "pipeline", "site"],
-                    "usage": "/health fix [endpoints|evolution|pipeline|site|<issue#>] [--dry-run]",
+                    "available_services": list_services(),
+                    "usage": "/health fix [endpoints|evolution|pipeline|site|metaflow|<issue#>] [--dry-run]",
                     "note": "Use '/health fix' without args for full HealthObserver remediation, or '/health fix 42' for ACP investigation of GitHub issue #42",
                 }
 

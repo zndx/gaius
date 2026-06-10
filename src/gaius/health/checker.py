@@ -134,6 +134,7 @@ class CheckResult:
     message: str
     details: dict[str, Any] = field(default_factory=dict)
     heuristic_id: Optional[str] = None
+    fix_service: Optional[str] = None  # Key in SERVICE_STRATEGIES for auto-remediation
     duration_ms: int = 0
     suggestion: Optional[str] = None
 
@@ -148,7 +149,54 @@ class HealthCheck:
     description: str
     check_fn: str  # Name of method to call
     heuristic_id: Optional[str] = None
+    fix_service: Optional[str] = None  # Key in SERVICE_STRATEGIES for auto-remediation
     critical: bool = False  # If True, failure stops further checks
+    slow: bool = False  # If True, skipped by run_quick and default run_all
+
+
+@dataclass
+class RCANotice:
+    """Root Cause Analysis notice when multiple failures share a common cause."""
+
+    root_cause: str
+    affected_checks: set[str]
+    message: str
+    escalation: str  # "ACP investigation" or "manual RCA"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for JSON output."""
+        return {
+            "root_cause": self.root_cause,
+            "affected_checks": sorted(self.affected_checks),
+            "message": self.message,
+            "escalation": self.escalation,
+        }
+
+
+# Dependency map for root cause correlation.
+# When multiple checks that depend on the same infrastructure fail,
+# we surface a single RCA notice instead of individual fix suggestions.
+# Maps root infrastructure to (sentinel_check_id, dependent_check_ids).
+# The sentinel is the check that directly tests the root infrastructure.
+# If the sentinel passes, the group is NOT the root cause — skip it.
+_DEPENDENCY_MAP: dict[str, tuple[str, list[str]]] = {
+    # Infrastructure layer — K8s being down breaks the entire Metaflow pipeline
+    "k8s": ("metaflow_stack", ["metaflow_stack", "metaflow_service"]),
+    # Database layer — postgres down breaks everything that queries it
+    "postgres": ("database_connection", [
+        "database_connection", "task_queue", "landing_page_pipeline",
+        "metaflow_stack", "content_freshness",
+    ]),
+    # Engine runtime — engine/daemons stopped means nothing processes
+    "engine": ("grpc_connection", [
+        "grpc_connection", "engine_endpoints", "cognition_daemon",
+        "evolution_daemon", "periodic_task_freshness", "metaflow_stack",
+    ]),
+    # Curation pipeline — broken Metaflow means no new content flows through
+    "curation_pipeline": ("metaflow_stack", [
+        "metaflow_stack", "landing_page_pipeline", "content_freshness",
+    ]),
+}
 
 
 @dataclass
@@ -171,6 +219,9 @@ class HealthReport:
     # Suggested interventions
     interventions: list[str] = field(default_factory=list)
 
+    # Root cause analysis notices
+    rca_notices: list[RCANotice] = field(default_factory=list)
+
     @property
     def healthy(self) -> bool:
         """Overall health status."""
@@ -188,10 +239,14 @@ class HealthReport:
     def summary(self) -> str:
         """Generate summary string."""
         total = len(self.checks)
-        return (
+        parts = [
             f"{self.status_indicator} Health: {self.passed}/{total} passed, "
             f"{self.warnings} warnings, {self.failures} failures"
-        )
+        ]
+        if self.rca_notices:
+            roots = ", ".join(n.root_cause for n in self.rca_notices)
+            parts.append(f"  Root Cause Analysis: {len(self.rca_notices)} correlation(s) detected ({roots})")
+        return "\n".join(parts)
 
 
 class HealthChecker:
@@ -223,6 +278,7 @@ class HealthChecker:
                 description="Primary: gRPC client to engine (orchestration, cognition, evolution)",
                 check_fn="_check_grpc_connection",
                 heuristic_id="engine/grpc_connection_stale",
+                fix_service="engine",
                 critical=False,  # Not critical - inference has fallback paths
             ),
             HealthCheck(
@@ -232,6 +288,7 @@ class HealthChecker:
                 description="vLLM endpoints managed by engine",
                 check_fn="_check_endpoints",
                 heuristic_id="inference/endpoint_unhealthy",
+                fix_service="endpoints",
             ),
             # Inference service checks (direct HTTP paths)
             HealthCheck(
@@ -256,6 +313,7 @@ class HealthChecker:
                 description="Primary: Activity logs, evolution state, agent versions",
                 check_fn="_check_database",
                 heuristic_id="data/database_connection_failed",
+                fix_service="postgres",
                 critical=True,
             ),
             HealthCheck(
@@ -264,6 +322,7 @@ class HealthChecker:
                 category="data",
                 description="Primary: Vector embeddings, semantic search, latent memory",
                 check_fn="_check_qdrant",
+                fix_service="qdrant",
             ),
             HealthCheck(
                 id="s3_minio_service",
@@ -271,6 +330,7 @@ class HealthChecker:
                 category="data",
                 description="Primary: Object storage for artifacts, large documents",
                 check_fn="_check_s3_minio",
+                fix_service="minio",
             ),
             # Cognition checks
             HealthCheck(
@@ -459,16 +519,28 @@ class HealthChecker:
                 check_fn="_check_site_content_freshness",
                 heuristic_id="site/content_stale",
             ),
+            # Metaflow deep stack validation (slow — K8s + HTTP checks)
+            HealthCheck(
+                id="metaflow_stack",
+                name="Metaflow Stack",
+                category="pipeline",
+                description="Metaflow service, K8s cluster, flow success rate",
+                check_fn="_check_metaflow_stack",
+                heuristic_id="infrastructure/metaflow_stack_down",
+                fix_service="metaflow",
+            ),
         ]
 
     async def run_all(
         self,
         progress_callback: Optional[Callable[["CheckResult", int, int], Awaitable[None]]] = None,
+        include_slow: bool = False,
     ) -> HealthReport:
         """Run all health checks with optional progress reporting.
 
         Args:
             progress_callback: Called after each check with (result, completed, total)
+            include_slow: If True, also run checks marked as slow (default False)
 
         Returns:
             Comprehensive health report
@@ -476,9 +548,14 @@ class HealthChecker:
         start_time = time.time()
         results = []
         metrics = {}
-        total_checks = len(self._checks)
 
-        for i, check in enumerate(self._checks):
+        # Filter out slow checks unless explicitly requested
+        checks_to_run = [
+            c for c in self._checks if include_slow or not c.slow
+        ]
+        total_checks = len(checks_to_run)
+
+        for i, check in enumerate(checks_to_run):
             result = await self._run_check(check)
             results.append(result)
 
@@ -490,7 +567,7 @@ class HealthChecker:
             if check.critical and result.status == CheckStatus.FAIL:
                 logger.warning(f"Critical check failed: {check.name}")
                 # Mark remaining as skipped
-                for remaining in self._checks[i + 1 :]:
+                for remaining in checks_to_run[i + 1 :]:
                     results.append(
                         CheckResult(
                             name=remaining.name,
@@ -514,6 +591,9 @@ class HealthChecker:
             if result.suggestion and result.status in (CheckStatus.WARN, CheckStatus.FAIL):
                 interventions.append(result.suggestion)
 
+        # Detect root cause correlations
+        rca_notices = self._detect_root_cause(results, checks_to_run)
+
         report = HealthReport(
             timestamp=datetime.now(),
             duration_ms=duration_ms,
@@ -524,6 +604,7 @@ class HealthChecker:
             skipped=skipped,
             metrics=metrics,
             interventions=interventions,
+            rca_notices=rca_notices,
         )
 
         # Emit failures to self-healing coordinator if configured
@@ -651,6 +732,55 @@ class HealthChecker:
             interventions=interventions,
         )
 
+    def _detect_root_cause(
+        self,
+        results: list[CheckResult],
+        checks_run: list["HealthCheck"],
+    ) -> list[RCANotice]:
+        """Detect when multiple failures share a common root cause.
+
+        Scans the dependency map for infrastructure roots where >= 2
+        dependent checks failed simultaneously. Returns RCA notices that
+        allow the observer to skip individual tier-0 remediation and
+        escalate directly.
+
+        Args:
+            results: Completed check results
+            checks_run: The HealthCheck definitions that were executed
+
+        Returns:
+            List of RCA notices (empty if no correlations found)
+        """
+        # Build a set of check IDs that actually failed
+        check_id_by_name: dict[str, str] = {c.name: c.id for c in checks_run}
+        failed_ids: set[str] = set()
+        for r in results:
+            if r.status == CheckStatus.FAIL:
+                cid = check_id_by_name.get(r.name)
+                if cid:
+                    failed_ids.add(cid)
+
+        notices: list[RCANotice] = []
+        for root, (sentinel, dependents) in _DEPENDENCY_MAP.items():
+            affected = failed_ids & set(dependents)
+            if len(affected) < 2:
+                continue
+            # If the sentinel check passed, this root is NOT the cause —
+            # the failures are downstream/coincidental
+            if sentinel not in failed_ids:
+                continue
+            notices.append(RCANotice(
+                root_cause=root,
+                affected_checks=affected,
+                message=(
+                    f"Multiple failures trace to {root}. "
+                    f"Root cause analysis recommended before individual fixes."
+                ),
+                escalation="ACP investigation",
+            ))
+
+        return notices
+
     async def _run_check(self, check: HealthCheck) -> CheckResult:
         """Run a single health check.
 
@@ -673,6 +803,7 @@ class HealthChecker:
 
             result = await check_method()
             result.heuristic_id = check.heuristic_id
+            result.fix_service = check.fix_service
             result.duration_ms = int((time.time() - start_time) * 1000)
 
             # Add suggestion from heuristic if check failed
@@ -3489,3 +3620,277 @@ class HealthChecker:
                 status=CheckStatus.FAIL,
                 message=f"Check failed: {str(e)[:80]}",
             )
+
+    async def _check_metaflow_stack(self) -> CheckResult:
+        """Validate the full Metaflow pipeline stack.
+
+        Validates four layers:
+        1. meta.flow_runs table accessible (DB → Metaflow schema)
+        2. Engine dispatch readiness (gRPC reachable, task processor active)
+        3. Metaflow service reachable (HTTP health check)
+        4. Recent flow success rate above threshold
+        """
+        import os
+
+        issues: list[str] = []
+        details: dict[str, Any] = {"endpoint": "metaflow_stack"}
+
+        # 1. Query meta.flow_runs for recent stats
+        try:
+            from ..engine.services.metaflow_query import get_metaflow_client
+
+            client = get_metaflow_client()
+            stats = await client.get_flow_stats(hours=24)
+
+            if "error" in stats:
+                issues.append(f"Flow query failed: {stats['error'][:60]}")
+            else:
+                details["flow_stats_24h"] = stats
+                total_runs = stats.get("total_runs", 0)
+                success_pct = stats.get("success_rate_pct", 0.0)
+
+                if total_runs == 0:
+                    issues.append("No flow runs in last 24h")
+                elif success_pct < 80.0:
+                    issues.append(
+                        f"Flow success rate {success_pct:.0f}% (last 24h, {total_runs} runs)"
+                    )
+
+        except Exception as e:
+            issues.append(f"Cannot query meta.flow_runs: {str(e)[:60]}")
+
+        # 1b. Engine dispatch readiness — verify the gRPC engine is running
+        # and the ScheduledTaskProcessor is picking up tasks.
+        # This is the critical bridge: pg_cron → engine → Metaflow.
+        try:
+            from ..client.engine_proxy import use_engine_proxy
+
+            if not use_engine_proxy():
+                issues.append("Engine not reachable (flow dispatch blocked)")
+                details["engine_dispatch"] = "engine_unreachable"
+            else:
+                details["engine_dispatch"] = "engine_reachable"
+
+                # Verify task processor is picking up work by checking
+                # scheduled_tasks for recent pickup activity.  If pg_cron
+                # inserts tasks but nothing picks them up, the processor
+                # is stalled.
+                from ..storage.database import get_pool
+
+                pool = await get_pool()
+                if pool:
+                    async with pool.acquire() as conn:
+                        row = await conn.fetchrow("""
+                            SELECT
+                                COUNT(*) FILTER (
+                                    WHERE picked_up_at >= NOW() - INTERVAL '1 hour'
+                                ) AS picked_up_1h,
+                                COUNT(*) FILTER (
+                                    WHERE picked_up_at IS NULL
+                                      AND scheduled_for < NOW() - INTERVAL '10 minutes'
+                                ) AS stale_pending
+                            FROM scheduled_tasks
+                            WHERE scheduled_for >= NOW() - INTERVAL '2 hours'
+                        """)
+                    picked_up = row["picked_up_1h"] or 0
+                    stale = row["stale_pending"] or 0
+                    details["task_processor"] = {
+                        "picked_up_1h": picked_up,
+                        "stale_pending": stale,
+                    }
+                    if stale > 0 and picked_up == 0:
+                        issues.append(
+                            f"Task processor stalled: {stale} tasks pending, "
+                            f"none picked up in 1h"
+                        )
+        except Exception as e:
+            issues.append(f"Engine dispatch check failed: {str(e)[:60]}")
+
+        # 2. Metaflow service HTTP health check
+        service_url = os.environ.get("METAFLOW_SERVICE_URL", "http://localhost:30180")
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{service_url}/flows",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status != 200:
+                        issues.append(
+                            f"Metaflow service returned {resp.status}"
+                        )
+                    else:
+                        details["metaflow_service"] = "reachable"
+        except ImportError:
+            # aiohttp not available — try urllib
+            try:
+                import urllib.request
+
+                req = urllib.request.Request(f"{service_url}/flows", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status != 200:
+                        issues.append(f"Metaflow service returned {resp.status}")
+                    else:
+                        details["metaflow_service"] = "reachable"
+            except Exception as e:
+                issues.append(f"Metaflow service unreachable: {str(e)[:60]}")
+        except Exception as e:
+            issues.append(f"Metaflow service unreachable: {str(e)[:60]}")
+
+        # 3. K8s cluster reachability
+        # Canonical KUBECONFIG path — matches devenv.nix enterShell and all
+        # process scripts in scripts/processes/*.sh. The system KUBECONFIG
+        # (/etc/rancher/rke2/rke2.yaml) is root-owned and unreadable.
+        import pathlib
+
+        canonical_kubeconfig = pathlib.Path.home() / ".config" / "kube" / "rke2.yaml"
+        system_kubeconfig = pathlib.Path("/etc/rancher/rke2/rke2.yaml")
+
+        if not canonical_kubeconfig.is_file():
+            issues.append(
+                "KUBECONFIG not found at ~/.config/kube/rke2.yaml"
+            )
+            details["k8s_cluster"] = "no_kubeconfig"
+            details["k8s_remediation"] = "just kubeconfig-sync"
+        elif not os.access(str(canonical_kubeconfig), os.R_OK):
+            issues.append(
+                "KUBECONFIG at ~/.config/kube/rke2.yaml is not readable"
+            )
+            details["k8s_cluster"] = "kubeconfig_unreadable"
+            details["k8s_remediation"] = "chmod 600 ~/.config/kube/rke2.yaml"
+        else:
+            # Check if user copy is stale vs system copy
+            if system_kubeconfig.is_file():
+                try:
+                    sys_mtime = system_kubeconfig.stat().st_mtime
+                    usr_mtime = canonical_kubeconfig.stat().st_mtime
+                    if sys_mtime > usr_mtime:
+                        details["k8s_kubeconfig_stale"] = True
+                        details["k8s_stale_remediation"] = "just kubeconfig-sync"
+                except OSError:
+                    pass  # Can't stat system file — not critical
+            kubectl_env = {**os.environ, "KUBECONFIG": str(canonical_kubeconfig)}
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "kubectl", "cluster-info",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=kubectl_env,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode != 0:
+                    err_msg = stderr.decode()[:60] if stderr else "unknown error"
+                    if details.get("k8s_kubeconfig_stale"):
+                        issues.append(
+                            "K8s unreachable (kubeconfig may be stale — "
+                            "run: just kubeconfig-sync)"
+                        )
+                    else:
+                        issues.append(f"K8s cluster unreachable: {err_msg}")
+                else:
+                    details["k8s_cluster"] = "reachable"
+                    details["kubeconfig"] = str(canonical_kubeconfig)
+
+                    # 3b. Check Metaflow pod status (cluster is reachable)
+                    try:
+                        pod_proc = await asyncio.create_subprocess_exec(
+                            "kubectl", "get", "pods",
+                            "-l", "app.kubernetes.io/name=metaflow-service",
+                            "--no-headers",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=kubectl_env,
+                        )
+                        pod_stdout, _ = await asyncio.wait_for(
+                            pod_proc.communicate(), timeout=10
+                        )
+                        pod_output = pod_stdout.decode().strip()
+                        if not pod_output:
+                            issues.append(
+                                "No metaflow-service pods found in K8s"
+                            )
+                            details["metaflow_pods"] = "missing"
+                        else:
+                            pod_statuses = []
+                            for line in pod_output.splitlines():
+                                parts = line.split()
+                                if len(parts) >= 3:
+                                    pod_statuses.append(
+                                        {"name": parts[0], "ready": parts[1], "status": parts[2]}
+                                    )
+                            details["metaflow_pods"] = pod_statuses
+                            # Detect bad pod states
+                            bad_states = {"CrashLoopBackOff", "Error", "Unknown", "ImagePullBackOff"}
+                            for ps in pod_statuses:
+                                if ps["status"] in bad_states:
+                                    issues.append(
+                                        f"Metaflow pod {ps['name']}: {ps['status']}"
+                                    )
+                    except (asyncio.TimeoutError, Exception):
+                        pass  # Pod check is supplementary — don't fail on it
+
+                    # 3c. Check CoreDNS status (DNS is required for all K8s services)
+                    try:
+                        dns_proc = await asyncio.create_subprocess_exec(
+                            "kubectl", "get", "pods",
+                            "-n", "kube-system",
+                            "-l", "k8s-app=kube-dns",
+                            "--no-headers",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=kubectl_env,
+                        )
+                        dns_stdout, _ = await asyncio.wait_for(
+                            dns_proc.communicate(), timeout=10
+                        )
+                        dns_output = dns_stdout.decode().strip()
+                        if dns_output:
+                            for line in dns_output.splitlines():
+                                parts = line.split()
+                                if len(parts) >= 3 and parts[2] in {"CrashLoopBackOff", "Error", "Unknown"}:
+                                    issues.append(
+                                        f"CoreDNS pod {parts[0]}: {parts[2]} — "
+                                        f"K8s DNS broken, pods cannot resolve service names"
+                                    )
+                                    details["coredns_status"] = parts[2]
+                                    details["coredns_remediation"] = (
+                                        "Edit CoreDNS ConfigMap to remove DNS loop: "
+                                        "kubectl -n kube-system edit configmap rke2-coredns-rke2-coredns"
+                                    )
+                    except (asyncio.TimeoutError, Exception):
+                        pass  # CoreDNS check is supplementary
+
+            except FileNotFoundError:
+                issues.append("kubectl not found in PATH")
+            except asyncio.TimeoutError:
+                issues.append("K8s cluster-info timed out (10s)")
+            except Exception as e:
+                issues.append(f"K8s check failed: {str(e)[:60]}")
+
+        # Compose result
+        if not issues:
+            return CheckResult(
+                name="Metaflow Stack",
+                status=CheckStatus.PASS,
+                message="Metaflow stack healthy (engine, DB, service, K8s all reachable)",
+                details=details,
+            )
+
+        # Single non-critical issue (e.g. low success rate) → WARN
+        if len(issues) == 1 and "success rate" in issues[0]:
+            return CheckResult(
+                name="Metaflow Stack",
+                status=CheckStatus.WARN,
+                message=issues[0],
+                details=details,
+                suggestion="Check recent flow failures: uv run gaius-cli --cmd \"/metaflow status\"",
+            )
+
+        return CheckResult(
+            name="Metaflow Stack",
+            status=CheckStatus.FAIL,
+            message=f"#MF.00000003.STACKDOWN: {'; '.join(issues)}",
+            details=details,
+            suggestion="Check K8s cluster and Metaflow service: /health fix metaflow",
+        )

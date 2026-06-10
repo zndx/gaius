@@ -56,7 +56,7 @@ Never use fallback syntax (`${KUBECONFIG:-...}`) — the system KUBECONFIG may p
 | `DATABASE_URL` | `postgres://gaius:gaius@localhost:5444/zndx_gaius` | devenv.nix |
 | `PGPORT` | `5444` | devenv.nix |
 | `KUBECONFIG` | `~/.config/kube/rke2.yaml` | enterShell |
-| `METAFLOW_SERVICE_URL` | `http://localhost:8180` | enterShell |
+| `METAFLOW_SERVICE_URL` | `http://localhost:30180` | enterShell |
 
 ## Nix-Managed Tools
 

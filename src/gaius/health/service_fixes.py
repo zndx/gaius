@@ -1652,6 +1652,290 @@ asyncio.run(diagnose())
         return actions
 
 
+class MetaflowFixStrategy(ServiceFixStrategy):
+    """Fix strategy for Metaflow pipeline stack.
+
+    Handles:
+    - K8s cluster connectivity issues
+    - Metaflow service port-forward restoration
+    - Flow execution verification
+
+    Guru Meditation: #MF.00000003.STACKDOWN
+    """
+
+    def __init__(self):
+        super().__init__("metaflow")
+
+    def create_fix_actions(
+        self, check_result: dict | None = None
+    ) -> list[RemediationAction]:
+        """Create actions to fix Metaflow stack issues."""
+        actions = []
+
+        # Step 1: Diagnose KUBECONFIG, K8s, and Metaflow state
+        actions.append(
+            RemediationAction(
+                name="Diagnose Metaflow stack",
+                description="Check KUBECONFIG, K8s cluster, Metaflow pods, and port-forwards",
+                code='''
+import subprocess
+import os
+from pathlib import Path
+
+# --- KUBECONFIG ---
+canonical = Path.home() / ".config" / "kube" / "rke2.yaml"
+system = Path("/etc/rancher/rke2/rke2.yaml")
+
+print("=== KUBECONFIG ===")
+if not canonical.is_file():
+    print(f"  FAIL: {canonical} does not exist")
+    if system.is_file():
+        print("  Root cause: RKE2 kubeconfig exists at /etc/rancher/rke2/rke2.yaml")
+        print("  but has not been copied to the user-readable location.")
+        print()
+        print("  Fix: just kubeconfig-sync")
+        print()
+        print("  To auto-sync on K8s restart: just kubeconfig-install-systemd")
+    else:
+        print("  RKE2 kubeconfig not found at /etc/rancher/rke2/rke2.yaml either")
+        print("  Is RKE2 installed? Check: systemctl status rke2-server")
+elif not os.access(str(canonical), os.R_OK):
+    print(f"  FAIL: {canonical} exists but is not readable")
+    print(f"  Fix: chmod 600 {canonical}")
+else:
+    print(f"  OK: {canonical} (readable)")
+    # Check if stale
+    if system.is_file():
+        try:
+            if system.stat().st_mtime > canonical.stat().st_mtime:
+                print(f"  WARN: Stale — system kubeconfig is newer")
+                print(f"  Fix: just kubeconfig-sync")
+        except OSError:
+            pass
+
+env_val = os.environ.get("KUBECONFIG", "")
+if env_val and env_val != str(canonical):
+    print(f"  WARN: $KUBECONFIG={env_val} (overridden to {canonical} for checks)")
+
+kubeconfig = str(canonical)
+env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+print("\\n=== K8s Cluster ===")
+try:
+    result = subprocess.run(
+        ["kubectl", "cluster-info"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    if result.returncode == 0:
+        print(f"  {result.stdout.strip().splitlines()[0]}")
+    else:
+        print(f"  FAIL: {result.stderr[:100]}")
+except Exception as e:
+    print(f"  FAIL: {e}")
+
+print("\\n=== CoreDNS (K8s DNS) ===")
+try:
+    result = subprocess.run(
+        ["kubectl", "get", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns", "--no-headers"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            status = parts[2] if len(parts) >= 3 else "?"
+            print(f"  {line}")
+            if status in ("CrashLoopBackOff", "Error", "Unknown"):
+                print(f"  *** CoreDNS is {status} — K8s DNS is broken ***")
+                print(f"  All pods will fail to resolve service names.")
+                print(f"  Fix: kubectl -n kube-system edit configmap rke2-coredns-rke2-coredns")
+                print(f"  Then: kubectl -n kube-system rollout restart deployment rke2-coredns-rke2-coredns")
+    else:
+        print("  No CoreDNS pods found")
+except Exception as e:
+    print(f"  FAIL: {e}")
+
+print("\\n=== Metaflow Pods ===")
+try:
+    result = subprocess.run(
+        ["kubectl", "get", "pods", "-l", "app.kubernetes.io/name=metaflow-service", "--no-headers"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            status = parts[2] if len(parts) >= 3 else "?"
+            print(f"  {line}")
+            if status in ("CrashLoopBackOff", "Error", "Unknown"):
+                print(f"  *** Pod is {status} — check init containers and DNS ***")
+    else:
+        print("  No metaflow-service pods found")
+except Exception as e:
+    print(f"  FAIL: {e}")
+
+# Check init container status for metaflow pods
+print("\\n=== Init Containers ===")
+try:
+    result = subprocess.run(
+        ["kubectl", "get", "pods", "-l", "app.kubernetes.io/name=metaflow-service",
+         "-o", "jsonpath={range .items[*]}{.metadata.name}: {range .status.initContainerStatuses[*]}{.name}={.state}{' '}{end}{'\\n'}{end}"],
+        capture_output=True, text=True, timeout=10, env=env,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        for line in result.stdout.strip().splitlines():
+            print(f"  {line}")
+    else:
+        print("  No init container data available")
+except Exception as e:
+    print(f"  FAIL: {e}")
+
+print("\\n=== Metaflow Service ===")
+service_url = os.environ.get("METAFLOW_SERVICE_URL", "http://localhost:30180")
+try:
+    import urllib.request
+    req = urllib.request.Request(f"{service_url}/flows", method="GET")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        print(f"  HTTP {resp.status} — reachable")
+except Exception as e:
+    print(f"  UNREACHABLE: {e}")
+
+print("\\nDiagnosis complete.")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 2: Restart the devenv-managed port-forward process
+        # This process has built-in infinite retry and readiness probes.
+        actions.append(
+            RemediationAction(
+                name="Restart Metaflow port-forwards",
+                description="Restart devenv port-forward process (has built-in infinite retry)",
+                command="process-compose process restart metaflow-port-forwards",
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        # Step 2b: Check CoreDNS health (DNS is prerequisite for all K8s services)
+        actions.append(
+            RemediationAction(
+                name="Check CoreDNS health",
+                description="Detect CoreDNS CrashLoopBackOff — blocks all K8s DNS resolution",
+                code='''
+import subprocess
+import os
+from pathlib import Path
+
+kubeconfig = str(Path.home() / ".config" / "kube" / "rke2.yaml")
+env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+result = subprocess.run(
+    ["kubectl", "get", "pods", "-n", "kube-system", "-l", "k8s-app=kube-dns",
+     "--no-headers"],
+    capture_output=True, text=True, timeout=10, env=env,
+)
+if result.returncode != 0:
+    print("Cannot query CoreDNS pods — kubectl failed")
+elif not result.stdout.strip():
+    print("No CoreDNS pods found in kube-system")
+else:
+    healthy = True
+    for line in result.stdout.strip().splitlines():
+        parts = line.split()
+        status = parts[2] if len(parts) >= 3 else "?"
+        print(f"  {line}")
+        if status in ("CrashLoopBackOff", "Error", "Unknown"):
+            healthy = False
+            print()
+            print(f"CoreDNS is {status} — K8s DNS is BROKEN")
+            print(f"#MF.00000004.DNSDOWN: All pods fail to resolve service names.")
+            print()
+            print("Manual fix required:")
+            print("  1. Edit CoreDNS ConfigMap to remove DNS forwarding loop:")
+            print("     kubectl -n kube-system edit configmap rke2-coredns-rke2-coredns")
+            print("     (Change 'forward . /etc/resolv.conf' to 'forward . 8.8.8.8 8.8.4.4')")
+            print("  2. Restart CoreDNS:")
+            print("     kubectl -n kube-system rollout restart deployment rke2-coredns-rke2-coredns")
+    if healthy:
+        print("CoreDNS is healthy")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=15,
+            )
+        )
+
+        # Step 2c: Wait for Metaflow service to become reachable
+        actions.append(
+            RemediationAction(
+                name="Wait for Metaflow service",
+                description="Poll Metaflow service HTTP endpoint until reachable (up to 30s)",
+                code='''
+import os
+import time
+import urllib.request
+
+service_url = os.environ.get("METAFLOW_SERVICE_URL", "http://localhost:30180")
+print(f"Waiting for Metaflow service at {service_url} (up to 30s)...")
+
+for i in range(6):
+    try:
+        req = urllib.request.Request(f"{service_url}/flows", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                print(f"Metaflow service reachable after {(i+1)*5}s")
+                break
+    except Exception:
+        pass
+    time.sleep(5)
+    print(f"  Waiting... {(i+1)*5}s")
+else:
+    print("Metaflow service not reachable after 30s")
+    print("Check: process-compose process logs metaflow-port-forwards")
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=35,
+            )
+        )
+
+        # Step 3: Verify flow execution
+        actions.append(
+            RemediationAction(
+                name="Verify Metaflow flow execution",
+                description="Check recent flow stats to verify the stack is operational",
+                code='''
+import asyncio
+
+async def verify():
+    from gaius.engine.services.metaflow_query import get_metaflow_client
+    client = get_metaflow_client()
+    stats = await client.get_flow_stats(hours=1)
+
+    if "error" in stats:
+        print(f"Flow query failed: {stats['error']}")
+        return
+
+    total = stats.get("total_runs", 0)
+    success_pct = stats.get("success_rate_pct", 0.0)
+    print(f"Last 1h: {total} runs, {success_pct:.0f}% success rate")
+
+    if total == 0:
+        print("No recent runs — stack may need a curation trigger")
+    elif success_pct < 80.0:
+        print("Low success rate — check flow logs for errors")
+    else:
+        print("Stack appears operational")
+
+asyncio.run(verify())
+''',
+                safety=SafetyLevel.SAFE,
+                timeout=30,
+            )
+        )
+
+        return actions
+
+
 # Service registry - maps service names to strategies
 #
 # NOTE: With Engine Federation architecture, most remediation should go through
@@ -1687,6 +1971,8 @@ SERVICE_STRATEGIES: dict[str, ServiceFixStrategy] = {
     "optillm": OptillmFixStrategy(),
     "site": SiteFixStrategy(),
     "cards": SiteFixStrategy(),  # Alias
+    "metaflow": MetaflowFixStrategy(),
+    "k8s": MetaflowFixStrategy(),  # Alias — K8s issues route through Metaflow stack fix
 }
 
 

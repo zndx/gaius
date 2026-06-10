@@ -98,6 +98,16 @@ FMEA_REGISTRY: tuple[FMEAMapping, ...] = (
         heuristic_path="data/minio_connection",
         check_names=("minio",),
     ),
+    FMEAMapping(
+        fmea_id="MF_003",
+        heuristic_path="infrastructure/metaflow_stack_down",
+        check_names=("metaflow_stack",),
+    ),
+    FMEAMapping(
+        fmea_id="MF_004",
+        heuristic_path="infrastructure/k8s_dns_failure",
+        check_names=("metaflow_stack", "coredns"),
+    ),
     # Model Quality
     FMEAMapping(
         fmea_id="MQ_005",

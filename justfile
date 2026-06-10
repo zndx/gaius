@@ -352,6 +352,22 @@ teardown:
 
 # ─── Kubernetes ──────────────────────────────────────────────────
 
+# Sync RKE2 kubeconfig to user-readable location
+kubeconfig-sync:
+    sudo bash "$(pwd)/scripts/lib/kubeconfig-sync.sh"
+
+# Install systemd drop-in for automatic kubeconfig sync on RKE2 restart
+kubeconfig-install-systemd:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Installing kubeconfig-sync systemd drop-in..."
+    sudo mkdir -p /etc/systemd/system/rke2-server.service.d
+    sudo cp "$(pwd)/infra/systemd/rke2-kubeconfig-sync.conf" \
+         /etc/systemd/system/rke2-server.service.d/kubeconfig-sync.conf
+    sudo systemctl daemon-reload
+    echo "✓ Drop-in installed. Verify:"
+    echo "  systemctl cat rke2-server | grep ExecStartPost"
+
 # Clean orphaned CNI IP allocations
 k8s-cleanup:
     #!/usr/bin/env bash

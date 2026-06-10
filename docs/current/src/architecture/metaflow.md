@@ -4,13 +4,9 @@ Gaius uses Metaflow for production data pipelines that run on Kubernetes. Flows 
 
 ## Infrastructure
 
-The Metaflow service is deployed via Tilt in `infra/tilt/` and runs on the local RKE2 Kubernetes cluster. Access requires a port-forward:
+The Metaflow service is deployed via Tilt in `infra/tilt/` and runs on the local RKE2 Kubernetes cluster. The service is exposed via K8s NodePort on port 30180 (patched automatically by `metaflow-port-forwards.sh` on startup).
 
-```bash
-kubectl port-forward svc/metaflow-service 8180:8080
-```
-
-The environment variable `METAFLOW_SERVICE_URL=http://localhost:8180` must be set for flow execution. This is configured automatically in `devenv.nix` for interactive shells and explicitly in process scripts.
+The environment variable `METAFLOW_SERVICE_URL=http://localhost:30180` must be set for flow execution. This is configured automatically in `devenv.nix` `enterShell` for interactive shells and explicitly in process scripts.
 
 ## GaiusFlow Base Class
 
@@ -71,7 +67,7 @@ Key environment variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `METAFLOW_SERVICE_URL` | Metaflow service endpoint (http://localhost:8180) |
+| `METAFLOW_SERVICE_URL` | Metaflow service endpoint (http://localhost:30180) |
 | `METAFLOW_DATASTORE_SYSROOT_S3` | MinIO path for flow artifacts |
 | `METAFLOW_DEFAULT_METADATA` | Metadata backend (postgresql) |
 | `GAIUS_KB_ROOT` | Knowledge base root directory |

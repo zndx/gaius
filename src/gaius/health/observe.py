@@ -131,6 +131,7 @@ class HealthIncident:
     github_issue: int | None = None
     status: str = "active"
     recovery_started_at: datetime | None = None
+    fix_service: str | None = None  # Key in SERVICE_STRATEGIES for auto-remediation
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -148,6 +149,7 @@ class HealthIncident:
             "github_issue": self.github_issue,
             "status": self.status,
             "recovery_started_at": self.recovery_started_at.isoformat() if self.recovery_started_at else None,
+            "fix_service": self.fix_service,
         }
 
 
@@ -328,6 +330,7 @@ class HealthObserver:
                                     github_issue=data.get("github_issue"),
                                     status=data.get("status", "active"),
                                     recovery_started_at=recovery_started_at,
+                                    fix_service=data.get("fix_service"),
                                 )
                                 self._active_incidents[fingerprint] = incident
 
@@ -463,23 +466,25 @@ class HealthObserver:
             await asyncio.sleep(interval)
 
     async def _run_health_check(self) -> HealthReport:
-        """Run comprehensive health check.
+        """Run comprehensive health check including any slow checks.
 
         Returns:
             HealthReport with all check results
         """
-        return await self._checker.run_all()
+        return await self._checker.run_all(include_slow=True)
 
     async def _process_failures(self, report: HealthReport) -> None:
         """Process failed health checks.
 
         For each failure:
-        1. Check if endpoint is in scheduled transition (not a real failure)
-        2. Calculate fingerprint for deduplication
-        3. Check if incident exists
-        4. Create or update incident
-        5. Calculate RPN
-        6. Attempt remediation based on tier
+        1. Check for RCA notices — if multiple failures share a root cause,
+           skip individual tier-0 remediation and escalate directly
+        2. Check if endpoint is in scheduled transition (not a real failure)
+        3. Calculate fingerprint for deduplication
+        4. Check if incident exists
+        5. Create or update incident
+        6. Calculate RPN
+        7. Attempt remediation based on tier
 
         Args:
             report: Health report with check results
@@ -491,6 +496,17 @@ class HealthObserver:
                 self._agenda_tracker = get_agenda_tracker()
             except Exception:
                 pass  # AgendaTracker not available, proceed without it
+
+        # Collect check IDs covered by RCA notices — these skip individual
+        # tier-0 remediation and escalate directly to ACP investigation
+        rca_covered: set[str] = set()
+        if report.rca_notices:
+            for notice in report.rca_notices:
+                rca_covered |= notice.affected_checks
+                logger.info(
+                    f"#HL.00003.ROOTCAUSE: {notice.message} "
+                    f"(affected: {', '.join(sorted(notice.affected_checks))})"
+                )
 
         for check in report.checks:
             if check.status != CheckStatus.FAIL:
@@ -533,6 +549,17 @@ class HealthObserver:
                     except Exception as e:
                         logger.warning(f"Incident callback error: {e}")
 
+                # If this check is covered by an RCA notice, skip tier-0
+                # procedural remediation and escalate to tier-2 (ACP)
+                # so the root cause gets investigated holistically
+                check_id = self._check_id_from_name(check.name)
+                if check_id and check_id in rca_covered:
+                    logger.info(
+                        f"RCA escalation: {fingerprint} covered by root cause correlation, "
+                        f"skipping tier-0 — escalating to tier 2"
+                    )
+                    incident.current_tier = max(incident.current_tier, 2)
+
                 # Attempt remediation
                 await self._attempt_remediation(incident)
 
@@ -566,6 +593,7 @@ class HealthObserver:
                 failure_mode_id=failure_mode_id,
                 rpn=rpn,
                 current_tier=rpn.tier.value,
+                fix_service=check.fix_service,
             )
 
             # Start event sequence
@@ -694,7 +722,8 @@ class HealthObserver:
     async def _tier0_remediate(self, incident: HealthIncident) -> HealingResult:
         """Tier 0 procedural remediation.
 
-        Uses SelfHealingCoordinator for code-only recovery.
+        Tries service-specific fix strategy first (covers Metaflow, NiFi, etc.),
+        then falls back to SelfHealingCoordinator for endpoint restart logic.
 
         Args:
             incident: The incident to remediate
@@ -702,6 +731,13 @@ class HealthObserver:
         Returns:
             HealingResult with outcome
         """
+        # Try service fix strategy first (covers Metaflow, NiFi, Postgres, etc.)
+        if incident.fix_service:
+            result = await self._try_fix_strategy(incident)
+            if result is not None:
+                return result
+
+        # Fall back to SelfHealingCoordinator (endpoint restart logic)
         if self._coordinator is None:
             # Lazy-load coordinator
             try:
@@ -728,6 +764,70 @@ class HealthObserver:
 
         result = await self._coordinator.handle_health_issue(issue)
         return result
+
+    async def _try_fix_strategy(self, incident: HealthIncident) -> HealingResult | None:
+        """Try the service-specific fix strategy for an incident.
+
+        Loads the strategy from SERVICE_STRATEGIES, builds a RemediationPlan,
+        and executes it via RemediationExecutor.
+
+        Args:
+            incident: The incident with fix_service set
+
+        Returns:
+            HealingResult if strategy was found and executed, None to fall through
+        """
+        from .service_fixes import get_strategy
+        from .remediation import RemediationPlan, RemediationExecutor
+
+        service_name = incident.fix_service
+        if not service_name:
+            return None
+
+        strategy = get_strategy(service_name)
+        if strategy is None:
+            logger.warning(
+                f"No fix strategy found for service '{service_name}', "
+                f"falling through to SelfHealingCoordinator"
+            )
+            return None
+
+        logger.info(
+            f"Using {strategy.__class__.__name__} for {incident.fingerprint}"
+        )
+
+        try:
+            actions = strategy.create_fix_actions()
+            if not actions:
+                logger.info(f"Strategy {service_name} returned no actions")
+                return None
+
+            plan = RemediationPlan(
+                service=service_name,
+                actions=actions,
+                heuristic_id=incident.failure_mode_id,
+            )
+
+            executor = RemediationExecutor()
+            result = await executor.execute(plan)
+
+            return HealingResult(
+                success=result.success,
+                action=f"fix_strategy:{service_name}",
+                tier=HealingTierType.PROCEDURAL,
+                escalate=not result.success,
+                reason=result.summary if not result.success else None,
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Fix strategy {service_name} failed: {e}"
+            )
+            return HealingResult(
+                success=False,
+                escalate=True,
+                reason=f"Fix strategy error: {e}",
+            )
 
     async def _tier1_remediate(self, incident: HealthIncident) -> HealingResult:
         """Tier 1 local agent remediation.
@@ -1569,6 +1669,23 @@ After creating the issue, report:
         failure_mode = check.heuristic_id or f"UNKNOWN_{check.name[:10].upper()}"
         endpoint = check.details.get("endpoint", check.name.lower().replace(" ", "_"))
         return f"{failure_mode}:{endpoint}"
+
+    def _check_id_from_name(self, name: str) -> str | None:
+        """Resolve a check result name back to its HealthCheck id.
+
+        The checker stores results with check.name but the RCA dependency map
+        uses check.id. This reverse lookup bridges the two.
+
+        Args:
+            name: Human-readable check name (e.g. "Metaflow Stack")
+
+        Returns:
+            Check id (e.g. "metaflow_stack") or None if not found
+        """
+        for hc in self._checker._checks:
+            if hc.name == name:
+                return hc.id
+        return None
 
     def _has_active_healing(self) -> bool:
         """Check if any incidents are actively being healed.
