@@ -86,6 +86,101 @@ def _find_acp_adapter() -> str:
     return "uvx"
 
 
+# Supported ACP agents. Each entry resolves to (command, default_args).
+# Selected via `acp.agent` in ~/.config/gaius/acp.conf or GAIUS_ACP_AGENT.
+ACP_AGENT_KEYS = ("vibe", "grok")
+
+
+def load_acp_agent_selection() -> str:
+    """Load the configured ACP agent key.
+
+    Precedence:
+    1. GAIUS_ACP_AGENT environment variable
+    2. `acp.agent` in the HOCON config (same search paths as security config)
+    3. Default: "vibe"
+
+    Returns:
+        Agent key ("vibe" or "grok")
+
+    Raises:
+        ACPConnectionError: Unknown agent key.
+        Guru Meditation: #ACP.00000011.BADAGENT
+    """
+    agent = os.environ.get("GAIUS_ACP_AGENT", "").strip().lower()
+
+    if not agent:
+        candidates = [
+            Path.home() / ".config/gaius/acp.conf",
+            Path.home() / ".gaius/acp.conf",
+            Path.cwd() / "config/acp.conf",
+            Path.cwd() / ".gaius/acp.conf",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                try:
+                    from pyhocon import ConfigFactory
+
+                    hocon: Any = ConfigFactory.parse_file(str(candidate))
+                    agent = str(hocon.get("acp.agent", "")).strip().lower()
+                except ImportError:
+                    logger.warning("pyhocon not installed; using default ACP agent")
+                break
+
+    if not agent:
+        agent = "vibe"
+
+    if agent not in ACP_AGENT_KEYS:
+        raise ACPConnectionError(
+            f"Unknown ACP agent '{agent}' (#ACP.00000011.BADAGENT)\n"
+            f"  Valid values: {', '.join(ACP_AGENT_KEYS)}\n"
+            f"  Set acp.agent in ~/.config/gaius/acp.conf or GAIUS_ACP_AGENT"
+        )
+    return agent
+
+
+def resolve_acp_agent(agent: str) -> tuple[str, list[str]]:
+    """Resolve an agent key to its spawn command and default args.
+
+    Fail-fast: verifies the agent binary exists, and for grok that
+    credentials are available (subscription login or XAI_API_KEY).
+
+    Args:
+        agent: Agent key from ACP_AGENT_KEYS
+
+    Returns:
+        (command, default_args) to spawn the ACP agent over stdio
+
+    Raises:
+        ACPConnectionError: Agent binary missing or grok unauthenticated.
+        Guru Meditations: #ACP.00000012.AGENTMISSING, #ACP.00000013.GROKAUTH
+    """
+    import shutil
+
+    if agent == "grok":
+        grok_cmd = shutil.which("grok")
+        if not grok_cmd:
+            raise ACPConnectionError(
+                "grok CLI not found in PATH (#ACP.00000012.AGENTMISSING)\n"
+                "  Install: https://docs.x.ai/grok-cli\n"
+                "  Or switch agent: set acp.agent = \"vibe\" in ~/.config/gaius/acp.conf"
+            )
+        # Subscription token (grok login) or API key must be present,
+        # otherwise session/new fails with auth_required deep in the SDK.
+        has_token = (Path.home() / ".grok/auth.json").exists()
+        if not has_token and not os.environ.get("XAI_API_KEY"):
+            raise ACPConnectionError(
+                "grok CLI has no credentials (#ACP.00000013.GROKAUTH)\n"
+                "  Subscription (QR-friendly): grok login --device-auth\n"
+                "  Or API key: export XAI_API_KEY=...\n"
+            )
+        return grok_cmd, ["agent", "stdio"]
+
+    # Default: Mistral Vibe via vibe-acp adapter
+    command = _find_acp_adapter()
+    args = ["--from", "mistral-vibe", "vibe-acp"] if command == "uvx" else []
+    return command, args
+
+
 @dataclass
 class ACPConfig:
     """Configuration for ACP client.
@@ -94,8 +189,10 @@ class ACPConfig:
         uv tool install mistral-vibe
 
     Attributes:
-        agent_command: Command to spawn the ACP adapter (vibe-acp)
-        agent_args: Arguments for the adapter
+        agent: ACP agent key ("vibe" or "grok"). Empty = load from config
+            (acp.agent in ~/.config/gaius/acp.conf, or GAIUS_ACP_AGENT env)
+        agent_command: Command to spawn the ACP agent. Empty = resolve from agent key
+        agent_args: Arguments for the agent command
         working_directory: Directory for Vibe operations
         connection_timeout: Seconds to wait for connection
         prompt_timeout: Seconds to wait for prompt response
@@ -113,10 +210,12 @@ class ACPConfig:
         The github_repo must be in the allowlist at ~/.config/gaius/acp.conf
         and must have private visibility.
     """
-    # vibe-acp is the ACP adapter from Mistral
-    # See: https://github.com/mistralai/mistral-vibe
-    agent_command: str = field(default_factory=_find_acp_adapter)
-    agent_args: list[str] = field(default_factory=lambda: ["--from", "mistral-vibe", "vibe-acp"] if _find_acp_adapter() == "uvx" else [])
+    # Agent selection: "vibe" (Mistral, via vibe-acp adapter) or "grok"
+    # (xAI grok CLI, native ACP via `grok agent stdio`). Resolved in
+    # __post_init__ so explicit agent_command overrides still work.
+    agent: str = ""
+    agent_command: str = ""
+    agent_args: list[str] | None = None
     working_directory: str = field(default_factory=lambda: os.getcwd())
     connection_timeout: float = 30.0
     prompt_timeout: float | None = None  # None = no timeout, let Vibe run to completion
@@ -129,6 +228,16 @@ class ACPConfig:
     buffer_limit: int = 16 * 1024 * 1024  # 16MB buffer for large ACP agent responses
     security_config_path: Path | None = None  # HOCON config for GitHub security
     # NOTE: verify_github_security removed - security is MANDATORY, not optional
+
+    def __post_init__(self) -> None:
+        if not self.agent:
+            self.agent = load_acp_agent_selection()
+        if not self.agent_command:
+            self.agent_command, default_args = resolve_acp_agent(self.agent)
+            if self.agent_args is None:
+                self.agent_args = default_args
+        if self.agent_args is None:
+            self.agent_args = []
 
 
 class GaiusACPClient:
@@ -384,7 +493,7 @@ class GaiusACPClient:
                 self._context_manager = spawn_agent_process(
                     gaius_client,
                     self.config.agent_command,
-                    *self.config.agent_args,
+                    *(self.config.agent_args or []),
                     env=env,
                     cwd=self.config.working_directory,
                     transport_kwargs={"limit": self.config.buffer_limit},

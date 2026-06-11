@@ -25,6 +25,9 @@ from .client import (
     ACPConfig,
     StreamCallback,
     _find_acp_adapter,
+    load_acp_agent_selection,
+    resolve_acp_agent,
+    ACP_AGENT_KEYS,
 )
 from .prompts import (
     WorkflowMode,
@@ -77,6 +80,9 @@ __all__ = [
     "ACPConfig",
     "StreamCallback",
     "_find_acp_adapter",
+    "load_acp_agent_selection",
+    "resolve_acp_agent",
+    "ACP_AGENT_KEYS",
     # Prompts
     "WorkflowMode",
     "CadencePolicy",

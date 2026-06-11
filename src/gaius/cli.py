@@ -244,6 +244,9 @@ class GaiusCLI:
                 # Self-healing - tiered recovery system
                 elif command == "heal":
                     result["data"] = self._run_async(self._cmd_heal(args))
+                # ACP agent configuration (Mistral Vibe / Grok)
+                elif command == "acp":
+                    result["data"] = self._cmd_acp(args)
                 # Model registry commands (local model specs)
                 elif command == "model":
                     result["data"] = self._cmd_model(args)
@@ -1332,6 +1335,75 @@ class GaiusCLI:
         }
 
     # --- Model Registry Commands ---
+
+    def _cmd_acp(self, args: str) -> dict:
+        """ACP agent configuration and status.
+
+        Usage:
+            /acp                - Show configured ACP agent and resolution
+            /acp agents         - List available ACP agents
+        """
+        import os
+        import shutil
+        from pathlib import Path
+
+        from .acp import (
+            ACP_AGENT_KEYS,
+            ACPConnectionError,
+            load_acp_agent_selection,
+            resolve_acp_agent,
+        )
+        from .acp.attribution import get_model_attribution
+
+        parts = args.split(maxsplit=1) if args else []
+        subcmd = parts[0].lower() if parts else "status"
+
+        if subcmd == "agents":
+            agents = []
+            for key in ACP_AGENT_KEYS:
+                try:
+                    command, agent_args = resolve_acp_agent(key)
+                    agents.append({
+                        "agent": key,
+                        "available": True,
+                        "command": " ".join([command, *agent_args]),
+                    })
+                except ACPConnectionError as e:
+                    agents.append({
+                        "agent": key,
+                        "available": False,
+                        "reason": str(e).split("\n")[0],
+                    })
+            return {"agents": agents}
+
+        # Default: status of the configured agent
+        agent = load_acp_agent_selection()
+        attribution = get_model_attribution(
+            "grok" if agent == "grok" else "vibe-acp"
+        )
+        status: dict = {
+            "agent": agent,
+            "model": attribution.name,
+            "source": (
+                "env:GAIUS_ACP_AGENT" if os.environ.get("GAIUS_ACP_AGENT")
+                else "config:acp.agent (default: vibe)"
+            ),
+        }
+        try:
+            command, agent_args = resolve_acp_agent(agent)
+            status["command"] = " ".join([command, *agent_args])
+            status["available"] = True
+        except ACPConnectionError as e:
+            status["available"] = False
+            status["error"] = str(e)
+        if agent == "grok":
+            status["auth"] = (
+                "subscription (grok login)"
+                if (Path.home() / ".grok/auth.json").exists()
+                else "api_key (XAI_API_KEY)" if os.environ.get("XAI_API_KEY")
+                else "none"
+            )
+        return status
 
     def _cmd_model(self, args: str) -> dict:
         """Model registry operations.

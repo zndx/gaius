@@ -516,6 +516,11 @@ Security is configured via HOCON at `~/.config/gaius/acp.conf`:
 
 ```hocon
 acp {
+  # Agent selection: "vibe" (Mistral Vibe, default) or "grok" (xAI grok CLI,
+  # native ACP via `grok agent stdio`; auth via `grok login --device-auth`
+  # subscription or XAI_API_KEY). Env override: GAIUS_ACP_AGENT.
+  agent = "vibe"
+
   github {
     # Explicit allowlist - only these repos can be used
     allowed_repos = ["zndx/gaius-acp"]
