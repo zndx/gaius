@@ -1,0 +1,39 @@
+diff --git a/build-helpers/make/make_deps.py b/build-helpers/make/make_deps.py
+index 7f549fcfd..0f318d0b6 100644
+--- a/build-helpers/make/make_deps.py
++++ b/build-helpers/make/make_deps.py
+@@ -125,6 +125,26 @@ def ensure_conan_app():
+     return res
+ 
+ 
++def _sanitize_ld_library_path(env):
++    """Remove Nix gcc libstdc++ from LD_LIBRARY_PATH in subprocess env.
++
++    devenv's Python wrapper injects gcc-XX.X.X-lib/lib into LD_LIBRARY_PATH.
++    This libstdc++ is built against Nix's glibc (2.42+), but host binaries
++    (dpkg-query, apt-get) only have the system glibc (e.g., 2.35 on Ubuntu
++    22.04), causing "GLIBC_2.38 not found" crashes.
++
++    Nix binaries don't need this path (they use RUNPATH), so removing it
++    is safe and prevents host binary crashes in conan system recipes.
++    """
++    if ld_path := env.get("LD_LIBRARY_PATH"):
++        paths = [
++            p for p in ld_path.split(":")
++            if not ("/nix/store" in p and "gcc" in p and "-lib/lib" in p)
++        ]
++        env["LD_LIBRARY_PATH"] = ":".join(paths) if paths else ""
++    return env
++
++
+ def run_conan(
+     args,
+     **kwargs,
+@@ -136,6 +156,7 @@ def run_conan(
+     else:
+         kwargs["env"].update(CONAN_ENV)
+     kwargs["env"].update(os.environ)
++    _sanitize_ld_library_path(kwargs["env"])
+     kwargs["text"] = kwargs.get(
+         "text",
+         True,
