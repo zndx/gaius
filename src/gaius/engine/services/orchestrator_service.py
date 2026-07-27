@@ -2044,9 +2044,23 @@ class OrchestratorService:
             candidate_pids = vllm_pids | gpu_pids
             result.processes_found = len(candidate_pids)
 
+            # Sibling zndx engines (aegir/atelier) register advisory leases in
+            # /tmp/zndx-gpu-leases; their vLLM workers match every heuristic
+            # above but are NOT stale gaius processes.
+            from ..resources.gpu_leases import lease_holder_protecting, live_lease_holder_pids
+
+            lease_holders = live_lease_holder_pids()
+
             # Kill untracked processes
             for pid in candidate_pids:
                 if pid in tracked_pids:
+                    continue
+
+                holder = lease_holder_protecting(pid, lease_holders)
+                if holder is not None:
+                    logger.info(
+                        f"Sparing PID {pid} — owned by cross-project GPU lease holder {holder}"
+                    )
                     continue
 
                 try:

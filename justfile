@@ -108,62 +108,49 @@ gpu-cleanup:
 gpu-deep-cleanup:
     #!/usr/bin/env bash
     set -euo pipefail
+    source "$(pwd)/scripts/lib/gpu-helpers.sh"
     echo "╔══════════════════════════════════════════════════════════════╗"
     echo "║  DEEP CLEANUP - Killing ALL inference processes              ║"
+    echo "║  (sparing live cross-project lease holders)                  ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
 
-    # 1. Kill vLLM processes by name pattern (includes workers and engine)
+    # 1. Kill vLLM processes by name pattern (includes workers and engine).
+    # Sibling engines' vLLM matches these patterns too — lease-spared kills only.
     echo "Killing vLLM processes..."
-    pkill -9 -f "vllm serve" 2>/dev/null || true
-    pkill -9 -f "vllm.entrypoints" 2>/dev/null || true
-    # Kill vLLM worker processes (show as "VLLM::Worker_TP0" etc in nvidia-smi)
-    pkill -9 -f "VLLM::" 2>/dev/null || true
-    # Kill by process name pattern for workers that renamed themselves
-    pgrep -f "VLLM::Worker" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
-    pgrep -f "VLLM::EngineCore" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+    _kill_unleased $(pgrep -f "vllm serve|vllm\.entrypoints|VLLM::" 2>/dev/null || true)
 
-    # 2. Kill ray processes (vLLM uses ray internally)
+    # 2. Kill ray processes (vLLM uses ray internally) — same sparing
     echo "Killing ray processes..."
-    pkill -9 -f "ray::" 2>/dev/null || true
-    pkill -9 -f "raylet" 2>/dev/null || true
-    pkill -9 -f "gcs_server" 2>/dev/null || true
+    _kill_unleased $(pgrep -f "ray::|raylet|gcs_server" 2>/dev/null || true)
 
-    # 3. Kill gaius engine/MCP processes
+    # 3. Kill gaius engine/MCP processes (gaius-only patterns)
     echo "Killing gaius processes..."
     pkill -9 -f "gaius.engine.server" 2>/dev/null || true
     pkill -9 -f "gaius.mcp_server" 2>/dev/null || true
 
-    # 4. Kill optillm (gunicorn on port 8000)
+    # 4. Kill optillm (gunicorn on port 8000; gaius-only tool)
     echo "Killing optillm/gunicorn..."
     pkill -9 -f "gunicorn.*optillm" 2>/dev/null || true
     pkill -9 -f "optillm" 2>/dev/null || true
-    # Kill anything on port 8000 (default vLLM/optillm port)
-    fuser -k 8000/tcp 2>/dev/null || true
+    # Anything left on port 8000 — lease-spared (a sibling vLLM may bind it)
+    _kill_unleased $(fuser 8000/tcp 2>/dev/null || true)
 
     # 5. Kill any GPU processes via nvidia-smi (catches orphaned processes)
     echo "Killing GPU processes via nvidia-smi..."
     VLLM_PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
-    if [ -n "$VLLM_PIDS" ]; then
-      for pid in $VLLM_PIDS; do
-        if [ -n "$pid" ] && [ "$pid" != " " ]; then
-          PROC_NAME=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
-          echo "  Killing GPU process PID $pid ($PROC_NAME)..."
-          kill -9 "$pid" 2>/dev/null || true
-        fi
-      done
+    if [ -n "${VLLM_PIDS// /}" ]; then
+      _kill_unleased $VLLM_PIDS
     else
       echo "  No GPU processes found"
     fi
 
     # 6. Second pass - some processes may have respawned or been missed
     sleep 1
-    REMAINING=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -v "^$" | wc -l)
+    REMAINING=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -v "^$" | wc -l || true)
     if [ "$REMAINING" -gt 0 ]; then
-      echo "Second pass - killing $REMAINING remaining GPU processes..."
-      nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | while read pid; do
-        [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
-      done
+      echo "Second pass - $REMAINING GPU processes still present..."
+      _kill_unleased $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null || true)
     fi
 
     sleep 2
@@ -180,7 +167,7 @@ gpu-deep-cleanup:
     echo ""
     echo "GPU processes:"
     nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>/dev/null | tail -n +2 || echo "  (nvidia-smi not available)"
-    GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -v "^$" | wc -l)
+    GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -v "^$" | wc -l || true)
     if [ "$GPU_PROCS" -eq 0 ]; then
       echo "  ✓ All GPUs clear"
     else
