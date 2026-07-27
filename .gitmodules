@@ -1,3 +1,6 @@
 [submodule "thirdparty/src/LuxCore"]
 	path = thirdparty/src/LuxCore
 	url = git@github.com:LuxCoreRender/LuxCore.git
+[submodule "external/signals-protocol"]
+	path = external/signals-protocol
+	url = git@github.com:zndx/signals-protocol.git
