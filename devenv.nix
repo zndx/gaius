@@ -312,6 +312,10 @@
     package = pkgs.python312;
     uv.enable = true;
     uv.sync.enable = true;
+    # OR-Tools CP-SAT is required for the orchestrator's makespan scheduler
+    # (capability-based BeginWorkload path fails with #SCH.00000001.NOORDEPS
+    # without it) — sync the extra so the solver is always present.
+    uv.sync.extras = [ "scheduler" ];
     venv.enable = true;
   };
 
