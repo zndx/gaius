@@ -44,6 +44,21 @@ python -m grpc_tools.protoc \
     --grpc_python_out="$OUTPUT_DIR" \
     "$PROTO_DIR/gaius_service.proto"
 
+# Compile Signals lattice face (vendored submodule proto)
+ZNDX_PROTO="$PROJECT_ROOT/external/signals-protocol/proto"
+if [[ -f "$ZNDX_PROTO/zndx/engine/v1/engine.proto" ]]; then
+    echo "  - zndx/engine/v1/engine.proto"
+    python -m grpc_tools.protoc \
+        -I "$ZNDX_PROTO" \
+        --python_out="$OUTPUT_DIR" \
+        --grpc_python_out="$OUTPUT_DIR" \
+        "$ZNDX_PROTO/zndx/engine/v1/engine.proto"
+    sed -i 's/^from zndx\.engine\.v1 import engine_pb2 as /from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as /' \
+        "$OUTPUT_DIR/zndx/engine/v1/engine_pb2_grpc.py"
+else
+    echo "  - zndx/engine/v1/engine.proto (skipped — submodule missing)"
+fi
+
 # Fix imports in generated files (grpc_tools generates absolute imports)
 echo "Fixing imports in generated files..."
 for file in "$OUTPUT_DIR"/*_pb2_grpc.py; do

@@ -109,6 +109,11 @@
   enterShell = ''
     export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
     export METAFLOW_SERVICE_URL="http://localhost:30180"
+    # devenv's port allocator may shift postgres off the declared 5444 when
+    # stacks launch concurrently (it exports the effective port as PGPORT).
+    # The static DATABASE_URL in .env can't follow, so rebuild it here; this
+    # export wins over dotenv for interactive shells and dbmate.
+    export DATABASE_URL="postgres://localhost:''${PGPORT:-5444}/zndx_gaius?sslmode=disable"
   '';
 
   # https://devenv.sh/packages/
@@ -247,10 +252,17 @@
       receivers = {
         otlp = {
           protocols = {
-            grpc.endpoint = "0.0.0.0:4317";
-            http.endpoint = "0.0.0.0:4318";
+            # 4337/4338: gaius's original 4317/4318 claim is squatted by the
+            # long-running cldr/cybersec collector on this host (which also
+            # holds 8888/8889/13133). Lattice: aegir owns 4327-4329.
+            grpc.endpoint = "0.0.0.0:4337";
+            http.endpoint = "0.0.0.0:4338";
           };
         };
+      };
+      extensions = {
+        # cybersec's collector holds the default health_check port 13133
+        health_check.endpoint = lib.mkForce "localhost:13134";
       };
       processors = {
         batch = {
@@ -260,7 +272,8 @@
       };
       exporters = {
         prometheus = {
-          endpoint = "0.0.0.0:8889";
+          # 8891: 8889 is cybersec's, 8890 is aegir's
+          endpoint = "0.0.0.0:8891";
           namespace = "gaius";
           resource_to_telemetry_conversion.enabled = true;
         };
@@ -273,6 +286,9 @@
         };
       };
       service = {
+        # No self-metrics server: the default :8888 bind belongs to
+        # cybersec's collector and was crash-looping ours at startup.
+        telemetry.metrics.level = "none";
         pipelines = {
           traces = {
             receivers = ["otlp"];
@@ -289,6 +305,16 @@
     };
   };
 
+  # The otel module's readiness probe targets the default health_check port;
+  # ours moved to 13134 above (13133 is held by cybersec's collector).
+  processes.opentelemetry-collector.process-compose.readiness_probe.http_get.port =
+    lib.mkForce 13134;
+
+  # The otel module exports OTEL_EXPORTER_OTLP_ENDPOINT pinned to its default
+  # 4317 regardless of the receiver settings above; that env capture beats the
+  # base.conf default, so force it to our shifted receiver.
+  env.OTEL_EXPORTER_OTLP_ENDPOINT = lib.mkForce "http://localhost:4337";
+
   # ============================================================================
   # Prometheus - Metrics storage and querying
   # ============================================================================
@@ -301,7 +327,7 @@
         job_name = "otel-collector";
         scrape_interval = "1s";  # 1s scraping for real-time ObservePanel
         static_configs = [{
-          targets = ["localhost:8889"];
+          targets = ["localhost:8891"];
         }];
       }
     ];
@@ -315,7 +341,8 @@
     # OR-Tools CP-SAT is required for the orchestrator's makespan scheduler
     # (capability-based BeginWorkload path fails with #SCH.00000001.NOORDEPS
     # without it) — sync the extra so the solver is always present.
-    uv.sync.extras = [ "scheduler" ];
+    # grpc extra keeps grpcio-reflection installed (lattice-ci / grpcurl list).
+    uv.sync.extras = [ "scheduler" "grpc" ];
     venv.enable = true;
   };
 

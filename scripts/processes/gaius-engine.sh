@@ -12,6 +12,13 @@ check_disabled DISABLE_ENGINE "Gaius Engine"
 
 banner "GAIUS ENGINE - Centralized Inference & Evolution Daemon"
 
+# Exclusive lattice bind — refuse to start if :50051 is already held.
+# (gRPC SO_REUSEPORT would otherwise dual-bind; see #EN.00000014.DUALBIND)
+assert_tcp_port_free "${GAIUS_ENGINE_GRPC_PORT:-50051}" "gaius-engine lattice"
+
+# Engine is not functional without zndx_gaius on the contract port.
+wait_for_postgres "${PGUSER:-$USER}"
+
 # ========================================================================
 # GPU CLEANUP - Ensure clean start by killing any stale vLLM processes
 # ========================================================================
@@ -22,9 +29,11 @@ gpu_cleanup
 # ========================================================================
 wait_for_aeron
 
-# Enable OpenTelemetry tracing if configured
+# Enable OpenTelemetry tracing if configured. Precedence: explicit
+# OTEL_ENDPOINT override > profile env (devenv.nix forces 4337 — gaius's
+# collector claim; 4317 is squatted by cldr/cybersec) > 4337 default.
 export OTEL_SERVICE_NAME="gaius-engine"
-export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_ENDPOINT:-http://localhost:4317}"
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_ENDPOINT:-${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4337}}"
 
 # Set API keys for inference backends
 export OPTILLM_API_KEY="${OPTILLM_API_KEY:-gaius-local-key}"

@@ -1,5 +1,12 @@
 # Federated Engine Architecture
 
+> **Two planes.** The **Signals lattice** join (systemd `gaius.service`,
+> `zndx.engine.v1.Engine/Status` on `:50051`, capability `cognition`) is
+> documented in [operations/peer-unit.md](../../../docs/current/src/operations/peer-unit.md)
+> and the Signals peer-unit spec. This file is the older **GPU inference mesh**
+> (KServe OIP + capability routing across nodes). Both are real; do not treat
+> this mesh write-up as the lattice accept gate.
+
 This document describes the Gaius Engine Federation architecture, enabling distributed inference across heterogeneous GPU deployments using standard protocols.
 
 ## Overview

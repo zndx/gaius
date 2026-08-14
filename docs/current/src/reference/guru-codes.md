@@ -25,6 +25,8 @@ Complete catalog of error codes used across the Gaius platform.
 | Code | Description | Fix |
 |------|-------------|-----|
 | `#EN.00001.GRPC_BIND` | gRPC port bind failure | Check port 50051 |
+| `#EN.00000014.DUALBIND` | Second gaius-engine dual-bound `:50051` (SO_REUSEPORT / extra devenv daemon) | `/health fix engine`; `ss -ltnp \| grep 50051` and stop the extra stack |
+| `#EN.00000015.NOREFLECT` | grpcio-reflection import failed (protobuf gencode/runtime mismatch) | `uv sync --extra grpc` (lock pins `grpcio-reflection<1.82`) |
 | `#EN.00002.VLLM_START` | vLLM startup failure | `/health fix endpoints` |
 | `#EN.00003.GPU_OOM` | GPU out of memory | `just gpu-cleanup` |
 | `#EN.00004.ORPHAN_PROC` | Orphan vLLM process | `just gpu-cleanup` |

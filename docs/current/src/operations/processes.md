@@ -61,6 +61,18 @@ export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
 exec some-command --flags
 ```
 
+## Systemd peer wrappers
+
+Signals group control (`gaius.service`, `After=signals-ready.service`) execs
+these instead of embedding shell in the unit file:
+
+| Script | Role |
+|--------|------|
+| `scripts/systemd_start.sh` | Idempotent `just up`; blocks until `Engine/Status` on `:50051` |
+| `scripts/systemd_stop.sh` | `just down` / `devenv processes down` (no GPU teardown) |
+
+See [Signals peer unit](./peer-unit.md).
+
 ## Adding a New Process
 
 1. Create `scripts/processes/<name>.sh` with the pattern above

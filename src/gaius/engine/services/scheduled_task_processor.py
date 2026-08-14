@@ -107,6 +107,111 @@ class ScheduledTaskProcessor(BaseDaemon):
     def is_running(self) -> bool:
         return self._running
 
+    async def _run_spawned_metaflow(
+        self,
+        *,
+        kind: str,
+        task: ScheduledTask,
+        argv: list[str],
+        log_prefix: str,
+        idle_timeout: int = 900,
+    ) -> dict[str, Any]:
+        """Spawn a Metaflow CLI child, register it for Yield, optional YK sentinel."""
+        import time
+
+        from gaius.engine.flow_processes import (
+            SpawnedFlow,
+            flow_processes,
+            workload_id_for,
+        )
+        from gaius.engine.sentinel_claim import (
+            apply_flow_sentinel,
+            delete_flow_sentinel,
+        )
+
+        wid = workload_id_for(kind, task.id)
+        env = dict(os.environ)
+        cwd = os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius")
+        table = flow_processes()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+                cwd=cwd,
+            )
+        except Exception as e:
+            logger.error(f"{log_prefix} spawn failed: {e}")
+            return {"status": "error", "error": str(e), "workload_id": wid}
+
+        table.register(
+            SpawnedFlow(
+                workload_id=wid, kind=kind, proc=proc, task_id=task.id
+            )
+        )
+        apply_flow_sentinel(wid, kind)
+        last_output = time.monotonic()
+        output_lines: list[str] = []
+        try:
+            assert proc.stdout is not None
+            while True:
+                try:
+                    raw = await asyncio.wait_for(
+                        proc.stdout.readline(),
+                        timeout=idle_timeout,
+                    )
+                except TimeoutError:
+                    idle_s = time.monotonic() - last_output
+                    if proc.returncode is not None:
+                        break
+                    logger.error(f"{log_prefix} stalled: no output for {idle_s:.0f}s")
+                    proc.kill()
+                    await proc.wait()
+                    return {
+                        "status": "stalled",
+                        "workload_id": wid,
+                        "idle_seconds": idle_s,
+                        "last_lines": output_lines[-10:],
+                    }
+                if raw:
+                    line = raw.decode("utf-8", errors="replace").rstrip()
+                    last_output = time.monotonic()
+                    output_lines.append(line)
+                    logger.info(f"  {log_prefix}: {line}")
+                else:
+                    break
+            retcode = await proc.wait()
+            if table.get(wid) is None and retcode not in (0, None):
+                logger.info(f"{log_prefix} yielded workload_id={wid} rc={retcode}")
+                return {
+                    "status": "yielded",
+                    "workload_id": wid,
+                    "returncode": retcode,
+                    "last_lines": output_lines[-10:],
+                }
+            if retcode == 0:
+                logger.info(f"{log_prefix} completed workload_id={wid}")
+                return {
+                    "status": "completed",
+                    "workload_id": wid,
+                    "returncode": 0,
+                    "last_lines": output_lines[-10:],
+                }
+            logger.error(f"{log_prefix} failed (exit {retcode})")
+            return {
+                "status": "failed",
+                "workload_id": wid,
+                "returncode": retcode,
+                "last_lines": output_lines[-20:],
+            }
+        except Exception as e:
+            logger.error(f"{log_prefix} error: {e}")
+            return {"status": "error", "workload_id": wid, "error": str(e)}
+        finally:
+            table.unregister(wid)
+            delete_flow_sentinel(wid)
+
     def register_handler(self, task_type: str, handler: TaskHandler) -> None:
         """Register a handler for a task type.
 
@@ -247,105 +352,19 @@ class ScheduledTaskProcessor(BaseDaemon):
             }
 
         async def handle_article_curate(task: ScheduledTask) -> dict[str, Any]:
-            """Handle article_curate task.
-
-            Triggers ArticleCurationFlow via Metaflow CLI.
-
-            Uses async subprocess to avoid blocking the event loop — the
-            previous blocking select.select() implementation deadlocked
-            the engine's gRPC server, preventing callback requests from
-            the flow subprocess (which calls Scheduler.complete for
-            cot_reflection inference).
-
-            Progress-based idle timeout: the subprocess must produce
-            stdout within IDLE_TIMEOUT seconds or it's considered stalled.
-            No hard wall-clock limit — a flow that keeps printing progress
-            can run as long as it needs (render step alone can take 15+
-            minutes for many cards).
-            """
-            import time
-
-            # Must exceed the engine's wall-clock timeout (600s) for
-            # cot_reflection calls, since the flow prints nothing during
-            # long gRPC calls. The engine's idle-timeout (120s) handles
-            # stall detection; this is just the subprocess safety net.
-            IDLE_TIMEOUT = 900  # 15 minutes without output
-
-            logger.info("Triggering ArticleCurationFlow...")
-
-            # Propagate full environment to subprocess (API keys, etc.)
+            """ArticleCurationFlow via Metaflow CLI (Yield-visible child)."""
             env = dict(os.environ)
-            has_xai = "XAI_API_KEY" in env
-            has_brave = "BRAVE_API_KEY" in env
-            logger.info(f"  Subprocess env: XAI_API_KEY={'present' if has_xai else 'MISSING'}, "
-                        f"BRAVE_API_KEY={'present' if has_brave else 'MISSING'}, "
-                        f"METAFLOW_HOME={env.get('METAFLOW_HOME', 'unset')}")
-
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "uv", "run", "python", "-m",
-                    "gaius.flows.article_curation.flow", "run",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    env=env,
-                    cwd=os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius"),
-                )
-
-                last_output = time.monotonic()
-                output_lines: list[str] = []
-
-                while True:
-                    try:
-                        # Async readline — yields control to event loop
-                        raw = await asyncio.wait_for(
-                            proc.stdout.readline(),
-                            timeout=IDLE_TIMEOUT,
-                        )
-                    except asyncio.TimeoutError:
-                        idle_s = time.monotonic() - last_output
-                        if proc.returncode is not None:
-                            break  # Already exited
-                        logger.error(
-                            f"ArticleCurationFlow stalled: no output for {idle_s:.0f}s"
-                        )
-                        proc.kill()
-                        await proc.wait()
-                        return {
-                            "status": "stalled",
-                            "idle_seconds": idle_s,
-                            "last_lines": output_lines[-10:],
-                        }
-
-                    if raw:
-                        line = raw.decode("utf-8", errors="replace").rstrip()
-                        last_output = time.monotonic()
-                        output_lines.append(line)
-                        logger.info(f"  ArticleCuration: {line}")
-                    else:
-                        # EOF — subprocess closed stdout
-                        break
-
-                retcode = await proc.wait()
-                if retcode == 0:
-                    logger.info("ArticleCurationFlow completed successfully")
-                    return {
-                        "status": "completed",
-                        "returncode": 0,
-                        "last_lines": output_lines[-10:],
-                    }
-                else:
-                    logger.error(
-                        f"ArticleCurationFlow failed (exit {retcode})"
-                    )
-                    return {
-                        "status": "failed",
-                        "returncode": retcode,
-                        "last_lines": output_lines[-20:],
-                    }
-
-            except Exception as e:
-                logger.error(f"ArticleCurationFlow error: {e}")
-                return {"status": "error", "error": str(e)}
+            logger.info(
+                "Triggering ArticleCurationFlow "
+                f"XAI_API_KEY={'present' if 'XAI_API_KEY' in env else 'MISSING'} "
+                f"BRAVE_API_KEY={'present' if 'BRAVE_API_KEY' in env else 'MISSING'}"
+            )
+            return await self._run_spawned_metaflow(
+                kind="article-curate",
+                task=task,
+                argv=["uv", "run", "python", "-m", "gaius.flows.article_curation.flow", "run"],
+                log_prefix="ArticleCuration",
+            )
 
         async def handle_prospects_check(task: ScheduledTask) -> dict[str, Any]:
             """Handle prospects_check task — lightweight daily FMP check.
@@ -425,98 +444,30 @@ class ScheduledTaskProcessor(BaseDaemon):
                 await service.stop()
 
         async def handle_prospects_update(task: ScheduledTask) -> dict[str, Any]:
-            """Handle prospects_update task — full billable analysis via subprocess.
-
-            Spawns ProspectsUpdateFlow via uv/Metaflow CLI.
-            Uses async subprocess with progress-based idle timeout
-            (same pattern as handle_article_curate).
-            """
-            import time
-
-            IDLE_TIMEOUT = 900  # 15 minutes without output
-
+            """ProspectsUpdateFlow via Metaflow CLI (Yield-visible child)."""
             symbols = task.payload.get("symbols", [])
             if not symbols:
                 logger.warning("prospects_update task has no symbols in payload")
                 return {"status": "skipped", "reason": "no symbols"}
-
             symbols_csv = ",".join(symbols)
-            logger.info(f"Triggering ProspectsUpdateFlow for symbols: {symbols_csv}")
-
-            # Propagate full environment to subprocess (API keys, etc.)
             env = dict(os.environ)
-            has_fmp = "FMP_API_KEY" in env
-            has_xai = "XAI_API_KEY" in env
             logger.info(
-                f"  Subprocess env: FMP_API_KEY={'present' if has_fmp else 'MISSING'}, "
-                f"XAI_API_KEY={'present' if has_xai else 'MISSING'}"
+                f"Triggering ProspectsUpdateFlow symbols={symbols_csv} "
+                f"FMP_API_KEY={'present' if 'FMP_API_KEY' in env else 'MISSING'} "
+                f"XAI_API_KEY={'present' if 'XAI_API_KEY' in env else 'MISSING'}"
             )
-
-            try:
-                proc = await asyncio.create_subprocess_exec(
+            result = await self._run_spawned_metaflow(
+                kind="prospects-update",
+                task=task,
+                argv=[
                     "uv", "run", "python", "-m",
                     "gaius.flows.prospects.update_flow", "run",
                     f"--symbols={symbols_csv}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    env=env,
-                    cwd=os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius"),
-                )
-
-                last_output = time.monotonic()
-                output_lines: list[str] = []
-
-                while True:
-                    try:
-                        raw = await asyncio.wait_for(
-                            proc.stdout.readline(),
-                            timeout=IDLE_TIMEOUT,
-                        )
-                    except asyncio.TimeoutError:
-                        idle_s = time.monotonic() - last_output
-                        if proc.returncode is not None:
-                            break
-                        logger.error(
-                            f"ProspectsUpdateFlow stalled: no output for {idle_s:.0f}s"
-                        )
-                        proc.kill()
-                        await proc.wait()
-                        return {
-                            "status": "stalled",
-                            "symbols": symbols,
-                            "idle_seconds": idle_s,
-                            "last_lines": output_lines[-10:],
-                        }
-
-                    if raw:
-                        line = raw.decode("utf-8", errors="replace").rstrip()
-                        last_output = time.monotonic()
-                        output_lines.append(line)
-                        logger.info(f"  ProspectsUpdate: {line}")
-                    else:
-                        break
-
-                retcode = await proc.wait()
-                if retcode == 0:
-                    logger.info("ProspectsUpdateFlow completed successfully")
-                    return {
-                        "status": "completed",
-                        "symbols": symbols,
-                        "returncode": 0,
-                        "last_lines": output_lines[-10:],
-                    }
-                else:
-                    logger.error(f"ProspectsUpdateFlow failed (exit {retcode})")
-                    return {
-                        "status": "failed",
-                        "symbols": symbols,
-                        "returncode": retcode,
-                        "last_lines": output_lines[-20:],
-                    }
-
-            except Exception as e:
-                logger.error(f"ProspectsUpdateFlow error: {e}")
-                return {"status": "error", "symbols": symbols, "error": str(e)}
+                ],
+                log_prefix="ProspectsUpdate",
+            )
+            result["symbols"] = symbols
+            return result
 
         async def handle_metabase_sync(task: ScheduledTask) -> dict[str, Any]:
             """Handle metabase_sync task — sync Metabase models from PostgreSQL views."""

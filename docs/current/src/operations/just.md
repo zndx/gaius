@@ -12,6 +12,8 @@ devenv-tasks 2.0.0 introduced a `tasks.db` SQLite file that deadlocks when tasks
 just --list              # Show all available recipes
 
 # Core operations
+just up                  # devenv up -d (product stack; systemd start uses this)
+just down                # devenv processes down (this project only)
 just restart-clean       # Full clean restart (preferred)
 just proto-generate      # Regenerate gRPC protobuf bindings
 

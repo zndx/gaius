@@ -16,6 +16,8 @@ uv run gaius
 uv run gaius-cli --cmd "/state" --format json
 
 # Engine management
+just up                          # devenv up -d (product stack; systemd start uses this)
+just down                        # devenv processes down (this project only)
 just restart-clean               # Full clean restart (preferred)
 just --list                      # Show all available tasks
 devenv processes up              # Start all platform components
@@ -58,6 +60,8 @@ src/gaius/
 └── commands/           # Slash command implementations
 
 scripts/
+├── systemd_start.sh        # gaius.service oneshot: just up, wait Engine/Status :50051
+├── systemd_stop.sh         # gaius.service stop: just down (no GPU teardown)
 ├── lib/
 │   ├── process-helpers.sh  # Shared: banner, check_disabled, wait_for_postgres, wait_for_aeron
 │   └── gpu-helpers.sh      # Shared: gpu_cleanup (used by engine + justfile)
@@ -362,6 +366,14 @@ uv run gaius-cli --cmd "/evolve status" --format json
 
 This isn't redundant tool use - it's verifying the product works.
 
+### CI vs smoke (naming)
+
+Elevated, repeatable gates are **CI** (`*-ci`, `*.ci.*` — e.g. Signals `just lattice-ci`).
+`just signals-ready` is a readiness oneshot, not a smoke. Keep **smoke** for one-off
+first-run scripts under `./scripts/` (or a thin just alias). Do not call lattice
+accept, `/health`, or peer-unit Status a "smoke test". Gherkin `@smoke` is a BDD
+filter tag, not an ops gate name.
+
 ## RASE Metamodel (Rapid Agentic Systems Engineering)
 
 The `gaius.rase` package implements a Python-native MBSE metamodel for verifiable agent training. **This is safety-critical infrastructure** - the verifier is a first-class artifact that must be maintained with the same rigor as production code.
@@ -451,7 +463,7 @@ Before committing changes to `gaius.rase`:
 # Verify all imports work
 uv run python -c "from gaius.rase import *"
 
-# Run comprehensive smoke test
+# First-run import / object-construction check (not a CI gate)
 uv run python -c "
 from gaius.rase import (
     TraceableId, NiFiInstance, ProcessorGroup, Processor,

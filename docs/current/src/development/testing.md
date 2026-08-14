@@ -51,6 +51,16 @@ For new modules or proto changes:
 uv run python -c "from gaius.engine.generated import NewSymbol; print('OK')"
 ```
 
+## CI vs smoke
+
+Elevated, repeatable gates use **CI** names (`*-ci`, `*.ci.*`). Lattice accept is
+`just lattice-ci` in the Signals tree, not a Gaius smoke. One-off first-run
+scripts may keep `smoke` in the filename (`./scripts/…`); do not add new
+`just *-smoke` recipes for anything that should stay green.
+
+Product verification is still the CLI (`uv run gaius-cli --cmd …`) and Textual
+Pilot for TUI. Those are neither smoke nor CI — they are the product test.
+
 ## TUI Testing
 
 TUI behavior must be tested using Textual Pilot before committing:

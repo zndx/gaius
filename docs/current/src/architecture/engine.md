@@ -7,11 +7,11 @@ The engine is the central nervous system of Gaius. It's a long-running daemon th
 ```
 ┌──────────────────────────────────────────────┐
 │                gRPC Server :50051             │
-│  ┌──────────────┐  ┌──────────────────────┐  │
-│  │ KServe OIP   │  │ Gaius Extensions     │  │
-│  │ (inference)  │  │ (health, evolution,  │  │
-│  │              │  │  orchestrator, ...)  │  │
-│  └──────┬───────┘  └──────────┬───────────┘  │
+│  ┌──────────┐ ┌──────────────┐ ┌───────────┐ │
+│  │ KServe   │ │ Gaius        │ │ zndx.v1   │ │
+│  │ OIP      │ │ Extensions   │ │ Engine    │ │
+│  │          │ │              │ │ (lattice) │ │
+│  └────┬─────┘ └──────┬───────┘ └─────┬─────┘ │
 ├─────────┼─────────────────────┼──────────────┤
 │         │    37 Services      │              │
 │  ┌──────┴──────┐  ┌──────────┴───────────┐  │
@@ -63,8 +63,9 @@ engine/
 ├── grpc/
 │   ├── server.py          # gRPC server setup
 │   └── servicers/
-│       ├── inference_servicer.py  # KServe OIP implementation
-│       └── gaius_servicer.py      # Gaius extensions
+│       ├── inference_servicer.py      # KServe OIP implementation
+│       ├── gaius_servicer.py          # Gaius extensions
+│       └── zndx_engine_servicer.py    # zndx.engine.v1.Engine (lattice)
 ├── backends/
 │   ├── backend_router.py  # Unified request routing
 │   ├── vllm_controller.py # vLLM process management
@@ -80,7 +81,11 @@ engine/
 
 ## gRPC Protocol
 
-The engine implements two gRPC services:
+The engine implements three gRPC services on `:50051`:
+
+- KServe OIP (`inference.GRPCInferenceService`) — portable inference
+- Native extensions (`gaius.engine.GaiusService`) — product surface
+- Signals lattice face (`zndx.engine.v1.Engine`) — `Status` / `Complete`; see [peer unit](../operations/peer-unit.md)
 
 ### KServe Open Inference Protocol
 

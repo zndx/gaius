@@ -187,7 +187,9 @@ grpc = [
     "grpcio-tools>=1.59.0",
     "grpcio-status>=1.59.0",
     "grpcio-health-checking>=1.59.0",
-    "protobuf>=4.25.0",
+    # 1.83+ ships reflection_pb2 gencode 7.35.1; xai-sdk/otel/grpcio-tools pin protobuf<7.
+    "grpcio-reflection>=1.59.0,<1.82",
+    "protobuf>=4.25.0,<7",
 ]
 # Full engine with gRPC (primary transport)
 engine-grpc = [

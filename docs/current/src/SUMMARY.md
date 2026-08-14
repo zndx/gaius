@@ -99,6 +99,7 @@
   - [devenv Environment](./operations/devenv.md)
   - [Process Scripts](./operations/processes.md)
   - [Just Task Runner](./operations/just.md)
+  - [Signals Peer Unit](./operations/peer-unit.md)
 - [Deployment](./operations/deployment.md)
   - [Kubernetes](./operations/k8s.md)
   - [Metaflow Service](./operations/metaflow-service.md)

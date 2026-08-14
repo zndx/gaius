@@ -6,6 +6,15 @@ set positional-arguments
 
 # ─── Stack Management ────────────────────────────────────────────
 
+# Start product stack in background (postgres · aeron · engine · …)
+# Used by scripts/systemd_start.sh (Signals lattice peer unit).
+up:
+    devenv up -d
+
+# Stop this project's process-compose only (does not kill sibling GPU leases)
+down:
+    devenv processes down 2>/dev/null || true
+
 # Full clean restart — starts stack as background daemon
 restart-clean:
     #!/usr/bin/env bash
@@ -89,6 +98,25 @@ proto-generate:
     echo "GaiusServiceAsyncStub = GaiusServiceStub" >> "$OUT_DIR/gaius_service_pb2_grpc.py"
 
     echo "✓ Added GaiusServiceAsyncStub alias for grpc.aio"
+    echo ""
+
+    # zndx.engine.v1 (signals-protocol) — lattice federation face
+    ZNDX_PROTO="external/signals-protocol/proto"
+    if [[ -f "$ZNDX_PROTO/zndx/engine/v1/engine.proto" ]]; then
+      echo "Source:  $ZNDX_PROTO/zndx/engine/v1/engine.proto"
+      python -m grpc_tools.protoc \
+        -I="$ZNDX_PROTO" \
+        --python_out="$OUT_DIR" \
+        --grpc_python_out="$OUT_DIR" \
+        "$ZNDX_PROTO/zndx/engine/v1/engine.proto"
+      sed -i 's/^from zndx\.engine\.v1 import engine_pb2 as /from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as /' \
+        "$OUT_DIR/zndx/engine/v1/engine_pb2_grpc.py"
+      mkdir -p "$OUT_DIR/zndx/engine/v1"
+      echo "✓ Generated zndx.engine.v1 bindings"
+    else
+      echo "⚠ signals-protocol proto not found at $ZNDX_PROTO — skip zndx bindings"
+    fi
+
     echo ""
     echo "Done! Regenerated files:"
     ls -la "$OUT_DIR"/gaius_service_pb2*.py "$OUT_DIR"/gaius_service_pb2*.pyi 2>/dev/null || ls -la "$OUT_DIR"/gaius_service_pb2*
@@ -204,7 +232,7 @@ thirdparty-luxcore:
 
 # ─── Testing / Debug ─────────────────────────────────────────────
 
-# Smoke-test MCP server startup
+# First-run check: MCP server imports (not a CI gate)
 mcp-test:
     PYTHONPATH="" .devenv/state/venv/bin/python -c "from gaius.mcp_server import create_server; print('MCP server OK')"
 

@@ -3,6 +3,7 @@
 Provides the main gRPC server that hosts:
 - KServe Open Inference Protocol (GRPCInferenceService)
 - Gaius custom extensions (GaiusService)
+- zndx.engine.v1.Engine (Signals lattice federation face)
 
 This is the primary transport for gaius-engine, designed to:
 - Be OIP-compliant for Cloudera/KServe compatibility
@@ -24,7 +25,8 @@ from ..generated import (
     add_GRPCInferenceServiceServicer_to_server,
     add_GaiusServiceServicer_to_server,
 )
-from .servicers import InferenceServicer, GaiusServicer
+from ..generated.zndx.engine.v1 import engine_pb2_grpc as zpb_grpc
+from .servicers import InferenceServicer, GaiusServicer, GaiusZndxEngineServicer
 
 logger = logging.getLogger(__name__)
 
@@ -202,10 +204,13 @@ class GrpcServer:
             logger.info("gRPC server disabled by configuration")
             return
 
-        # Configure server options
+        # Configure server options.
+        # grpc.so_reuseport=0 is mandatory: default ON lets a second gaius-engine
+        # dual-bind :50051 and kernel-lottery Engine/Status (lattice accept).
         options = [
             ("grpc.max_receive_message_length", self._config.max_message_size),
             ("grpc.max_send_message_length", self._config.max_message_size),
+            ("grpc.so_reuseport", 0),
         ]
 
         # Create async gRPC server
@@ -224,24 +229,46 @@ class GrpcServer:
         add_GaiusServiceServicer_to_server(gaius_servicer, self._server)
         logger.debug("Registered GaiusService (custom extensions)")
 
-        # Enable reflection for debugging (grpcurl, etc.)
+        # Register Signals lattice face (same port; distinct service path)
+        zndx_servicer = GaiusZndxEngineServicer(self._services)
+        zpb_grpc.add_EngineServicer_to_server(zndx_servicer, self._server)
+        logger.debug("Registered zndx.engine.v1.Engine (lattice federation face)")
+
+        # Reflection is required for external spot-checks (grpcurl list) and
+        # lattice-ci. Generated stubs remain the protocol SoR.
         if self._config.reflection_enabled:
             try:
                 from grpc_reflection.v1alpha import reflection
+            except Exception as exc:
+                raise RuntimeError(
+                    "#EN.00000015.NOREFLECT grpcio-reflection failed to import.\n"
+                    f"  {exc}\n"
+                    "  grpcio-reflection>=1.83 needs protobuf 7; this tree pins "
+                    "protobuf<7 (xai-sdk).\n"
+                    "  Try: uv sync --extra grpc   # lock pins grpcio-reflection<1.82\n"
+                    "  Or:  /health fix engine"
+                ) from exc
 
-                service_names = (
-                    "inference.GRPCInferenceService",
-                    "gaius.engine.GaiusService",
-                    reflection.SERVICE_NAME,
-                )
-                reflection.enable_server_reflection(service_names, self._server)
-                logger.debug("gRPC reflection enabled")
-            except ImportError:
-                logger.debug("grpcio-reflection not installed, reflection disabled")
+            service_names = (
+                "inference.GRPCInferenceService",
+                "gaius.engine.GaiusService",
+                "zndx.engine.v1.Engine",
+                reflection.SERVICE_NAME,
+            )
+            reflection.enable_server_reflection(service_names, self._server)
+            logger.info("gRPC reflection enabled (grpcurl list)")
 
-        # Bind to port
+        # Bind exclusively. add_insecure_port returns 0 when the port is taken.
         listen_addr = f"{self._config.host}:{self._config.port}"
-        self._server.add_insecure_port(listen_addr)
+        bound = self._server.add_insecure_port(listen_addr)
+        if bound == 0:
+            raise RuntimeError(
+                f"#EN.00000014.DUALBIND could not bind {listen_addr} "
+                "(port already held; gRPC reuseport is disabled).\n"
+                "  Another gaius-engine / devenv daemon is listening.\n"
+                "  Try: /health fix engine\n"
+                "  Or:  ss -ltnp | grep 50051   # stop the extra devenv stack, not just down"
+            )
 
         # Start server
         await self._server.start()
@@ -250,6 +277,7 @@ class GrpcServer:
         logger.info(f"gRPC server listening on {listen_addr}")
         logger.info("  - GRPCInferenceService (KServe OIP v2)")
         logger.info("  - GaiusService (custom extensions)")
+        logger.info("  - zndx.engine.v1.Engine (Signals lattice face)")
 
     async def stop(self, grace: float = 5.0) -> None:
         """Stop the gRPC server gracefully.

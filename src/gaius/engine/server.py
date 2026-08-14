@@ -507,6 +507,7 @@ class GaiusEngine:
             logger.warning("Install with: uv sync --extra grpc")
         except Exception as e:
             logger.error(f"Failed to start gRPC server: {e}")
+            raise
 
     async def _autonomous_start_evolution(self) -> None:
         """Start the evolution daemon automatically."""
