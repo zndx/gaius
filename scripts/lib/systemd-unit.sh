@@ -5,40 +5,40 @@
 : "${ROOT:?systemd-unit.sh: ROOT must be set}"
 
 GRPC_PORT="${GAIUS_ENGINE_GRPC_PORT:-50051}"
-PG_PORT="${GAIUS_PG_PORT:-5444}"
 PGDATA_GAIUS="${GAIUS_PGDATA:-$ROOT/.devenv/state/postgres}"
 UNIT_NAME="${GAIUS_SYSTEMD_UNIT:-gaius.service}"
-# Dedicated compose instance for the systemd unit — never the interactive
-# $XDG_RUNTIME_DIR/devenv-<hash> leftover from a login-shell `devenv up`.
-GAIUS_DEVENV_RUNTIME="${GAIUS_DEVENV_RUNTIME:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gaius-systemd}"
+UI_PORT="${GAIUS_UI_PORT:-9890}"
 
 info() { echo "gaius.service: $*"; }
 
+# Optional: only if the unit still exports GAIUS_DEVENV_RUNTIME (legacy).
+# Default is devenv's own runtime so systemd and a login-shell `devenv up`
+# share one process-compose graph.
 export_unit_runtime() {
-  mkdir -p "$GAIUS_DEVENV_RUNTIME"
-  export DEVENV_RUNTIME="$GAIUS_DEVENV_RUNTIME"
+  if [[ -n "${GAIUS_DEVENV_RUNTIME:-}" ]]; then
+    mkdir -p "$GAIUS_DEVENV_RUNTIME"
+    export DEVENV_RUNTIME="$GAIUS_DEVENV_RUNTIME"
+  fi
   if [[ -d "/run/user/$(id -u)" ]]; then
     export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   fi
 }
 
+# Same graph as a laptop `devenv up -d`. Do not pin PGPORT — devenv assigns
+# it so projects and worktrees do not collide. secretspec is devenv's.
 lattice_up() {
   export_unit_runtime
-  export PGPORT="$PG_PORT"
-  export DATABASE_URL="postgres://localhost:${PG_PORT}/zndx_gaius?sslmode=disable"
   /bin/bash -lc "cd \"$ROOT\" && export PATH=\"/usr/local/bin:\$PATH\" && \
-    export DEVENV_RUNTIME=\"$DEVENV_RUNTIME\" && \
     export XDG_RUNTIME_DIR=\"${XDG_RUNTIME_DIR:-}\" && \
-    export PGPORT=\"$PG_PORT\" && \
-    export DATABASE_URL=\"$DATABASE_URL\" && \
-    (just up 2>/dev/null || devenv up -d)"
+    ${DEVENV_RUNTIME:+export DEVENV_RUNTIME=\"$DEVENV_RUNTIME\" &&} \
+    devenv up -d"
 }
 
 lattice_down() {
   export_unit_runtime
   /bin/bash -lc "cd \"$ROOT\" && export PATH=\"/usr/local/bin:\$PATH\" && \
-    export DEVENV_RUNTIME=\"$DEVENV_RUNTIME\" && \
     export XDG_RUNTIME_DIR=\"${XDG_RUNTIME_DIR:-}\" && \
+    ${DEVENV_RUNTIME:+export DEVENV_RUNTIME=\"$DEVENV_RUNTIME\" &&} \
     (just down 2>/dev/null || devenv processes down || true)" || true
 }
 
@@ -84,9 +84,24 @@ status_ok() {
   GAIUS_ENGINE_GRPC_PORT="${GRPC_PORT}" "$py" "$ROOT/scripts/zndx_status_ok.py" >/dev/null 2>&1
 }
 
-# Contract port only — devenv's allocator must not silently move us to :5445.
-postgres_ok() {
-  pg_isready -h 127.0.0.1 -p "$PG_PORT" >/dev/null 2>&1
+ui_ok() {
+  ss -ltnH 2>/dev/null | grep -qE ":${UI_PORT}[[:space:]]"
+}
+
+# True if pid is a descendant of this checkout's process-compose.
+owned_by_compose() {
+  local pid="$1" p cmd cwd i
+  p="$pid"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -n "$p" && "$p" != 0 ]] || return 1
+    cmd=$(ps -p "$p" -o args= 2>/dev/null || true)
+    if [[ "$cmd" == *process-compose* || "$cmd" == *devenv-wrapped*daemon-processes* ]]; then
+      cwd=$(readlink "/proc/${p}/cwd" 2>/dev/null || true)
+      [[ -z "$cwd" || "$cwd" == "$ROOT" ]] && return 0
+    fi
+    p=$(ps -p "$p" -o ppid= 2>/dev/null | tr -d ' ')
+  done
+  return 1
 }
 
 # Leftover session postmaster holding PGDATA (often on a shifted port).
@@ -122,13 +137,12 @@ stop_orphan_gaius_postgres() {
 # Skip-up only when the *unit* already owns the single ready listener.
 unit_already_ready() {
   local n pid
+  status_ok || return 1
   n=$(listener_count)
   [[ "${n:-0}" -eq 1 ]] || return 1
-  postgres_ok || return 1
-  status_ok || return 1
   pid=$(listener_pids | head -1)
   [[ -n "$pid" ]] || return 1
-  in_unit_cgroup "$pid"
+  owned_by_compose "$pid"
 }
 
 term_pid() {

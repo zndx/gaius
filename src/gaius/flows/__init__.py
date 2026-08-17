@@ -6,7 +6,8 @@ This module provides Metaflow flows integrated with Gaius infrastructure:
 - KB integration for output artifacts
 
 Available flows:
-- ArxivDoclingFlow: Fetch arXiv paper, convert PDF to markdown, save to KB
+- ArxivDoclingFlow: Convert a PDF (arXiv or any URL) to markdown. arXiv →
+  KB zettelkasten; generic URL → files in a local output_dir.
 """
 
 from gaius.flows.base import GaiusFlow
@@ -55,6 +56,11 @@ def _register_builtin_flows():
         from gaius.flows.card_upkeep import CardUpkeepFlow  # noqa: F401
     except ImportError:
         pass  # card_upkeep dependencies may not be installed
+
+    try:
+        from gaius.flows.summary import KnowledgeSummaryFlow  # noqa: F401
+    except ImportError:
+        pass
 
 
 _register_builtin_flows()

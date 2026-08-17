@@ -18,6 +18,8 @@ from gaius.engine.grpc.servicers.zndx_engine_servicer import (
     PROJECT,
     GaiusZndxEngineServicer,
     build_status_response,
+    pick_ask_replica,
+    resolve_complete_alias,
 )
 
 
@@ -40,6 +42,31 @@ class TestBuildStatusResponse:
         assert CAPABILITY_COGNITION in caps
         cognition = next(ep for ep in resp.endpoints if ep.capability == CAPABILITY_COGNITION)
         assert cognition.healthy is True
+        assert any(s.kind == "primary" and s.url for s in resp.surfaces)
+
+    def test_ask_picks_healthy_replica(self):
+        orch = MagicMock()
+        def status(name):
+            if name == "interpretable":
+                return SimpleNamespace(status="starting")
+            if name == "interpretable-b":
+                return SimpleNamespace(status="healthy")
+            return None
+        orch.get_endpoint_status.side_effect = status
+        svc = _services(orchestrator_service=orch)
+        assert resolve_complete_alias("ask", svc) == "interpretable-b"
+        assert pick_ask_replica(svc) == "interpretable-b"
+
+    def test_ask_sae_falls_through_to_thinking(self):
+        orch = MagicMock()
+        def status(name):
+            if name == "thinking":
+                return SimpleNamespace(status="healthy")
+            return SimpleNamespace(status="starting")
+        orch.get_endpoint_status.side_effect = status
+        svc = _services(orchestrator_service=orch)
+        assert resolve_complete_alias("ask-sae", svc) == "thinking"
+        assert resolve_complete_alias("ask", svc) == "thinking"
 
     def test_includes_live_orchestrator_endpoints(self):
         orch = MagicMock()
@@ -112,6 +139,29 @@ class TestZndxServicerRpcs:
         with pytest.raises(grpc.aio.AbortError):
             await servicer.Complete(req, ctx)
         ctx.abort.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_complete_aborts_on_empty_error_string(self):
+        """httpx.ReadTimeout stringifies to '' — must not look like success."""
+        router = MagicMock()
+        router.complete = AsyncMock(
+            return_value=SimpleNamespace(
+                content="",
+                model="Qwen/Qwen3.8-27B",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=30000,
+                error="",
+            )
+        )
+        servicer = GaiusZndxEngineServicer(_services(backend_router=router))
+        ctx = MagicMock()
+        ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError("internal"))
+        with pytest.raises(grpc.aio.AbortError):
+            await servicer.Complete(zpb.CompleteRequest(prompt="sitrep"), ctx)
+        ctx.abort.assert_awaited()
+        detail = ctx.abort.await_args.args[1]
+        assert "complete[" in detail
 
     @pytest.mark.asyncio
     async def test_complete_unavailable_without_router(self):

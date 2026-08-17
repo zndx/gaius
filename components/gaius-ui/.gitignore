@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+# ghostty-web WASM is derived (npm / Atelier ui/public/ghostty)
+/assets/ghostty/*.wasm
+/assets/ghostty/ghostty-web.js

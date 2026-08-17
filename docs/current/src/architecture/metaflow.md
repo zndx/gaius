@@ -4,9 +4,18 @@ Gaius uses Metaflow for production data pipelines that run on Kubernetes. Flows 
 
 ## Infrastructure
 
-The Metaflow service is deployed via Tilt in `infra/tilt/` and runs on the local RKE2 Kubernetes cluster. The service is exposed via K8s NodePort on port 30180 (patched automatically by `metaflow-port-forwards.sh` on startup).
+Two profiles exist. **When Signals is on the lattice, platform Metaflow is SoR.**
 
-The environment variable `METAFLOW_SERVICE_URL=http://localhost:30180` must be set for flow execution. This is configured automatically in `devenv.nix` `enterShell` for interactive shells and explicitly in process scripts.
+| Mode | When | Metadata | Artifacts | Compute |
+|------|------|----------|-----------|---------|
+| `platform` | Signals `Engine/Status` (`:50551`) has healthy `metaflow` or `scheduler`, and `:30180/ping` succeeds | Signals metadata service | RustFS `s3://metaflow/metaflow` | Host Metaflow + YK Application on `root.internal.inference.extract` (no `root.gaius`) |
+| `local` | Signals Status unreachable (standalone devenv) | Gaius Tilt / `infra/tilt` | Gaius MinIO / `/raid/metaflow` | host subprocess |
+
+`apply_metaflow_config()` (and every flow spawn env) resolves this via
+`gaius.flows.platform_metaflow.resolve_metaflow_mode`. Federated + Metaflow
+down is `#MF.00000006.NOPLATFORM` — do not tilt-deploy a competing service.
+
+Force for tests: `GAIUS_METAFLOW_MODE=local` or `platform`.
 
 ## GaiusFlow Base Class
 
@@ -58,6 +67,7 @@ Registered flows can be listed and invoked from the CLI or MCP tools.
 | ArticleCurationFlow | End-to-end article research and card publication | ~2 min |
 | ArxivDoclingFlow | Fetch and convert arXiv papers to markdown | ~30s |
 | ClouderaDocsFlow | Sync Cloudera documentation archives | varies |
+| KnowledgeSummaryFlow | Parallel collection `summary.md` (ontology, heuristics, articles, projects, thoughts) | seconds |
 
 See [Article Curation](./article-curation.md) for the full 11-step pipeline.
 

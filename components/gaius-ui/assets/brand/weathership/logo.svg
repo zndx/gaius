@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 96" role="img" aria-label="weathership">
+  <title>weathership</title>
+  <g transform="translate(8, 16) scale(2.667)">
+    <polygon points="12,2 19,10 5,10" fill="#F7F5EE"/>
+    <rect x="3" y="11" width="18" height="2" fill="#F7F5EE"/>
+    <polygon points="5,14 19,14 12,22" fill="#F7F5EE"/>
+  </g>
+  <text x="88" y="74" font-family="Inter, 'Inter Fallback', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-weight="600" font-size="80" fill="#F7F5EE" letter-spacing="-1.6">weathership</text>
+</svg>

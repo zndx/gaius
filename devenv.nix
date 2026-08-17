@@ -109,6 +109,8 @@
   enterShell = ''
     export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
     export METAFLOW_SERVICE_URL="http://localhost:30180"
+    # Lattice hub gRPC (Status / ServerQuery), not a canned UI URL.
+    export SIGNALS_ENGINE_TARGET="''${SIGNALS_ENGINE_TARGET:-127.0.0.1:50551}"
     # devenv's port allocator may shift postgres off the declared 5444 when
     # stacks launch concurrently (it exports the effective port as PGPORT).
     # The static DATABASE_URL in .env can't follow, so rebuild it here; this
@@ -121,6 +123,7 @@
     just
     aeron
     awscli2
+    bubblewrap  # grok --sandbox workspace (Linux deny list via bwrap)
     inputs.blender-bin.packages.${pkgs.system}.default  # Pre-built Blender with GPU (OptiX/CUDA)
     cmake
     conan
@@ -145,6 +148,8 @@
     open-policy-agent
     opentofu
     protobuf
+    cargo
+    rustc
     presenterm
     qdrant
     tilt          # K8s development environment for Metaflow
@@ -487,6 +492,26 @@
       exec ${config.devenv.root}/scripts/processes/nifi.sh
     '';
     process-compose.disabled = false;
+  };
+
+  # Gaius board UI (Keiretsu / Axum — LAN bind :9890)
+  processes.gaius-ui = {
+    exec = ''
+      exec ${config.devenv.root}/scripts/processes/gaius-ui.sh
+    '';
+    process-compose = {
+      depends_on.postgres.condition = "process_healthy";
+      readiness_probe = {
+        http_get = {
+          host = "127.0.0.1";
+          port = 9890;
+          path = "/healthz";
+        };
+        initial_delay_seconds = 2;
+        period_seconds = 5;
+        failure_threshold = 24;
+      };
+    };
   };
 
   # Gaius Fetch Worker (content gathering daemon)

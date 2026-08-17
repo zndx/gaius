@@ -1,0 +1,55 @@
+{% include "chrome.html" %}
+<div class="landing-page" id="board-page">
+  <section class="landing-hero">
+    <h1 class="landing-title">Board</h1>
+    <p class="landing-blurb muted">
+      TUI parity: 19×19 with Ollivier-Ricci GEOMETRY and Tenuki marks,
+      CAD minigrids (Embed · Iso), cognition reserve for one next question.
+    </p>
+    <div class="landing-stats" aria-label="Cognition">
+      <div class="landing-stat">
+        <div class="landing-stat-label">Purpose</div>
+        <div class="landing-stat-value">one-next-question</div>
+      </div>
+      <div class="landing-stat">
+        <div class="landing-stat-label">Reserve</div>
+        <div class="landing-stat-value mono">{{ reserve }}</div>
+      </div>
+      <div class="landing-stat">
+        <div class="landing-stat-label">κ @ cursor</div>
+        <div class="landing-stat-value mono" id="stat-kappa">{{ kappa }}</div>
+      </div>
+      <div class="landing-stat">
+        <div class="landing-stat-label">Tenuki</div>
+        <div class="landing-stat-value mono" id="stat-tenuki">{{ tenuki }}</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="board-row" style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+    <div>
+      <table id="main-grid" class="gaius-grid" aria-label="19 by 19 board"></table>
+      <p class="muted mono" id="location">◉ —</p>
+    </div>
+    <div>
+      <p class="muted">Embed</p>
+      <table id="minigrid-embed" class="gaius-minigrid" aria-label="Embed minigrid"></table>
+      <p class="muted">Iso · κ</p>
+      <table id="minigrid-iso" class="gaius-minigrid" aria-label="Iso minigrid"></table>
+    </div>
+  </section>
+</div>
+<style>
+  .gaius-grid td, .gaius-minigrid td {
+    width: 18px; height: 18px; text-align: center; font-family: ui-monospace, monospace;
+    font-size: 12px; color: var(--text-color-kumo-default);
+  }
+  .gaius-grid .hoshi { color: var(--color-kumo-brand); }
+  .gaius-grid .tenuki-target { color: #c084fc; font-weight: 700; }
+  .gaius-grid .tenuki-visited { color: #7c3aed; opacity: 0.6; }
+  .gaius-grid .cursor { outline: 1px solid var(--color-kumo-brand); }
+  .kappa-neg { background: rgba(220, 38, 38, 0.35); }
+  .kappa-pos { background: rgba(37, 99, 235, 0.35); }
+</style>
+<script src="/assets/js/board.js?v={{ asset_v }}"></script>
+{% include "footer.html" %}

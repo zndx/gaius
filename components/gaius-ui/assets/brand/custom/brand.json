@@ -1,0 +1,7 @@
+{
+  "id": "custom",
+  "display_name": "Custom",
+  "logo_file": "logo.svg",
+  "logo_alt": "Organization",
+  "source": "Upload a .tgz matching Weathership brand/ layout (see README)"
+}

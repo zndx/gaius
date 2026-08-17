@@ -1,0 +1,38 @@
+[package]
+name = "gaius-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gaius board UI — Axum + Askama + Keiretsu (Signals-shaped)"
+
+[[bin]]
+name = "gaius-ui"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+askama = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+portable-pty = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+vt100 = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[package.metadata.askama]
+dirs = ["templates"]

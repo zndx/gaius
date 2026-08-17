@@ -123,7 +123,7 @@ proto-generate:
 
 # ─── GPU ─────────────────────────────────────────────────────────
 
-# Kill stale vLLM processes and show GPU memory
+# Kill stale vLLM processes, reclaim unheld /dev/shm offload maps, show GPU memory
 gpu-cleanup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -205,6 +205,53 @@ gpu-deep-cleanup:
     echo "GPU Memory:"
     nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv 2>/dev/null || echo "  (nvidia-smi not available)"
     echo ""
+
+# ─── Web UI (Keiretsu / Signals-shaped) ──────────────────────────
+
+# Rebuild stale product artifacts (proto stubs if proto changed, then gaius-ui).
+# cargo is incremental; proto-generate runs only when .proto is newer than stubs.
+# Does not uv sync, docs-build, or thirdparty. systemctl restart gaius still required.
+rebuild:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="{{justfile_directory()}}"
+    src_newer_than() {
+      local dest="$1"; shift
+      [[ -f "$dest" ]] || return 0
+      local dest_m src
+      dest_m=$(stat -c %Y "$dest")
+      for src in "$@"; do
+        [[ -f "$src" ]] || continue
+        if (( $(stat -c %Y "$src") > dest_m )); then
+          return 0
+        fi
+      done
+      return 1
+    }
+    if src_newer_than \
+         "$ROOT/src/gaius/engine/generated/gaius_service_pb2.py" \
+         "$ROOT/src/gaius/engine/proto/gaius_service.proto" \
+      || src_newer_than \
+         "$ROOT/src/gaius/engine/generated/zndx/engine/v1/engine_pb2.py" \
+         "$ROOT/external/signals-protocol/proto/zndx/engine/v1/engine.proto"; then
+      echo "rebuild: proto sources newer than stubs"
+      just proto-generate
+    else
+      echo "rebuild: proto stubs up to date"
+    fi
+    echo "rebuild: cargo (incremental) gaius-ui"
+    cargo build --release -p gaius-ui \
+      --manifest-path "$ROOT/components/gaius-ui/Cargo.toml"
+
+alias ui-rebuild := rebuild
+
+# Axum board + cognition + Ghostty terminal (0.0.0.0:9890)
+ui:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export GAIUS_UI_BIND="${GAIUS_UI_BIND:-0.0.0.0:9890}"
+    export GAIUS_BOARD_JSON="${GAIUS_BOARD_JSON:-$PWD/build/dev/.board.json}"
+    exec "{{justfile_directory()}}/scripts/processes/gaius-ui.sh"
 
 # ─── Docs ────────────────────────────────────────────────────────
 

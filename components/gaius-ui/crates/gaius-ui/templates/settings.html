@@ -1,0 +1,96 @@
+{% include "chrome.html" %}
+<section class="card">
+  <h1>Settings</h1>
+  <p class="muted">
+    Deployment-wide configuration for this gaius-ui process.
+    Logo pack only — theme stays Keiretsu; product name stays <strong>Gaius</strong>.
+    Changes apply to <strong>all clients</strong> on this deployment.
+  </p>
+</section>
+
+<section class="card" id="branding">
+  <h2>Branding</h2>
+  <p class="muted">
+    Default is <strong>Weathership</strong> (mono-white lockup on dark chrome).
+    The empty slot takes a <span class="mono">.tgz</span> brand pack —
+    flat <span class="mono">logo.svg</span> + <span class="mono">favicon.svg</span>,
+    or a Weathership kit layout
+    (<span class="mono">logo/lockup/lockup-mono-white.svg</span>).
+  </p>
+
+  <form id="brand-upload" method="post" action="/settings/brand/upload"
+        enctype="multipart/form-data" hidden></form>
+  <input id="brand-pack-file" form="brand-upload" type="file" name="pack"
+         class="brand-file-input" accept=".tgz,.tar.gz,application/gzip,application/x-gzip"
+         onchange="this.form.submit()" />
+
+  <form method="post" action="/settings/brand" class="brand-form">
+    <div class="brand-grid" role="radiogroup" aria-label="Logo brand pack">
+      {% for b in brands %}
+      {% if b.has_logo %}
+      <label class="brand-card{% if b.id.as_str() == selected_brand.as_str() %} selected{% endif %}">
+        <input type="radio" name="brand_id" value="{{ b.id }}"
+               {% if b.id.as_str() == selected_brand.as_str() %}checked{% endif %}
+               onchange="this.form.submit()" />
+        <span class="brand-card-preview">
+          <img src="{{ b.logo_href }}?v={{ asset_v }}" alt="{{ b.logo_alt }}" height="28" />
+        </span>
+        <span class="brand-card-meta">
+          <span class="brand-card-name">{{ b.display_name }}</span>
+          <span class="mono brand-card-id">{{ b.id }}</span>
+        </span>
+      </label>
+      {% else %}
+      <label class="brand-card brand-card-empty" for="brand-pack-file">
+        <span class="brand-card-preview" aria-hidden="true">
+          <svg class="brand-plus" viewBox="0 0 32 32" width="32" height="32" focusable="false">
+            <path fill="currentColor" d="M15 6h2v20h-2z"/>
+            <path fill="currentColor" d="M6 15h20v2H6z"/>
+          </svg>
+        </span>
+        <span class="brand-card-meta">
+          <span class="brand-card-name">Custom</span>
+          <span class="mono brand-card-id">upload .tgz</span>
+        </span>
+      </label>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% if let Some(msg) = saved_msg %}
+    <p class="saved-hint">{{ msg }}</p>
+    {% endif %}
+  </form>
+</section>
+
+<section class="card" id="ask-backend">
+  <h2>Ask</h2>
+  <p class="muted">
+    Side-panel companion. Leftover GPUs <span class="mono">4–5</span> only —
+    Terminal thinking on <span class="mono">0–3</span> is never moved.
+    One model owns a whole GPU; we never pack two models on one card.
+    A large Ask model takes both leftover GPUs (tensor parallel).
+  </p>
+  <form method="post" action="/settings/ask" class="brand-form">
+    <div class="brand-grid" role="radiogroup" aria-label="Ask backend">
+      <label class="brand-card{% if ask_backend == "clt-pair" %} selected{% endif %}">
+        <input type="radio" name="ask_backend" value="clt-pair"
+               {% if ask_backend == "clt-pair" %}checked{% endif %}
+               onchange="this.form.submit()" />
+        <span class="brand-card-meta">
+          <span class="brand-card-name">2× Qwen3-1.7B</span>
+          <span class="mono brand-card-id">one whole GPU each (4 and 5)</span>
+        </span>
+      </label>
+      <label class="brand-card{% if ask_backend == "sae-9b" %} selected{% endif %}">
+        <input type="radio" name="ask_backend" value="sae-9b"
+               {% if ask_backend == "sae-9b" %}checked{% endif %}
+               onchange="this.form.submit()" />
+        <span class="brand-card-meta">
+          <span class="brand-card-name">1× Qwen3.5-9B-Base + SAE</span>
+          <span class="mono brand-card-id">two whole GPUs (TP=2 on 4–5)</span>
+        </span>
+      </label>
+    </div>
+  </form>
+</section>
+{% include "footer.html" %}

@@ -7,7 +7,8 @@ Design:
 - LISTEN on 'scheduled_task_ready' channel for immediate pickup
 - Task handlers registered by task_type
 - Marks tasks complete with result/error
-- No automatic catch-up (manual trigger only)
+- Prospects check/update catch up on engine start so a recycle
+  cannot skip the daily Data Product clock.
 
 Guru Meditation Codes:
 - #STP.00000001.CONNFAIL: LISTEN connection failed
@@ -64,7 +65,8 @@ class ScheduledTaskProcessor(BaseDaemon):
     """PostgreSQL LISTEN/NOTIFY processor for scheduled tasks.
 
     Listens for task insertions and executes registered handlers.
-    No automatic catch-up - stale tasks require manual intervention.
+    Prospects product tasks catch up on start so ``gaius.prospects.corpus``
+    stays current across ``signals.target`` recycles.
     """
 
     def __init__(
@@ -84,6 +86,7 @@ class ScheduledTaskProcessor(BaseDaemon):
         self._pool: asyncpg.Pool | None = None
         self._listen_task: asyncio.Task | None = None
         self._health_task: asyncio.Task | None = None
+        self._catchup_task: asyncio.Task | None = None
 
         # Task handlers by type
         self._handlers: dict[str, TaskHandler] = {}
@@ -125,14 +128,26 @@ class ScheduledTaskProcessor(BaseDaemon):
             workload_id_for,
         )
         from gaius.engine.sentinel_claim import (
-            apply_flow_sentinel,
+            YkAdmitError,
+            apply_and_admit,
+            bind_workload_id,
             delete_flow_sentinel,
         )
 
-        wid = workload_id_for(kind, task.id)
-        env = dict(os.environ)
+        proposed = workload_id_for(kind, task.id)
+        wid = bind_workload_id(kind, proposed)
+        minted = wid == proposed
+        from gaius.flows.config import metaflow_child_env
+
+        env = metaflow_child_env()
+        env["GAIUS_YK_APPLICATION_ID"] = wid
         cwd = os.environ.get("GAIUS_ROOT", "/home/rch/local/src/zndx/gaius")
         table = flow_processes()
+        try:
+            apply_and_admit(wid, kind)
+        except YkAdmitError as e:
+            logger.error(f"{log_prefix} YK admit failed: {e}")
+            return {"status": "error", "error": str(e), "workload_id": wid}
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -150,7 +165,6 @@ class ScheduledTaskProcessor(BaseDaemon):
                 workload_id=wid, kind=kind, proc=proc, task_id=task.id
             )
         )
-        apply_flow_sentinel(wid, kind)
         last_output = time.monotonic()
         output_lines: list[str] = []
         try:
@@ -209,8 +223,12 @@ class ScheduledTaskProcessor(BaseDaemon):
             logger.error(f"{log_prefix} error: {e}")
             return {"status": "error", "workload_id": wid, "error": str(e)}
         finally:
-            table.unregister(wid)
-            delete_flow_sentinel(wid)
+            # Natural end of the host child. Yield path already unregistered
+            # and deleted the claim. Do not delete at spawn.
+            if table.get(wid) is not None:
+                table.unregister(wid)
+                if minted:
+                    delete_flow_sentinel(wid)
 
     def register_handler(self, task_type: str, handler: TaskHandler) -> None:
         """Register a handler for a task type.
@@ -246,7 +264,21 @@ class ScheduledTaskProcessor(BaseDaemon):
         # Start health check
         self._health_task = asyncio.create_task(self._health_check_loop())
 
+        # Catch-up must not block start(). DaemonRegistry times out at 30s;
+        # awaiting prospects_check here cancelled LISTEN on signals.target recycle.
+        self._catchup_task = asyncio.create_task(self._run_startup_catchup())
+
         logger.info(f"ScheduledTaskProcessor started, listening on '{self._channel}'")
+
+    async def _run_startup_catchup(self) -> None:
+        try:
+            await self._catch_up_prospects()
+        except Exception:
+            logger.exception("prospects catch-up failed; LISTEN clock still running")
+        try:
+            await self._catch_up_board_reindex()
+        except Exception:
+            logger.exception("board reindex catch-up failed; LISTEN clock still running")
 
     async def stop(self) -> None:
         """Stop the task processor."""
@@ -257,7 +289,7 @@ class ScheduledTaskProcessor(BaseDaemon):
         self._running = False
 
         # Cancel tasks
-        for task in [self._listen_task, self._health_task]:
+        for task in [self._listen_task, self._health_task, self._catchup_task]:
             if task:
                 task.cancel()
                 try:
@@ -343,13 +375,17 @@ class ScheduledTaskProcessor(BaseDaemon):
                 f"KV sync: {result.get('kv_sync', {}).get('success', False)}"
             )
 
-            return {
+            published = {
                 "slot": slot,
                 "enriched_count": enrich_count,
                 "enriched_failed": enrich_failed,
                 "published_count": result.get("published_count", 0),
                 "kv_sync_success": result.get("kv_sync", {}).get("success", False),
             }
+            from gaius.engine.services.agenda_emit import emit_publish_cards
+
+            emit_publish_cards(published)
+            return published
 
         async def handle_article_curate(task: ScheduledTask) -> dict[str, Any]:
             """ArticleCurationFlow via Metaflow CLI (Yield-visible child)."""
@@ -406,39 +442,43 @@ class ScheduledTaskProcessor(BaseDaemon):
                     all_symbols = list(set(symbols + pending_symbols + synthesis_symbols))
 
                     if all_symbols:
-                        async with self._pool.acquire() as conn:
-                            pending_count = await conn.fetchval(
-                                """
-                                SELECT COUNT(*) FROM scheduled_tasks
-                                WHERE task_type = 'prospects_update'
-                                  AND picked_up_at IS NULL
-                                  AND completed_at IS NULL
-                                """,
-                            )
+                        await self._enqueue_prospects_update(
+                            all_symbols, source="prospects_check"
+                        )
+                else:
+                    from gaius.flows.prospects.publish import record_availability
 
-                            if pending_count == 0:
-                                await conn.execute(
-                                    """
-                                    INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
-                                    VALUES ('prospects_update', $1, 'prospects_check', NOW())
-                                    """,
-                                    json.dumps({"symbols": all_symbols}),
-                                )
-                                logger.info(
-                                    f"Scheduled prospects_update for {len(all_symbols)} symbols: "
-                                    f"{', '.join(all_symbols)}"
-                                )
-                            else:
-                                logger.info(
-                                    f"Skipping prospects_update scheduling: {pending_count} "
-                                    f"pending update task(s) already exist"
-                                )
+                    avail = record_availability(
+                        reason=str(result.get("reason") or "no new filings")
+                    )
+                    result["availability"] = {
+                        k: avail.get(k)
+                        for k in (
+                            "needs_update",
+                            "snapshot_uri",
+                            "tx_id",
+                            "reason",
+                        )
+                    }
+                    if avail.get("needs_update"):
+                        from gaius.flows.prospects.flow import load_watchlist
+
+                        watch = [
+                            str(e.get("symbol"))
+                            for e in load_watchlist()
+                            if e.get("symbol")
+                        ]
+                        if watch:
+                            await self._enqueue_prospects_update(
+                                watch, source="prospects_maintain"
+                            )
 
                 return {
                     "update_recommended": result.get("update_recommended", False),
                     "reason": result.get("reason", ""),
                     "new_filings_count": result.get("new_filings_count", 0),
                     "symbols_checked": len(result.get("symbols_with_new_filings", [])),
+                    "availability": result.get("availability"),
                 }
             finally:
                 await service.stop()
@@ -465,8 +505,12 @@ class ScheduledTaskProcessor(BaseDaemon):
                     f"--symbols={symbols_csv}",
                 ],
                 log_prefix="ProspectsUpdate",
+                idle_timeout=3600,
             )
             result["symbols"] = symbols
+            from gaius.engine.services.agenda_emit import emit_prospects_update
+
+            emit_prospects_update(result)
             return result
 
         async def handle_metabase_sync(task: ScheduledTask) -> dict[str, Any]:
@@ -525,8 +569,246 @@ class ScheduledTaskProcessor(BaseDaemon):
         self.register_handler("article_curate", handle_article_curate)
         self.register_handler("prospects_check", handle_prospects_check)
         self.register_handler("prospects_update", handle_prospects_update)
+        async def handle_board_reindex(task: ScheduledTask) -> dict[str, Any]:
+            """Publish the live KB onto current_state. The board IS this row."""
+            from gaius.storage.kb_board import (
+                build_board_snapshot,
+                load_content_index,
+                publish_board_snapshot,
+            )
+
+            kb_root = str(
+                task.payload.get("kb_root")
+                or os.environ.get("GAIUS_KB_ROOT", "build/dev")
+            )
+            snap = build_board_snapshot(
+                kb_root, catalog=await load_content_index()
+            )
+            generation = await publish_board_snapshot(snap)
+            if self._pool:
+                async with self._pool.acquire() as conn:
+                    try:
+                        await conn.execute(
+                            "SELECT meta.mark_board_reindex_started($1, $2)",
+                            generation,
+                            snap.n_documents,
+                        )
+                    except Exception as e:
+                        logger.warning("mark_board_reindex_started: %s", e)
+            logger.info(
+                "board_reindex generation=%s docs=%s iced=%s cells=%s",
+                generation,
+                snap.n_documents,
+                snap.n_iceberg,
+                snap.cells_occupied,
+            )
+            return {**snap.summary(), "generation": generation}
+
+        async def handle_weekly_signals_summary(task: ScheduledTask) -> dict[str, Any]:
+            """S2S remotes + week log → scratch YYYY-MM-DD-HHmmss_wWW-summary.md."""
+            from gaius.engine.services.weekly_signals_summary import (
+                WeeklySummaryError,
+                run_weekly_summary,
+            )
+
+            previous = bool(task.payload.get("previous", True))
+            week = str(task.payload.get("week") or "")
+            try:
+                result = await run_weekly_summary(
+                    week=week,
+                    previous=previous and not week,
+                )
+            except WeeklySummaryError as e:
+                logger.error("weekly_signals_summary: %s", e)
+                return {"status": "failed", "error": str(e)}
+            if self._pool:
+                async with self._pool.acquire() as conn:
+                    try:
+                        await conn.execute(
+                            "SELECT meta.mark_weekly_signals_summary_started($1, $2)",
+                            result.week.label,
+                            result.path,
+                        )
+                    except Exception as e:
+                        logger.warning("mark_weekly_signals_summary_started: %s", e)
+            logger.info(
+                "weekly_signals_summary week=%s path=%s projects=%s",
+                result.week.label,
+                result.path,
+                ",".join(p.project for p in result.participants),
+            )
+            await self._enqueue_knowledge_summary(
+                week=result.week.label, source="weekly_signals_summary"
+            )
+            return {
+                "status": "completed",
+                "week": result.week.label,
+                "path": result.path,
+                "projects": [p.project for p in result.participants],
+                "commits": len(result.commits),
+                "notes": len(result.notes),
+                "acp_used": result.acp_used,
+            }
+
+        async def handle_knowledge_summary(task: ScheduledTask) -> dict[str, Any]:
+            """KnowledgeSummaryFlow: ontology + heuristics summary.md (foreach)."""
+            week = str(task.payload.get("week") or "")
+            section = str(task.payload.get("section") or "")
+            argv = [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "gaius.flows.summary.flow",
+                "run",
+            ]
+            if week:
+                argv.extend(["--week", week])
+            if section:
+                argv.extend(["--section", section])
+            return await self._run_spawned_metaflow(
+                kind="knowledge-summary",
+                task=task,
+                argv=argv,
+                log_prefix="KnowledgeSummary",
+            )
+
+        self.register_handler("publish_cards", handle_publish_cards)
+        self.register_handler("article_curate", handle_article_curate)
+        self.register_handler("prospects_check", handle_prospects_check)
+        self.register_handler("prospects_update", handle_prospects_update)
         self.register_handler("metabase_sync", handle_metabase_sync)
         self.register_handler("metaagent_audit", handle_metaagent_audit)
+        self.register_handler("board_reindex", handle_board_reindex)
+        self.register_handler("weekly_signals_summary", handle_weekly_signals_summary)
+        self.register_handler("knowledge_summary", handle_knowledge_summary)
+
+    async def _enqueue_knowledge_summary(self, *, week: str, source: str) -> None:
+        """Fan out KNOWLEDGE pages after the weekly zettel. Does not block it."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            pending_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM scheduled_tasks
+                WHERE task_type = 'knowledge_summary'
+                  AND picked_up_at IS NULL
+                  AND completed_at IS NULL
+                """,
+            )
+            if pending_count:
+                logger.info("Skipping knowledge_summary scheduling: %s pending", pending_count)
+                return
+            await conn.execute(
+                """
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('knowledge_summary', $1, $2, NOW())
+                """,
+                json.dumps({"week": week}),
+                source,
+            )
+        logger.info("Scheduled knowledge_summary from %s week=%s", source, week)
+
+    async def _enqueue_prospects_update(
+        self, symbols: list[str], *, source: str
+    ) -> None:
+        if not self._pool or not symbols:
+            return
+        async with self._pool.acquire() as conn:
+            pending_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM scheduled_tasks
+                WHERE task_type = 'prospects_update'
+                  AND picked_up_at IS NULL
+                  AND completed_at IS NULL
+                """,
+            )
+            if pending_count:
+                logger.info(
+                    "Skipping prospects_update scheduling: %s pending",
+                    pending_count,
+                )
+                return
+            await conn.execute(
+                """
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                VALUES ('prospects_update', $1, $2, NOW())
+                """,
+                json.dumps({"symbols": symbols}),
+                source,
+            )
+        logger.info(
+            "Scheduled prospects_update from %s for %s symbols: %s",
+            source,
+            len(symbols),
+            ", ".join(symbols),
+        )
+
+    async def _catch_up_prospects(self) -> None:
+        """Re-arm the daily clock after engine recycle; run leftover tasks."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            try:
+                due = await conn.fetchval("SELECT meta.should_run_prospects_check()")
+            except Exception as e:
+                logger.warning("prospects cooldown function missing: %s", e)
+                due = False
+            if due:
+                await conn.execute(
+                    """
+                    INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                    SELECT 'prospects_check', '{}'::jsonb, 'engine-catchup', NOW()
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM scheduled_tasks
+                        WHERE task_type = 'prospects_check'
+                          AND picked_up_at IS NULL
+                          AND completed_at IS NULL
+                    )
+                    """
+                )
+            pending = await conn.fetch(
+                """
+                SELECT id FROM scheduled_tasks
+                WHERE task_type IN ('prospects_check', 'prospects_update')
+                  AND picked_up_at IS NULL
+                  AND completed_at IS NULL
+                ORDER BY id
+                """
+            )
+        for row in pending:
+            logger.info("prospects catch-up executing task %s", row["id"])
+            await self._execute_task(row["id"])
+
+    async def _catch_up_board_reindex(self) -> None:
+        """Arm the board clock after recycle so the UI is never an empty cache."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO scheduled_tasks (task_type, payload, source, scheduled_for)
+                SELECT 'board_reindex', '{}'::jsonb, 'engine-catchup', NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM scheduled_tasks
+                    WHERE task_type = 'board_reindex'
+                      AND picked_up_at IS NULL
+                      AND completed_at IS NULL
+                )
+                """
+            )
+            pending = await conn.fetch(
+                """
+                SELECT id FROM scheduled_tasks
+                WHERE task_type = 'board_reindex'
+                  AND picked_up_at IS NULL
+                  AND completed_at IS NULL
+                ORDER BY id
+                """
+            )
+        for row in pending:
+            logger.info("board_reindex catch-up executing task %s", row["id"])
+            await self._execute_task(row["id"])
 
     async def _listen_loop(self) -> None:
         """Main LISTEN loop with reconnection."""

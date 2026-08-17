@@ -204,6 +204,11 @@ class GaiusServiceStub(object):
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=gaius__service__pb2.CognitionActivityResponse.FromString,
                 _registered_method=True)
+        self.CognitionSurface = channel.unary_unary(
+                '/gaius.engine.GaiusService/CognitionSurface',
+                request_serializer=gaius__service__pb2.CognitionSurfaceRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.CognitionSurfaceResponse.FromString,
+                _registered_method=True)
         self.SelfObservation = channel.unary_unary(
                 '/gaius.engine.GaiusService/SelfObservation',
                 request_serializer=gaius__service__pb2.SelfObservationRequest.SerializeToString,
@@ -338,6 +343,91 @@ class GaiusServiceStub(object):
                 '/gaius.engine.GaiusService/ThetaConsolidationStats',
                 request_serializer=gaius__service__pb2.ThetaConsolidationStatsRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.ThetaConsolidationStatsResponse.FromString,
+                _registered_method=True)
+        self.ThetaAgenda = channel.unary_unary(
+                '/gaius.engine.GaiusService/ThetaAgenda',
+                request_serializer=gaius__service__pb2.ThetaAgendaRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.ThetaAgendaResponse.FromString,
+                _registered_method=True)
+        self.AgendaList = channel.unary_unary(
+                '/gaius.engine.GaiusService/AgendaList',
+                request_serializer=gaius__service__pb2.AgendaListRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AgendaListResponse.FromString,
+                _registered_method=True)
+        self.AgendaGet = channel.unary_unary(
+                '/gaius.engine.GaiusService/AgendaGet',
+                request_serializer=gaius__service__pb2.AgendaGetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AgendaGetResponse.FromString,
+                _registered_method=True)
+        self.AgendaCreate = channel.unary_unary(
+                '/gaius.engine.GaiusService/AgendaCreate',
+                request_serializer=gaius__service__pb2.AgendaCreateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AgendaCreateResponse.FromString,
+                _registered_method=True)
+        self.AgendaUpdate = channel.unary_unary(
+                '/gaius.engine.GaiusService/AgendaUpdate',
+                request_serializer=gaius__service__pb2.AgendaUpdateRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AgendaUpdateResponse.FromString,
+                _registered_method=True)
+        self.WeeklySignalsSummary = channel.unary_unary(
+                '/gaius.engine.GaiusService/WeeklySignalsSummary',
+                request_serializer=gaius__service__pb2.WeeklySignalsSummaryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.WeeklySignalsSummaryResponse.FromString,
+                _registered_method=True)
+        self.WeeklySignalsSummaryList = channel.unary_unary(
+                '/gaius.engine.GaiusService/WeeklySignalsSummaryList',
+                request_serializer=gaius__service__pb2.WeeklySignalsSummaryListRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.WeeklySignalsSummaryListResponse.FromString,
+                _registered_method=True)
+        self.WeeklySignalsSummaryGet = channel.unary_unary(
+                '/gaius.engine.GaiusService/WeeklySignalsSummaryGet',
+                request_serializer=gaius__service__pb2.WeeklySignalsSummaryGetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.WeeklySignalsSummaryGetResponse.FromString,
+                _registered_method=True)
+        self.KnowledgeSummary = channel.unary_unary(
+                '/gaius.engine.GaiusService/KnowledgeSummary',
+                request_serializer=gaius__service__pb2.KnowledgeSummaryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.KnowledgeSummaryResponse.FromString,
+                _registered_method=True)
+        self.FederationSurfaces = channel.unary_unary(
+                '/gaius.engine.GaiusService/FederationSurfaces',
+                request_serializer=gaius__service__pb2.FederationSurfacesRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.FederationSurfacesResponse.FromString,
+                _registered_method=True)
+        self.AskPresent = channel.unary_unary(
+                '/gaius.engine.GaiusService/AskPresent',
+                request_serializer=gaius__service__pb2.AskPresentRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.AskPresentResponse.FromString,
+                _registered_method=True)
+        self.SummaryIndex = channel.unary_unary(
+                '/gaius.engine.GaiusService/SummaryIndex',
+                request_serializer=gaius__service__pb2.SummaryIndexRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SummaryIndexResponse.FromString,
+                _registered_method=True)
+        self.SummaryGet = channel.unary_unary(
+                '/gaius.engine.GaiusService/SummaryGet',
+                request_serializer=gaius__service__pb2.SummaryGetRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SummaryGetResponse.FromString,
+                _registered_method=True)
+        self.SummaryHop = channel.unary_unary(
+                '/gaius.engine.GaiusService/SummaryHop',
+                request_serializer=gaius__service__pb2.SummaryHopRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SummaryHopResponse.FromString,
+                _registered_method=True)
+        self.SummaryFork = channel.unary_unary(
+                '/gaius.engine.GaiusService/SummaryFork',
+                request_serializer=gaius__service__pb2.SummaryForkRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SummaryForkResponse.FromString,
+                _registered_method=True)
+        self.SummarySchedules = channel.unary_unary(
+                '/gaius.engine.GaiusService/SummarySchedules',
+                request_serializer=gaius__service__pb2.SummarySchedulesRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SummarySchedulesResponse.FromString,
+                _registered_method=True)
+        self.SummaryScheduleTrigger = channel.unary_unary(
+                '/gaius.engine.GaiusService/SummaryScheduleTrigger',
+                request_serializer=gaius__service__pb2.SummaryScheduleTriggerRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SummaryScheduleTriggerResponse.FromString,
                 _registered_method=True)
         self.MetaAgentQuery = channel.unary_unary(
                 '/gaius.engine.GaiusService/MetaAgentQuery',
@@ -904,6 +994,12 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CognitionSurface(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SelfObservation(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -1087,6 +1183,108 @@ class GaiusServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def ThetaConsolidationStats(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ThetaAgenda(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AgendaList(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AgendaGet(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AgendaCreate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AgendaUpdate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WeeklySignalsSummary(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WeeklySignalsSummaryList(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WeeklySignalsSummaryGet(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def KnowledgeSummary(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FederationSurfaces(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AskPresent(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SummaryIndex(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SummaryGet(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SummaryHop(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SummaryFork(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SummarySchedules(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SummaryScheduleTrigger(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1718,6 +1916,11 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=gaius__service__pb2.CognitionActivityResponse.SerializeToString,
             ),
+            'CognitionSurface': grpc.unary_unary_rpc_method_handler(
+                    servicer.CognitionSurface,
+                    request_deserializer=gaius__service__pb2.CognitionSurfaceRequest.FromString,
+                    response_serializer=gaius__service__pb2.CognitionSurfaceResponse.SerializeToString,
+            ),
             'SelfObservation': grpc.unary_unary_rpc_method_handler(
                     servicer.SelfObservation,
                     request_deserializer=gaius__service__pb2.SelfObservationRequest.FromString,
@@ -1852,6 +2055,91 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     servicer.ThetaConsolidationStats,
                     request_deserializer=gaius__service__pb2.ThetaConsolidationStatsRequest.FromString,
                     response_serializer=gaius__service__pb2.ThetaConsolidationStatsResponse.SerializeToString,
+            ),
+            'ThetaAgenda': grpc.unary_unary_rpc_method_handler(
+                    servicer.ThetaAgenda,
+                    request_deserializer=gaius__service__pb2.ThetaAgendaRequest.FromString,
+                    response_serializer=gaius__service__pb2.ThetaAgendaResponse.SerializeToString,
+            ),
+            'AgendaList': grpc.unary_unary_rpc_method_handler(
+                    servicer.AgendaList,
+                    request_deserializer=gaius__service__pb2.AgendaListRequest.FromString,
+                    response_serializer=gaius__service__pb2.AgendaListResponse.SerializeToString,
+            ),
+            'AgendaGet': grpc.unary_unary_rpc_method_handler(
+                    servicer.AgendaGet,
+                    request_deserializer=gaius__service__pb2.AgendaGetRequest.FromString,
+                    response_serializer=gaius__service__pb2.AgendaGetResponse.SerializeToString,
+            ),
+            'AgendaCreate': grpc.unary_unary_rpc_method_handler(
+                    servicer.AgendaCreate,
+                    request_deserializer=gaius__service__pb2.AgendaCreateRequest.FromString,
+                    response_serializer=gaius__service__pb2.AgendaCreateResponse.SerializeToString,
+            ),
+            'AgendaUpdate': grpc.unary_unary_rpc_method_handler(
+                    servicer.AgendaUpdate,
+                    request_deserializer=gaius__service__pb2.AgendaUpdateRequest.FromString,
+                    response_serializer=gaius__service__pb2.AgendaUpdateResponse.SerializeToString,
+            ),
+            'WeeklySignalsSummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.WeeklySignalsSummary,
+                    request_deserializer=gaius__service__pb2.WeeklySignalsSummaryRequest.FromString,
+                    response_serializer=gaius__service__pb2.WeeklySignalsSummaryResponse.SerializeToString,
+            ),
+            'WeeklySignalsSummaryList': grpc.unary_unary_rpc_method_handler(
+                    servicer.WeeklySignalsSummaryList,
+                    request_deserializer=gaius__service__pb2.WeeklySignalsSummaryListRequest.FromString,
+                    response_serializer=gaius__service__pb2.WeeklySignalsSummaryListResponse.SerializeToString,
+            ),
+            'WeeklySignalsSummaryGet': grpc.unary_unary_rpc_method_handler(
+                    servicer.WeeklySignalsSummaryGet,
+                    request_deserializer=gaius__service__pb2.WeeklySignalsSummaryGetRequest.FromString,
+                    response_serializer=gaius__service__pb2.WeeklySignalsSummaryGetResponse.SerializeToString,
+            ),
+            'KnowledgeSummary': grpc.unary_unary_rpc_method_handler(
+                    servicer.KnowledgeSummary,
+                    request_deserializer=gaius__service__pb2.KnowledgeSummaryRequest.FromString,
+                    response_serializer=gaius__service__pb2.KnowledgeSummaryResponse.SerializeToString,
+            ),
+            'FederationSurfaces': grpc.unary_unary_rpc_method_handler(
+                    servicer.FederationSurfaces,
+                    request_deserializer=gaius__service__pb2.FederationSurfacesRequest.FromString,
+                    response_serializer=gaius__service__pb2.FederationSurfacesResponse.SerializeToString,
+            ),
+            'AskPresent': grpc.unary_unary_rpc_method_handler(
+                    servicer.AskPresent,
+                    request_deserializer=gaius__service__pb2.AskPresentRequest.FromString,
+                    response_serializer=gaius__service__pb2.AskPresentResponse.SerializeToString,
+            ),
+            'SummaryIndex': grpc.unary_unary_rpc_method_handler(
+                    servicer.SummaryIndex,
+                    request_deserializer=gaius__service__pb2.SummaryIndexRequest.FromString,
+                    response_serializer=gaius__service__pb2.SummaryIndexResponse.SerializeToString,
+            ),
+            'SummaryGet': grpc.unary_unary_rpc_method_handler(
+                    servicer.SummaryGet,
+                    request_deserializer=gaius__service__pb2.SummaryGetRequest.FromString,
+                    response_serializer=gaius__service__pb2.SummaryGetResponse.SerializeToString,
+            ),
+            'SummaryHop': grpc.unary_unary_rpc_method_handler(
+                    servicer.SummaryHop,
+                    request_deserializer=gaius__service__pb2.SummaryHopRequest.FromString,
+                    response_serializer=gaius__service__pb2.SummaryHopResponse.SerializeToString,
+            ),
+            'SummaryFork': grpc.unary_unary_rpc_method_handler(
+                    servicer.SummaryFork,
+                    request_deserializer=gaius__service__pb2.SummaryForkRequest.FromString,
+                    response_serializer=gaius__service__pb2.SummaryForkResponse.SerializeToString,
+            ),
+            'SummarySchedules': grpc.unary_unary_rpc_method_handler(
+                    servicer.SummarySchedules,
+                    request_deserializer=gaius__service__pb2.SummarySchedulesRequest.FromString,
+                    response_serializer=gaius__service__pb2.SummarySchedulesResponse.SerializeToString,
+            ),
+            'SummaryScheduleTrigger': grpc.unary_unary_rpc_method_handler(
+                    servicer.SummaryScheduleTrigger,
+                    request_deserializer=gaius__service__pb2.SummaryScheduleTriggerRequest.FromString,
+                    response_serializer=gaius__service__pb2.SummaryScheduleTriggerResponse.SerializeToString,
             ),
             'MetaAgentQuery': grpc.unary_unary_rpc_method_handler(
                     servicer.MetaAgentQuery,
@@ -3080,6 +3368,33 @@ class GaiusService(object):
             _registered_method=True)
 
     @staticmethod
+    def CognitionSurface(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/CognitionSurface',
+            gaius__service__pb2.CognitionSurfaceRequest.SerializeToString,
+            gaius__service__pb2.CognitionSurfaceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def SelfObservation(request,
             target,
             options=(),
@@ -3798,6 +4113,465 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/ThetaConsolidationStats',
             gaius__service__pb2.ThetaConsolidationStatsRequest.SerializeToString,
             gaius__service__pb2.ThetaConsolidationStatsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ThetaAgenda(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/ThetaAgenda',
+            gaius__service__pb2.ThetaAgendaRequest.SerializeToString,
+            gaius__service__pb2.ThetaAgendaResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AgendaList(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AgendaList',
+            gaius__service__pb2.AgendaListRequest.SerializeToString,
+            gaius__service__pb2.AgendaListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AgendaGet(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AgendaGet',
+            gaius__service__pb2.AgendaGetRequest.SerializeToString,
+            gaius__service__pb2.AgendaGetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AgendaCreate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AgendaCreate',
+            gaius__service__pb2.AgendaCreateRequest.SerializeToString,
+            gaius__service__pb2.AgendaCreateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AgendaUpdate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AgendaUpdate',
+            gaius__service__pb2.AgendaUpdateRequest.SerializeToString,
+            gaius__service__pb2.AgendaUpdateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WeeklySignalsSummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/WeeklySignalsSummary',
+            gaius__service__pb2.WeeklySignalsSummaryRequest.SerializeToString,
+            gaius__service__pb2.WeeklySignalsSummaryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WeeklySignalsSummaryList(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/WeeklySignalsSummaryList',
+            gaius__service__pb2.WeeklySignalsSummaryListRequest.SerializeToString,
+            gaius__service__pb2.WeeklySignalsSummaryListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WeeklySignalsSummaryGet(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/WeeklySignalsSummaryGet',
+            gaius__service__pb2.WeeklySignalsSummaryGetRequest.SerializeToString,
+            gaius__service__pb2.WeeklySignalsSummaryGetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def KnowledgeSummary(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/KnowledgeSummary',
+            gaius__service__pb2.KnowledgeSummaryRequest.SerializeToString,
+            gaius__service__pb2.KnowledgeSummaryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FederationSurfaces(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/FederationSurfaces',
+            gaius__service__pb2.FederationSurfacesRequest.SerializeToString,
+            gaius__service__pb2.FederationSurfacesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AskPresent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/AskPresent',
+            gaius__service__pb2.AskPresentRequest.SerializeToString,
+            gaius__service__pb2.AskPresentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SummaryIndex(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SummaryIndex',
+            gaius__service__pb2.SummaryIndexRequest.SerializeToString,
+            gaius__service__pb2.SummaryIndexResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SummaryGet(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SummaryGet',
+            gaius__service__pb2.SummaryGetRequest.SerializeToString,
+            gaius__service__pb2.SummaryGetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SummaryHop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SummaryHop',
+            gaius__service__pb2.SummaryHopRequest.SerializeToString,
+            gaius__service__pb2.SummaryHopResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SummaryFork(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SummaryFork',
+            gaius__service__pb2.SummaryForkRequest.SerializeToString,
+            gaius__service__pb2.SummaryForkResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SummarySchedules(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SummarySchedules',
+            gaius__service__pb2.SummarySchedulesRequest.SerializeToString,
+            gaius__service__pb2.SummarySchedulesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SummaryScheduleTrigger(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SummaryScheduleTrigger',
+            gaius__service__pb2.SummaryScheduleTriggerRequest.SerializeToString,
+            gaius__service__pb2.SummaryScheduleTriggerResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -5537,4 +6311,5 @@ class GaiusService(object):
             _registered_method=True)
 
 # Async stub alias - same class works with grpc.aio.Channel
+# Type hints in .pyi declare this as a subclass for type checking
 GaiusServiceAsyncStub = GaiusServiceStub

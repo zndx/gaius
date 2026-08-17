@@ -232,6 +232,8 @@ message CompleteRequest {
   float temperature = 5;
   string priority = 6;  // "critical", "high", "normal", "low"
   string technique = 7;  // optillm technique: cot_reflection, bon, moa, etc.
+  string timezone = 8;   // IANA; empty = unspecified
+  string clock_json = 9; // optional Ask Clock JSON
 }
 
 message CompleteResponse {
@@ -436,6 +438,54 @@ message CognitionActivityResponse {
   string current_task = 4;
   int32 thoughts_today = 5;
   int32 active_thoughts = 6;
+}
+
+// Federation cognition surface (gaius-ui /cognition). Honest window
+// aggregates from cognition_thoughts + cognition_cycles — not a coding-agent session store.
+message CognitionSurfaceRequest {
+  int32 window_days = 1;     // rolling window; default 365; must be >= 1
+  int32 thought_limit = 2;   // sidebar recency list; default 80
+  string stream = 3;         // optional thought_type filter
+}
+
+message CognitionDayBucket {
+  string date = 1;           // YYYY-MM-DD (UTC)
+  int32 thoughts = 2;
+  int32 cycles = 3;
+}
+
+message CognitionHourCell {
+  int32 weekday = 1;         // 0 = Sunday (PostgreSQL DOW)
+  int32 hour = 2;            // 0-23 UTC
+  int32 thoughts = 3;
+}
+
+message CognitionStreamCount {
+  string id = 1;             // thought_type
+  int32 thoughts = 2;
+}
+
+message CognitionSurfaceResponse {
+  bool running = 1;
+  int32 cycles_completed = 2;          // daemon lifetime
+  int32 cycles_in_window = 3;
+  int64 last_cycle_timestamp_ms = 4;
+  string current_task = 5;
+  int32 thoughts = 6;
+  int32 streams = 7;
+  int32 active_days = 8;
+  float thoughts_per_cycle = 9;
+  string concentration_stream = 10;
+  float concentration_pct = 11;
+  int32 reserve_tokens = 12;
+  string project = 13;                 // federation.project (gaius)
+  string unit = 14;                    // this peer's cognition unit
+  repeated ThoughtMessage recent = 15;
+  repeated ThoughtMessage top = 16;
+  repeated CognitionDayBucket days = 17;
+  repeated CognitionHourCell hours = 18;
+  repeated CognitionStreamCount stream_counts = 19;
+  string error = 20;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1473,6 +1523,320 @@ message ThetaSitrepResponse {
   string error = 14;
 }
 
+// KB-oriented day agenda (current/agenda.md + project agendas).
+// Not Synth's gesture/procedure FSM.
+message ThetaAgendaRequest {
+  string action = 1;              // "list" | "init"
+  string horizon = 2;             // "day", "week", "quarter", "open"
+}
+
+message ThetaAgendaItem {
+  string description = 1;
+  string priority = 2;
+  string project = 3;
+  string due_date = 4;
+  bool completed = 5;
+  string source_path = 6;
+}
+
+message ThetaAgendaResponse {
+  bool success = 1;
+  string action = 2;
+  string horizon = 3;
+  string path = 4;                // current/agenda.md
+  bool created = 5;
+  repeated ThetaAgendaItem items = 6;
+  string ascii_format = 7;
+  string error = 8;
+}
+
+// Consciousness surface — scratch zettels (note | list | event).
+// Not ThetaAgenda (day rollup). Not Synth gestures.
+message AgendaCheck {
+  bool done = 1;
+  string text = 2;
+}
+
+message AgendaCard {
+  string path = 1;                 // scratch/YYYY-MM-DD/YYYY-MM-DD-HHmmss_skewer.md
+  string kind = 2;                 // note | list | event
+  string title = 3;
+  string body = 4;
+  string excerpt = 5;
+  string prev = 6;
+  string next = 7;
+  string starts = 8;               // ISO-8601
+  string ends = 9;
+  repeated string tags = 10;
+  bool pin = 11;
+  repeated AgendaCheck checks = 12;
+  int64 created_ms = 13;
+  string intent = 14;              // brief | reminder | session
+  string with_whom = 15;           // e.g. agents
+  string calendar_url = 16;        // Google Calendar TEMPLATE (iPad-safe)
+  string timezone = 17;            // IANA zone the item was booked in (empty = unspecified)
+}
+
+message AgendaListRequest {
+  int32 window_days = 1;           // default 14
+  string kind = 2;                 // empty = all
+  string tag = 3;
+  string origin = 4;               // YYYY-MM-DD — caller's calendar today
+  string timezone = 5;             // IANA — window and item days in this zone
+}
+
+message AgendaListResponse {
+  repeated AgendaCard items = 1;
+  string error = 2;
+}
+
+message AgendaGetRequest {
+  string path = 1;
+}
+
+message AgendaGetResponse {
+  AgendaCard item = 1;
+  string error = 2;
+}
+
+message AgendaCreateRequest {
+  string kind = 1;
+  string title = 2;
+  string body = 3;
+  string starts = 4;
+  string ends = 5;
+  repeated string tags = 6;
+  bool pin = 7;
+  string intent = 8;               // brief | reminder | session
+  string with_whom = 9;
+  string timezone = 10;            // IANA zone of the starts/ends wall clock
+}
+
+message AgendaCreateResponse {
+  AgendaCard item = 1;
+  string error = 2;
+}
+
+message AgendaUpdateRequest {
+  string path = 1;
+  string title = 2;
+  string body = 3;
+  string starts = 4;
+  string ends = 5;
+  repeated string tags = 6;
+  bool pin = 7;
+  bool has_pin = 8;
+  repeated AgendaCheck checks = 9;
+  bool has_checks = 10;
+  string intent = 11;
+  bool has_intent = 12;
+  string with_whom = 13;
+  bool has_with = 14;
+  string timezone = 15;
+  bool has_timezone = 16;
+}
+
+message AgendaUpdateResponse {
+  AgendaCard item = 1;
+  string error = 2;
+}
+
+// Weekly Signals Summary — S2S remotes + last week's commits/notes.
+// Participants are engines that answer Engine/ServerQuery REMOTES.
+message WeeklySignalsRemote {
+  string project = 1;
+  string name = 2;
+  string url = 3;
+}
+
+message WeeklySignalsSummaryRequest {
+  string week = 1;                 // YYYY-Www; empty = current ISO week
+  bool previous = 2;               // if week empty, use the previous ISO week
+}
+
+message WeeklySignalsSummaryResponse {
+  string path = 1;
+  string week = 2;
+  string body = 3;
+  repeated string projects = 4;
+  repeated WeeklySignalsRemote remotes = 5;
+  bool acp_used = 6;
+  string error = 7;
+}
+
+message WeeklySignalsSummaryListRequest {
+  int32 limit = 1;                 // default 12
+}
+
+message WeeklySignalsSummaryItem {
+  string path = 1;
+  string week = 2;
+  string title = 3;
+}
+
+message WeeklySignalsSummaryListResponse {
+  repeated WeeklySignalsSummaryItem items = 1;
+  string error = 2;
+}
+
+message WeeklySignalsSummaryGetRequest {
+  string path = 1;
+}
+
+message WeeklySignalsSummaryGetResponse {
+  string path = 1;
+  string body = 2;
+  string error = 3;
+}
+
+// Collection pages. Weekly zettel is unchanged.
+// Writes current/{ontology,heuristics,articles,projects,thoughts}/summary.md.
+message KnowledgeSummaryRequest {
+  string week = 1;                 // YYYY-Www stamp; empty = current ISO week
+  string section = 2;              // ontology|heuristic|articles|projects|thoughts|empty=all
+}
+
+message KnowledgeSummaryWritten {
+  string section = 1;
+  string path = 2;
+  int32 notes = 3;
+}
+
+message KnowledgeSummaryResponse {
+  string week = 1;
+  repeated KnowledgeSummaryWritten items = 2;
+  string error = 3;
+}
+
+// Live peer primary UIs via S2S (Status.surfaces + ServerQuery PEERS).
+// Empty items is honest — do not invent Signals/Aegir/Atelier URLs.
+message FederationSurface {
+  string project = 1;
+  string engine_target = 2;
+  string primary_ui = 3;
+}
+
+message FederationSurfacesRequest {}
+
+message FederationSurfacesResponse {
+  repeated FederationSurface items = 1;
+  string error = 2;
+}
+
+// Ask rich-present (OHLC/table/links/markdown). Engine FMP — no façade HTTP.
+message AskPresentRequest {
+  string kind = 1;                 // ohlc | table | links | markdown
+  string symbol = 2;
+  string title = 3;
+  string from_date = 4;
+  string to_date = 5;
+  string payload_json = 6;         // bars/rows/links/markdown body
+}
+
+message AskPresentResponse {
+  string artifact_json = 1;
+  string error = 2;
+  int32 n_items = 3;
+}
+
+// Summary lineup — FedWiki trail over a temporal slice of the KB.
+// SECTION = ontology | heuristic. LENS = articles | projects | thoughts.
+// Default visit: this ISO week's Signals Summary, then hop [[wiki]] / fork.
+message SummaryNote {
+  string id = 1;                   // KB path or lens/{section}/{lens}
+  string title = 2;
+  string body = 3;
+  string section = 4;              // ontology | heuristic | week
+  string lens = 5;                 // articles | projects | thoughts | week
+  string week = 6;                 // YYYY-Www
+  int64 mtime_ms = 7;
+  repeated string links = 8;
+  string origin_project = 9;
+  string origin_id = 10;           // forked-from id
+  string excerpt = 11;
+  bool virtual = 12;               // generated lens index, not a file
+}
+
+message SummaryIndexRequest {
+  string section = 1;              // ontology | heuristic | empty
+  string lens = 2;                 // articles | projects | thoughts | empty
+  string week = 3;                 // YYYY-Www; empty = current ISO week
+  int32 limit = 4;                 // default 48
+}
+
+message SummaryIndexResponse {
+  string week = 1;
+  string landing_id = 2;           // latest weekly summary path (may be empty)
+  SummaryNote seed = 3;            // first panel (week or lens index)
+  repeated SummaryNote items = 4;
+  string error = 5;
+}
+
+message SummaryGetRequest {
+  string id = 1;
+  string section = 2;
+  string lens = 3;
+  string week = 4;
+}
+
+message SummaryGetResponse {
+  SummaryNote note = 1;
+  string error = 2;
+}
+
+message SummaryHopRequest {
+  string from_id = 1;
+  string target = 2;               // raw [[wiki]] target
+  string section = 3;
+  string lens = 4;
+  string week = 5;
+}
+
+message SummaryHopResponse {
+  SummaryNote note = 1;
+  string resolved_id = 2;
+  string error = 3;
+}
+
+message SummaryForkRequest {
+  string id = 1;                   // local id, or leave origin_project set
+  string origin_project = 2;       // empty = local fork; else ServerQuery NOTE
+}
+
+message SummaryForkResponse {
+  SummaryNote note = 1;
+  string error = 2;
+}
+
+// Live clocks. Trigger enqueues scheduled_tasks. source is pg_cron
+// until Airflow is the SoT (Airflow schedules Metaflow when available).
+message SummarySchedule {
+  string id = 1;                   // cron.job jobname
+  string cron = 2;
+  string task_type = 3;            // empty if this job is not an enqueue
+  string source = 4;               // pg_cron | airflow
+  bool enabled = 5;
+  bool triggerable = 6;
+  string cadence = 7;              // hourly | daily | weekly | extended
+}
+
+message SummarySchedulesRequest {}
+
+message SummarySchedulesResponse {
+  repeated SummarySchedule items = 1;
+  string error = 2;
+}
+
+message SummaryScheduleTriggerRequest {
+  string id = 1;                   // jobname
+}
+
+message SummaryScheduleTriggerResponse {
+  int32 task_id = 1;
+  string task_type = 2;
+  string error = 3;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MetaAgent Messages (Multi-Agent Analytics)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2431,6 +2795,9 @@ message ProspectsStatusResponse {
   bool update_recommended = 8;    // Local LLM recommends full update
   string update_reason = 9;       // Why update is recommended
   string error = 10;
+  int64 buffer_bytes = 11;        // prospects-buffer current bytes
+  int64 buffer_max_bytes = 12;
+  int32 buffer_entries = 13;
 }
 
 // Check request - lightweight daily check (local LLM only)
@@ -2821,6 +3188,7 @@ service GaiusService {
   rpc GetRecentThoughts(GetRecentThoughtsRequest) returns (GetRecentThoughtsResponse);
   rpc TriggerCognition(TriggerCognitionRequest) returns (TriggerCognitionResponse);
   rpc CognitionActivity(google.protobuf.Empty) returns (CognitionActivityResponse);
+  rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);
   rpc SelfObservation(SelfObservationRequest) returns (SelfObservationResponse);
   rpc EngineAudit(EngineAuditRequest) returns (EngineAuditResponse);
 
@@ -2886,6 +3254,23 @@ service GaiusService {
   rpc ThetaSitrep(ThetaSitrepRequest) returns (ThetaSitrepResponse);
   rpc ThetaConsolidate(ThetaConsolidateRequest) returns (ThetaConsolidateResponse);
   rpc ThetaConsolidationStats(ThetaConsolidationStatsRequest) returns (ThetaConsolidationStatsResponse);
+  rpc ThetaAgenda(ThetaAgendaRequest) returns (ThetaAgendaResponse);
+  rpc AgendaList(AgendaListRequest) returns (AgendaListResponse);
+  rpc AgendaGet(AgendaGetRequest) returns (AgendaGetResponse);
+  rpc AgendaCreate(AgendaCreateRequest) returns (AgendaCreateResponse);
+  rpc AgendaUpdate(AgendaUpdateRequest) returns (AgendaUpdateResponse);
+  rpc WeeklySignalsSummary(WeeklySignalsSummaryRequest) returns (WeeklySignalsSummaryResponse);
+  rpc WeeklySignalsSummaryList(WeeklySignalsSummaryListRequest) returns (WeeklySignalsSummaryListResponse);
+  rpc WeeklySignalsSummaryGet(WeeklySignalsSummaryGetRequest) returns (WeeklySignalsSummaryGetResponse);
+  rpc KnowledgeSummary(KnowledgeSummaryRequest) returns (KnowledgeSummaryResponse);
+  rpc FederationSurfaces(FederationSurfacesRequest) returns (FederationSurfacesResponse);
+  rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
+  rpc SummaryIndex(SummaryIndexRequest) returns (SummaryIndexResponse);
+  rpc SummaryGet(SummaryGetRequest) returns (SummaryGetResponse);
+  rpc SummaryHop(SummaryHopRequest) returns (SummaryHopResponse);
+  rpc SummaryFork(SummaryForkRequest) returns (SummaryForkResponse);
+  rpc SummarySchedules(SummarySchedulesRequest) returns (SummarySchedulesResponse);
+  rpc SummaryScheduleTrigger(SummaryScheduleTriggerRequest) returns (SummaryScheduleTriggerResponse);
 
   // ─────────────────────────────────────────────────────────────────────────
   // MetaAgent (Multi-Agent Analytics)

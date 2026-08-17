@@ -1,0 +1,60 @@
+{% include "chrome.html" %}
+<div class="cog-page" id="cog-page">
+  <aside class="cog-rail" aria-label="Thought stream">
+    <div class="cog-rail-head">
+      <span class="cog-kicker" id="cog-rail-count">— THOUGHTS</span>
+      <label class="cog-sr-only" for="cog-stream">Stream</label>
+      <select id="cog-stream" class="cog-select" aria-label="Stream">
+        <option value="">All streams</option>
+      </select>
+    </div>
+    <ul class="cog-rail-list" id="cog-rail-list"></ul>
+    <div class="cog-rail-foot mono muted" id="cog-rail-foot">federation.project=gaius</div>
+  </aside>
+  <section class="cog-main">
+    <div id="cog-error" class="cog-error" hidden></div>
+    <div class="cog-toolbar">
+      <label class="cog-toolbar-label">Window
+        <select id="cog-window" class="cog-select" aria-label="Window">
+          <option value="7">Last 7 days</option>
+          <option value="30">Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365" selected>Last year</option>
+        </select>
+      </label>
+      <button type="button" id="cog-refresh" class="btn">Refresh</button>
+      <span class="muted mono" id="cog-updated">UTC</span>
+      <span class="pill" id="cog-running">—</span>
+    </div>
+    <div class="cog-stats" id="cog-stats" aria-label="Cognition totals"></div>
+    <div class="cog-panel">
+      <div class="cog-panel-head">
+        <h2>Activity</h2>
+        <span class="muted">thoughts · UTC</span>
+      </div>
+      <div id="cog-year" class="cog-year" role="img" aria-label="Year heatmap"></div>
+    </div>
+    <div class="cog-split">
+      <div class="cog-panel">
+        <div class="cog-panel-head">
+          <h2>Activity by day</h2>
+        </div>
+        <div id="cog-bars" class="cog-bars" aria-label="Daily bars"></div>
+        <div class="cog-panel-head" style="margin-top:1rem">
+          <h3>Hour of week</h3>
+          <span class="muted">UTC</span>
+        </div>
+        <div id="cog-how" class="cog-how" aria-label="Hour of week"></div>
+      </div>
+      <div class="cog-panel">
+        <div class="cog-panel-head">
+          <h2>Top thoughts</h2>
+          <span class="muted">by salience</span>
+        </div>
+        <ol id="cog-top" class="cog-top"></ol>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="/assets/js/cognition.js?v={{ asset_v }}" defer></script>
+{% include "footer.html" %}

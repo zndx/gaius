@@ -4,12 +4,14 @@ Gaius manages 6 NVIDIA RTX 4090 GPUs (24GB VRAM each, 144GB total) across vLLM i
 
 ## GPU Allocation
 
+Device assignment is **all-or-nothing**. One model owns a GPU. We never
+place two models on one card, even when VRAM is free. A large model
+takes as many *whole* GPUs as tensor-parallel requires.
+
 | GPU | Typical Use | VRAM | Notes |
 |-----|-------------|------|-------|
-| 0-1 | Reasoning endpoint (24B model) | 2 × 24GB | tensor_parallel=2, CoT reflection |
-| 2-3 | Coding endpoint (24B model) | 2 × 24GB | tensor_parallel=2 |
-| 4 | Embedding endpoint (Nomic 768-dim) | 24GB | ColNomic multi-vector |
-| 5 | Rendering / Evolution | 24GB | Dynamically assigned |
+| 0–3 | thinking (Qwen3.8-27B) | 4 × 24GB | TP=4, whole devices |
+| 4–5 | Ask leftovers | 2 × 24GB | either 2× 1.7B (one GPU each) or 1× 9B-SAE TP=2 |
 
 The Orchestrator manages allocation via capability-based scheduling (OR-Tools CP-SAT). GPUs can be temporarily reassigned for LuxCore rendering or evolution training via makespan scheduling — the Orchestrator evicts a low-priority endpoint, runs the workload, then restores the endpoint.
 
@@ -45,6 +47,8 @@ The `gpu-helpers.sh` shared library provides the `gpu_cleanup` function used by 
 | OOM during model load | Endpoint stuck in STARTING | Free GPU, then `/health fix endpoints` |
 | CUDA memory fragmentation | Degraded inference speed | `just gpu-deep-cleanup` then restart |
 | OpenCV conflict | vLLM WorkerProc fails (cv2 error) | Already fixed via pyproject.toml override |
+| Qwen3.8 JIT `cicc` / `GLIBC_2.38` | thinking STARTING then FAILED after ~14 GiB/GPU | Tinybox CUDA 12.4 + host gcc-11; `scripts/lib/tinybox-nvcc.sh` shadows `$CUDA_HOME/bin/nvcc`. Do not install CUDA 13 |
+| `/dev/shm` full (`#EP.00000007`) | thinking fails: `Insufficient space in /dev/shm` (0 MiB free) | Leftover `--kv-offloading-size` maps. `/health fix endpoints` or `just gpu-cleanup` unlinks unheld `vllm_offload_*.mmap` / `psm_*` only — never PostgreSQL or `gaius-aeron` |
 
 ## Rendering GPU Eviction
 

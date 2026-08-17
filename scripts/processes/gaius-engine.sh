@@ -16,8 +16,28 @@ banner "GAIUS ENGINE - Centralized Inference & Evolution Daemon"
 # (gRPC SO_REUSEPORT would otherwise dual-bind; see #EN.00000014.DUALBIND)
 assert_tcp_port_free "${GAIUS_ENGINE_GRPC_PORT:-50051}" "gaius-engine lattice"
 
-# Engine is not functional without zndx_gaius on the contract port.
+# Follow devenv's assigned PGPORT (worktrees / sibling projects). If
+# systemd pinned this checkout's postmaster to the lattice port, wait
+# discovers that live listener instead of a dark assigned port.
 wait_for_postgres "${PGUSER:-$USER}"
+
+# Interactive direnv `source_up` loads ~/local/.env (XAI/BRAVE/CEREBRAS).
+# system.slice / process-compose do not. Walk repo → $HOME for .env files.
+_dir="$(cd "$SCRIPT_DIR/../.." && pwd)"
+while true; do
+  if [[ -f "$_dir/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$_dir/.env"
+    set +a
+  fi
+  [[ "$_dir" == "/" || "$_dir" == "$HOME" ]] && break
+  _dir="$(dirname "$_dir")"
+done
+unset _dir
+# dotenv DATABASE_URL is static (:5444). Re-derive from the effective PGPORT
+# devenv exported so we do not talk to a dark contract port.
+export DATABASE_URL="postgres://localhost:${PGPORT:-5444}/zndx_gaius?sslmode=disable"
 
 # ========================================================================
 # GPU CLEANUP - Ensure clean start by killing any stale vLLM processes

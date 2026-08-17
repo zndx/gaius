@@ -1,4 +1,18 @@
 # yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+#
+# Ports: devenv assigns PGPORT so worktrees and sibling projects do not
+# collide. Do not pin 5444 from systemd. Lattice *prefers* 5444
+# (services.postgres.port) when free.
+#
+# Secrets: DECLARED in secretspec.toml, PROVIDED per environment.
+# dotenv (.env) is the local default (gitignored).
+#   devenv --secretspec-provider env shell
+#   secretspec run -- uv run gaius
+secretspec:
+  enable: true
+  provider: dotenv
+  profile: default
+
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling

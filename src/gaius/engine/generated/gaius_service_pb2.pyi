@@ -367,7 +367,7 @@ class EnsureEndpointResponse(_message.Message):
     def __init__(self, healthy: bool = ..., status: _Optional[str] = ..., port: _Optional[int] = ..., gpu_ids: _Optional[_Iterable[int]] = ..., message: _Optional[str] = ...) -> None: ...
 
 class CompleteRequest(_message.Message):
-    __slots__ = ("agent_alias", "prompt", "system_prompt", "max_tokens", "temperature", "priority", "technique")
+    __slots__ = ("agent_alias", "prompt", "system_prompt", "max_tokens", "temperature", "priority", "technique", "timezone", "clock_json")
     AGENT_ALIAS_FIELD_NUMBER: _ClassVar[int]
     PROMPT_FIELD_NUMBER: _ClassVar[int]
     SYSTEM_PROMPT_FIELD_NUMBER: _ClassVar[int]
@@ -375,6 +375,8 @@ class CompleteRequest(_message.Message):
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
     PRIORITY_FIELD_NUMBER: _ClassVar[int]
     TECHNIQUE_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_JSON_FIELD_NUMBER: _ClassVar[int]
     agent_alias: str
     prompt: str
     system_prompt: str
@@ -382,7 +384,9 @@ class CompleteRequest(_message.Message):
     temperature: float
     priority: str
     technique: str
-    def __init__(self, agent_alias: _Optional[str] = ..., prompt: _Optional[str] = ..., system_prompt: _Optional[str] = ..., max_tokens: _Optional[int] = ..., temperature: _Optional[float] = ..., priority: _Optional[str] = ..., technique: _Optional[str] = ...) -> None: ...
+    timezone: str
+    clock_json: str
+    def __init__(self, agent_alias: _Optional[str] = ..., prompt: _Optional[str] = ..., system_prompt: _Optional[str] = ..., max_tokens: _Optional[int] = ..., temperature: _Optional[float] = ..., priority: _Optional[str] = ..., technique: _Optional[str] = ..., timezone: _Optional[str] = ..., clock_json: _Optional[str] = ...) -> None: ...
 
 class CompleteResponse(_message.Message):
     __slots__ = ("text", "tokens_used", "latency_ms", "model", "job_id")
@@ -720,6 +724,88 @@ class CognitionActivityResponse(_message.Message):
     thoughts_today: int
     active_thoughts: int
     def __init__(self, cognition_running: bool = ..., cycles_completed: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts_today: _Optional[int] = ..., active_thoughts: _Optional[int] = ...) -> None: ...
+
+class CognitionSurfaceRequest(_message.Message):
+    __slots__ = ("window_days", "thought_limit", "stream")
+    WINDOW_DAYS_FIELD_NUMBER: _ClassVar[int]
+    THOUGHT_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    STREAM_FIELD_NUMBER: _ClassVar[int]
+    window_days: int
+    thought_limit: int
+    stream: str
+    def __init__(self, window_days: _Optional[int] = ..., thought_limit: _Optional[int] = ..., stream: _Optional[str] = ...) -> None: ...
+
+class CognitionDayBucket(_message.Message):
+    __slots__ = ("date", "thoughts", "cycles")
+    DATE_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_FIELD_NUMBER: _ClassVar[int]
+    date: str
+    thoughts: int
+    cycles: int
+    def __init__(self, date: _Optional[str] = ..., thoughts: _Optional[int] = ..., cycles: _Optional[int] = ...) -> None: ...
+
+class CognitionHourCell(_message.Message):
+    __slots__ = ("weekday", "hour", "thoughts")
+    WEEKDAY_FIELD_NUMBER: _ClassVar[int]
+    HOUR_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    weekday: int
+    hour: int
+    thoughts: int
+    def __init__(self, weekday: _Optional[int] = ..., hour: _Optional[int] = ..., thoughts: _Optional[int] = ...) -> None: ...
+
+class CognitionStreamCount(_message.Message):
+    __slots__ = ("id", "thoughts")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    thoughts: int
+    def __init__(self, id: _Optional[str] = ..., thoughts: _Optional[int] = ...) -> None: ...
+
+class CognitionSurfaceResponse(_message.Message):
+    __slots__ = ("running", "cycles_completed", "cycles_in_window", "last_cycle_timestamp_ms", "current_task", "thoughts", "streams", "active_days", "thoughts_per_cycle", "concentration_stream", "concentration_pct", "reserve_tokens", "project", "unit", "recent", "top", "days", "hours", "stream_counts", "error")
+    RUNNING_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    CYCLES_IN_WINDOW_FIELD_NUMBER: _ClassVar[int]
+    LAST_CYCLE_TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_TASK_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_FIELD_NUMBER: _ClassVar[int]
+    STREAMS_FIELD_NUMBER: _ClassVar[int]
+    ACTIVE_DAYS_FIELD_NUMBER: _ClassVar[int]
+    THOUGHTS_PER_CYCLE_FIELD_NUMBER: _ClassVar[int]
+    CONCENTRATION_STREAM_FIELD_NUMBER: _ClassVar[int]
+    CONCENTRATION_PCT_FIELD_NUMBER: _ClassVar[int]
+    RESERVE_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    UNIT_FIELD_NUMBER: _ClassVar[int]
+    RECENT_FIELD_NUMBER: _ClassVar[int]
+    TOP_FIELD_NUMBER: _ClassVar[int]
+    DAYS_FIELD_NUMBER: _ClassVar[int]
+    HOURS_FIELD_NUMBER: _ClassVar[int]
+    STREAM_COUNTS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    running: bool
+    cycles_completed: int
+    cycles_in_window: int
+    last_cycle_timestamp_ms: int
+    current_task: str
+    thoughts: int
+    streams: int
+    active_days: int
+    thoughts_per_cycle: float
+    concentration_stream: str
+    concentration_pct: float
+    reserve_tokens: int
+    project: str
+    unit: str
+    recent: _containers.RepeatedCompositeFieldContainer[ThoughtMessage]
+    top: _containers.RepeatedCompositeFieldContainer[ThoughtMessage]
+    days: _containers.RepeatedCompositeFieldContainer[CognitionDayBucket]
+    hours: _containers.RepeatedCompositeFieldContainer[CognitionHourCell]
+    stream_counts: _containers.RepeatedCompositeFieldContainer[CognitionStreamCount]
+    error: str
+    def __init__(self, running: bool = ..., cycles_completed: _Optional[int] = ..., cycles_in_window: _Optional[int] = ..., last_cycle_timestamp_ms: _Optional[int] = ..., current_task: _Optional[str] = ..., thoughts: _Optional[int] = ..., streams: _Optional[int] = ..., active_days: _Optional[int] = ..., thoughts_per_cycle: _Optional[float] = ..., concentration_stream: _Optional[str] = ..., concentration_pct: _Optional[float] = ..., reserve_tokens: _Optional[int] = ..., project: _Optional[str] = ..., unit: _Optional[str] = ..., recent: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., top: _Optional[_Iterable[_Union[ThoughtMessage, _Mapping]]] = ..., days: _Optional[_Iterable[_Union[CognitionDayBucket, _Mapping]]] = ..., hours: _Optional[_Iterable[_Union[CognitionHourCell, _Mapping]]] = ..., stream_counts: _Optional[_Iterable[_Union[CognitionStreamCount, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
 
 class CognitionStreamRequest(_message.Message):
     __slots__ = ("buffer_size", "event_types")
@@ -2245,6 +2331,520 @@ class ThetaSitrepResponse(_message.Message):
     error: str
     def __init__(self, success: bool = ..., horizon: _Optional[str] = ..., generated_at_ms: _Optional[int] = ..., healthy: bool = ..., status_text: _Optional[str] = ..., gpu_count: _Optional[int] = ..., endpoint_count: _Optional[int] = ..., priority_count: _Optional[int] = ..., thought_count: _Optional[int] = ..., objective_count: _Optional[int] = ..., project_count: _Optional[int] = ..., report_json: _Optional[bytes] = ..., ascii_format: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
 
+class ThetaAgendaRequest(_message.Message):
+    __slots__ = ("action", "horizon")
+    ACTION_FIELD_NUMBER: _ClassVar[int]
+    HORIZON_FIELD_NUMBER: _ClassVar[int]
+    action: str
+    horizon: str
+    def __init__(self, action: _Optional[str] = ..., horizon: _Optional[str] = ...) -> None: ...
+
+class ThetaAgendaItem(_message.Message):
+    __slots__ = ("description", "priority", "project", "due_date", "completed", "source_path")
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    PRIORITY_FIELD_NUMBER: _ClassVar[int]
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    DUE_DATE_FIELD_NUMBER: _ClassVar[int]
+    COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_PATH_FIELD_NUMBER: _ClassVar[int]
+    description: str
+    priority: str
+    project: str
+    due_date: str
+    completed: bool
+    source_path: str
+    def __init__(self, description: _Optional[str] = ..., priority: _Optional[str] = ..., project: _Optional[str] = ..., due_date: _Optional[str] = ..., completed: bool = ..., source_path: _Optional[str] = ...) -> None: ...
+
+class ThetaAgendaResponse(_message.Message):
+    __slots__ = ("success", "action", "horizon", "path", "created", "items", "ascii_format", "error")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    ACTION_FIELD_NUMBER: _ClassVar[int]
+    HORIZON_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    CREATED_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ASCII_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    action: str
+    horizon: str
+    path: str
+    created: bool
+    items: _containers.RepeatedCompositeFieldContainer[ThetaAgendaItem]
+    ascii_format: str
+    error: str
+    def __init__(self, success: bool = ..., action: _Optional[str] = ..., horizon: _Optional[str] = ..., path: _Optional[str] = ..., created: bool = ..., items: _Optional[_Iterable[_Union[ThetaAgendaItem, _Mapping]]] = ..., ascii_format: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AgendaCheck(_message.Message):
+    __slots__ = ("done", "text")
+    DONE_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    done: bool
+    text: str
+    def __init__(self, done: bool = ..., text: _Optional[str] = ...) -> None: ...
+
+class AgendaCard(_message.Message):
+    __slots__ = ("path", "kind", "title", "body", "excerpt", "prev", "next", "starts", "ends", "tags", "pin", "checks", "created_ms", "intent", "with_whom", "calendar_url", "timezone")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    EXCERPT_FIELD_NUMBER: _ClassVar[int]
+    PREV_FIELD_NUMBER: _ClassVar[int]
+    NEXT_FIELD_NUMBER: _ClassVar[int]
+    STARTS_FIELD_NUMBER: _ClassVar[int]
+    ENDS_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    PIN_FIELD_NUMBER: _ClassVar[int]
+    CHECKS_FIELD_NUMBER: _ClassVar[int]
+    CREATED_MS_FIELD_NUMBER: _ClassVar[int]
+    INTENT_FIELD_NUMBER: _ClassVar[int]
+    WITH_WHOM_FIELD_NUMBER: _ClassVar[int]
+    CALENDAR_URL_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    kind: str
+    title: str
+    body: str
+    excerpt: str
+    prev: str
+    next: str
+    starts: str
+    ends: str
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    pin: bool
+    checks: _containers.RepeatedCompositeFieldContainer[AgendaCheck]
+    created_ms: int
+    intent: str
+    with_whom: str
+    calendar_url: str
+    timezone: str
+    def __init__(self, path: _Optional[str] = ..., kind: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., excerpt: _Optional[str] = ..., prev: _Optional[str] = ..., next: _Optional[str] = ..., starts: _Optional[str] = ..., ends: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., pin: bool = ..., checks: _Optional[_Iterable[_Union[AgendaCheck, _Mapping]]] = ..., created_ms: _Optional[int] = ..., intent: _Optional[str] = ..., with_whom: _Optional[str] = ..., calendar_url: _Optional[str] = ..., timezone: _Optional[str] = ...) -> None: ...
+
+class AgendaListRequest(_message.Message):
+    __slots__ = ("window_days", "kind", "tag", "origin", "timezone")
+    WINDOW_DAYS_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TAG_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    window_days: int
+    kind: str
+    tag: str
+    origin: str
+    timezone: str
+    def __init__(self, window_days: _Optional[int] = ..., kind: _Optional[str] = ..., tag: _Optional[str] = ..., origin: _Optional[str] = ..., timezone: _Optional[str] = ...) -> None: ...
+
+class AgendaListResponse(_message.Message):
+    __slots__ = ("items", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[AgendaCard]
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[AgendaCard, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AgendaGetRequest(_message.Message):
+    __slots__ = ("path",)
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    def __init__(self, path: _Optional[str] = ...) -> None: ...
+
+class AgendaGetResponse(_message.Message):
+    __slots__ = ("item", "error")
+    ITEM_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    item: AgendaCard
+    error: str
+    def __init__(self, item: _Optional[_Union[AgendaCard, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AgendaCreateRequest(_message.Message):
+    __slots__ = ("kind", "title", "body", "starts", "ends", "tags", "pin", "intent", "with_whom", "timezone")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    STARTS_FIELD_NUMBER: _ClassVar[int]
+    ENDS_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    PIN_FIELD_NUMBER: _ClassVar[int]
+    INTENT_FIELD_NUMBER: _ClassVar[int]
+    WITH_WHOM_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    kind: str
+    title: str
+    body: str
+    starts: str
+    ends: str
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    pin: bool
+    intent: str
+    with_whom: str
+    timezone: str
+    def __init__(self, kind: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., starts: _Optional[str] = ..., ends: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., pin: bool = ..., intent: _Optional[str] = ..., with_whom: _Optional[str] = ..., timezone: _Optional[str] = ...) -> None: ...
+
+class AgendaCreateResponse(_message.Message):
+    __slots__ = ("item", "error")
+    ITEM_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    item: AgendaCard
+    error: str
+    def __init__(self, item: _Optional[_Union[AgendaCard, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AgendaUpdateRequest(_message.Message):
+    __slots__ = ("path", "title", "body", "starts", "ends", "tags", "pin", "has_pin", "checks", "has_checks", "intent", "has_intent", "with_whom", "has_with", "timezone", "has_timezone")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    STARTS_FIELD_NUMBER: _ClassVar[int]
+    ENDS_FIELD_NUMBER: _ClassVar[int]
+    TAGS_FIELD_NUMBER: _ClassVar[int]
+    PIN_FIELD_NUMBER: _ClassVar[int]
+    HAS_PIN_FIELD_NUMBER: _ClassVar[int]
+    CHECKS_FIELD_NUMBER: _ClassVar[int]
+    HAS_CHECKS_FIELD_NUMBER: _ClassVar[int]
+    INTENT_FIELD_NUMBER: _ClassVar[int]
+    HAS_INTENT_FIELD_NUMBER: _ClassVar[int]
+    WITH_WHOM_FIELD_NUMBER: _ClassVar[int]
+    HAS_WITH_FIELD_NUMBER: _ClassVar[int]
+    TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    HAS_TIMEZONE_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    title: str
+    body: str
+    starts: str
+    ends: str
+    tags: _containers.RepeatedScalarFieldContainer[str]
+    pin: bool
+    has_pin: bool
+    checks: _containers.RepeatedCompositeFieldContainer[AgendaCheck]
+    has_checks: bool
+    intent: str
+    has_intent: bool
+    with_whom: str
+    has_with: bool
+    timezone: str
+    has_timezone: bool
+    def __init__(self, path: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., starts: _Optional[str] = ..., ends: _Optional[str] = ..., tags: _Optional[_Iterable[str]] = ..., pin: bool = ..., has_pin: bool = ..., checks: _Optional[_Iterable[_Union[AgendaCheck, _Mapping]]] = ..., has_checks: bool = ..., intent: _Optional[str] = ..., has_intent: bool = ..., with_whom: _Optional[str] = ..., has_with: bool = ..., timezone: _Optional[str] = ..., has_timezone: bool = ...) -> None: ...
+
+class AgendaUpdateResponse(_message.Message):
+    __slots__ = ("item", "error")
+    ITEM_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    item: AgendaCard
+    error: str
+    def __init__(self, item: _Optional[_Union[AgendaCard, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class WeeklySignalsRemote(_message.Message):
+    __slots__ = ("project", "name", "url")
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    project: str
+    name: str
+    url: str
+    def __init__(self, project: _Optional[str] = ..., name: _Optional[str] = ..., url: _Optional[str] = ...) -> None: ...
+
+class WeeklySignalsSummaryRequest(_message.Message):
+    __slots__ = ("week", "previous")
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    PREVIOUS_FIELD_NUMBER: _ClassVar[int]
+    week: str
+    previous: bool
+    def __init__(self, week: _Optional[str] = ..., previous: bool = ...) -> None: ...
+
+class WeeklySignalsSummaryResponse(_message.Message):
+    __slots__ = ("path", "week", "body", "projects", "remotes", "acp_used", "error")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    PROJECTS_FIELD_NUMBER: _ClassVar[int]
+    REMOTES_FIELD_NUMBER: _ClassVar[int]
+    ACP_USED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    week: str
+    body: str
+    projects: _containers.RepeatedScalarFieldContainer[str]
+    remotes: _containers.RepeatedCompositeFieldContainer[WeeklySignalsRemote]
+    acp_used: bool
+    error: str
+    def __init__(self, path: _Optional[str] = ..., week: _Optional[str] = ..., body: _Optional[str] = ..., projects: _Optional[_Iterable[str]] = ..., remotes: _Optional[_Iterable[_Union[WeeklySignalsRemote, _Mapping]]] = ..., acp_used: bool = ..., error: _Optional[str] = ...) -> None: ...
+
+class WeeklySignalsSummaryListRequest(_message.Message):
+    __slots__ = ("limit",)
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    limit: int
+    def __init__(self, limit: _Optional[int] = ...) -> None: ...
+
+class WeeklySignalsSummaryItem(_message.Message):
+    __slots__ = ("path", "week", "title")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    week: str
+    title: str
+    def __init__(self, path: _Optional[str] = ..., week: _Optional[str] = ..., title: _Optional[str] = ...) -> None: ...
+
+class WeeklySignalsSummaryListResponse(_message.Message):
+    __slots__ = ("items", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[WeeklySignalsSummaryItem]
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[WeeklySignalsSummaryItem, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class WeeklySignalsSummaryGetRequest(_message.Message):
+    __slots__ = ("path",)
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    def __init__(self, path: _Optional[str] = ...) -> None: ...
+
+class WeeklySignalsSummaryGetResponse(_message.Message):
+    __slots__ = ("path", "body", "error")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    body: str
+    error: str
+    def __init__(self, path: _Optional[str] = ..., body: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class KnowledgeSummaryRequest(_message.Message):
+    __slots__ = ("week", "section")
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    SECTION_FIELD_NUMBER: _ClassVar[int]
+    week: str
+    section: str
+    def __init__(self, week: _Optional[str] = ..., section: _Optional[str] = ...) -> None: ...
+
+class KnowledgeSummaryWritten(_message.Message):
+    __slots__ = ("section", "path", "notes")
+    SECTION_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    NOTES_FIELD_NUMBER: _ClassVar[int]
+    section: str
+    path: str
+    notes: int
+    def __init__(self, section: _Optional[str] = ..., path: _Optional[str] = ..., notes: _Optional[int] = ...) -> None: ...
+
+class KnowledgeSummaryResponse(_message.Message):
+    __slots__ = ("week", "items", "error")
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    week: str
+    items: _containers.RepeatedCompositeFieldContainer[KnowledgeSummaryWritten]
+    error: str
+    def __init__(self, week: _Optional[str] = ..., items: _Optional[_Iterable[_Union[KnowledgeSummaryWritten, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class FederationSurface(_message.Message):
+    __slots__ = ("project", "engine_target", "primary_ui")
+    PROJECT_FIELD_NUMBER: _ClassVar[int]
+    ENGINE_TARGET_FIELD_NUMBER: _ClassVar[int]
+    PRIMARY_UI_FIELD_NUMBER: _ClassVar[int]
+    project: str
+    engine_target: str
+    primary_ui: str
+    def __init__(self, project: _Optional[str] = ..., engine_target: _Optional[str] = ..., primary_ui: _Optional[str] = ...) -> None: ...
+
+class FederationSurfacesRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class FederationSurfacesResponse(_message.Message):
+    __slots__ = ("items", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[FederationSurface]
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[FederationSurface, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class AskPresentRequest(_message.Message):
+    __slots__ = ("kind", "symbol", "title", "from_date", "to_date", "payload_json")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    SYMBOL_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    FROM_DATE_FIELD_NUMBER: _ClassVar[int]
+    TO_DATE_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_JSON_FIELD_NUMBER: _ClassVar[int]
+    kind: str
+    symbol: str
+    title: str
+    from_date: str
+    to_date: str
+    payload_json: str
+    def __init__(self, kind: _Optional[str] = ..., symbol: _Optional[str] = ..., title: _Optional[str] = ..., from_date: _Optional[str] = ..., to_date: _Optional[str] = ..., payload_json: _Optional[str] = ...) -> None: ...
+
+class AskPresentResponse(_message.Message):
+    __slots__ = ("artifact_json", "error", "n_items")
+    ARTIFACT_JSON_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    N_ITEMS_FIELD_NUMBER: _ClassVar[int]
+    artifact_json: str
+    error: str
+    n_items: int
+    def __init__(self, artifact_json: _Optional[str] = ..., error: _Optional[str] = ..., n_items: _Optional[int] = ...) -> None: ...
+
+class SummaryNote(_message.Message):
+    __slots__ = ("id", "title", "body", "section", "lens", "week", "mtime_ms", "links", "origin_project", "origin_id", "excerpt", "virtual")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    SECTION_FIELD_NUMBER: _ClassVar[int]
+    LENS_FIELD_NUMBER: _ClassVar[int]
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    MTIME_MS_FIELD_NUMBER: _ClassVar[int]
+    LINKS_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_PROJECT_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_ID_FIELD_NUMBER: _ClassVar[int]
+    EXCERPT_FIELD_NUMBER: _ClassVar[int]
+    VIRTUAL_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    title: str
+    body: str
+    section: str
+    lens: str
+    week: str
+    mtime_ms: int
+    links: _containers.RepeatedScalarFieldContainer[str]
+    origin_project: str
+    origin_id: str
+    excerpt: str
+    virtual: bool
+    def __init__(self, id: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., section: _Optional[str] = ..., lens: _Optional[str] = ..., week: _Optional[str] = ..., mtime_ms: _Optional[int] = ..., links: _Optional[_Iterable[str]] = ..., origin_project: _Optional[str] = ..., origin_id: _Optional[str] = ..., excerpt: _Optional[str] = ..., virtual: bool = ...) -> None: ...
+
+class SummaryIndexRequest(_message.Message):
+    __slots__ = ("section", "lens", "week", "limit")
+    SECTION_FIELD_NUMBER: _ClassVar[int]
+    LENS_FIELD_NUMBER: _ClassVar[int]
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    section: str
+    lens: str
+    week: str
+    limit: int
+    def __init__(self, section: _Optional[str] = ..., lens: _Optional[str] = ..., week: _Optional[str] = ..., limit: _Optional[int] = ...) -> None: ...
+
+class SummaryIndexResponse(_message.Message):
+    __slots__ = ("week", "landing_id", "seed", "items", "error")
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    LANDING_ID_FIELD_NUMBER: _ClassVar[int]
+    SEED_FIELD_NUMBER: _ClassVar[int]
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    week: str
+    landing_id: str
+    seed: SummaryNote
+    items: _containers.RepeatedCompositeFieldContainer[SummaryNote]
+    error: str
+    def __init__(self, week: _Optional[str] = ..., landing_id: _Optional[str] = ..., seed: _Optional[_Union[SummaryNote, _Mapping]] = ..., items: _Optional[_Iterable[_Union[SummaryNote, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SummaryGetRequest(_message.Message):
+    __slots__ = ("id", "section", "lens", "week")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    SECTION_FIELD_NUMBER: _ClassVar[int]
+    LENS_FIELD_NUMBER: _ClassVar[int]
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    section: str
+    lens: str
+    week: str
+    def __init__(self, id: _Optional[str] = ..., section: _Optional[str] = ..., lens: _Optional[str] = ..., week: _Optional[str] = ...) -> None: ...
+
+class SummaryGetResponse(_message.Message):
+    __slots__ = ("note", "error")
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    note: SummaryNote
+    error: str
+    def __init__(self, note: _Optional[_Union[SummaryNote, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SummaryHopRequest(_message.Message):
+    __slots__ = ("from_id", "target", "section", "lens", "week")
+    FROM_ID_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_NUMBER: _ClassVar[int]
+    SECTION_FIELD_NUMBER: _ClassVar[int]
+    LENS_FIELD_NUMBER: _ClassVar[int]
+    WEEK_FIELD_NUMBER: _ClassVar[int]
+    from_id: str
+    target: str
+    section: str
+    lens: str
+    week: str
+    def __init__(self, from_id: _Optional[str] = ..., target: _Optional[str] = ..., section: _Optional[str] = ..., lens: _Optional[str] = ..., week: _Optional[str] = ...) -> None: ...
+
+class SummaryHopResponse(_message.Message):
+    __slots__ = ("note", "resolved_id", "error")
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    RESOLVED_ID_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    note: SummaryNote
+    resolved_id: str
+    error: str
+    def __init__(self, note: _Optional[_Union[SummaryNote, _Mapping]] = ..., resolved_id: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SummaryForkRequest(_message.Message):
+    __slots__ = ("id", "origin_project")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    ORIGIN_PROJECT_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    origin_project: str
+    def __init__(self, id: _Optional[str] = ..., origin_project: _Optional[str] = ...) -> None: ...
+
+class SummaryForkResponse(_message.Message):
+    __slots__ = ("note", "error")
+    NOTE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    note: SummaryNote
+    error: str
+    def __init__(self, note: _Optional[_Union[SummaryNote, _Mapping]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SummarySchedule(_message.Message):
+    __slots__ = ("id", "cron", "task_type", "source", "enabled", "triggerable", "cadence")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    CRON_FIELD_NUMBER: _ClassVar[int]
+    TASK_TYPE_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    TRIGGERABLE_FIELD_NUMBER: _ClassVar[int]
+    CADENCE_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    cron: str
+    task_type: str
+    source: str
+    enabled: bool
+    triggerable: bool
+    cadence: str
+    def __init__(self, id: _Optional[str] = ..., cron: _Optional[str] = ..., task_type: _Optional[str] = ..., source: _Optional[str] = ..., enabled: bool = ..., triggerable: bool = ..., cadence: _Optional[str] = ...) -> None: ...
+
+class SummarySchedulesRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class SummarySchedulesResponse(_message.Message):
+    __slots__ = ("items", "error")
+    ITEMS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    items: _containers.RepeatedCompositeFieldContainer[SummarySchedule]
+    error: str
+    def __init__(self, items: _Optional[_Iterable[_Union[SummarySchedule, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SummaryScheduleTriggerRequest(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    def __init__(self, id: _Optional[str] = ...) -> None: ...
+
+class SummaryScheduleTriggerResponse(_message.Message):
+    __slots__ = ("task_id", "task_type", "error")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    TASK_TYPE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    task_id: int
+    task_type: str
+    error: str
+    def __init__(self, task_id: _Optional[int] = ..., task_type: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+
 class MetaAgentQueryRequest(_message.Message):
     __slots__ = ("query", "include_dot", "include_markdown", "domains", "max_agents")
     QUERY_FIELD_NUMBER: _ClassVar[int]
@@ -3619,7 +4219,7 @@ class ProspectsStatusRequest(_message.Message):
     def __init__(self, profile: _Optional[str] = ..., domain: _Optional[str] = ..., symbols: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ProspectsStatusResponse(_message.Message):
-    __slots__ = ("success", "profile", "domain", "candidates", "strategies", "pending_filings", "last_fmp_sync_at", "update_recommended", "update_reason", "error")
+    __slots__ = ("success", "profile", "domain", "candidates", "strategies", "pending_filings", "last_fmp_sync_at", "update_recommended", "update_reason", "error", "buffer_bytes", "buffer_max_bytes", "buffer_entries")
     SUCCESS_FIELD_NUMBER: _ClassVar[int]
     PROFILE_FIELD_NUMBER: _ClassVar[int]
     DOMAIN_FIELD_NUMBER: _ClassVar[int]
@@ -3630,6 +4230,9 @@ class ProspectsStatusResponse(_message.Message):
     UPDATE_RECOMMENDED_FIELD_NUMBER: _ClassVar[int]
     UPDATE_REASON_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    BUFFER_BYTES_FIELD_NUMBER: _ClassVar[int]
+    BUFFER_MAX_BYTES_FIELD_NUMBER: _ClassVar[int]
+    BUFFER_ENTRIES_FIELD_NUMBER: _ClassVar[int]
     success: bool
     profile: str
     domain: str
@@ -3640,7 +4243,10 @@ class ProspectsStatusResponse(_message.Message):
     update_recommended: bool
     update_reason: str
     error: str
-    def __init__(self, success: bool = ..., profile: _Optional[str] = ..., domain: _Optional[str] = ..., candidates: _Optional[_Iterable[_Union[CandidateSummary, _Mapping]]] = ..., strategies: _Optional[_Iterable[_Union[StrategySummary, _Mapping]]] = ..., pending_filings: _Optional[int] = ..., last_fmp_sync_at: _Optional[str] = ..., update_recommended: bool = ..., update_reason: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
+    buffer_bytes: int
+    buffer_max_bytes: int
+    buffer_entries: int
+    def __init__(self, success: bool = ..., profile: _Optional[str] = ..., domain: _Optional[str] = ..., candidates: _Optional[_Iterable[_Union[CandidateSummary, _Mapping]]] = ..., strategies: _Optional[_Iterable[_Union[StrategySummary, _Mapping]]] = ..., pending_filings: _Optional[int] = ..., last_fmp_sync_at: _Optional[str] = ..., update_recommended: bool = ..., update_reason: _Optional[str] = ..., error: _Optional[str] = ..., buffer_bytes: _Optional[int] = ..., buffer_max_bytes: _Optional[int] = ..., buffer_entries: _Optional[int] = ...) -> None: ...
 
 class ProspectsCheckRequest(_message.Message):
     __slots__ = ("profile", "domain", "force")

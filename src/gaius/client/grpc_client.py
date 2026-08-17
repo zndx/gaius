@@ -1044,7 +1044,7 @@ class GrpcEngineClient:
 
         elif action == "complete":
             request = CompleteRequest(
-                agent_alias=params.get("agent", "instruct"),
+                agent_alias=params.get("agent", "thinking"),
                 prompt=params.get("prompt", ""),
                 system_prompt=params.get("system_prompt", ""),
                 max_tokens=params.get("max_tokens", 2048),
@@ -1057,7 +1057,7 @@ class GrpcEngineClient:
 
         elif action == "submit":
             request = SubmitJobRequest(
-                agent_alias=params.get("agent", "instruct"),
+                agent_alias=params.get("agent", "thinking"),
                 prompt=params.get("prompt", ""),
                 system_prompt=params.get("system_prompt", ""),
                 max_tokens=params.get("max_tokens", 2048),
@@ -1378,6 +1378,72 @@ class GrpcEngineClient:
                 "active_thoughts": response.active_thoughts,
             }
 
+        elif action == "surface":
+            from ..engine.generated import CognitionSurfaceRequest
+
+            response = await self._stub.CognitionSurface(
+                CognitionSurfaceRequest(
+                    window_days=int(params.get("window_days") or 365),
+                    thought_limit=int(params.get("thought_limit") or 80),
+                    stream=str(params.get("stream") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            last_cycle_at = None
+            if response.last_cycle_timestamp_ms > 0:
+                last_cycle_at = datetime.fromtimestamp(
+                    response.last_cycle_timestamp_ms / 1000
+                ).isoformat()
+
+            def _thought(t: object) -> dict:
+                ts = None
+                ts_ms = getattr(t, "timestamp_ms", 0)
+                if ts_ms:
+                    ts = datetime.fromtimestamp(ts_ms / 1000).isoformat()
+                return {
+                    "id": getattr(t, "id", ""),
+                    "type": getattr(t, "thought_type", ""),
+                    "title": getattr(t, "title", ""),
+                    "summary": getattr(t, "summary", ""),
+                    "salience": getattr(t, "salience", 0.0),
+                    "generation": getattr(t, "generation", 0),
+                    "timestamp": ts,
+                    "note_path": getattr(t, "note_path", ""),
+                }
+
+            return {
+                "running": response.running,
+                "cycles_completed": response.cycles_completed,
+                "cycles_in_window": response.cycles_in_window,
+                "last_cycle_at": last_cycle_at,
+                "current_task": response.current_task or None,
+                "thoughts": response.thoughts,
+                "streams": response.streams,
+                "active_days": response.active_days,
+                "thoughts_per_cycle": response.thoughts_per_cycle,
+                "concentration_stream": response.concentration_stream,
+                "concentration_pct": response.concentration_pct,
+                "reserve_tokens": response.reserve_tokens,
+                "project": response.project,
+                "unit": response.unit,
+                "recent": [_thought(t) for t in response.recent],
+                "top": [_thought(t) for t in response.top],
+                "days": [
+                    {"date": d.date, "thoughts": d.thoughts, "cycles": d.cycles}
+                    for d in response.days
+                ],
+                "hours": [
+                    {"weekday": h.weekday, "hour": h.hour, "thoughts": h.thoughts}
+                    for h in response.hours
+                ],
+                "stream_counts": [
+                    {"id": s.id, "thoughts": s.thoughts}
+                    for s in response.stream_counts
+                ],
+            }
+
         elif action == "trigger":
             from ..engine.generated import TriggerCognitionRequest
 
@@ -1559,7 +1625,395 @@ class GrpcEngineClient:
             ThetaSitrepRequest,
             ThetaConsolidateRequest,
             ThetaConsolidationStatsRequest,
+            ThetaAgendaRequest,
+            AgendaListRequest,
+            AgendaGetRequest,
+            AgendaCreateRequest,
+            AgendaUpdateRequest,
+            AgendaCheck,
+            WeeklySignalsSummaryRequest,
+            WeeklySignalsSummaryListRequest,
+            WeeklySignalsSummaryGetRequest,
+            KnowledgeSummaryRequest,
+            FederationSurfacesRequest,
+            AskPresentRequest,
+            SummaryIndexRequest,
+            SummaryGetRequest,
+            SummaryHopRequest,
+            SummaryForkRequest,
+            SummarySchedulesRequest,
+            SummaryScheduleTriggerRequest,
         )
+
+        def _card(c: object) -> dict:
+            if c is None:
+                return {}
+            return {
+                "path": getattr(c, "path", ""),
+                "kind": getattr(c, "kind", ""),
+                "title": getattr(c, "title", ""),
+                "body": getattr(c, "body", ""),
+                "excerpt": getattr(c, "excerpt", ""),
+                "prev": getattr(c, "prev", ""),
+                "next": getattr(c, "next", ""),
+                "starts": getattr(c, "starts", ""),
+                "ends": getattr(c, "ends", ""),
+                "tags": list(getattr(c, "tags", [])),
+                "pin": bool(getattr(c, "pin", False)),
+                "checks": [
+                    {"done": ch.done, "text": ch.text}
+                    for ch in getattr(c, "checks", [])
+                ],
+                "created_ms": getattr(c, "created_ms", 0),
+                "intent": getattr(c, "intent", ""),
+                "with": getattr(c, "with_whom", ""),
+                "calendar_url": getattr(c, "calendar_url", ""),
+                "timezone": getattr(c, "timezone", ""),
+            }
+
+        if action == "AgendaList":
+            response = await self._stub.AgendaList(
+                AgendaListRequest(
+                    window_days=int(params.get("window_days") or 14),
+                    kind=str(params.get("kind") or ""),
+                    tag=str(params.get("tag") or ""),
+                    origin=str(params.get("origin") or ""),
+                    timezone=str(params.get("timezone") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {"items": [_card(i) for i in response.items]}
+
+        if action == "AgendaGet":
+            response = await self._stub.AgendaGet(
+                AgendaGetRequest(path=str(params.get("path") or "")),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {"item": _card(response.item)}
+
+        if action == "AgendaCreate":
+            response = await self._stub.AgendaCreate(
+                AgendaCreateRequest(
+                    kind=str(params.get("kind") or "note"),
+                    title=str(params.get("title") or ""),
+                    body=str(params.get("body") or ""),
+                    starts=str(params.get("starts") or ""),
+                    ends=str(params.get("ends") or ""),
+                    tags=list(params.get("tags") or []),
+                    pin=bool(params.get("pin") or False),
+                    intent=str(params.get("intent") or ""),
+                    with_whom=str(params.get("with") or params.get("with_whom") or ""),
+                    timezone=str(params.get("timezone") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {"item": _card(response.item)}
+
+        if action == "AgendaUpdate":
+            checks_in = params.get("checks")
+            req = AgendaUpdateRequest(
+                path=str(params.get("path") or ""),
+                title=str(params.get("title") or ""),
+                body=str(params.get("body") or ""),
+                starts=str(params.get("starts") or ""),
+                ends=str(params.get("ends") or ""),
+                tags=list(params.get("tags") or []),
+                pin=bool(params.get("pin") or False),
+                has_pin="pin" in params,
+                has_checks=checks_in is not None,
+                intent=str(params.get("intent") or ""),
+                has_intent="intent" in params,
+                with_whom=str(params.get("with") or params.get("with_whom") or ""),
+                has_with="with" in params or "with_whom" in params,
+                timezone=str(params.get("timezone") or ""),
+                has_timezone="timezone" in params,
+            )
+            if checks_in is not None:
+                req.checks.extend(
+                    AgendaCheck(done=bool(c.get("done")), text=str(c.get("text", "")))
+                    for c in checks_in
+                )
+            response = await self._stub.AgendaUpdate(req, timeout=timeout)
+            if response.error:
+                return {"error": response.error}
+            return {"item": _card(response.item)}
+
+        if action == "WeeklySignalsSummary":
+            response = await self._stub.WeeklySignalsSummary(
+                WeeklySignalsSummaryRequest(
+                    week=str(params.get("week") or ""),
+                    previous=bool(params.get("previous") or False),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "path": response.path,
+                "week": response.week,
+                "body": response.body,
+                "projects": list(response.projects),
+                "remotes": [
+                    {"project": r.project, "name": r.name, "url": r.url}
+                    for r in response.remotes
+                ],
+                "acp_used": response.acp_used,
+            }
+
+        if action == "WeeklySignalsSummaryList":
+            response = await self._stub.WeeklySignalsSummaryList(
+                WeeklySignalsSummaryListRequest(limit=int(params.get("limit") or 12)),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "items": [
+                    {"path": i.path, "week": i.week, "title": i.title}
+                    for i in response.items
+                ]
+            }
+
+        if action == "WeeklySignalsSummaryGet":
+            response = await self._stub.WeeklySignalsSummaryGet(
+                WeeklySignalsSummaryGetRequest(path=str(params.get("path") or "")),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {"path": response.path, "body": response.body}
+
+        if action == "KnowledgeSummary":
+            response = await self._stub.KnowledgeSummary(
+                KnowledgeSummaryRequest(
+                    week=str(params.get("week") or ""),
+                    section=str(params.get("section") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "week": response.week,
+                "items": [
+                    {"section": i.section, "path": i.path, "notes": i.notes}
+                    for i in response.items
+                ],
+            }
+
+        if action == "FederationSurfaces":
+            response = await self._stub.FederationSurfaces(
+                FederationSurfacesRequest(),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "items": [
+                    {
+                        "project": i.project,
+                        "engine_target": i.engine_target,
+                        "primary_ui": i.primary_ui,
+                    }
+                    for i in response.items
+                ]
+            }
+
+        if action == "AskPresent":
+            response = await self._stub.AskPresent(
+                AskPresentRequest(
+                    kind=str(params.get("kind") or "ohlc"),
+                    symbol=str(params.get("symbol") or ""),
+                    title=str(params.get("title") or ""),
+                    from_date=str(params.get("from_date") or ""),
+                    to_date=str(params.get("to_date") or ""),
+                    payload_json=str(params.get("payload_json") or params.get("bars") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            import json as _json
+
+            try:
+                artifact = _json.loads(response.artifact_json or "{}")
+            except _json.JSONDecodeError:
+                artifact = {}
+            return {
+                "artifact": artifact,
+                "n_items": response.n_items,
+            }
+
+        if action == "SummaryIndex":
+            response = await self._stub.SummaryIndex(
+                SummaryIndexRequest(
+                    section=str(params.get("section") or ""),
+                    lens=str(params.get("lens") or ""),
+                    week=str(params.get("week") or ""),
+                    limit=int(params.get("limit") or 48),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+
+            def _sn(n: object) -> dict:
+                if n is None:
+                    return {}
+                return {
+                    "id": getattr(n, "id", ""),
+                    "title": getattr(n, "title", ""),
+                    "body": getattr(n, "body", ""),
+                    "section": getattr(n, "section", ""),
+                    "lens": getattr(n, "lens", ""),
+                    "week": getattr(n, "week", ""),
+                    "mtime_ms": getattr(n, "mtime_ms", 0),
+                    "links": list(getattr(n, "links", [])),
+                    "origin_project": getattr(n, "origin_project", ""),
+                    "origin_id": getattr(n, "origin_id", ""),
+                    "excerpt": getattr(n, "excerpt", ""),
+                    "virtual": bool(getattr(n, "virtual", False)),
+                }
+
+            return {
+                "week": response.week,
+                "landing_id": response.landing_id,
+                "seed": _sn(response.seed),
+                "items": [_sn(i) for i in response.items],
+            }
+
+        if action == "SummaryGet":
+            response = await self._stub.SummaryGet(
+                SummaryGetRequest(
+                    id=str(params.get("id") or params.get("path") or ""),
+                    section=str(params.get("section") or ""),
+                    lens=str(params.get("lens") or ""),
+                    week=str(params.get("week") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            n = response.note
+            return {
+                "id": n.id,
+                "title": n.title,
+                "body": n.body,
+                "section": n.section,
+                "lens": n.lens,
+                "week": n.week,
+                "mtime_ms": n.mtime_ms,
+                "links": list(n.links),
+                "origin_project": n.origin_project,
+                "origin_id": n.origin_id,
+                "excerpt": n.excerpt,
+                "virtual": n.virtual,
+            }
+
+        if action == "SummaryHop":
+            response = await self._stub.SummaryHop(
+                SummaryHopRequest(
+                    from_id=str(params.get("from_id") or ""),
+                    target=str(params.get("target") or ""),
+                    section=str(params.get("section") or ""),
+                    lens=str(params.get("lens") or ""),
+                    week=str(params.get("week") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            n = response.note
+            return {
+                "resolved_id": response.resolved_id,
+                "id": n.id,
+                "title": n.title,
+                "body": n.body,
+                "links": list(n.links),
+                "excerpt": n.excerpt,
+            }
+
+        if action == "SummaryFork":
+            response = await self._stub.SummaryFork(
+                SummaryForkRequest(
+                    id=str(params.get("id") or ""),
+                    origin_project=str(params.get("origin_project") or ""),
+                ),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            n = response.note
+            return {
+                "id": n.id,
+                "title": n.title,
+                "body": n.body,
+                "origin_project": n.origin_project,
+                "origin_id": n.origin_id,
+            }
+
+        if action == "SummarySchedules":
+            response = await self._stub.SummarySchedules(
+                SummarySchedulesRequest(), timeout=timeout
+            )
+            if response.error:
+                return {"error": response.error}
+            return {
+                "items": [
+                    {
+                        "id": i.id,
+                        "cron": i.cron,
+                        "task_type": i.task_type,
+                        "source": i.source,
+                        "enabled": i.enabled,
+                        "triggerable": i.triggerable,
+                        "cadence": i.cadence,
+                    }
+                    for i in response.items
+                ]
+            }
+
+        if action == "SummaryScheduleTrigger":
+            response = await self._stub.SummaryScheduleTrigger(
+                SummaryScheduleTriggerRequest(id=str(params.get("id") or "")),
+                timeout=timeout,
+            )
+            if response.error:
+                return {"error": response.error}
+            return {"task_id": response.task_id, "task_type": response.task_type}
+
+        if action == "ThetaAgenda":
+            request = ThetaAgendaRequest(
+                action=params.get("action", "list"),
+                horizon=params.get("horizon", "day"),
+            )
+            response = await self._stub.ThetaAgenda(request, timeout=timeout)
+            return {
+                "success": response.success,
+                "action": response.action,
+                "horizon": response.horizon,
+                "path": response.path,
+                "created": response.created,
+                "items": [
+                    {
+                        "description": i.description,
+                        "priority": i.priority,
+                        "project": i.project,
+                        "due_date": i.due_date,
+                        "completed": i.completed,
+                        "source_path": i.source_path,
+                    }
+                    for i in response.items
+                ],
+                "ascii_format": response.ascii_format,
+                "error": response.error,
+            }
 
         if action == "ThetaSitrep":
             request = ThetaSitrepRequest(
@@ -3167,12 +3621,12 @@ class GrpcEngineClient:
         # Capabilities: reasoning, instruct, long_context, adversarial, synthesis
         ROLE_TO_ENDPOINT = {
             "Leader": "orchestrator",      # reasoning/synthesis
-            "Risk": "instruct",            # analysis
-            "Optimizer": "instruct",       # analysis
+            "Risk": "thinking",            # analysis
+            "Optimizer": "thinking",       # analysis
             "Planner": "orchestrator",     # reasoning
-            "Critic": "instruct",          # adversarial/analysis
-            "Executor": "instruct",        # execution
-            "Adversary": "instruct",       # adversarial
+            "Critic": "thinking",          # adversarial/analysis
+            "Executor": "thinking",        # execution
+            "Adversary": "thinking",       # adversarial
         }
 
         # Get role prompts
@@ -3185,7 +3639,7 @@ class GrpcEngineClient:
                     role_enum = AgentRole(role_name)
                     role_def = get_role(role_enum)
                     prompt = role_def.get_prompt(domain, context)
-                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "instruct")
+                    endpoint = ROLE_TO_ENDPOINT.get(role_name, "thinking")
 
                     request = CompleteRequest(
                         agent_alias=endpoint,

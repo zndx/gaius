@@ -65,6 +65,9 @@ class ServiceRegistry:
     # Orchestrator service for endpoint management
     orchestrator_service: Any = None
 
+    # Shared asyncpg pool (set after gRPC bind; cognition starts later)
+    db_pool: Any = None
+
     # Cognition service for thought generation
     cognition_service: Any = None
 

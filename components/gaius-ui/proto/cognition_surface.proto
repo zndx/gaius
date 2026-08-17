@@ -1,0 +1,311 @@
+// Client subset of gaius.engine.GaiusService — field numbers MUST match
+// src/gaius/engine/proto/gaius_service.proto (CognitionSurface).
+syntax = "proto3";
+package gaius.engine;
+
+message ThoughtMessage {
+  string id = 1;
+  string thought_type = 2;
+  string title = 3;
+  string summary = 4;
+  float salience = 5;
+  int32 generation = 6;
+  int64 timestamp_ms = 7;
+  string note_path = 8;
+}
+
+message CognitionSurfaceRequest {
+  int32 window_days = 1;
+  int32 thought_limit = 2;
+  string stream = 3;
+}
+
+message CognitionDayBucket {
+  string date = 1;
+  int32 thoughts = 2;
+  int32 cycles = 3;
+}
+
+message CognitionHourCell {
+  int32 weekday = 1;
+  int32 hour = 2;
+  int32 thoughts = 3;
+}
+
+message CognitionStreamCount {
+  string id = 1;
+  int32 thoughts = 2;
+}
+
+message CognitionSurfaceResponse {
+  bool running = 1;
+  int32 cycles_completed = 2;
+  int32 cycles_in_window = 3;
+  int64 last_cycle_timestamp_ms = 4;
+  string current_task = 5;
+  int32 thoughts = 6;
+  int32 streams = 7;
+  int32 active_days = 8;
+  float thoughts_per_cycle = 9;
+  string concentration_stream = 10;
+  float concentration_pct = 11;
+  int32 reserve_tokens = 12;
+  string project = 13;
+  string unit = 14;
+  repeated ThoughtMessage recent = 15;
+  repeated ThoughtMessage top = 16;
+  repeated CognitionDayBucket days = 17;
+  repeated CognitionHourCell hours = 18;
+  repeated CognitionStreamCount stream_counts = 19;
+  string error = 20;
+}
+
+message AgendaCheck {
+  bool done = 1;
+  string text = 2;
+}
+
+message AgendaCard {
+  string path = 1;
+  string kind = 2;
+  string title = 3;
+  string body = 4;
+  string excerpt = 5;
+  string prev = 6;
+  string next = 7;
+  string starts = 8;
+  string ends = 9;
+  repeated string tags = 10;
+  bool pin = 11;
+  repeated AgendaCheck checks = 12;
+  int64 created_ms = 13;
+  string intent = 14;
+  string with_whom = 15;
+  string calendar_url = 16;
+  string timezone = 17;
+}
+
+message AgendaListRequest {
+  int32 window_days = 1;
+  string kind = 2;
+  string tag = 3;
+  string origin = 4;
+  string timezone = 5;
+}
+
+message AgendaListResponse {
+  repeated AgendaCard items = 1;
+  string error = 2;
+}
+
+message AgendaGetRequest {
+  string path = 1;
+}
+
+message AgendaGetResponse {
+  AgendaCard item = 1;
+  string error = 2;
+}
+
+message AgendaCreateRequest {
+  string kind = 1;
+  string title = 2;
+  string body = 3;
+  string starts = 4;
+  string ends = 5;
+  repeated string tags = 6;
+  bool pin = 7;
+  string intent = 8;
+  string with_whom = 9;
+  string timezone = 10;
+}
+
+message AgendaCreateResponse {
+  AgendaCard item = 1;
+  string error = 2;
+}
+
+message AgendaUpdateRequest {
+  string path = 1;
+  string title = 2;
+  string body = 3;
+  string starts = 4;
+  string ends = 5;
+  repeated string tags = 6;
+  bool pin = 7;
+  bool has_pin = 8;
+  repeated AgendaCheck checks = 9;
+  bool has_checks = 10;
+  string intent = 11;
+  bool has_intent = 12;
+  string with_whom = 13;
+  bool has_with = 14;
+  string timezone = 15;
+  bool has_timezone = 16;
+}
+
+message AgendaUpdateResponse {
+  AgendaCard item = 1;
+  string error = 2;
+}
+
+message SummaryNote {
+  string id = 1;
+  string title = 2;
+  string body = 3;
+  string section = 4;
+  string lens = 5;
+  string week = 6;
+  int64 mtime_ms = 7;
+  repeated string links = 8;
+  string origin_project = 9;
+  string origin_id = 10;
+  string excerpt = 11;
+  bool virtual = 12;
+}
+
+message SummaryIndexRequest {
+  string section = 1;
+  string lens = 2;
+  string week = 3;
+  int32 limit = 4;
+}
+
+message SummaryIndexResponse {
+  string week = 1;
+  string landing_id = 2;
+  SummaryNote seed = 3;
+  repeated SummaryNote items = 4;
+  string error = 5;
+}
+
+message SummaryGetRequest {
+  string id = 1;
+  string section = 2;
+  string lens = 3;
+  string week = 4;
+}
+
+message SummaryGetResponse {
+  SummaryNote note = 1;
+  string error = 2;
+}
+
+message SummaryHopRequest {
+  string from_id = 1;
+  string target = 2;
+  string section = 3;
+  string lens = 4;
+  string week = 5;
+}
+
+message SummaryHopResponse {
+  SummaryNote note = 1;
+  string resolved_id = 2;
+  string error = 3;
+}
+
+message SummaryForkRequest {
+  string id = 1;
+  string origin_project = 2;
+}
+
+message SummaryForkResponse {
+  SummaryNote note = 1;
+  string error = 2;
+}
+
+message SummarySchedule {
+  string id = 1;
+  string cron = 2;
+  string task_type = 3;
+  string source = 4;
+  bool enabled = 5;
+  bool triggerable = 6;
+  string cadence = 7;
+}
+
+message SummarySchedulesRequest {}
+
+message SummarySchedulesResponse {
+  repeated SummarySchedule items = 1;
+  string error = 2;
+}
+
+message SummaryScheduleTriggerRequest {
+  string id = 1;
+}
+
+message SummaryScheduleTriggerResponse {
+  int32 task_id = 1;
+  string task_type = 2;
+  string error = 3;
+}
+
+message FederationSurface {
+  string project = 1;
+  string engine_target = 2;
+  string primary_ui = 3;
+}
+
+message FederationSurfacesRequest {}
+
+message FederationSurfacesResponse {
+  repeated FederationSurface items = 1;
+  string error = 2;
+}
+
+message AskPresentRequest {
+  string kind = 1;
+  string symbol = 2;
+  string title = 3;
+  string from_date = 4;
+  string to_date = 5;
+  string payload_json = 6;
+}
+
+message AskPresentResponse {
+  string artifact_json = 1;
+  string error = 2;
+  int32 n_items = 3;
+}
+
+message StartEndpointRequest {
+  string endpoint_name = 1;
+}
+
+message StopEndpointRequest {
+  string endpoint_name = 1;
+  bool force = 2;
+}
+
+message EndpointResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message EnsureEndpointResponse {
+  bool healthy = 1;
+  string status = 2;
+  int32 port = 3;
+  repeated int32 gpu_ids = 4;
+  string message = 5;
+}
+
+service GaiusService {
+  rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);
+  rpc AgendaList(AgendaListRequest) returns (AgendaListResponse);
+  rpc AgendaGet(AgendaGetRequest) returns (AgendaGetResponse);
+  rpc AgendaCreate(AgendaCreateRequest) returns (AgendaCreateResponse);
+  rpc AgendaUpdate(AgendaUpdateRequest) returns (AgendaUpdateResponse);
+  rpc SummaryIndex(SummaryIndexRequest) returns (SummaryIndexResponse);
+  rpc SummaryGet(SummaryGetRequest) returns (SummaryGetResponse);
+  rpc SummaryHop(SummaryHopRequest) returns (SummaryHopResponse);
+  rpc SummaryFork(SummaryForkRequest) returns (SummaryForkResponse);
+  rpc SummarySchedules(SummarySchedulesRequest) returns (SummarySchedulesResponse);
+  rpc SummaryScheduleTrigger(SummaryScheduleTriggerRequest) returns (SummaryScheduleTriggerResponse);
+  rpc FederationSurfaces(FederationSurfacesRequest) returns (FederationSurfacesResponse);
+  rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
+  rpc EnsureEndpoint(StartEndpointRequest) returns (EnsureEndpointResponse);
+  rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);
+}

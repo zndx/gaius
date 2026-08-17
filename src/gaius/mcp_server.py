@@ -44,6 +44,7 @@ Exposes full Gaius capabilities to MCP clients:
 
 **Flow Operations (Metaflow pipelines)**
 - fetch_paper: Fetch arXiv paper with PDF→markdown→topics→scoring→KB pipeline
+- extract_pdf: Convert any PDF URL to markdown via docling, write to a local dir
 - list_flows: List available Metaflow pipelines
 - query_lineage: Query lineage graph for a KB entry
 
@@ -738,8 +739,7 @@ def create_server() -> "FastMCP":
             from gaius.flows.runner import run_flow_with_gpu_management
             from gaius.flows.docling.flow import ArxivDoclingFlow
 
-            # Apply local config
-            apply_metaflow_config("local")
+            apply_metaflow_config()
 
             # Build flow args
             subprocess_args = [
@@ -785,6 +785,69 @@ def create_server() -> "FastMCP":
             return json.dumps({
                 "success": False,
                 "arxiv_url": arxiv_url,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }, indent=2)
+
+    @server.tool()
+    async def extract_pdf(
+        url: str,
+        output_dir: str,
+        archive_pdf: bool = True,
+        use_gpu: bool = True,
+    ) -> str:
+        """Convert any PDF URL to markdown via docling and write to a local dir.
+
+        Generic (non-arXiv) counterpart to fetch_paper. Downloads the PDF,
+        converts it with docling, and writes ``<stem>.md``, ``<stem>.txt`` and
+        (when archive_pdf) ``<stem>.pdf`` into ``output_dir``. Topic modeling and
+        relevance scoring are skipped (no arXiv abstract/corpus).
+
+        Args:
+            url: Any PDF URL (e.g. "https://host/paper.pdf")
+            output_dir: Local destination directory for the output files
+            archive_pdf: Also write the source PDF into output_dir (default: True)
+            use_gpu: Use GPU-aware runner / eviction for docling (default: True)
+        """
+        try:
+            from gaius.flows.config import apply_metaflow_config
+            from gaius.flows.runner import run_flow_with_gpu_management
+            from gaius.flows.docling.flow import ArxivDoclingFlow
+
+            apply_metaflow_config()
+
+            subprocess_args = [
+                f"--source_url={url}",
+                f"--output_dir={output_dir}",
+                f"--archive_pdf={archive_pdf}",
+                "--enable_topics=False",
+                "--enable_scoring=False",
+            ]
+
+            result = await run_flow_with_gpu_management(
+                flow_class=ArxivDoclingFlow,
+                flow_args=subprocess_args,
+                require_gpu=use_gpu,
+                estimated_memory_mb=16000,
+            )
+
+            return json.dumps({
+                "success": result.success,
+                "url": url,
+                "output_dir": output_dir,
+                "output_path": result.output_path,
+                "workload_id": result.workload_id,
+                "duration_s": result.duration_s,
+                "evicted_endpoints": result.evicted_endpoints,
+                "restored_endpoints": result.restored_endpoints,
+                "error": result.error,
+            }, indent=2)
+
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "success": False,
+                "url": url,
                 "error": str(e),
                 "traceback": traceback.format_exc(),
             }, indent=2)
@@ -1259,7 +1322,7 @@ def create_server() -> "FastMCP":
                 action="complete",
                 params={
                     "prompt": question,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": technique or "",
                     "max_tokens": max_tokens,
                 },
@@ -1362,7 +1425,7 @@ Be concise but thorough."""
                 params={
                     "prompt": synthesis_prompt,
                     "system_prompt": f"You are a research assistant specializing in {domain or 'general topics'}.",
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": "cot_reflection",
                     "max_tokens": 2048,
                 },
@@ -1870,7 +1933,7 @@ Domain: {domain or 'general'}
                     params={
                         "prompt": question,
                         "system_prompt": system_prompt or "",
-                        "agent": "instruct",
+                        "agent": "thinking",
                         "temperature": 0.6,
                         "max_tokens": max_tokens,
                     },
@@ -3468,17 +3531,444 @@ Domain: {domain or 'general'}
         """
         try:
             client = await _get_engine_client()
-            if client:
-                result = await client.call("ThetaAgent", "sitrep", {"horizon": horizon})
-                return json.dumps(result, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
 
-            # Fallback to direct access if engine not available
-            from .agents.theta import ThetaAgent
+            result = await client.call("Gaius", "ThetaSitrep", {"horizon": horizon})
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
 
-            agent = ThetaAgent(kb_root=get_kb_root())
-            sitrep = await agent.sitrep(horizon=horizon)
+    @server.tool()
+    async def summary_index(
+        section: str = "",
+        lens: str = "",
+        week: str = "",
+        limit: int = 48,
+    ) -> str:
+        """Temporal Summary lineup index (FedWiki trailheads).
 
-            return json.dumps(sitrep.to_dict(), indent=2)
+        section: ontology | heuristic | empty
+        lens: articles | projects | thoughts | empty (week landing)
+        week: YYYY-Www (empty = current ISO week)
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "SummaryIndex",
+                {"section": section, "lens": lens, "week": week, "limit": limit},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def summary_get(id: str, section: str = "", lens: str = "", week: str = "") -> str:
+        """Get one Summary page (KB path or lens/…)."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "SummaryGet",
+                {"id": id, "section": section, "lens": lens, "week": week},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def summary_hop(from_id: str, target: str) -> str:
+        """Resolve a [[wiki]] target from a Summary page (FedWiki hop)."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "SummaryHop",
+                {"from_id": from_id, "target": target},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def summary_fork(id: str, origin_project: str = "") -> str:
+        """Fork a Summary page into scratch (local, or ServerQuery NOTE from a peer)."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "SummaryFork",
+                {"id": id, "origin_project": origin_project},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def weekly_signals_summary_list(limit: int = 12) -> str:
+        """List recent weekly Signals Summary zettels (*_wWW-summary.md)."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "WeeklySignalsSummaryList",
+                {"limit": limit},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def weekly_signals_summary_run(week: str = "") -> str:
+        """Run the weekly Signals Summary (S2S remotes + ACP readout).
+
+        Only projects that answer Engine/ServerQuery REMOTES participate.
+        Writes scratch/YYYY-MM-DD/YYYY-MM-DD-HHmmss_wWW-summary.md.
+        week: optional ISO week YYYY-Www (empty = current week).
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "WeeklySignalsSummary",
+                {"week": week, "previous": False},
+                timeout=600.0,
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def knowledge_summary_run(section: str = "", week: str = "") -> str:
+        """Write collection summary.md pages (ontology, heuristics, articles, projects, thoughts).
+
+        Weekly Signals zettel is unchanged.
+        section: ontology | heuristic | articles | projects | thoughts | empty (all).
+        week: optional ISO week stamp YYYY-Www (thoughts uses this window).
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "KnowledgeSummary",
+                {"week": week, "section": section},
+                timeout=60.0,
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def weekly_signals_summary_get(path: str) -> str:
+        """Read one weekly Signals Summary zettel by relative KB path."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "WeeklySignalsSummaryGet",
+                {"path": path},
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def agenda_list(
+        window_days: int = 14,
+        kind: str = "",
+        tag: str = "",
+        origin: str = "",
+        timezone: str = "",
+    ) -> str:
+        """List Agenda cards (note/list/event; intent brief/reminder/session).
+
+        origin: YYYY-MM-DD of the caller's calendar today.
+        timezone: IANA zone (e.g. America/Denver). Window and item days use this.
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
+            result = await client.call(
+                "Gaius",
+                "AgendaList",
+                {
+                    "window_days": window_days,
+                    "kind": kind,
+                    "tag": tag,
+                    "origin": origin,
+                    "timezone": timezone,
+                },
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def agenda_get(path: str) -> str:
+        """Get one Agenda zettel by relative KB path."""
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            result = await client.call("Gaius", "AgendaGet", {"path": path})
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def ask_present(
+        symbol: str = "",
+        title: str = "",
+        bars: str = "",
+        from_date: str = "",
+        to_date: str = "",
+        kind: str = "ohlc",
+    ) -> str:
+        """Present a rich artifact in the Gaius Ask panel.
+
+        kind: ohlc (FMP EOD via symbol), table (bars=JSON rows),
+        links (bars=JSON [{href,title}]), markdown (body in bars).
+        Terminal stays prose. If posted=true, the chart/table/links are in Ask.
+        """
+        import httpx
+
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
+            built = await client.call(
+                "Gaius",
+                "AskPresent",
+                {
+                    "kind": kind,
+                    "symbol": symbol,
+                    "title": title,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "payload_json": bars,
+                },
+                timeout=30.0,
+            )
+            if built.get("error"):
+                return json.dumps(built, indent=2)
+            artifact = built.get("artifact") or {}
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+        origin = os.environ.get("GAIUS_UI_ORIGIN", "http://127.0.0.1:9890").rstrip("/")
+        posted = False
+        post_error = ""
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as hx:
+                r = await hx.post(f"{origin}/api/gaius/v1/ask/artifacts", json=artifact)
+                posted = r.status_code < 300
+                if not posted:
+                    post_error = r.text[:300]
+        except Exception as e:
+            post_error = str(e)
+        n_bars = len(artifact.get("bars") or [])
+        if posted:
+            return json.dumps({
+                "ok": True,
+                "posted": True,
+                "title": artifact.get("title"),
+                "symbol": artifact.get("symbol"),
+                "n_bars": n_bars,
+                "hint": "Chart is in the Ask panel. Do not print JSON or the fence.",
+            }, indent=2)
+        fence = f":::gaius-artifact\n{json.dumps(artifact, separators=(',', ':'))}\n:::\n"
+        return json.dumps({
+            "ok": False,
+            "posted": False,
+            "error": post_error,
+            "fence": fence,
+            "hint": "Ask panel POST failed. Print the fence field verbatim on its own lines. Do not wrap.",
+        }, indent=2)
+
+    @server.tool()
+    async def agenda_create(
+        kind: str = "note",
+        title: str = "",
+        body: str = "",
+        starts: str = "",
+        ends: str = "",
+        tags: str = "",
+        pin: bool = False,
+        intent: str = "",
+        with_whom: str = "",
+        timezone: str = "",
+    ) -> str:
+        """Create an Agenda zettel on the Agenda calendar (not Google).
+
+        kind = shape: note | list | event.
+        intent = why: brief (surface a fact), reminder (you do something),
+        session (book time WITH the agents). Sessions require starts.
+        The Agenda is the calendar. Optional Google Calendar TEMPLATE
+        link is returned for iPad / Calendar.app.
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            result = await client.call(
+                "Gaius",
+                "AgendaCreate",
+                {
+                    "kind": kind,
+                    "title": title,
+                    "body": body,
+                    "starts": starts,
+                    "ends": ends,
+                    "tags": tag_list,
+                    "pin": pin,
+                    "intent": intent,
+                    "with_whom": with_whom,
+                    "timezone": timezone,
+                },
+            )
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def agenda_update(
+        path: str,
+        title: str = "",
+        body: str = "",
+        starts: str = "",
+        ends: str = "",
+        tags: str = "",
+        pin: bool | None = None,
+        checks: str = "",
+    ) -> str:
+        """Update an Agenda zettel. Path must stay under scratch/.
+
+        checks: optional JSON array of {done, text} for list items.
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                }, indent=2)
+            params: dict = {"path": path}
+            if title:
+                params["title"] = title
+            if body:
+                params["body"] = body
+            if starts:
+                params["starts"] = starts
+            if ends:
+                params["ends"] = ends
+            if tags:
+                params["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+            if pin is not None:
+                params["pin"] = pin
+            if checks.strip():
+                try:
+                    parsed = json.loads(checks)
+                except json.JSONDecodeError as e:
+                    return json.dumps({
+                        "error": f"checks must be a JSON array of {{done, text}}. {e}",
+                    }, indent=2)
+                if not isinstance(parsed, list):
+                    return json.dumps({
+                        "error": "checks must be a JSON array of {done, text}.",
+                    }, indent=2)
+                params["checks"] = parsed
+            result = await client.call("Gaius", "AgendaUpdate", params)
+            return json.dumps(result, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    @server.tool()
+    async def theta_agenda(action: str = "list", horizon: str = "day") -> str:
+        """List or init the KB day agenda (current/agenda.md).
+
+        Args:
+            action: list (default) or init
+            horizon: day, week, quarter, or open
+        """
+        try:
+            client = await _get_engine_client()
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
+
+            result = await client.call(
+                "Gaius",
+                "ThetaAgenda",
+                {"action": action, "horizon": horizon},
+            )
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -3503,24 +3993,19 @@ Domain: {domain or 'general'}
         """
         try:
             client = await _get_engine_client()
-            if client:
-                result = await client.call("ThetaAgent", "consolidate", {
-                    "temporal_slice": temporal_slice,
-                    "max_candidates": max_candidates,
-                    "research_mode": True,
-                })
-                return json.dumps(result, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
 
-            # Fallback to direct access if engine not available
-            from .agents.theta import ThetaAgent
-
-            agent = ThetaAgent(kb_root=get_kb_root(), research_mode=True)
-            result = await agent.run_consolidation(
-                temporal_slice=temporal_slice or None,
-                max_candidates=max_candidates,
-            )
-
-            return json.dumps(result.to_dict(), indent=2)
+            result = await client.call("Gaius", "ThetaConsolidate", {
+                "temporal_slice": temporal_slice,
+                "max_candidates": max_candidates,
+                "research_mode": True,
+            })
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             # Include Guru Meditation code for DeepOnto errors
             error_msg = str(e)
@@ -3541,17 +4026,15 @@ Domain: {domain or 'general'}
         """
         try:
             client = await _get_engine_client()
-            if client:
-                result = await client.call("ThetaAgent", "consolidation_stats", {})
-                return json.dumps(result, indent=2, default=str)
+            if not client:
+                return json.dumps({
+                    "error": "Engine not available",
+                    "guru_meditation": "#THETA.00000008.NOENGINE",
+                    "remediation": "Try: /health fix engine",
+                }, indent=2)
 
-            # Fallback to direct access if engine not available
-            from .agents.theta import ThetaAgent
-
-            agent = ThetaAgent(kb_root=get_kb_root())
-            stats = agent.get_consolidation_stats()
-
-            return json.dumps(stats, indent=2)
+            result = await client.call("Gaius", "ThetaConsolidationStats", {})
+            return json.dumps(result, indent=2, default=str)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
 
@@ -4670,7 +5153,7 @@ Domain: {domain or 'general'}
 
         Routes through the gRPC engine's ExternalInferenceRouter when
         force_xai=True, which uses the latest Grok model (grok-4-1-fast).
-        Falls back to local instruct model otherwise.
+        Falls back to local thinking model otherwise.
 
         Args:
             agent_output: The output to evaluate
@@ -4746,7 +5229,7 @@ Domain: {domain or 'general'}
                 return json.dumps(
                     {
                         "evaluation": result.content,
-                        "model": "local:instruct",
+                        "model": "local:thinking",
                         "provider": "local",
                         "input_tokens": result.input_tokens,
                         "output_tokens": result.output_tokens,

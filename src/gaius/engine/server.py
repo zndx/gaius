@@ -315,7 +315,7 @@ class GaiusEngine:
         await self._init_controller.complete_init()
 
         # 10. Auto-resume ambient workload if it was running before restart
-        await self._maybe_resume_ambient()
+        await self._maybe_start_ambient()
 
         logger.info(
             f"Gaius Engine started with {len(self.config.agents)} agents configured"
@@ -559,6 +559,8 @@ class GaiusEngine:
                 max_size=10,
             )
             logger.info(f"Created shared database pool (min=2, max=10)")
+            if self._grpc_server:
+                self._grpc_server.update_service("db_pool", self._db_pool)
         except Exception as db_err:
             # This is a critical failure - pg_cron tasks won't be consumed
             logger.error(
@@ -880,7 +882,7 @@ class GaiusEngine:
         """Initialize the Ambient Computing Workload service.
 
         The AmbientWorkloadService manages ambient computing workload cycles:
-        - Maintains baseline endpoint mix (orchestrator, instruct)
+        - Maintains baseline endpoint mix (orchestrator, thinking)
         - Executes standard tasks on each endpoint
         - Evicts baseline for reasoning tasks
         - Restores baseline after reasoning completes
@@ -967,42 +969,19 @@ class GaiusEngine:
         except Exception as e:
             logger.error(f"Failed to initialize Vector Search service: {e}")
 
-    async def _maybe_resume_ambient(self) -> None:
-        """Auto-resume ambient workload if it was running before restart.
-
-        Called during engine startup AFTER endpoints are ready. Uses
-        persisted state from ambient_daemon_state table to determine
-        if the daemon should be auto-resumed.
-
-        Controlled by startup.auto_resume_ambient config (default: True).
-        """
-        # Check config flag
-        if not self.config.startup.auto_resume_ambient:
-            logger.info("Ambient auto-resume disabled in config")
-            return
-
-        # Check if ambient service is available
+    async def _maybe_start_ambient(self) -> None:
+        """Start Ambient unless the operator stopped it (default-on)."""
         if not self._ambient_service:
-            logger.debug("Ambient service not initialized, skipping resume check")
+            logger.debug("Ambient service not initialized, skipping auto-start")
             return
-
+        if not self.config.startup.auto_start_ambient:
+            logger.info("Ambient auto-start disabled in config")
+            return
         try:
-            result = await self._ambient_service.resume_from_persisted_state()
-            status = result.get("status", "unknown")
-
-            if status == "resumed":
-                logger.info(
-                    f"Ambient workload auto-resumed: "
-                    f"cycle {result.get('cycles_completed', 0)}, "
-                    f"{result.get('total_tasks', 0)} tasks completed previously"
-                )
-            elif status == "not_running":
-                logger.debug(f"Ambient workload not resumed: {result.get('message', 'was not running')}")
-            else:
-                logger.warning(f"Ambient workload resume failed: {result.get('message', 'unknown error')}")
-
+            result = await self._ambient_service.ensure_started_on_boot()
+            logger.info("Ambient boot: %s %s", result.get("status"), result.get("message", ""))
         except Exception as e:
-            logger.warning(f"Failed to check ambient resume state: {e}")
+            logger.warning(f"Failed to auto-start ambient: {e}")
 
     async def _init_daemon_registry(self) -> None:
         """Initialize daemon registry and start all daemons with FAIL-FAST semantics.
@@ -1286,7 +1265,7 @@ class GaiusEngine:
         - article_curate: Trigger ArticleCurationFlow
 
         OPTIONAL criticality - landing page tasks aren't critical to engine.
-        No automatic catch-up - stale tasks require manual intervention.
+        Prospects check/update catch up on start (daily Data Product clock).
         """
         try:
             from .services.scheduled_task_processor import ScheduledTaskProcessor
@@ -1326,7 +1305,7 @@ class GaiusEngine:
             # Create tracker with database pool for persistence
             self._agenda_tracker = AgendaTracker(
                 db_pool=self._db_pool,
-                baseline_endpoints=["orchestrator", "instruct"],
+                baseline_endpoints=["orchestrator", "thinking"],
             )
 
             # Wire to OrchestratorService
@@ -1943,7 +1922,7 @@ class GaiusEngine:
                 )
 
             prompt = request.params.get("prompt", "")
-            agent = request.params.get("agent", "instruct")
+            agent = request.params.get("agent", "thinking")
             system_prompt = request.params.get("system_prompt")
             temperature = request.params.get("temperature", 0.7)
             max_tokens = request.params.get("max_tokens", 2048)
@@ -2333,6 +2312,16 @@ def main():
 
     # Load config
     config = load_config(args.config)
+
+    try:
+        from gaius.flows.config import apply_metaflow_config
+
+        apply_metaflow_config()
+    except Exception:
+        logging.getLogger("gaius.engine").debug(
+            "platform Metaflow env not applied at engine boot",
+            exc_info=True,
+        )
 
     # Create and run engine
     engine = GaiusEngine(config)

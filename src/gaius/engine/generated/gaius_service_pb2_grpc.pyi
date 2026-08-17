@@ -119,6 +119,7 @@ class GaiusServiceStub:
     GetRecentThoughts: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.GetRecentThoughtsRequest, gaius_service_pb2.GetRecentThoughtsResponse]
     TriggerCognition: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.TriggerCognitionRequest, gaius_service_pb2.TriggerCognitionResponse]
     CognitionActivity: grpc.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.CognitionActivityResponse]
+    CognitionSurface: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionSurfaceRequest, gaius_service_pb2.CognitionSurfaceResponse]
     SelfObservation: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SelfObservationRequest, gaius_service_pb2.SelfObservationResponse]
     EngineAudit: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.EngineAuditRequest, gaius_service_pb2.EngineAuditResponse]
     SubscribeCognition: grpc.UnaryStreamMultiCallable[gaius_service_pb2.CognitionStreamRequest, gaius_service_pb2.CognitionEvent]
@@ -179,6 +180,23 @@ class GaiusServiceStub:
     """
     ThetaConsolidate: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ThetaConsolidateRequest, gaius_service_pb2.ThetaConsolidateResponse]
     ThetaConsolidationStats: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ThetaConsolidationStatsRequest, gaius_service_pb2.ThetaConsolidationStatsResponse]
+    ThetaAgenda: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.ThetaAgendaRequest, gaius_service_pb2.ThetaAgendaResponse]
+    AgendaList: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaListRequest, gaius_service_pb2.AgendaListResponse]
+    AgendaGet: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaGetRequest, gaius_service_pb2.AgendaGetResponse]
+    AgendaCreate: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaCreateRequest, gaius_service_pb2.AgendaCreateResponse]
+    AgendaUpdate: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaUpdateRequest, gaius_service_pb2.AgendaUpdateResponse]
+    WeeklySignalsSummary: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryRequest, gaius_service_pb2.WeeklySignalsSummaryResponse]
+    WeeklySignalsSummaryList: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryListRequest, gaius_service_pb2.WeeklySignalsSummaryListResponse]
+    WeeklySignalsSummaryGet: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryGetRequest, gaius_service_pb2.WeeklySignalsSummaryGetResponse]
+    KnowledgeSummary: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.KnowledgeSummaryRequest, gaius_service_pb2.KnowledgeSummaryResponse]
+    FederationSurfaces: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.FederationSurfacesRequest, gaius_service_pb2.FederationSurfacesResponse]
+    AskPresent: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]
+    SummaryIndex: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryIndexRequest, gaius_service_pb2.SummaryIndexResponse]
+    SummaryGet: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryGetRequest, gaius_service_pb2.SummaryGetResponse]
+    SummaryHop: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryHopRequest, gaius_service_pb2.SummaryHopResponse]
+    SummaryFork: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryForkRequest, gaius_service_pb2.SummaryForkResponse]
+    SummarySchedules: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummarySchedulesRequest, gaius_service_pb2.SummarySchedulesResponse]
+    SummaryScheduleTrigger: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryScheduleTriggerRequest, gaius_service_pb2.SummaryScheduleTriggerResponse]
     MetaAgentQuery: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentQueryRequest, gaius_service_pb2.MetaAgentQueryResponse]
     """─────────────────────────────────────────────────────────────────────────
     MetaAgent (Multi-Agent Analytics)
@@ -326,6 +344,12 @@ class GaiusServiceStub:
     """Create article (engine writes to KB)"""
     ArticleCurate: grpc.UnaryStreamMultiCallable[gaius_service_pb2.ArticleCurateRequest, gaius_service_pb2.ArticleCurationEvent]
     """Stream curation progress events"""
+    RenderCards: grpc.UnaryStreamMultiCallable[gaius_service_pb2.RenderCardsRequest, gaius_service_pb2.RenderCardEvent]
+    """─────────────────────────────────────────────────────────────────────────
+    Rendering (Blender Card Visualization via Workload Management)
+    ─────────────────────────────────────────────────────────────────────────
+    Stream card rendering progress
+    """
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
@@ -418,6 +442,7 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     GetRecentThoughts: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.GetRecentThoughtsRequest, gaius_service_pb2.GetRecentThoughtsResponse]  # type: ignore[assignment]
     TriggerCognition: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.TriggerCognitionRequest, gaius_service_pb2.TriggerCognitionResponse]  # type: ignore[assignment]
     CognitionActivity: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.CognitionActivityResponse]  # type: ignore[assignment]
+    CognitionSurface: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.CognitionSurfaceRequest, gaius_service_pb2.CognitionSurfaceResponse]  # type: ignore[assignment]
     SelfObservation: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SelfObservationRequest, gaius_service_pb2.SelfObservationResponse]  # type: ignore[assignment]
     EngineAudit: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.EngineAuditRequest, gaius_service_pb2.EngineAuditResponse]  # type: ignore[assignment]
     SubscribeCognition: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.CognitionStreamRequest, gaius_service_pb2.CognitionEvent]  # type: ignore[assignment]
@@ -478,6 +503,23 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """
     ThetaConsolidate: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ThetaConsolidateRequest, gaius_service_pb2.ThetaConsolidateResponse]  # type: ignore[assignment]
     ThetaConsolidationStats: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ThetaConsolidationStatsRequest, gaius_service_pb2.ThetaConsolidationStatsResponse]  # type: ignore[assignment]
+    ThetaAgenda: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.ThetaAgendaRequest, gaius_service_pb2.ThetaAgendaResponse]  # type: ignore[assignment]
+    AgendaList: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaListRequest, gaius_service_pb2.AgendaListResponse]  # type: ignore[assignment]
+    AgendaGet: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaGetRequest, gaius_service_pb2.AgendaGetResponse]  # type: ignore[assignment]
+    AgendaCreate: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaCreateRequest, gaius_service_pb2.AgendaCreateResponse]  # type: ignore[assignment]
+    AgendaUpdate: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AgendaUpdateRequest, gaius_service_pb2.AgendaUpdateResponse]  # type: ignore[assignment]
+    WeeklySignalsSummary: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryRequest, gaius_service_pb2.WeeklySignalsSummaryResponse]  # type: ignore[assignment]
+    WeeklySignalsSummaryList: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryListRequest, gaius_service_pb2.WeeklySignalsSummaryListResponse]  # type: ignore[assignment]
+    WeeklySignalsSummaryGet: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.WeeklySignalsSummaryGetRequest, gaius_service_pb2.WeeklySignalsSummaryGetResponse]  # type: ignore[assignment]
+    KnowledgeSummary: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.KnowledgeSummaryRequest, gaius_service_pb2.KnowledgeSummaryResponse]  # type: ignore[assignment]
+    FederationSurfaces: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.FederationSurfacesRequest, gaius_service_pb2.FederationSurfacesResponse]  # type: ignore[assignment]
+    AskPresent: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.AskPresentRequest, gaius_service_pb2.AskPresentResponse]  # type: ignore[assignment]
+    SummaryIndex: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryIndexRequest, gaius_service_pb2.SummaryIndexResponse]  # type: ignore[assignment]
+    SummaryGet: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryGetRequest, gaius_service_pb2.SummaryGetResponse]  # type: ignore[assignment]
+    SummaryHop: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryHopRequest, gaius_service_pb2.SummaryHopResponse]  # type: ignore[assignment]
+    SummaryFork: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryForkRequest, gaius_service_pb2.SummaryForkResponse]  # type: ignore[assignment]
+    SummarySchedules: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummarySchedulesRequest, gaius_service_pb2.SummarySchedulesResponse]  # type: ignore[assignment]
+    SummaryScheduleTrigger: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SummaryScheduleTriggerRequest, gaius_service_pb2.SummaryScheduleTriggerResponse]  # type: ignore[assignment]
     MetaAgentQuery: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.MetaAgentQueryRequest, gaius_service_pb2.MetaAgentQueryResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
     MetaAgent (Multi-Agent Analytics)
@@ -625,6 +667,12 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     """Create article (engine writes to KB)"""
     ArticleCurate: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.ArticleCurateRequest, gaius_service_pb2.ArticleCurationEvent]  # type: ignore[assignment]
     """Stream curation progress events"""
+    RenderCards: grpc.aio.UnaryStreamMultiCallable[gaius_service_pb2.RenderCardsRequest, gaius_service_pb2.RenderCardEvent]  # type: ignore[assignment]
+    """─────────────────────────────────────────────────────────────────────────
+    Rendering (Blender Card Visualization via Workload Management)
+    ─────────────────────────────────────────────────────────────────────────
+    Stream card rendering progress
+    """
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
     """═══════════════════════════════════════════════════════════════════════════
@@ -914,6 +962,13 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
     ) -> typing.Union[gaius_service_pb2.CognitionActivityResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionActivityResponse]]: ...
 
     @abc.abstractmethod
+    def CognitionSurface(
+        self,
+        request: gaius_service_pb2.CognitionSurfaceRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.CognitionSurfaceResponse, collections.abc.Awaitable[gaius_service_pb2.CognitionSurfaceResponse]]: ...
+
+    @abc.abstractmethod
     def SelfObservation(
         self,
         request: gaius_service_pb2.SelfObservationRequest,
@@ -1134,6 +1189,125 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         request: gaius_service_pb2.ThetaConsolidationStatsRequest,
         context: _ServicerContext,
     ) -> typing.Union[gaius_service_pb2.ThetaConsolidationStatsResponse, collections.abc.Awaitable[gaius_service_pb2.ThetaConsolidationStatsResponse]]: ...
+
+    @abc.abstractmethod
+    def ThetaAgenda(
+        self,
+        request: gaius_service_pb2.ThetaAgendaRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.ThetaAgendaResponse, collections.abc.Awaitable[gaius_service_pb2.ThetaAgendaResponse]]: ...
+
+    @abc.abstractmethod
+    def AgendaList(
+        self,
+        request: gaius_service_pb2.AgendaListRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.AgendaListResponse, collections.abc.Awaitable[gaius_service_pb2.AgendaListResponse]]: ...
+
+    @abc.abstractmethod
+    def AgendaGet(
+        self,
+        request: gaius_service_pb2.AgendaGetRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.AgendaGetResponse, collections.abc.Awaitable[gaius_service_pb2.AgendaGetResponse]]: ...
+
+    @abc.abstractmethod
+    def AgendaCreate(
+        self,
+        request: gaius_service_pb2.AgendaCreateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.AgendaCreateResponse, collections.abc.Awaitable[gaius_service_pb2.AgendaCreateResponse]]: ...
+
+    @abc.abstractmethod
+    def AgendaUpdate(
+        self,
+        request: gaius_service_pb2.AgendaUpdateRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.AgendaUpdateResponse, collections.abc.Awaitable[gaius_service_pb2.AgendaUpdateResponse]]: ...
+
+    @abc.abstractmethod
+    def WeeklySignalsSummary(
+        self,
+        request: gaius_service_pb2.WeeklySignalsSummaryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.WeeklySignalsSummaryResponse, collections.abc.Awaitable[gaius_service_pb2.WeeklySignalsSummaryResponse]]: ...
+
+    @abc.abstractmethod
+    def WeeklySignalsSummaryList(
+        self,
+        request: gaius_service_pb2.WeeklySignalsSummaryListRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.WeeklySignalsSummaryListResponse, collections.abc.Awaitable[gaius_service_pb2.WeeklySignalsSummaryListResponse]]: ...
+
+    @abc.abstractmethod
+    def WeeklySignalsSummaryGet(
+        self,
+        request: gaius_service_pb2.WeeklySignalsSummaryGetRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.WeeklySignalsSummaryGetResponse, collections.abc.Awaitable[gaius_service_pb2.WeeklySignalsSummaryGetResponse]]: ...
+
+    @abc.abstractmethod
+    def KnowledgeSummary(
+        self,
+        request: gaius_service_pb2.KnowledgeSummaryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.KnowledgeSummaryResponse, collections.abc.Awaitable[gaius_service_pb2.KnowledgeSummaryResponse]]: ...
+
+    @abc.abstractmethod
+    def FederationSurfaces(
+        self,
+        request: gaius_service_pb2.FederationSurfacesRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.FederationSurfacesResponse, collections.abc.Awaitable[gaius_service_pb2.FederationSurfacesResponse]]: ...
+
+    @abc.abstractmethod
+    def AskPresent(
+        self,
+        request: gaius_service_pb2.AskPresentRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.AskPresentResponse, collections.abc.Awaitable[gaius_service_pb2.AskPresentResponse]]: ...
+
+    @abc.abstractmethod
+    def SummaryIndex(
+        self,
+        request: gaius_service_pb2.SummaryIndexRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SummaryIndexResponse, collections.abc.Awaitable[gaius_service_pb2.SummaryIndexResponse]]: ...
+
+    @abc.abstractmethod
+    def SummaryGet(
+        self,
+        request: gaius_service_pb2.SummaryGetRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SummaryGetResponse, collections.abc.Awaitable[gaius_service_pb2.SummaryGetResponse]]: ...
+
+    @abc.abstractmethod
+    def SummaryHop(
+        self,
+        request: gaius_service_pb2.SummaryHopRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SummaryHopResponse, collections.abc.Awaitable[gaius_service_pb2.SummaryHopResponse]]: ...
+
+    @abc.abstractmethod
+    def SummaryFork(
+        self,
+        request: gaius_service_pb2.SummaryForkRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SummaryForkResponse, collections.abc.Awaitable[gaius_service_pb2.SummaryForkResponse]]: ...
+
+    @abc.abstractmethod
+    def SummarySchedules(
+        self,
+        request: gaius_service_pb2.SummarySchedulesRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SummarySchedulesResponse, collections.abc.Awaitable[gaius_service_pb2.SummarySchedulesResponse]]: ...
+
+    @abc.abstractmethod
+    def SummaryScheduleTrigger(
+        self,
+        request: gaius_service_pb2.SummaryScheduleTriggerRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SummaryScheduleTriggerResponse, collections.abc.Awaitable[gaius_service_pb2.SummaryScheduleTriggerResponse]]: ...
 
     @abc.abstractmethod
     def MetaAgentQuery(
@@ -1659,5 +1833,17 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         context: _ServicerContext,
     ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.ArticleCurationEvent], collections.abc.AsyncIterator[gaius_service_pb2.ArticleCurationEvent]]:
         """Stream curation progress events"""
+
+    @abc.abstractmethod
+    def RenderCards(
+        self,
+        request: gaius_service_pb2.RenderCardsRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[collections.abc.Iterator[gaius_service_pb2.RenderCardEvent], collections.abc.AsyncIterator[gaius_service_pb2.RenderCardEvent]]:
+        """─────────────────────────────────────────────────────────────────────────
+        Rendering (Blender Card Visualization via Workload Management)
+        ─────────────────────────────────────────────────────────────────────────
+        Stream card rendering progress
+        """
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

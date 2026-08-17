@@ -5,11 +5,46 @@
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   source "$SCRIPT_DIR/../lib/process-helpers.sh"
 
-# devenv's port allocator may shift postgres off the declared 5444 when
-# stacks launch concurrently; it publishes the effective port as PGPORT.
-# The dotenv DATABASE_URL is static and can't follow, so every process
-# script gets the derived URL (this source-time export wins over dotenv).
-export DATABASE_URL="postgres://localhost:${PGPORT:-5444}/zndx_gaius?sslmode=disable"
+# devenv assigns PGPORT so projects and worktrees do not collide.
+# systemd may pin this checkout's postgresql.auto.conf to the lattice
+# contract (5444). Prefer a *live* assignment; never invent a third port.
+_gaius_pgdata() {
+  if [[ -n "${PGDATA:-}" ]]; then
+    printf '%s\n' "$PGDATA"
+    return
+  fi
+  local here
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  printf '%s\n' "${here}/.devenv/state/postgres"
+}
+
+_gaius_conf_port() {
+  local pgdata="$1" conf
+  for conf in "$pgdata/postgresql.auto.conf" "$pgdata/postgresql.conf"; do
+    [[ -f "$conf" ]] || continue
+    sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$conf" | tail -1
+    return 0
+  done
+  return 1
+}
+
+gaius_effective_pg_port() {
+  local assigned="${PGPORT:-}"
+  local configured
+  configured="$(_gaius_conf_port "$(_gaius_pgdata)" || true)"
+  if [[ -n "$assigned" ]] && pg_isready -h 127.0.0.1 -p "$assigned" >/dev/null 2>&1; then
+    printf '%s\n' "$assigned"
+    return 0
+  fi
+  if [[ -n "$configured" ]] && pg_isready -h 127.0.0.1 -p "$configured" >/dev/null 2>&1; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+  printf '%s\n' "${assigned:-${configured:-5444}}"
+}
+
+# dotenv DATABASE_URL is static. Follow the port we will actually wait on.
+export DATABASE_URL="postgres://localhost:$(gaius_effective_pg_port)/zndx_gaius?sslmode=disable"
 
 # Print a box banner
 banner() {
@@ -47,14 +82,20 @@ check_disabled_exit() {
 # Usage: wait_for_postgres [user]
 wait_for_postgres() {
   local user="${1:-postgres}"
-  echo "Waiting for PostgreSQL..."
+  local assigned="${PGPORT:-unset}"
+  local port
+  echo "Waiting for PostgreSQL (devenv assigned ${assigned})..."
   for i in $(seq 1 30); do
-    if pg_isready -h 127.0.0.1 -p "${PGPORT:-5444}" -U "$user" >/dev/null 2>&1; then
-      echo "  PostgreSQL ready"
+    port="$(gaius_effective_pg_port)"
+    if pg_isready -h 127.0.0.1 -p "$port" -U "$user" >/dev/null 2>&1; then
+      export PGPORT="$port"
+      export DATABASE_URL="postgres://localhost:${port}/zndx_gaius?sslmode=disable"
+      echo "  PostgreSQL ready on :${port}"
       return 0
     fi
     if [ "$i" -eq 30 ]; then
-      echo "ERROR: PostgreSQL not ready after 30s"
+      echo "ERROR: PostgreSQL not ready after 30s (devenv assigned ${assigned})"
+      echo "  Try: /health fix postgres"
       exit 1
     fi
     sleep 1

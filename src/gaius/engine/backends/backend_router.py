@@ -39,12 +39,16 @@ class InferenceRequest:
         source_context: Provenance context for HX exchange tracking (external backends)
     """
 
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     agent_alias: str
     temperature: float = 0.7
     max_tokens: int = 2048
     technique: Optional[str] = None
     source_context: Optional[dict[str, Any]] = None
+    enable_thinking: bool = True
+    reasoning_effort: str = "xhigh"
+    preserve_thinking: bool = True
+    extra_body: dict[str, Any] | None = None
 
 
 @dataclass
@@ -74,6 +78,7 @@ class InferenceResponse:
     error: Optional[str] = None
     exchange_id: Optional[str] = None
     request_hash: Optional[str] = None
+    reasoning_content: str = ""
 
     @property
     def success(self) -> bool:
@@ -140,15 +145,10 @@ class BackendRouter:
         logger.info("BackendRouter stopped")
 
     def get_agent_config(self, agent_alias: str) -> Optional[AgentConfig]:
-        """Get configuration for an agent.
+        """Get configuration for an agent (legacy instruct → thinking)."""
+        from ..config import get_agent_by_alias
 
-        Args:
-            agent_alias: Agent identifier
-
-        Returns:
-            AgentConfig if found, None otherwise
-        """
-        return self.config.agents.get(agent_alias)
+        return get_agent_by_alias(self.config, agent_alias)
 
     async def route(self, request: InferenceRequest) -> InferenceResponse:
         """Route an inference request to the appropriate backend.
@@ -159,7 +159,9 @@ class BackendRouter:
         Returns:
             InferenceResponse from the selected backend
         """
-        # Get agent configuration
+        from ..config import resolve_agent_name
+
+        request.agent_alias = resolve_agent_name(request.agent_alias)
         agent_config = self.get_agent_config(request.agent_alias)
 
         response: InferenceResponse
@@ -171,11 +173,13 @@ class BackendRouter:
                 logger.info(f"Routing to dynamic vLLM endpoint: {request.agent_alias}")
                 response = await self._route_to_dynamic_vllm(request, proc)
             else:
+                from ..config import GURU_NOAGENT
+
                 response = InferenceResponse(
                     content="",
                     model="",
                     backend="",
-                    error=f"Unknown agent: {request.agent_alias}",
+                    error=f"{GURU_NOAGENT} unknown agent: {request.agent_alias}",
                 )
         else:
             # Determine backend
@@ -350,27 +354,18 @@ class BackendRouter:
         proc = self.vllm.get_process(request.agent_alias)
 
         if not proc or proc.status.value != "healthy":
-            logger.info(
-                f"Endpoint not healthy for {request.agent_alias}, "
-                f"proc={proc.status.value if proc else 'None'}, attempting start"
+            status = proc.status.value if proc else "absent"
+            return InferenceResponse(
+                content="",
+                model=agent_config.model,
+                backend="vllm",
+                error=(
+                    f"vLLM {request.agent_alias} is {status}, not HEALTHY.\n"
+                    "  Guru: #EP.00000016.NOTREADY\n"
+                    "  Complete does not wait out a 900s vLLM load. "
+                    "Settings/boot starts leftover Ask; retry when /gpu status is HEALTHY."
+                ),
             )
-            # Try to start the endpoint
-            try:
-                proc = await self.vllm.start_endpoint(request.agent_alias, agent_config)
-                if proc.status.value != "healthy":
-                    return InferenceResponse(
-                        content="",
-                        model=agent_config.model,
-                        backend="vllm",
-                        error=f"Failed to start vLLM endpoint for {request.agent_alias}",
-                    )
-            except Exception as e:
-                return InferenceResponse(
-                    content="",
-                    model=agent_config.model,
-                    backend="vllm",
-                    error=str(e),
-                )
 
         # Create vLLM request
         vllm_request = VLLMRequest(
@@ -379,6 +374,10 @@ class BackendRouter:
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             agent_alias=request.agent_alias,
+            enable_thinking=request.enable_thinking,
+            reasoning_effort=request.reasoning_effort,
+            preserve_thinking=request.preserve_thinking,
+            extra_body=request.extra_body or {},
         )
 
         # Execute request
@@ -392,6 +391,7 @@ class BackendRouter:
             output_tokens=response.output_tokens,
             latency_ms=response.latency_ms,
             error=response.error,
+            reasoning_content=response.reasoning_content,
         )
 
     async def _route_to_dynamic_vllm(
@@ -416,6 +416,10 @@ class BackendRouter:
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             agent_alias=request.agent_alias,
+            enable_thinking=request.enable_thinking,
+            reasoning_effort=request.reasoning_effort,
+            preserve_thinking=request.preserve_thinking,
+            extra_body=request.extra_body or {},
         )
 
         # Execute request
@@ -429,6 +433,7 @@ class BackendRouter:
             output_tokens=response.output_tokens,
             latency_ms=response.latency_ms,
             error=response.error,
+            reasoning_content=response.reasoning_content,
         )
 
     async def complete(
@@ -441,6 +446,10 @@ class BackendRouter:
         technique: Optional[str] = None,
         source_context: Optional[dict[str, Any]] = None,
         task_type: Optional[str] = None,
+        enable_thinking: bool = True,
+        reasoning_effort: str = "xhigh",
+        preserve_thinking: bool = True,
+        extra_body: dict[str, Any] | None = None,
     ) -> InferenceResponse:
         """Convenience method for simple completions.
 
@@ -476,6 +485,10 @@ class BackendRouter:
             max_tokens=max_tokens,
             technique=technique,
             source_context=source_context,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            preserve_thinking=preserve_thinking,
+            extra_body=extra_body,
         )
 
         return await self.route(request)

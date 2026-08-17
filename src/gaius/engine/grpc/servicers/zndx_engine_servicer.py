@@ -24,8 +24,62 @@ logger = logging.getLogger(__name__)
 
 PROJECT = "gaius"
 CAPABILITY_COGNITION = "cognition"
+CAPABILITY_THINKING = "thinking"
 
+
+ASK_REPLICAS = ("interpretable", "interpretable-b")
+ASK_SAE = ("ask-sae",)
 _HEALTHY_STATUSES = frozenset({"healthy", "running", "ready"})
+
+def resolve_complete_alias(capability: str, services: object | None = None) -> str:
+    """Empty / lattice cognition face → standing thinking endpoint.
+
+    Ask prefers leftover small models (SAE or 1.7B), then thinking.
+    STARTING is occupied — skip, do not wait 900s.
+    """
+    raw = (capability or "").strip()
+    if raw in ("", CAPABILITY_COGNITION):
+        return CAPABILITY_THINKING
+    if raw in ("ask", "ask-sae", "interpretable", "interpretable-b"):
+        return pick_ask_cascade(raw, services)
+    return raw
+
+
+def _alias_healthy(services: object | None, alias: str) -> bool:
+    orch = getattr(services, "orchestrator_service", None) if services else None
+    if orch is None:
+        return False
+    st = orch.get_endpoint_status(alias)
+    if st is None:
+        return False
+    return str(getattr(st, "status", "") or "").lower() in _HEALTHY_STATUSES
+
+
+def pick_ask_cascade(requested: str, services: object | None) -> str:
+    """Prefer leftover light (SAE or 1.7B) if already HEALTHY.
+
+    If light is down, Complete on standing thinking. Never return a
+    STARTING leftover so Complete does not start vLLM without a YK
+    light-queue admit (OOM / contention).
+    """
+    if requested == "ask-sae":
+        light = list(ASK_SAE) + list(ASK_REPLICAS)
+    else:
+        light = list(ASK_REPLICAS) + list(ASK_SAE)
+    for alias in light:
+        if _alias_healthy(services, alias):
+            return alias
+    if _alias_healthy(services, CAPABILITY_THINKING):
+        return CAPABILITY_THINKING
+    from ...sentinel_claim import light_wait_available
+
+    if light_wait_available():
+        return light[0]
+    return CAPABILITY_THINKING
+
+
+def pick_ask_replica(services: object | None) -> str:
+    return pick_ask_cascade("ask", services)
 
 
 def _alias_to_capability(orchestrator: object) -> dict[str, str]:
@@ -73,25 +127,39 @@ def build_status_response(services: "ServiceRegistry") -> zpb.StatusResponse:
             if not isinstance(ep, dict):
                 continue
             cap = alias_caps.get(alias) or ep.get("capability") or alias
+            caps: list[str] = []
+            if config is not None:
+                agent = getattr(config, "agents", {}).get(alias)
+                if agent is not None:
+                    caps = list(getattr(agent, "capabilities", []) or [])
+            detail = f"alias={alias}"
+            if caps:
+                detail += f" capabilities=[{','.join(caps)}]"
             endpoints.append(
                 zpb.Endpoint(
                     capability=str(cap),
                     model=str(ep.get("model") or ""),
                     healthy=_endpoint_healthy(str(ep.get("status") or "")),
                     gpu_ids=list(ep.get("gpu_ids") or []),
-                    detail=f"alias={alias}",
+                    detail=detail,
                 )
             )
+
+    from ...s2s import local_surfaces
 
     return zpb.StatusResponse(
         project=PROJECT,
         endpoints=endpoints,
         total_gpus=total_gpus,
+        surfaces=local_surfaces(),
     )
 
 
 class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
-    """Shared federation face: Status + Complete + Yield. Remediate is Aegir-owned."""
+    """Shared federation face: Status + Complete + Yield + ServerQuery.
+
+    Remediate is Aegir-owned.
+    """
 
     def __init__(self, services: "ServiceRegistry") -> None:
         self._services = services
@@ -108,14 +176,6 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         request: zpb.CompleteRequest,
         context: aio.ServicerContext,
     ) -> zpb.CompleteResponse:
-        if request.json_schema:
-            await context.abort(
-                grpc.StatusCode.UNIMPLEMENTED,
-                "Gaius zndx.engine.v1.Complete does not honor json_schema yet.\n"
-                "  Omit json_schema, or call native gaius.engine.GaiusService/Complete.\n"
-                "  Try: /health fix engine",
-            )
-
         router = self._services.backend_router
         if router is None:
             await context.abort(
@@ -125,27 +185,58 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
                 "  Or:  just restart-clean",
             )
 
-        capability = request.capability or CAPABILITY_COGNITION
+        agent_alias = resolve_complete_alias(request.capability, self._services)
+        tz = (getattr(request, "timezone", "") or "").strip()
+        if tz or (getattr(request, "clock_json", "") or "").strip():
+            logger.info(
+                "zndx Complete clock timezone=%s clock_chars=%s",
+                tz or "-",
+                len(getattr(request, "clock_json", "") or ""),
+            )
+
+        extra_body: dict | None = None
+        if request.json_schema:
+            import json as _json
+
+            try:
+                schema = _json.loads(request.json_schema)
+            except _json.JSONDecodeError as e:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"json_schema is not valid JSON: {e}",
+                )
+            extra_body = {
+                "guided_json": schema,
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "preserve_thinking": True,
+                },
+            }
+
         try:
             result = await router.complete(
                 prompt=request.prompt,
-                agent_alias=capability,
+                agent_alias=agent_alias,
                 system_prompt=request.system_prompt or None,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
                 task_type="zndx_complete",
+                enable_thinking=True,
+                preserve_thinking=True,
+                extra_body=extra_body,
             )
         except Exception as e:
-            logger.exception("zndx Complete failed capability=%s", capability)
+            logger.exception("zndx Complete failed capability=%s", agent_alias)
             await context.abort(
                 grpc.StatusCode.INTERNAL,
-                f"complete[{capability}] failed: {e}\n  Try: /health fix engine",
+                f"complete[{agent_alias}] failed: {e}\n  Try: /health fix engine",
             )
 
-        if getattr(result, "error", None):
+        # ``error=""`` is still a failure (httpx.ReadTimeout stringifies empty).
+        if getattr(result, "error", None) is not None:
             await context.abort(
                 grpc.StatusCode.INTERNAL,
-                f"complete[{capability}] failed: {result.error}\n"
+                f"complete[{agent_alias}] failed: {result.error}\n"
                 "  Try: /health fix engine",
             )
 
@@ -155,6 +246,7 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
             prompt_tokens=int(getattr(result, "input_tokens", 0) or 0),
             completion_tokens=int(getattr(result, "output_tokens", 0) or 0),
             latency_ms=float(getattr(result, "latency_ms", 0.0) or 0.0),
+            reasoning_content=getattr(result, "reasoning_content", "") or "",
             finish_reason="stop",
         )
 
@@ -176,11 +268,58 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         context: aio.ServicerContext,
     ) -> zpb.YieldResponse:
         from ...flow_processes import flow_processes
+        from ...sentinel_claim import AMBIENT_WORKLOAD_ID, release_kind
+
+        ambient = getattr(self._services, "ambient_service", None)
+        if ambient is not None:
+            await ambient.pause_gpu(f"yield:{request.workload_id}")
 
         ended, msg = await flow_processes().yield_one(request.workload_id)
+        if request.workload_id == AMBIENT_WORKLOAD_ID and ambient is not None:
+            release_kind("ambient")
+            await ambient.stop_daemon()
+            await ambient._set_operator_disabled(False)
+            await ambient._set_preempted(True)
         return zpb.YieldResponse(
             ok=True,
             process_ended=ended,
             restore_started=False,
             message=msg,
         )
+
+    async def ServerQuery(
+        self,
+        request: zpb.ServerQueryRequest,
+        context: aio.ServicerContext,
+    ) -> zpb.ServerQueryResponse:
+        from ...s2s import ServerQueryError, local_response
+
+        try:
+            from ...s2s import attach_local_note
+
+            resp = local_response(int(request.kind), self._services)
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_NOTE:
+                attach_local_note(resp, request.note_id)
+            if int(request.kind) == zpb.SERVER_QUERY_KIND_SCHEDULES:
+                from ...services.summary_schedule import list_schedule_catalog
+
+                db = getattr(self._services, "cognition_service", None)
+                pool = getattr(db, "_db_pool", None) if db is not None else None
+                try:
+                    cards = await list_schedule_catalog(pool)
+                except Exception:
+                    cards = []
+                resp.schedules.extend(
+                    zpb.ScheduleHint(
+                        id=c.id,
+                        cron=c.cron,
+                        airflow_dag_id="",
+                        source=c.source,
+                        enabled=c.enabled,
+                    )
+                    for c in cards
+                )
+            return resp
+        except ServerQueryError as e:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
+            return zpb.ServerQueryResponse()  # pragma: no cover — abort raises

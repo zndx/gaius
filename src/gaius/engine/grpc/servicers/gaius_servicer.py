@@ -17,7 +17,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, Optional
 
 import grpc
 from grpc import aio
@@ -93,6 +93,11 @@ from ...generated import (
     TriggerCognitionRequest,
     TriggerCognitionResponse,
     CognitionActivityResponse,
+    CognitionSurfaceRequest,
+    CognitionSurfaceResponse,
+    CognitionDayBucket,
+    CognitionHourCell,
+    CognitionStreamCount,
     SelfObservationRequest,
     SelfObservationResponse,
     EngineAuditRequest,
@@ -185,6 +190,48 @@ from ...generated import (
     ThetaConsolidateResponse,
     ThetaConsolidationStatsRequest,
     ThetaConsolidationStatsResponse,
+    ThetaAgendaRequest,
+    ThetaAgendaResponse,
+    ThetaAgendaItem,
+    AgendaCheck,
+    AgendaCard,
+    AgendaListRequest,
+    AgendaListResponse,
+    AgendaGetRequest,
+    AgendaGetResponse,
+    AgendaCreateRequest,
+    AgendaCreateResponse,
+    AgendaUpdateRequest,
+    AgendaUpdateResponse,
+    WeeklySignalsRemote,
+    WeeklySignalsSummaryRequest,
+    WeeklySignalsSummaryResponse,
+    WeeklySignalsSummaryListRequest,
+    WeeklySignalsSummaryListResponse,
+    WeeklySignalsSummaryGetRequest,
+    WeeklySignalsSummaryGetResponse,
+    KnowledgeSummaryRequest,
+    KnowledgeSummaryResponse,
+    KnowledgeSummaryWritten,
+    FederationSurfacesRequest,
+    FederationSurfacesResponse,
+    FederationSurface,
+    AskPresentRequest,
+    AskPresentResponse,
+    SummaryNote as ProtoSummaryNote,
+    SummaryIndexRequest,
+    SummaryIndexResponse,
+    SummaryGetRequest,
+    SummaryGetResponse,
+    SummaryHopRequest,
+    SummaryHopResponse,
+    SummaryForkRequest,
+    SummaryForkResponse,
+    SummarySchedule as ProtoSummarySchedule,
+    SummarySchedulesRequest,
+    SummarySchedulesResponse,
+    SummaryScheduleTriggerRequest,
+    SummaryScheduleTriggerResponse,
     # CLT (Cross-Layer Transcoders)
     CLTExtractRequest,
     CLTExtractResponse,
@@ -365,6 +412,16 @@ _STATUS_MAP = {
 def _status_to_enum(status_str: str) -> ProcessStatus:
     """Convert string status to ProcessStatus enum value."""
     return _STATUS_MAP.get(status_str.lower(), PROCESS_STATUS_UNSPECIFIED)
+
+
+def _summary_db(services: object) -> object | None:
+    pool = getattr(services, "db_pool", None) or getattr(services, "_db_pool", None)
+    if pool is not None:
+        return pool
+    cog = getattr(services, "cognition_service", None)
+    if cog is not None:
+        return getattr(cog, "_db_pool", None)
+    return None
 
 
 class GaiusServicer(GaiusServiceServicer):
@@ -794,7 +851,7 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             result = await self._services.backend_router.complete(
                 prompt=request.prompt,
-                agent_alias=request.agent_alias or "instruct",
+                agent_alias=request.agent_alias or "thinking",
                 system_prompt=request.system_prompt,
                 temperature=request.temperature or 0.7,
                 max_tokens=request.max_tokens or 2048,
@@ -908,6 +965,19 @@ class GaiusServicer(GaiusServiceServicer):
                 success=False,
                 workload_id=request.workload_id,
                 error="OrchestratorService not initialized",
+            )
+
+        from gaius.engine.sentinel_claim import GURU_NOAPP, gpu_start_allowed
+
+        if not gpu_start_allowed(request.workload_id):
+            return BeginWorkloadResponse(
+                success=False,
+                workload_id=request.workload_id,
+                error=(
+                    f"{GURU_NOAPP} exclusive GPU start requires an admitted "
+                    "YK Application (federation.zndx.org/gpu claim). "
+                    "Leases in /tmp/zndx-gpu-leases are intra-node refuse only."
+                ),
             )
 
         try:
@@ -1435,12 +1505,12 @@ class GaiusServicer(GaiusServiceServicer):
         # Map role capabilities to endpoints
         ROLE_TO_ENDPOINT = {
             "Leader": "orchestrator",
-            "Risk": "instruct",
-            "Optimizer": "instruct",
+            "Risk": "thinking",
+            "Optimizer": "thinking",
             "Planner": "orchestrator",
-            "Critic": "instruct",
-            "Executor": "instruct",
-            "Adversary": "instruct",
+            "Critic": "thinking",
+            "Executor": "thinking",
+            "Adversary": "thinking",
         }
 
         for i, role_name in enumerate(roles):
@@ -1458,7 +1528,7 @@ class GaiusServicer(GaiusServiceServicer):
                 role_enum = AgentRole(role_name)
                 role_def = get_role(role_enum)
                 prompt = role_def.get_prompt(domain, context_str)
-                endpoint = ROLE_TO_ENDPOINT.get(role_name, "instruct")
+                endpoint = ROLE_TO_ENDPOINT.get(role_name, "thinking")
 
                 # Run the agent
                 if self._services.backend_router:
@@ -1929,6 +1999,81 @@ class GaiusServicer(GaiusServiceServicer):
             logger.debug(f"Failed to get active thoughts: {e}")
 
         return response
+
+    async def CognitionSurface(
+        self,
+        request: CognitionSurfaceRequest,
+        context: aio.ServicerContext,
+    ) -> CognitionSurfaceResponse:
+        """Federation cognition dashboard snapshot (thoughts + cycles)."""
+        cognition = getattr(self._services, "cognition_service", None)
+        if not cognition:
+            return CognitionSurfaceResponse(
+                error=(
+                    "Cognition service not available.\n"
+                    "Guru Meditation: #COG.00000024.NOSVC\n"
+                    "  Try: /health fix engine"
+                ),
+            )
+        try:
+            snap = await cognition.surface(
+                window_days=request.window_days or 365,
+                thought_limit=request.thought_limit or 80,
+                stream=request.stream or "",
+            )
+        except ValueError as e:
+            return CognitionSurfaceResponse(error=str(e))
+        except Exception as e:
+            return CognitionSurfaceResponse(
+                error=(
+                    f"Cognition surface failed: {e}\n"
+                    "Guru Meditation: #COG.00000028.SURFACE\n"
+                    "  Try: /health fix postgres"
+                ),
+            )
+
+        def _thought(t: Any) -> ThoughtMessage:
+            return ThoughtMessage(
+                id=t.id,
+                thought_type=t.thought_type,
+                title=t.title,
+                summary=t.summary,
+                salience=t.salience,
+                generation=t.generation,
+                timestamp_ms=t.timestamp_ms,
+                note_path=t.note_path,
+            )
+
+        return CognitionSurfaceResponse(
+            running=snap.running,
+            cycles_completed=snap.cycles_completed,
+            cycles_in_window=snap.cycles_in_window,
+            last_cycle_timestamp_ms=snap.last_cycle_timestamp_ms,
+            current_task=snap.current_task,
+            thoughts=snap.thoughts,
+            streams=snap.streams,
+            active_days=snap.active_days,
+            thoughts_per_cycle=snap.thoughts_per_cycle,
+            concentration_stream=snap.concentration_stream,
+            concentration_pct=snap.concentration_pct,
+            reserve_tokens=snap.reserve_tokens,
+            project=snap.project,
+            unit=snap.unit,
+            recent=[_thought(t) for t in snap.recent],
+            top=[_thought(t) for t in snap.top],
+            days=[
+                CognitionDayBucket(date=d.date, thoughts=d.thoughts, cycles=d.cycles)
+                for d in snap.days
+            ],
+            hours=[
+                CognitionHourCell(weekday=h.weekday, hour=h.hour, thoughts=h.thoughts)
+                for h in snap.hours
+            ],
+            stream_counts=[
+                CognitionStreamCount(id=s.id, thoughts=s.thoughts)
+                for s in snap.stream_counts
+            ],
+        )
 
     async def SelfObservation(
         self,
@@ -2729,7 +2874,7 @@ class GaiusServicer(GaiusServiceServicer):
 
                 result = await self._services.backend_router.complete(
                     prompt=prompt,
-                    agent_alias="instruct",  # Use instruct endpoint for explain
+                    agent_alias="thinking",
                     temperature=0.7,
                     max_tokens=max_tokens,
                     task_type="grid_explain",
@@ -4444,69 +4589,44 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaSitrepRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaSitrepResponse:
-        """Generate situational awareness report.
+        """Generate situational awareness report via ThetaService only."""
+        theta_service = getattr(self._services, "theta_service", None)
+        if theta_service is None:
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "ThetaService is not registered on the engine.\n"
+                "  Guru: #THETA.00000007.NOSVC\n"
+                "  Try: /health fix engine",
+            )
 
-        Delegates to ThetaService if available, otherwise falls back to
-        direct ThetaAgent instantiation for backward compatibility.
-        """
         try:
             horizon = request.horizon or "day"
+            result = await theta_service.sitrep(horizon=horizon)
 
-            # Prefer ThetaService if available (Engine-First architecture)
-            theta_service = self._services.theta_service
-            if theta_service:
-                result = await theta_service.sitrep(horizon=horizon)
-
-                if not result.get("success"):
-                    return ThetaSitrepResponse(
-                        success=False,
-                        error=result.get("error", "Unknown error"),
-                    )
-
-                report = result.get("report", {})
+            if not result.get("success"):
                 return ThetaSitrepResponse(
-                    success=True,
-                    horizon=horizon,
-                    generated_at_ms=int(
-                        report.get("generated_at_ms", 0)
-                        or (report.get("generated_at", 0) * 1000 if isinstance(report.get("generated_at"), float) else 0)
-                    ),
-                    healthy=report.get("system_status", {}).get("healthy", False),
-                    status_text=report.get("system_status", {}).get("status_text", ""),
-                    gpu_count=report.get("system_status", {}).get("gpu_count", 0),
-                    endpoint_count=report.get("system_status", {}).get("endpoint_count", 0),
-                    priority_count=len(report.get("priorities", [])),
-                    thought_count=len(report.get("thoughts", [])),
-                    objective_count=len(report.get("objectives", [])),
-                    project_count=report.get("project_count", 0),
-                    report_json=json.dumps(report).encode(),
-                    ascii_format=result.get("ascii_format", ""),
+                    success=False,
+                    error=result.get("error", "Unknown error"),
                 )
 
-            # Fallback: direct ThetaAgent instantiation
-            import os
-            from ....agents.theta import ThetaAgent
-
-            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
-            agent = ThetaAgent(kb_root=kb_root)
-
-            report = await agent.sitrep(horizon=horizon)
-            report_dict = report.to_dict()
-
+            report = result.get("report", {})
             return ThetaSitrepResponse(
                 success=True,
                 horizon=horizon,
-                generated_at_ms=int(report.generated_at.timestamp() * 1000),
-                healthy=report.system_status.healthy,
-                status_text=report.system_status.status_text,
-                gpu_count=report.system_status.gpu_count,
-                endpoint_count=report.system_status.endpoint_count,
-                priority_count=len(report.priorities),
-                thought_count=len(report.thoughts),
-                objective_count=len(report.objectives),
-                project_count=report.project_count,
-                report_json=json.dumps(report_dict).encode(),
-                ascii_format=report.to_ascii(),
+                generated_at_ms=int(
+                    report.get("generated_at_ms", 0)
+                    or (report.get("generated_at", 0) * 1000 if isinstance(report.get("generated_at"), float) else 0)
+                ),
+                healthy=report.get("system_status", {}).get("healthy", False),
+                status_text=report.get("system_status", {}).get("status_text", ""),
+                gpu_count=report.get("system_status", {}).get("gpu_count", 0),
+                endpoint_count=report.get("system_status", {}).get("endpoint_count", 0),
+                priority_count=len(report.get("priorities", [])),
+                thought_count=len(report.get("thoughts", [])),
+                objective_count=len(report.get("objectives", [])),
+                project_count=report.get("project_count", 0),
+                report_json=json.dumps(report).encode(),
+                ascii_format=result.get("ascii_format", ""),
             )
         except Exception as e:
             logger.exception(f"ThetaSitrep failed: {e}")
@@ -4520,61 +4640,35 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidateRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidateResponse:
-        """Run NVAR-mediated consolidation cycle.
+        """Run NVAR-mediated consolidation via ThetaService only."""
+        theta_service = getattr(self._services, "theta_service", None)
+        if theta_service is None:
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "ThetaService is not registered on the engine.\n"
+                "  Guru: #THETA.00000007.NOSVC\n"
+                "  Try: /health fix engine",
+            )
 
-        Delegates to ThetaService if available, otherwise falls back to
-        direct ThetaAgent instantiation for backward compatibility.
-        """
         try:
             temporal_slice = request.temporal_slice or None
             max_candidates = request.max_candidates or 10
-
-            # Prefer ThetaService if available (Engine-First architecture)
-            theta_service = self._services.theta_service
-            if theta_service:
-                result = await theta_service.run_consolidation(
-                    temporal_slice=temporal_slice,
-                    max_candidates=max_candidates,
-                )
-
-                signal = result.get("signal", {}) or {}
-                return ThetaConsolidateResponse(
-                    success=result.get("success", False),
-                    slice_id=result.get("slice_id", ""),
-                    urgency=signal.get("urgency", 0.0),
-                    drift=signal.get("drift", 0.0),
-                    candidates_evaluated=result.get("candidates_evaluated", 0),
-                    candidates_selected=result.get("candidates_selected", 0),
-                    documents_augmented=result.get("documents_augmented", 0),
-                    error=result.get("error", ""),
-                    guru_meditation=result.get("guru_code", ""),
-                )
-
-            # Fallback: direct ThetaAgent instantiation
-            import os
-            from ....agents.theta import ThetaAgent
-            from ....agents.theta.subsumption import DeepOntoNotAvailableError
-
-            kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
-            agent = ThetaAgent(
-                kb_root=kb_root,
-                research_mode=request.research_mode if request.research_mode else True,
-            )
-
-            result = await agent.run_consolidation(
+            result = await theta_service.run_consolidation(
                 temporal_slice=temporal_slice,
                 max_candidates=max_candidates,
             )
 
+            signal = result.get("signal", {}) or {}
             return ThetaConsolidateResponse(
-                success=result.error is None,
-                slice_id=result.slice_id,
-                urgency=result.signal.urgency if result.signal else 0.0,
-                drift=result.signal.drift if result.signal else 0.0,
-                candidates_evaluated=result.candidates_evaluated,
-                candidates_selected=result.candidates_selected,
-                documents_augmented=result.documents_augmented,
-                error=result.error or "",
+                success=result.get("success", False),
+                slice_id=result.get("slice_id", ""),
+                urgency=signal.get("urgency", 0.0),
+                drift=signal.get("drift", 0.0),
+                candidates_evaluated=result.get("candidates_evaluated", 0),
+                candidates_selected=result.get("candidates_selected", 0),
+                documents_augmented=result.get("documents_augmented", 0),
+                error=result.get("error", ""),
+                guru_meditation=result.get("guru_code", ""),
             )
         except Exception as e:
             error_msg = str(e)
@@ -4594,24 +4688,18 @@ class GaiusServicer(GaiusServiceServicer):
         request: ThetaConsolidationStatsRequest,
         context: grpc.aio.ServicerContext,
     ) -> ThetaConsolidationStatsResponse:
-        """Get consolidation statistics.
+        """Get consolidation statistics via ThetaService only."""
+        theta_service = getattr(self._services, "theta_service", None)
+        if theta_service is None:
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "ThetaService is not registered on the engine.\n"
+                "  Guru: #THETA.00000007.NOSVC\n"
+                "  Try: /health fix engine",
+            )
 
-        Delegates to ThetaService if available, otherwise falls back to
-        direct ThetaAgent instantiation for backward compatibility.
-        """
         try:
-            # Prefer ThetaService if available (Engine-First architecture)
-            theta_service = self._services.theta_service
-            if theta_service:
-                stats = theta_service.get_consolidation_stats()
-            else:
-                # Fallback: direct ThetaAgent instantiation
-                import os
-                from ....agents.theta import ThetaAgent
-
-                kb_root = os.getenv("GAIUS_KB_ROOT", "build/dev")
-                agent = ThetaAgent(kb_root=kb_root)
-                stats = agent.get_consolidation_stats()
+            stats = theta_service.get_consolidation_stats()
 
             return ThetaConsolidationStatsResponse(
                 # NVAR dynamics
@@ -4635,8 +4723,584 @@ class GaiusServicer(GaiusServiceServicer):
             )
         except Exception as e:
             logger.exception(f"ThetaConsolidationStats failed: {e}")
-            # Return empty response on error
-            return ThetaConsolidationStatsResponse()
+            await context.abort(
+                grpc.StatusCode.INTERNAL,
+                f"ThetaConsolidationStats failed: {e}\n"
+                "  Try: /health fix engine",
+            )
+
+    async def ThetaAgenda(
+        self,
+        request: ThetaAgendaRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> ThetaAgendaResponse:
+        """List or init the KB day agenda via ThetaService only."""
+        theta_service = getattr(self._services, "theta_service", None)
+        if theta_service is None:
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "ThetaService is not registered on the engine.\n"
+                "  Guru: #THETA.00000007.NOSVC\n"
+                "  Try: /health fix engine",
+            )
+
+        try:
+            result = theta_service.agenda(
+                action=request.action or "list",
+                horizon=request.horizon or "day",
+            )
+            if not result.get("success"):
+                return ThetaAgendaResponse(
+                    success=False,
+                    action=request.action or "list",
+                    horizon=request.horizon or "day",
+                    error=result.get("error", ""),
+                )
+            items = [
+                ThetaAgendaItem(
+                    description=i.get("description", ""),
+                    priority=i.get("priority", ""),
+                    project=i.get("project", ""),
+                    due_date=i.get("due_date", ""),
+                    completed=bool(i.get("completed")),
+                    source_path=i.get("source_path", ""),
+                )
+                for i in result.get("items", [])
+            ]
+            return ThetaAgendaResponse(
+                success=True,
+                action=result.get("action", ""),
+                horizon=result.get("horizon", ""),
+                path=result.get("path", ""),
+                created=bool(result.get("created")),
+                items=items,
+                ascii_format=result.get("ascii_format", ""),
+            )
+        except Exception as e:
+            logger.exception(f"ThetaAgenda failed: {e}")
+            return ThetaAgendaResponse(
+                success=False,
+                action=request.action or "list",
+                horizon=request.horizon or "day",
+                error=str(e),
+            )
+
+    def _agenda_card(self, item: Any) -> AgendaCard:
+        return AgendaCard(
+            path=item.path,
+            kind=item.kind,
+            title=item.title,
+            body=item.body,
+            excerpt=item.excerpt(),
+            prev=item.prev,
+            next=item.next,
+            starts=item.starts,
+            ends=item.ends,
+            tags=list(item.tags),
+            pin=item.pin,
+            checks=[
+                AgendaCheck(done=bool(c.get("done")), text=str(c.get("text", "")))
+                for c in item.checks
+            ],
+            created_ms=item.created_ms,
+            intent=item.intent,
+            with_whom=item.with_whom,
+            calendar_url=item.calendar_url(),
+            timezone=getattr(item, "timezone", "") or "",
+        )
+
+    async def AgendaList(
+        self,
+        request: AgendaListRequest,
+        context: aio.ServicerContext,
+    ) -> AgendaListResponse:
+        from ...services.agenda_notes import (
+            AgendaError,
+            kb_root_from_env,
+            list_items,
+        )
+
+        try:
+            items = list_items(
+                kb_root_from_env(),
+                window_days=request.window_days or 14,
+                kind=request.kind or "",
+                tag=request.tag or "",
+                origin=request.origin or "",
+                tz_name=request.timezone or "",
+            )
+            return AgendaListResponse(items=[self._agenda_card(i) for i in items])
+        except AgendaError as e:
+            return AgendaListResponse(error=str(e))
+        except Exception as e:
+            logger.exception("AgendaList failed")
+            return AgendaListResponse(error=str(e))
+
+    async def AgendaGet(
+        self,
+        request: AgendaGetRequest,
+        context: aio.ServicerContext,
+    ) -> AgendaGetResponse:
+        from ...services.agenda_notes import (
+            AgendaError,
+            get_item,
+            kb_root_from_env,
+        )
+
+        try:
+            item = get_item(kb_root_from_env(), request.path)
+            return AgendaGetResponse(item=self._agenda_card(item))
+        except AgendaError as e:
+            return AgendaGetResponse(error=str(e))
+        except Exception as e:
+            logger.exception("AgendaGet failed")
+            return AgendaGetResponse(error=str(e))
+
+    async def AgendaCreate(
+        self,
+        request: AgendaCreateRequest,
+        context: aio.ServicerContext,
+    ) -> AgendaCreateResponse:
+        from ...services.agenda_notes import (
+            AgendaError,
+            create_item,
+            kb_root_from_env,
+        )
+
+        try:
+            item = create_item(
+                kb_root_from_env(),
+                kind=request.kind,
+                title=request.title,
+                body=request.body,
+                starts=request.starts,
+                ends=request.ends,
+                tags=list(request.tags),
+                pin=request.pin,
+                intent=request.intent,
+                with_whom=request.with_whom,
+                tz_name=request.timezone or "",
+            )
+            return AgendaCreateResponse(item=self._agenda_card(item))
+        except AgendaError as e:
+            return AgendaCreateResponse(error=str(e))
+        except Exception as e:
+            logger.exception("AgendaCreate failed")
+            return AgendaCreateResponse(error=str(e))
+
+    async def AgendaUpdate(
+        self,
+        request: AgendaUpdateRequest,
+        context: aio.ServicerContext,
+    ) -> AgendaUpdateResponse:
+        from ...services.agenda_notes import (
+            AgendaError,
+            kb_root_from_env,
+            update_item,
+        )
+
+        try:
+            kwargs: dict[str, Any] = {}
+            if request.title:
+                kwargs["title"] = request.title
+            if request.body:
+                kwargs["body"] = request.body
+            if request.starts:
+                kwargs["starts"] = request.starts
+            if request.ends:
+                kwargs["ends"] = request.ends
+            if request.tags:
+                kwargs["tags"] = list(request.tags)
+            if request.has_pin:
+                kwargs["pin"] = request.pin
+            if request.has_checks:
+                kwargs["checks"] = [
+                    {"done": c.done, "text": c.text} for c in request.checks
+                ]
+            if request.has_intent:
+                kwargs["intent"] = request.intent
+            if request.has_with:
+                kwargs["with_whom"] = request.with_whom
+            if request.has_timezone:
+                kwargs["tz_name"] = request.timezone
+            item = update_item(kb_root_from_env(), request.path, **kwargs)
+            return AgendaUpdateResponse(item=self._agenda_card(item))
+        except AgendaError as e:
+            return AgendaUpdateResponse(error=str(e))
+        except Exception as e:
+            logger.exception("AgendaUpdate failed")
+            return AgendaUpdateResponse(error=str(e))
+
+    async def WeeklySignalsSummary(
+        self,
+        request: WeeklySignalsSummaryRequest,
+        context: aio.ServicerContext,
+    ) -> WeeklySignalsSummaryResponse:
+        from ...services.weekly_signals_summary import (
+            WeeklySummaryError,
+            run_weekly_summary,
+        )
+
+        try:
+            result = await run_weekly_summary(
+                week=request.week or "",
+                previous=bool(request.previous),
+                services=self._services,
+            )
+            remotes = [
+                WeeklySignalsRemote(project=p.project, name=r.name, url=r.url)
+                for p in result.participants
+                for r in p.remotes
+            ]
+            return WeeklySignalsSummaryResponse(
+                path=result.path,
+                week=result.week.label,
+                body=result.body,
+                projects=[p.project for p in result.participants],
+                remotes=remotes,
+                acp_used=result.acp_used,
+            )
+        except WeeklySummaryError as e:
+            return WeeklySignalsSummaryResponse(error=str(e))
+        except Exception as e:
+            logger.exception("WeeklySignalsSummary failed")
+            return WeeklySignalsSummaryResponse(error=str(e))
+
+    async def WeeklySignalsSummaryList(
+        self,
+        request: WeeklySignalsSummaryListRequest,
+        context: aio.ServicerContext,
+    ) -> WeeklySignalsSummaryListResponse:
+        from ...services.agenda_notes import kb_root_from_env
+        from ...services.weekly_signals_summary import (
+            WeeklySummaryError,
+            list_summaries,
+        )
+
+        try:
+            items = list_summaries(kb_root_from_env(), limit=request.limit or 12)
+            return WeeklySignalsSummaryListResponse(items=items)
+        except WeeklySummaryError as e:
+            return WeeklySignalsSummaryListResponse(error=str(e))
+        except Exception as e:
+            logger.exception("WeeklySignalsSummaryList failed")
+            return WeeklySignalsSummaryListResponse(error=str(e))
+
+    async def WeeklySignalsSummaryGet(
+        self,
+        request: WeeklySignalsSummaryGetRequest,
+        context: aio.ServicerContext,
+    ) -> WeeklySignalsSummaryGetResponse:
+        from ...services.agenda_notes import kb_root_from_env
+        from ...services.weekly_signals_summary import (
+            WeeklySummaryError,
+            read_summary,
+        )
+
+        try:
+            body = read_summary(kb_root_from_env(), request.path)
+            return WeeklySignalsSummaryGetResponse(path=request.path, body=body)
+        except WeeklySummaryError as e:
+            return WeeklySignalsSummaryGetResponse(error=str(e))
+        except Exception as e:
+            logger.exception("WeeklySignalsSummaryGet failed")
+            return WeeklySignalsSummaryGetResponse(error=str(e))
+
+    async def KnowledgeSummary(
+        self,
+        request: KnowledgeSummaryRequest,
+        context: aio.ServicerContext,
+    ) -> KnowledgeSummaryResponse:
+        from ...services.knowledge_summary import (
+            KnowledgeSummaryError,
+            run_knowledge_summaries,
+        )
+        from ...services.weekly_signals_summary import (
+            WeeklySummaryError,
+            parse_iso_week,
+        )
+
+        try:
+            written = run_knowledge_summaries(
+                week=request.week or "",
+                section=request.section or "",
+            )
+            week = parse_iso_week(request.week or "").label
+            return KnowledgeSummaryResponse(
+                week=week,
+                items=[
+                    KnowledgeSummaryWritten(
+                        section=w.section, path=w.path, notes=w.notes
+                    )
+                    for w in written
+                ],
+            )
+        except (KnowledgeSummaryError, WeeklySummaryError) as e:
+            return KnowledgeSummaryResponse(error=str(e))
+        except Exception as e:
+            logger.exception("KnowledgeSummary failed")
+            return KnowledgeSummaryResponse(error=str(e))
+
+    async def FederationSurfaces(
+        self,
+        request: FederationSurfacesRequest,
+        context: aio.ServicerContext,
+    ) -> FederationSurfacesResponse:
+        from ...s2s import collect_peer_surfaces
+
+        try:
+            rows = await collect_peer_surfaces(self._services)
+            return FederationSurfacesResponse(
+                items=[
+                    FederationSurface(
+                        project=r["project"],
+                        engine_target=r["engine_target"],
+                        primary_ui=r["primary_ui"],
+                    )
+                    for r in rows
+                ]
+            )
+        except Exception as e:
+            logger.exception("FederationSurfaces failed")
+            return FederationSurfacesResponse(error=str(e))
+
+    async def AskPresent(
+        self,
+        request: AskPresentRequest,
+        context: aio.ServicerContext,
+    ) -> AskPresentResponse:
+        from ...services.ask_present import AskPresentError, build_artifact
+
+        try:
+            art = await build_artifact(
+                kind=request.kind or "ohlc",
+                symbol=request.symbol or "",
+                title=request.title or "",
+                from_date=request.from_date or "",
+                to_date=request.to_date or "",
+                payload_json=request.payload_json or "",
+            )
+            n = len(art.get("bars") or art.get("rows") or art.get("links") or [])
+            return AskPresentResponse(
+                artifact_json=json.dumps(art),
+                n_items=n,
+            )
+        except AskPresentError as e:
+            return AskPresentResponse(error=str(e))
+        except Exception as e:
+            logger.exception("AskPresent failed")
+            return AskPresentResponse(error=str(e))
+
+    def _summary_note(self, note: object) -> ProtoSummaryNote:
+        return ProtoSummaryNote(
+            id=getattr(note, "id", ""),
+            title=getattr(note, "title", ""),
+            body=getattr(note, "body", ""),
+            section=getattr(note, "section", ""),
+            lens=getattr(note, "lens", ""),
+            week=getattr(note, "week", ""),
+            mtime_ms=int(getattr(note, "mtime_ms", 0) or 0),
+            links=list(getattr(note, "links", []) or []),
+            origin_project=getattr(note, "origin_project", "") or "gaius",
+            origin_id=getattr(note, "origin_id", ""),
+            excerpt=getattr(note, "excerpt", "") or "",
+            virtual=bool(getattr(note, "virtual", False)),
+        )
+
+    async def SummaryIndex(
+        self,
+        request: SummaryIndexRequest,
+        context: aio.ServicerContext,
+    ) -> SummaryIndexResponse:
+        from ...services.agenda_notes import kb_root_from_env
+        from ...services.summary_lineup import SummaryLineupError, build_index
+        from ...services.weekly_signals_summary import WeeklySummaryError
+
+        try:
+            db = _summary_db(self._services)
+            idx = await build_index(
+                kb_root_from_env(),
+                section=request.section or "",
+                lens=request.lens or "",
+                week=request.week or "",
+                limit=request.limit or 48,
+                db_pool=db,
+            )
+            seed = idx["seed"]
+            return SummaryIndexResponse(
+                week=str(idx["week"]),
+                landing_id=str(idx["landing_id"] or ""),
+                seed=self._summary_note(seed),
+                items=[self._summary_note(n) for n in idx["items"]],
+            )
+        except (SummaryLineupError, WeeklySummaryError) as e:
+            return SummaryIndexResponse(error=str(e))
+        except Exception as e:
+            logger.exception("SummaryIndex failed")
+            return SummaryIndexResponse(error=str(e))
+
+    async def SummaryGet(
+        self,
+        request: SummaryGetRequest,
+        context: aio.ServicerContext,
+    ) -> SummaryGetResponse:
+        from ...services.agenda_notes import kb_root_from_env
+        from ...services.summary_lineup import SummaryLineupError, build_index, get_note
+        from ...services.weekly_signals_summary import WeeklySummaryError
+
+        try:
+            kb = kb_root_from_env()
+            nid = request.id or ""
+            if nid.startswith("lens/"):
+                db = _summary_db(self._services)
+                idx = await build_index(
+                    kb,
+                    section=request.section or "",
+                    lens=request.lens or "",
+                    week=request.week or "",
+                    db_pool=db,
+                )
+                return SummaryGetResponse(note=self._summary_note(idx["seed"]))
+            from ...services.summary_lineup import load_db_thought, parse_thought_id
+
+            if parse_thought_id(nid):
+                note = await load_db_thought(
+                    _summary_db(self._services),
+                    nid,
+                    week=request.week or "",
+                )
+                return SummaryGetResponse(note=self._summary_note(note))
+            note = get_note(
+                kb,
+                nid,
+                section=request.section or "",
+                lens=request.lens or "",
+                week=request.week or "",
+            )
+            return SummaryGetResponse(note=self._summary_note(note))
+        except (SummaryLineupError, WeeklySummaryError) as e:
+            return SummaryGetResponse(error=str(e))
+        except Exception as e:
+            logger.exception("SummaryGet failed")
+            return SummaryGetResponse(error=str(e))
+
+    async def SummaryHop(
+        self,
+        request: SummaryHopRequest,
+        context: aio.ServicerContext,
+    ) -> SummaryHopResponse:
+        from ...services.agenda_notes import kb_root_from_env
+        from ...services.summary_lineup import (
+            SummaryLineupError,
+            get_note,
+            load_db_thought,
+            parse_thought_id,
+            resolve_hop,
+        )
+        from ...services.weekly_signals_summary import WeeklySummaryError
+
+        try:
+            kb = kb_root_from_env()
+            target = request.target or ""
+            if parse_thought_id(target):
+                note = await load_db_thought(
+                    _summary_db(self._services),
+                    target,
+                    week=request.week or "",
+                )
+                return SummaryHopResponse(
+                    note=self._summary_note(note),
+                    resolved_id=note.id,
+                )
+            resolved = resolve_hop(kb, request.from_id or "", target)
+            note = get_note(kb, resolved, week=request.week or "")
+            return SummaryHopResponse(
+                note=self._summary_note(note),
+                resolved_id=resolved,
+            )
+        except (SummaryLineupError, WeeklySummaryError) as e:
+            return SummaryHopResponse(error=str(e))
+        except Exception as e:
+            logger.exception("SummaryHop failed")
+            return SummaryHopResponse(error=str(e))
+
+    async def SummaryFork(
+        self,
+        request: SummaryForkRequest,
+        context: aio.ServicerContext,
+    ) -> SummaryForkResponse:
+        from ...services.agenda_notes import kb_root_from_env
+        from ...services.summary_lineup import SummaryLineupError, fork_note
+        from ...services.weekly_signals_summary import WeeklySummaryError
+
+        try:
+            note = await fork_note(
+                kb_root_from_env(),
+                request.id or "",
+                origin_project=request.origin_project or "",
+                services=self._services,
+            )
+            return SummaryForkResponse(note=self._summary_note(note))
+        except (SummaryLineupError, WeeklySummaryError) as e:
+            return SummaryForkResponse(error=str(e))
+        except Exception as e:
+            logger.exception("SummaryFork failed")
+            return SummaryForkResponse(error=str(e))
+
+    async def SummarySchedules(
+        self,
+        request: SummarySchedulesRequest,
+        context: aio.ServicerContext,
+    ) -> SummarySchedulesResponse:
+        from ...services.summary_schedule import (
+            ScheduleCatalogError,
+            list_schedule_catalog,
+        )
+
+        try:
+            cards = await list_schedule_catalog(_summary_db(self._services))
+            return SummarySchedulesResponse(
+                items=[
+                    ProtoSummarySchedule(
+                        id=c.id,
+                        cron=c.cron,
+                        task_type=c.task_type,
+                        source=c.source,
+                        enabled=c.enabled,
+                        triggerable=c.triggerable,
+                        cadence=c.cadence,
+                    )
+                    for c in cards
+                ]
+            )
+        except ScheduleCatalogError as e:
+            return SummarySchedulesResponse(error=str(e))
+        except Exception as e:
+            logger.exception("SummarySchedules failed")
+            return SummarySchedulesResponse(error=str(e))
+
+    async def SummaryScheduleTrigger(
+        self,
+        request: SummaryScheduleTriggerRequest,
+        context: aio.ServicerContext,
+    ) -> SummaryScheduleTriggerResponse:
+        from ...services.summary_schedule import (
+            ScheduleCatalogError,
+            trigger_schedule,
+        )
+
+        try:
+            task_id, task_type = await trigger_schedule(
+                _summary_db(self._services), request.id or ""
+            )
+            return SummaryScheduleTriggerResponse(
+                task_id=task_id, task_type=task_type
+            )
+        except ScheduleCatalogError as e:
+            return SummaryScheduleTriggerResponse(error=str(e))
+        except Exception as e:
+            logger.exception("SummaryScheduleTrigger failed")
+            return SummaryScheduleTriggerResponse(error=str(e))
 
     # -------------------------------------------------------------------------
     # CLT (Cross-Layer Transcoders) - Interpretable Sparse Feature Extraction
@@ -6714,6 +7378,7 @@ class GaiusServicer(GaiusServiceServicer):
                     needs_update=s.get("needs_update", False),
                 ))
 
+            buf = status.get("buffer") or {}
             return ProspectsStatusResponse(
                 success=True,
                 profile=status.get("profile", request.profile or "zndx"),
@@ -6724,6 +7389,9 @@ class GaiusServicer(GaiusServiceServicer):
                 last_fmp_sync_at=status.get("last_fmp_sync_at", ""),
                 update_recommended=status.get("update_recommended", False),
                 update_reason=status.get("update_reason", ""),
+                buffer_bytes=int(buf.get("current_bytes", 0)),
+                buffer_max_bytes=int(buf.get("max_bytes", 0)),
+                buffer_entries=int(buf.get("entry_count", 0)),
             )
 
         except Exception as e:
@@ -6818,6 +7486,7 @@ class GaiusServicer(GaiusServiceServicer):
 
             # Stream progress events from service
             sitrep_path = ""
+            last_type: int | None = None
             async for event in service.run_update(
                 profile=request.profile,
                 domain=request.domain,
@@ -6829,8 +7498,9 @@ class GaiusServicer(GaiusServiceServicer):
                 if "sitrep_path" in event and event["sitrep_path"]:
                     sitrep_path = event["sitrep_path"]
 
+                last_type = int(event.get("type", ProspectsUpdateEvent.QUEUED))
                 yield ProspectsUpdateEvent(
-                    type=event.get("type", ProspectsUpdateEvent.QUEUED),
+                    type=last_type,
                     timestamp_ms=int(time.time() * 1000),
                     progress=event.get("progress", 0.0),
                     message=event.get("message", ""),
@@ -6839,13 +7509,14 @@ class GaiusServicer(GaiusServiceServicer):
                     sitrep_path=event.get("sitrep_path", ""),
                 )
 
-            yield ProspectsUpdateEvent(
-                type=ProspectsUpdateEvent.COMPLETED,
-                timestamp_ms=int(time.time() * 1000),
-                progress=1.0,
-                message="Update completed",
-                sitrep_path=sitrep_path,
-            )
+            if last_type != ProspectsUpdateEvent.FAILED:
+                yield ProspectsUpdateEvent(
+                    type=ProspectsUpdateEvent.COMPLETED,
+                    timestamp_ms=int(time.time() * 1000),
+                    progress=1.0,
+                    message="Update completed",
+                    sitrep_path=sitrep_path,
+                )
 
         except Exception as e:
             logger.exception(f"ProspectsUpdate failed: {e}")
@@ -6875,9 +7546,9 @@ class GaiusServicer(GaiusServiceServicer):
 
         Phases:
         1. BM25 lexical search (KB)
-        2. Vector search (ColNomic MaxSim - evicts instruct)
+        2. Vector search (ColBERT-Zero MaxSim - evicts thinking)
         3. Web search (Brave API)
-        4. Ensure instruct endpoint restored
+        4. Ensure thinking endpoint restored
         5. Parallel synthesis (local + Grok branch/join)
         6. Merge results and write KB zettelkasten
         """

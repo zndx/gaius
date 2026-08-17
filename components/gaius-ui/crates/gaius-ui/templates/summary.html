@@ -1,0 +1,39 @@
+{% include "chrome.html" %}
+<div class="sum-page" id="sum-page">
+  <aside class="sum-rail" aria-label="Summary lineup">
+    <div class="sum-rail-head">
+      <button type="button" class="sum-week-btn" id="sum-week" title="Open this week's Signals Summary">—</button>
+    </div>
+    <div class="sum-group">
+      <div class="sum-group-title">SECTION</div>
+      <label class="sum-sr-only" for="sum-root">Root</label>
+      <select id="sum-root" class="sum-root" aria-label="Archive Current Scratch">
+        <option value="archive">Archive</option>
+        <option value="current" selected>Current</option>
+        <option value="scratch">Scratch</option>
+      </select>
+    </div>
+    <div class="sum-group">
+      <div class="sum-group-title">LENS</div>
+      <button type="button" class="sum-tab" data-lens="articles">Articles</button>
+      <button type="button" class="sum-tab" data-lens="projects">Projects</button>
+      <button type="button" class="sum-tab" data-lens="thoughts">Thoughts</button>
+    </div>
+    <div class="sum-group">
+      <div class="sum-group-title">KNOWLEDGE</div>
+      <button type="button" class="sum-tab" data-section="ontology">Ontology</button>
+      <button type="button" class="sum-tab" data-section="heuristic">Heuristic</button>
+    </div>
+    <div class="sum-group">
+      <div class="sum-group-title">SCHEDULE</div>
+      <button type="button" class="sum-tab" data-cadence="hourly">Hourly</button>
+      <button type="button" class="sum-tab" data-cadence="daily">Daily</button>
+      <button type="button" class="sum-tab" data-cadence="weekly">Weekly</button>
+      <button type="button" class="sum-tab" data-cadence="extended">Extended</button>
+    </div>
+    <div class="sum-rail-foot muted mono" id="sum-foot">federation.project=gaius</div>
+  </aside>
+  <section class="sum-trail" id="sum-trail" aria-label="Lineup"></section>
+</div>
+<script src="/assets/js/summary.js?v={{ asset_v }}" defer></script>
+{% include "footer.html" %}

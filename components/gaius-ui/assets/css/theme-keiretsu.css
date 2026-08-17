@@ -1,0 +1,124 @@
+/* Canonical: cldr-design-template@db1a423 app/src/styles/theme-keiretsu.css
+ * Downstream copy (Atelier) — sync policy: build/ZNDX_CONSOLIDATION_PLAN.md.
+ * Do not edit locally; fix upstream, then re-sync. */
+
+/**
+ * Keiretsu — Wikimedia-informed monochrome value ramp (OKLCH hue 250°, whisper chroma)
+ * as the tonal architecture; brand accent HUES preserved but luminance-matched.
+ *
+ * Laws (from Aegir / zndx, RH-ratified 2026-07-19):
+ *   1. Elevation is lightness — never hue. Surfaces carry no brand.
+ *   2. Area × chroma is a budget (Munsell): accents ≤ ~10% of any surface.
+ *   3. Contrast is a band: body 10–13:1, strong ≤ ~15:1 — below the halation zone.
+ *
+ * Adjacent to theme-cloudera.css — select via data-theme="keiretsu" | "cloudera".
+ *
+ * Usage (document root):  <html data-mode="dark" data-theme="keiretsu">
+ * Only flip data-mode for light/dark. Theme is selected independently.
+ */
+
+/* ── Dark (default / home) — grey on slate on charcoal on black ─────────── */
+[data-theme="keiretsu"][data-mode="dark"],
+html[data-theme="keiretsu"]:not([data-mode="light"]) {
+  color-scheme: dark;
+
+  /* Surfaces — the k-ramp */
+  --color-kumo-canvas: #090b0e;        /* k0 black · page */
+  --color-kumo-base: #101418;          /* k1 charcoal · canvas (≡ Wikimedia Codex base) */
+  --color-kumo-elevated: #191d22;      /* k2 charcoal+ · card */
+  --color-kumo-recessed: #21272d;      /* k3 slate */
+  --color-kumo-tint: #21272d;
+  --color-kumo-contrast: #e5e8ec;
+  --color-kumo-overlay: #191d22;
+  --color-kumo-control: #101418;
+  --color-kumo-interact: #30363c;      /* k4 slate+ */
+  --color-kumo-fill: #30363c;
+  --color-kumo-fill-hover: #21272d;
+
+  /* Brand — periwinkle (Cloudera indigo hue 277, luminance-matched for dark).
+     Runtime accent hook preserved: set --cldr-accent on <html>. */
+  --color-kumo-brand: var(--cldr-accent, #96a2fc);
+  --color-kumo-brand-hover: var(--cldr-accent-dim, #818cf8);
+
+  /* Borders / focus — k4/k5; focus is one of the two places brand may appear unasked */
+  --color-kumo-line: #30363c;
+  --color-kumo-hairline: #30363c;
+  --color-kumo-focus: #96a2fc;
+
+  /* Status — matched luminance (equal perceived weight; hue differentiates) */
+  --color-kumo-danger: #f28881;
+  --color-kumo-danger-tint: color-mix(in oklch, #f28881 16%, transparent);
+  --color-kumo-warning: #d99d54;
+  --color-kumo-warning-tint: color-mix(in oklch, #d99d54 16%, transparent);
+  --color-kumo-success: #4ec491;
+  --color-kumo-success-tint: color-mix(in oklch, #4ec491 16%, transparent);
+  --color-kumo-info: #96a2fc;
+  --color-kumo-info-tint: color-mix(in oklch, #96a2fc 13%, transparent);
+
+  --color-kumo-banner-info: color-mix(in oklch, #96a2fc 20%, transparent);
+  --color-kumo-banner-warning: color-mix(in oklch, #d99d54 24%, transparent);
+
+  /* Text — never pure white (halation); strong tops at 15:1 on k1 */
+  --text-color-kumo-default: #d4d8dd;  /* k8 · 11.8:1 on card */
+  --text-color-kumo-strong: #e5e8ec;   /* k9 */
+  --text-color-kumo-subtle: #9fa5ac;   /* k7 · 6.8:1 on card */
+  --text-color-kumo-inactive: #7b8187; /* disabled — WCAG-exempt by design */
+  --text-color-kumo-placeholder: #7b8187;
+  --text-color-kumo-inverse: #090b0e;
+  --text-color-kumo-brand: #96a2fc;
+  --text-color-kumo-link: #96a2fc;     /* ≥4.5:1 as text on every surface through k3 */
+  --text-color-kumo-info: #96a2fc;
+  --text-color-kumo-success: #4ec491;
+  --text-color-kumo-danger: #f28881;
+  --text-color-kumo-warning: #d99d54;
+}
+
+/* ── Light (opt-in) — the same ramp, mirrored; elevation lightens ───────── */
+[data-theme="keiretsu"][data-mode="light"] {
+  color-scheme: light;
+
+  --color-kumo-canvas: #eef1f4;
+  --color-kumo-base: #f8f9fb;
+  --color-kumo-elevated: #ffffff;
+  --color-kumo-recessed: #e4e8ed;
+  --color-kumo-tint: #e4e8ed;
+  --color-kumo-contrast: #15191d;
+  --color-kumo-overlay: #ffffff;
+  --color-kumo-control: #ffffff;
+  --color-kumo-interact: #d9dfe5;
+  --color-kumo-fill: #e4e8ed;
+  --color-kumo-fill-hover: #d9dfe5;
+
+  /* Light brand deepens: #6366f1 only reaches 3.9:1 on light canvas — #4338ca clears it */
+  --color-kumo-brand: var(--cldr-accent, #4338ca);
+  --color-kumo-brand-hover: var(--cldr-accent-dim, #372aa8);
+
+  --color-kumo-line: #d3d9df;
+  --color-kumo-hairline: #d3d9df;
+  --color-kumo-focus: #4338ca;
+
+  --color-kumo-danger: #dc2626;
+  --color-kumo-danger-tint: color-mix(in oklch, #dc2626 10%, transparent);
+  --color-kumo-warning: #d97706;
+  --color-kumo-warning-tint: color-mix(in oklch, #d97706 12%, transparent);
+  --color-kumo-success: #059669;
+  --color-kumo-success-tint: color-mix(in oklch, #059669 10%, transparent);
+  --color-kumo-info: #4338ca;
+  --color-kumo-info-tint: color-mix(in oklch, #4338ca 9%, transparent);
+
+  --color-kumo-banner-info: color-mix(in oklch, #4338ca 16%, transparent);
+  --color-kumo-banner-warning: color-mix(in oklch, #d97706 20%, transparent);
+
+  --text-color-kumo-default: #25292f;  /* 11.9:1 on card — same band as dark */
+  --text-color-kumo-strong: #15191d;
+  --text-color-kumo-subtle: #5d646b;
+  --text-color-kumo-inactive: #8a9098;
+  --text-color-kumo-placeholder: #8a9098;
+  --text-color-kumo-inverse: #f8f9fb;
+  --text-color-kumo-brand: #4338ca;
+  --text-color-kumo-link: #4338ca;
+  --text-color-kumo-info: #4338ca;
+  --text-color-kumo-success: #047857;
+  --text-color-kumo-danger: #b91c1c;
+  --text-color-kumo-warning: #b45309;
+}

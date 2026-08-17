@@ -166,6 +166,8 @@ class GaiusCLI:
                     result["data"] = self._cmd_iso(args)
                 elif command == "view":
                     result["data"] = self._cmd_view(args)
+                elif command == "board":
+                    result["data"] = self._run_async(self._cmd_board(args))
                 elif command == "state":
                     result["data"] = self._run_async(self._cmd_state(args))
                 elif command == "agents":
@@ -277,6 +279,12 @@ class GaiusCLI:
                 # SITREP - ThetaAgent situational awareness
                 elif command == "sitrep":
                     result["data"] = self._run_async(self._cmd_sitrep(args))
+                elif command == "agenda":
+                    result["data"] = self._run_async(self._cmd_agenda(args))
+                elif command == "summary":
+                    result["data"] = self._run_async(self._cmd_summary(args))
+                elif command == "peers":
+                    result["data"] = self._run_async(self._cmd_peers(args))
                 elif command == "consolidate":
                     result["data"] = self._run_async(self._cmd_consolidate(args))
                 # CLT - Cross-Layer Transcoders for circuit tracing
@@ -549,6 +557,67 @@ class GaiusCLI:
             self.state.cycle_view_mode()
         return {"view": self.state.view_mode.value}
 
+    async def _cmd_board(self, args: str = "") -> dict:
+        """Knowledge-base board. ``current_state`` is the board.
+
+        Usage:
+            /board           - Read the live current_state row
+            /board refresh   - Run one reindex cycle now (clock also runs itself)
+        """
+        from .storage.grid_state import load_current_state_fast
+        from .storage.kb_board import (
+            build_board_snapshot,
+            load_content_index,
+            publish_board_snapshot,
+        )
+
+        kb_root = self._get_kb_root()
+        kick = (args or "").strip().lower() in ("refresh", "publish", "reindex")
+        if kick:
+            snap = build_board_snapshot(
+                kb_root, catalog=await load_content_index()
+            )
+            generation = await publish_board_snapshot(snap)
+            out = snap.summary()
+            out["allocations"] = snap.allocations
+            out["generation"] = generation
+            out["published"] = True
+            return out
+
+        cached = await load_current_state_fast(kb_root)
+        if cached is None or cached.n_documents <= 0:
+            snap = build_board_snapshot(
+                kb_root, catalog=await load_content_index()
+            )
+            generation = await publish_board_snapshot(snap)
+            out = snap.summary()
+            out["allocations"] = snap.allocations
+            out["generation"] = generation
+            out["published"] = True
+            out["note"] = "current_state was empty; one cycle published"
+            return out
+
+        n_iceberg = 0
+        if cached.documents:
+            n_iceberg = sum(
+                1 for d in cached.documents if d.get("iceberg_id")
+            )
+        return {
+            "kb_root": kb_root,
+            "projection_method": cached.projection_method,
+            "n_documents": cached.n_documents,
+            "n_iceberg": n_iceberg,
+            "n_file_only": max(0, cached.n_documents - n_iceberg),
+            "cells_occupied": len({
+                (int(d["x"]), int(d["y"]))
+                for d in (cached.documents or [])
+                if "x" in d and "y" in d
+            }),
+            "generation": cached.generation,
+            "published": False,
+            "allocations": cached.allocations,
+        }
+
     async def _cmd_state(self, args: str = "") -> dict:
         """Get or sync application state.
 
@@ -609,11 +678,23 @@ class GaiusCLI:
         state = await client.get_current_state(kb_root)
 
         if not state:
-            return {
-                "status": "no_cached_state",
-                "kb_root": kb_root,
-                "message": "No cached state found. Run /reindex to populate.",
-            }
+            from .storage.kb_board import (
+                build_board_snapshot,
+                load_content_index,
+                publish_board_snapshot,
+            )
+
+            snap = build_board_snapshot(
+                kb_root, catalog=await load_content_index()
+            )
+            await publish_board_snapshot(snap)
+            state = await client.get_current_state(kb_root)
+            if not state:
+                return {
+                    "status": "no_cached_state",
+                    "kb_root": kb_root,
+                    "message": "KB topology published but GetCurrentState empty.",
+                }
 
         # Update self.state with geometry from loaded state
         if state.geometry and state.geometry.curvature_map:
@@ -732,6 +813,9 @@ class GaiusCLI:
 
     def _get_kb_root(self) -> str:
         """Get KB root from config."""
+        kb = getattr(self.config, "kb", None)
+        if kb is not None and getattr(kb, "root", None):
+            return str(kb.root)
         return getattr(self.config, "kb_root", "build/dev")
 
     def _cmd_agents(self) -> dict:
@@ -1328,6 +1412,7 @@ class GaiusCLI:
                 "exec <cmd> [args]": "Execute via Engine's CommandService",
                 # ThetaAgent situational awareness
                 "sitrep [horizon]": "Situational report (day, week, quarter, open)",
+                "agenda [init|list|cards|create|get]": "Day rollup or consciousness cards",
                 # Dataview - Bases feature store
                 "dataview [cmd]": "Bases feature store (list, <base>, health)",
             },
@@ -1924,10 +2009,10 @@ Use UPPERCASE_WITH_UNDERSCORES for the variable name.
 
             if use_engine_proxy():
                 orch = await get_orchestrator_proxy()
-                result = await orch.ensure_endpoint("instruct")
+                result = await orch.ensure_endpoint("thinking")
                 if result.get("healthy"):
                     port = result.get("port", 8082)
-                    model_id = result.get("model", "instruct")
+                    model_id = result.get("model", "thinking")
                     return (model_id, f"http://localhost:{port}/v1")
         except Exception:
             pass
@@ -2426,7 +2511,7 @@ for name, obj in list(locals().items()):
         try:
             result = await scheduler.complete(
                 prompt=prompt,
-                agent="instruct",  # Use instruct agent (always available)
+                agent="thinking",
                 system_prompt=system_prompt,
                 technique=technique,
                 temperature=temperature,
@@ -2526,7 +2611,7 @@ When discussing technical topics, be precise and cite sources when possible."""
                 params={
                     "prompt": query,
                     "system_prompt": system,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": "cot_reflection",
                 },
             )
@@ -2635,7 +2720,7 @@ Answer:"""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                 },
             )
 
@@ -2905,7 +2990,7 @@ Respond with:
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": "cot_reflection",
                 },
             )
@@ -5775,6 +5860,8 @@ Respond with:
             /thoughts deep      - Run deeper analysis
             /thoughts recent    - Show recent thoughts without triggering new cycle
             /thoughts recent 5  - Show last 5 thoughts
+            /thoughts surface   - Federation cognition dashboard (default 365d)
+            /thoughts surface 30 [stream] - Windowed surface; optional thought_type
             /thoughts self      - Trigger self-observation (thoughts about thoughts)
             /thoughts audit     - Trigger engine audit
             /thoughts chain [id]- Show thought chain
@@ -5793,6 +5880,53 @@ Respond with:
             }
 
         args_lower = args.strip().lower() if args else ""
+
+        # /thoughts surface [days] [stream] — engine CognitionSurface
+        if args_lower.startswith("surface"):
+            parts = args.split() if args else []
+            window_days = 365
+            stream = ""
+            if len(parts) > 1:
+                try:
+                    window_days = int(parts[1])
+                except ValueError:
+                    return {
+                        "error": (
+                            "window_days must be an integer.\n"
+                            "  Guru: #COG.00000026.BADWINDOW\n"
+                            "  Try: /thoughts surface 365"
+                        ),
+                        "mode": "surface",
+                    }
+            if len(parts) > 2:
+                stream = parts[2]
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    return {
+                        "error": (
+                            "Engine gRPC not available.\n"
+                            "  Guru: #COG.00000029.NOENGINE\n"
+                            "  Try: /health fix engine"
+                        ),
+                        "mode": "surface",
+                    }
+                result = await client.call(
+                    "Cognition",
+                    "surface",
+                    {
+                        "window_days": window_days,
+                        "thought_limit": 80,
+                        "stream": stream,
+                    },
+                    timeout=30.0,
+                )
+                result["mode"] = "surface"
+                return result
+            except Exception as e:
+                return {"error": str(e), "mode": "surface"}
 
         # /thoughts self - trigger self-observation
         if args_lower == "self":
@@ -7450,7 +7584,7 @@ The GitHub issue remained open, likely due to a race condition during prior reso
                 gpus = []  # GPU health not available, continue without it
 
             # Get preload config to identify obsolete endpoints
-            preload_config = os.environ.get("GAIUS_PRELOAD_ENDPOINTS", "instruct")
+            preload_config = os.environ.get("GAIUS_PRELOAD_ENDPOINTS", "thinking")
             preload_endpoints = [e.strip() for e in preload_config.split(",")]
 
             return {
@@ -10081,16 +10215,23 @@ Generated: {now.isoformat()}
             /flow lineage <kb_path>  - Query lineage for a KB file
             /flow config [local|k8s] - Show/switch Metaflow configuration
 
-        Docling flow options (default: full run with all features enabled):
-            /flow run docling <url>              - Full run: PDF + topics + scoring
-            /flow run docling <url> --no-topics  - Disable topic modeling
-            /flow run docling <url> --no-scoring - Disable LLM scoring
-            /flow run docling <url> --no-archive - Don't save PDF to KB
-            /flow run docling <url> --no-gpu     - CPU-only mode
-            /flow run docling <url> --model=lda  - Use LDA instead of BERTopic
-            /flow run docling <url> --topics=10  - Set number of topics (LDA/LSA)
+        Docling flow — arXiv mode (default: full run with all features enabled):
+            /flow run docling <arxiv-url>           - Full run: PDF + topics + scoring
+            /flow run docling <url> --no-topics     - Disable topic modeling
+            /flow run docling <url> --no-scoring    - Disable LLM scoring
+            /flow run docling <url> --no-archive    - Don't save PDF to KB
+            /flow run docling <url> --no-gpu        - CPU-only mode
+            /flow run docling <url> --model=lda     - Use LDA instead of BERTopic
+            /flow run docling <url> --topics=10     - Set number of topics (LDA/LSA)
             /flow run docling <url> --rubric=strict - Use alternative rubric
             /flow run docling <url> --remote-scoring - Use remote LLM for scoring
+
+        Docling flow — generic mode (any PDF URL → markdown in a local dir):
+            /flow run docling <pdf-url> <output-dir>            - Write .md/.txt/.pdf
+            /flow run docling <pdf-url> --output-dir=<dir>      - Same, via flag
+            /flow run docling <pdf-url> <dir> --no-archive      - Skip the .pdf copy
+            /flow run docling <pdf-url> <dir> --no-gpu          - CPU-only mode
+            (scoring + topic modeling are skipped — no arXiv abstract/corpus)
         """
         parts = args.strip().split() if args else []
         subcmd = parts[0].lower() if parts else "list"
@@ -10167,28 +10308,80 @@ Generated: {now.isoformat()}
                     "available": list(FLOW_REGISTRY.keys()),
                 }
 
-            # Apply local config
-            apply_metaflow_config("local")
+            apply_metaflow_config()
 
-            # For docling flow, we expect a URL
+            # For docling flow, we expect a URL (arXiv or any PDF URL)
             if flow_name == "docling":
                 if not flow_args:
-                    return {"error": "docling flow requires an arXiv URL argument"}
+                    return {"error": "docling flow requires a URL argument"}
 
-                arxiv_url = flow_args[0]
+                from gaius.flows.runner import run_flow_with_gpu_management
+                from gaius.flows.docling.flow import ArxivDoclingFlow, extract_arxiv_id
 
-                # Parse flags - defaults enable all features for full runs
+                url = flow_args[0]
                 archive_pdf = "--no-archive" not in flow_args
                 no_gpu = "--no-gpu" in flow_args
+
+                # Destination dir: 2nd positional (non-flag) or --output-dir=/--out=
+                output_dir = ""
+                if len(flow_args) > 1 and not flow_args[1].startswith("--"):
+                    output_dir = flow_args[1]
+                for arg in flow_args:
+                    if arg.startswith(("--output-dir=", "--output=", "--out=")):
+                        output_dir = arg.split("=", 1)[1]
+
+                is_arxiv = extract_arxiv_id(url) is not None
+
+                # --- Generic mode: any PDF URL → markdown/text/pdf in output_dir ---
+                if output_dir:
+                    subprocess_args = [
+                        f"--source_url={url}",
+                        f"--output_dir={output_dir}",
+                        f"--archive_pdf={archive_pdf}",
+                        "--enable_topics=False",
+                        "--enable_scoring=False",
+                    ]
+                    result = await run_flow_with_gpu_management(
+                        flow_class=ArxivDoclingFlow,
+                        flow_args=subprocess_args,
+                        require_gpu=not no_gpu,
+                        estimated_memory_mb=16000,  # Docling needs ~16GB
+                    )
+                    return {
+                        "flow": flow_name,
+                        "mode": "generic",
+                        "url": url,
+                        "output_dir": output_dir,
+                        "success": result.success,
+                        "workload_id": result.workload_id,
+                        "evicted_endpoints": result.evicted_endpoints,
+                        "restored_endpoints": result.restored_endpoints,
+                        "output_path": result.output_path,
+                        "duration_s": result.duration_s,
+                        "error": result.error,
+                        "gpu_management": not no_gpu,
+                    }
+
+                # A non-arXiv URL with no destination dir cannot go to the KB.
+                if not is_arxiv:
+                    return {
+                        "error": (
+                            "Non-arXiv URL requires a destination directory.\n"
+                            "  Usage: /flow run docling <pdf-url> <output-dir>\n"
+                            "     or: /flow run docling <pdf-url> --output-dir=<dir>"
+                        ),
+                        "url": url,
+                    }
+
+                # --- arXiv mode: full pipeline → KB zettelkasten ---
+                arxiv_url = url
                 enable_topics = "--no-topics" not in flow_args
                 enable_scoring = "--no-scoring" not in flow_args
                 use_remote_scoring = "--remote-scoring" in flow_args
 
-                # Parse value-based options
                 topic_model_type = "bertopic"  # default: neural topics
                 scoring_rubric = "default"
                 num_topics = None
-
                 for arg in flow_args:
                     if arg.startswith("--model="):
                         topic_model_type = arg.split("=", 1)[1]
@@ -10200,11 +10393,6 @@ Generated: {now.isoformat()}
                         except ValueError:
                             pass
 
-                # Use GPU-aware runner
-                from gaius.flows.runner import run_flow_with_gpu_management
-                from gaius.flows.docling.flow import ArxivDoclingFlow
-
-                # Build flow args for subprocess - full run with all features
                 subprocess_args = [
                     f"--arxiv_url={arxiv_url}",
                     f"--archive_pdf={archive_pdf}",
@@ -10226,6 +10414,7 @@ Generated: {now.isoformat()}
 
                 return {
                     "flow": flow_name,
+                    "mode": "arxiv",
                     "url": arxiv_url,
                     "success": result.success,
                     "workload_id": result.workload_id,
@@ -10377,54 +10566,345 @@ Generated: {now.isoformat()}
             /sitrep week          # Sprint planning view
             /sitrep quarter       # Quarterly review
         """
-        try:
-            from .agents.theta import ThetaAgent, Horizon
-        except ImportError as e:
-            return {
-                "error": f"ThetaAgent module not available: {e}",
-                "suggestion": "Ensure agents/theta module is installed",
-            }
-
-        # Parse horizon argument
         args_lower = args.strip().lower() if args else ""
         horizon_str = args_lower.split()[0] if args_lower else "day"
-
-        try:
-            horizon = Horizon(horizon_str)
-        except ValueError:
+        valid_horizons = ("day", "week", "quarter", "open")
+        if horizon_str not in valid_horizons:
             return {
                 "error": f"Unknown horizon: {horizon_str}",
-                "valid_horizons": ["day", "week", "quarter", "open"],
+                "valid_horizons": list(valid_horizons),
                 "help": self._cmd_sitrep.__doc__,
             }
 
         try:
-            # Get KB root from config
-            kb_root = self._get_kb_root()
-
-            # Create ThetaAgent and generate report
-            agent = ThetaAgent(profile=self.config.profile, kb_root=kb_root)
-            report = await agent.sitrep(horizon)
-
-            # Return both structured data and formatted output
-            result = report.to_dict()
-
-            # Include formatted ASCII for text output mode
-            if self.format != "json":
-                result["formatted"] = report.to_ascii()
-
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /sitrep.\n"
+                    "  Guru Meditation: #THETA.00000008.NOENGINE\n"
+                    "  Try: /health fix engine"
+                )
+            result = await engine_client.call(
+                "Gaius",
+                "ThetaSitrep",
+                {"horizon": horizon_str},
+                timeout=60.0,
+            )
+            if result.get("error"):
+                return result
+            if self.format != "json" and result.get("ascii_format"):
+                result["formatted"] = result["ascii_format"]
             return result
-
         except Exception as e:
             return {
                 "error": str(e),
                 "horizon": horizon_str,
-                "suggestion": "/health diagnose for system status",
+                "suggestion": "/health fix engine",
             }
 
     # ─────────────────────────────────────────────────────────────────────
     # CONSOLIDATE - ThetaAgent Cross-Temporal Linking
     # ─────────────────────────────────────────────────────────────────────
+
+    async def _cmd_agenda(self, args: str) -> dict:
+        """KB-oriented day agenda (current/agenda.md + project agendas).
+
+        Usage:
+            /agenda              - List items in the current horizon (day)
+            /agenda list [hz]    - Same, explicit
+            /agenda init [hz]    - Create current/agenda.md if missing
+            /agenda cards [n]    - Consciousness cards (scratch zettels)
+            /agenda create <kind> <title>
+            /agenda get <path>
+        """
+        parts = args.split() if args else []
+        try:
+            engine_client = await self._get_engine_client_cached()
+        except Exception:
+            engine_client = None
+
+        if parts and parts[0] == "cards":
+            window = 14
+            if len(parts) > 1:
+                try:
+                    window = int(parts[1])
+                except ValueError:
+                    return {"error": "window_days must be an integer"}
+            if not engine_client:
+                return {
+                    "error": "Engine client required.\n  Guru: #THETA.00000008.NOENGINE"
+                }
+            return await engine_client.call(
+                "Gaius", "AgendaList", {"window_days": window}, timeout=30.0
+            )
+
+        if parts and parts[0] == "create":
+            kind = parts[1] if len(parts) > 1 else "note"
+            title = " ".join(parts[2:]) if len(parts) > 2 else kind
+            if not engine_client:
+                return {
+                    "error": "Engine client required.\n  Guru: #THETA.00000008.NOENGINE"
+                }
+            return await engine_client.call(
+                "Gaius",
+                "AgendaCreate",
+                {"kind": kind, "title": title, "body": ""},
+                timeout=30.0,
+            )
+
+        if parts and parts[0] == "get":
+            path = parts[1] if len(parts) > 1 else ""
+            if not engine_client:
+                return {
+                    "error": "Engine client required.\n  Guru: #THETA.00000008.NOENGINE"
+                }
+            return await engine_client.call(
+                "Gaius", "AgendaGet", {"path": path}, timeout=30.0
+            )
+
+        action = "list"
+        horizon = "day"
+        valid_h = ("day", "week", "quarter", "open")
+        if parts and parts[0] in ("init", "list"):
+            action = parts[0]
+            if len(parts) > 1:
+                horizon = parts[1].lower()
+        elif parts and parts[0] in valid_h:
+            horizon = parts[0]
+        elif parts:
+            return {
+                "error": f"Unknown agenda args: {args}",
+                "help": self._cmd_agenda.__doc__,
+            }
+        if horizon not in valid_h:
+            return {"error": f"Unknown horizon: {horizon}", "valid_horizons": list(valid_h)}
+
+        try:
+            engine_client = await self._get_engine_client_cached()
+            if not engine_client:
+                raise RuntimeError(
+                    "Engine client required for /agenda.\n"
+                    "  Guru Meditation: #THETA.00000008.NOENGINE\n"
+                    "  Try: /health fix engine"
+                )
+            result = await engine_client.call(
+                "Gaius",
+                "ThetaAgenda",
+                {"action": action, "horizon": horizon},
+                timeout=30.0,
+            )
+            if result.get("error"):
+                return result
+            if self.format != "json" and result.get("ascii_format"):
+                result["formatted"] = result["ascii_format"]
+            return result
+        except Exception as e:
+            return {
+                "error": str(e),
+                "suggestion": "/health fix engine",
+            }
+
+    async def _cmd_peers(self, args: str) -> dict:
+        """Live federated primary UIs (Status.surfaces via S2S). Empty is honest."""
+        result = await engine_client.call(
+            "Gaius",
+            "FederationSurfaces",
+            {},
+            timeout=20.0,
+        )
+        if self.format != "json" and not result.get("error"):
+            lines = []
+            for it in result.get("items") or []:
+                lines.append(
+                    f"{it.get('project')}  {it.get('primary_ui')}  ({it.get('engine_target')})"
+                )
+            result["formatted"] = "\n".join(lines) if lines else "(none advertising a primary UI)"
+        return result
+
+    async def _cmd_summary(self, args: str) -> dict:
+        """Temporal Summary lineup + weekly Signals readout.
+
+        Usage:
+            /summary                      - This week's lineup seed
+            /summary index [sec] [lens] [week]
+            /summary list [n]             - Weekly zettels
+            /summary run [YYYY-Www]
+            /summary knowledge [collection] [week]
+            /summary get <id>
+            /summary hop <from> <target>
+            /summary fork <id>
+            /summary schedules
+            /summary trigger <job>
+        """
+        parts = args.split() if args else []
+        try:
+            engine_client = await self._get_engine_client_cached()
+        except Exception:
+            engine_client = None
+        if not engine_client:
+            return {
+                "error": "Engine client required for /summary.\n"
+                "  Guru: #THETA.00000008.NOENGINE\n"
+                "  Try: /health fix engine"
+            }
+
+        action = parts[0] if parts else "index"
+        if action in ("index",):
+            section = ""
+            lens = ""
+            week = ""
+            if len(parts) > 1:
+                if parts[1] in ("ontology", "heuristic"):
+                    section = parts[1]
+                    rest = parts[2:]
+                else:
+                    rest = parts[1:]
+                if rest and rest[0] in ("articles", "projects", "thoughts"):
+                    lens = rest[0]
+                    rest = rest[1:]
+                if rest:
+                    week = rest[0]
+            result = await engine_client.call(
+                "Gaius",
+                "SummaryIndex",
+                {"section": section, "lens": lens, "week": week, "limit": 48},
+                timeout=60.0,
+            )
+            if self.format != "json" and not result.get("error"):
+                seed = result.get("seed") or {}
+                items = result.get("items") or []
+                lines = [
+                    f"{result.get('week')}  landing={result.get('landing_id') or '—'}",
+                    seed.get("title") or "",
+                ]
+                for it in items:
+                    lines.append(f"  {it.get('id')}  {it.get('title')}")
+                result["formatted"] = "\n".join(lines)
+            return result
+
+        if action in ("list", "ls"):
+            limit = 12
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    return {"error": "limit must be an integer"}
+            result = await engine_client.call(
+                "Gaius",
+                "WeeklySignalsSummaryList",
+                {"limit": limit},
+                timeout=30.0,
+            )
+            if self.format != "json" and result.get("items"):
+                lines = [
+                    f"{i['week']}  {i['path']}  {i['title']}"
+                    for i in result["items"]
+                ]
+                result["formatted"] = "\n".join(lines) or "(none)"
+            return result
+
+        if action == "run":
+            week = parts[1] if len(parts) > 1 else ""
+            result = await engine_client.call(
+                "Gaius",
+                "WeeklySignalsSummary",
+                {"week": week, "previous": False},
+                timeout=600.0,
+            )
+            if self.format != "json" and result.get("path"):
+                result["formatted"] = (
+                    f"{result.get('week')} → {result['path']}\n"
+                    f"projects: {', '.join(result.get('projects') or [])}"
+                )
+            return result
+
+        if action == "knowledge":
+            section = ""
+            week = ""
+            rest = parts[1:]
+            if rest and rest[0] in (
+                "ontology",
+                "heuristic",
+                "articles",
+                "projects",
+                "thoughts",
+            ):
+                section = rest[0]
+                rest = rest[1:]
+            if rest:
+                week = rest[0]
+            result = await engine_client.call(
+                "Gaius",
+                "KnowledgeSummary",
+                {"week": week, "section": section},
+                timeout=60.0,
+            )
+            if self.format != "json" and not result.get("error"):
+                lines = [result.get("week") or ""]
+                for it in result.get("items") or []:
+                    lines.append(
+                        f"  {it.get('section')}  {it.get('path')}  {it.get('notes')} notes"
+                    )
+                result["formatted"] = "\n".join(lines)
+            return result
+
+        if action == "get":
+            path = parts[1] if len(parts) > 1 else ""
+            if not path:
+                return {"error": "Usage: /summary get <id>"}
+            return await engine_client.call(
+                "Gaius",
+                "SummaryGet",
+                {"id": path},
+                timeout=30.0,
+            )
+
+        if action == "hop":
+            if len(parts) < 3:
+                return {"error": "Usage: /summary hop <from> <target>"}
+            return await engine_client.call(
+                "Gaius",
+                "SummaryHop",
+                {"from_id": parts[1], "target": parts[2]},
+                timeout=30.0,
+            )
+
+        if action == "fork":
+            if len(parts) < 2:
+                return {"error": "Usage: /summary fork <id>"}
+            origin = parts[2] if len(parts) > 2 else ""
+            return await engine_client.call(
+                "Gaius",
+                "SummaryFork",
+                {"id": parts[1], "origin_project": origin},
+                timeout=60.0,
+            )
+
+        if action in ("schedules", "schedule"):
+            result = await engine_client.call(
+                "Gaius", "SummarySchedules", {}, timeout=30.0
+            )
+            if self.format != "json" and result.get("items"):
+                result["formatted"] = "\n".join(
+                    f"{i.get('cadence', '?'):8}  {i['id']}  {i['cron']}  {i['task_type']}"
+                    for i in result["items"]
+                )
+            return result
+
+        if action == "trigger":
+            if len(parts) < 2:
+                return {"error": "Usage: /summary trigger <job>"}
+            return await engine_client.call(
+                "Gaius",
+                "SummaryScheduleTrigger",
+                {"id": parts[1]},
+                timeout=30.0,
+            )
+
+        return {
+            "error": f"Unknown summary args: {args}",
+            "help": self._cmd_summary.__doc__,
+        }
 
     async def _cmd_consolidate(self, args: str) -> dict:
         """Run NVAR-mediated consolidation for cross-temporal linking.
@@ -10452,15 +10932,6 @@ Generated: {now.isoformat()}
             /consolidate                 # Daily consolidation run
             /consolidate stats           # Check KG policy stats
         """
-        try:
-            from .agents.theta import ThetaAgent
-            from .agents.theta.subsumption import DeepOntoNotAvailableError
-        except ImportError as e:
-            return {
-                "error": f"ThetaAgent module not available: {e}",
-                "suggestion": "Ensure agents/theta module is installed",
-            }
-
         args_parts = args.strip().split() if args else []
 
         # Check for subcommands
@@ -10494,8 +10965,8 @@ Generated: {now.isoformat()}
             if not engine_client:
                 raise RuntimeError(
                     "Engine client required for /consolidate.\n"
-                    "  Guru Meditation: #THETA.00000001.ENGINE_REQUIRED\n"
-                    "  Try: devenv processes up"
+                    "  Guru Meditation: #THETA.00000008.NOENGINE\n"
+                    "  Try: /health fix engine"
                 )
             result = await engine_client.call(
                 "Gaius",
@@ -10540,12 +11011,6 @@ Generated: {now.isoformat()}
 
             return result
 
-        except DeepOntoNotAvailableError as e:
-            return {
-                "error": str(e),
-                "guru_meditation": "#THETA.00000001.DEEPONTO_UNAVAILABLE",
-                "remediation": "uv add deeponto jpype1 && ensure Java 11+ installed",
-            }
         except Exception as e:
             return {
                 "error": str(e),
@@ -10560,8 +11025,8 @@ Generated: {now.isoformat()}
             if not engine_client:
                 raise RuntimeError(
                     "Engine client required for /consolidate stats.\n"
-                    "  Guru Meditation: #THETA.00000001.ENGINE_REQUIRED\n"
-                    "  Try: devenv processes up"
+                    "  Guru Meditation: #THETA.00000008.NOENGINE\n"
+                    "  Try: /health fix engine"
                 )
             stats = await engine_client.call(
                 "Gaius",
@@ -12655,6 +13120,7 @@ Examples:
             /prospects status            - Same as above
             /prospects check [--force]   - Check for new SEC filings (~$0)
             /prospects update [symbol] [--limit N]  - Run full LLM analysis
+            /prospects buffer            - In-memory FIFO (mirrors ambient)
             /prospects help              - Show help
 
         Options:
@@ -12664,7 +13130,7 @@ Examples:
         Cost Tiers:
             - Status: $0 (cached data)
             - Check: ~$0 (FMP API, local decision)
-            - Update: ~$0.60/prospect (Cerebras + Grok LLM analysis)
+            - Update: local thinking via Engine/Complete (no Cerebras/Grok)
 
         Examples:
             /prospects                     # Show status
@@ -12688,6 +13154,17 @@ Examples:
                 "command": "prospects",
                 "action": "status",
                 **result,
+            }
+
+        if subcmd == "buffer":
+            result = await client.call("Prospects", "status", {})
+            return {
+                "command": "prospects",
+                "action": "buffer",
+                "buffer_bytes": result.get("buffer_bytes", 0),
+                "buffer_max_bytes": result.get("buffer_max_bytes", 0),
+                "buffer_entries": result.get("buffer_entries", 0),
+                "buffer": result.get("buffer"),
             }
 
         # Check: daily check for new filings
@@ -12756,7 +13233,7 @@ Examples:
         # Unknown subcommand
         return {
             "error": f"Unknown prospects subcommand: {subcmd}",
-            "usage": "/prospects [status|check|update|help] ...",
+            "usage": "/prospects [status|check|update|buffer|help] ...",
         }
 
     async def _cmd_metabase(self, args: str) -> dict:
