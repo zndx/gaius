@@ -2478,5 +2478,5 @@ Be concise - each summary should be 1-2 sentences max."""
 if __name__ == "__main__":
     # Apply Metaflow config before running
     from gaius.flows.config import apply_metaflow_config
-    apply_metaflow_config("local")
+    apply_metaflow_config()
     ArticleCurationFlow()

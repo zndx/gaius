@@ -29,7 +29,7 @@ class SchedulingTask:
 
     Attributes:
         task_id: Unique identifier for this task
-        endpoint_name: Name of the endpoint (e.g., "instruct", "reasoning")
+        endpoint_name: Name of the endpoint (e.g., "thinking", "reasoning")
         model_id: HuggingFace model ID or path
         required_gpus: Number of GPUs needed for this task
         salience: Priority weight for objective function (higher = more important)

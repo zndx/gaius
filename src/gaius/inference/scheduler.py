@@ -227,13 +227,13 @@ class InferenceScheduler:
         logger.info(f"Configuring default endpoints (reason: {reason})")
 
         # Default endpoints matching agents.conf standard ports
-        # instruct = Devstral-24B on port 8082
-        self._endpoints["instruct"] = EndpointState(
-            name="instruct",
+        # thinking = Qwen3.8-27B on port 8082
+        self._endpoints["thinking"] = EndpointState(
+            name="thinking",
             url="http://localhost:8082/v1",
             gpus=[0, 1, 2, 3],
-            models_available=["mistralai/Devstral-Small-2-24B-Instruct-2512"],
-            current_model="mistralai/Devstral-Small-2-24B-Instruct-2512",
+            models_available=["Qwen/Qwen3.8-27B"],
+            current_model="Qwen/Qwen3.8-27B",
         )
 
         # reasoning = QwQ-32B on port 8081

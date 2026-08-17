@@ -2,14 +2,14 @@
 
 Single-responsibility flow for production use with Metaflow Runner API.
 
-Cost: ~$0.06/filing (Cerebras GLM 4.7) + ~$0.50/synthesis (XAI Grok)
+Cost: local thinking via Engine/Complete (no Cerebras / XAI)
 
 Pipeline steps:
 1. Load watchlist and fetch FMP data
 2. Sync SEC filings to HX Iceberg (idempotent)
 3. Extract text with docling (unprocessed only)
-4. Analyze with Cerebras GLM 4.7 (unanalyzed only)
-5. Synthesize with XAI Grok
+4. Analyze with local thinking (Engine/Complete)
+5. Synthesize with local thinking
 6. Create KB zettelkasten artifacts
 
 Usage:
@@ -99,14 +99,14 @@ def load_synthesis_from_kb(kb_root: Path, symbol: str) -> PositionSynthesis | No
 class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
     """Full billable analysis with LLM synthesis.
 
-    Cost: ~$0.06/filing (Cerebras) + ~$0.50/synthesis (Grok)
+    Cost: local thinking via Engine/Complete (no Cerebras / XAI)
 
     Steps:
     1. Load watchlist and fetch comprehensive FMP data
     2. Sync SEC filings to HX Iceberg
     3. Extract text with docling
-    4. Analyze each filing with Cerebras GLM 4.7
-    5. Synthesize overall position with XAI Grok
+    4. Analyze each filing with local thinking
+    5. Synthesize overall position with local thinking
     6. Create KB artifacts (Obsidian .md files)
 
     Triggered when ProspectsCheckFlow recommends update.
@@ -185,8 +185,14 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             "correlation_id": self.get_correlation_id(),
         })
 
+        from gaius.flows.config import apply_metaflow_config
+        from gaius.flows.lattice import require_signals_metaflow
+
+        apply_metaflow_config()
+        require_signals_metaflow()
         print(f"Prospects update starting for profile={self._resolved_profile}, domain={self._resolved_domain}")
         print(f"Filings per symbol limit: {self.filings_per_symbol}")
+        print("LLM: local thinking via zndx.engine.v1.Engine/Complete (Signals Metaflow)")
 
         # Load watchlist
         self.watchlist = load_watchlist()
@@ -460,7 +466,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def analyze_filings(self):
-        """Analyze filings with Cerebras GLM 4.7.
+        """Analyze filings with local thinking (lattice Complete).
 
         Uses ProspectsAnalyzer to extract key metrics, highlights, and risks
         from SEC filings. Only analyzes filings that:
@@ -479,10 +485,8 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             analyzer = ProspectsAnalyzer()
 
             # Check if Cerebras is available
-            availability = analyzer.is_available
-            if not availability.get("cerebras"):
-                print("  WARNING: Cerebras not available, skipping analysis")
-                print("  Set CEREBRAS_API_KEY to enable filing analysis")
+            if not analyzer.is_available.get("thinking"):
+                print("  thinking capability required; Engine/Complete not usable")
                 return
 
             edgar_sync = get_edgar_sync()
@@ -619,7 +623,7 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def synthesize_position(self):
-        """Synthesize overall position with XAI Grok.
+        """Synthesize overall position with local thinking.
 
         Uses ProspectsAnalyzer to combine multiple filing analyses into
         an investment thesis with conviction score and recommendations.
@@ -692,10 +696,8 @@ class ProspectsUpdateFlow(TracedFlow, GaiusFlow):
             analyzer = ProspectsAnalyzer()
 
             # Check if XAI is available
-            availability = analyzer.is_available
-            if not availability.get("xai"):
-                print("  WARNING: XAI not available, skipping synthesis")
-                print("  Set XAI_API_KEY to enable position synthesis")
+            if not analyzer.is_available.get("thinking"):
+                print("  thinking capability required; Engine/Complete not usable")
                 return
 
             for symbol in symbols_to_process:
@@ -1431,6 +1433,19 @@ run_id: "{metrics['run_id']}"
         outputs = [Dataset.from_kb(path) for path in self.kb_paths]
         self.emit_lineage_complete(outputs)
 
+        from gaius.flows.prospects.publish import publish_from_flow
+
+        published = publish_from_flow(self)
+        self.product_tx = published
+        if published.get("skipped"):
+            print("Signals History: skipped (warehouse not required on this lattice)")
+        else:
+            print(
+                "Signals History: "
+                f"{published.get('product_id')} tx={published.get('tx_id')} "
+                f"kind={published.get('kind')}"
+            )
+
         # Build summary card
         current.card.append(Markdown("# Prospects Update Summary"))
         current.card.append(Markdown(f"**Profile:** {self._resolved_profile}"))
@@ -1457,8 +1472,8 @@ run_id: "{metrics['run_id']}"
 
         current.card.append(Markdown("## Cost Summary"))
         current.card.append(Table([
-            ["Analysis (Cerebras)", f"${total_analysis_cost:.4f}"],
-            ["Synthesis (Grok)", f"${total_synthesis_cost:.4f}"],
+            ["Analysis (thinking)", f"${total_analysis_cost:.4f}"],
+            ["Synthesis (thinking)", f"${total_synthesis_cost:.4f}"],
             ["**Total**", f"**${total_cost:.4f}**"],
         ], headers=["Component", "Cost"]))
 
@@ -1496,5 +1511,5 @@ run_id: "{metrics['run_id']}"
 
 
 if __name__ == "__main__":
-    apply_metaflow_config("local")
+    apply_metaflow_config()
     ProspectsUpdateFlow()

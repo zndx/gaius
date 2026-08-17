@@ -12,6 +12,27 @@ check_disabled_exit DISABLE_METAFLOW "Metaflow"
 
 banner "METAFLOW BOOTSTRAP - K8s Deployment"
 
+# When Signals Engine/Status supplies scheduler (and :30180 answers),
+# platform Metaflow is SoR. Do not tilt-deploy a competing service.
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROBE_PY="$ROOT/.devenv/state/venv/bin/python"
+if [[ ! -x "$PROBE_PY" ]]; then
+  PROBE_PY="python3"
+fi
+if MODE_OUT="$("$PROBE_PY" -c 'from gaius.flows.platform_metaflow import resolve_metaflow_mode; print(resolve_metaflow_mode().mode)' 2>/tmp/gaius-mf-probe.err)"; then
+  if [[ "$MODE_OUT" == "platform" ]]; then
+    echo "Signals platform Metaflow is SoR (Engine/Status + :30180) — skip Gaius Tilt"
+    exit 0
+  fi
+else
+  if grep -q '#MF.0000000[56]' /tmp/gaius-mf-probe.err 2>/dev/null; then
+    cat /tmp/gaius-mf-probe.err >&2
+    exit 1
+  fi
+  echo "  platform probe unavailable — continuing with Gaius-local bootstrap"
+  cat /tmp/gaius-mf-probe.err >&2 || true
+fi
+
 # Always set from $HOME — env.KUBECONFIG can't be set in Nix daemon mode
 export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
 
@@ -28,6 +49,20 @@ echo "  Kubernetes cluster accessible"
 echo "Applying NodePort services..."
 kubectl apply -f infra/k8s/devenv-services.yaml
 echo "  NodePort services applied"
+
+# 2b. Align host-side Endpoints with devenv's EFFECTIVE ports. The devenv
+# daemon's port allocator may shift services off their declared ports when
+# stacks launch concurrently (PGPORT / MINIO_PORT / MINIO_CONSOLE_PORT carry
+# the truth). The manifest keeps the declared lattice — in-cluster consumers
+# still dial devenv-postgres:5444 / devenv-minio:9010 — and only the host
+# side of the bridge follows the allocator. Runs before the skip-if-running
+# gate so existing pods heal without a redeploy.
+kubectl patch endpoints devenv-postgres --type=json -p="[
+  {\"op\":\"replace\",\"path\":\"/subsets/0/ports/0/port\",\"value\":${PGPORT:-5444}}]"
+kubectl patch endpoints devenv-minio --type=json -p="[
+  {\"op\":\"replace\",\"path\":\"/subsets/0/ports/0/port\",\"value\":${MINIO_PORT:-9010}},
+  {\"op\":\"replace\",\"path\":\"/subsets/0/ports/1/port\",\"value\":${MINIO_CONSOLE_PORT:-9011}}]"
+echo "  Endpoints aligned to effective ports (pg:${PGPORT:-5444} minio:${MINIO_PORT:-9010}/${MINIO_CONSOLE_PORT:-9011})"
 
 # 3. Skip if already healthy
 if kubectl get pods -l app.kubernetes.io/name=metaflow-service \

@@ -33,6 +33,8 @@ Beyond the core jobs, several migrations add domain-specific cron schedules:
 | `20251228000002_triage_cron_jobs` | Content triage | Periodic |
 | `20260202200000_landing_page_cron` | Landing page card publishing | Periodic |
 | `20260203100000_scheduled_task_notify` | `NOTIFY` on scheduled task changes | Event-driven |
+| `20260816000001_board_reindex_cron` | Continuous 19×19 board reindex | Every minute |
+| `20260817000001_weekly_signals_summary_cron` | Weekly Signals Summary (S2S remotes) | Monday 15:00 UTC |
 
 The `scheduled_task_notify` migration uses PostgreSQL `LISTEN`/`NOTIFY` to wake the engine watchdog when tasks are due, avoiding polling overhead.
 

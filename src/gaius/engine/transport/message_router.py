@@ -317,7 +317,7 @@ def create_service_handlers(
         if action == "complete":
             response = await scheduler_service.complete(
                 prompt=params["prompt"],
-                agent_alias=params.get("agent", "instruct"),
+                agent_alias=params.get("agent", "thinking"),
                 system_prompt=params.get("system_prompt"),
                 temperature=params.get("temperature", 0.7),
                 max_tokens=params.get("max_tokens", 2048),

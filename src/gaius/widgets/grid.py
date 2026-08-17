@@ -97,6 +97,9 @@ class MainGrid(Widget):
         elif self.state.overlay_mode == OverlayMode.AGENTS:
             self._render_agents(grid)
 
+        # Tenuki annotations sit on the curvature field (visited + last jump)
+        self._render_tenuki(grid)
+
         # Candidates (if visible)
         if self.state.show_candidates:
             self._render_candidates(grid)
@@ -327,6 +330,27 @@ class MainGrid(Widget):
         for name, x, y, color in self.state.agent_positions:
             if 0 <= x < 19 and 0 <= y < 19:
                 grid[y][x] = ("◆", color)
+
+    def _render_tenuki(self, grid: list) -> None:
+        """Annotate tenuki: visited cells and the last strategic jump.
+
+        These marks live on the same board as the Ricci heatmap so a
+        tenuki is readable as a move *on* the curvature field.
+        """
+        target = self.state.tenuki_target
+        for x, y in self.state.tenuki_visited:
+            if not (0 <= x < 19 and 0 <= y < 19):
+                continue
+            if target is not None and (x, y) == target:
+                continue
+            ch, _style = grid[y][x]
+            if ch in (".", "·", "+", " "):
+                grid[y][x] = ("∘", "dim magenta")
+
+        if target is not None:
+            tx, ty = target
+            if 0 <= tx < 19 and 0 <= ty < 19:
+                grid[ty][tx] = ("☆", "bold magenta")
 
     def _render_candidates(self, grid: list) -> None:
         """Render candidate move markers."""

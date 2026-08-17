@@ -478,7 +478,7 @@ class ProspectsCheckFlow(TracedFlow, GaiusFlow):
 if __name__ == "__main__":
     import sys
 
-    apply_metaflow_config("local")
+    apply_metaflow_config()
 
     # Simple CLI dispatch - only check flow is in this file
     if len(sys.argv) > 1:

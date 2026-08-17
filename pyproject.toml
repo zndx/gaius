@@ -22,8 +22,7 @@ dependencies = [
     "nvidia-ml-py>=12.0.0", # GPU monitoring (provides pynvml module)
     "textual>=0.60.0",
     "umap-learn>=0.5.7",
-    "cuml-cu12>=25.6.0", # Updated for numba 0.61.2 compatibility (required by vLLM 0.9+)
-    "vllm>=0.12.0", # GLM-4.6V support requires vLLM 0.12.0+
+    "vllm>=0.27.0", # Qwen3.8-27B is Qwen3_5ForConditionalGeneration (0.12 cannot load it)
     "graphriccicurvature>=0.5.3.2",
     "ripser>=0.6.12",
     "deepagents>=0.2.8",
@@ -32,9 +31,7 @@ dependencies = [
     "opentelemetry-instrumentation-logging>=0.60b0",
     "bm25s>=0.2.14",
     "stemming>=1.0.1",
-    # ColPali multimodal embeddings for colnomic-embed-multimodal-7b
-    # Using forked repo with fixes for ColNomic support
-    "colpali-engine @ git+https://github.com/zndx/oss-colpali.git",
+    "pylate>=1.3.4", # ColBERT-Zero late-interaction (replaces colpali-engine)
     "pyiceberg[pyiceberg-core,s3fs,sql-postgres]>=0.10.0",
     "pystemmer>=3.0.0",
     "qdrant-client>=1.12.1",
@@ -251,6 +248,10 @@ dev = [
 # Note: colpali-engine>=0.3.5 has ColQwen2_5 but conflicts with vLLM torch==2.9.0
 # Use ColQwen2 from 0.3.2 instead, or vidore/colqwen2-v1.0 model
 [tool.uv]
+# Lattice host is linux/x86_64 (tinybox). Do not lock Darwin/ARM splits.
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 override-dependencies = [
     "peft>=0.18.0",
     # rapidocr wants opencv-python which needs libGL.so.1 (unavailable on Nix).
@@ -262,7 +263,36 @@ override-dependencies = [
     # host glibc (2.35), causing GLIBC_2.38 not found. devenv provides ninja via Nix
     # which is self-contained with its own glibc. Block the pip version.
     "ninja>=1.0 ; sys_platform == 'never'",
+    # Qwen3.8-27B is architecture qwen3_5; transformers 4.57 (colpali pin) cannot load it.
+    "transformers>=5.8.0",
+    # vLLM 0.27 serves Qwen3_5 on torch 2.13. pylate's fast-plaid extra pins
+    # torch<=2.11; we encode with pylate.models.ColBERT and store in Qdrant
+    # (no PLAID index). Force the vLLM torch.
+    "torch==2.13.0",
+    # vLLM 0.27.1 pulls xgrammar 0.2.4, which has no cp312 manylinux_x86_64 wheel.
+    "xgrammar==0.2.3",
+    # vLLM 0.27 CLI imports openai.types.responses.NamespaceTool (2.8.1 lacks it).
+    "openai>=3.1.0",
+    # Must match torch 2.13.0+cu129. PyPI 0.28.0 has no torchvision::nms for that ABI.
+    "torchvision==0.28.0+cu129",
+    # Default torchaudio is cu130 (libcudart.so.13). Tinybox toolkit is 12.4.
+    "torchaudio==2.11.0+cu129",
+    "torchcodec==0.16.0+cu129",
 ]
+
+# Driver 570.148 = CUDA 12.8. Default vLLM/torch wheels are cu130 and
+# refuse to init. Use the cu129 variant (closest published 0.27.1 wheel).
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
+torchaudio = { index = "pytorch-cu129" }
+torchcodec = { index = "pytorch-cu129" }
+vllm = { url = "https://github.com/vllm-project/vllm/releases/download/v0.27.1/vllm-0.27.1+cu129-cp38-abi3-manylinux_2_28_x86_64.whl" }
 
 # ty type checker configuration
 # Strategy: Zero errors, warnings acceptable for third-party libs without stubs

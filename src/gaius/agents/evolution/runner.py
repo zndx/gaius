@@ -144,7 +144,7 @@ class AgentRunner:
             # Route through scheduler proxy
             result = await scheduler.complete(
                 prompt=prompt,
-                agent="instruct",  # Default agent, config provides the specifics
+                agent="thinking",
                 system_prompt=config.system_prompt,
                 temperature=config.temperature,
                 max_tokens=max_tokens or config.max_tokens,

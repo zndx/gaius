@@ -45,7 +45,7 @@ UMAP preserves local neighborhood structure — points that are close in 768-dim
 
 ### Multi-Vector Architecture
 
-Gaius uses ColNomic multi-vector embeddings for document retrieval (late interaction scoring). Each document has multiple token vectors, aggregated to a single vector for grid projection. The aggregated vectors are stored in Qdrant's `"agg"` named vector field.
+Gaius uses **ColBERT-Zero** (`lightonai/ColBERT-Zero`) for document retrieval: late-interaction MaxSim over 128-d token vectors. Contrastive pre-training is multi-vector from the start, on public Nomic-embed data (Apache 2.0). Aggregated mean vectors live in Qdrant's `"agg"` field for grid projection. Collection: `gaius_kb_colbert_zero` (not compatible with the retired ColNomic index). Vision/PDF is not this model — that is Qwen3.8-27B.
 
 ## Mapping to the Grid
 

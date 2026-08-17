@@ -57,6 +57,40 @@ def live_lease_holder_pids(lease_dir: Path | None = None) -> set[int]:
     return holders
 
 
+def live_foreign_leased_gpu_ids(
+    own_project: str = "gaius", lease_dir: Path | None = None
+) -> set[int]:
+    """Return GPU ids held by live leases of OTHER projects.
+
+    The allocator must not place endpoints on GPUs a sibling engine has
+    leased — the sibling's (possibly tensor-parallel) workers occupy that
+    VRAM even though gaius records no allocation there, so vLLM startup
+    would fail at engine-core init. Stale leases (dead holder pid) and
+    ``own_project`` leases are ignored. A missing/unreadable lease dir or
+    payload degrades to the historical lease-blind behavior (empty set).
+    """
+    leased: set[int] = set()
+    directory = _lease_dir(lease_dir)
+    try:
+        owner_files = sorted(directory.glob("*.owner.json"))
+    except OSError:
+        return leased
+
+    for owner_file in owner_files:
+        try:
+            payload = json.loads(owner_file.read_text())
+            pid = int(payload["pid"])
+            gpus = [int(g) for g in payload.get("gpus", [])]
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logger.warning(f"Ignoring malformed GPU lease {owner_file}: {e}")
+            continue
+        if payload.get("project") == own_project:
+            continue
+        if Path(f"/proc/{pid}").is_dir():
+            leased.update(gpus)
+    return leased
+
+
 def _ppid_of(pid: int) -> int | None:
     """Parent pid of ``pid`` via /proc, robust to spaces/parens in comm."""
     try:

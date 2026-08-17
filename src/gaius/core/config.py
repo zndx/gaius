@@ -79,10 +79,10 @@ class VectorStoreConfig:
 
     host: str = "localhost"
     port: int = 6339
-    collection: str = "gaius_kb_colnomic"  # ColNomic multi-vector collection
+    collection: str = "gaius_kb_colbert_zero"
 
-    # ColNomic embedding settings (GPU-accelerated via colpali-engine)
-    colnomic_model: str = "nomic-ai/colnomic-embed-multimodal-7b"
+    # Late-interaction embedder (ColBERT-Zero via pylate). ColNomic retired.
+    colnomic_model: str = "lightonai/ColBERT-Zero"
     aggregation: str = "mean"  # "mean", "max", or "first" for aggregated single vector
     batch_size: int = 8  # Smaller batch size for GPU memory
     device: str = "cuda:0"  # GPU device for embeddings
@@ -506,9 +506,8 @@ def _parse_config_tree(tree: ConfigTree) -> GaiusConfig:
     vector_store = VectorStoreConfig(
         host=g.get("vector_store.host", "localhost"),
         port=g.get("vector_store.port", 6339),
-        collection=g.get("vector_store.collection", "gaius_kb_colnomic"),
-        # ColNomic multi-vector settings (GPU-accelerated)
-        colnomic_model=g.get("vector_store.colnomic_model", "nomic-ai/colnomic-embed-multimodal-7b"),
+        collection=g.get("vector_store.collection", "gaius_kb_colbert_zero"),
+        colnomic_model=g.get("vector_store.colnomic_model", "lightonai/ColBERT-Zero"),
         aggregation=g.get("vector_store.aggregation", "mean"),
         batch_size=int(g.get("vector_store.batch_size", 8)),
         device=g.get("vector_store.device", "cuda:0"),

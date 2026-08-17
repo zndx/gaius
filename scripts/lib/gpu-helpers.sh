@@ -76,6 +76,29 @@ _kill_unleased() {
   return 0
 }
 
+# Unlink leftover vLLM CPU-offload mmaps and psm rings that no process
+# still maps. --kv-offloading-size 8 leaves an 8GiB
+# /dev/shm/vllm_offload_*.mmap after each unclean stop; a handful fill
+# the 63GiB tmpfs and thinking fails (#EP.00000007.SHMFULL).
+# Never touch PostgreSQL*, gaius-aeron, sem.*, or mapped files.
+shm_reclaim_vllm() {
+  echo "  Reclaiming unheld vLLM /dev/shm segments..."
+  local maps f base n=0
+  maps=$(cat /proc/[0-9]*/maps 2>/dev/null | grep '/dev/shm/' || true)
+  for f in /dev/shm/vllm_offload_*.mmap /dev/shm/psm_*; do
+    [ -e "$f" ] || continue
+    base="${f##*/}"
+    if printf '%s\n' "$maps" | grep -F -q "$base"; then
+      echo "    keep $base (mapped)"
+    else
+      rm -f "$f"
+      n=$((n + 1))
+      echo "    rm $base"
+    fi
+  done
+  echo "    reclaimed $n; $(df -h /dev/shm | awk 'NR==2 { print $4 }') free on /dev/shm"
+}
+
 # Kill stale vLLM/engine GPU processes and show memory status.
 # Used by both gaius-engine startup and `just gpu-cleanup`.
 gpu_cleanup() {
@@ -97,6 +120,8 @@ gpu_cleanup() {
   _kill_unleased $(pgrep -f "vllm serve" 2>/dev/null || true)
   # The gaius engine is ours alone; the pattern cannot match sibling engines.
   pkill -9 -f "gaius.engine.server" 2>/dev/null || true
+
+  shm_reclaim_vllm
 
   # Show GPU memory status
   echo ""

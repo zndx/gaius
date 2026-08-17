@@ -2428,7 +2428,7 @@ Use `/inference stop <endpoint>` to stop an endpoint.
                 endpoints = ["evo0", "evo1", "evo2", "evo3", "evo4", "evo5"]
                 mode_text = "**6 parallel GPUs**"
             else:
-                endpoints = ["instruct"]
+                endpoints = ["thinking"]
                 mode_text = "single endpoint"
 
             content.show_file("evolve.md", f"# Evolution Daemon\n\nStarting clean start with {mode_text}...\n\nPhase 1: Cleaning stale GPU processes...")
@@ -2969,6 +2969,58 @@ Use `/evolve stop` to stop orchestrated evolution.
         thought_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         return thought_files
 
+    def _handle_agenda_command(self, args: str) -> None:
+        """Handle /agenda [init|list] [horizon] via Engine ThetaAgenda."""
+        import asyncio
+
+        content = self.query_one("#info-panel", InfoPanel)
+        parts = args.split() if args else []
+        action = "list"
+        horizon = "day"
+        valid_h = ("day", "week", "quarter", "open")
+        if parts and parts[0] in ("init", "list"):
+            action = parts[0]
+            if len(parts) > 1:
+                horizon = parts[1].lower()
+        elif parts and parts[0] in valid_h:
+            horizon = parts[0]
+        elif parts:
+            content.show_file(
+                "agenda_error.md",
+                f"# Agenda\n\nUnknown args: `{args}`\n\n"
+                "`/agenda` · `/agenda init` · `/agenda list [day|week|quarter|open]`",
+            )
+            return
+
+        content.show_file("agenda.md", f"# Agenda ({action} {horizon})\n\n*…*")
+
+        async def run_agenda():
+            try:
+                from .client.grpc_client import get_grpc_client
+
+                client = await get_grpc_client()
+                if not client:
+                    raise RuntimeError(
+                        "Engine not available.\n"
+                        "  Guru: #THETA.00000008.NOENGINE\n"
+                        "  Try: /health fix engine"
+                    )
+                result = await client.call(
+                    service="Gaius",
+                    action="ThetaAgenda",
+                    params={"action": action, "horizon": horizon},
+                    timeout=30.0,
+                )
+                if result.get("error"):
+                    content.show_file("agenda_error.md", f"# Agenda\n\n{result['error']}")
+                    return
+                body = result.get("ascii_format") or result.get("path") or "(empty)"
+                content.show_file("agenda.md", f"# Agenda\n\n```\n{body}\n```")
+            except Exception as e:
+                content.show_file("agenda_error.md", f"# Agenda\n\n{e}")
+
+        asyncio.create_task(run_agenda())
+
     def _handle_sitrep_command(self, args: str) -> None:
         """Handle /sitrep command for situational awareness report.
 
@@ -3027,7 +3079,8 @@ Use `/evolve stop` to stop orchestrated evolution.
                 if not client:
                     raise RuntimeError(
                         "Engine not available.\n"
-                        "  Try: just restart-clean"
+                        "  Guru: #THETA.00000008.NOENGINE\n"
+                        "  Try: /health fix engine"
                     )
 
                 result = await client.call(
@@ -4007,7 +4060,7 @@ The GitHub issue remained open, likely due to a race condition during prior reso
             gpus = []
 
         import os
-        preload_config = os.environ.get("GAIUS_PRELOAD_ENDPOINTS", "instruct")
+        preload_config = os.environ.get("GAIUS_PRELOAD_ENDPOINTS", "thinking")
 
         return {
             "endpoints": endpoints,
@@ -7939,7 +7992,8 @@ The general-purpose agentic query interface.
             f"[bold cyan]{coord}[/] │ "
             f"{domain} "
             f"[dim]{gen_str}[/] │ "
-            f"[dim]hjkl:move o:overlay v:view g:panel /:cmd[/]"
+            f"[magenta]1Q[/] │ "
+            f"[dim]hjkl:move t:tenuki o:overlay v:view g:panel /:cmd[/]"
         )
 
     def _update_status(self) -> None:
@@ -8022,7 +8076,16 @@ The general-purpose agentic query interface.
     def _update_location(self) -> None:
         """Update the location indicator with current cursor position."""
         indicator = self.query_one("#location-indicator", LocationIndicator)
-        indicator.update_position(self.state.cursor_x, self.state.cursor_y)
+        tenuki = ""
+        if self.state.tenuki_target:
+            tx, ty = self.state.tenuki_target
+            tenuki = f"{tx},{ty}"
+        indicator.update_position(
+            self.state.cursor_x,
+            self.state.cursor_y,
+            kappa=self.state.cursor_kappa,
+            tenuki=tenuki,
+        )
 
     def _update_explanation(self) -> None:
         """Update the content panel with contextual explanation."""
@@ -8184,7 +8247,7 @@ The general-purpose agentic query interface.
 - Opens generated note in editor for review/editing
 
 ## Evolution (press `e` for panel)
-- `/evolve start [endpoint]`: Clean start GPU + daemon (default: instruct)
+- `/evolve start [endpoint]`: Clean start GPU + daemon (default: thinking)
 - `/evolve stop`: Stop evolution daemon
 - `/evolve status`: Show daemon status
 - `/evolve trigger [agent]`: Force evolution cycle
@@ -8292,6 +8355,7 @@ The general-purpose agentic query interface.
         target = self._find_tenuki_target()
 
         if target and target != (self.state.cursor_x, self.state.cursor_y):
+            self.state.tenuki_target = target
             self.state.cursor_x, self.state.cursor_y = target
             self._refresh_grid()
             self._update_status()
@@ -9268,6 +9332,8 @@ Use `/reindex` to refresh TDA from current KB.
         elif command == "sitrep":
             # Situational awareness report (ThetaAgent)
             self._handle_sitrep_command(args)
+        elif command == "agenda":
+            self._handle_agenda_command(args)
         elif command == "ambient":
             # Ambient computing cycles
             self._handle_ambient_command(args)

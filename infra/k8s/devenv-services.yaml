@@ -11,6 +11,13 @@
 # Services:
 #   - devenv-postgres: PostgreSQL on 5444 -> NodePort 30438
 #   - devenv-minio: MinIO on 9010 -> NodePort 30910
+#
+# NOTE: the Endpoints ports below are the DECLARED lattice ports. devenv's
+# daemon port allocator may shift the host services (e.g. postgres 5445,
+# minio 9012/9013); scripts/processes/metaflow-bootstrap.sh patches the
+# Endpoints to the effective $PGPORT/$MINIO_PORT after every apply. This
+# file must stay valid static YAML because infra/tilt/Tiltfile consumes it
+# unrendered via k8s_yaml.
 
 ---
 # PostgreSQL Service (for Metaflow metadata, Gaius lineage)

@@ -1,0 +1,73 @@
+# Bridge host gaius-engine (:50051) into ns/metaflow for Signals Metaflow
+# @kubernetes tasks. Do not hostNetwork every task. Same pattern as
+# signals config/k8s/airflow/host-bridge.yaml.
+#
+# Apply (once, on the RKE2 that already runs Metaflow):
+#   export KUBECONFIG="$HOME/.config/kube/rke2.yaml"
+#   kubectl apply -f infra/k8s/gaius-engine-host-bridge.yaml
+#
+# Tasks set:
+#   GAIUS_ENGINE_GRPC=gaius-engine.metaflow.svc.cluster.local:50051
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gaius-engine
+  namespace: metaflow
+  labels:
+    app: gaius-engine
+    federation.project: gaius
+    app.kubernetes.io/part-of: signals-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: gaius-engine-proxy
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 15051
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gaius-engine-proxy
+  namespace: metaflow
+  labels:
+    app: gaius-engine-proxy
+    federation.project: gaius
+    app.kubernetes.io/part-of: signals-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gaius-engine-proxy
+  template:
+    metadata:
+      labels:
+        app: gaius-engine-proxy
+        federation.project: gaius
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: socat
+          image: alpine/socat:1.8.0.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-d"
+            - "-d"
+            - "TCP-LISTEN:15051,fork,reuseaddr,bind=0.0.0.0"
+            - "TCP:127.0.0.1:50051"
+          ports:
+            - name: grpc
+              containerPort: 15051
+              hostPort: 15051
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

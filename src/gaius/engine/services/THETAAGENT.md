@@ -342,6 +342,8 @@ This provides principled uncertainty quantification for subsumption confidence.
 | `#THETA.00000004.SITREPFAIL` | SITREP generation failed |
 | `#THETA.00000005.CONSFAIL` | Consolidation cycle failed |
 | `#THETA.00000002.RESERVOIRPY` | ReservoirPy not available for NVAR dynamics |
+| `#THETA.00000007.NOSVC` | ThetaService not registered on the engine |
+| `#THETA.00000008.NOENGINE` | Thin client cannot reach engine gRPC |
 
 ## Service Configuration
 

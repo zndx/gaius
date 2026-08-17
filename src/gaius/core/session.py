@@ -885,7 +885,7 @@ Return empty array [] if no clear threads detected."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "max_tokens": 400,
                     "temperature": 0.4,
                 },
@@ -978,7 +978,7 @@ Be specific about the topics, not generic. Write in second person ("You were exp
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "max_tokens": 150,
                     "temperature": 0.5,
                 },

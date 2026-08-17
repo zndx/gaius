@@ -239,7 +239,7 @@ class ModelRouter:
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "max_tokens": kwargs.get("max_tokens", phase_config.max_tokens),
                     "temperature": kwargs.get("temperature", 0.7),
                 },
@@ -336,7 +336,7 @@ class EndpointRouterConfig:
 
     endpoints: dict[str, EndpointConfig] = field(default_factory=dict)
     model_routing: dict[str, str] = field(default_factory=dict)
-    default_endpoint: str = "instruct"
+    default_endpoint: str = "thinking"
     failover_enabled: bool = True
 
 
@@ -419,15 +419,15 @@ class EndpointRouter:
         model_to_endpoint = {
             "orchestrator": "orchestrator",
             "nvidia/Orchestrator": "orchestrator",
-            "Devstral": "instruct",
-            "mistralai/Devstral": "instruct",
-            "Mistral-7B": "instruct",
-            "mistralai/Mistral": "instruct",
+            "Devstral": "thinking",
+            "mistralai/Devstral": "thinking",
+            "Mistral-7B": "thinking",
+            "mistralai/Mistral": "thinking",
             "DeepSeek-R1": "reasoning",
             "deepseek-ai/DeepSeek-R1": "reasoning",
             "QwQ": "reasoning",
-            "Qwen2.5-Coder": "instruct",
-            "Qwen/Qwen2.5-Coder": "instruct",
+            "Qwen2.5-Coder": "thinking",
+            "Qwen/Qwen2.5-Coder": "thinking",
         }
 
         def get_endpoint_name(model_id: str) -> str:
@@ -731,7 +731,7 @@ class EndpointRouter:
             self.config.endpoints[failed_endpoint].healthy = False
 
         # First, try to start the failed endpoint on-demand if it's a known endpoint
-        if failed_endpoint in ("orchestrator", "instruct", "reasoning"):
+        if failed_endpoint in ("orchestrator", "thinking", "reasoning"):
             if await self._try_start_endpoint_on_demand(failed_endpoint):
                 # Endpoint started - retry the original request
                 try:

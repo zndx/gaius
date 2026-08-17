@@ -3,7 +3,7 @@
 Manages ambient computing workload cycles that deliver continuous,
 invisible, self-sustaining model activity. The system:
 
-1. Maintains a baseline endpoint mix (orchestrator + instruct)
+1. Maintains a baseline endpoint mix (orchestrator + thinking)
 2. Executes standard tasks on each endpoint to verify health
 3. Evicts baseline endpoints when reasoning tasks arrive
 4. Restores baseline after reasoning completes
@@ -43,6 +43,21 @@ if TYPE_CHECKING:
     from .orchestrator_service import OrchestratorService
 
 logger = logging.getLogger(__name__)
+
+
+def ambient_boot_action(
+    state: dict[str, Any] | None,
+    *,
+    auto_start: bool,
+) -> str:
+    """Decide boot action. ``skip`` / ``resume`` / ``start``."""
+    if not auto_start:
+        return "skip"
+    if state and state.get("operator_disabled"):
+        return "skip"
+    if state and state.get("running"):
+        return "resume"
+    return "start"
 
 
 class AmbientPhase(Enum):
@@ -103,8 +118,8 @@ BASELINE_TASKS: dict[str, AmbientTask] = {
         expected_capability="routing",
         timeout_secs=10,
     ),
-    "instruct": AmbientTask(
-        endpoint="instruct",
+    "thinking": AmbientTask(
+        endpoint="thinking",
         prompt="Complete this function:\ndef fibonacci(n):\n    ",
         expected_capability="generation",
         timeout_secs=20,
@@ -120,51 +135,51 @@ DEFAULT_REASONING_TASK = AmbientTask(
 
 # Varied task pools for daemon mode
 VARIED_BASELINE_TASKS: list[tuple[str, AmbientTask]] = [
-    # Instruct endpoint tasks (varied prompts for health checks)
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    # Thinking endpoint tasks (varied prompts for health checks)
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Explain what a hash table is in one sentence.",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="What is the time complexity of binary search?",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Define polymorphism in OOP.",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Name three common design patterns.",
         expected_capability="generation",
         timeout_secs=15,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Complete this function:\ndef fibonacci(n):\n    ",
         expected_capability="coding",
         timeout_secs=20,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Write a Python one-liner to reverse a string.",
         expected_capability="coding",
         timeout_secs=20,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Implement a simple stack class in Python.",
         expected_capability="coding",
         timeout_secs=20,
     )),
-    ("instruct", AmbientTask(
-        endpoint="instruct",
+    ("thinking", AmbientTask(
+        endpoint="thinking",
         prompt="Write a function to check if a number is prime.",
         expected_capability="coding",
         timeout_secs=20,
@@ -255,6 +270,7 @@ class AmbientWorkloadService:
         self._agenda_tracker: Optional["AgendaTracker"] = None
         self._current_workload_id: Optional[str] = None
         self._evicted_endpoints: list[str] = []
+        self._gpu_paused = False
 
         # Ambient buffer for content fetching (byte-sized FIFO)
         # Fetch and summarize are ALWAYS enabled - this is core ambient work
@@ -291,6 +307,7 @@ class AmbientWorkloadService:
             "baseline_endpoints": self._baseline_endpoints,
             "reasoning_endpoint": self._reasoning_endpoint,
             # Daemon state
+            "gpu_paused": self._gpu_paused,
             "daemon_running": self._daemon_running,
             "daemon_cycle": self._daemon_cycle,
             "max_cycles": self._max_cycles,
@@ -347,6 +364,26 @@ class AmbientWorkloadService:
                 "max_cycles": self._max_cycles,
             }
 
+        from gaius.engine.sentinel_claim import (
+            AMBIENT_WORKLOAD_ID,
+            YkAdmitError,
+            apply_and_admit,
+            bind_workload_id,
+        )
+
+        try:
+            wid = bind_workload_id("ambient", AMBIENT_WORKLOAD_ID)
+            apply_and_admit(wid, "ambient")
+        except YkAdmitError as e:
+            return {
+                "success": False,
+                "message": str(e),
+                "max_cycles": max_cycles,
+            }
+
+        await self._set_operator_disabled(False)
+        await self._set_preempted(False)
+        self._gpu_paused = False
         self._daemon_running = True
         self._stop_requested = False
         self._max_cycles = max_cycles
@@ -411,6 +448,12 @@ class AmbientWorkloadService:
 
         # Persist stopped state (clears running flag)
         await self._persist_daemon_state(running=False)
+        await self._set_operator_disabled(True)
+        await self._set_preempted(False)
+
+        from gaius.engine.sentinel_claim import release_kind
+
+        release_kind("ambient")
 
         return {
             "success": True,
@@ -1022,7 +1065,20 @@ class AmbientWorkloadService:
         """
         results = {}
 
+        thinking = self._orchestrator.get_endpoint_status("thinking")
+        thinking_loading = thinking is not None and (thinking.status or "").lower() in {
+            "starting",
+            "process_status_starting",
+        }
         for endpoint in self._baseline_endpoints:
+            if thinking_loading and endpoint != "thinking":
+                logger.info(
+                    "Ambient skip ensure %s: thinking still %s",
+                    endpoint,
+                    thinking.status,
+                )
+                results[endpoint] = False
+                continue
             try:
                 status = await self._orchestrator.ensure_endpoint(endpoint)
                 results[endpoint] = status.status == ProcessStatus.HEALTHY.value
@@ -1217,16 +1273,57 @@ class AmbientWorkloadService:
                 "Focus on the most interesting or important topics."
             )
 
-            # Use instruct endpoint for summarization (lower latency)
+            if self._gpu_paused:
+                return {
+                    "success": True,
+                    "message": "GPU paused (YK preempt); buffer kept",
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "skipped": True,
+                }
+
+            # GPU summarization rides the extract token (same lane as
+            # article/prospects). Do not mint a second GPU Application.
+            from gaius.engine.sentinel_claim import (
+                YkAdmitError,
+                apply_and_admit,
+                bind_workload_id,
+                gpu_start_allowed,
+            )
+
+            try:
+                extract_id = bind_workload_id(
+                    "ambient-summarize",
+                    f"article-curate-{int(time.time())}",
+                )
+                apply_and_admit(extract_id, "ambient-summarize")
+            except YkAdmitError as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+
+            if not gpu_start_allowed(extract_id):
+                return {
+                    "success": True,
+                    "message": "extract not admitted; skip think-summarize",
+                    "skipped": True,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                }
+
+            # Thinking on, effort low — always-on, cheap. Tokens are not the answer.
             response = await asyncio.wait_for(
                 self._backend_router.complete(
                     prompt=summarize_prompt,
-                    agent_alias="instruct",
-                    max_tokens=buffer_cfg.summarize_max_tokens,
-                    temperature=0.7,
+                    agent_alias="thinking",
+                    max_tokens=max(buffer_cfg.summarize_max_tokens, 1024),
+                    temperature=1.0,
                     task_type="ambient_summarization",
+                    enable_thinking=True,
+                    reasoning_effort="low",
+                    preserve_thinking=True,
                 ),
-                timeout=30,
+                timeout=120,
             )
 
             latency_ms = int((time.time() - start_time) * 1000)
@@ -1237,6 +1334,17 @@ class AmbientWorkloadService:
                     "error": response.error,
                     "latency_ms": latency_ms,
                 }
+
+            if getattr(response, "reasoning_content", ""):
+                think_entry = BufferEntry.create(
+                    role=BufferRole.ASSISTANT,
+                    content=response.reasoning_content,
+                    metadata={
+                        "kind": "thinking",
+                        "source_count": len(content_entries),
+                    },
+                )
+                await self._buffer.add_entry(think_entry)
 
             # Add summary to buffer
             summary_entry = BufferEntry.create(
@@ -1475,73 +1583,34 @@ Output exactly 3 search queries, one per line, no numbering or bullets:"""
             )
 
     async def _evict_for_reasoning(self) -> dict[str, Any]:
-        """Evict baseline endpoints to make room for reasoning.
+        """Keep Qwen3.8 thinking. Do not evict TP=4 for cap_reasoning (QwQ).
 
-        Uses the orchestrator's workload management to handle eviction.
-        Tracks endpoint transitions via AgendaTracker for incident tracking.
+        Thinking is the live reasoning endpoint. A HIGH-priority REASONING
+        workload used to start QwQ-32B and stop thinking.
 
         Returns:
-            Dict with success status and evicted endpoints
+            Dict with success status and the thinking endpoint name
         """
         try:
-            # Use begin_workload to request reasoning capability
-            from ..workloads import WorkloadRequest, WorkloadType, JobPriority
-            from gaius.models.registry import TaskType
+            if self._orchestrator is None:
+                return {"success": False, "error": "orchestrator not bound"}
 
-            request = WorkloadRequest(
-                workload_id=f"ambient-reasoning-{int(time.time())}",
-                workload_type=WorkloadType.INFERENCE,
-                required_capabilities=[TaskType.REASONING],
-                priority=JobPriority.HIGH,
-                estimated_duration_s=120,
-                estimated_memory_mb=32000,  # ~32GB for reasoning model
-                preemptible=False,
-            )
+            status = self._orchestrator.get_endpoint_status("thinking")
+            if status is None or status.status not in ("healthy", "starting"):
+                status = await self._orchestrator.ensure_endpoint("thinking")
 
-            result = await self._orchestrator.begin_workload(request)
-
-            response = {
-                "success": result.success,
-                "evicted": list(result.evicted_endpoints) if result.evicted_endpoints else [],
-                "restore_plan": list(result.restore_plan) if result.restore_plan else [],
-                "wait_time_ms": result.wait_time_ms,
-                "workload_id": request.workload_id,
+            return {
+                "success": status is not None and status.status in (
+                    "healthy",
+                    "starting",
+                    "optillm",
+                ),
+                "evicted": [],
+                "restore_plan": [],
+                "reasoning_endpoint": "thinking",
+                "reasoning_port": status.port if status else None,
+                "workload_id": None,
             }
-
-            # Track eviction for AgendaTracker integration
-            if result.success:
-                self._current_workload_id = request.workload_id
-                self._evicted_endpoints = list(result.evicted_endpoints) if result.evicted_endpoints else []
-
-                # Record eviction transitions as POSITIVE control (orchestrated)
-                # Note: ABSENT represents a stopped/non-running endpoint state
-                if self._agenda_tracker and self._evicted_endpoints:
-                    from ..resources.reconciliation import EndpointState
-                    from ..incidents import ControlMode
-
-                    for endpoint in self._evicted_endpoints:
-                        try:
-                            await self._agenda_tracker.on_endpoint_transition(
-                                endpoint=endpoint,
-                                from_state=EndpointState.HEALTHY,
-                                to_state=EndpointState.ABSENT,  # ABSENT = not running
-                                observed_control=ControlMode.POSITIVE,  # Orchestrated eviction
-                            )
-                            logger.debug(f"Recorded eviction transition for {endpoint}")
-                        except Exception as e:
-                            logger.warning(f"Failed to record eviction transition for {endpoint}: {e}")
-
-            # Get the allocated reasoning endpoint for use in the reasoning task
-            if result.success and result.allocated_endpoints:
-                reasoning_alloc = result.allocated_endpoints.get(TaskType.REASONING)
-                if reasoning_alloc:
-                    response["reasoning_endpoint"] = reasoning_alloc.endpoint_name
-                    response["reasoning_port"] = reasoning_alloc.port
-
-            # Include error message from WorkloadResult if present
-            if not result.success and result.error:
-                response["error"] = result.error
-            return response
 
         except Exception as e:
             logger.exception("Eviction failed")
@@ -1760,6 +1829,58 @@ Output exactly 3 search queries, one per line, no numbering or bullets:"""
         except Exception as e:
             logger.warning(f"Failed to persist daemon state: {e}")
 
+    async def _set_operator_disabled(self, disabled: bool) -> None:
+        if not self._db_pool:
+            return
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE ambient_daemon_state SET operator_disabled = $1, "
+                    "updated_at = NOW() WHERE id = 1",
+                    disabled,
+                )
+        except Exception as e:
+            logger.warning("set operator_disabled failed: %s", e)
+
+    async def _set_preempted(self, preempted: bool) -> None:
+        if not self._db_pool:
+            return
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE ambient_daemon_state SET preempted = $1, "
+                    "updated_at = NOW() WHERE id = 1",
+                    preempted,
+                )
+        except Exception as e:
+            logger.warning("set preempted failed: %s", e)
+
+    async def pause_gpu(self, reason: str = "yield") -> None:
+        """YK preempt: stop calling thinking. RAM buffer stays."""
+        self._gpu_paused = True
+        await self._set_preempted(True)
+        logger.info("Ambient GPU paused (%s); buffer retained", reason)
+
+    async def resume_gpu(self) -> None:
+        self._gpu_paused = False
+        await self._set_preempted(False)
+        logger.info("Ambient GPU resumed")
+
+    async def ensure_started_on_boot(self) -> dict[str, Any]:
+        """Start or resume Ambient unless the operator stopped it."""
+        auto_start = self._config.startup.auto_start_ambient
+        state = await self.load_persisted_state()
+        action = ambient_boot_action(state, auto_start=auto_start)
+        if action == "skip":
+            return {
+                "status": "skipped",
+                "message": "auto-start off or operator-disabled",
+            }
+        if action == "resume":
+            return await self.resume_from_persisted_state()
+        started = await self.start_daemon()
+        return {"status": "started" if started.get("success") else "error", **started}
+
     async def _increment_cycle_in_db(self, tasks_in_cycle: int, successful: int) -> None:
         """Increment cycle count in database after each cycle.
 
@@ -1797,7 +1918,7 @@ Output exactly 3 search queries, one per line, no numbering or bullets:"""
                     """
                     SELECT running, baseline_only, max_cycles, cycles_completed,
                            total_tasks, successful_tasks, started_at, stopped_at,
-                           updated_at
+                           updated_at, operator_disabled, preempted
                     FROM ambient_daemon_state
                     WHERE id = 1
                     """

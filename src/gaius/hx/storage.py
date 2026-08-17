@@ -61,7 +61,16 @@ def get_storage_config(
         config = get_hx_config()
 
     if config.use_minio:
+        from gaius.flows.prospects.product_env import is_platform_env
+
         if check_minio and not _check_minio_available(config):
+            if is_platform_env():
+                raise RuntimeError(
+                    "#HX.00000001.NORUSTFS Signals RustFS is required for "
+                    f"HX at {config.minio_endpoint} (no filesystem fallback).\n"
+                    "  Try: /health fix endpoints\n"
+                    "  Or:  just signals-ready"
+                )
             logger.warning(
                 f"MinIO not available at {config.minio_endpoint}, "
                 f"falling back to filesystem at {config.filesystem_warehouse}"

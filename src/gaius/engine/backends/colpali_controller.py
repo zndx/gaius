@@ -1,4 +1,9 @@
-"""ColPali embedding backend controller.
+"""Late-interaction embedding controller (ColBERT-Zero).
+
+ColPali / ColNomic is retired. This module keeps the orchestrator
+entry points (``start_colpali_endpoint``, ``embed_texts``) so existing
+callers do not fork, but the weights are ``lightonai/ColBERT-Zero``.
+"""
 
 Manages ColQwen2.5 multi-vector embedding model lifecycle with GPU allocation.
 Unlike standard embedding models, ColPali produces multi-vector embeddings
@@ -121,8 +126,7 @@ class ColPaliController:
         Uses device_map for model loading to place on specific GPUs.
     """
 
-    # Default ColPali model - ColNomic multimodal embeddings
-    DEFAULT_MODEL = "nomic-ai/colnomic-embed-multimodal-7b"
+    DEFAULT_MODEL = "lightonai/ColBERT-Zero"
 
     def __init__(
         self,
@@ -240,48 +244,25 @@ class ColPaliController:
             gpu_ids: GPUs to place model on
 
         Returns:
-            Tuple of (model, processor)
+            Tuple of (embedder, None)
         """
-        import torch
-
         # Determine device map
         if gpu_ids:
             device_map = f"cuda:{gpu_ids[0]}"
         else:
             device_map = "cpu"
 
-        logger.debug(f"Loading ColPali model {model_name} on {device_map}")
+        if "colnomic" in model_name.lower() or "colpali" in model_name.lower() or "colqwen" in model_name.lower():
+            raise RuntimeError(
+                f"#EM.00000003.RETIRED {model_name} is retired. "
+                "Use lightonai/ColBERT-Zero (open late-interaction)."
+            )
+        from gaius.inference.search.colbert import ColBERTZeroEmbedder
 
-        # Dynamically select model class based on model name
-        # ColQwen2_5 models require colpali-engine>=0.3.5
-        is_qwen25_model = "qwen2.5" in model_name.lower() or "colnomic" in model_name.lower()
-
-        if is_qwen25_model:
-            try:
-                from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
-                model_class = ColQwen2_5
-                processor_class = ColQwen2_5_Processor
-            except ImportError:
-                raise ImportError(
-                    f"Model {model_name} requires ColQwen2_5 from colpali-engine>=0.3.5. "
-                    f"Use 'vidore/colqwen2-v0.1' instead (compatible with 0.3.2)."
-                )
-        else:
-            from colpali_engine.models import ColQwen2, ColQwen2Processor
-            model_class = ColQwen2
-            processor_class = ColQwen2Processor
-
-        # Load processor first (lightweight)
-        processor = processor_class.from_pretrained(model_name)
-
-        # Load model with bfloat16 for memory efficiency
-        model = model_class.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map=device_map,
-        ).eval()
-
-        return model, processor
+        logger.info("Loading ColBERT-Zero %s on %s", model_name, device_map)
+        embedder = ColBERTZeroEmbedder(model_name=model_name, device=device_map)
+        _ = embedder.model  # force load
+        return embedder, None
 
     async def stop_colpali_endpoint(self, name: str) -> None:
         """Unload a ColPali model and free GPU memory.
@@ -388,32 +369,15 @@ class ColPaliController:
         Returns:
             Multi-vector embeddings: [text_idx][token_idx][128]
         """
-        import torch
-
-        if endpoint.model is None or endpoint.processor is None:
+        if endpoint.model is None:
             raise RuntimeError(
-                f"ColPali endpoint {endpoint.name} model/processor not loaded. "
-                f"Status: {endpoint.status}"
+                f"ColBERT endpoint {endpoint.name} not loaded. Status: {endpoint.status}"
             )
-
-        model = endpoint.model
-        processor = endpoint.processor
-
-        # Process texts as queries
-        batch = processor.process_queries(texts)
-        batch = {k: v.to(model.device) for k, v in batch.items()}
-
-        # Generate embeddings
-        with torch.no_grad():
-            embeddings = model(**batch)  # Shape: [batch, num_tokens, 768]
-
-        # Convert to nested list format
-        # embeddings shape: [batch_size, seq_len, hidden_dim]
-        result = []
-        for i in range(embeddings.shape[0]):
-            text_embeddings = embeddings[i].cpu().float().numpy().tolist()
-            result.append(text_embeddings)
-
+        embedder = endpoint.model
+        result: list[list[list[float]]] = []
+        for text in texts:
+            multi, _agg = embedder.encode_text(text, prefix="search_query: ")
+            result.append(multi.tolist())
         return result
 
     async def _get_or_create_endpoint(

@@ -431,49 +431,21 @@ def get_colqwen_embedder(
     model_name: str | None = None,
     model_revision: str | None = None,
     aggregation: str | AggregationMethod = AggregationMethod.MEAN,
-) -> ColQwenEmbedder:
-    """Get or create ColQwen embedder singleton.
+) -> object:
+    """Return the late-interaction embedder.
 
-    Reads settings from config if available.
-
-    Args:
-        model_name: Override model name (None = use config or default)
-        model_revision: Override model revision (None = use config)
-        aggregation: Override aggregation method (None = use config)
-
-    Returns:
-        ColQwenEmbedder instance
+    ColPali/ColNomic is retired. This name stays for callers; the
+    implementation is ColBERT-Zero.
     """
-    global _embedder
-    if _embedder is None:
-        # Try to get settings from config
-        try:
-            from ...core.config import get_config
+    from .colbert import DEFAULT_MODEL, get_colbert_embedder
 
-            config = get_config()
-            mm_config = config.vector_store  # Will have multimodal settings
-
-            if model_name is None:
-                model_name = getattr(
-                    mm_config, "multimodal_model", ColQwenEmbedder.DEFAULT_MODEL
-                )
-            if model_revision is None:
-                model_revision = getattr(mm_config, "model_revision", None)
-            if aggregation == AggregationMethod.MEAN:  # Default
-                agg_str = getattr(mm_config, "aggregation", "mean")
-                aggregation = AggregationMethod(agg_str)
-        except Exception:
-            # Use defaults if config not available
-            pass
-
-        # Ensure model_name is set
-        if model_name is None:
-            model_name = ColQwenEmbedder.DEFAULT_MODEL
-
-        _embedder = ColQwenEmbedder(
-            model_name=model_name,
-            model_revision=model_revision,
-            aggregation=aggregation,
+    if model_name and (
+        "colnomic" in model_name.lower()
+        or "colqwen" in model_name.lower()
+        or "colpali" in model_name.lower()
+    ):
+        raise RuntimeError(
+            f"#EM.00000003.RETIRED {model_name} is retired. "
+            "Use lightonai/ColBERT-Zero."
         )
-
-    return _embedder
+    return get_colbert_embedder(model_name or DEFAULT_MODEL)

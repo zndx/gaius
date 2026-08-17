@@ -645,7 +645,7 @@ Output ONLY the new system prompt, nothing else."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "temperature": 0.8,  # Higher for diversity
                     "max_tokens": 2048,
                 },
@@ -747,7 +747,7 @@ Output ONLY the new system prompt."""
                 action="complete",
                 params={
                     "prompt": prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "temperature": 0.7,
                     "max_tokens": 2048,
                 },
@@ -1085,7 +1085,7 @@ Output ONLY the new system prompt."""
                 params={
                     "prompt": example.input_prompt,
                     "system_prompt": config.system_prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "temperature": config.temperature,
                     "max_tokens": 1024,
                 },

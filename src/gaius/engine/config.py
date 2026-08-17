@@ -40,6 +40,7 @@ class EndpointConfig:
     gpu_memory_utilization: Optional[float] = None
     swap_space: Optional[float] = None
     embedding_dim: Optional[int] = None
+    extra_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -54,6 +55,9 @@ class AgentConfig:
     optillm_technique: Optional[str] = None
     resources: ResourceRequirements = field(default_factory=ResourceRequirements)
     endpoint: Optional[EndpointConfig] = None
+    # Ordered capability labels (versatility + specialization).
+    # e.g. Qwen3.8-27B: ["thinking", "vision"]
+    capabilities: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -113,7 +117,7 @@ class OptillmConfig:
     enabled: bool = True
     api_key: Optional[str] = None
     base_url: str = "http://localhost:8000"
-    backend_url: str = "http://localhost:8082/v1"  # vLLM instruct endpoint
+    backend_url: str = "http://localhost:8082/v1"  # vLLM thinking endpoint
     default_technique: str = "cot_reflection"
     timeout: int = 600  # Wall-clock safety net (idle_timeout is the real guard)
     idle_timeout: int = 120  # No vLLM progress for this long = stalled
@@ -218,7 +222,7 @@ class StartupConfig:
     """Autonomous startup configuration."""
 
     clean_start: bool = True  # Kill stale processes on boot
-    preload_endpoints: list[str] = field(default_factory=lambda: ["instruct"])
+    preload_endpoints: list[str] = field(default_factory=lambda: ["thinking"])
     auto_start_evolution: bool = True  # Start evolution daemon if enabled
     auto_start_cognition: bool = True  # Start cognition daemon for scheduled tasks
     auto_start_flow_scheduler: bool = True  # Start flow scheduler for Metaflow pipelines
@@ -227,6 +231,7 @@ class StartupConfig:
 
     # Ambient workload auto-restart after engine restart
     auto_resume_ambient: bool = True  # Resume ambient daemon if it was running before restart
+    auto_start_ambient: bool = True  # Start Ambient unless operator-disabled
 
 
 @dataclass
@@ -368,8 +373,12 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
                     gpu_memory_utilization=safe_get(endpoint_conf, "gpu-memory-utilization"),
                     swap_space=safe_get(endpoint_conf, "swap-space"),
                     embedding_dim=safe_get(endpoint_conf, "embedding-dim"),
+                    extra_args=[
+                        str(a) for a in list(safe_get(endpoint_conf, "extra-args", []) or [])
+                    ],
                 )
 
+            raw_caps = safe_get(agent_conf, "capabilities", []) or []
             agents[name] = AgentConfig(
                 name=name,
                 alias=safe_get(agent_conf, "alias", name),
@@ -379,6 +388,7 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
                 optillm_technique=safe_get(agent_conf, "optillm-technique"),
                 resources=resources,
                 endpoint=endpoint,
+                capabilities=[str(c) for c in list(raw_caps)],
             )
 
     # Parse backends
@@ -549,9 +559,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         clean_start=startup_conf.get("clean-start", True)
         if hasattr(startup_conf, "get")
         else True,
-        preload_endpoints=list(startup_conf.get("preload-endpoints", ["orchestrator", "instruct"]))
+        preload_endpoints=list(startup_conf.get("preload-endpoints", ["orchestrator", "thinking"]))
         if hasattr(startup_conf, "get")
-        else ["orchestrator", "instruct"],
+        else ["orchestrator", "thinking"],
         auto_start_evolution=startup_conf.get("auto-start-evolution", True)
         if hasattr(startup_conf, "get")
         else True,
@@ -568,6 +578,9 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
         if hasattr(startup_conf, "get")
         else 3,
         auto_resume_ambient=startup_conf.get("auto-resume-ambient", True)
+        if hasattr(startup_conf, "get")
+        else True,
+        auto_start_ambient=startup_conf.get("auto-start-ambient", True)
         if hasattr(startup_conf, "get")
         else True,
     )
@@ -589,17 +602,40 @@ def _parse_config(conf: "ConfigTree") -> EngineConfig:
     )
 
 
+GURU_NOAGENT = "#EP.00000002.NOAGENT"
+
+# Old callers said "instruct"; the primary Qwen3.8 endpoint is thinking.
+_AGENT_ALIASES = {"instruct": "thinking"}
+
+
+class UnknownAgentError(KeyError):
+    def __init__(self, alias: str) -> None:
+        self.alias = alias
+        super().__init__(f"{GURU_NOAGENT} unknown agent alias {alias!r}")
+
+
+def resolve_agent_name(alias: str) -> str:
+    """Map legacy names onto the live HOCON key."""
+    return _AGENT_ALIASES.get(alias, alias)
+
+
 def get_agent_by_alias(config: EngineConfig, alias: str) -> Optional[AgentConfig]:
-    """Look up agent by alias.
-
-    Args:
-        config: Engine configuration
-        alias: Agent alias (e.g., "orchestrator", "reasoning")
-
-    Returns:
-        AgentConfig if found, None otherwise
-    """
+    """Look up agent by alias or HOCON key."""
+    key = resolve_agent_name(alias)
+    if key in config.agents:
+        return config.agents[key]
     for agent in config.agents.values():
-        if agent.alias == alias:
+        if agent.alias == alias or agent.alias == key:
             return agent
     return None
+
+
+def require_agent(config: EngineConfig, alias: str) -> tuple[str, AgentConfig]:
+    """Resolve alias to the HOCON key and AgentConfig. Fail-fast if unknown."""
+    agent = get_agent_by_alias(config, alias)
+    if agent is None:
+        raise UnknownAgentError(alias)
+    key = resolve_agent_name(alias)
+    if key in config.agents:
+        return key, config.agents[key]
+    return agent.alias, agent

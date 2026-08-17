@@ -44,6 +44,15 @@ class FMPEndpoint:
     OWNERSHIP_PERCENT = "symbol-ownership-percent"
     SEC_FILINGS = "sec-filings"
     PROFILE = "profile"
+    STOCK_NEWS = "stock-news"
+    GENERAL_NEWS = "general-news"
+    FMP_ARTICLES = "fmp-articles"
+    EARNINGS_CALENDAR = "earnings-calendar"
+    MERGERS = "mergers-acquisitions"
+    INSIDER = "insider-trading"
+    CONGRESS = "congress-trading"
+    EIGHT_K = "sec-8k"
+    HISTORICAL_EOD = "historical-price-eod"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -56,10 +65,30 @@ class FMPEndpoint:
             return cls.PORTFOLIO_HOLDINGS
         elif "symbol-ownership-percent" in url_lower:
             return cls.OWNERSHIP_PERCENT
+        elif "sec-filings-8k" in url_lower or "sec_filings_8k" in url_lower:
+            return cls.EIGHT_K
         elif "sec_filings" in url_lower or "sec-filings" in url_lower:
             return cls.SEC_FILINGS
-        elif "/profile/" in url_lower:
+        elif "/profile" in url_lower:
             return cls.PROFILE
+        elif "press-release" in url_lower:
+            return cls.STOCK_NEWS
+        elif "news/stock" in url_lower:
+            return cls.STOCK_NEWS
+        elif "news/general" in url_lower:
+            return cls.GENERAL_NEWS
+        elif "fmp-articles" in url_lower:
+            return cls.FMP_ARTICLES
+        elif "earnings-calendar" in url_lower:
+            return cls.EARNINGS_CALENDAR
+        elif "merger" in url_lower:
+            return cls.MERGERS
+        elif "insider" in url_lower:
+            return cls.INSIDER
+        elif "senate" in url_lower or "house-latest" in url_lower:
+            return cls.CONGRESS
+        elif "historical-price" in url_lower or "historical-chart" in url_lower:
+            return cls.HISTORICAL_EOD
         return cls.UNKNOWN
 
 

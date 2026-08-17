@@ -123,7 +123,7 @@ class EngineInferenceClient:
                 user_prompt += f"\nAssistant: {msg.content}\n"
 
         # Default to instruct model if not specified
-        agent = model or "instruct"
+        agent = model or "thinking"
 
         # Route through scheduler
         result = await scheduler.complete(

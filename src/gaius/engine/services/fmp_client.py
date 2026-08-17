@@ -607,6 +607,155 @@ class FMPClient:
 
         return None
 
+    async def get_historical_eod(
+        self,
+        symbol: str,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        source_context: dict | None = None,
+    ) -> list[dict[str, object]]:
+        """Daily OHLC for a symbol. Empty list is honest — caller fail-fasts.
+
+        Uses /stable/historical-price-eod/full.
+        """
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            raise FMPClientError(
+                "symbol is required for historical EOD.\n  Guru: #FMP.00000004.PARSEERR"
+            )
+        if not to_date:
+            to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not from_date:
+            from_date = (datetime.now(timezone.utc) - timedelta(days=90)).strftime(
+                "%Y-%m-%d"
+            )
+        data = await self._request(
+            endpoint=FMPEndpoint.HISTORICAL_EOD,
+            path="/stable/historical-price-eod/full",
+            symbol=sym,
+            params={"symbol": sym, "from": from_date, "to": to_date},
+            source_context=source_context,
+        )
+        rows: list[dict]
+        if isinstance(data, list):
+            rows = [r for r in data if isinstance(r, dict)]
+        elif isinstance(data, dict):
+            hist = data.get("historical", data.get("data", []))
+            rows = [r for r in hist if isinstance(r, dict)] if isinstance(hist, list) else []
+        else:
+            rows = []
+        bars: list[dict[str, object]] = []
+        for r in rows:
+            t = r.get("date") or r.get("t")
+            if not t:
+                continue
+            try:
+                bars.append(
+                    {
+                        "t": str(t)[:10],
+                        "o": float(r.get("open", r.get("o"))),
+                        "h": float(r.get("high", r.get("h"))),
+                        "l": float(r.get("low", r.get("l"))),
+                        "c": float(r.get("close", r.get("c"))),
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+        bars.sort(key=lambda b: str(b["t"]))
+        return bars
+
+    async def get_latest_stock_news(self, *, limit: int = 20) -> list[dict]:
+        data = await self._request(
+            endpoint=FMPEndpoint.STOCK_NEWS,
+            path="/stable/news/stock-latest",
+            params={"page": "0", "limit": str(limit)},
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_latest_general_news(self, *, limit: int = 10) -> list[dict]:
+        data = await self._request(
+            endpoint=FMPEndpoint.GENERAL_NEWS,
+            path="/stable/news/general-latest",
+            params={"page": "0", "limit": str(limit)},
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_fmp_articles(self, *, limit: int = 10) -> list[dict]:
+        data = await self._request(
+            endpoint=FMPEndpoint.FMP_ARTICLES,
+            path="/stable/fmp-articles",
+            params={"page": "0", "limit": str(limit)},
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_latest_8k(self, *, days: int = 7, limit: int = 25) -> list[dict]:
+        to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%d"
+        )
+        data = await self._request(
+            endpoint=FMPEndpoint.EIGHT_K,
+            path="/stable/sec-filings-8k",
+            params={"from": from_date, "to": to_date, "limit": str(limit)},
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_latest_insider(self, *, limit: int = 20) -> list[dict]:
+        data = await self._request(
+            endpoint=FMPEndpoint.INSIDER,
+            path="/stable/insider-trading/latest",
+            params={"page": "0", "limit": str(limit)},
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_latest_mergers(self, *, limit: int = 15) -> list[dict]:
+        data = await self._request(
+            endpoint=FMPEndpoint.MERGERS,
+            path="/stable/mergers-acquisitions-latest",
+            params={"page": "0", "limit": str(limit)},
+        )
+        return data if isinstance(data, list) else []
+
+    async def get_latest_congress(self, *, limit: int = 10) -> list[dict]:
+        out: list[dict] = []
+        for path in ("/stable/senate-latest", "/stable/house-latest"):
+            data = await self._request(
+                endpoint=FMPEndpoint.CONGRESS,
+                path=path,
+                params={"page": "0", "limit": str(limit)},
+            )
+            if isinstance(data, list):
+                chamber = "senate" if "senate" in path else "house"
+                for row in data:
+                    if isinstance(row, dict):
+                        rec = dict(row)
+                        rec.setdefault("chamber", chamber)
+                        out.append(rec)
+        return out
+
+    async def get_earnings_calendar(self, *, days: int = 14) -> list[dict]:
+        data = await self._request(
+            endpoint=FMPEndpoint.EARNINGS_CALENDAR,
+            path="/stable/earnings-calendar",
+        )
+        if not isinstance(data, list):
+            return []
+        today = datetime.now(timezone.utc).date()
+        end = today + timedelta(days=days)
+        kept: list[dict] = []
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            raw = str(row.get("date") or "")[:10]
+            try:
+                day = datetime.strptime(raw, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if today <= day <= end:
+                kept.append(row)
+        return kept
+
     @property
     def rate_limit_status(self) -> dict:
         """Get current rate limit status."""

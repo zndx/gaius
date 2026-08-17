@@ -26,6 +26,12 @@ Inspired by the Amiga's iconic error screens, every failure mode in Gaius gets a
 | ACF | Article Curation Flow |
 | HL | Health |
 | XB | X Bookmarks |
+| SDG | Signals Data Governance (sdg-corpora + sdg-strategy) |
+| KB | Knowledge base board / current_state |
+| AG | Agenda consciousness zettels |
+| SS | Server-to-server (Engine/ServerQuery remotes) |
+| WS | Weekly Signals Summary |
+| UI | gaius-ui (PTY, brand, Ask artifacts) |
 
 ## How They're Used
 

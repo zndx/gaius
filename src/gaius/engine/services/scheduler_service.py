@@ -571,7 +571,7 @@ class SchedulerService:
             logger.debug("Using local model for evaluation")
             return await self.complete(
                 prompt=prompt,
-                agent_alias="instruct",  # Use instruct local model
+                agent_alias="thinking",
                 priority=JobPriority.HIGH,
             )
 
@@ -679,9 +679,9 @@ class SchedulerService:
         CAPABILITY_TO_ENDPOINT = {
             "reasoning": "reasoning",      # Strong reasoning models
             "long_context": "reasoning",   # Same - needs context
-            "coding": "instruct",          # Code generation via instruct
+            "coding": "thinking",          # Code generation via thinking
             "adversarial": "reasoning",    # Needs reasoning
-            "synthesis": "instruct",       # Synthesis via instruct
+            "synthesis": "thinking",       # Synthesis via thinking
         }
 
         # Default to core swarm roles
@@ -700,7 +700,7 @@ class SchedulerService:
                 }
 
             # Determine endpoint from capabilities
-            endpoint = "instruct"  # Default
+            endpoint = "thinking"
             for cap in role_def.model_capabilities:
                 if cap in CAPABILITY_TO_ENDPOINT:
                     endpoint = CAPABILITY_TO_ENDPOINT[cap]

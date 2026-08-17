@@ -111,7 +111,7 @@ class InferenceManager:
         Raises:
             RuntimeError: If engine is not available
         """
-        priority = ["orchestrator", "instruct"]
+        priority = ["orchestrator", "thinking"]
 
         if self._use_engine:
             # Engine mode - use priority order with known endpoints
@@ -148,7 +148,7 @@ class InferenceManager:
         """
         if self._use_engine:
             # Engine mode - return standard endpoints
-            return ["orchestrator", "instruct", "embedding", "reasoning"]
+            return ["orchestrator", "thinking", "embedding", "reasoning"]
         self._require_engine()
         return []  # unreachable but satisfies type checker
 

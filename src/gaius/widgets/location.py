@@ -27,6 +27,8 @@ class LocationIndicator(Widget):
 
     cursor_x: reactive[int] = reactive(9)
     cursor_y: reactive[int] = reactive(9)
+    kappa: reactive[float | None] = reactive(None)
+    tenuki: reactive[str] = reactive("")
 
     def __init__(self, x: int = 9, y: int = 9, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -80,10 +82,27 @@ class LocationIndicator(Widget):
         else:
             quadrant = "SE"
 
-        return f"◉ [{self.cursor_x:2d},{self.cursor_y:2d}] │ RA {ra_h:02d}h{ra_m:02d}m │ Dec {dec_sign}{dec:5.1f}° │ ψ {psi:5.1f}° │ {quadrant}"
+        kappa = (
+            f"κ {self.kappa:+.3f}" if self.kappa is not None else "κ —"
+        )
+        tenuki = f" │ tenuki {self.tenuki}" if self.tenuki else ""
+        return (
+            f"◉ [{self.cursor_x:2d},{self.cursor_y:2d}] │ "
+            f"RA {ra_h:02d}h{ra_m:02d}m │ Dec {dec_sign}{dec:5.1f}° │ "
+            f"ψ {psi:5.1f}° │ {quadrant} │ {kappa}{tenuki}"
+        )
 
-    def update_position(self, x: int, y: int) -> None:
-        """Update the cursor position."""
+    def update_position(
+        self,
+        x: int,
+        y: int,
+        *,
+        kappa: float | None = None,
+        tenuki: str = "",
+    ) -> None:
+        """Update the cursor position and geometry annotations."""
         self.cursor_x = x
         self.cursor_y = y
+        self.kappa = kappa
+        self.tenuki = tenuki
         self.refresh()

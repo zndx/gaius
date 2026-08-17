@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..backends import BackendRouter, OptillmController, ProcessStatus, VLLMController
-from ..config import EngineConfig
+from ..config import EngineConfig, UnknownAgentError, require_agent
 from ..resources import ResourceManager
 
 if TYPE_CHECKING:
@@ -176,8 +176,10 @@ class OrchestratorService:
         # Track restart attempts per endpoint
         self._restart_attempts: dict[str, int] = {}
 
-        # Stuck state detection (AIOps autonomous health loop)
-        self._stuck_starting_timeout = 300  # 5 minutes
+        # Stuck state detection (AIOps autonomous health loop).
+        # Must exceed VLLMController._startup_timeout (600s) so we do not
+        # SIGKILL a TP=4 Qwen3.8 load that is still compiling/loading.
+        self._stuck_starting_timeout = 900
         self._stuck_stopping_timeout = 120  # 2 minutes
         self._stuck_detections: dict[str, dict] = {}  # endpoint -> {detected_at, elapsed}
 
@@ -270,11 +272,14 @@ class OrchestratorService:
         Raises:
             ValueError: If agent not in config
         """
-        if agent_alias not in self.config.agents:
-            raise ValueError(f"Unknown agent: {agent_alias}")
-
-        agent_config = self.config.agents[agent_alias]
+        try:
+            agent_alias, agent_config = require_agent(self.config, agent_alias)
+        except UnknownAgentError as e:
+            raise ValueError(str(e)) from e
         backend = agent_config.backend.lower()
+
+        if backend == "clt":
+            return await self._ensure_clt_endpoint(agent_alias)
 
         # For optillm-backed agents, no dedicated endpoint needed
         if backend == "optillm":
@@ -287,7 +292,7 @@ class OrchestratorService:
             )
 
         # ColPali backend for multi-vector embeddings (ColNomic)
-        if backend == "colpali":
+        if backend in ("colpali", "colbert"):
             # Check if ColPali endpoint already exists
             from ..backends.colpali_controller import get_colpali_controller
             controller = get_colpali_controller()
@@ -377,11 +382,14 @@ class OrchestratorService:
         Returns:
             EndpointStatus with startup state
         """
-        if agent_alias not in self.config.agents:
-            raise ValueError(f"Unknown agent: {agent_alias}")
-
-        agent_config = self.config.agents[agent_alias]
+        try:
+            agent_alias, agent_config = require_agent(self.config, agent_alias)
+        except UnknownAgentError as e:
+            raise ValueError(str(e)) from e
         backend = agent_config.backend.lower()
+
+        if backend == "clt":
+            return await self._ensure_clt_endpoint(agent_alias)
 
         # optillm agents use shared optillm, no dedicated endpoint
         if backend == "optillm":
@@ -394,7 +402,7 @@ class OrchestratorService:
             )
 
         # ColPali backend for multi-vector embeddings (ColNomic)
-        if backend == "colpali":
+        if backend in ("colpali", "colbert"):
             return await self._start_colpali_endpoint(agent_alias, agent_config)
 
         # Note: sentence-transformers backend is deprecated.
@@ -422,7 +430,12 @@ class OrchestratorService:
         Returns:
             True if stopped successfully
         """
-        return await self._vllm.stop_endpoint(agent_alias)
+        from ..config import resolve_agent_name
+
+        if agent_alias == "clt":
+            self.stop_clt_capability()
+            return True
+        return await self._vllm.stop_endpoint(resolve_agent_name(agent_alias))
 
     async def restart_endpoint(self, agent_alias: str) -> EndpointStatus:
         """Restart an inference endpoint.
@@ -600,8 +613,12 @@ class OrchestratorService:
         Returns:
             EndpointStatus if exists
         """
-        # Check vLLM processes first
-        proc = self._vllm.get_process(agent_alias)
+        from ..config import resolve_agent_name
+
+        # Check vLLM processes first (instruct → thinking)
+        proc = self._vllm.get_process(resolve_agent_name(agent_alias))
+        if proc is None and agent_alias != resolve_agent_name(agent_alias):
+            proc = self._vllm.get_process(agent_alias)
         if proc:
             # Get startup progress
             message, progress = self._vllm.get_startup_progress(agent_alias)
@@ -622,7 +639,7 @@ class OrchestratorService:
         # Check ColPali endpoints if this is a colpali-backed agent
         if agent_alias in self.config.agents:
             agent_config = self.config.agents[agent_alias]
-            if agent_config.backend.lower() == "colpali":
+            if agent_config.backend.lower() in ("colpali", "colbert"):
                 try:
                     from ..backends.colpali_controller import get_colpali_controller
                     controller = get_colpali_controller()
@@ -1097,6 +1114,30 @@ class OrchestratorService:
             f"Used by vLLM: {sorted(used_ports)}"
         )
 
+    async def _ensure_clt_endpoint(self, agent_alias: str) -> EndpointStatus:
+        """Standing CLT worker on a *free whole* leftover GPU.
+
+        Never packed onto a GPU that already serves a vLLM replica.
+        """
+        if self._clt_capability is not None:
+            _, gpu = self._clt_capability
+            return EndpointStatus(
+                agent_alias=agent_alias,
+                model="Qwen/Qwen3-1.7B",
+                port=None,
+                gpu_ids=[gpu],
+                status="healthy",
+            )
+        free = self.resource_manager.get_free_gpus()
+        if not free:
+            raise ValueError(
+                "No leftover GPU for CLT traces.\n"
+                "  Guru: #CLT.00000001.NOGPU\n"
+                "  Thinking holds 0–3; Ask CLT wants 4 or 5."
+            )
+        spec = type("Spec", (), {"model_id": "Qwen/Qwen3-1.7B"})()
+        return await self._start_clt_capability(agent_alias, spec, free[0])
+
     async def _start_clt_capability(
         self,
         endpoint_name: str,
@@ -1255,8 +1296,19 @@ class OrchestratorService:
             t.capability for t in current_tasks if t.capability
         }
 
+        thinking_running = next(
+            (t for t in current_tasks if t.endpoint_name == "thinking"),
+            None,
+        )
+        # Qwen3.8 thinking covers these; do not evict it for cap_reasoning (QwQ).
+        thinking_covers = {"reasoning", "thinking", "instruct", "chat"}
+
         for task_type in request.required_capabilities:
             capability_key = task_type.value
+
+            if thinking_running is not None and capability_key in thinking_covers:
+                target_tasks.append(thinking_running)
+                continue
 
             # If we already have this capability, keep it
             for task in current_tasks:
@@ -2406,6 +2458,16 @@ class OrchestratorService:
         if not self._auto_restart_enabled:
             return
 
+        live = self.get_endpoint_status(alias)
+        if live and (live.status or "").lower() in {
+            "starting",
+            "healthy",
+            "process_status_starting",
+            "process_status_healthy",
+        }:
+            logger.info("Skip auto-restart of %s: status=%s", alias, live.status)
+            return
+
         # Check restart attempts
         attempts = self._restart_attempts.get(alias, 0)
         if attempts >= self._max_restart_attempts:
@@ -2425,6 +2487,20 @@ class OrchestratorService:
         try:
             # Brief cooldown before restart
             await asyncio.sleep(5)
+
+            live = self.get_endpoint_status(alias)
+            if live and (live.status or "").lower() in {
+                "starting",
+                "healthy",
+                "process_status_starting",
+                "process_status_healthy",
+            }:
+                logger.info(
+                    "Skip auto-restart of %s after cooldown: status=%s",
+                    alias,
+                    live.status,
+                )
+                return
 
             # Restart the endpoint
             status = await self.restart_endpoint(alias)
@@ -2839,6 +2915,7 @@ class OrchestratorService:
         endpoints = {}
         for alias, proc in self._vllm._processes.items():
             message, progress = self._vllm.get_startup_progress(alias)
+            agent = self.config.agents.get(alias) if self.config else None
             endpoints[alias] = {
                 "model": proc.model,
                 "port": proc.port,
@@ -2848,6 +2925,7 @@ class OrchestratorService:
                 "startup_progress": progress,
                 "startup_message": message,
                 "requests_served": proc.requests_served,
+                "capabilities": list(agent.capabilities) if agent else [],
             }
 
         return {

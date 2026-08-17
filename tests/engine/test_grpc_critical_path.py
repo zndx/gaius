@@ -518,14 +518,13 @@ class TestComplete:
         assert response.tokens_used == 50
 
     @pytest.mark.asyncio
-    async def test_default_agent_is_instruct(self, servicer, mock_services, grpc_context):
-        """Empty agent_alias defaults to 'instruct'."""
+    async def test_default_agent_is_thinking(self, servicer, mock_services, grpc_context):
+        """Empty agent_alias defaults to 'thinking'."""
         request = CompleteRequest(prompt="Hello")
         await servicer.Complete(request, grpc_context)
 
-        # Verify backend was called with 'instruct'
         call_kwargs = mock_services.backend_router.complete.call_args.kwargs
-        assert call_kwargs["agent_alias"] == "instruct"
+        assert call_kwargs["agent_alias"] == "thinking"
 
 
 class TestCompleteEdgeCases:

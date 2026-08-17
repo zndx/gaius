@@ -4,3 +4,15 @@
 [submodule "external/signals-protocol"]
 	path = external/signals-protocol
 	url = git@github.com:zndx/signals-protocol.git
+[submodule "external/sdg-corpora"]
+	path = external/sdg-corpora
+	url = git@github.com:zndx/sdg-corpora.git
+	branch = trunk
+[submodule "external/sdg-strategy"]
+	path = external/sdg-strategy
+	url = git@github.com:zndx/sdg-strategy.git
+	branch = trunk
+[submodule "external/oss-grok-build"]
+	path = external/oss-grok-build
+	url = git@github.com:weathership/oss-grok-build.git
+	branch = main

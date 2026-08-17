@@ -29,11 +29,28 @@ class ModelCapability(Enum):
     ORCHESTRATION = auto()  # Task routing/planning
     TEXT_EMBEDDING = auto()  # Text to vector
     VISION_EMBEDDING = auto()  # Image to vector
-    VISION_LANGUAGE = auto()  # Multimodal understanding
+    VISION_LANGUAGE = auto()  # Multimodal understanding (surface label: vision)
     FUNCTION_CALLING = auto()  # Tool use
     LONG_CONTEXT = auto()  # Extended context window
     LATENT_MAS_CLT = auto()  # Cross-Layer Transcoder for latent-space operations
-    THINKING = auto()  # Model produces thinking traces (extended reasoning)
+    THINKING = auto()  # Request-mode thinking traces (on by default for Qwen3.8)
+    OPEN_THINKING = auto()  # Olmo 3: full model flow is public (data, code, checkpoints)
+
+    def surface_label(self) -> str:
+        """Operator-facing capability token. Ordered arrays use these strings."""
+        if self is ModelCapability.VISION_LANGUAGE:
+            return "vision"
+        if self is ModelCapability.OPEN_THINKING:
+            return "open-thinking"
+        if self is ModelCapability.TEXT_EMBEDDING:
+            return "text-embedding"
+        if self is ModelCapability.VISION_EMBEDDING:
+            return "vision-embedding"
+        if self is ModelCapability.FUNCTION_CALLING:
+            return "function-calling"
+        if self is ModelCapability.LONG_CONTEXT:
+            return "long-context"
+        return self.name.lower().replace("_", "-")
 
 
 class TaskType(Enum):
@@ -219,6 +236,10 @@ class ModelSpec:
     # Metadata
     description: str = ""
     tags: list[str] = field(default_factory=list)
+
+    def capability_labels(self) -> list[str]:
+        """Ordered surface labels (thinking before vision for Qwen3.8)."""
+        return [c.surface_label() for c in self.capabilities]
 
     def supports(self, capability: ModelCapability) -> bool:
         """Check if model has a capability."""
@@ -474,6 +495,27 @@ QWEN3_CODER = ModelSpec(
     tags=["coding", "general", "long-context"],
 )
 
+COLBERT_ZERO = ModelSpec(
+    model_id="lightonai/ColBERT-Zero",
+    name="ColBERT-Zero",
+    provider="colbert",
+    capabilities=[
+        ModelCapability.TEXT_EMBEDDING,
+    ],
+    task_scores={
+        TaskType.TEXT_EMBEDDING: 1.0,
+    },
+    embedding_dim=128,
+    context_length=519,
+    parameters_b=0.149,
+    memory_mb=600,
+    description=(
+        "Open late-interaction ColBERT (MaxSim, 128-d). "
+        "Contrastive pre-training in the multi-vector setting on public Nomic data."
+    ),
+    tags=["open-embedding", "colbert", "late-interaction", "pylate", "apache-2"],
+)
+
 # Text embedding - Nomic
 NOMIC_EMBED_TEXT = ModelSpec(
     model_id="nomic-ai/nomic-embed-text-v1",
@@ -635,53 +677,68 @@ META_LLAMA_3_1_8B_INSTRUCT = ModelSpec(
 # Kept for backwards compatibility with generated ModelSpecs
 # from gaius.models.registry import ModelSpec, VLLMConfig, ModelCapability, TaskType
 
-DEVSTRAL_SMALL_2_24B_INSTRUCT_2512 = ModelSpec(
-    model_id="mistralai/Devstral-Small-2-24B-Instruct-2512",
-    name="Devstral-Small-2-24B-Instruct-2512",
+QWEN38_27B = ModelSpec(
+    model_id="Qwen/Qwen3.8-27B",
+    name="Qwen3.8-27B",
     provider="vllm",
+    # thinking first, vision next — request-mode thinking, native VL
     capabilities=[
-        ModelCapability.CHAT,
-        ModelCapability.CODING,
-        ModelCapability.FUNCTION_CALLING,
+        ModelCapability.THINKING,
         ModelCapability.VISION_LANGUAGE,
+        ModelCapability.CHAT,
         ModelCapability.LONG_CONTEXT,
+        ModelCapability.FUNCTION_CALLING,
+        ModelCapability.CODING,
     ],
     task_scores={
-        TaskType.INSTRUCT: 1.0,  # Primary use: long-context instruction following
-        TaskType.CHAT: 0.85,
+        TaskType.THINKING: 1.0,
+        TaskType.INSTRUCT: 0.95,
+        TaskType.CHAT: 0.90,
         TaskType.CODING: 0.95,
-        TaskType.SWARM_AGENT: 0.80,
+        TaskType.SYNTHESIS: 0.90,
+        TaskType.SWARM_AGENT: 0.85,
     },
     context_length=262144,
-    parameters_b=24.0,
-    memory_mb=24000,  # ~24GB FP8 weights, distributed across 4 GPUs
-    default_temperature=0.7,
+    parameters_b=27.0,
+    memory_mb=54000,  # BF16 weights ~54GB, TP=4
+    default_temperature=1.0,
     default_max_tokens=2048,
     default_port=8091,
     vllm_config=VLLMConfig(
         tensor_parallel_size=4,
-        max_model_len=262144,  # Full 256K context
-        max_num_seqs=32,
-        gpu_memory_utilization=0.95,
-        enforce_eager=True,  # Skip CUDA graph compilation
+        max_model_len=262144,
+        max_num_seqs=8,
+        dtype="bfloat16",
+        trust_remote_code=True,
+        gpu_memory_utilization=0.90,
+        enforce_eager=True,
         swap_space=8,
+        reasoning_parser="qwen3",
+        extra_args={
+            "default-chat-template-kwargs": (
+                '{"enable_thinking":true,"preserve_thinking":true}'
+            ),
+        },
     ),
-    description="Devstral Small 2 24B Instruct - 256K context for multi-turn instruction following",
-    tags=["vllm", "fp8", "long-context", "instruct", "coding", "256k"],
+    description=(
+        "Qwen3.8-27B native BF16 — capabilities [thinking, vision]; "
+        "thinking on by default, multimodal VL"
+    ),
+    tags=["vllm", "bf16", "thinking", "vision", "long-context", "qwen3.8", "262k"],
 )
 
-# OLMo3-32B-Think - Extended reasoning with thinking traces
+# OLMo3-32B-Think — open-thinking (full model flow is public)
 OLMO3_32B_THINK = ModelSpec(
     model_id="allenai/Olmo-3-32B-Think",
     name="OLMo3-32B-Think",
     provider="vllm",
     capabilities=[
+        ModelCapability.OPEN_THINKING,
         ModelCapability.CHAT,
         ModelCapability.REASONING,
-        ModelCapability.THINKING,
     ],
     task_scores={
-        TaskType.THINKING: 1.0,  # Primary use: extended reasoning
+        TaskType.THINKING: 0.90,
         TaskType.REASONING: 0.95,
         TaskType.EVALUATION: 0.85,
         TaskType.SYNTHESIS: 0.80,
@@ -701,8 +758,11 @@ OLMO3_32B_THINK = ModelSpec(
         enforce_eager=True,  # Skip CUDA graph compilation
         swap_space=8,
     ),
-    description="OLMo3-32B-Think - extended reasoning with thinking traces (64K context)",
-    tags=["vllm", "thinking", "reasoning", "64k", "olmo"],
+    description=(
+        "Olmo 3-32B-Think — open-thinking: training data, code, and "
+        "checkpoints are public, not just weights"
+    ),
+    tags=["vllm", "open-thinking", "olmo", "model-flow", "64k"],
 )
 
 
@@ -852,6 +912,7 @@ CI_MODEL_MAPPING: dict[str, str] = {
     # Mistral family → CI_MISTRAL_TINY
     "mistralai/Mistral-7B-Instruct-v0.3": "ci-test/mistral-tiny",
     "mistralai/Devstral-Small-2-24B-Instruct-2512": "ci-test/mistral-tiny",
+    "Qwen/Qwen3.8-27B": "ci-test/qwen-tiny",
     # Orchestration → Use Qwen (closest to Llama-based NVIDIA model)
     "nvidia/Orchestrator-8B": "ci-test/qwen-tiny",
 }
@@ -896,7 +957,7 @@ class ModelRegistry:
     def _register_defaults(self) -> None:
         """Register default model set."""
         defaults = [
-            DEVSTRAL_SMALL_2_24B_INSTRUCT_2512,
+            QWEN38_27B,
             META_LLAMA_3_1_8B_INSTRUCT,
             QWEN3_8B,
             # Local vLLM models
@@ -906,9 +967,10 @@ class ModelRegistry:
             GLM_46V_FLASH,
             MISTRAL_7B,
             QWEN3_CODER,
-            # On-demand capabilities (thinking + instruct)
+            # On-demand capabilities (open-thinking)
             OLMO3_32B_THINK,
             # Embedding models
+            COLBERT_ZERO,
             NOMIC_EMBED_TEXT,
             NOMIC_EMBED_VISION,
             # API models

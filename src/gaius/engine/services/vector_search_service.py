@@ -70,9 +70,8 @@ class VectorSearchConfig:
 
     idle_timeout_s: int = 300  # Unload after 5 minutes idle
     max_queue_wait_s: int = 60  # Max time to wait for GPU
-    model_name: str = "nomic-ai/colnomic-embed-multimodal-7b"
-    # ColNomic 7B in bf16 requires ~15GB VRAM (7B params * 2 bytes = 14GB + overhead)
-    memory_mb: int = 15000  # GPU memory estimate (bf16)
+    model_name: str = "lightonai/ColBERT-Zero"
+    memory_mb: int = 2000  # 149M ModernBERT ColBERT-Zero
 
     @classmethod
     def from_env(cls) -> "VectorSearchConfig":

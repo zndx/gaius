@@ -1551,5 +1551,5 @@ Write in a clear, authoritative tone suitable for professional research output."
 
 
 if __name__ == "__main__":
-    apply_metaflow_config("local")
+    apply_metaflow_config()
     ResearchFlow()

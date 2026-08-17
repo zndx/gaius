@@ -1,6 +1,7 @@
 """Contextual explanations for grid state and overlays."""
 
 from ..core.state import ViewMode, OverlayMode
+from ..engine.services.cognition_buffer import NEXT_QUESTION_RESERVE_TOKENS
 
 
 def get_view_explanation(view_mode: ViewMode) -> str:
@@ -137,5 +138,21 @@ def generate_explanation(
         get_minigrid_explanation("Embed", x, y),
         "",
         get_minigrid_explanation("Iso", x, y),
+        "",
+        "---",
+        "",
+        "### Cognition",
+        (
+            "Universal agent context, held for **one next question** "
+            f"(reserve {NEXT_QUESTION_RESERVE_TOKENS} tokens) — not a "
+            "conversation, not a coding session."
+        ),
+        "",
+        f"- where: ({x}, {y})",
+        f"- doing: {view_mode.value} / {overlay_mode.value}",
+        "- decide: — (open; answers must inform a move here)",
+        "",
+        "Ollivier-Ricci κ is the GEOMETRY overlay on the 19×19. "
+        "Tenuki (`t`) annotates the same board (☆ last jump, ∘ visited).",
     ]
     return "\n".join(sections)

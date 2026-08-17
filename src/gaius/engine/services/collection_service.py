@@ -2033,7 +2033,21 @@ created_at: {now.isoformat()}
                 await asyncio.sleep(0.1)
 
                 try:
-                    # Run Metaflow flow module directly (not metaflow.cli)
+                    import time
+
+                    from gaius.engine.flow_processes import (
+                        SpawnedFlow,
+                        flow_processes,
+                    )
+                    from gaius.engine.sentinel_claim import (
+                        YkAdmitError,
+                        apply_and_admit,
+                        bind_workload_id,
+                        delete_flow_sentinel,
+                    )
+                    from gaius.flows.config import metaflow_child_env
+
+                    wid = ""
                     cmd = [
                         "uv", "run", "python", "-m", "gaius.flows.article_curation.flow",
                         "run",
@@ -2041,19 +2055,34 @@ created_at: {now.isoformat()}
                     if slug:
                         cmd.extend(["--article", slug])
 
-                    logger.info(f"Starting article curation: {' '.join(cmd)}")
+                    wid = bind_workload_id(
+                        "article-curate", f"article-curate-{int(time.time())}"
+                    )
+                    try:
+                        apply_and_admit(wid, "article-curate")
+                    except YkAdmitError as e:
+                        logger.error("article curate YK admit failed: %s", e)
+                        raise
 
-                    # Run Metaflow as subprocess
-                    # Uses inherited Metaflow configuration from environment
+                    logger.info(f"Starting article curation: {' '.join(cmd)} workload_id={wid}")
+
+                    env = metaflow_child_env()
+                    env["GAIUS_KB_ROOT"] = self._config.kb_root
+                    env["GAIUS_YK_APPLICATION_ID"] = wid
+
                     process = await asyncio.create_subprocess_exec(
                         *cmd,
                         cwd=os.environ.get("GAIUS_PROJECT_ROOT", os.getcwd()),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
-                        env={
-                            **os.environ,
-                            "GAIUS_KB_ROOT": self._config.kb_root,
-                        },
+                        env=env,
+                    )
+                    flow_processes().register(
+                        SpawnedFlow(
+                            workload_id=wid,
+                            kind="article-curate",
+                            proc=process,
+                        )
                     )
 
                     stdout, stderr = await process.communicate()
@@ -2092,7 +2121,24 @@ created_at: {now.isoformat()}
                         await event_queue.put(failed_event)
 
                 finally:
-                    # Signal completion
+                    # Keep the YK Application until the host child is gone
+                    # (Yield or natural end). A cancelled CLI stream must not
+                    # kubectl-delete the claim — that 404s extract mid-run.
+                    proc = None
+                    try:
+                        row = flow_processes().get(wid) if wid else None
+                        proc = row.proc if row else None
+                    except Exception:
+                        pass
+                    still_running = proc is not None and proc.returncode is None
+                    if still_running:
+                        logger.info(
+                            "leaving Application %s up (host child still running)",
+                            wid,
+                        )
+                    elif wid:
+                        flow_processes().unregister(wid)
+                        delete_flow_sentinel(wid)
                     await event_queue.put(None)
 
             flow_task = asyncio.create_task(run_flow())
@@ -2222,11 +2268,11 @@ created_at: {now.isoformat()}
             from gaius.inference.engine_client import get_engine_client, Message as EngMsg
 
             engine = await get_engine_client()
-            # TECH DEBT: Uses model="instruct" (direct vLLM). Should use model="leader"
+            # TECH DEBT: Uses model="thinking" (direct vLLM). Should use model="leader"
             # to route through optillm for prompt optimization.
             result = await engine.complete(
                 [EngMsg(role="user", content=prompt)],
-                model="instruct",
+                model="thinking",
                 temperature=0.7,
                 max_tokens=4096,
                 timeout=120.0,
@@ -2509,11 +2555,11 @@ created_at: {now.isoformat()}
                 f"Write for a technically literate audience. Use markdown formatting."
             )
 
-            # TECH DEBT: Uses model="instruct" (direct vLLM). Should use model="leader"
+            # TECH DEBT: Uses model="thinking" (direct vLLM). Should use model="leader"
             # to route through optillm for prompt optimization.
             result = await engine.complete(
                 [Message(role="user", content=prompt)],
-                model="instruct",
+                model="thinking",
                 temperature=0.7,
                 max_tokens=4096,
                 timeout=120.0,

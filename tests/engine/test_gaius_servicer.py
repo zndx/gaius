@@ -11,6 +11,7 @@ Critical Path Coverage:
 4. Error handling for missing services
 """
 
+import grpc
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from dataclasses import dataclass
@@ -138,6 +139,7 @@ class MockServiceRegistry:
         self.orchestrator_service = MagicMock() if has_orchestrator else None
         self.backend_router = MagicMock() if has_router else None
         self.init_controller = None
+        self.theta_service = None
 
         if has_config:
             self.config = MagicMock()
@@ -705,6 +707,79 @@ Coverage Focus:
 5. XAI Budget (lines 642-671):
    - Budget limits returned correctly
 """
+
+
+class TestThetaEngineFirst:
+    """Theta RPCs must not instantiate ThetaAgent in the servicer."""
+
+    @pytest.fixture
+    def servicer(self):
+        return GaiusServicer(MockServiceRegistry().as_registry())
+
+    @pytest.fixture
+    def context(self):
+        ctx = MagicMock()
+        ctx.abort = AsyncMock(side_effect=grpc.aio.AbortError("failed precondition"))
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_sitrep_aborts_without_theta_service(self, servicer, context):
+        from gaius.engine.generated import ThetaSitrepRequest
+
+        with pytest.raises(grpc.aio.AbortError):
+            await servicer.ThetaSitrep(ThetaSitrepRequest(horizon="day"), context)
+        detail = context.abort.await_args.args[1]
+        assert "#THETA.00000007.NOSVC" in detail
+
+    @pytest.mark.asyncio
+    async def test_consolidate_aborts_without_theta_service(self, servicer, context):
+        from gaius.engine.generated import ThetaConsolidateRequest
+
+        with pytest.raises(grpc.aio.AbortError):
+            await servicer.ThetaConsolidate(ThetaConsolidateRequest(), context)
+        assert "#THETA.00000007.NOSVC" in context.abort.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_stats_aborts_without_theta_service(self, servicer, context):
+        from gaius.engine.generated import ThetaConsolidationStatsRequest
+
+        with pytest.raises(grpc.aio.AbortError):
+            await servicer.ThetaConsolidationStats(
+                ThetaConsolidationStatsRequest(), context
+            )
+        assert "#THETA.00000007.NOSVC" in context.abort.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_sitrep_uses_theta_service(self, context):
+        from gaius.engine.generated import ThetaSitrepRequest
+
+        services = MockServiceRegistry()
+        theta = MagicMock()
+        theta.sitrep = AsyncMock(
+            return_value={
+                "success": True,
+                "report": {
+                    "system_status": {
+                        "healthy": True,
+                        "status_text": "ok",
+                        "gpu_count": 6,
+                        "endpoint_count": 1,
+                    },
+                    "priorities": [],
+                    "thoughts": [],
+                    "objectives": [],
+                    "project_count": 0,
+                },
+                "ascii_format": "GAIUS SITUATION REPORT",
+            }
+        )
+        services.theta_service = theta
+        servicer = GaiusServicer(services.as_registry())
+        resp = await servicer.ThetaSitrep(ThetaSitrepRequest(horizon="day"), context)
+        theta.sitrep.assert_awaited_once()
+        assert resp.success is True
+        assert resp.ascii_format == "GAIUS SITUATION REPORT"
+        context.abort.assert_not_awaited()
 
 
 if __name__ == "__main__":

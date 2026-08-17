@@ -627,5 +627,5 @@ class CardUpkeepFlow(TracedFlow, GaiusFlow):
 if __name__ == "__main__":
     # Apply Metaflow config before running
     from gaius.flows.config import apply_metaflow_config
-    apply_metaflow_config("local")
+    apply_metaflow_config()
     CardUpkeepFlow()

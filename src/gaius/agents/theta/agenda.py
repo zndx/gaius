@@ -6,7 +6,7 @@ them into a unified, priority-ordered agenda.
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -188,16 +188,19 @@ class AgendaAggregator:
         self.kb_root = Path(kb_root)
         self.projects_dir = self.kb_root / "current" / "projects"
 
+    def day_agenda_path(self) -> Path:
+        """Personal day rollup: ``current/agenda.md``."""
+        return self.kb_root / "current" / "agenda.md"
+
     def discover_agendas(self) -> list[Path]:
-        """Find all agenda.md files in projects.
-
-        Returns:
-            List of paths to agenda.md files.
-        """
-        if not self.projects_dir.exists():
-            return []
-
-        return list(self.projects_dir.glob("**/agenda.md"))
+        """Find the day rollup and all project ``agenda.md`` files."""
+        found: list[Path] = []
+        day = self.day_agenda_path()
+        if day.is_file():
+            found.append(day)
+        if self.projects_dir.exists():
+            found.extend(sorted(self.projects_dir.glob("**/agenda.md")))
+        return found
 
     def aggregate(
         self,
@@ -216,13 +219,14 @@ class AgendaAggregator:
         all_tasks = []
 
         for agenda_path in self.discover_agendas():
-            # Extract project name from path
-            # e.g., current/projects/gaius/agenda.md -> gaius
-            try:
-                rel_path = agenda_path.relative_to(self.projects_dir)
-                project_name = rel_path.parts[0] if rel_path.parts else ""
-            except ValueError:
-                project_name = agenda_path.parent.name
+            if agenda_path == self.day_agenda_path():
+                project_name = "today"
+            else:
+                try:
+                    rel_path = agenda_path.relative_to(self.projects_dir)
+                    project_name = rel_path.parts[0] if rel_path.parts else ""
+                except ValueError:
+                    project_name = agenda_path.parent.name
 
             tasks = parse_agenda_md(agenda_path, project_name)
             all_tasks.extend(tasks)
@@ -265,3 +269,75 @@ class AgendaAggregator:
         """
         tasks = self.aggregate(horizon)
         return [t.to_priority_item() for t in tasks[:limit]]
+
+    def init_day_agenda(self, horizon: Horizon = Horizon.DAY) -> dict[str, Any]:
+        """Create ``current/agenda.md`` if missing. Never overwrite.
+
+        Seeds from open P0/P1 project tasks in the horizon, or one starter
+        line so sitrep has something to roll up.
+        """
+        path = self.day_agenda_path()
+        rel = "current/agenda.md"
+        if path.is_file():
+            tasks = parse_agenda_md(path, project_name="today")
+            return {
+                "created": False,
+                "path": rel,
+                "items": tasks,
+            }
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        seeds = [
+            t
+            for t in self.aggregate(horizon)
+            if t.priority in ("P0", "P1")
+        ][:7]
+        today = date.today().isoformat()
+        lines = [
+            "# Agenda",
+            "",
+            f"horizon: {horizon.value}",
+            f"generated: {datetime.now().isoformat(timespec='seconds')}",
+            "",
+            "## Today",
+            "",
+        ]
+        if seeds:
+            for t in seeds:
+                due = t.due_date.isoformat() if t.due_date else "today"
+                proj = f" ({t.project})" if t.project else ""
+                lines.append(f"- [ ] {t.priority}: {t.description}{proj} @{due}")
+        else:
+            lines.append(f"- [ ] P1: Set today's priorities @{today}")
+        lines.append("")
+        path.write_text("\n".join(lines), encoding="utf-8")
+        tasks = parse_agenda_md(path, project_name="today")
+        return {
+            "created": True,
+            "path": rel,
+            "items": tasks,
+        }
+
+    def format_ascii(
+        self,
+        tasks: list[AgendaTask],
+        horizon: Horizon = Horizon.DAY,
+        path: str = "current/agenda.md",
+        created: bool | None = None,
+    ) -> str:
+        """80-col list for CLI / sitrep-adjacent display."""
+        lines = [f"AGENDA ({horizon.value})", path]
+        if created is True:
+            lines.append("created")
+        elif created is False:
+            lines.append("already exists")
+        if not tasks:
+            lines.append("  [--] No agenda items | /agenda init to create")
+        else:
+            for t in tasks:
+                box = "x" if t.completed else " "
+                due = t.due_date.isoformat() if t.due_date else ""
+                proj = f" ({t.project})" if t.project else ""
+                tail = f" @{due}" if due else ""
+                lines.append(f"  [{box}] {t.priority}: {t.description}{proj}{tail}")
+        return "\n".join(lines)

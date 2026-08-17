@@ -182,6 +182,7 @@ class AppState:
     gradient_field: list = field(default_factory=list)  # List of (x, y, gx, gy) gradient vectors
     divergence_map: list = field(default_factory=list)  # 19x19 divergence values
     tenuki_visited: set = field(default_factory=set)    # Set of (x, y) positions visited by tenuki
+    tenuki_target: Optional[tuple[int, int]] = None     # Last tenuki jump (annotated on the board)
 
     # Agent positions (list of (name, x, y, color))
     agent_positions: list = field(default_factory=list)
@@ -325,3 +326,17 @@ class AppState:
         col = chr(65 + self.cursor_x + (1 if self.cursor_x >= 8 else 0))  # Skip 'I'
         row = 19 - self.cursor_y
         return f"{col}{row}"
+
+    def curvature_at(self, x: int, y: int) -> float | None:
+        """Ollivier-Ricci κ at a grid cell, if the geometry map is loaded."""
+        cmap = self.curvature_map
+        if not cmap or y < 0 or y >= len(cmap):
+            return None
+        row = cmap[y]
+        if x < 0 or x >= len(row):
+            return None
+        return float(row[x])
+
+    @property
+    def cursor_kappa(self) -> float | None:
+        return self.curvature_at(self.cursor_x, self.cursor_y)

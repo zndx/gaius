@@ -318,7 +318,7 @@ class SearchFlow(TracedFlow, GaiusFlow):
                 action="phase_change",
                 params={
                     "change_type": "instruct_restore",
-                    "target_endpoint": "instruct",
+                    "target_endpoint": "thinking",
                     "await_healthy": True,
                 },
                 timeout=120.0,
@@ -392,7 +392,7 @@ Provide a clear, well-structured response that synthesizes information from all 
                 params={
                     "prompt": prompt,
                     "system_prompt": "You are a research assistant. Synthesize search results into a coherent response. Reference sources using [[wikilinks]] for KB docs and [Markdown links](url) for web sources.",
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": "cot_reflection",
                     "max_tokens": 2048,
                 },
@@ -699,5 +699,5 @@ Provide a thorough analysis that:
 
 
 if __name__ == "__main__":
-    apply_metaflow_config("local")
+    apply_metaflow_config()
     SearchFlow()

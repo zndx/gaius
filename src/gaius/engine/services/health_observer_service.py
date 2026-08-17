@@ -1070,6 +1070,50 @@ class HealthObserverService(BaseDaemon):
                     reason=str(e),
                 )
 
+    def _incident_too_old_to_restart(self, incident: HealthIncident) -> bool:
+        """Stale incidents escalate; they do not evict a live preload."""
+        try:
+            created = incident.created_at
+            if created.tzinfo:
+                created = created.replace(tzinfo=None)
+            age = (datetime.now() - created).total_seconds()
+        except Exception:
+            return False
+        if age > 600:
+            logger.info(
+                "Skip restart for stale incident %s age=%.0fs",
+                incident.fingerprint,
+                age,
+            )
+            return True
+        return False
+
+    def _skip_restart_if_loading(self, alias: str) -> bool:
+        """Do not evict a live STARTING/HEALTHY endpoint (instruct → thinking)."""
+        if not self._orchestrator:
+            return False
+        from ..config import resolve_agent_name
+
+        key = resolve_agent_name(alias)
+        status = self._orchestrator.get_endpoint_status(key)
+        if status is None:
+            return False
+        current = (status.status or "").lower()
+        if current in {
+            "starting",
+            "healthy",
+            "process_status_starting",
+            "process_status_healthy",
+        }:
+            logger.info(
+                "Skip restart of %s (incident alias %s): status=%s",
+                key,
+                alias,
+                status.status,
+            )
+            return True
+        return False
+
     async def _tier0_remediate(self, incident: HealthIncident) -> bool:
         """Tier 0 procedural remediation.
 
@@ -1086,8 +1130,16 @@ class HealthObserverService(BaseDaemon):
             return False
 
         try:
+            # Stale 70h VLLM_001:instruct / GPU_001 rows must not SIGKILL a
+            # fresh Qwen3.8 TP=4 load.
+            if self._incident_too_old_to_restart(incident):
+                return True
+            if self._skip_restart_if_loading("thinking"):
+                return True
             # Check if this is an endpoint issue
             if incident.failure_mode_id.startswith("VLLM"):
+                if self._skip_restart_if_loading(incident.endpoint):
+                    return True
                 await self._orchestrator.restart_endpoint(incident.endpoint)
                 return True
             elif incident.failure_mode_id.startswith("GPU"):
@@ -1100,6 +1152,8 @@ class HealthObserverService(BaseDaemon):
                     # Extract GPU ID from incident endpoint (e.g., "gpu_0" -> 0)
                     incident_gpu = int(incident.endpoint.split("_")[-1])
                     if incident_gpu in gpu_ids:
+                        if self._skip_restart_if_loading(alias):
+                            continue
                         await self._orchestrator.restart_endpoint(alias)
                 return True
             elif incident.failure_mode_id.startswith("PIPELINE"):

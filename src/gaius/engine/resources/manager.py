@@ -4,7 +4,7 @@ Manages GPU inventory, allocations, and scheduling for multi-GPU
 tensor-parallel configurations.
 
 Supports dynamic GPU swapping for transitioning between:
-- Default state: orchestrator(2) + instruct(4) = 6 GPUs
+- Default state: orchestrator(2) + thinking(4) = 6 GPUs
 - Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
 """
 
@@ -89,17 +89,32 @@ class ResourceManager:
     def get_free_gpus(self) -> list[int]:
         """Get list of unallocated, unreserved GPU IDs.
 
+        GPUs held by a live cross-project lease (a sibling engine's
+        tensor-parallel workers occupy that VRAM) are excluded — the
+        cleanup paths already spare those processes, and allocating on
+        top of them only produces vLLM engine-core init failures.
+
         Returns:
             Sorted list of available GPU IDs
         """
+        from gaius.engine.resources.gpu_leases import live_foreign_leased_gpu_ids
+
         allocated_gpus = set()
         for alloc in self.allocations.values():
             if alloc.state not in (AllocationState.FAILED, AllocationState.RELEASING):
                 allocated_gpus.update(alloc.gpu_ids)
 
+        foreign_leased = live_foreign_leased_gpu_ids()
+        if foreign_leased:
+            logger.debug(f"GPUs {sorted(foreign_leased)} held by cross-project leases")
+
         free = []
         for gpu_id in range(self.total_gpus):
-            if gpu_id not in allocated_gpus and gpu_id not in self.reserved_gpus:
+            if (
+                gpu_id not in allocated_gpus
+                and gpu_id not in self.reserved_gpus
+                and gpu_id not in foreign_leased
+            ):
                 free.append(gpu_id)
 
         return sorted(free)
@@ -207,14 +222,14 @@ class ResourceManager:
         """
         start_time = datetime.now()
 
-        # Check if agent config exists
-        if request.agent_alias not in self.config.agents:
-            return AllocationResult(
-                success=False,
-                error=f"Unknown agent: {request.agent_alias}",
-            )
+        from ..config import UnknownAgentError, require_agent
 
-        agent_config = self.config.agents[request.agent_alias]
+        try:
+            request.agent_alias, agent_config = require_agent(
+                self.config, request.agent_alias
+            )
+        except UnknownAgentError as e:
+            return AllocationResult(success=False, error=str(e))
 
         # Try immediate allocation
         try:
@@ -403,21 +418,21 @@ class ResourceManager:
     def plan_swap_for_reasoning(self) -> SwapPlan:
         """Plan resource swap to enable 4-GPU reasoning model.
 
-        Default state: orchestrator(2) + instruct(4) = 6 GPUs
+        Default state: orchestrator(2) + thinking(4) = 6 GPUs
         Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
 
         Returns:
             SwapPlan with endpoints to stop/start
         """
         # Reasoning needs 4 GPUs; we keep orchestrator (2 GPUs)
-        # So we need to stop: instruct (4 GPUs)
+        # So we need to stop: thinking (4 GPUs)
 
         endpoints_to_stop = []
         gpus_to_free = []
 
         # Check which endpoints are currently allocated
         for alias, alloc in self.allocations.items():
-            if alias == "instruct":
+            if alias in ("thinking", "instruct"):
                 endpoints_to_stop.append(alias)
                 gpus_to_free.extend(alloc.gpu_ids)
 
@@ -438,7 +453,7 @@ class ResourceManager:
         """Plan restoration to default GPU state after reasoning completes.
 
         Reasoning state: orchestrator(2) + reasoning(4) = 6 GPUs
-        Default state: orchestrator(2) + instruct(4) = 6 GPUs
+        Default state: orchestrator(2) + thinking(4) = 6 GPUs
 
         Returns:
             SwapPlan to restore default endpoints
@@ -452,20 +467,20 @@ class ResourceManager:
             gpus_to_free = list(self.allocations["reasoning"].gpu_ids)
 
         # Plan GPU allocation for default endpoints
-        # instruct: 4 GPUs
+        # thinking (Qwen3.8-27B): 4 GPUs
         gpus_to_allocate = {}
         if len(gpus_to_free) >= 4:
             gpus_to_allocate = {
-                "instruct": gpus_to_free[:4],
+                "thinking": gpus_to_free[:4],
             }
 
         return SwapPlan(
             endpoints_to_stop=endpoints_to_stop,
-            endpoints_to_start=["instruct"],
+            endpoints_to_start=["thinking"],
             gpus_to_free=gpus_to_free,
             gpus_to_allocate=gpus_to_allocate,
             reason="Restore default endpoint configuration",
-            estimated_duration_s=120,  # 2 minutes for instruct model
+            estimated_duration_s=120,
         )
 
     def can_execute_swap(self, plan: SwapPlan) -> tuple[bool, str]:
@@ -504,7 +519,7 @@ class ResourceManager:
         """Determine current GPU allocation mode.
 
         Returns:
-            "default" - instruct endpoint active
+            "default" - thinking endpoint active
             "reasoning" - reasoning endpoint active
             "mixed" - partial allocation
             "idle" - nothing allocated
@@ -513,7 +528,7 @@ class ResourceManager:
 
         if "reasoning" in active_endpoints:
             return "reasoning"
-        elif "instruct" in active_endpoints:
+        elif "thinking" in active_endpoints or "instruct" in active_endpoints:
             return "default"
         elif active_endpoints:
             return "mixed"

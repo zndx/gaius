@@ -1,8 +1,7 @@
-"""Prospects analysis module using Cerebras GLM 4.7 and XAI Grok.
+"""Prospects analysis via local thinking (Signals lattice Engine/Complete).
 
-This module provides:
-1. SEC filing analysis via Cerebras GLM 4.7 (~$0.06/filing)
-2. Position synthesis via XAI Grok (~$0.50/synthesis)
+Cerebras GLM and XAI Grok are not on this path. Metaflow steps call
+``gaius.flows.lattice.complete`` so RKE2 tasks hit host :50051.
 
 The analysis pipeline:
 1. Parse SEC filings (10-K, 10-Q, 8-K)
@@ -26,11 +25,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from gaius.engine.backends.external import CerebrasBackend, XAIBackend
 from gaius.flows.prospects.filing_preprocessor import (
     PreprocessedFiling,
     preprocess_filing,
 )
+from gaius.flows.prospects.tables import detect_tables, tables_text
+from gaius.flows.prospects.windows import admitted_text, scan_windows
 
 logger = logging.getLogger(__name__)
 
@@ -383,21 +383,67 @@ Produce a synthesis as JSON with this structure:
 }}"""
 
 
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    content = (raw or "").strip()
+    if content.startswith("```json"):
+        content = content[7:]
+    if content.startswith("```"):
+        content = content[3:]
+    if content.endswith("```"):
+        content = content[:-3]
+    content = content.strip()
+    start = content.find("{")
+    end = content.rfind("}") + 1
+    if start < 0 or end <= start:
+        raise AnalysisError(
+            f"thinking returned no JSON object: {content[:300]}",
+            guru_code="#PA.00000003.PARSEFAIL",
+        )
+    try:
+        data = json.loads(content[start:end])
+    except json.JSONDecodeError as e:
+        raise AnalysisError(
+            f"Failed to parse thinking JSON: {e}\nResponse: {content[:500]}",
+            guru_code="#PA.00000003.PARSEFAIL",
+        ) from e
+    if not isinstance(data, dict):
+        raise AnalysisError(
+            f"thinking JSON was {type(data).__name__}, not object",
+            guru_code="#PA.00000003.PARSEFAIL",
+        )
+    return data
+
+
+def _thinking_complete(
+    prompt: str,
+    *,
+    system_prompt: str,
+    json_schema: dict[str, Any] | None,
+    max_tokens: int,
+) -> Any:
+    from gaius.flows.lattice import complete
+
+    return complete(
+        prompt,
+        capability="thinking",
+        system_prompt=system_prompt,
+        max_tokens=max_tokens,
+        temperature=0.3,
+        json_schema=json_schema,
+        timeout_s=600.0,
+    )
+
+
 class ProspectsAnalyzer:
-    """Orchestrates SEC filing analysis and position synthesis.
+    """Filing analysis and position synthesis on local thinking."""
 
-    Uses:
-    - Cerebras GLM 4.7 for individual filing analysis (fast, cheap)
-    - XAI Grok for cross-filing synthesis (frontier quality)
-    """
+    def __init__(self, **_: object):
+        # No remote backends. Extra kwargs ignored for call-site compatibility.
+        return
 
-    def __init__(
-        self,
-        cerebras_backend: CerebrasBackend | None = None,
-        xai_backend: XAIBackend | None = None,
-    ):
-        self._cerebras = cerebras_backend or CerebrasBackend()
-        self._xai = xai_backend or XAIBackend()
+    @property
+    def is_available(self) -> dict[str, bool]:
+        return {"thinking": True, "cerebras": False, "xai": False}
 
     async def analyze_filing(
         self,
@@ -425,27 +471,37 @@ class ProspectsAnalyzer:
         Raises:
             AnalysisError: If analysis fails.
         """
-        if not self._cerebras.is_available:
-            raise AnalysisError(
-                "CEREBRAS_API_KEY not configured",
-                guru_code="#PA.00000004.NOPROVIDER",
-            )
+        # Aegir-grain windows + table detect, then local thinking.
+        # 30k-char keyword compact is no longer the analysis input.
+        encode_offsets = None
+        if use_preprocessing:
+            from gaius.flows.prospects.windows import colbert_offsets
 
-        # Preprocess large filings to extract salient content
-        # Threshold: 50K chars (~12K tokens) triggers preprocessing
-        # Target: 30K chars (~8K tokens) for analysis
-        preprocessed: PreprocessedFiling | None = None
-        if use_preprocessing and len(filing_content) > 50000:
-            preprocessed = preprocess_filing(filing_content, target_buffer_size=30000)
-            analysis_text = preprocessed.compact_buffer
-            logger.info(
-                f"Preprocessed {symbol} {filing_type}: "
-                f"{preprocessed.original_length:,} → {preprocessed.buffer_length:,} chars, "
-                f"sections: {preprocessed.sections_detected}"
-            )
-        else:
-            # Short filings or preprocessing disabled: use truncation as fallback
-            analysis_text = filing_content[:30000]
+            encode_offsets = colbert_offsets
+
+        scan = scan_windows(filing_content, encode_offsets=encode_offsets)
+        tables = detect_tables(filing_content)
+        window_blob = admitted_text(scan)
+        table_blob = tables_text(tables)
+        analysis_text = "\n\n".join(p for p in (window_blob, table_blob) if p)
+        if not analysis_text:
+            analysis_text = filing_content[:200_000]
+        preprocessed = PreprocessedFiling(
+            compact_buffer=analysis_text,
+            original_length=len(filing_content),
+            buffer_length=len(analysis_text),
+            sections_detected=["windows", "tables"] if tables or scan.windows else [],
+            table_rows_in_buffer=sum(t.rows for t in tables),
+            windows_selected=sum(1 for w in scan.windows if w.admitted),
+        )
+        logger.info(
+            "Prospects compact input %s %s: %s chars (%s windows, %s tables)",
+            symbol,
+            filing_type,
+            f"{len(analysis_text):,}",
+            preprocessed.windows_selected,
+            len(tables),
+        )
 
         # Prepare messages
         user_content = FILING_ANALYSIS_USER_TEMPLATE.format(
@@ -456,171 +512,57 @@ class ProspectsAnalyzer:
             filing_content=analysis_text,
         )
 
-        messages = [
-            {"role": "system", "content": FILING_ANALYSIS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-
-        # Call Cerebras with structured output to guarantee valid JSON
-        response = await self._cerebras.complete(
-            messages=messages,
-            model="zai-glm-4.7",
-            temperature=0.3,  # Lower for more consistent analysis
+        response = _thinking_complete(
+            user_content,
+            system_prompt=FILING_ANALYSIS_SYSTEM_PROMPT,
+            json_schema=FILING_ANALYSIS_SCHEMA,
             max_tokens=GLM_MAX_TOKENS,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "filing_analysis",
-                    "strict": True,
-                    "schema": FILING_ANALYSIS_SCHEMA,
-                },
-            },
         )
 
-        if not response.success:
-            raise AnalysisError(
-                f"Cerebras analysis failed: {response.error}",
-                guru_code="#PA.00000001.CEREBFAIL",
-            )
+        data = _parse_json_object(response.text)
+        metrics: dict[str, Any] = data.get("metrics", {})
 
-        # Parse JSON response (structured output guarantees valid JSON)
-        # However, GLM 4.7 has quirks where it may return non-JSON or malformed JSON
-        try:
-            content = response.content.strip()
-            data = None
-            needs_fallback = False
-            fallback_reason = ""
+        analysis = FilingAnalysis(
+            symbol=symbol,
+            filing_type=filing_type,
+            filing_date=filing_date,
+            revenue_yoy_change=metrics.get("revenue_yoy_change"),
+            gross_margin=metrics.get("gross_margin"),
+            net_income_yoy_change=metrics.get("net_income_yoy_change"),
+            free_cash_flow=metrics.get("free_cash_flow"),
+            key_highlights=data.get("key_highlights", []),
+            risk_factors=data.get("risk_factors", []),
+            guidance_changes=data.get("guidance_changes", []),
+            management_commentary=data.get("management_commentary", ""),
+            model_used=response.model or "thinking",
+            analysis_at=datetime.now(timezone.utc).isoformat(),
+            input_tokens=response.prompt_tokens,
+            output_tokens=response.completion_tokens,
+            cost_usd=0.0,
+            reasoning=response.reasoning_content or "",
+            preprocess_original_chars=preprocessed.original_length,
+            preprocess_buffer_chars=preprocessed.buffer_length,
+            preprocess_table_rows=preprocessed.table_rows_in_buffer,
+            preprocess_sections=preprocessed.sections_detected,
+            preprocessed_buffer=analysis_text,
+        )
 
-            # GLM 4.7 quirk: with complex content it may return reasoning in content
-            # instead of structured JSON. Detect this and retry without structured output.
-            if not content or not content.startswith("{"):
-                needs_fallback = True
-                fallback_reason = f"non-JSON content (starts with: {content[:50]}...)"
-            else:
-                # Try to parse the JSON
-                try:
-                    data = json.loads(content)
-                except json.JSONDecodeError as parse_err:
-                    # GLM may have returned malformed JSON (e.g., duplicate objects, trailing data)
-                    needs_fallback = True
-                    fallback_reason = f"malformed JSON: {parse_err}"
+        logger.info(
+            f"Analyzed {filing_type} for {symbol}: "
+            f"{len(analysis.key_highlights)} highlights, "
+            f"{len(analysis.risk_factors)} risks"
+        )
 
-            if needs_fallback:
-                logger.warning(
-                    f"GLM returned {fallback_reason} for {symbol} {filing_type}. "
-                    f"Attempting fallback without structured output..."
-                )
-                # Two-phase fallback: retry without structured output to get raw response
-                fallback_response = await self._cerebras.complete(
-                    messages=messages,
-                    model="zai-glm-4.7",
-                    temperature=0.3,
-                    max_tokens=GLM_MAX_TOKENS,
-                    # No response_format - let GLM respond naturally
-                )
-                if fallback_response.success:
-                    fallback_content = fallback_response.content.strip()
-                    logger.info(
-                        f"GLM fallback response for {symbol} {filing_type} "
-                        f"(first 500 chars):\n{fallback_content[:500]}"
-                    )
-                    # Try to extract JSON from fallback response
-                    # GLM may embed JSON within reasoning text
-                    json_start = fallback_content.find("{")
-                    json_end = fallback_content.rfind("}") + 1
-                    if json_start >= 0 and json_end > json_start:
-                        potential_json = fallback_content[json_start:json_end]
-                        try:
-                            data = json.loads(potential_json)
-                            logger.info(f"Extracted JSON from GLM reasoning for {symbol}")
-                            # Use the fallback response tokens for cost calculation
-                            response = fallback_response
-                            content = potential_json
-                        except json.JSONDecodeError as extract_err:
-                            # JSON extraction failed, raise with context
-                            raise AnalysisError(
-                                f"GLM returned reasoning instead of JSON for complex {filing_type}. "
-                                f"Original: {fallback_reason}. Extraction error: {extract_err}. "
-                                f"Content: {fallback_content[:300]}...",
-                                guru_code="#PA.00000003.PARSEFAIL",
-                            )
-                    else:
-                        raise AnalysisError(
-                            f"GLM returned reasoning without embedded JSON for {filing_type}. "
-                            f"Original: {fallback_reason}. Content: {fallback_content[:300]}...",
-                            guru_code="#PA.00000003.PARSEFAIL",
-                        )
-                else:
-                    raise AnalysisError(
-                        f"GLM fallback also failed: {fallback_response.error}",
-                        guru_code="#PA.00000001.CEREBFAIL",
-                    )
+        is_truncated = response.finish_reason == "length"
+        _emit_token_usage_event(
+            symbol=symbol,
+            filing_type=filing_type,
+            output_tokens=response.completion_tokens,
+            max_tokens=GLM_MAX_TOKENS,
+            is_truncated=is_truncated,
+        )
 
-            # Type narrowing: data is guaranteed to be a dict by this point
-            # (either from initial parse or fallback extraction, else we raised)
-            if data is None or not isinstance(data, dict):
-                raise AnalysisError(
-                    f"Internal error: data should be dict but got {type(data).__name__}",
-                    guru_code="#PA.00000004.TYPENARROW",
-                )
-
-            metrics: dict[str, Any] = data.get("metrics", {})
-
-            analysis = FilingAnalysis(
-                symbol=symbol,
-                filing_type=filing_type,
-                filing_date=filing_date,
-                revenue_yoy_change=metrics.get("revenue_yoy_change"),
-                gross_margin=metrics.get("gross_margin"),
-                net_income_yoy_change=metrics.get("net_income_yoy_change"),
-                free_cash_flow=metrics.get("free_cash_flow"),
-                key_highlights=data.get("key_highlights", []),
-                risk_factors=data.get("risk_factors", []),
-                guidance_changes=data.get("guidance_changes", []),
-                management_commentary=data.get("management_commentary", ""),
-                model_used="zai-glm-4.7",
-                analysis_at=datetime.now(timezone.utc).isoformat(),
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                cost_usd=_calculate_cerebras_cost(
-                    response.input_tokens, response.output_tokens
-                ),
-                # Capture chain-of-thought for distillation
-                reasoning=response.reasoning or "",
-                # Preprocessing statistics (if preprocessing was used)
-                preprocess_original_chars=preprocessed.original_length if preprocessed else 0,
-                preprocess_buffer_chars=preprocessed.buffer_length if preprocessed else 0,
-                preprocess_table_rows=preprocessed.table_rows_in_buffer if preprocessed else 0,
-                preprocess_sections=preprocessed.sections_detected if preprocessed else [],
-                # Preserve preprocessed buffer for Grok synthesis context
-                preprocessed_buffer=analysis_text,
-            )
-
-            logger.info(
-                f"Analyzed {filing_type} for {symbol}: "
-                f"{len(analysis.key_highlights)} highlights, "
-                f"{len(analysis.risk_factors)} risks, "
-                f"cost=${analysis.cost_usd:.4f}"
-            )
-
-            # Emit token usage event for monitoring
-            # Detect potential truncation: if output_tokens is very close to max_tokens
-            is_truncated = response.output_tokens >= (GLM_MAX_TOKENS * 0.95)
-            _emit_token_usage_event(
-                symbol=symbol,
-                filing_type=filing_type,
-                output_tokens=response.output_tokens,
-                max_tokens=GLM_MAX_TOKENS,
-                is_truncated=is_truncated,
-            )
-
-            return analysis
-
-        except json.JSONDecodeError as e:
-            raise AnalysisError(
-                f"Failed to parse analysis response: {e}\nResponse: {response.content[:500]}",
-                guru_code="#PA.00000003.PARSEFAIL",
-            )
+        return analysis
 
     async def synthesize_position(
         self,
@@ -643,12 +585,6 @@ class ProspectsAnalyzer:
         Raises:
             AnalysisError: If synthesis fails.
         """
-        if not self._xai.is_available:
-            raise AnalysisError(
-                "XAI_API_KEY not configured",
-                guru_code="#PA.00000004.NOPROVIDER",
-            )
-
         if not filing_analyses:
             raise AnalysisError(
                 "No filing analyses to synthesize",
@@ -666,7 +602,7 @@ class ProspectsAnalyzer:
         # Budget: ~500K tokens for filing content (~2M chars), leaving room for analyses + output
         filing_content_parts: list[str] = []
         total_content_chars = 0
-        max_content_chars = 2_000_000  # ~500K tokens budget for content
+        max_content_chars = 800_000  # thinking 262k ≈ unique-text budget, not 2M Grok
 
         for analysis in filing_analyses:
             if analysis.preprocessed_buffer and total_content_chars < max_content_chars:
@@ -688,84 +624,40 @@ class ProspectsAnalyzer:
             holders_context=holders_context or "No institutional holder data available.",
         )
 
-        messages = [
-            {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-
-        # Log context size for monitoring
         logger.info(
             f"Synthesis context for {symbol}: "
             f"filing_content={len(filing_content):,} chars, "
             f"analyses={len(analyses_json):,} chars"
         )
 
-        # Call XAI Grok with generous max_tokens
-        # Grok-3 supports up to 16K output tokens and 131K context
-        response = await self._xai.complete(
-            messages=messages,
-            temperature=0.5,
-            max_tokens=16384,
+        response = _thinking_complete(
+            user_content,
+            system_prompt=SYNTHESIS_SYSTEM_PROMPT,
+            json_schema=None,
+            max_tokens=8192,
         )
-
-        if not response.success:
-            raise AnalysisError(
-                f"XAI synthesis failed: {response.error}",
-                guru_code="#PA.00000002.XAIFAIL",
-            )
-
-        # Parse JSON response
-        try:
-            content = response.content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-
-            data = json.loads(content)
-
-            synthesis = PositionSynthesis(
-                symbol=symbol,
-                company_name=company_name,
-                conviction_score=float(data.get("conviction_score", 0.5)),
-                recommendation=data.get("recommendation", "hold"),
-                thesis_summary=data.get("thesis_summary", ""),
-                bull_case=data.get("bull_case", []),
-                bear_case=data.get("bear_case", []),
-                key_catalysts=data.get("key_catalysts", []),
-                risk_level=data.get("risk_level", "medium"),
-                key_risks=data.get("key_risks", []),
-                valuation_notes=data.get("valuation_notes", ""),
-                model_used="grok-4-1-fast",
-                synthesis_at=datetime.now(timezone.utc).isoformat(),
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                cost_usd=_calculate_xai_cost(
-                    response.input_tokens, response.output_tokens
-                ),
-            )
-
-            logger.info(
-                f"Synthesized position for {symbol}: "
-                f"conviction={synthesis.conviction_score:.2f}, "
-                f"recommendation={synthesis.recommendation}, "
-                f"cost=${synthesis.cost_usd:.4f}"
-            )
-
-            return synthesis
-
-        except (json.JSONDecodeError, ValueError) as e:
-            raise AnalysisError(
-                f"Failed to parse synthesis response: {e}\nResponse: {response.content[:500]}",
-                guru_code="#PA.00000003.PARSEFAIL",
-            )
-
-    @property
-    def is_available(self) -> dict[str, bool]:
-        """Check which backends are available."""
-        return {
-            "cerebras": self._cerebras.is_available,
-            "xai": self._xai.is_available,
-        }
+        data = _parse_json_object(response.text)
+        synthesis = PositionSynthesis(
+            symbol=symbol,
+            company_name=company_name,
+            conviction_score=float(data.get("conviction_score", 0.5)),
+            recommendation=data.get("recommendation", "hold"),
+            thesis_summary=data.get("thesis_summary", ""),
+            bull_case=data.get("bull_case", []),
+            bear_case=data.get("bear_case", []),
+            key_catalysts=data.get("key_catalysts", []),
+            risk_level=data.get("risk_level", "medium"),
+            key_risks=data.get("key_risks", []),
+            valuation_notes=data.get("valuation_notes", ""),
+            model_used=response.model or "thinking",
+            synthesis_at=datetime.now(timezone.utc).isoformat(),
+            input_tokens=response.prompt_tokens,
+            output_tokens=response.completion_tokens,
+            cost_usd=0.0,
+        )
+        logger.info(
+            f"Synthesized position for {symbol}: "
+            f"conviction={synthesis.conviction_score:.2f}, "
+            f"recommendation={synthesis.recommendation}"
+        )
+        return synthesis

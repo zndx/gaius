@@ -38,6 +38,42 @@ from .fmp_client import FMPClient, FMPClientConfig, SECFiling, InstitutionalHold
 logger = logging.getLogger(__name__)
 
 
+def _format_market_row(kind: str, row: dict[str, Any]) -> str:
+    """Turn one FMP market row into FIFO prose."""
+    symbol = str(row.get("symbol") or row.get("ticker") or "")
+    title = str(
+        row.get("title")
+        or row.get("companyName")
+        or row.get("targetedCompanyName")
+        or row.get("reportingName")
+        or symbol
+    )
+    when = str(
+        row.get("publishedDate")
+        or row.get("filingDate")
+        or row.get("transactionDate")
+        or row.get("acceptedDate")
+        or row.get("date")
+        or ""
+    )
+    body = str(
+        row.get("text")
+        or row.get("content")
+        or row.get("formType")
+        or row.get("transactionType")
+        or ""
+    )
+    extra = ""
+    if row.get("formType"):
+        extra = f" form={row.get('formType')}"
+    if row.get("chamber"):
+        extra += f" chamber={row.get('chamber')}"
+    if row.get("link") or row.get("url") or row.get("finalLink"):
+        extra += f" {row.get('finalLink') or row.get('link') or row.get('url')}"
+    text = f"{kind} {symbol} {when}\n{title}{extra}\n{body}".strip()
+    return text[:2500]
+
+
 class ProspectsError(Exception):
     """Prospects service error with Guru Meditation code."""
 
@@ -180,6 +216,9 @@ class ProspectsService:
 
         # FMP client (created on start)
         self._fmp_client: FMPClient | None = None
+        from gaius.engine.services.prospects_buffer import ProspectsBuffer
+
+        self._buffer = ProspectsBuffer(max_bytes=256 * 1024)
 
     async def start(self) -> None:
         """Start the prospects service."""
@@ -211,6 +250,121 @@ class ProspectsService:
 
         logger.info("Stopping ProspectsService")
         self._running = False
+
+    async def ingest_market_buffer(self) -> dict[str, Any]:
+        """Pull market-wide FMP streams into the RAM FIFO (not just watchlist)."""
+        from gaius.engine.services.prospects_buffer import ProspectsRole, entry
+
+        added = 0
+        errors: list[str] = []
+        watch = set(self._cached_candidates.keys())
+        async with FMPClient(FMPClientConfig(capture_enabled=False)) as fmp:
+            pulls: list[tuple[str, list[dict], str]] = []
+            try:
+                pulls.append(("stock-news", await fmp.get_latest_stock_news(limit=15), "news"))
+            except Exception as e:
+                errors.append(f"stock-news: {e}")
+            try:
+                pulls.append(("general-news", await fmp.get_latest_general_news(limit=8), "news"))
+            except Exception as e:
+                errors.append(f"general-news: {e}")
+            try:
+                pulls.append(("fmp-articles", await fmp.get_fmp_articles(limit=8), "article"))
+            except Exception as e:
+                errors.append(f"fmp-articles: {e}")
+            try:
+                pulls.append(("8k", await fmp.get_latest_8k(days=7, limit=20), "8-K"))
+            except Exception as e:
+                errors.append(f"8k: {e}")
+            try:
+                pulls.append(("insider", await fmp.get_latest_insider(limit=15), "insider"))
+            except Exception as e:
+                errors.append(f"insider: {e}")
+            try:
+                pulls.append(("ma", await fmp.get_latest_mergers(limit=10), "m&a"))
+            except Exception as e:
+                errors.append(f"ma: {e}")
+            try:
+                pulls.append(("congress", await fmp.get_latest_congress(limit=8), "congress"))
+            except Exception as e:
+                errors.append(f"congress: {e}")
+
+        for stream, rows, kind in pulls:
+            for row in rows:
+                text = _format_market_row(kind, row)
+                if not text:
+                    continue
+                symbol = str(row.get("symbol") or row.get("ticker") or "")
+                rec = entry(
+                    ProspectsRole.FMP,
+                    text,
+                    stream=stream,
+                    kind=kind,
+                    symbol=symbol,
+                    primary=symbol in watch,
+                    title=str(row.get("title") or row.get("companyName") or symbol),
+                )
+                await self._buffer.add_entry(rec)
+                added += 1
+
+        stats = self._buffer.get_stats()
+        return {
+            "ingested": added,
+            "errors": errors,
+            "buffer_bytes": stats.get("current_bytes"),
+            "buffer_entries": stats.get("entry_count"),
+        }
+
+    async def compact_buffer(self) -> dict[str, Any]:
+        """Compact FIFO prose with local thinking. Bind extract; no new GPU app."""
+        from gaius.engine.services.ambient_buffer import BufferRole
+        from gaius.engine.services.prospects_buffer import ProspectsRole, entry
+        from gaius.engine.sentinel_claim import (
+            YkAdmitError,
+            apply_and_admit,
+            bind_workload_id,
+        )
+        from gaius.flows.lattice import complete
+
+        items = await self._buffer.get_entries_by_role(BufferRole.CONTENT, limit=24)
+        if not items:
+            return {"skipped": True, "reason": "buffer empty"}
+        watch = set(self._cached_candidates.keys())
+        lines: list[str] = []
+        for it in items:
+            mark = "*" if it.metadata.get("primary") or it.metadata.get("symbol") in watch else " "
+            title = it.metadata.get("title") or it.metadata.get("kind") or ""
+            lines.append(f"[{mark}] {title}: {it.content[:400]}")
+        prompt = (
+            "You are compacting a live FMP market buffer for an investment desk.\n"
+            "Watchlist names are marked [*]. Other names are the market aperture.\n"
+            "Write: (1) watchlist-relevant items (2) market-wide items worth "
+            "a closer look (3) one-line risks. Be terse.\n\n"
+            + "\n".join(lines)
+        )
+        proposed = f"prospects-compact-{int(time.time())}"
+        try:
+            wid = bind_workload_id("prospects-compact", proposed)
+            apply_and_admit(wid, "prospects-compact")
+        except YkAdmitError as e:
+            return {"skipped": True, "reason": str(e).split("\n", 1)[0]}
+        try:
+            result = await asyncio.to_thread(
+                complete, prompt, max_tokens=700, temperature=0.2
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        text = (result.text or result.reasoning_content or "").strip()
+        if text:
+            await self._buffer.add_entry(
+                entry(ProspectsRole.COMPACT, text, source="thinking")
+            )
+        return {
+            "success": True,
+            "chars": len(text),
+            "model": result.model,
+            "prompt_tokens": result.prompt_tokens,
+        }
 
     async def _load_watchlist(self) -> list[str]:
         """Load prospect watchlist from HOCON config.
@@ -479,6 +633,7 @@ class ProspectsService:
                 update_recommended = True
                 update_reason = f"Last check was {hours_since_check:.0f} hours ago"
 
+        buf = self._buffer.get_stats()
         return {
             "profile": profile,
             "domain": domain,
@@ -490,6 +645,7 @@ class ProspectsService:
             ),
             "update_recommended": update_recommended,
             "update_reason": update_reason,
+            "buffer": buf,
         }
 
     async def run_check(
@@ -500,18 +656,33 @@ class ProspectsService:
     ) -> dict[str, Any]:
         """Run daily check for new SEC filings.
 
-        Cost: ~$0 (FMP API + local logic, no LLM calls)
+        Cost: ~$0 (FMP API + local logic, no LLM calls). Occupies
+        ``root.external.rate-metered`` for the duration, then releases
+        so the YK row comes and goes.
 
         This method can be triggered by pg_cron for automated daily checks.
-
-        Args:
-            profile: Profile name.
-            domain: Domain context.
-            force: Force check even if recently checked.
-
-        Returns:
-            Dict with update_recommended flag and details.
         """
+        from gaius.engine.sentinel_claim import (
+            YkAdmitError,
+            ephemeral_claim,
+            release_kind,
+        )
+
+        try:
+            ephemeral_claim("prospects-check", f"gaius-fmp-{int(time.time())}")
+        except YkAdmitError as e:
+            raise ProspectsError(str(e), guru_code=e.code) from e
+        try:
+            return await self._run_check_body(profile, domain, force)
+        finally:
+            release_kind("prospects-check")
+
+    async def _run_check_body(
+        self,
+        profile: str,
+        domain: str,
+        force: bool,
+    ) -> dict[str, Any]:
         # Check if FMP check is throttled (but always query HX for pending work)
         fmp_throttled = False
         if not force and self._last_check_at:
@@ -615,6 +786,9 @@ class ProspectsService:
 
         reason = ", ".join(reasons) if reasons else "System converged - no pending work"
 
+        market = await self.ingest_market_buffer()
+        compact = await self.compact_buffer()
+
         return {
             "update_recommended": update_recommended,
             "reason": reason,
@@ -624,6 +798,8 @@ class ProspectsService:
             "pending_analysis_by_symbol": pending_analysis,
             "pending_synthesis_count": pending_synthesis_count,
             "pending_synthesis_symbols": list(pending_synthesis.keys()),
+            "market_buffer": market,
+            "buffer_compact": compact,
         }
 
     async def run_update(
@@ -681,9 +857,29 @@ class ProspectsService:
         project_root = Path(__file__).parent.parent.parent.parent.parent
         flow_file = project_root / "src" / "gaius" / "flows" / "prospects" / "update_flow.py"
 
-        # Set environment with KB root
-        env = os.environ.copy()
+        from gaius.flows.config import metaflow_child_env
+        from gaius.engine.sentinel_claim import (
+            YkAdmitError,
+            apply_and_admit,
+            bind_workload_id,
+            delete_flow_sentinel,
+        )
+
+        env = metaflow_child_env()
         env["GAIUS_KB_ROOT"] = self._config.kb_root
+        proposed = f"prospects-update-{int(time.time())}"
+        wid = bind_workload_id("prospects-update", proposed)
+        minted = wid == proposed
+        env["GAIUS_YK_APPLICATION_ID"] = wid
+        try:
+            apply_and_admit(wid, "prospects-update")
+        except YkAdmitError as e:
+            yield {
+                "type": 10,
+                "progress": 0.0,
+                "message": str(e),
+            }
+            return
 
         try:
             # Use Metaflow Runner API for programmatic execution
@@ -762,6 +958,11 @@ class ProspectsService:
                 "progress": 0.0,
                 "message": f"Flow execution failed: {e}",
             }
+        finally:
+            # Reused extract claim (article-curate-*) stays; only tear down
+            # an Application this update minted.
+            if minted:
+                delete_flow_sentinel(wid)
 
     def _parse_flow_output(self, line: str, current_progress: float) -> dict[str, Any] | None:
         """Parse Metaflow output line and return progress event if recognized.

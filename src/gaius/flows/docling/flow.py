@@ -1,13 +1,27 @@
-"""ArxivDoclingFlow - Fetch arXiv paper, convert PDF to markdown, save to KB.
+"""ArxivDoclingFlow - Convert a PDF (arXiv or any URL) to markdown via docling.
+
+Two modes, auto-detected from the URL in the ``start`` step:
+
+- **arXiv mode** (the URL/ID resolves to an arXiv id): the original pipeline —
+  fetch metadata, archive PDF, convert, score, extract topics, write a
+  zettelkasten note into the KB.
+- **Generic mode** (any other PDF URL, with ``output_dir`` set): download the
+  PDF, convert to markdown, and write ``<stem>.md`` / ``.txt`` / ``.pdf`` into
+  ``output_dir``. Scoring and topic modeling are skipped (no arXiv
+  abstract/corpus to work from).
 
 This flow demonstrates Metaflow integration with Gaius:
-1. Parse arXiv URL and fetch metadata
-2. Download PDF from arXiv
-3. Optionally archive PDF to KB attachments
+1. Parse URL and (for arXiv) fetch metadata
+2. Download PDF
+3. Optionally archive PDF to KB attachments (arXiv mode)
 4. Use docling to convert PDF to markdown
-5. Score paper relevance using LLM with rubric
-6. Extract topics using LDA/LSA/HDP/BERTopic
-7. Create zettelkasten note in KB with full lineage
+5. Score paper relevance using LLM with rubric (arXiv mode)
+6. Extract topics using LDA/LSA/HDP/BERTopic (arXiv mode)
+7. Write output: KB zettelkasten (arXiv) or files in output_dir (generic)
+
+The class name is retained as ``ArxivDoclingFlow`` because the flow's class
+name and step names are matched as string literals elsewhere (LISTEN/NOTIFY
+event routing in flow_scheduler_service, nifi_som dataset generation).
 
 Topic modeling:
 - Supports Gensim (LDA, LSA, HDP) and BERTopic
@@ -26,11 +40,15 @@ Usage:
     # With topic modeling
     python -m gaius.flows.docling.flow run --arxiv_url "..." --enable_topics True --topic_model_type bertopic
 
+    # Generic PDF URL → markdown in a local directory
+    python -m gaius.flows.docling.flow run --source_url "https://host/paper.pdf" --output_dir ./build
+
     # K8s execution (via Argo Workflows)
     python -m gaius.flows.docling.flow argo-workflows create --arxiv_url "..."
 
     # Via CLI
     uv run gaius-cli --cmd "/flow run docling https://arxiv.org/abs/2312.12345"
+    uv run gaius-cli --cmd "/flow run docling https://host/paper.pdf ./build"
 """
 
 from __future__ import annotations
@@ -79,9 +97,13 @@ def extract_arxiv_id(url_or_id: str) -> str | None:
 
 @register_flow("docling")
 class ArxivDoclingFlow(TracedFlow, GaiusFlow):
-    """Fetch arXiv paper, convert PDF to markdown, save to KB.
+    """Convert a PDF (arXiv or any URL) to markdown via docling.
 
-    Tracks full lineage: arXiv URL → PDF → markdown → KB zettelkasten
+    Mode is auto-detected in ``start`` from the supplied URL:
+      - arXiv id resolvable and no ``output_dir`` → arXiv mode (KB zettelkasten)
+      - otherwise → generic mode (writes files into ``output_dir``)
+
+    Tracks full lineage: URL → PDF → markdown → output artifact.
 
     OTel Integration:
         - Inherits from TracedFlow for automatic span creation per step
@@ -89,10 +111,24 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         - correlation_id links this run to NiFi FlowFiles for end-to-end tracing
     """
 
+    # URL is accepted via either parameter; source_url wins if both are set.
     arxiv_url = Parameter(
         "arxiv_url",
-        help="arXiv abstract URL (e.g., https://arxiv.org/abs/2312.12345)",
-        required=True,
+        help="arXiv abstract URL or ID (e.g., https://arxiv.org/abs/2312.12345)",
+        default="",
+    )
+
+    source_url = Parameter(
+        "source_url",
+        help="Any PDF URL (generic mode). Alternative to arxiv_url.",
+        default="",
+    )
+
+    output_dir = Parameter(
+        "output_dir",
+        help="Local destination directory for generic-mode output (.md/.txt/.pdf). "
+        "Setting this forces generic mode even for arXiv URLs.",
+        default="",
     )
 
     archive_pdf = Parameter(
@@ -147,24 +183,54 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def start(self):
-        """Parse arXiv URL and fetch paper metadata."""
+        """Resolve the source URL and (for arXiv) fetch paper metadata."""
         import feedparser
         import httpx
 
-        # Emit semantic event for paper processing start
+        # Resolve URL from either parameter (source_url wins if both are set)
+        url = (self.source_url or self.arxiv_url).strip()
+        if not url:
+            raise ValueError(
+                "No URL provided.\n"
+                "  Guru Meditation: #DOCLING.00000004.NO_URL\n"
+                "  Pass --arxiv_url=<id|url> or --source_url=<pdf-url>."
+            )
+
+        # Emit semantic event for paper processing start. Use the lazy accessor:
+        # Metaflow runs each step in its own task process and does not persist
+        # attributes set in __init__, so self.correlation_id may be unset here.
         self.emit_event("paper.processing.started", {
-            "arxiv_url": self.arxiv_url,
-            "correlation_id": self.correlation_id,
+            "source_url": url,
+            "correlation_id": self.get_correlation_id(),
         })
 
-        # Extract arXiv ID
-        self.arxiv_id = extract_arxiv_id(self.arxiv_url)
-        if not self.arxiv_id:
-            raise ValueError(f"Could not extract arXiv ID from: {self.arxiv_url}")
+        # Mode detection: an arXiv id (and no explicit output_dir) → arXiv mode.
+        # An output_dir forces generic mode even for arXiv URLs (user wants files
+        # in a directory rather than a KB zettelkasten note).
+        self.arxiv_id = extract_arxiv_id(url)
+        self.mode = "arxiv" if (self.arxiv_id and not self.output_dir) else "generic"
 
+        if self.mode == "arxiv":
+            self._start_arxiv(httpx, feedparser)
+        else:
+            self._start_generic(url)
+
+        # Emit lineage START
+        from gaius.hx.lineage.events import Dataset
+
+        source_id = self.arxiv_id or url
+        source_type = "arxiv" if self.mode == "arxiv" else "url"
+        self.emit_lineage_start(
+            job_name="docling",
+            inputs=[Dataset.from_source(source_id, source_type)],
+        )
+
+        self.next(self.fetch_pdf)
+
+    def _start_arxiv(self, httpx, feedparser) -> None:
+        """Fetch metadata from the arXiv API (arXiv mode)."""
         print(f"Processing arXiv paper: {self.arxiv_id}")
 
-        # Fetch metadata from arXiv API
         api_url = "https://export.arxiv.org/api/query"
         params = {"id_list": self.arxiv_id, "max_results": 1}
         url = f"{api_url}?{urlencode(params)}"
@@ -212,15 +278,45 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         print(f"Authors: {', '.join(self.authors[:3])}{'...' if len(self.authors) > 3 else ''}")
         print(f"PDF URL: {self.pdf_url}")
 
-        # Emit lineage START
-        from gaius.hx.lineage.events import Dataset
+    def _start_generic(self, url: str) -> None:
+        """Set up state for a generic (non-arXiv) PDF URL.
 
-        self.emit_lineage_start(
-            job_name="arxiv_docling",
-            inputs=[Dataset.from_source(self.arxiv_id, "arxiv")],
-        )
+        Requires ``output_dir``. Metadata that the arXiv API would supply
+        (abstract, authors, categories, dates) is unavailable here, so those
+        are left empty and the downstream scoring/topic steps are skipped.
+        """
+        from urllib.parse import unquote, urlparse
 
-        self.next(self.fetch_pdf)
+        if not self.output_dir:
+            raise ValueError(
+                "Generic PDF URL requires --output_dir.\n"
+                "  Guru Meditation: #DOCLING.00000005.NO_OUTPUT_DIR\n"
+                f"  URL '{url}' is not an arXiv id; pass --output_dir=<dir>."
+            )
+
+        # Even in forced-generic mode, an arXiv id lets us resolve the real PDF.
+        if self.arxiv_id:
+            self.pdf_url = f"https://arxiv.org/pdf/{self.arxiv_id}.pdf"
+            default_stem = self.arxiv_id.replace("/", "_")
+        else:
+            self.pdf_url = url
+            basename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+            stem = basename
+            for ext in (".pdf", ".PDF"):
+                if stem.endswith(ext):
+                    stem = stem[: -len(ext)]
+            default_stem = stem or "document"
+
+        # Provisional title (refined from the markdown heading post-conversion)
+        self.title = default_stem
+        self.abstract = ""
+        self.authors = []
+        self.categories = []
+        self.published_at = None
+
+        print("Generic PDF mode")
+        print(f"PDF URL: {self.pdf_url}")
+        print(f"Output dir: {self.output_dir}")
 
     @traced_step
     @retry(times=3)
@@ -263,10 +359,14 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def archive_step(self):
-        """Optionally save PDF to KB archive."""
+        """Optionally save PDF to KB archive (arXiv mode only).
+
+        Generic-mode PDFs are written into ``output_dir`` in the output step,
+        where a clean title (from the converted markdown) is available.
+        """
         self.archive_path_result = None
 
-        if self.archive_pdf:
+        if self.archive_pdf and self.mode == "arxiv":
             if self.arxiv_id is None:
                 raise RuntimeError(
                     "arxiv_id not set in archive_step.\n"
@@ -325,6 +425,18 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
             # Export to markdown
             self.markdown = result.document.export_to_markdown()
 
+            # Plain-text export too (matches the .txt convention); fall back to
+            # markdown if the docling build lacks export_to_text.
+            try:
+                self.plain_text = result.document.export_to_text()
+            except Exception:
+                self.plain_text = self.markdown
+
+            # In generic mode we have no metadata title; derive one from the
+            # first markdown heading so the output files get a meaningful name.
+            if self.mode == "generic":
+                self.title = self._title_from_markdown(self.markdown) or self.title
+
             self.emit_event("docling.conversion.completed", {
                 "arxiv_id": self.arxiv_id,
                 "markdown_chars": len(self.markdown),
@@ -349,8 +461,11 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.paper_score = None
         self.rubric_version = None
 
-        if not self.enable_scoring:
-            print("Scoring disabled, skipping...")
+        if not self.enable_scoring or self.mode == "generic":
+            if self.mode == "generic":
+                print("Generic mode: skipping relevance scoring (no abstract)")
+            else:
+                print("Scoring disabled, skipping...")
             self.next(self.extract_topics)
             return
 
@@ -435,8 +550,11 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.topic_result = None
         self.topic_model_info = None
 
-        if not self.enable_topics:
-            print("Topic extraction disabled, skipping...")
+        if not self.enable_topics or self.mode == "generic":
+            if self.mode == "generic":
+                print("Generic mode: skipping topic extraction")
+            else:
+                print("Topic extraction disabled, skipping...")
             self.next(self.create_zettelkasten)
             return
 
@@ -613,7 +731,12 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
     @traced_step
     @step
     def create_zettelkasten(self):
-        """Create KB note with YAML frontmatter."""
+        """Write output: KB zettelkasten (arXiv) or files in output_dir (generic)."""
+        if self.mode == "generic":
+            self._write_generic_output()
+            self.next(self.end)
+            return
+
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H%M%S")
@@ -707,6 +830,52 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
 
         self.next(self.end)
 
+    @staticmethod
+    def _title_from_markdown(md: str) -> str | None:
+        """Return the first markdown heading text, or None if there is none."""
+        for line in md.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                return stripped.lstrip("#").strip() or None
+        return None
+
+    def _write_generic_output(self) -> None:
+        """Write markdown/text/pdf into ``output_dir`` (generic mode)."""
+        out_dir = Path(self.output_dir).expanduser()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        stem = safe_filename(self.title) or "document"
+        md_path = out_dir / f"{stem}.md"
+        md_path.write_text(self.markdown)
+        written = [str(md_path)]
+
+        txt_path = out_dir / f"{stem}.txt"
+        txt_path.write_text(self.plain_text)
+        written.append(str(txt_path))
+
+        if self.archive_pdf:
+            pdf_path = out_dir / f"{stem}.pdf"
+            pdf_path.write_bytes(self.pdf_bytes)
+            written.append(str(pdf_path))
+
+        # Canonical output path (consumed by the runner's stdout parser) and a
+        # `document` artifact for parity with the zettelkasten path.
+        self.kb_path = str(md_path)
+        self.document = self.markdown
+        self.output_files = written
+
+        self.emit_event(EventNames.ZETTELKASTEN_CREATED, {
+            "source_url": self.pdf_url,
+            "kb_path": self.kb_path,
+            "document_size": len(self.markdown),
+        })
+
+        print(f"Wrote {len(written)} file(s) to {out_dir}:")
+        for path in written:
+            print(f"  - {path}")
+        # Stable token parsed by run_flow_with_gpu_management
+        print(f"Created output: {self.kb_path}")
+
     @traced_step
     # Metaflow @card stubs don't include `type` kwarg - see GitHub #15
     @card(type="blank")  # type: ignore[unknown-argument] - Metaflow stubs incomplete, type= is valid
@@ -718,7 +887,7 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         self.emit_event("paper.processing.completed", {
             "arxiv_id": self.arxiv_id,
             "kb_path": self.kb_path,
-            "correlation_id": self.correlation_id,
+            "correlation_id": self.get_correlation_id(),
         })
 
         # Collect outputs
@@ -745,9 +914,13 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
 
         # Build summary card
         current.card.append(Markdown("# ArxivDoclingFlow Summary"))
-        current.card.append(Markdown(f"**arXiv ID:** [{self.arxiv_id}](https://arxiv.org/abs/{self.arxiv_id})"))
+        if self.mode == "arxiv":
+            current.card.append(Markdown(f"**arXiv ID:** [{self.arxiv_id}](https://arxiv.org/abs/{self.arxiv_id})"))
+        else:
+            current.card.append(Markdown(f"**Source URL:** {self.pdf_url}"))
         current.card.append(Markdown(f"**Title:** {self.title}"))
-        current.card.append(Markdown(f"**KB Note:** `{self.kb_path}`"))
+        output_label = "KB Note" if self.mode == "arxiv" else "Output"
+        current.card.append(Markdown(f"**{output_label}:** `{self.kb_path}`"))
 
         # Stats table
         stats = [
@@ -764,7 +937,8 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
 
         # Lineage
         current.card.append(Markdown("## Lineage"))
-        lineage_items = [f"- Input: `arXiv:{self.arxiv_id}`", f"- Output: `{self.kb_path}`"]
+        input_ref = f"arXiv:{self.arxiv_id}" if self.mode == "arxiv" else self.pdf_url
+        lineage_items = [f"- Input: `{input_ref}`", f"- Output: `{self.kb_path}`"]
         if self.archive_path_result:
             lineage_items.append(f"- Archive: `{self.archive_path_result}`")
         if self.rubric_version:
@@ -776,9 +950,12 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         print("=" * 60)
         print("  ArxivDoclingFlow Complete")
         print("=" * 60)
-        print(f"  arXiv ID:      {self.arxiv_id}")
+        if self.mode == "arxiv":
+            print(f"  arXiv ID:      {self.arxiv_id}")
+        else:
+            print(f"  Source URL:    {self.pdf_url}")
         print(f"  Title:         {self.title[:50]}...")
-        print(f"  KB Note:       {self.kb_path}")
+        print(f"  {'KB Note' if self.mode == 'arxiv' else 'Output':<13}: {self.kb_path}")
         if self.archive_path_result:
             print(f"  PDF Archive:   {self.archive_path_result}")
         print(f"  Markdown:      {len(self.markdown):,} characters")
@@ -787,11 +964,12 @@ class ArxivDoclingFlow(TracedFlow, GaiusFlow):
         if self.topic_model_info:
             print(f"  Topics:        {self.topic_model_info['num_topics']} ({self.topic_model_info['model_type']})")
         print("")
-        print(f"  Lineage: arXiv:{self.arxiv_id} → {self.kb_path}")
+        input_ref = f"arXiv:{self.arxiv_id}" if self.mode == "arxiv" else self.pdf_url
+        print(f"  Lineage: {input_ref} → {self.kb_path}")
         print("=" * 60)
 
 
 if __name__ == "__main__":
     # Apply Metaflow config before running
-    apply_metaflow_config("local")
+    apply_metaflow_config()
     ArxivDoclingFlow()

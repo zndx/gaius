@@ -205,7 +205,7 @@ async def _fallback_evict_endpoints(required_memory_mb: int) -> tuple[bool, list
 
         # Stop endpoints in priority order (lowest priority first)
         # Priority: reasoning > orchestrator > instruct
-        stop_order = ["instruct"]
+        stop_order = ["thinking"]
 
         for endpoint_name in stop_order:
             try:
@@ -367,11 +367,10 @@ async def run_flow_with_gpu_management(
         logger.info(f"Running flow {flow_class.__name__} with args: {flow_args}")
 
         # Apply Metaflow config
-        from gaius.flows.config import apply_metaflow_config
-        apply_metaflow_config("local")
+        from gaius.flows.config import metaflow_child_env
 
-        # Set up environment with CUDA_VISIBLE_DEVICES
-        env = os.environ.copy()
+        # Set up environment with CUDA_VISIBLE_DEVICES + resolved Metaflow profile
+        env = metaflow_child_env()
         if cuda_devices:
             env["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
@@ -401,10 +400,12 @@ async def run_flow_with_gpu_management(
                 duration_s=duration,
             )
 
-        # Extract output path from stdout if available
+        # Extract output path from stdout if available. Tokens cover both the
+        # arXiv zettelkasten path and the generic output_dir path.
         output_path = None
+        _output_tokens = ("KB Note:", "Created zettelkasten", "Created output:")
         for line in flow_result.stdout.split("\n"):
-            if "KB Note:" in line or "Created zettelkasten" in line:
+            if any(tok in line for tok in _output_tokens):
                 parts = line.split(":")
                 if len(parts) >= 2:
                     output_path = parts[-1].strip()

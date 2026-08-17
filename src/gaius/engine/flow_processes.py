@@ -63,6 +63,10 @@ class FlowProcessTable:
         if row is None:
             return False, f"no spawned flow for workload_id={workload_id or '(empty)'}"
         ended = await _terminate(row.proc)
+        # Application teardown is Yield — not host-flow start.
+        from gaius.engine.sentinel_claim import delete_flow_sentinel
+
+        delete_flow_sentinel(workload_id)
         msg = (
             f"ended {row.kind} pid={row.pid} workload_id={workload_id}"
             if ended

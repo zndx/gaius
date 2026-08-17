@@ -209,7 +209,7 @@ class AgendaTracker:
             baseline_endpoints: List of endpoints that constitute baseline
         """
         self._db_pool = db_pool
-        self._baseline_endpoints = baseline_endpoints or ["orchestrator", "instruct"]
+        self._baseline_endpoints = baseline_endpoints or ["orchestrator", "thinking"]
 
         # Active operations (routine tracking)
         self._active_operations: dict[str, AgendaOperation] = {}

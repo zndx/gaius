@@ -14,7 +14,7 @@ Usage:
     scheduler = MakespanScheduler(total_gpus=6)
 
     current = [
-        SchedulingTask("instruct", "instruct", "model", required_gpus=4, fixed_gpu_ids=[0,1,2,3]),
+        SchedulingTask("thinking", "thinking", "model", required_gpus=4, fixed_gpu_ids=[0,1,2,3]),
     ]
 
     target = [

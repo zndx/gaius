@@ -191,7 +191,7 @@ class ParallelSynthesizer:
     ) -> tuple[Optional[str], Optional[str], Optional[str], int]:
         """Run local instruct synthesis via gRPC.
 
-        Uses the engine's Scheduler.complete with agent="instruct" and
+        Uses the engine's Scheduler.complete with agent="thinking" and
         technique="cot_reflection" for chain-of-thought reasoning.
 
         Returns:
@@ -208,7 +208,7 @@ class ParallelSynthesizer:
                 params={
                     "prompt": context,
                     "system_prompt": system_prompt,
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": "cot_reflection",
                     "max_tokens": 4096,
                 },

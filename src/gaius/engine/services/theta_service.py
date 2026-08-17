@@ -329,6 +329,70 @@ class ThetaService(BaseDaemon):
                 "guru_code": guru_code,
             }
 
+    def agenda(self, action: str = "list", horizon: str = "day") -> dict[str, Any]:
+        """List or init the KB day agenda.
+
+        Args:
+            action: ``list`` or ``init``
+            horizon: day | week | quarter | open
+        """
+        from gaius.agents.theta.horizons import Horizon
+        from gaius.agents.theta.agenda import AgendaAggregator, AgendaTask
+
+        action = (action or "list").strip().lower()
+        if action not in ("list", "init"):
+            return {
+                "success": False,
+                "action": action,
+                "horizon": horizon,
+                "error": f"Unknown agenda action: {action} (list|init)",
+            }
+
+        try:
+            hz = Horizon(horizon.lower()) if horizon else Horizon.DAY
+        except ValueError:
+            return {
+                "success": False,
+                "action": action,
+                "horizon": horizon,
+                "error": f"Unknown horizon: {horizon}",
+            }
+
+        agent = self._get_agent()
+        agg: AgendaAggregator = agent.agenda
+        created: bool | None = None
+        if action == "init":
+            result = agg.init_day_agenda(hz)
+            created = bool(result["created"])
+            tasks: list[AgendaTask] = result["items"]
+            path = result["path"]
+        else:
+            tasks = agg.aggregate(hz)
+            day = agg.day_agenda_path()
+            path = "current/agenda.md" if day.is_file() else ""
+
+        def _item(t: AgendaTask) -> dict[str, Any]:
+            return {
+                "description": t.description,
+                "priority": t.priority,
+                "project": t.project,
+                "due_date": t.due_date.isoformat() if t.due_date else "",
+                "completed": t.completed,
+                "source_path": t.source_path,
+            }
+
+        return {
+            "success": True,
+            "action": action,
+            "horizon": hz.value,
+            "path": path,
+            "created": bool(created) if created is not None else False,
+            "items": [_item(t) for t in tasks],
+            "ascii_format": agg.format_ascii(
+                tasks, horizon=hz, path=path or "current/agenda.md", created=created
+            ),
+        }
+
     def get_consolidation_stats(self) -> dict[str, Any]:
         """Get consolidation statistics.
 

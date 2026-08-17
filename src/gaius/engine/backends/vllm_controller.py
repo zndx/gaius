@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from collections import deque
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -23,6 +24,168 @@ from ..resources import (
     ResourceManager,
     ResourceUnavailable,
 )
+
+_NIX_GCC_MARKERS = ("gcc-wrapper", "/gcc-", "gcc-15")
+_REAL_CUDA_HOME = Path("/usr/local/cuda")
+_HOST_GCC = Path("/usr/bin/gcc-11")
+_HOST_GXX = Path("/usr/bin/g++-11")
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_TINYBOX_CUDA_HOME = _REPO_ROOT / ".devenv" / "tinybox-cuda"
+_TINYBOX_NVCC_SRC = _REPO_ROOT / "scripts" / "lib" / "tinybox-nvcc.sh"
+_TINYBOX_NINJA_SRC = _REPO_ROOT / "scripts" / "lib" / "tinybox-ninja.sh"
+
+# Health checks pass timeout=5 on the same client. Complete must outlast
+# Qwen thinking + a queued peer on the shared thinking endpoint. Grok's
+# stream idle is 300s; stay under that so the façade can still emit SSE.
+VLLM_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=30.0)
+GURU_VLLM_TIMEOUT = "#EP.00000006.VLLMTIMEOUT"
+
+
+def format_vllm_http_error(exc: BaseException) -> str:
+    """Non-empty vLLM HTTP error. Empty ``str(httpx.ReadTimeout)`` is falsy
+    and used to leak a successful Complete with no tokens.
+    """
+    name = type(exc).__name__
+    detail = str(exc).strip()
+    if isinstance(exc, httpx.TimeoutException):
+        msg = f"{name}: {detail}" if detail else f"{name}: vLLM HTTP timed out"
+        return (
+            f"{msg}\n"
+            f"  Guru: {GURU_VLLM_TIMEOUT}\n"
+            f"  Try: /health fix endpoints"
+        )
+    if detail:
+        return f"{name}: {detail}"
+    return name
+
+
+def _host_ninja() -> Path | None:
+    home = Path(os.environ.get("HOME", "") or "") / ".local" / "bin" / "ninja"
+    for candidate in (home, Path("/usr/bin/ninja"), Path("/usr/local/bin/ninja")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _ensure_tinybox_cuda_home() -> Path | None:
+    """Shadow CUDA_HOME so torch hits a host-LD nvcc wrapper, not /usr/local/cuda/bin/nvcc.
+
+    Real nvcc then execs cicc from the toolkit tree; the wrapper's LD_LIBRARY_PATH
+    is what cicc inherits. Nix python/ninja keep the parent LD (they need Nix glibc).
+    """
+    if not (_REAL_CUDA_HOME / "bin" / "nvcc").is_file():
+        return None
+    if not _TINYBOX_NVCC_SRC.is_file():
+        raise RuntimeError(
+            "Tinybox nvcc wrapper missing.\n"
+            f"  Expected: {_TINYBOX_NVCC_SRC}\n"
+            "  #EP.00000005.TINYBOXCUDA"
+        )
+    root = _TINYBOX_CUDA_HOME
+    bin_dir = root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for src, name in ((_TINYBOX_NVCC_SRC, "nvcc"), (_TINYBOX_NINJA_SRC, "ninja")):
+        if not src.is_file():
+            raise RuntimeError(
+                f"Tinybox {name} wrapper missing.\n"
+                f"  Expected: {src}\n"
+                "  #EP.00000005.TINYBOXCUDA"
+            )
+        dest = bin_dir / name
+        if dest.is_symlink() or dest.exists():
+            dest.unlink()
+        dest.symlink_to(src)
+        if not os.access(dest, os.X_OK):
+            raise RuntimeError(
+                f"Tinybox {name} wrapper is not executable: {src}\n"
+                "  #EP.00000005.TINYBOXCUDA"
+            )
+    for name in ("include", "lib64", "nvvm", "extras", "targets", "version.json"):
+        src = _REAL_CUDA_HOME / name
+        dst = root / name
+        if src.exists() and not dst.exists():
+            dst.symlink_to(src)
+    for item in (_REAL_CUDA_HOME / "bin").iterdir():
+        if item.name == "nvcc":
+            continue
+        dest = bin_dir / item.name
+        if not dest.exists() and not dest.is_symlink():
+            dest.symlink_to(item)
+    return root
+
+
+def _tinybox_cuda_compile_env(env: dict[str, str]) -> dict[str, str]:
+    """Host gcc-11 + CUDA 12.4; Nix libstdc++ must not reach cicc.
+
+    The vLLM child is Nix python (needs Nix glibc via PT_INTERP/RUNPATH).
+    cicc is a host ELF. Isolate the CUDA 12.4 frontend with a CUDA_HOME
+    whose bin/nvcc rewrites LD_LIBRARY_PATH to host libs only.
+    """
+    cleaned = dict(env)
+    if _HOST_GXX.is_file() and _HOST_GCC.is_file():
+        cleaned["CC"] = str(_HOST_GCC)
+        cleaned["CXX"] = str(_HOST_GXX)
+        cleaned["CUDAHOSTCXX"] = str(_HOST_GXX)
+        cleaned["NVCC_PREPEND_FLAGS"] = "-ccbin=/usr/bin/g++-11"
+    for key in list(cleaned):
+        if key.startswith("NIX_"):
+            cleaned.pop(key, None)
+    for key in ("LIBRARY_PATH", "CPLUS_INCLUDE_PATH", "C_INCLUDE_PATH", "CPATH"):
+        cleaned.pop(key, None)
+
+    original_ld = [p for p in cleaned.get("LD_LIBRARY_PATH", "").split(":") if p]
+    nvidia_libs = next((p for p in original_ld if p.endswith("nvidia-libs")), None)
+    # Nix python (PT_INTERP → Nix glibc). Host /usr/lib on LD_LIBRARY_PATH
+    # makes it load Ubuntu libc 2.35 and abort (stack smash, exit -6).
+    # cicc/as get host libs from scripts/lib/tinybox-nvcc.sh, not from here.
+    keep_ld: list[str] = []
+    if nvidia_libs:
+        keep_ld.append(nvidia_libs)
+    for p in ("/usr/local/cuda/lib64", "/usr/local/cuda/extras/CUPTI/lib64"):
+        if p not in keep_ld and (p in original_ld or Path(p).is_dir()):
+            keep_ld.append(p)
+    cleaned["LD_LIBRARY_PATH"] = ":".join(keep_ld)
+
+    shadow = _ensure_tinybox_cuda_home()
+    if shadow is not None:
+        cleaned["CUDA_HOME"] = str(shadow)
+        cleaned["CUDA_PATH"] = str(shadow)
+        cleaned["CUDACXX"] = str(shadow / "bin" / "nvcc")
+        cleaned["NINJA"] = str(shadow / "bin" / "ninja")
+        cleaned["CMAKE_MAKE_PROGRAM"] = str(shadow / "bin" / "ninja")
+    else:
+        cleaned["CUDA_HOME"] = cleaned.get("CUDA_HOME") or "/usr/local/cuda"
+        host_ninja = _host_ninja()
+        if host_ninja is not None:
+            cleaned["NINJA"] = str(host_ninja)
+            cleaned["CMAKE_MAKE_PROGRAM"] = str(host_ninja)
+
+    original_path = [p for p in cleaned.get("PATH", "").split(":") if p]
+    venv_bins = [
+        p
+        for p in original_path
+        if p.endswith("/.devenv/state/venv/bin") or p.endswith("/venv/bin")
+    ]
+    front: list[str] = []
+    if shadow is not None:
+        front.append(str(shadow / "bin"))
+    front.extend(["/usr/local/cuda/bin", "/usr/bin", "/bin"])
+    rest = [
+        p
+        for p in original_path
+        if p not in front
+        and p not in venv_bins
+        and not p.startswith("/nix/store/")
+        and not any(m in p for m in _NIX_GCC_MARKERS)
+    ]
+    seen: list[str] = []
+    for p in venv_bins + front + rest:
+        if p and p not in seen:
+            seen.append(p)
+    cleaned["PATH"] = ":".join(seen)
+    cleaned.setdefault("TORCH_CUDA_ARCH_LIST", "8.9")
+    cleaned.setdefault("MAX_JOBS", "4")
+    return cleaned
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +272,15 @@ class VLLMRequest:
         agent_alias: Agent this request is for
     """
 
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     model: str
     temperature: float = 0.7
     max_tokens: int = 2048
     agent_alias: Optional[str] = None
+    enable_thinking: bool = True
+    reasoning_effort: str = "xhigh"
+    preserve_thinking: bool = True
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -127,6 +294,7 @@ class VLLMResponse:
         output_tokens: Number of output tokens
         latency_ms: Request latency in milliseconds
         error: Error message if request failed
+        reasoning_content: Thinking trace when the model emits one
     """
 
     content: str
@@ -135,6 +303,7 @@ class VLLMResponse:
     output_tokens: int = 0
     latency_ms: int = 0
     error: Optional[str] = None
+    reasoning_content: str = ""
 
     @property
     def success(self) -> bool:
@@ -174,12 +343,16 @@ class VLLMController:
         # Process tracking
         self._processes: dict[str, VLLMProcess] = {}
         self._lock = asyncio.Lock()
+        # One vLLM serve at a time — concurrent thinking+orchestrator
+        # start fights over port 8081 and TP ranks.
+        self._start_gate = asyncio.Lock()
 
         # Port allocation - tracks ports we've allocated (system check on allocation)
         self._allocated_ports: set[int] = set()
 
         # Health check settings
-        self._startup_timeout = 180  # 3 minutes for large models
+        # Qwen3.8-27B TP=4 BF16 + 262k KV regularly exceeds 3 minutes.
+        self._startup_timeout = 900
         self._max_failures = 3
         self._max_recovery = 3
 
@@ -193,8 +366,8 @@ class VLLMController:
 
     async def start(self) -> None:
         """Start the controller."""
-        self._client = httpx.AsyncClient(timeout=30)
-        logger.info("VLLMController started")
+        self._client = httpx.AsyncClient(timeout=VLLM_HTTP_TIMEOUT)
+        logger.info("VLLMController started (http read timeout=180s)")
 
     async def stop(self) -> None:
         """Stop the controller and all managed processes."""
@@ -273,62 +446,94 @@ class VLLMController:
         Raises:
             ResourceUnavailable: If GPUs cannot be allocated
             ValueError: If agent not found in config
+            RuntimeError: If /dev/shm cannot hold KV offload (#EP.00000007)
         """
-        async with self._lock:
-            # Get agent config
-            if agent_config is None:
-                if agent_alias not in self.config.agents:
-                    raise ValueError(f"Unknown agent: {agent_alias}")
-                agent_config = self.config.agents[agent_alias]
+        from ..resources.shm import require_shm_for_offload
 
-            # Check if already running
-            if agent_alias in self._processes:
-                proc = self._processes[agent_alias]
-                if proc.status in (ProcessStatus.HEALTHY, ProcessStatus.STARTING):
-                    logger.info(f"Endpoint {agent_alias} already running")
-                    return proc
+        peek = agent_config or self.config.agents.get(agent_alias)
+        swap = peek.endpoint.swap_space if peek and peek.endpoint else None
+        require_shm_for_offload(swap)
+        async with self._start_gate:
+            async with self._lock:
+                # Get agent config
+                if agent_config is None:
+                    from ..config import require_agent
 
-            # Allocate GPUs
-            allocation = self.resource_manager.allocate(agent_alias, agent_config)
+                    agent_alias, agent_config = require_agent(self.config, agent_alias)
 
-            # Allocate port
-            port = self._allocate_port()
+                # Check if already running
+                if agent_alias in self._processes:
+                    proc = self._processes[agent_alias]
+                    if proc.status in (ProcessStatus.HEALTHY, ProcessStatus.STARTING):
+                        logger.info(f"Endpoint {agent_alias} already running")
+                        return proc
 
-            # Create process state
-            # Get max_num_seqs and task from endpoint config if available
-            max_num_seqs = 256  # Default
-            task = "generate"  # Default
-            if agent_config.endpoint:
-                if agent_config.endpoint.max_num_seqs:
-                    max_num_seqs = agent_config.endpoint.max_num_seqs
-                if agent_config.endpoint.task:
-                    task = agent_config.endpoint.task
+                # Allocate GPUs
+                allocation = self.resource_manager.allocate(agent_alias, agent_config)
 
-            proc = VLLMProcess(
-                agent_alias=agent_alias,
-                model=agent_config.model,
-                port=port,
-                gpu_ids=allocation.gpu_ids,
-                tensor_parallel=agent_config.resources.gpus,
-                context_length=agent_config.resources.context_length,
-                max_num_seqs=max_num_seqs,
-                task=task,
-                status=ProcessStatus.STARTING,
-            )
-            self._processes[agent_alias] = proc
+                # Allocate port
+                port = self._allocate_port()
 
-        # Start outside lock (pass endpoint config for per-endpoint flags)
-        success = await self._start_vllm_process(proc, endpoint_config=agent_config.endpoint)
+                # Create process state
+                # Get max_num_seqs and task from endpoint config if available
+                max_num_seqs = 256  # Default
+                task = "generate"  # Default
+                if agent_config.endpoint:
+                    if agent_config.endpoint.max_num_seqs:
+                        max_num_seqs = agent_config.endpoint.max_num_seqs
+                    if agent_config.endpoint.task:
+                        task = agent_config.endpoint.task
+
+                proc = VLLMProcess(
+                    agent_alias=agent_alias,
+                    model=agent_config.model,
+                    port=port,
+                    gpu_ids=allocation.gpu_ids,
+                    tensor_parallel=agent_config.resources.gpus,
+                    context_length=agent_config.resources.context_length,
+                    max_num_seqs=max_num_seqs,
+                    task=task,
+                    status=ProcessStatus.STARTING,
+                )
+                self._processes[agent_alias] = proc
+
+            # Start outside the allocation lock, still exclusive vs other serves
+            success = await self._start_vllm_process(proc, endpoint_config=agent_config.endpoint)
 
         if success:
             # Update allocation state with PID for orphan detection
             allocation.mark_active(port, pid=proc.pid)
             proc.status = ProcessStatus.HEALTHY
+        elif proc.process is not None and proc.process.returncode is None:
+            # Still loading (large TP). Do not FAILED/release — HealthObserver
+            # must not evict a live STARTING process.
+            allocation.mark_active(port, pid=proc.pid)
+            proc.status = ProcessStatus.STARTING
+            logger.warning(
+                "Endpoint %s still STARTING after %ss (pid=%s); leaving it up",
+                agent_alias,
+                self._startup_timeout,
+                proc.pid,
+            )
         else:
             # Release resources on failure
             proc.status = ProcessStatus.FAILED
             self.resource_manager.release(agent_alias)
             self._release_port(port)
+            buf = "\n".join(list(proc.stderr_buffer)[-30:] + list(proc.stdout_buffer)[-30:])
+            if "out of memory" in buf.lower() or "cuda out of memory" in buf.lower():
+                raise RuntimeError(
+                    f"#EP.00000003.CTXFIT {agent_alias} {proc.model} "
+                    f"max-model-len={proc.context_length} did not fit. "
+                    "Set resources.context-length in agents.conf to the largest "
+                    "value that fits 4x4090 BF16. Do not silently cap.\n"
+                    f"{buf[-800:]}"
+                )
+            if "validation error" in buf.lower() or "unrecognized arguments" in buf.lower():
+                raise RuntimeError(
+                    f"#EP.00000004.VLLMARGS {agent_alias} {proc.model} "
+                    f"vLLM refused to start:\n{buf[-800:]}"
+                )
 
         return proc
 
@@ -423,6 +628,11 @@ class VLLMController:
         if extra_env:
             env.update(extra_env)
 
+        # Tinybox multi-GPU: nvcc is CUDA 12.4. devenv injects Nix gcc 15
+        # and its libstdc++ (needs glibc 2.38). Host Ubuntu 22.04 is 2.35.
+        # JIT kernels must use host gcc-11 and must not see Nix libstdc++.
+        env = _tinybox_cuda_compile_env(env)
+
         # Use custom serve_command if provided, otherwise build default
         if serve_command:
             cmd = serve_command
@@ -465,7 +675,11 @@ class VLLMController:
             if ep.enforce_eager:
                 cmd.append("--enforce-eager")
             if ep.swap_space is not None:
-                cmd.extend(["--swap-space", str(ep.swap_space)])
+                # vLLM 0.27: --swap-space removed; CPU KV overflow is
+                # --kv-offloading-size (GiB).
+                cmd.extend(["--kv-offloading-size", str(ep.swap_space)])
+            if ep.extra_args:
+                cmd.extend(ep.extra_args)
 
             # Add extra args from config
             cmd.extend(self._extra_args)
@@ -473,6 +687,14 @@ class VLLMController:
         logger.info(
             f"Starting vLLM for {proc.agent_alias}: "
             f"CUDA_VISIBLE_DEVICES={gpu_str} {' '.join(cmd)}"
+        )
+        logger.info(
+            "tinybox CUDA JIT %s: CUDA_HOME=%s CC=%s NINJA=%s LD_LIBRARY_PATH=%s",
+            proc.agent_alias,
+            env.get("CUDA_HOME"),
+            env.get("CC"),
+            env.get("NINJA"),
+            env.get("LD_LIBRARY_PATH"),
         )
 
         try:
@@ -547,6 +769,8 @@ class VLLMController:
                 lower = decoded.lower()
                 if "cuda out of memory" in lower or "runtimeerror" in lower:
                     logger.error(f"[{proc.agent_alias}] {decoded}")
+                elif "unrecognized arguments" in lower or "validation error" in lower:
+                    logger.error(f"[{proc.agent_alias}] {decoded}")
                 elif "error" in lower and "error 12-" not in lower:
                     # Skip timestamped error lines (vLLM logging spam)
                     logger.debug(f"[{proc.agent_alias}] {decoded}")
@@ -560,9 +784,10 @@ class VLLMController:
         while (datetime.now() - start).total_seconds() < self._startup_timeout:
             # Check if process crashed
             if proc.process and proc.process.returncode is not None:
+                tail = "\n".join(list(proc.stderr_buffer)[-20:] + list(proc.stdout_buffer)[-10:])
                 logger.error(
                     f"vLLM process for {proc.agent_alias} exited with code "
-                    f"{proc.process.returncode}"
+                    f"{proc.process.returncode}\n{tail[-1200:]}"
                 )
                 return False
 
@@ -689,12 +914,19 @@ class VLLMController:
             )
 
         # Build OpenAI-compatible request
-        payload = {
+        payload: dict[str, Any] = {
             "model": request.model,
             "messages": request.messages,
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
+            "chat_template_kwargs": {
+                "enable_thinking": request.enable_thinking,
+                "preserve_thinking": request.preserve_thinking,
+            },
+            "reasoning_effort": request.reasoning_effort,
         }
+        if request.extra_body:
+            payload.update(request.extra_body)
 
         start_time = datetime.now()
 
@@ -719,9 +951,21 @@ class VLLMController:
             message = choice.get("message", {})
             usage = data.get("usage", {})
 
-            content = message.get("content", "")
+            content = message.get("content", "") or ""
+            reasoning = (
+                message.get("reasoning_content")
+                or message.get("reasoning")
+                or ""
+            )
+            if not reasoning and "<think>" in content:
+                # Split default Qwen think block from the answer
+                end = content.find("</think>")
+                if end != -1:
+                    reasoning = content[: end + len("</think>")]
+                    content = content[end + len("</think>") :].lstrip()
             logger.info(
                 f"VLLMController.complete: content_length={len(content)}, "
+                f"reasoning_length={len(reasoning)}, "
                 f"output_tokens={usage.get('completion_tokens', 0)}, "
                 f"latency_ms={latency_ms}"
             )
@@ -729,11 +973,12 @@ class VLLMController:
             proc.requests_served += 1
 
             return VLLMResponse(
-                content=message.get("content", ""),
+                content=content,
                 model=data.get("model", request.model),
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
                 latency_ms=latency_ms,
+                reasoning_content=reasoning if isinstance(reasoning, str) else "",
             )
 
         except httpx.HTTPStatusError as e:
@@ -750,13 +995,14 @@ class VLLMController:
 
         except Exception as e:
             latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            logger.error(f"vLLM request error: {e}")
+            error_msg = format_vllm_http_error(e)
+            logger.error("vLLM request error: %s", error_msg)
 
             return VLLMResponse(
                 content="",
                 model=request.model,
                 latency_ms=latency_ms,
-                error=str(e),
+                error=error_msg,
             )
 
     def get_startup_progress(self, agent_alias: str) -> tuple[str, float]:

@@ -217,7 +217,7 @@ class InferenceConfig:
         """Discover an available vLLM endpoint.
 
         Checks configured endpoints in order of preference:
-        1. instruct (Devstral-24B) - general instruction following
+        1. thinking (Qwen3.8-27B) - primary generate
         2. orchestrator (Orchestrator-8B) - meta-cognitive routing
         3. reasoning (DeepSeek-R1-32B) - complex reasoning
 
@@ -227,7 +227,7 @@ class InferenceConfig:
 
         # Endpoint preference order (ports from agents.conf)
         endpoints = [
-            ("instruct", "http://localhost:8082/v1"),
+            ("thinking", "http://localhost:8082/v1"),
             ("orchestrator", "http://localhost:8080/v1"),
             ("reasoning", "http://localhost:8081/v1"),
         ]

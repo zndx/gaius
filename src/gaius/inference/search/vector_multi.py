@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6339"))
-COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "gaius_kb_colnomic")
+COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "gaius_kb_colbert_zero")
 
 
 @dataclass

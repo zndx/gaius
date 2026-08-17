@@ -522,7 +522,7 @@ Trigger reason: {trigger_reason}"""
                 "prompt": prompt,
                 "system_prompt": "You are a knowledge analyst examining a personal knowledge base. "
                     "Find patterns, connections, and generate curiosity about the content.",
-                "agent": "instruct",
+                "agent": "thinking",
                 "max_tokens": 2048,
             },
         )
@@ -1268,7 +1268,7 @@ SALIENCE: 0.0-1.0"""
                 "prompt": prompt,
                 "system_prompt": "You are analyzing an AI system's thought patterns "
                     "to identify blind spots and improvement areas.",
-                "agent": "instruct",
+                "agent": "thinking",
                 "max_tokens": 1024,
             },
         )
@@ -1662,7 +1662,7 @@ EVALUATION: How to measure success"""
                 "prompt": prompt,
                 "system_prompt": "You are designing reasoning tasks for AI capability development. "
                     "Focus on novel, challenging tasks that test different skills.",
-                "agent": "instruct",
+                "agent": "thinking",
                 "max_tokens": 2048,
             },
         )
@@ -1873,7 +1873,7 @@ Generated: {datetime.now().isoformat()}
                         "prompt": f"Summarize this activity period:\n{summary_text}\n\n"
                             "Add brief insights about the activity level.",
                         "system_prompt": "You are generating a brief activity summary.",
-                        "agent": "instruct",
+                        "agent": "thinking",
                         "max_tokens": 512,
                     },
                 )

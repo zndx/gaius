@@ -1662,7 +1662,7 @@ Your summary note content"""
                 params={
                     "prompt": synthesis_prompt,
                     "system_prompt": f"You are a research assistant advancing an ongoing investigation into {topic} in the {domain} domain.",
-                    "agent": "instruct",
+                    "agent": "thinking",
                     "technique": "cot_reflection",
                     "max_tokens": 2048,
                 },
@@ -1950,12 +1950,15 @@ Your summary note content"""
         logger.info(f"Starting article curation: {' '.join(cmd)}")
 
         try:
+            from gaius.flows.config import metaflow_child_env
+
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 cwd=os.environ.get("GAIUS_PROJECT_ROOT", os.getcwd()),
+                env=metaflow_child_env(),
             )
 
             last_output = time.time()
@@ -2381,6 +2384,23 @@ Your summary note content"""
                 "enable_engine_audit": self.config.enable_engine_audit,
             },
         }
+
+    async def surface(
+        self,
+        window_days: int = 365,
+        thought_limit: int = 80,
+        stream: str = "",
+    ) -> Any:
+        """Federation cognition snapshot for gaius-ui / CLI."""
+        from .cognition_surface import build_cognition_surface
+
+        return await build_cognition_surface(
+            self._db_pool,
+            window_days=window_days,
+            thought_limit=thought_limit,
+            stream=stream,
+            status=self.get_status(),
+        )
 
     async def get_pending_tasks(self, limit: int = 10) -> list[dict]:
         """Get pending scheduled tasks.
