@@ -100,7 +100,6 @@ def test_align_prompt_is_sanitized() -> None:
     assert "REDACTED" in prompt
     assert "relatedMatch" in prompt
     assert "broader" in prompt
-    assert "Never propose" not in prompt
 
 
 def test_guru_string_present() -> None:

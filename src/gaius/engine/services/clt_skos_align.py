@@ -21,8 +21,7 @@ GURU_PARSE = (
     "  Guru: #CLT.00000011.ACPJSON"
 )
 
-# SKOS mapping + hierarchical properties. Do not shrink this to the
-# relations a given prompt happens to demand — broader into SDG is valid.
+# SKOS mapping and hierarchical properties accepted from ACP replies.
 _VERDICTS = frozenset({
     "broader",
     "narrower",
@@ -123,10 +122,9 @@ def build_align_prompt(case: AmbiguousCase) -> str:
     sdg = [f"https://signals.zndx.org/sdg#{c}" for c in case.codes]
     raw = (
         "You align CLT activation concepts to the SDG SKOS scheme.\n"
-        "The two schemes stay distinct ConceptSchemes. Relate them with any "
-        "SKOS property that fits the evidence (broader, narrower, related, "
-        "relatedMatch, closeMatch, exactMatch, broadMatch, narrowMatch). "
-        "Do not refuse a relation because it was not demanded.\n"
+        "The two schemes stay distinct ConceptSchemes. Relate them with the "
+        "SKOS property that fits the evidence: broader, narrower, related, "
+        "relatedMatch, closeMatch, exactMatch, broadMatch, narrowMatch, or none.\n"
         "Reply with ONLY JSON: "
         '{"match":"relatedMatch|closeMatch|exactMatch|broader|narrower|'
         'related|broadMatch|narrowMatch|none","sdg_uri":"","reason":""}.\n'
