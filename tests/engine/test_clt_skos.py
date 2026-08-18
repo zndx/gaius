@@ -62,5 +62,36 @@ def test_write_candidate_ttl(tmp_path) -> None:
     assert "band_early" in text and "band_late" in text
 
 
+def test_parse_align_reply_json() -> None:
+    from gaius.engine.services.clt_skos_align import parse_align_reply
+
+    got = parse_align_reply(
+        'Sure.\n{"match":"relatedMatch","sdg_uri":"https://signals.zndx.org/sdg#MFG","reason":"spans mention process"}\n'
+    )
+    assert got["match"] == "relatedMatch"
+    assert got["sdg_uri"].endswith("#MFG")
+
+
+def test_align_prompt_is_sanitized() -> None:
+    from gaius.engine.services.clt_skos_align import AmbiguousCase, build_align_prompt
+
+    case = AmbiguousCase(
+        layer=0,
+        feature_idx=1,
+        clt_uri="https://signals.zndx.org/clt/qwen3-1.7b-20k#L0F1",
+        notation="0:1",
+        pref_label="L0 F1",
+        codes=["MFG"],
+        item_ids=[1],
+        logits=["sk-ant-api03-ABCDEFGHIJKLMNOPQRST"],
+        span_glosss=["ok"],
+    )
+    prompt = build_align_prompt(case)
+    assert "ABCDEFGHIJKLMNOPQRST" not in prompt
+    assert "REDACTED" in prompt
+    assert "relatedMatch" in prompt
+    assert "skos:broader" in prompt
+
+
 def test_guru_string_present() -> None:
     assert "SDG.00000005" in GURU_NOMAXSIM

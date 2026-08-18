@@ -202,6 +202,7 @@ Complete catalog of error codes used across the Gaius platform.
 | `#SDG.00000003.NOSTRATEGY` | `external/sdg-strategy` aperture spec missing | `git submodule update --init external/sdg-strategy` |
 | `#SDG.00000005.NOMAXSIM` | `sdg_aperture` not in Qdrant; CLT SKOS ingest will not admit-all | Load the aiming collection or pass a MaxSim callback |
 | `#CLT.00000010.OFFMISMATCH` | CLT token position outside offset_mapping | Extract and ground with the same tokenizer |
+| `#CLT.00000011.ACPJSON` | ACP SKOS alignment reply was not JSON | Re-run `acp_align`; agent must return only the verdict object |
 | `#SDG.00000004.NOAPERTURE` | Strategy checkout present but snapshot / registered τ incomplete | Re-sync sdg-strategy from Aegir's published pin |
 | `#SDG.00000005.NOENTRY` | `record_attention` on a source_id that was never merged | Merge into the cognition scratchpad first |
 

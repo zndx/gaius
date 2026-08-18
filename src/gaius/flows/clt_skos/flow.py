@@ -177,13 +177,33 @@ class CltSkosEvalFlow(GaiusFlow):
 
         self.propose_stats = asyncio.run(_run())
         print(f"clt_skos.propose {self.propose_stats}")
+        self.next(self.acp_align)
+
+    @step
+    def acp_align(self):
+        from gaius.engine.services.clt_skos_align import run_acp_align
+        from gaius.storage.database import get_database_url
+        import asyncpg
+
+        run_id = str(getattr(self, "_lineage_run_id", "") or "clt-skos")
+
+        async def _run() -> dict:
+            pool = await asyncpg.create_pool(get_database_url())
+            try:
+                return await run_acp_align(pool, run_id=run_id)
+            finally:
+                await pool.close()
+
+        self.align_stats = asyncio.run(_run())
+        print(f"clt_skos.acp_align {self.align_stats}")
         self.next(self.end)
 
     @step
     def end(self):
         print(
             f"clt_skos.end admit={self.admit_stats} extract={self.extract_stats} "
-            "skos=contrib/clt/qwen3-1.7b-20k (P1 publish)"
+            f"propose={getattr(self, 'propose_stats', {})} "
+            f"align={getattr(self, 'align_stats', {})}"
         )
         self.emit_lineage_complete(
             outputs=[Dataset.from_source("postgres", "activation")]
