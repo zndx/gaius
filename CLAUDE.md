@@ -153,10 +153,11 @@ Do NOT use fallback syntax (`${KUBECONFIG:-...}`) — the system KUBECONFIG may 
 
 ## Knowledge Base Structure
 
-Development KB lives under `build/dev/` (gitignored):
+Development KB lives at `/raid/signals/var/kb/dev/` (gitignored).
+`./build/dev` is a symlink to that tree:
 
 ```
-build/dev/
+build/dev/   →  /raid/signals/var/kb/dev/
 ├── current/            # Active work (manual)
 │   ├── projects/
 │   └── content/domains/

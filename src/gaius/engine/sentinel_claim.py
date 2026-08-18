@@ -297,7 +297,8 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     """Mounts this kind may fill. Empty = no disk floor.
 
     Prospects / FMP product bytes land on RustFS (``/raid``). A full
-    root must not refuse that lane. Article curate still writes KB on ``/``.
+    root must not refuse that lane. Article curate writes KB under
+    ``/raid/signals/var/kb/dev`` (``./build/dev`` is a symlink).
     """
     rc = resource_class_for(kind)
     if rc.queue == COMPUTE.queue:
@@ -308,6 +309,8 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
         return ("/raid",)
     if kind.replace("_", "-") == "clt-probe":
         # Tape is Postgres. Root 99% must not block understanding.
+        return ("/raid",)
+    if kind.replace("_", "-") == "article-curate":
         return ("/raid",)
     return ("/", "/raid")
 

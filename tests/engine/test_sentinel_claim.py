@@ -286,8 +286,7 @@ def test_prospects_disk_floor_is_raid_only() -> None:
     assert disk_paths_for("prospects-update") == ("/raid",)
     assert disk_paths_for("fmp") == ("/raid",)
     assert disk_paths_for("ambient") == ()
-    assert "/" in disk_paths_for("article-curate")
-    assert "/raid" in disk_paths_for("article-curate")
+    assert disk_paths_for("article-curate") == ("/raid",)
 
 
 def test_prospects_check_ignores_full_root(monkeypatch: pytest.MonkeyPatch) -> None:

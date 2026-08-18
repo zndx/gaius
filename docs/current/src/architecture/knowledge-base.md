@@ -1,6 +1,6 @@
 # Knowledge Base
 
-The knowledge base is a markdown-first document store organized as a zettelkasten. It lives under `build/dev/` (gitignored) and is accessible through MCP tools for CRUD operations.
+The knowledge base is a markdown-first document store organized as a zettelkasten. The tree lives at `/raid/signals/var/kb/dev/` (gitignored). `./build/dev` is a symlink to that path. CRUD goes through MCP tools.
 
 ## Directory Structure
 
