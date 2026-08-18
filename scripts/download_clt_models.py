@@ -28,9 +28,14 @@ MODELS = [
 
 def main() -> int:
     """Download CLT models to HuggingFace cache."""
-    cache_dir = os.environ.get("HF_HOME", "/raid/cache/huggingface")
+    # Same layout as Aegir: HF_HOME/hub. Do not pass cache_dir=HF_HOME
+    # (that writes models--* next to hub/ and forks a second tree).
+    os.environ.pop("HF_HUB_CACHE", None)
+    os.environ.pop("HUGGINGFACE_HUB_CACHE", None)
+    hf_home = os.environ.get("HF_HOME", "/raid/cache/huggingface")
+    hub = os.path.join(hf_home, "hub")
 
-    print(f"Downloading CLT models to: {cache_dir}")
+    print(f"Downloading CLT models to: {hub} (HF_HOME={hf_home})")
     print()
 
     for model_id in MODELS:
@@ -38,8 +43,6 @@ def main() -> int:
         try:
             path = snapshot_download(
                 repo_id=model_id,
-                cache_dir=cache_dir,
-                local_dir_use_symlinks=True,
             )
             print(f"  -> {path}")
         except Exception as e:

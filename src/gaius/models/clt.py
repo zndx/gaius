@@ -18,9 +18,20 @@ References:
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 
 import torch
+
+# huggingface_hub 1.27 dropped HF_HUB_ENABLE_HF_TRANSFER; circuit-tracer
+# still imports it. Inject the env-flag the old constant named.
+import huggingface_hub.constants as _hf_const
+
+if not hasattr(_hf_const, "HF_HUB_ENABLE_HF_TRANSFER"):
+    _hf_const.HF_HUB_ENABLE_HF_TRANSFER = os.environ.get(
+        "HF_HUB_ENABLE_HF_TRANSFER", ""
+    ).strip().lower() in ("1", "true", "yes")
+
 from circuit_tracer import ReplacementModel  # Required dependency - fail-fast
 
 logger = logging.getLogger(__name__)

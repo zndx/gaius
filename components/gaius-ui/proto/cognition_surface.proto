@@ -292,6 +292,93 @@ message EnsureEndpointResponse {
   string message = 5;
 }
 
+message SignalsTelemetryRequest {}
+
+message GpuWatt {
+  int32 index = 1;
+  string uuid = 2;
+  string model = 3;
+  double power_w = 4;
+  double util = 5;
+  double memory_used_mib = 6;
+  double memory_free_mib = 7;
+  double energy_mj = 8;
+  double temp_c = 9;
+}
+
+message SignalsTelemetryResponse {
+  string source_url = 1;
+  string scraped_at = 2;
+  repeated GpuWatt gpus = 3;
+  double total_w = 4;
+  double parked_w = 5;
+  double inferring_w = 6;
+  string error = 7;
+}
+
+message DiscoverSurfaceRequest {
+  string window = 1;
+  string query = 2;
+  string breakdown = 3;
+  int32 limit = 4;
+  string cursor = 5;
+  repeated string feature_pins = 6;
+  string from_ts = 7;
+  string to_ts = 8;
+}
+
+message DiscoverBucket {
+  string t = 1;
+  int32 n = 2;
+  string breakdown_key = 3;
+  double salience = 4;
+  double watts = 5;
+  double util = 6;
+  double salience_ma = 7;
+  double watts_ma = 8;
+  double util_ma = 9;
+}
+
+message DiscoverEpisode {
+  string kind = 1;
+  string at = 2;
+  int32 eta_s = 3;
+  string label = 4;
+}
+
+message DiscoverDoc {
+  string id = 1;
+  string stream = 2;
+  string source = 3;
+  string ts = 4;
+  string title = 5;
+  string body = 6;
+  string source_id = 7;
+  string url = 8;
+}
+
+message DiscoverFacet {
+  string key = 1;
+  string kind = 2;
+  int32 count = 3;
+  double salience = 4;
+}
+
+message DiscoverSurfaceResponse {
+  repeated DiscoverBucket buckets = 1;
+  repeated DiscoverDoc docs = 2;
+  repeated DiscoverFacet facets = 3;
+  int32 total = 4;
+  string window = 5;
+  string query = 6;
+  string scraped_at = 7;
+  string interval = 8;
+  string error = 9;
+  string last_salience_at = 10;
+  DiscoverEpisode next_episode = 11;
+  string clock = 12;
+}
+
 service GaiusService {
   rpc CognitionSurface(CognitionSurfaceRequest) returns (CognitionSurfaceResponse);
   rpc AgendaList(AgendaListRequest) returns (AgendaListResponse);
@@ -308,4 +395,6 @@ service GaiusService {
   rpc AskPresent(AskPresentRequest) returns (AskPresentResponse);
   rpc EnsureEndpoint(StartEndpointRequest) returns (EnsureEndpointResponse);
   rpc StopEndpoint(StopEndpointRequest) returns (EndpointResponse);
+  rpc SignalsTelemetry(SignalsTelemetryRequest) returns (SignalsTelemetryResponse);
+  rpc DiscoverSurface(DiscoverSurfaceRequest) returns (DiscoverSurfaceResponse);
 }

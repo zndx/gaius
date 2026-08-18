@@ -957,7 +957,7 @@ async fn stream_complete(
 
         let want_chart = ask_write::looks_like_chart(&prompt);
         let small = ask_write::is_small_ask(&cap);
-        // Charts: AskPresent gRPC (engine FMP). Do not wait on leftover vLLM.
+        // Charts: AskPresent gRPC (engine FMP). Does not wait on light/medium vLLM.
         if small && want_chart && !ask_write::looks_like_agenda_write(&prompt) {
             if let Some(ohlc) = ask_write::parse_ohlc_spec("", &[], &prompt) {
                 apply_chart(&tx, &ctx, &state.artifacts, &ohlc).await;
@@ -1046,7 +1046,7 @@ async fn stream_complete(
         let first = match first {
             Err(e) if small && cap != thinking_cap => {
                 send(ctx.delta(
-                    Some(&format!("Ask leftover not ready — using {thinking_cap}")),
+                    Some(&format!("Ask light/medium not ready — using {thinking_cap}")),
                     None,
                     Some(&format!("{e}")),
                 ))

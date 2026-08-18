@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from .generated.zndx.engine.v1 import engine_pb2 as zpb
 
@@ -81,16 +83,103 @@ def advertised_head(root: Path | None = None) -> str:
     return (proc.stdout or "").strip()
 
 
+_LOOPBACK = frozenset({"localhost", "ip6-localhost", "::1", "0.0.0.0", "::"})
+
+
+def is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().strip("[]").lower()
+    if not h:
+        return True
+    if h in _LOOPBACK or h.startswith("127."):
+        return True
+    return False
+
+
+def advertise_host() -> str:
+    """Cluster hostname for S2S. Same resolution as Ægir/Signals.
+
+    Prefer shared lattice env, then FQDN, then ``{short}.dev.vista.zndx.org``
+    when it resolves. Never loopback — empty is honest.
+    """
+    for key in (
+        "GAIUS_ADVERTISE_HOST",
+        "GAIUS_LATTICE_HOST",
+        "SIGNALS_ADVERTISE_HOST",
+        "SIGNALS_LATTICE_HOST",
+        "SIGNALS_KRB_HOST",
+        "AEGIR_ADVERTISE_HOST",
+    ):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        host = raw.split("/")[-1].split(":")[0].strip("[]")
+        if host and not is_loopback_host(host):
+            return host
+    try:
+        fqdn = (socket.getfqdn() or "").strip()
+        if fqdn and not is_loopback_host(fqdn) and "." in fqdn:
+            return fqdn
+        hn = (socket.gethostname() or "").strip()
+        if hn and not is_loopback_host(hn) and "." in hn:
+            return hn
+        if hn and not is_loopback_host(hn):
+            zt = f"{hn}.dev.vista.zndx.org"
+            try:
+                socket.getaddrinfo(zt, None)
+                return zt
+            except OSError:
+                return hn
+    except OSError:
+        pass
+    return ""
+
+
+def rewrite_public_url(url: str) -> str:
+    host = advertise_host()
+    if not url or not host:
+        return url
+    parsed = urlparse(url)
+    if not parsed.hostname or not is_loopback_host(parsed.hostname):
+        return url
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    return urlunparse(
+        (parsed.scheme or "http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def surface_title(project: str) -> str:
+    raw = (project or "").strip()
+    known = {
+        "gaius": "Gaius",
+        "signals": "Signals",
+        "aegir": "Ægir",
+        "atelier": "Atelier",
+    }
+    if raw.lower() in known:
+        return known[raw.lower()]
+    if not raw:
+        return "Peer"
+    return raw.replace("-", " ").replace("_", " ").title()
+
+
 def local_primary_ui() -> str:
-    """This engine's advertised board URL. Env only — do not invent peer UIs."""
+    """Hostname URL for S2S. Never advertise loopback."""
     raw = (os.environ.get("GAIUS_PRIMARY_UI") or "").strip()
     if raw:
-        return raw
-    bind = (os.environ.get("GAIUS_UI_BIND") or "0.0.0.0:9890").strip()
-    port = bind.rsplit(":", 1)[-1]
-    if port.isdigit():
-        return f"http://127.0.0.1:{port}"
-    return ""
+        rewritten = rewrite_public_url(raw)
+        parsed = urlparse(rewritten)
+        if parsed.hostname and not is_loopback_host(parsed.hostname):
+            return rewritten
+    host = advertise_host()
+    if not host:
+        return ""
+    port = "9890"
+    bind = (os.environ.get("GAIUS_UI_BIND") or "").strip()
+    if bind:
+        maybe = bind.rsplit(":", 1)[-1]
+        if maybe.isdigit():
+            port = maybe
+    return f"http://{host}:{port}"
 
 
 def local_surfaces() -> list[zpb.Surface]:
@@ -142,17 +231,26 @@ async def collect_peer_surfaces(
     *,
     skip_project: str = "gaius",
 ) -> list[dict[str, str]]:
-    """S2S: PEERS + Status.surfaces. Only peers that advertise a primary UI."""
+    """S2S: self + PEERS + Status.surfaces. Only advertised primary UIs."""
     queue: list[tuple[str, str]] = list(configured_peers(services))
     queue.extend(directory_seeds())
-    seen: set[str] = set()
-    found: list[dict[str, str]] = []
+    seen_addr: set[str] = set()
+    by_project: dict[str, dict[str, str]] = {}
+    self_ui = local_primary_ui()
+    if self_ui:
+        host = advertise_host() or "localhost"
+        by_project["gaius"] = {
+            "project": "gaius",
+            "title": surface_title("gaius"),
+            "engine_target": f"{host}:50051",
+            "primary_ui": self_ui,
+        }
     while queue:
         hint_project, target = queue.pop(0)
         addr = target.replace("grpc://", "").strip()
-        if not addr or addr in seen:
+        if not addr or addr in seen_addr:
             continue
-        seen.add(addr)
+        seen_addr.add(addr)
         status = await status_peer(addr)
         if status is None:
             continue
@@ -160,14 +258,16 @@ async def collect_peer_surfaces(
         if project and project == skip_project:
             continue
         ui = primary_ui_of(status)
+        key = (project or addr).lower()
         if ui:
-            found.append(
-                {
+            prev = by_project.get(key)
+            if prev is None or _url_is_loopback(prev.get("primary_ui") or ""):
+                by_project[key] = {
                     "project": project or addr,
+                    "title": surface_title(project or ""),
                     "engine_target": addr,
                     "primary_ui": ui,
                 }
-            )
         peers = await query_peer(addr, kind=zpb.SERVER_QUERY_KIND_PEERS)
         if peers is None:
             continue
@@ -175,8 +275,14 @@ async def collect_peer_surfaces(
             tgt = (peer.target or "").strip()
             if tgt:
                 queue.append((peer.project or "", tgt))
-    found.sort(key=lambda row: row["project"])
-    return found
+    return sorted(by_project.values(), key=lambda row: row["project"])
+
+
+def _url_is_loopback(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname or ""
+    return is_loopback_host(host)
 
 
 def configured_peers(services: object) -> list[tuple[str, str]]:

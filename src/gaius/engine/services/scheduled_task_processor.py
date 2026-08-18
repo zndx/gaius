@@ -683,6 +683,16 @@ class ScheduledTaskProcessor(BaseDaemon):
         self.register_handler("weekly_signals_summary", handle_weekly_signals_summary)
         self.register_handler("knowledge_summary", handle_knowledge_summary)
 
+        async def handle_feature_probe(task: ScheduledTask) -> dict[str, Any]:
+            from .feature_probe import run_probe_batch
+
+            gpu = int(task.payload.get("gpu_index") or 4)
+            if not self._pool:
+                raise RuntimeError("feature_probe needs db pool")
+            return await run_probe_batch(self._pool, gpu_index=gpu)
+
+        self.register_handler("feature_probe", handle_feature_probe)
+
     async def _enqueue_knowledge_summary(self, *, week: str, source: str) -> None:
         """Fan out KNOWLEDGE pages after the weekly zettel. Does not block it."""
         if not self._pool:

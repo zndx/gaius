@@ -14,6 +14,7 @@ from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
 from gaius.engine.grpc.servicers.zndx_engine_servicer import GaiusZndxEngineServicer
 from gaius.engine.s2s import (
     ServerQueryError,
+    advertise_host,
     advertised_head,
     collect_peer_surfaces,
     declared_queues,
@@ -68,22 +69,35 @@ def test_local_response_remotes(git_repo: Path) -> None:
     assert resp.head
 
 
-def test_local_surfaces_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GAIUS_PRIMARY_UI", "http://127.0.0.1:9890")
+def test_advertise_host_prefers_signals_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GAIUS_ADVERTISE_HOST", raising=False)
+    monkeypatch.setenv("SIGNALS_ADVERTISE_HOST", "tinybox.dev.vista.zndx.org")
+    assert advertise_host() == "tinybox.dev.vista.zndx.org"
+
+
+def test_local_surfaces_uses_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GAIUS_PRIMARY_UI", raising=False)
+    monkeypatch.setenv("GAIUS_ADVERTISE_HOST", "tinybox")
+    monkeypatch.setenv("GAIUS_UI_BIND", "0.0.0.0:9890")
+    assert local_primary_ui() == "http://tinybox:9890"
     surf = local_surfaces()
-    assert len(surf) == 1
-    assert surf[0].kind == "primary"
-    assert surf[0].url == "http://127.0.0.1:9890"
-    assert local_primary_ui() == "http://127.0.0.1:9890"
+    assert surf[0].url == "http://tinybox:9890"
+
+
+def test_loopback_env_rewritten_to_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAIUS_PRIMARY_UI", "http://127.0.0.1:9890")
+    monkeypatch.setenv("GAIUS_ADVERTISE_HOST", "tinybox")
+    assert local_primary_ui() == "http://tinybox:9890"
 
 
 def test_local_response_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GAIUS_ADVERTISE_HOST", "tinybox")
     monkeypatch.setenv("GAIUS_PRIMARY_UI", "http://127.0.0.1:9890")
     resp = local_response(
         zpb.SERVER_QUERY_KIND_SURFACES,
         SimpleNamespace(config=None),
     )
-    assert [s.url for s in resp.surfaces] == ["http://127.0.0.1:9890"]
+    assert [s.url for s in resp.surfaces] == ["http://tinybox:9890"]
 
 
 @pytest.mark.asyncio
@@ -99,8 +113,10 @@ async def test_collect_skips_peers_without_primary_ui(
     monkeypatch.setattr("gaius.engine.s2s.status_peer", _status)
     monkeypatch.setattr("gaius.engine.s2s.query_peer", _query)
     monkeypatch.setenv("SIGNALS_ENGINE_TARGET", "127.0.0.1:50551")
+    monkeypatch.delenv("GAIUS_PRIMARY_UI", raising=False)
+    monkeypatch.delenv("GAIUS_ADVERTISE_HOST", raising=False)
     rows = await collect_peer_surfaces(SimpleNamespace(config=None))
-    assert rows == []
+    assert all(r["project"] != "signals" for r in rows)
 
 
 @pytest.mark.asyncio
@@ -125,14 +141,50 @@ async def test_collect_lists_advertised_primary(
     monkeypatch.setattr("gaius.engine.s2s.status_peer", _status)
     monkeypatch.setattr("gaius.engine.s2s.query_peer", _query)
     monkeypatch.setenv("SIGNALS_ENGINE_TARGET", "127.0.0.1:50551")
+    monkeypatch.setenv("GAIUS_ADVERTISE_HOST", "tinybox")
+    monkeypatch.delenv("GAIUS_PRIMARY_UI", raising=False)
+    monkeypatch.setenv("GAIUS_UI_BIND", "0.0.0.0:9890")
     rows = await collect_peer_surfaces(SimpleNamespace(config=None))
-    assert rows == [
-        {
-            "project": "signals",
-            "engine_target": "127.0.0.1:50551",
-            "primary_ui": "http://127.0.0.1:9889",
-        }
-    ]
+    projects = {r["project"]: r for r in rows}
+    assert projects["gaius"]["title"] == "Gaius"
+    assert projects["gaius"]["primary_ui"] == "http://tinybox:9890"
+    assert projects["signals"]["title"] == "Signals"
+    assert projects["signals"]["primary_ui"] == "http://127.0.0.1:9889"
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_dedupes_signals_by_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _status(target: str):
+        url = (
+            "http://tinybox.dev.vista.zndx.org:9889"
+            if "tinybox" in target
+            else "http://127.0.0.1:9889"
+        )
+        return zpb.StatusResponse(
+            project="signals",
+            surfaces=[zpb.Surface(kind="primary", url=url, healthy=True)],
+        )
+
+    async def _query(target: str, **_k):
+        if target.startswith("127."):
+            return zpb.ServerQueryResponse(
+                project="signals",
+                peers=[zpb.PeerHint(project="signals", target="tinybox.dev.vista.zndx.org:50551")],
+            )
+        return zpb.ServerQueryResponse(project="signals")
+
+    monkeypatch.setattr("gaius.engine.s2s.status_peer", _status)
+    monkeypatch.setattr("gaius.engine.s2s.query_peer", _query)
+    monkeypatch.setenv("SIGNALS_ENGINE_TARGET", "127.0.0.1:50551")
+    monkeypatch.setenv("GAIUS_ADVERTISE_HOST", "tinybox.dev.vista.zndx.org")
+    monkeypatch.delenv("GAIUS_PRIMARY_UI", raising=False)
+    rows = await collect_peer_surfaces(SimpleNamespace(config=None))
+    sig = [r for r in rows if r["project"] == "signals"]
+    assert len(sig) == 1
+    assert sig[0]["primary_ui"] == "http://tinybox.dev.vista.zndx.org:9889"
 
 
 def test_declared_queues_light_medium_heavy() -> None:

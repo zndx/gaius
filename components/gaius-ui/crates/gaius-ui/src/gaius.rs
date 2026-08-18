@@ -15,7 +15,31 @@ use pb::{
     SummaryScheduleTriggerRequest, SummarySchedulesRequest,
     FederationSurfacesRequest, AskPresentRequest,
     EnsureEndpointResponse, StartEndpointRequest, StopEndpointRequest,
+    SignalsTelemetryRequest, DiscoverSurfaceRequest,
 };
+
+fn surface_title(project: &str) -> String {
+    match project.trim().to_ascii_lowercase().as_str() {
+        "gaius" => "Gaius".into(),
+        "signals" => "Signals".into(),
+        "aegir" => "Ægir".into(),
+        "atelier" => "Atelier".into(),
+        "" => "Peer".into(),
+        other => other
+            .replace('-', " ")
+            .replace('_', " ")
+            .split_whitespace()
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum GaiusError {
@@ -52,6 +76,140 @@ impl Gaius {
             return Err(GaiusError::Message(r.message));
         }
         Ok(r)
+    }
+
+    pub async fn discover_surface(
+        &self,
+        window: String,
+        query: String,
+        breakdown: String,
+        limit: i32,
+    ) -> Result<serde_json::Value, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .discover_surface(DiscoverSurfaceRequest {
+                window: if window.is_empty() {
+                    "1h".into()
+                } else {
+                    window
+                },
+                query,
+                breakdown: if breakdown.is_empty() {
+                    "source".into()
+                } else {
+                    breakdown
+                },
+                limit: if limit <= 0 { 50 } else { limit },
+                cursor: String::new(),
+                feature_pins: vec![],
+                from_ts: String::new(),
+                to_ts: String::new(),
+            })
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        let buckets: Vec<serde_json::Value> = r
+            .buckets
+            .into_iter()
+            .map(|b| {
+                serde_json::json!({
+                    "t": b.t,
+                    "n": b.n,
+                    "breakdown_key": b.breakdown_key,
+                    "salience": b.salience,
+                    "watts": b.watts,
+                    "util": b.util,
+                    "salience_ma": b.salience_ma,
+                    "watts_ma": b.watts_ma,
+                    "util_ma": b.util_ma,
+                })
+            })
+            .collect();
+        let docs: Vec<serde_json::Value> = r
+            .docs
+            .into_iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id,
+                    "stream": d.stream,
+                    "source": d.source,
+                    "ts": d.ts,
+                    "title": d.title,
+                    "body": d.body,
+                    "source_id": d.source_id,
+                    "url": d.url,
+                })
+            })
+            .collect();
+        let facets: Vec<serde_json::Value> = r
+            .facets
+            .into_iter()
+            .map(|f| {
+                serde_json::json!({
+                    "key": f.key,
+                    "kind": f.kind,
+                    "count": f.count,
+                    "salience": f.salience,
+                })
+            })
+            .collect();
+        let ep = r.next_episode;
+        Ok(serde_json::json!({
+            "window": r.window,
+            "query": r.query,
+            "interval": r.interval,
+            "scraped_at": r.scraped_at,
+            "total": r.total,
+            "last_salience_at": r.last_salience_at,
+            "clock": r.clock,
+            "next_episode": ep.map(|e| serde_json::json!({
+                "kind": e.kind,
+                "at": e.at,
+                "eta_s": e.eta_s,
+                "label": e.label,
+            })),
+            "buckets": buckets,
+            "docs": docs,
+            "facets": facets,
+        }))
+    }
+
+    pub async fn signals_telemetry(&self) -> Result<serde_json::Value, GaiusError> {
+        let mut c = self.client().await?;
+        let r = c
+            .signals_telemetry(SignalsTelemetryRequest {})
+            .await?
+            .into_inner();
+        if !r.error.is_empty() {
+            return Err(GaiusError::Message(r.error));
+        }
+        let gpus: Vec<serde_json::Value> = r
+            .gpus
+            .into_iter()
+            .map(|g| {
+                serde_json::json!({
+                    "index": g.index,
+                    "uuid": g.uuid,
+                    "model": g.model,
+                    "power_w": g.power_w,
+                    "util": g.util,
+                    "memory_used_mib": g.memory_used_mib,
+                    "memory_free_mib": g.memory_free_mib,
+                    "energy_mj": g.energy_mj,
+                    "temp_c": g.temp_c,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "source_url": r.source_url,
+            "scraped_at": r.scraped_at,
+            "total_w": r.total_w,
+            "parked_w": r.parked_w,
+            "inferring_w": r.inferring_w,
+            "gpus": gpus,
+        }))
     }
 
     pub async fn stop_endpoint(&self, name: String) -> Result<(), GaiusError> {
@@ -264,6 +422,7 @@ impl Gaius {
                 .map(|i| {
                     serde_json::json!({
                         "project": i.project,
+                        "title": surface_title(&i.project),
                         "engine_target": i.engine_target,
                         "primary_ui": i.primary_ui,
                     })

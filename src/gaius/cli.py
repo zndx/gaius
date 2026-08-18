@@ -205,6 +205,8 @@ class GaiusCLI:
                 # GPU Orchestrator commands
                 elif command == "gpu" or command == "orch":
                     result["data"] = self._run_async(self._cmd_gpu(args))
+                elif command == "discover":
+                    result["data"] = self._run_async(self._cmd_discover(args))
                 # Inference management (high-level)
                 elif command == "inference" or command == "inf":
                     result["data"] = self._run_async(self._cmd_inference(args))
@@ -4071,6 +4073,44 @@ Respond with:
         except Exception as e:
             raise RuntimeError(f"MetaAgent query failed: {e}")
 
+    async def _cmd_discover(self, args: str) -> dict:
+        """Discover landing snapshot (inflow events + empty feature facets).
+
+        Usage:
+            /discover
+            /discover 7d
+            /discover 36h source:arxiv_cs_dc
+            /discover 36h feature:12:4412
+        """
+        parts = (args or "").split()
+        window = "1h"
+        query_parts: list[str] = []
+        if parts and (
+            parts[0].lower() in ("salience", "1h", "24h")
+            or (parts[0][-1:].lower() in "mhd" and parts[0][:-1].isdigit())
+        ):
+            window = parts[0]
+            query_parts = parts[1:]
+        else:
+            query_parts = parts
+        try:
+            client = await self._get_engine_client_cached()
+        except Exception as e:
+            return {
+                "error": f"Failed to connect to engine: {e}",
+                "suggestion": "Run: systemctl restart gaius",
+            }
+        return await client.call(
+            "Discover",
+            "surface",
+            {
+                "window": window,
+                "query": " ".join(query_parts),
+                "breakdown": "source",
+                "limit": 50,
+            },
+        )
+
     async def _cmd_gpu(self, args: str) -> dict:
         """GPU orchestrator operations.
 
@@ -4081,6 +4121,7 @@ Respond with:
             /gpu restart <name>   - Restart endpoint
             /gpu logs <name>      - Show endpoint logs
             /gpu health           - Detailed GPU metrics
+            /gpu watts            - Ephemeral Signals DCGM scrape (W, no store)
             /gpu clean-start [ep] - Kill stale processes and reset state
             /gpu cleanup          - Kill ALL orphaned GPU processes (deep clean)
         """
@@ -4147,6 +4188,10 @@ Respond with:
                     from .inference.health import get_health_monitor
                     monitor = get_health_monitor()
                     return monitor.get_summary()
+
+                elif subcmd in ("watts", "telemetry"):
+                    client = await self._get_engine_client_cached()
+                    return await client.call("SignalsTelemetry", "snapshot", {})
 
                 elif subcmd == "clean-start":
                     # Kill any stale processes and reset state

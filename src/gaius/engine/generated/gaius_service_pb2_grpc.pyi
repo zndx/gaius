@@ -27,11 +27,6 @@ GRPC_GENERATED_VERSION: str
 GRPC_VERSION: str
 
 class GaiusServiceStub:
-    """═══════════════════════════════════════════════════════════════════════════
-    Service Definition
-    ═══════════════════════════════════════════════════════════════════════════
-    """
-
     @typing.overload
     def __new__(cls, channel: grpc.Channel) -> GaiusServiceStub: ...
     @typing.overload
@@ -350,14 +345,12 @@ class GaiusServiceStub:
     ─────────────────────────────────────────────────────────────────────────
     Stream card rendering progress
     """
+    SignalsTelemetry: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.SignalsTelemetryRequest, gaius_service_pb2.SignalsTelemetryResponse]
+    """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
+    DiscoverSurface: grpc.UnaryUnaryMultiCallable[gaius_service_pb2.DiscoverSurfaceRequest, gaius_service_pb2.DiscoverSurfaceResponse]
 
 @typing.type_check_only
 class GaiusServiceAsyncStub(GaiusServiceStub):
-    """═══════════════════════════════════════════════════════════════════════════
-    Service Definition
-    ═══════════════════════════════════════════════════════════════════════════
-    """
-
     def __init__(self, channel: grpc.aio.Channel) -> None: ...
     OrchestratorStatus: grpc.aio.UnaryUnaryMultiCallable[google.protobuf.empty_pb2.Empty, gaius_service_pb2.OrchestratorStatusResponse]  # type: ignore[assignment]
     """─────────────────────────────────────────────────────────────────────────
@@ -673,13 +666,11 @@ class GaiusServiceAsyncStub(GaiusServiceStub):
     ─────────────────────────────────────────────────────────────────────────
     Stream card rendering progress
     """
+    SignalsTelemetry: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.SignalsTelemetryRequest, gaius_service_pb2.SignalsTelemetryResponse]  # type: ignore[assignment]
+    """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
+    DiscoverSurface: grpc.aio.UnaryUnaryMultiCallable[gaius_service_pb2.DiscoverSurfaceRequest, gaius_service_pb2.DiscoverSurfaceResponse]  # type: ignore[assignment]
 
 class GaiusServiceServicer(metaclass=abc.ABCMeta):
-    """═══════════════════════════════════════════════════════════════════════════
-    Service Definition
-    ═══════════════════════════════════════════════════════════════════════════
-    """
-
     @abc.abstractmethod
     def OrchestratorStatus(
         self,
@@ -1845,5 +1836,20 @@ class GaiusServiceServicer(metaclass=abc.ABCMeta):
         ─────────────────────────────────────────────────────────────────────────
         Stream card rendering progress
         """
+
+    @abc.abstractmethod
+    def SignalsTelemetry(
+        self,
+        request: gaius_service_pb2.SignalsTelemetryRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.SignalsTelemetryResponse, collections.abc.Awaitable[gaius_service_pb2.SignalsTelemetryResponse]]:
+        """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry."""
+
+    @abc.abstractmethod
+    def DiscoverSurface(
+        self,
+        request: gaius_service_pb2.DiscoverSurfaceRequest,
+        context: _ServicerContext,
+    ) -> typing.Union[gaius_service_pb2.DiscoverSurfaceResponse, collections.abc.Awaitable[gaius_service_pb2.DiscoverSurfaceResponse]]: ...
 
 def add_GaiusServiceServicer_to_server(servicer: GaiusServiceServicer, server: typing.Union[grpc.Server, grpc.aio.Server]) -> None: ...

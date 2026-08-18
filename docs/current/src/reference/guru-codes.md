@@ -42,7 +42,19 @@ Complete catalog of error codes used across the Gaius platform.
 | `#EP.00000005.TINYBOXCUDA` | Qwen3.8 JIT `cicc` loaded Nix `libstdc++` (needs glibc 2.38) | Host gcc-11 + `scripts/lib/tinybox-nvcc.sh` as `$CUDA_HOME/bin/nvcc`; do not install CUDA 13 |
 | `#EP.00000006.VLLMTIMEOUT` | vLLM HTTP read timed out on Complete (thinking + queue > read timeout) | `/health fix endpoints`; sitrep follow-up needs the 180s read timeout |
 | `#EP.00000007.SHMFULL` | `/dev/shm` full — leftover `vllm_offload_*.mmap` / `psm_*` after unclean vLLM stop | `/health fix endpoints` (reclaims unheld segments); `just gpu-cleanup` |
-| `#EP.00000016.NOTREADY` | Complete hit a vLLM that is absent/STARTING | Wait for `/gpu status` HEALTHY; Settings starts leftover Ask. Charts do not wait. |
+| `#EP.00000016.NOTREADY` | Complete hit a vLLM that is absent/STARTING | Wait for `/gpu status` HEALTHY; Settings starts light or medium Ask. Charts do not wait. |
+| `#EP.00000017.NOTELEMETRY` | Signals `kind=telemetry` surface missing or :9410 returned 503 | Confirm `SIGNALS_ENGINE_TARGET` Status.surfaces; dcgm-exporter on :9400; no DCGM dep in Gaius |
+
+### DI — Discover landing
+
+| Code | Description | Fix |
+|------|-------------|-----|
+| `#DI.00000001.NODB` | Discover has no engine db_pool | `/health fix postgres` |
+| `#DI.00000002.BADWINDOW` | Window not `36h` / `7d` / `1h` | Pass a 1..3660 day window |
+| `#DI.00000003.BADLIMIT` | limit not in 1..200 | Pass 50 |
+| `#DI.00000004.BADBREAK` | breakdown not stream/source/layer | Pass `source` |
+| `#DI.00000005.BADFEATURE` | feature pin not `layer:index` | `feature:12:4412` |
+| `#DI.00000006.SURFACE` | Discover SQL failed | `/health fix postgres` |
 
 ### AG — Agenda (consciousness zettels)
 
@@ -188,6 +200,8 @@ Complete catalog of error codes used across the Gaius platform.
 | `#SDG.00000001.NOCORPORA` | `external/sdg-corpora` vocabulary missing | `git submodule update --init external/sdg-corpora` |
 | `#SDG.00000002.UNKCODE` | Attention token not in corpora SKOS and not in strategy aiming C | Check `annotations.csv` / `aperture.snapshot.json`; do not invent codes |
 | `#SDG.00000003.NOSTRATEGY` | `external/sdg-strategy` aperture spec missing | `git submodule update --init external/sdg-strategy` |
+| `#SDG.00000005.NOMAXSIM` | `sdg_aperture` not in Qdrant; CLT SKOS ingest will not admit-all | Load the aiming collection or pass a MaxSim callback |
+| `#CLT.00000010.OFFMISMATCH` | CLT token position outside offset_mapping | Extract and ground with the same tokenizer |
 | `#SDG.00000004.NOAPERTURE` | Strategy checkout present but snapshot / registered τ incomplete | Re-sync sdg-strategy from Aegir's published pin |
 | `#SDG.00000005.NOENTRY` | `record_attention` on a source_id that was never merged | Merge into the cognition scratchpad first |
 

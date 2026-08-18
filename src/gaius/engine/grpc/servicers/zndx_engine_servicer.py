@@ -34,7 +34,7 @@ _HEALTHY_STATUSES = frozenset({"healthy", "running", "ready"})
 def resolve_complete_alias(capability: str, services: object | None = None) -> str:
     """Empty / lattice cognition face → standing thinking endpoint.
 
-    Ask prefers leftover small models (SAE or 1.7B), then thinking.
+    Ask prefers light (1.7B) or medium (SAE) if HEALTHY, then thinking.
     STARTING is occupied — skip, do not wait 900s.
     """
     raw = (capability or "").strip()
@@ -56,17 +56,17 @@ def _alias_healthy(services: object | None, alias: str) -> bool:
 
 
 def pick_ask_cascade(requested: str, services: object | None) -> str:
-    """Prefer leftover light (SAE or 1.7B) if already HEALTHY.
+    """Prefer light (1.7B) or medium (SAE) if already HEALTHY.
 
-    If light is down, Complete on standing thinking. Never return a
-    STARTING leftover so Complete does not start vLLM without a YK
-    light-queue admit (OOM / contention).
+    If those are down, Complete on standing thinking. Never return a
+    STARTING alias so Complete does not start vLLM without a YK
+    light/medium admit (OOM / contention).
     """
     if requested == "ask-sae":
-        light = list(ASK_SAE) + list(ASK_REPLICAS)
+        small = list(ASK_SAE) + list(ASK_REPLICAS)
     else:
-        light = list(ASK_REPLICAS) + list(ASK_SAE)
-    for alias in light:
+        small = list(ASK_REPLICAS) + list(ASK_SAE)
+    for alias in small:
         if _alias_healthy(services, alias):
             return alias
     if _alias_healthy(services, CAPABILITY_THINKING):
@@ -74,7 +74,7 @@ def pick_ask_cascade(requested: str, services: object | None) -> str:
     from ...sentinel_claim import light_wait_available
 
     if light_wait_available():
-        return light[0]
+        return small[0]
     return CAPABILITY_THINKING
 
 

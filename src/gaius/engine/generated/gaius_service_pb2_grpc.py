@@ -27,11 +27,7 @@ if _version_not_supported:
 
 
 class GaiusServiceStub(object):
-    """═══════════════════════════════════════════════════════════════════════════
-    Service Definition
-    ═══════════════════════════════════════════════════════════════════════════
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -749,14 +745,20 @@ class GaiusServiceStub(object):
                 request_serializer=gaius__service__pb2.RenderCardsRequest.SerializeToString,
                 response_deserializer=gaius__service__pb2.RenderCardEvent.FromString,
                 _registered_method=True)
+        self.SignalsTelemetry = channel.unary_unary(
+                '/gaius.engine.GaiusService/SignalsTelemetry',
+                request_serializer=gaius__service__pb2.SignalsTelemetryRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.SignalsTelemetryResponse.FromString,
+                _registered_method=True)
+        self.DiscoverSurface = channel.unary_unary(
+                '/gaius.engine.GaiusService/DiscoverSurface',
+                request_serializer=gaius__service__pb2.DiscoverSurfaceRequest.SerializeToString,
+                response_deserializer=gaius__service__pb2.DiscoverSurfaceResponse.FromString,
+                _registered_method=True)
 
 
 class GaiusServiceServicer(object):
-    """═══════════════════════════════════════════════════════════════════════════
-    Service Definition
-    ═══════════════════════════════════════════════════════════════════════════
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def OrchestratorStatus(self, request, context):
         """─────────────────────────────────────────────────────────────────────────
@@ -1748,6 +1750,19 @@ class GaiusServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SignalsTelemetry(self, request, context):
+        """Signals DCGM — one scrape, no store. Discover via Status.surfaces kind=telemetry.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DiscoverSurface(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GaiusServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -2461,6 +2476,16 @@ def add_GaiusServiceServicer_to_server(servicer, server):
                     request_deserializer=gaius__service__pb2.RenderCardsRequest.FromString,
                     response_serializer=gaius__service__pb2.RenderCardEvent.SerializeToString,
             ),
+            'SignalsTelemetry': grpc.unary_unary_rpc_method_handler(
+                    servicer.SignalsTelemetry,
+                    request_deserializer=gaius__service__pb2.SignalsTelemetryRequest.FromString,
+                    response_serializer=gaius__service__pb2.SignalsTelemetryResponse.SerializeToString,
+            ),
+            'DiscoverSurface': grpc.unary_unary_rpc_method_handler(
+                    servicer.DiscoverSurface,
+                    request_deserializer=gaius__service__pb2.DiscoverSurfaceRequest.FromString,
+                    response_serializer=gaius__service__pb2.DiscoverSurfaceResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'gaius.engine.GaiusService', rpc_method_handlers)
@@ -2470,11 +2495,7 @@ def add_GaiusServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class GaiusService(object):
-    """═══════════════════════════════════════════════════════════════════════════
-    Service Definition
-    ═══════════════════════════════════════════════════════════════════════════
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     @staticmethod
     def OrchestratorStatus(request,
@@ -6300,6 +6321,60 @@ class GaiusService(object):
             '/gaius.engine.GaiusService/RenderCards',
             gaius__service__pb2.RenderCardsRequest.SerializeToString,
             gaius__service__pb2.RenderCardEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SignalsTelemetry(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/SignalsTelemetry',
+            gaius__service__pb2.SignalsTelemetryRequest.SerializeToString,
+            gaius__service__pb2.SignalsTelemetryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DiscoverSurface(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/gaius.engine.GaiusService/DiscoverSurface',
+            gaius__service__pb2.DiscoverSurfaceRequest.SerializeToString,
+            gaius__service__pb2.DiscoverSurfaceResponse.FromString,
             options,
             channel_credentials,
             insecure,

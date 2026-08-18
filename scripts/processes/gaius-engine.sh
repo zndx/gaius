@@ -16,6 +16,11 @@ banner "GAIUS ENGINE - Centralized Inference & Evolution Daemon"
 # (gRPC SO_REUSEPORT would otherwise dual-bind; see #EN.00000014.DUALBIND)
 assert_tcp_port_free "${GAIUS_ENGINE_GRPC_PORT:-50051}" "gaius-engine lattice"
 
+# Same cluster hostname as Signals/Ægir when they export it.
+if [[ -z "${GAIUS_ADVERTISE_HOST:-}" && -n "${SIGNALS_ADVERTISE_HOST:-}" ]]; then
+  export GAIUS_ADVERTISE_HOST="$SIGNALS_ADVERTISE_HOST"
+fi
+
 # Follow devenv's assigned PGPORT (worktrees / sibling projects). If
 # systemd pinned this checkout's postmaster to the lattice port, wait
 # discovers that live listener instead of a dark assigned port.

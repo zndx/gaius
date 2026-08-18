@@ -111,6 +111,8 @@
     export METAFLOW_SERVICE_URL="http://localhost:30180"
     # Lattice hub gRPC (Status / ServerQuery), not a canned UI URL.
     export SIGNALS_ENGINE_TARGET="''${SIGNALS_ENGINE_TARGET:-127.0.0.1:50551}"
+    # Same advertise name as Signals/Ægir when they set it (ZT / lab FQDN).
+    export GAIUS_ADVERTISE_HOST="''${GAIUS_ADVERTISE_HOST:-''${SIGNALS_ADVERTISE_HOST:-}}"
     # devenv's port allocator may shift postgres off the declared 5444 when
     # stacks launch concurrently (it exports the effective port as PGPORT).
     # The static DATABASE_URL in .env can't follow, so rebuild it here; this

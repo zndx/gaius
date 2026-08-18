@@ -86,6 +86,18 @@ class InferenceResponse:
         return self.error is None
 
 
+def _metrics_provider(backend: str | None) -> str:
+    """Map InferenceResponse.backend onto record_inference provider labels."""
+    raw = (backend or "").strip().lower()
+    if raw.startswith("external:"):
+        return raw.split(":", 1)[1] or "external"
+    if raw in ("cerebras", "xai", "bytez"):
+        return raw
+    if raw:
+        return "local"
+    return ""
+
+
 class BackendRouter:
     """Routes inference requests to appropriate backends.
 
@@ -207,14 +219,22 @@ class BackendRouter:
                     error=f"Unknown backend: {backend}",
                 )
 
-        # Record metrics at core layer - ALL inference flows through here
+        # Record metrics at core layer - ALL inference flows through here.
+        # Split in/out must be passed: the total counter is not a substitute
+        # (yield tape / tokens_in_total / tokens_out_total stay at 0 otherwise).
         metrics = EngineMetrics.get_instance()
-        tokens = (response.input_tokens or 0) + (response.output_tokens or 0)
+        tokens_in = int(response.input_tokens or 0)
+        tokens_out = int(response.output_tokens or 0)
+        tokens = tokens_in + tokens_out
         metrics.record_inference(
             model=request.agent_alias,
             latency_ms=response.latency_ms,
             tokens=tokens,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             success=response.error is None,
+            technique=response.technique or "",
+            provider=_metrics_provider(response.backend),
         )
 
         return response
@@ -363,7 +383,7 @@ class BackendRouter:
                     f"vLLM {request.agent_alias} is {status}, not HEALTHY.\n"
                     "  Guru: #EP.00000016.NOTREADY\n"
                     "  Complete does not wait out a 900s vLLM load. "
-                    "Settings/boot starts leftover Ask; retry when /gpu status is HEALTHY."
+                    "Settings/boot starts light or medium Ask; retry when /gpu status is HEALTHY."
                 ),
             )
 

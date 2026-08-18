@@ -232,6 +232,12 @@ from ...generated import (
     SummarySchedulesResponse,
     SummaryScheduleTriggerRequest,
     SummaryScheduleTriggerResponse,
+    DiscoverSurfaceRequest,
+    DiscoverSurfaceResponse,
+    DiscoverBucket as ProtoDiscoverBucket,
+    DiscoverDoc as ProtoDiscoverDoc,
+    DiscoverFacet as ProtoDiscoverFacet,
+    DiscoverEpisode as ProtoDiscoverEpisode,
     # CLT (Cross-Layer Transcoders)
     CLTExtractRequest,
     CLTExtractResponse,
@@ -264,6 +270,9 @@ from ...generated import (
     ObserveStatusResponse,
     MetricSnapshot,
     EndpointSnapshot,
+    SignalsTelemetryRequest,
+    SignalsTelemetryResponse,
+    GpuWatt,
     # X Bookmarks
     XBookmarksAuthRequest,
     XBookmarksAuthResponse,
@@ -1999,6 +2008,88 @@ class GaiusServicer(GaiusServiceServicer):
             logger.debug(f"Failed to get active thoughts: {e}")
 
         return response
+
+    async def DiscoverSurface(
+        self,
+        request: DiscoverSurfaceRequest,
+        context: aio.ServicerContext,
+    ) -> DiscoverSurfaceResponse:
+        from ...services.discover_surface import DiscoverError, load_discover
+
+        pool = _summary_db(self._services)
+        try:
+            snap = await load_discover(
+                pool,
+                window=request.window or "1h",
+                query=request.query or "",
+                breakdown=request.breakdown or "source",
+                limit=request.limit or 50,
+                feature_pins=list(request.feature_pins or []),
+                from_ts=request.from_ts or "",
+                to_ts=request.to_ts or "",
+            )
+        except DiscoverError as e:
+            return DiscoverSurfaceResponse(error=str(e))
+        except Exception as e:
+            return DiscoverSurfaceResponse(
+                error=(
+                    f"Discover surface failed: {e}\n"
+                    "Guru Meditation: #DI.00000006.SURFACE\n"
+                    "  Try: /health fix postgres"
+                ),
+            )
+        return DiscoverSurfaceResponse(
+            buckets=[
+                ProtoDiscoverBucket(
+                    t=b.t,
+                    n=b.n,
+                    breakdown_key=b.breakdown_key,
+                    salience=b.salience,
+                    watts=b.watts,
+                    util=b.util,
+                    salience_ma=b.salience_ma,
+                    watts_ma=b.watts_ma,
+                    util_ma=b.util_ma,
+                )
+                for b in snap.buckets
+            ],
+            docs=[
+                ProtoDiscoverDoc(
+                    id=d.id,
+                    stream=d.stream,
+                    source=d.source,
+                    ts=d.ts,
+                    title=d.title,
+                    body=d.body,
+                    source_id=d.source_id,
+                    url=d.url,
+                )
+                for d in snap.docs
+            ],
+            facets=[
+                ProtoDiscoverFacet(
+                    key=f.key, kind=f.kind, count=f.count, salience=f.salience
+                )
+                for f in snap.facets
+            ],
+            total=snap.total,
+            window=snap.window,
+            query=snap.query,
+            scraped_at=snap.scraped_at,
+            interval=snap.interval,
+            last_salience_at=snap.last_salience_at,
+            clock=snap.clock,
+            next_episode=(
+                ProtoDiscoverEpisode(
+                    kind=snap.next_episode.kind,
+                    at=snap.next_episode.at,
+                    eta_s=snap.next_episode.eta_s,
+                    label=snap.next_episode.label,
+                )
+                if snap.next_episode
+                else None
+            ),
+        )
 
     async def CognitionSurface(
         self,
@@ -5863,6 +5954,43 @@ class GaiusServicer(GaiusServiceServicer):
     # Observability Dashboard Service Methods
     # =========================================================================
 
+    async def SignalsTelemetry(
+        self,
+        request: SignalsTelemetryRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> SignalsTelemetryResponse:
+        """One Signals DCGM scrape. No store. 503/missing surface → error field."""
+        from ...services.signals_telemetry import (
+            SignalsTelemetryError,
+            scrape_snapshot,
+        )
+
+        try:
+            snap = await scrape_snapshot()
+        except SignalsTelemetryError as e:
+            return SignalsTelemetryResponse(error=str(e))
+        return SignalsTelemetryResponse(
+            source_url=snap["source_url"],
+            scraped_at=snap["scraped_at"],
+            total_w=snap["total_w"],
+            parked_w=snap["parked_w"],
+            inferring_w=snap["inferring_w"],
+            gpus=[
+                GpuWatt(
+                    index=int(g.get("index") or 0),
+                    uuid=str(g.get("uuid") or ""),
+                    model=str(g.get("model") or ""),
+                    power_w=float(g.get("power_w") or 0.0),
+                    util=float(g.get("util") or 0.0),
+                    memory_used_mib=float(g.get("memory_used_mib") or 0.0),
+                    memory_free_mib=float(g.get("memory_free_mib") or 0.0),
+                    energy_mj=float(g.get("energy_mj") or 0.0),
+                    temp_c=float(g.get("temp_c") or 0.0),
+                )
+                for g in snap.get("gpus") or []
+            ],
+        )
+
     async def ObserveStatus(
         self,
         request: ObserveStatusRequest,
@@ -5881,6 +6009,7 @@ class GaiusServicer(GaiusServiceServicer):
             # Initialize Prometheus source
             prometheus = PrometheusSource()
             prometheus_ok = await prometheus.health_check()
+            self._signals_watts_snap = None
 
             # Query metrics
             metrics = []
@@ -5916,6 +6045,26 @@ class GaiusServicer(GaiusServiceServicer):
                             if hasattr(status_data, "__await__"):
                                 status_data = await status_data
                             current_value = float(status_data.get("cycles_completed", 0))
+                    elif metric_def.query in (
+                        "signals_total_w",
+                        "signals_inferring_w",
+                        "signals_parked_w",
+                    ):
+                        from ...services.signals_telemetry import scrape_snapshot
+
+                        if not hasattr(self, "_signals_watts_snap"):
+                            try:
+                                self._signals_watts_snap = await scrape_snapshot()
+                            except Exception:
+                                self._signals_watts_snap = None
+                        snap = self._signals_watts_snap
+                        if snap:
+                            key = {
+                                "signals_total_w": "total_w",
+                                "signals_inferring_w": "inferring_w",
+                                "signals_parked_w": "parked_w",
+                            }[metric_def.query]
+                            current_value = float(snap.get(key) or 0.0)
 
                 # Determine status from thresholds
                 status = metric_def.get_color(current_value)
@@ -5929,6 +6078,7 @@ class GaiusServicer(GaiusServiceServicer):
                     status=status,
                 ))
 
+            self._signals_watts_snap = None
             await prometheus.close()
 
             # Get endpoint status by reusing OrchestratorStatus (already has all fallback logic)

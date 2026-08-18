@@ -30,6 +30,18 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 const RESERVE: u32 = 65_536;
 
 #[derive(Template)]
+#[template(path = "discover.html")]
+struct DiscoverPage {
+    title: String,
+    active: String,
+    mode: String,
+    asset_v: String,
+    brand_id: String,
+    logo_href: String,
+    logo_alt: String,
+}
+
+#[derive(Template)]
 #[template(path = "board.html")]
 struct BoardPage {
     title: String,
@@ -139,11 +151,51 @@ fn chrome_bits(state: &openai::AppState) -> ChromeBits {
     let b = state.brand.read().expect("brand lock");
     ChromeBits {
         mode: "dark".into(),
-        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.2.30-ops".into()),
+        asset_v: std::env::var("GAIUS_UI_ASSET_V").unwrap_or_else(|_| "0.3.3-clt-labels".into()),
         brand_id: b.id.clone(),
         logo_href: b.logo_href.clone(),
         logo_alt: b.logo_alt.clone(),
     }
+}
+
+async fn discover(State(state): State<openai::AppState>) -> impl IntoResponse {
+    let c = chrome_bits(&state);
+    Html(
+        DiscoverPage {
+            title: "Discover".into(),
+            active: "discover".into(),
+            mode: c.mode,
+            asset_v: c.asset_v,
+            brand_id: c.brand_id,
+            logo_href: c.logo_href,
+            logo_alt: c.logo_alt,
+        }
+        .render()
+        .unwrap_or_else(|e| format!("template error: {e}")),
+    )
+}
+
+async fn discover_api(Query(q): Query<DiscoverQuery>) -> impl IntoResponse {
+    match gaius::Gaius::from_env()
+        .discover_surface(
+            q.window.unwrap_or_default(),
+            q.query.unwrap_or_default(),
+            q.breakdown.unwrap_or_default(),
+            q.limit.unwrap_or(50),
+        )
+        .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => summary_err(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct DiscoverQuery {
+    window: Option<String>,
+    query: Option<String>,
+    breakdown: Option<String>,
+    limit: Option<i32>,
 }
 
 async fn board(State(state): State<openai::AppState>) -> impl IntoResponse {
@@ -369,6 +421,13 @@ fn summary_err(e: gaius::GaiusError) -> axum::response::Response {
         format!("{e}\n"),
     )
         .into_response()
+}
+
+async fn watts_api() -> impl IntoResponse {
+    match gaius::Gaius::from_env().signals_telemetry().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => summary_err(e),
+    }
 }
 
 async fn ops_api(State(state): State<openai::AppState>) -> impl IntoResponse {
@@ -654,7 +713,7 @@ async fn apply_ask_endpoints(backend: &str) -> Result<String, String> {
             g.ensure_endpoint("ask-sae".into())
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok("Ask → Qwen3.5-9B-Base + SAE (TP=2 on leftover 4–5). Thinking 0–3 untouched.".into())
+            Ok("Ask → medium: Qwen3.5-9B-Base + SAE (TP=2 on GPU 4–5). Thinking 0–3 untouched.".into())
         }
         brand::ASK_CLT_PAIR | "clt" | "interpretable" => {
             let _ = g.stop_endpoint("ask-sae".into()).await;
@@ -665,7 +724,7 @@ async fn apply_ask_endpoints(backend: &str) -> Result<String, String> {
             g.ensure_endpoint("interpretable-b".into())
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok("Ask → 2× Qwen3-1.7B (CLT-capable) on leftover GPUs 4 and 5.".into())
+            Ok("Ask → light: 2× Qwen3-1.7B (one whole GPU each, 4 and 5).".into())
         }
         other => Err(format!(
             "unknown ask backend {other}.\n  Guru: #UI.00000009.ASKBACKEND"
@@ -880,7 +939,9 @@ async fn main() -> anyhow::Result<()> {
         assets.join("brand/custom")
     };
     let app = Router::new()
-        .route("/", get(board))
+        .route("/", get(discover))
+        .route("/lab/board", get(board))
+        .route("/api/gaius/v1/discover", get(discover_api))
         .route("/agenda", get(agenda))
         .route("/api/gaius/v1/agenda", get(agenda_api).post(agenda_create))
         .route("/api/gaius/v1/agenda/update", post(agenda_update))
@@ -903,6 +964,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/gaius/v1/board", get(board_api))
         .route("/api/gaius/v1/cognition", get(cognition_api))
         .route("/api/gaius/v1/ops", get(ops_api))
+        .route("/api/gaius/v1/watts", get(watts_api))
         .route("/api/gaius/v1/federation/surfaces", get(federation_surfaces_api))
         .route(
             "/api/gaius/v1/ask/artifacts",

@@ -1,0 +1,74 @@
+{% include "chrome.html" %}
+<div class="discover-page" id="discover-page">
+  <div id="discover-countdown" class="discover-countdown" hidden></div>
+  <div class="discover-toolbar">
+    <label class="discover-query-wrap">
+      <span class="muted">Query</span>
+      <input id="discover-query" class="discover-query" type="search"
+             placeholder="stream:inflow source:arxiv_cs_dc  or  feature:12:4412"
+             autocomplete="off" spellcheck="false" />
+    </label>
+    <label class="discover-window-wrap">
+      <span class="muted">Window</span>
+      <select id="discover-window">
+        <option value="1h" selected>1 hr</option>
+        <option value="24h">24 hrs</option>
+        <option value="36h">36 hrs</option>
+        <option value="7d">7 days</option>
+        <option value="30d">30 days</option>
+      </select>
+    </label>
+    <label class="discover-break-wrap">
+      <span class="muted">Breakdown</span>
+      <select id="discover-breakdown">
+        <option value="source" selected>source</option>
+        <option value="stream">stream</option>
+        <option value="layer">layer</option>
+      </select>
+    </label>
+    <button type="button" id="discover-update" class="discover-update">Update</button>
+    <span id="discover-meta" class="muted discover-meta"></span>
+  </div>
+
+  <div class="discover-hist-wrap">
+    <div id="discover-hist" class="discover-hist" aria-label="Salience by minute"></div>
+    <svg id="discover-trends" class="discover-trends" aria-hidden="true"></svg>
+    <div class="discover-legend muted">
+      <span class="leg sal">salience</span>
+      <span class="leg w">watts (5m MA)</span>
+      <span class="leg u">util % (5m MA)</span>
+    </div>
+  </div>
+
+  <div class="discover-body">
+    <aside class="discover-facets" aria-label="Selected fields">
+      <h2 class="discover-h">Selected</h2>
+      <div id="discover-selected" class="discover-chips"></div>
+      <h2 class="discover-h">Popular</h2>
+      <div id="discover-popular" class="discover-chips"></div>
+      <p class="muted discover-facet-hint">
+        Popular features are ranked by repeat × activation in this window.
+      </p>
+    </aside>
+    <section class="discover-table-wrap">
+      <div class="discover-table-head">
+        <h2 class="discover-h">Activation Examples</h2>
+        <span id="discover-count" class="muted"></span>
+      </div>
+      <table class="discover-table">
+        <thead>
+          <tr>
+            <th>@timestamp</th>
+            <th>stream</th>
+            <th>source</th>
+            <th>message</th>
+            <th>L·F</th>
+          </tr>
+        </thead>
+        <tbody id="discover-rows"></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+<script src="/assets/js/discover.js?v={{ asset_v }}"></script>
+{% include "footer.html" %}

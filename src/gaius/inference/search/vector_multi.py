@@ -136,34 +136,21 @@ class VectorSearchMulti:
             import torch
             from opentelemetry import trace
 
+            from .colbert import get_colbert_embedder
+
             tracer = trace.get_tracer("gaius.inference.search")
 
             if not torch.cuda.is_available():
                 raise RuntimeError(
-                    "ColNomic requires GPU but CUDA is not available. "
+                    "ColBERT-Zero requires GPU but CUDA is not available. "
                     "Check GPU health with /gpu or nvidia-smi."
                 )
 
-            # Determine device
             device = self._device if self._device else "cuda:0"
-
-            # When device is explicitly specified by VectorSearchService,
-            # create a fresh embedder on that device instead of using singleton.
-            # The singleton may be on a different GPU from a previous allocation.
-            if self._device:
-                with tracer.start_as_current_span("colnomic.embedder.create") as span:
-                    span.set_attribute("device", device)
-                    span.set_attribute("singleton", False)
-                    span.add_event("colnomic.device.explicit", {"device": device})
-                    self._embedder = ColQwenEmbedder(device=device)
-                    span.add_event("colnomic.embedder.ready")
-            else:
-                # Use singleton for default behavior (backwards compatibility)
-                with tracer.start_as_current_span("colnomic.embedder.singleton") as span:
-                    span.set_attribute("device", device)
-                    span.set_attribute("singleton", True)
-                    self._embedder = get_colqwen_embedder()
-                    span.add_event("colnomic.singleton.retrieved")
+            with tracer.start_as_current_span("colbert_zero.embedder.create") as span:
+                span.set_attribute("device", device)
+                self._embedder = get_colbert_embedder(device=device)
+                span.add_event("colbert_zero.embedder.ready")
 
         return self._embedder
 
@@ -179,7 +166,7 @@ class VectorSearchMulti:
 
     @property
     def embedding_dim(self) -> int:
-        """Get embedding dimension (128 for ColNomic)."""
+        """Get embedding dimension (128 for ColBERT-Zero)."""
         return 128
 
     def ensure_collection(self) -> None:
@@ -204,11 +191,11 @@ class VectorSearchMulti:
             logger.info(f"Created Qdrant collection: {self.collection_name}")
 
     def index_kb(self, batch_size: int = 8, include_images: bool = True) -> int:
-        """Index all KB documents into Qdrant using ColNomic multi-vectors.
+        """Index all KB documents into Qdrant using ColBERT-Zero multi-vectors.
 
         Args:
             batch_size: Number of chunks to embed at once (smaller for GPU memory)
-            include_images: Whether to index image files
+            include_images: Ignored — Zero is text-only (#EM.00000001.NOVISION)
 
         Returns:
             Number of chunks indexed
@@ -230,7 +217,12 @@ class VectorSearchMulti:
 
             # Separate text and image chunks
             text_chunks = [c for c in batch if c.content_type == "text"]
-            image_chunks = [c for c in batch if c.content_type == "image"]
+            image_chunks = []
+            if include_images and any(c.content_type == "image" for c in batch):
+                logger.warning(
+                    "Skipping image chunks — ColBERT-Zero is text-only "
+                    "(#EM.00000001.NOVISION)"
+                )
 
             points = []
 

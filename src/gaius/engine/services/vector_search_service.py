@@ -676,7 +676,7 @@ class VectorSearchService:
         """Get Qdrant collection name."""
         if self._vector_search_multi:
             return self._vector_search_multi.collection_name
-        return "gaius_kb_colnomic"
+        return "gaius_kb_colbert_zero"
 
     def get_status(self) -> dict:
         """Get service status for diagnostics."""

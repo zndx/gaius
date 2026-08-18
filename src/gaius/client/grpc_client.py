@@ -69,6 +69,7 @@ from ..engine.generated import (
     GetOrphanedIssuesRequest,
     # Observability Dashboard
     ObserveStatusRequest,
+    SignalsTelemetryRequest,
     # X Bookmarks
     XBookmarksAuthRequest,
     XBookmarksCompleteAuthRequest,
@@ -905,6 +906,8 @@ class GrpcEngineClient:
             return await self._call_health(action, params, timeout)
         elif service == "Cognition":
             return await self._call_cognition(action, params, timeout)
+        elif service == "Discover":
+            return await self._call_discover(action, params, timeout)
         elif service == "Workload":
             return await self._call_workload(action, params, timeout)
         elif service == "Embedding":
@@ -921,6 +924,8 @@ class GrpcEngineClient:
             return await self._call_health_observer(action, params, timeout)
         elif service == "Observe":
             return await self._call_observe(action, params, timeout)
+        elif service == "SignalsTelemetry":
+            return await self._call_signals_telemetry(action, params, timeout)
         elif service == "XBookmarks":
             return await self._call_x_bookmarks(action, params, timeout)
         elif service == "Ambient":
@@ -1315,6 +1320,82 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Health action: {action}")
+
+    async def _call_discover(self, action: str, params: dict, timeout: float) -> dict:
+        if action not in ("surface", "status", ""):
+            raise ValueError(f"Unknown Discover action: {action}")
+        from ..engine.generated import DiscoverSurfaceRequest
+
+        response = await self._stub.DiscoverSurface(
+            DiscoverSurfaceRequest(
+                window=str(params.get("window") or "1h"),
+                query=str(params.get("query") or ""),
+                breakdown=str(params.get("breakdown") or "source"),
+                limit=int(params.get("limit") or 50),
+                cursor=str(params.get("cursor") or ""),
+                feature_pins=list(params.get("feature_pins") or []),
+                from_ts=str(params.get("from_ts") or ""),
+                to_ts=str(params.get("to_ts") or ""),
+            ),
+            timeout=timeout,
+        )
+        if response.error:
+            return {"error": response.error}
+        return {
+            "window": response.window,
+            "query": response.query,
+            "interval": response.interval,
+            "scraped_at": response.scraped_at,
+            "total": response.total,
+            "last_salience_at": response.last_salience_at,
+            "clock": response.clock,
+            "next_episode": (
+                {
+                    "kind": response.next_episode.kind,
+                    "at": response.next_episode.at,
+                    "eta_s": response.next_episode.eta_s,
+                    "label": response.next_episode.label,
+                }
+                if response.next_episode.kind or response.next_episode.at
+                else None
+            ),
+            "buckets": [
+                {
+                    "t": b.t,
+                    "n": b.n,
+                    "breakdown_key": b.breakdown_key,
+                    "salience": b.salience,
+                    "watts": b.watts,
+                    "util": b.util,
+                    "salience_ma": b.salience_ma,
+                    "watts_ma": b.watts_ma,
+                    "util_ma": b.util_ma,
+                }
+                for b in response.buckets
+            ],
+            "docs": [
+                {
+                    "id": d.id,
+                    "stream": d.stream,
+                    "source": d.source,
+                    "ts": d.ts,
+                    "title": d.title,
+                    "body": d.body,
+                    "source_id": d.source_id,
+                    "url": d.url,
+                }
+                for d in response.docs
+            ],
+            "facets": [
+                {
+                    "key": f.key,
+                    "kind": f.kind,
+                    "count": f.count,
+                    "salience": f.salience,
+                }
+                for f in response.facets
+            ],
+        }
 
     async def _call_cognition(self, action: str, params: dict, timeout: float) -> dict:
         """Handle Cognition service calls via gRPC."""
@@ -2473,6 +2554,38 @@ class GrpcEngineClient:
 
         else:
             raise ValueError(f"Unknown Observe action: {action}")
+
+    async def _call_signals_telemetry(
+        self, action: str, params: dict, timeout: float
+    ) -> dict:
+        if action not in ("snapshot", "status", ""):
+            raise ValueError(f"Unknown SignalsTelemetry action: {action}")
+        response = await self._stub.SignalsTelemetry(
+            SignalsTelemetryRequest(), timeout=timeout
+        )
+        if response.error:
+            return {"error": response.error}
+        return {
+            "source_url": response.source_url,
+            "scraped_at": response.scraped_at,
+            "total_w": response.total_w,
+            "parked_w": response.parked_w,
+            "inferring_w": response.inferring_w,
+            "gpus": [
+                {
+                    "index": g.index,
+                    "uuid": g.uuid,
+                    "model": g.model,
+                    "power_w": g.power_w,
+                    "util": g.util,
+                    "memory_used_mib": g.memory_used_mib,
+                    "memory_free_mib": g.memory_free_mib,
+                    "energy_mj": g.energy_mj,
+                    "temp_c": g.temp_c,
+                }
+                for g in response.gpus
+            ],
+        }
 
     async def _call_x_bookmarks(
         self, action: str, params: dict, timeout: float

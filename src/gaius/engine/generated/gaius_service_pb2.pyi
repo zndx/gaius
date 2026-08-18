@@ -4713,3 +4713,161 @@ class RenderCardEvent(_message.Message):
     duration_ms: int
     error: str
     def __init__(self, phase: _Optional[_Union[RenderPhase, str]] = ..., card_id: _Optional[str] = ..., message: _Optional[str] = ..., progress: _Optional[float] = ..., variant: _Optional[str] = ..., output_path: _Optional[str] = ..., image_url: _Optional[str] = ..., cards_done: _Optional[int] = ..., cards_total: _Optional[int] = ..., duration_ms: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SignalsTelemetryRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class GpuWatt(_message.Message):
+    __slots__ = ("index", "uuid", "model", "power_w", "util", "memory_used_mib", "memory_free_mib", "energy_mj", "temp_c")
+    INDEX_FIELD_NUMBER: _ClassVar[int]
+    UUID_FIELD_NUMBER: _ClassVar[int]
+    MODEL_FIELD_NUMBER: _ClassVar[int]
+    POWER_W_FIELD_NUMBER: _ClassVar[int]
+    UTIL_FIELD_NUMBER: _ClassVar[int]
+    MEMORY_USED_MIB_FIELD_NUMBER: _ClassVar[int]
+    MEMORY_FREE_MIB_FIELD_NUMBER: _ClassVar[int]
+    ENERGY_MJ_FIELD_NUMBER: _ClassVar[int]
+    TEMP_C_FIELD_NUMBER: _ClassVar[int]
+    index: int
+    uuid: str
+    model: str
+    power_w: float
+    util: float
+    memory_used_mib: float
+    memory_free_mib: float
+    energy_mj: float
+    temp_c: float
+    def __init__(self, index: _Optional[int] = ..., uuid: _Optional[str] = ..., model: _Optional[str] = ..., power_w: _Optional[float] = ..., util: _Optional[float] = ..., memory_used_mib: _Optional[float] = ..., memory_free_mib: _Optional[float] = ..., energy_mj: _Optional[float] = ..., temp_c: _Optional[float] = ...) -> None: ...
+
+class SignalsTelemetryResponse(_message.Message):
+    __slots__ = ("source_url", "scraped_at", "gpus", "total_w", "parked_w", "inferring_w", "error")
+    SOURCE_URL_FIELD_NUMBER: _ClassVar[int]
+    SCRAPED_AT_FIELD_NUMBER: _ClassVar[int]
+    GPUS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_W_FIELD_NUMBER: _ClassVar[int]
+    PARKED_W_FIELD_NUMBER: _ClassVar[int]
+    INFERRING_W_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    source_url: str
+    scraped_at: str
+    gpus: _containers.RepeatedCompositeFieldContainer[GpuWatt]
+    total_w: float
+    parked_w: float
+    inferring_w: float
+    error: str
+    def __init__(self, source_url: _Optional[str] = ..., scraped_at: _Optional[str] = ..., gpus: _Optional[_Iterable[_Union[GpuWatt, _Mapping]]] = ..., total_w: _Optional[float] = ..., parked_w: _Optional[float] = ..., inferring_w: _Optional[float] = ..., error: _Optional[str] = ...) -> None: ...
+
+class DiscoverSurfaceRequest(_message.Message):
+    __slots__ = ("window", "query", "breakdown", "limit", "cursor", "feature_pins", "from_ts", "to_ts")
+    WINDOW_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    BREAKDOWN_FIELD_NUMBER: _ClassVar[int]
+    LIMIT_FIELD_NUMBER: _ClassVar[int]
+    CURSOR_FIELD_NUMBER: _ClassVar[int]
+    FEATURE_PINS_FIELD_NUMBER: _ClassVar[int]
+    FROM_TS_FIELD_NUMBER: _ClassVar[int]
+    TO_TS_FIELD_NUMBER: _ClassVar[int]
+    window: str
+    query: str
+    breakdown: str
+    limit: int
+    cursor: str
+    feature_pins: _containers.RepeatedScalarFieldContainer[str]
+    from_ts: str
+    to_ts: str
+    def __init__(self, window: _Optional[str] = ..., query: _Optional[str] = ..., breakdown: _Optional[str] = ..., limit: _Optional[int] = ..., cursor: _Optional[str] = ..., feature_pins: _Optional[_Iterable[str]] = ..., from_ts: _Optional[str] = ..., to_ts: _Optional[str] = ...) -> None: ...
+
+class DiscoverBucket(_message.Message):
+    __slots__ = ("t", "n", "breakdown_key", "salience", "watts", "util", "salience_ma", "watts_ma", "util_ma")
+    T_FIELD_NUMBER: _ClassVar[int]
+    N_FIELD_NUMBER: _ClassVar[int]
+    BREAKDOWN_KEY_FIELD_NUMBER: _ClassVar[int]
+    SALIENCE_FIELD_NUMBER: _ClassVar[int]
+    WATTS_FIELD_NUMBER: _ClassVar[int]
+    UTIL_FIELD_NUMBER: _ClassVar[int]
+    SALIENCE_MA_FIELD_NUMBER: _ClassVar[int]
+    WATTS_MA_FIELD_NUMBER: _ClassVar[int]
+    UTIL_MA_FIELD_NUMBER: _ClassVar[int]
+    t: str
+    n: int
+    breakdown_key: str
+    salience: float
+    watts: float
+    util: float
+    salience_ma: float
+    watts_ma: float
+    util_ma: float
+    def __init__(self, t: _Optional[str] = ..., n: _Optional[int] = ..., breakdown_key: _Optional[str] = ..., salience: _Optional[float] = ..., watts: _Optional[float] = ..., util: _Optional[float] = ..., salience_ma: _Optional[float] = ..., watts_ma: _Optional[float] = ..., util_ma: _Optional[float] = ...) -> None: ...
+
+class DiscoverEpisode(_message.Message):
+    __slots__ = ("kind", "at", "eta_s", "label")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    AT_FIELD_NUMBER: _ClassVar[int]
+    ETA_S_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    kind: str
+    at: str
+    eta_s: int
+    label: str
+    def __init__(self, kind: _Optional[str] = ..., at: _Optional[str] = ..., eta_s: _Optional[int] = ..., label: _Optional[str] = ...) -> None: ...
+
+class DiscoverDoc(_message.Message):
+    __slots__ = ("id", "stream", "source", "ts", "title", "body", "source_id", "url")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    STREAM_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    TS_FIELD_NUMBER: _ClassVar[int]
+    TITLE_FIELD_NUMBER: _ClassVar[int]
+    BODY_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_ID_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    stream: str
+    source: str
+    ts: str
+    title: str
+    body: str
+    source_id: str
+    url: str
+    def __init__(self, id: _Optional[str] = ..., stream: _Optional[str] = ..., source: _Optional[str] = ..., ts: _Optional[str] = ..., title: _Optional[str] = ..., body: _Optional[str] = ..., source_id: _Optional[str] = ..., url: _Optional[str] = ...) -> None: ...
+
+class DiscoverFacet(_message.Message):
+    __slots__ = ("key", "kind", "count", "salience")
+    KEY_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    COUNT_FIELD_NUMBER: _ClassVar[int]
+    SALIENCE_FIELD_NUMBER: _ClassVar[int]
+    key: str
+    kind: str
+    count: int
+    salience: float
+    def __init__(self, key: _Optional[str] = ..., kind: _Optional[str] = ..., count: _Optional[int] = ..., salience: _Optional[float] = ...) -> None: ...
+
+class DiscoverSurfaceResponse(_message.Message):
+    __slots__ = ("buckets", "docs", "facets", "total", "window", "query", "scraped_at", "interval", "error", "last_salience_at", "next_episode", "clock")
+    BUCKETS_FIELD_NUMBER: _ClassVar[int]
+    DOCS_FIELD_NUMBER: _ClassVar[int]
+    FACETS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_FIELD_NUMBER: _ClassVar[int]
+    WINDOW_FIELD_NUMBER: _ClassVar[int]
+    QUERY_FIELD_NUMBER: _ClassVar[int]
+    SCRAPED_AT_FIELD_NUMBER: _ClassVar[int]
+    INTERVAL_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    LAST_SALIENCE_AT_FIELD_NUMBER: _ClassVar[int]
+    NEXT_EPISODE_FIELD_NUMBER: _ClassVar[int]
+    CLOCK_FIELD_NUMBER: _ClassVar[int]
+    buckets: _containers.RepeatedCompositeFieldContainer[DiscoverBucket]
+    docs: _containers.RepeatedCompositeFieldContainer[DiscoverDoc]
+    facets: _containers.RepeatedCompositeFieldContainer[DiscoverFacet]
+    total: int
+    window: str
+    query: str
+    scraped_at: str
+    interval: str
+    error: str
+    last_salience_at: str
+    next_episode: DiscoverEpisode
+    clock: str
+    def __init__(self, buckets: _Optional[_Iterable[_Union[DiscoverBucket, _Mapping]]] = ..., docs: _Optional[_Iterable[_Union[DiscoverDoc, _Mapping]]] = ..., facets: _Optional[_Iterable[_Union[DiscoverFacet, _Mapping]]] = ..., total: _Optional[int] = ..., window: _Optional[str] = ..., query: _Optional[str] = ..., scraped_at: _Optional[str] = ..., interval: _Optional[str] = ..., error: _Optional[str] = ..., last_salience_at: _Optional[str] = ..., next_episode: _Optional[_Union[DiscoverEpisode, _Mapping]] = ..., clock: _Optional[str] = ...) -> None: ...

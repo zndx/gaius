@@ -37,6 +37,24 @@ if not gpu_id:
     print("WARNING: CUDA_VISIBLE_DEVICES not set, using default GPU", file=sys.stderr)
 
 
+def _token_offsets(tokenizer, text: str, expected_len: int) -> list[list[int]]:
+    """Char spans aligned to CLT positions (same tokenizer as get_activations)."""
+    enc = tokenizer(
+        text,
+        return_offsets_mapping=True,
+        add_special_tokens=True,
+        return_tensors=None,
+    )
+    raw = [(int(a), int(b)) for a, b in enc["offset_mapping"]]
+    if expected_len and len(raw) != expected_len:
+        # BOS prepended by ensure_tokenized when the first token is not special
+        if expected_len == len(raw) + 1:
+            raw = [(0, 0), *raw]
+        elif len(raw) > expected_len:
+            raw = raw[:expected_len]
+    return [[a, b] for a, b in raw]
+
+
 def main() -> int:
     """Run CLT worker loop."""
     import contextlib
@@ -106,6 +124,7 @@ def main() -> int:
 
                 m = ensure_loaded()
                 result = m.extract_features(text, top_k=top_k)
+                offsets = _token_offsets(m.model.tokenizer, text, result.total_positions)
 
                 # Convert features to JSON-serializable format
                 features = [
@@ -123,6 +142,8 @@ def main() -> int:
                         "features": features,
                         "count": len(features),
                         "text_length": len(text),
+                        "total_positions": result.total_positions,
+                        "offsets": offsets,
                     }
                 })
 

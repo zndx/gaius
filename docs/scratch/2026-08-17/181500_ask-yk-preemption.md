@@ -1,6 +1,6 @@
 # Ask availability — YK only, light vs heavy vs offline
 
-Never start leftover vLLM if YuniKorn has not admitted the Ask Sentinel.
+Never start light/medium vLLM if YuniKorn has not admitted the Ask Sentinel.
 Going around YK is how we OOM thinking and contend on 4–5.
 
 ## Workload classes
@@ -17,15 +17,15 @@ offline **must** be siblings.
 
 ## Ask Complete (engine)
 
-1. Preferred leftover if **already HEALTHY** (YK-admitted earlier).
-2. Other leftover if healthy.
+1. Preferred light or medium if **already HEALTHY** (YK-admitted earlier).
+2. The other small class if healthy.
 3. Else **Complete on standing thinking** — share the existing 27B
    process. Do **not** allocate GPUs. Do **not** start a new vLLM.
 4. Give up only if thinking is also down **and** `light_wait_available()`
    is false (light leaf will not take another Sentinel).
 
-Settings/boot may `apply_and_admit("ask-agent")` **then** start leftover
-vLLM. Complete never calls `start_endpoint` on a cold leftover.
+Settings/boot may `apply_and_admit("ask-agent")` **then** start light
+or medium vLLM. Complete never calls `start_endpoint` on a cold model.
 
 ## YK laws (still)
 

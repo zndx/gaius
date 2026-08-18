@@ -65,10 +65,10 @@
 <section class="card" id="ask-backend">
   <h2>Ask</h2>
   <p class="muted">
-    Side-panel companion. Leftover GPUs <span class="mono">4–5</span> only —
-    Terminal thinking on <span class="mono">0–3</span> is never moved.
-    One model owns a whole GPU; we never pack two models on one card.
-    A large Ask model takes both leftover GPUs (tensor parallel).
+    Side-panel companion. Light (1 GPU) or medium (2 GPU) on
+    <span class="mono">4–5</span>. Terminal thinking stays on
+    <span class="mono">0–3</span>. One model owns a whole GPU;
+    we never pack two models on one card.
   </p>
   <form method="post" action="/settings/ask" class="brand-form">
     <div class="brand-grid" role="radiogroup" aria-label="Ask backend">

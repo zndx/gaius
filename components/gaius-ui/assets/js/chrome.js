@@ -6,6 +6,34 @@
   var closeBtn = document.getElementById("waffle-close");
   if (!toggle || !rail || !list) return;
 
+  function isIpHost(h) {
+    if (!h) return false;
+    if (h.indexOf(":") >= 0) return true;
+    return /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
+  }
+
+  function hrefForBrowser(url) {
+    var browse = window.location.hostname;
+    if (!url || !isIpHost(browse)) return url;
+    try {
+      var u = new URL(url, window.location.origin);
+      u.hostname = browse;
+      if (window.location.protocol) u.protocol = window.location.protocol;
+      return u.toString();
+    } catch (e) {
+      return url;
+    }
+  }
+
+  function itemTitle(it) {
+    if (it && it.title) return it.title;
+    var p = (it && it.project) || "";
+    if (!p) return "Peer";
+    return p.replace(/[-_]/g, " ").replace(/\b\w/g, function (c) {
+      return c.toUpperCase();
+    });
+  }
+
   function setOpen(open) {
     rail.hidden = !open;
     toggle.setAttribute("aria-pressed", open ? "true" : "false");
@@ -19,17 +47,11 @@
     rows.forEach(function (it) {
       var li = document.createElement("li");
       var a = document.createElement("a");
-      a.href = it.primary_ui;
+      a.href = hrefForBrowser(it.primary_ui);
       a.target = "_blank";
       a.rel = "noopener noreferrer";
-      var name = document.createElement("span");
-      name.className = "waffle-project";
-      name.textContent = it.project || it.engine_target || "peer";
-      var url = document.createElement("span");
-      url.className = "waffle-url";
-      url.textContent = it.primary_ui;
-      a.appendChild(name);
-      a.appendChild(url);
+      a.textContent = itemTitle(it);
+      a.className = "waffle-project";
       li.appendChild(a);
       list.appendChild(li);
     });

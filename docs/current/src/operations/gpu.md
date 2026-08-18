@@ -11,7 +11,7 @@ takes as many *whole* GPUs as tensor-parallel requires.
 | GPU | Typical Use | VRAM | Notes |
 |-----|-------------|------|-------|
 | 0–3 | thinking (Qwen3.8-27B) | 4 × 24GB | TP=4, whole devices |
-| 4–5 | Ask leftovers | 2 × 24GB | either 2× 1.7B (one GPU each) or 1× 9B-SAE TP=2 |
+| 4–5 | Ask light / medium | 2 × 24GB | 2× 1.7B (light, one GPU each) or 1× 9B-SAE (medium, TP=2) |
 
 The Orchestrator manages allocation via capability-based scheduling (OR-Tools CP-SAT). GPUs can be temporarily reassigned for LuxCore rendering or evolution training via makespan scheduling — the Orchestrator evicts a low-priority endpoint, runs the workload, then restores the endpoint.
 

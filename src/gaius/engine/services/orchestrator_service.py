@@ -1115,7 +1115,7 @@ class OrchestratorService:
         )
 
     async def _ensure_clt_endpoint(self, agent_alias: str) -> EndpointStatus:
-        """Standing CLT worker on a *free whole* leftover GPU.
+        """Standing CLT worker on a *free whole* GPU (light class).
 
         Never packed onto a GPU that already serves a vLLM replica.
         """
@@ -1131,7 +1131,7 @@ class OrchestratorService:
         free = self.resource_manager.get_free_gpus()
         if not free:
             raise ValueError(
-                "No leftover GPU for CLT traces.\n"
+                "No free GPU for a CLT worker (light class).\n"
                 "  Guru: #CLT.00000001.NOGPU\n"
                 "  Thinking holds 0–3; Ask CLT wants 4 or 5."
             )

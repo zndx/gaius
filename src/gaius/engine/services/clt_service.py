@@ -209,6 +209,10 @@ class CLTService:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(self.gpu_index)
         env["HF_HOME"] = os.environ.get("HF_HOME", "/raid/cache/huggingface")
+        # Share Aegir's HF_HOME/hub. A forked HF_HUB_CACHE writes a second
+        # tree under /raid/cache/rch/huggingface.
+        env.pop("HF_HUB_CACHE", None)
+        env.pop("HUGGINGFACE_HUB_CACHE", None)
 
         logger.info(f"Starting CLT worker on GPU {self.gpu_index}")
 

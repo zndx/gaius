@@ -151,14 +151,18 @@ _KIND_CLASS: dict[str, ResourceClass] = {
     "prospects_check": RATE_METERED,
     "fmp": RATE_METERED,
     "ambient": COMPUTE,
-    # Ask 1.7B: one whole leftover GPU per replica.
+    # Ask 1.7B: one whole GPU per replica (light).
     "ask-agent": LIGHT,
     "ask_agent": LIGHT,
     "ask-light": LIGHT,
-    # Ask SAE 9B: two whole leftover GPUs, medium leaf only.
+    # Ask SAE 9B: two whole GPUs, medium leaf only.
     "ask-sae": MEDIUM,
     "ask_sae": MEDIUM,
     "ask-medium": MEDIUM,
+    # Live YK has extract, not light yet (light is in Signals yaml, not
+    # loaded). Probe is offline batch — extract is the existing 1-GPU leaf.
+    "clt-probe": EXTRACT,
+    "clt_probe": EXTRACT,
 }
 
 
@@ -258,13 +262,15 @@ _KIND_PHASE: dict[str, str] = {
     "ask-sae": "ask",
     "ask_sae": "ask",
     "ask-medium": "ask",
+    "clt-probe": "probe",
+    "clt_probe": "probe",
 }
 
 
 def light_wait_available() -> bool:
     """True if YK may still place an Ask (light) Sentinel.
 
-    Never start leftover vLLM without this. Going around YK OOMs the box.
+    Never start light/medium vLLM without this. Going around YK OOMs the box.
     Standalone (no Signals scheduler): True so local Settings can start Ask.
     """
     if not sentinels_enabled() or not federation_required():
@@ -299,6 +305,9 @@ def disk_paths_for(kind: str) -> tuple[str, ...]:
     if rc.queue == RATE_METERED.queue:
         return ("/raid",)
     if kind.replace("_", "-").startswith("prospects-"):
+        return ("/raid",)
+    if kind.replace("_", "-") == "clt-probe":
+        # Tape is Postgres. Root 99% must not block understanding.
         return ("/raid",)
     return ("/", "/raid")
 
