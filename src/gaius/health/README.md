@@ -390,10 +390,12 @@ flowchart TB
     T2 --> LEARN
 ```
 
-## ACP Escalation (Mistral Vibe Integration)
+## ACP Escalation (grok-build)
 
 When the self-healing system encounters issues beyond its capability, it can
-escalate to Mistral Vibe via the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP). This enables
+escalate via the [Agent Client Protocol](https://agentclientprotocol.com/) (ACP)
+to grok-build (local thinking Qwen3.8-27B by default; Grok subscription to
+escalate). This enables
 **meta-level maintenance**—the ACP agent evolves the `/health fix` framework
 itself rather than just fixing individual issues.
 
@@ -435,7 +437,7 @@ sequenceDiagram
     end
 
     HO->>ACP: Escalate incident
-    ACP->>AG: Connect via vibe-acp
+    ACP->>AG: Connect via grok agent stdio
 
     AG->>AG: Analyze with MCP tools
     AG->>AG: Identify framework gap
@@ -487,7 +489,7 @@ See [ACP README](../acp/README.md) for full security documentation.
 | `AdaptiveLearner` | database | fmea.engine | `update_from_outcome()` |
 | `SERVICE_STRATEGIES` | various services | cli, mcp_server | `/health fix <service>` |
 | `HealthObserver` | health, acp, database | mcp_server | `start()`, `stop()` |
-| `GaiusACPClient` | vibe-acp | HealthObserver | `prompt()` |
+| `GaiusACPClient` | grok-build (thinking) | HealthObserver | `prompt()` |
 
 ## See Also
 

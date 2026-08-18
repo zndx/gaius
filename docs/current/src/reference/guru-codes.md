@@ -137,7 +137,7 @@ Complete catalog of error codes used across the Gaius platform.
 
 | Code | Description | Fix |
 |------|-------------|-----|
-| `#ACP.00000001.CONNFAIL` | ACP connection failed | Check Mistral Vibe |
+| `#ACP.00000001.CONNFAIL` | ACP connection failed | Check grok CLI / thinking façade |
 | `#ACP.00000002.TIMEOUT` | ACP connection timeout | Retry |
 | `#ACP.SEC.00000002.NOTALLOWED` | Repo not in allowlist | Update acp.conf |
 | `#ACP.SEC.00000003.NOTPRIVATE` | Repo not private | Make repo private |

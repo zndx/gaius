@@ -42,7 +42,7 @@ Without this integration, every render pipeline operation would generate spuriou
 
 ## ACP Escalation
 
-When an incident exceeds the RPN threshold or local remediation fails after 3 attempts, the observer escalates via ACP (Agent Client Protocol) to Mistral Vibe:
+When an incident exceeds the RPN threshold or local remediation fails after 3 attempts, the observer escalates via ACP (Agent Client Protocol) to grok-build (local thinking by default):
 
 - The ACP agent analyzes the issue using MCP tools
 - Identifies gaps in the `/health fix` framework

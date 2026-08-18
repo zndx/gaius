@@ -21,7 +21,20 @@ GURU_PARSE = (
     "  Guru: #CLT.00000011.ACPJSON"
 )
 
-_VERDICTS = frozenset({"relatedMatch", "closeMatch", "none", "pending"})
+# SKOS mapping + hierarchical properties. Do not shrink this to the
+# relations a given prompt happens to demand — broader into SDG is valid.
+_VERDICTS = frozenset({
+    "broader",
+    "narrower",
+    "related",
+    "relatedMatch",
+    "closeMatch",
+    "exactMatch",
+    "broadMatch",
+    "narrowMatch",
+    "none",
+    "pending",
+})
 
 
 @dataclass
@@ -110,9 +123,13 @@ def build_align_prompt(case: AmbiguousCase) -> str:
     sdg = [f"https://signals.zndx.org/sdg#{c}" for c in case.codes]
     raw = (
         "You align CLT activation concepts to the SDG SKOS scheme.\n"
-        "The two schemes stay distinct. Never propose skos:broader into SDG.\n"
+        "The two schemes stay distinct ConceptSchemes. Relate them with any "
+        "SKOS property that fits the evidence (broader, narrower, related, "
+        "relatedMatch, closeMatch, exactMatch, broadMatch, narrowMatch). "
+        "Do not refuse a relation because it was not demanded.\n"
         "Reply with ONLY JSON: "
-        '{"match":"relatedMatch|closeMatch|none","sdg_uri":"","reason":""}.\n'
+        '{"match":"relatedMatch|closeMatch|exactMatch|broader|narrower|'
+        'related|broadMatch|narrowMatch|none","sdg_uri":"","reason":""}.\n'
         f"CLT concept: {case.clt_uri}\n"
         f"notation: {case.notation}\n"
         f"prefLabel: {case.pref_label}\n"
@@ -130,9 +147,11 @@ def parse_align_reply(text: str) -> dict[str, str]:
     if not m:
         raise ValueError(GURU_PARSE)
     data = json.loads(m.group(0))
-    match = str(data.get("match") or "none")
+    match = str(data.get("match") or "none").strip()
+    if match.startswith("skos:"):
+        match = match[5:]
     if match not in _VERDICTS:
-        match = "none"
+        raise ValueError(f"{GURU_PARSE}\n  match={match!r}")
     return {
         "match": match,
         "sdg_uri": str(data.get("sdg_uri") or ""),

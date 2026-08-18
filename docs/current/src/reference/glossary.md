@@ -1,6 +1,6 @@
 # Glossary
 
-**ACP** — Agent Client Protocol. Integration layer for Mistral Vibe to perform autonomous health maintenance.
+**ACP** — Agent Client Protocol. Integration layer for grok-build (default: local thinking Qwen3.8-27B; escalate with a Grok subscription) to perform autonomous health maintenance.
 
 **AgendaTracker** — Tracks scheduled endpoint transitions for makespan operations, preventing false-positive health incidents.
 

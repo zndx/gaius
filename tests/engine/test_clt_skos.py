@@ -72,6 +72,15 @@ def test_parse_align_reply_json() -> None:
     assert got["sdg_uri"].endswith("#MFG")
 
 
+def test_parse_align_reply_accepts_broader() -> None:
+    from gaius.engine.services.clt_skos_align import parse_align_reply
+
+    got = parse_align_reply(
+        '{"match":"skos:broader","sdg_uri":"https://signals.zndx.org/sdg#MFG","reason":"feature is a kind of manufacturing"}\n'
+    )
+    assert got["match"] == "broader"
+
+
 def test_align_prompt_is_sanitized() -> None:
     from gaius.engine.services.clt_skos_align import AmbiguousCase, build_align_prompt
 
@@ -90,7 +99,8 @@ def test_align_prompt_is_sanitized() -> None:
     assert "ABCDEFGHIJKLMNOPQRST" not in prompt
     assert "REDACTED" in prompt
     assert "relatedMatch" in prompt
-    assert "skos:broader" in prompt
+    assert "broader" in prompt
+    assert "Never propose" not in prompt
 
 
 def test_guru_string_present() -> None:

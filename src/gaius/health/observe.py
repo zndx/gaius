@@ -163,7 +163,7 @@ class HealthObserver:
     - Event-sourced healing audit trail
     - GitHub issue tracking for persistent incidents
 
-    The observer integrates with Mistral Vibe through ACP, delegating:
+    The observer integrates with grok-build through ACP, delegating:
     - Complex root cause analysis
     - Remediation planning
     - GitHub issue management

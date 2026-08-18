@@ -21,7 +21,7 @@ When a health check detects an issue:
    - **RPN < 100** (Tier 0): Automatic procedural restart
    - **RPN 100-200** (Tier 1): Agent-assisted remediation
    - **RPN > 200** (Tier 2): Requires user approval
-   - **RPN > 300**: Escalates via ACP (Mistral Vibe) for meta-level intervention
+   - **RPN > 300**: Escalates via ACP (grok-build; local thinking default) for meta-level intervention
 4. Outcomes feed back into the adaptive learner, adjusting future risk scores
 
 ## Health Check Categories
@@ -66,7 +66,7 @@ The `HealthObserver` (`health/observe.py`) runs as a background daemon with a co
 
 **Scheduled transition awareness**: The observer consults the `AgendaTracker` before creating incidents. Endpoints currently in a makespan-scheduled transition (e.g., model swap during GPU eviction) are excluded from incident creation, preventing false positives during planned operations.
 
-**ACP escalation**: When an incident exceeds RPN 300 or fails three local remediation attempts, the observer escalates to Mistral Vibe via the Agent Client Protocol. The ACP agent analyzes the failure using MCP tools, identifies gaps in the `/health fix` framework, and commits improvements to the `acp/health-fix` branch for human review. Cadence limits (max 3 issues/24h, min 5 min between restarts) prevent runaway automation.
+**ACP escalation**: When an incident exceeds RPN 300 or fails three local remediation attempts, the observer escalates via the Agent Client Protocol. Default ACP is grok-build on local thinking (Qwen3.8-27B via Engine/Complete); subscription grok-build is used only when a task needs it. The ACP agent analyzes the failure using MCP tools, identifies gaps in the `/health fix` framework, and commits improvements to the `acp/health-fix` branch for human review. Cadence limits (max 3 issues/24h, min 5 min between restarts) prevent runaway automation.
 
 ## Subchapters
 

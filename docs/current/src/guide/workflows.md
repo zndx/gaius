@@ -24,7 +24,7 @@ End-to-end knowledge synthesis: define a topic, curate articles from the web (vi
 
 ### [Health Workflow](./workflow-health.md)
 
-System diagnosis and remediation: run health checks, interpret Guru Meditation Codes, apply self-healing fixes, and monitor recovery. The Health Observer daemon runs continuously, scoring incidents via FMEA (Severity × Occurrence × Detection). When RPN exceeds threshold, it escalates to Mistral Vibe via the Agent Client Protocol.
+System diagnosis and remediation: run health checks, interpret Guru Meditation Codes, apply self-healing fixes, and monitor recovery. The Health Observer daemon runs continuously, scoring incidents via FMEA (Severity × Occurrence × Detection). When RPN exceeds threshold, it escalates via the Agent Client Protocol to grok-build (local thinking by default).
 
 ### [Evolution Workflow](./workflow-evolution.md)
 

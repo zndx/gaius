@@ -1,14 +1,11 @@
 """Agent Client Protocol (ACP) integration for Gaius.
 
-Provides ACP client for connecting to Mistral Vibe via the vibe-acp adapter,
-enabling autonomous health maintenance and complex task delegation.
+Provides ACP client for connecting to grok-build (default: local thinking
+Qwen3.8-27B via Engine/Complete; escalate with a Grok subscription).
 
 ACP (Agent Client Protocol) is JSON-RPC 2.0 over stdio, standardizing:
 - Where the agent lives in your workflow (unlike MCP which covers data/tools access)
 - Bidirectional communication between clients and AI agents
-
-Supported agents: Mistral Vibe, Gemini CLI, OpenHands, Goose
-Supported clients: Zed, Neovim, Toad (Textual-based TUI)
 
 Usage:
     from gaius.acp import GaiusACPClient
@@ -24,10 +21,13 @@ from .client import (
     ACPRateLimitError,
     ACPConfig,
     StreamCallback,
-    _find_acp_adapter,
     load_acp_agent_selection,
     resolve_acp_agent,
+    acp_agent_environ,
+    write_thinking_grok_home,
+    thinking_facade_url,
     ACP_AGENT_KEYS,
+    DEFAULT_ACP_AGENT,
 )
 from .prompts import (
     WorkflowMode,
@@ -79,10 +79,13 @@ __all__ = [
     "ACPRateLimitError",
     "ACPConfig",
     "StreamCallback",
-    "_find_acp_adapter",
     "load_acp_agent_selection",
     "resolve_acp_agent",
+    "acp_agent_environ",
+    "write_thinking_grok_home",
+    "thinking_facade_url",
     "ACP_AGENT_KEYS",
+    "DEFAULT_ACP_AGENT",
     # Prompts
     "WorkflowMode",
     "CadencePolicy",

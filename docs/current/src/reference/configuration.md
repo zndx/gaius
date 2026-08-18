@@ -55,6 +55,10 @@ Configured in `~/.config/gaius/acp.conf`:
 
 ```hocon
 acp {
+  # thinking = grok-build on local Qwen3.8-27B (default)
+  # grok     = grok-build + Grok subscription (escalate)
+  agent = "thinking"
+
   github {
     allowed_repos = ["zndx/gaius-acp"]
     require_private = true

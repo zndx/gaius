@@ -160,7 +160,7 @@ flowchart TD
 
 | Module | Layer | Singleton | Key Types | Description |
 |--------|-------|-----------|-----------|-------------|
-| [`acp/`](acp/README.md) | L5 | — | `GaiusACPClient` | ACP agent integration (Mistral Vibe) |
+| [`acp/`](acp/README.md) | L5 | — | `GaiusACPClient` | ACP agent (grok-build; default local thinking) |
 | [`mcp/`](mcp/README.md) | L5 | — | — | Programmatic MCP tool access |
 | [`providers/`](providers/README.md) | L4 | — | `CerebrasClient` | Cloud GPU providers |
 

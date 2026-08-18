@@ -1,8 +1,8 @@
 # Agent Client Protocol (ACP) Integration
 
-This package provides ACP client integration for connecting Gaius to the ACP agent
-(currently Mistral Vibe via the vibe-acp adapter), enabling autonomous health
-maintenance and framework evolution.
+This package provides ACP client integration for connecting Gaius to grok-build
+(default: local thinking Qwen3.8-27B via Engine/Complete; escalate with a Grok
+subscription), enabling autonomous health maintenance and framework evolution.
 
 ## Overview
 
@@ -45,14 +45,14 @@ flowchart TB
     end
 
     subgraph Agent["ACP Agent (External)"]
-        Adapter["vibe-acp adapter"]
-        Model["Mistral Vibe"]
+        Adapter["grok agent stdio"]
+        Model["thinking Qwen3.8-27B / subscription grok-build"]
 
         Adapter --> Model
     end
 
     ACPClient <-->|"ACP/JSON-RPC over stdio"| Adapter
-    Model -->|"Mistral API"| Model
+    Model -->|"Engine/Complete or xAI"| Model
     Model -->|"MCP tools"| MCP
 ```
 
@@ -78,7 +78,7 @@ async with GaiusACPClient() as client:
 ```
 
 **Key Features**:
-- Spawns the ACP agent via the vibe-acp adapter
+- Spawns grok-build via `grok agent stdio` (thinking by default)
 - Auto-configures Gaius MCP server in the session
 - Handles filesystem and terminal permissions
 - Streams responses via configurable callback
@@ -140,6 +140,10 @@ disable it—this prevents generated code from bypassing security checks.
 
 ```hocon
 acp {
+  # thinking = grok-build on local Qwen3.8-27B (default)
+  # grok     = grok-build + Grok subscription (escalate)
+  agent = "thinking"
+
   github {
     # Only this repo is allowed for ACP issue tracking
     allowed_repos = ["zndx/gaius-acp"]
@@ -244,8 +248,8 @@ flowchart TD
     H --> I[Framework capability expanded]
 ```
 
-Note: The `acp/health-fix` branch naming reflects that the ACP agent (currently
-Mistral Vibe) operates on an isolated branch for human review before merge.
+Note: The `acp/health-fix` branch naming reflects that the ACP agent operates
+on an isolated branch for human review before merge.
 
 ## Security Considerations
 
@@ -285,7 +289,7 @@ title = validate_issue_title("[HEALTH-FIX] GPU_001: Implement OOM fix")
 ## Dependencies
 
 - `agent-client-protocol` - ACP Python SDK
-- `vibe-acp` - ACP adapter for Mistral Vibe
+- `grok` CLI (grok-build) - default local thinking; subscription to escalate
 - `gh` - GitHub CLI for API operations
 - `pyhocon` (optional) - HOCON config parsing
 
@@ -306,7 +310,6 @@ title = validate_issue_title("[HEALTH-FIX] GPU_001: Implement OOM fix")
 ## References
 
 - [Agent Client Protocol Specification](https://github.com/anthropics/agent-client-protocol)
-- [vibe-acp Adapter](https://github.com/zndx/vibe-acp)
 - [Gaius Health Framework](../health/README.md)
 - [FMEA Failure Mode Catalog](../health/fmea/README.md)
 

@@ -49,7 +49,7 @@ src/gaius/
 ├── health/             # Self-healing infrastructure
 │   ├── observe.py      # HealthObserver daemon
 │   └── service_fixes.py # Automated remediation strategies
-├── acp/                # Agent Client Protocol (Mistral Vibe integration)
+├── acp/                # Agent Client Protocol (grok-build; default local thinking)
 ├── rase/               # RASE metamodel (agent training verification)
 ├── widgets/            # TUI widgets
 │   ├── grid.py         # MainGrid (19×19)
@@ -491,14 +491,14 @@ When extending the metamodel, consult `docs/scratch/2025-12-19/150000_rase_mbse_
 
 ## ACP Integration (Agent Client Protocol)
 
-The `gaius.acp` package provides integration with Mistral Vibe for autonomous health maintenance. **This is security-critical infrastructure** with mandatory multi-layer protections.
+The `gaius.acp` package provides integration with grok-build for autonomous health maintenance (default: local thinking Qwen3.8-27B via Engine/Complete; escalate with a Grok subscription). **This is security-critical infrastructure** with mandatory multi-layer protections.
 
 ### Architecture Overview
 
 ```
 HealthObserver → detects incident → exceeds FMEA threshold?
        ↓                                    ↓ Yes
-  Log & self-heal ←── No ──┘     Escalate via ACP → Mistral Vibe
+  Log & self-heal ←── No ──┘     Escalate via ACP → grok-build
                                             ↓
                               ACP agent analyzes via MCP tools
                                             ↓
@@ -528,10 +528,10 @@ Security is configured via HOCON at `~/.config/gaius/acp.conf`:
 
 ```hocon
 acp {
-  # Agent selection: "vibe" (Mistral Vibe, default) or "grok" (xAI grok CLI,
-  # native ACP via `grok agent stdio`; auth via `grok login --device-auth`
-  # subscription or XAI_API_KEY). Env override: GAIUS_ACP_AGENT.
-  agent = "vibe"
+  # Agent selection: "thinking" (default — grok-build on local Qwen3.8-27B
+  # via Engine/Complete) or "grok" (grok-build + Grok subscription; escalate
+  # only). Env override: GAIUS_ACP_AGENT.
+  agent = "thinking"
 
   github {
     # Explicit allowlist - only these repos can be used

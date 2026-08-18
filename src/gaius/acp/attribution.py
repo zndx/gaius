@@ -12,8 +12,8 @@ class ModelAttribution:
     """Attribution info for an AI model.
 
     Attributes:
-        name: Display name (e.g., "Mistral")
-        emoji: Brand emoji (e.g., "🌀")
+        name: Display name (e.g., "Qwen3.8-27B")
+        emoji: Brand emoji (e.g., "🏠")
         url: Optional link to model provider
     """
 
@@ -32,8 +32,10 @@ class ModelAttribution:
 
 # Map adapter command prefixes to model attribution
 MODEL_ATTRIBUTION_MAP: dict[str, ModelAttribution] = {
-    "vibe-acp": ModelAttribution("Mistral", "🌀", "https://mistral.ai"),
+    "thinking": ModelAttribution("Qwen3.8-27B", "🏠", None),
+    "gaius-thinking": ModelAttribution("Qwen3.8-27B", "🏠", None),
     "grok": ModelAttribution("Grok", "⚡", "https://x.ai"),
+    "grok-build": ModelAttribution("Grok", "⚡", "https://x.ai"),
     "codex": ModelAttribution("Codex", "🧠", "https://openai.com"),
     "ollama": ModelAttribution("Local LLM", "🏠", None),
     "llamafile": ModelAttribution("Local LLM", "🏠", None),
@@ -47,7 +49,7 @@ def get_model_attribution(agent_command: str | None) -> ModelAttribution:
     """Get model attribution based on ACP adapter command.
 
     Args:
-        agent_command: The configured ACP agent command (e.g., "vibe-acp")
+        agent_command: The configured ACP agent key or command (e.g., "thinking")
 
     Returns:
         ModelAttribution with name, emoji, and optional URL
@@ -62,7 +64,7 @@ def get_model_attribution(agent_command: str | None) -> ModelAttribution:
     if command in MODEL_ATTRIBUTION_MAP:
         return MODEL_ATTRIBUTION_MAP[command]
 
-    # Check for prefix match (handles versioned commands like "vibe-acp-v2")
+    # Check for prefix match (handles versioned commands like "grok-build-v2")
     for prefix, attribution in MODEL_ATTRIBUTION_MAP.items():
         if command.startswith(prefix):
             return attribution

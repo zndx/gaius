@@ -212,7 +212,7 @@ class HealthObserverService(BaseDaemon):
     - GitHub issue tracking for persistent incidents
     - Daemon registry integration for lifecycle monitoring
 
-    The observer integrates with Mistral Vibe via ACP, delegating:
+    The observer integrates with grok-build via ACP, delegating:
     - Complex root cause analysis
     - Remediation planning
     - GitHub issue management
@@ -1559,7 +1559,7 @@ Begin your investigation now."""
                 format_rca_constraint_violations,
                 format_issue_body,
                 RCA_ISSUE_BODY_TEMPLATE,
-                _find_acp_adapter,
+                load_acp_agent_selection,
             )
             from ...acp.security import (
                 sanitize_issue_content,
@@ -1593,8 +1593,7 @@ Begin your investigation now."""
             )
 
             # Build issue body with dynamic model attribution
-            # Detect which ACP adapter would be used for attribution
-            agent_command = _find_acp_adapter()
+            agent_command = load_acp_agent_selection()
             body = format_issue_body(
                 RCA_ISSUE_BODY_TEMPLATE,
                 agent_command=agent_command,

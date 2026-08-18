@@ -408,8 +408,8 @@ async def _acp_compose(facts: str) -> str:
         raise WeeklySummaryError(f"{GURU_ACPFAIL}\n  Error: {e}") from e
     cwd = os.environ.get("GAIUS_REPO_ROOT") or os.environ.get("DEVENV_ROOT") or os.getcwd()
     try:
-        # Strongest ACP agent for the exec readout. Do not inherit vibe
-        # from ~/.config/gaius/acp.conf (health-observer default).
+        # Exec readout escalates to subscription grok-build. Default ACP
+        # elsewhere is local thinking (Qwen3.8-27B).
         async with GaiusACPClient(
             ACPConfig(agent="grok", working_directory=cwd, include_gaius_mcp=False)
         ) as client:

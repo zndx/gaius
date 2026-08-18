@@ -1,16 +1,21 @@
-"""ACP Client for connecting Gaius to Mistral Vibe.
+"""ACP Client for connecting Gaius to grok-build.
 
 This module provides the ACP (Agent Client Protocol) client that enables
-Gaius to delegate complex reasoning tasks to Mistral Vibe for autonomous
+Gaius to delegate complex reasoning tasks to grok-build for autonomous
 health maintenance, diagnosis, and remediation.
+
+Default agent is local thinking (Qwen3.8-27B via Engine/Complete).
+Escalation is grok-build with a Grok subscription. Mistral is not on
+the roster.
 
 The client wraps the agent-client-protocol Python SDK to manage:
 - Connection lifecycle (spawn, initialize, session management)
 - Permission handling for filesystem and terminal operations
-- Prompt/response communication with Vibe
+- Prompt/response communication with the agent
 
 Architecture:
-    Gaius (this client) → Mistral Vibe (via ACP) → Mistral API
+    Gaius (this client) → grok agent stdio → Engine/Complete (thinking)
+                                    ↘ subscription grok-build (escalate)
                                     ↓
                             Gaius MCP Server (tools)
 
@@ -56,7 +61,7 @@ class ACPRateLimitError(ACPConnectionError):
 
     Guru Meditation: #ACP.00000006.RATELIMIT
 
-    This exception indicates the underlying model (Mistral) hit a rate limit.
+    This exception indicates the underlying model hit a rate limit.
     The client supports exponential backoff retry - callers should check
     `is_rate_limited()` after `prompt()` returns to detect mid-stream rate limits.
     """
@@ -65,30 +70,85 @@ class ACPRateLimitError(ACPConnectionError):
         self.retry_after = retry_after
 
 
-def _find_acp_adapter() -> str:
-    """Find the vibe-acp adapter command.
-
-    Looks for:
-    1. vibe-acp in PATH (installed via uv tool install mistral-vibe)
-    2. uvx fallback
-
-    Returns:
-        Path to the adapter command
-    """
-    import shutil
-
-    # Check if vibe-acp is available (installed via uv tool install mistral-vibe)
-    vibe_acp = shutil.which("vibe-acp")
-    if vibe_acp:
-        return vibe_acp
-
-    # Fall back to uvx (will run from cache)
-    return "uvx"
-
-
-# Supported ACP agents. Each entry resolves to (command, default_args).
+# Roster: local thinking (default) and subscription grok-build (escalate).
 # Selected via `acp.agent` in ~/.config/gaius/acp.conf or GAIUS_ACP_AGENT.
-ACP_AGENT_KEYS = ("vibe", "grok")
+DEFAULT_ACP_AGENT = "thinking"
+ACP_AGENT_KEYS = ("thinking", "grok")
+
+
+def _repo_root() -> Path:
+    for key in ("GAIUS_REPO_ROOT", "DEVENV_ROOT"):
+        val = os.environ.get(key)
+        if val:
+            return Path(val)
+    return Path.cwd()
+
+
+def thinking_facade_url() -> str:
+    """OpenAI-compatible base URL for Engine/Complete (gaius-ui :9890/v1)."""
+    bind = (
+        os.environ.get("GAIUS_PRIMARY_UI")
+        or os.environ.get("GAIUS_UI_ORIGIN")
+        or ""
+    ).rstrip("/")
+    if bind.startswith("http"):
+        return f"{bind}/v1"
+    raw = os.environ.get("GAIUS_UI_BIND", "127.0.0.1:9890")
+    host, _, port = raw.rpartition(":")
+    if not port:
+        port = "9890"
+        host = raw or "127.0.0.1"
+    if host in ("0.0.0.0", "", "::", "[::]"):
+        host = "127.0.0.1"
+    return f"http://{host}:{port}/v1"
+
+
+def write_thinking_grok_home(dest: Path | None = None) -> Path:
+    """Write a GROK_HOME that aims grok-build at local thinking.
+
+    Isolated from ~/.grok so the interactive TUI can stay on a
+    subscription default. Override dest with GAIUS_ACP_GROK_HOME.
+    """
+    if dest is None:
+        override = os.environ.get("GAIUS_ACP_GROK_HOME", "").strip()
+        dest = Path(override) if override else _repo_root() / "build/dev/.gaius-acp-grok"
+    dest.mkdir(parents=True, exist_ok=True)
+    base = thinking_facade_url()
+    toml = f"""
+[models]
+default = "gaius-thinking"
+max_retries = 2
+
+[agent]
+system_prompt_label = "Qwen3.8-27B on Gaius Engine"
+
+[model.gaius-thinking]
+model = "thinking"
+base_url = "{base}"
+name = "Gaius thinking (Engine/Complete)"
+api_key = "gaius"
+api_backend = "chat_completions"
+context_window = 262144
+max_completion_tokens = 8192
+max_retries = 2
+system_prompt_label = "Qwen3.8-27B on Gaius Engine"
+
+[ui]
+permission_mode = "always-approve"
+
+[features]
+telemetry = false
+remote_fetch = false
+"""
+    (dest / "config.toml").write_text(toml.lstrip(), encoding="utf-8")
+    return dest
+
+
+def acp_agent_environ(agent: str) -> dict[str, str]:
+    """Extra env for the spawned ACP process (GROK_HOME for thinking)."""
+    if agent == "thinking":
+        return {"GROK_HOME": str(write_thinking_grok_home())}
+    return {}
 
 
 def load_acp_agent_selection() -> str:
@@ -97,10 +157,10 @@ def load_acp_agent_selection() -> str:
     Precedence:
     1. GAIUS_ACP_AGENT environment variable
     2. `acp.agent` in the HOCON config (same search paths as security config)
-    3. Default: "vibe"
+    3. Default: "thinking" (grok-build on local Qwen3.8-27B)
 
     Returns:
-        Agent key ("vibe" or "grok")
+        Agent key ("thinking" or "grok")
 
     Raises:
         ACPConnectionError: Unknown agent key.
@@ -127,22 +187,38 @@ def load_acp_agent_selection() -> str:
                 break
 
     if not agent:
-        agent = "vibe"
+        agent = DEFAULT_ACP_AGENT
 
     if agent not in ACP_AGENT_KEYS:
         raise ACPConnectionError(
             f"Unknown ACP agent '{agent}' (#ACP.00000011.BADAGENT)\n"
             f"  Valid values: {', '.join(ACP_AGENT_KEYS)}\n"
+            f"  thinking = grok-build on local Qwen3.8-27B (default)\n"
+            f"  grok     = grok-build with Grok subscription (escalate)\n"
             f"  Set acp.agent in ~/.config/gaius/acp.conf or GAIUS_ACP_AGENT"
         )
     return agent
 
 
+def _grok_bin() -> str:
+    import shutil
+
+    grok_cmd = shutil.which("grok")
+    if grok_cmd:
+        return grok_cmd
+    raise ACPConnectionError(
+        "grok CLI not found in PATH (#ACP.00000012.AGENTMISSING)\n"
+        "  Install: https://docs.x.ai/grok-cli\n"
+        "  Or: export GAIUS_GROK_BIN=$(command -v grok)"
+    )
+
+
 def resolve_acp_agent(agent: str) -> tuple[str, list[str]]:
     """Resolve an agent key to its spawn command and default args.
 
-    Fail-fast: verifies the agent binary exists, and for grok that
-    credentials are available (subscription login or XAI_API_KEY).
+    Fail-fast: verifies the grok binary exists. Subscription grok also
+    requires credentials (login token or XAI_API_KEY). Local thinking
+    does not — it uses Engine/Complete via gaius-thinking.
 
     Args:
         agent: Agent key from ACP_AGENT_KEYS
@@ -151,19 +227,21 @@ def resolve_acp_agent(agent: str) -> tuple[str, list[str]]:
         (command, default_args) to spawn the ACP agent over stdio
 
     Raises:
-        ACPConnectionError: Agent binary missing or grok unauthenticated.
-        Guru Meditations: #ACP.00000012.AGENTMISSING, #ACP.00000013.GROKAUTH
+        ACPConnectionError: Agent binary missing, unknown key, or grok unauthenticated.
+        Guru Meditations: #ACP.00000011.BADAGENT, #ACP.00000012.AGENTMISSING, #ACP.00000013.GROKAUTH
     """
-    import shutil
+    if agent == "thinking":
+        write_thinking_grok_home()
+        return _grok_bin(), [
+            "agent",
+            "--always-approve",
+            "--model",
+            "gaius-thinking",
+            "stdio",
+        ]
 
     if agent == "grok":
-        grok_cmd = shutil.which("grok")
-        if not grok_cmd:
-            raise ACPConnectionError(
-                "grok CLI not found in PATH (#ACP.00000012.AGENTMISSING)\n"
-                "  Install: https://docs.x.ai/grok-cli\n"
-                "  Or switch agent: set acp.agent = \"vibe\" in ~/.config/gaius/acp.conf"
-            )
+        grok_cmd = _grok_bin()
         # Subscription token (grok login) or API key must be present,
         # otherwise session/new fails with auth_required deep in the SDK.
         has_token = (Path.home() / ".grok/auth.json").exists()
@@ -173,32 +251,39 @@ def resolve_acp_agent(agent: str) -> tuple[str, list[str]]:
                 "  Subscription (QR-friendly): grok login --device-auth\n"
                 "  Or API key: export XAI_API_KEY=...\n"
             )
-        return grok_cmd, ["agent", "stdio"]
+        return grok_cmd, [
+            "agent",
+            "--always-approve",
+            "--model",
+            "grok-build",
+            "stdio",
+        ]
 
-    # Default: Mistral Vibe via vibe-acp adapter
-    command = _find_acp_adapter()
-    args = ["--from", "mistral-vibe", "vibe-acp"] if command == "uvx" else []
-    return command, args
+    raise ACPConnectionError(
+        f"Unknown ACP agent '{agent}' (#ACP.00000011.BADAGENT)\n"
+        f"  Valid values: {', '.join(ACP_AGENT_KEYS)}"
+    )
 
 
 @dataclass
 class ACPConfig:
     """Configuration for ACP client.
 
-    Requires the mistral-vibe package:
-        uv tool install mistral-vibe
+    Requires the grok CLI (grok-build) in PATH.
 
     Attributes:
-        agent: ACP agent key ("vibe" or "grok"). Empty = load from config
-            (acp.agent in ~/.config/gaius/acp.conf, or GAIUS_ACP_AGENT env)
+        agent: ACP agent key ("thinking" or "grok"). Empty = load from config
+            (acp.agent in ~/.config/gaius/acp.conf, or GAIUS_ACP_AGENT env).
+            Default is thinking (local Qwen3.8-27B). grok is subscription escalation.
         agent_command: Command to spawn the ACP agent. Empty = resolve from agent key
         agent_args: Arguments for the agent command
-        working_directory: Directory for Vibe operations
+        agent_env: Extra environment for the spawned process (GROK_HOME for thinking)
+        working_directory: Directory for agent operations
         connection_timeout: Seconds to wait for connection
         prompt_timeout: Seconds to wait for prompt response
         auto_approve_fs: Auto-approve filesystem operations
         auto_approve_terminal: Auto-approve terminal operations
-        mcp_config: MCP server configuration for Vibe to use
+        mcp_config: MCP server configuration for the agent to use
         include_gaius_mcp: Automatically include Gaius MCP server
         github_repo: GitHub repository for issue tracking (MUST be in allowlist)
         stream_callback: Optional async callback for streaming responses to TUI
@@ -210,16 +295,17 @@ class ACPConfig:
         The github_repo must be in the allowlist at ~/.config/gaius/acp.conf
         and must have private visibility.
     """
-    # Agent selection: "vibe" (Mistral, via vibe-acp adapter) or "grok"
-    # (xAI grok CLI, native ACP via `grok agent stdio`). Resolved in
-    # __post_init__ so explicit agent_command overrides still work.
+    # Agent selection: "thinking" (grok-build + local Qwen3.8-27B) or
+    # "grok" (grok-build + Grok subscription). Resolved in __post_init__
+    # so explicit agent_command overrides still work.
     agent: str = ""
     agent_command: str = ""
     agent_args: list[str] | None = None
+    agent_env: dict[str, str] = field(default_factory=dict)
     working_directory: str = field(default_factory=lambda: os.getcwd())
     connection_timeout: float = 30.0
-    prompt_timeout: float | None = None  # None = no timeout, let Vibe run to completion
-    auto_approve_fs: bool = True  # Trust Vibe with KB files
+    prompt_timeout: float | None = None  # None = no timeout, let the agent run to completion
+    auto_approve_fs: bool = True  # Trust the agent with KB files
     auto_approve_terminal: bool = True  # Allow gh CLI for issue management
     mcp_config: dict[str, Any] | None = None  # Additional MCP servers
     include_gaius_mcp: bool = True  # Include Gaius MCP server in session
@@ -238,16 +324,21 @@ class ACPConfig:
                 self.agent_args = default_args
         if self.agent_args is None:
             self.agent_args = []
+        if not self.agent_env:
+            self.agent_env = acp_agent_environ(self.agent)
 
 
 class GaiusACPClient:
-    """ACP client for connecting to Mistral Vibe.
+    """ACP client for connecting to grok-build.
 
     This client implements the Agent Client Protocol to communicate with
-    Mistral Vibe, enabling Gaius to delegate complex tasks like:
+    grok-build, enabling Gaius to delegate complex tasks like:
     - Health report analysis and root cause diagnosis
     - Remediation planning and execution
     - GitHub issue creation and management
+
+    Default inference is local thinking (Qwen3.8-27B via Engine/Complete).
+    Pass ACPConfig(agent="grok") to escalate to a Grok subscription.
 
     The client handles permission requests for filesystem and terminal
     operations, with configurable auto-approval policies.
@@ -290,9 +381,9 @@ class GaiusACPClient:
         return self._session_id
 
     async def connect(self) -> None:
-        """Connect to Mistral Vibe via ACP.
+        """Connect to grok-build via ACP.
 
-        Spawns Vibe subprocess and establishes an ACP session.
+        Spawns `grok agent stdio` and establishes an ACP session.
         Verifies GitHub repository security before connecting.
 
         Raises:
@@ -478,18 +569,15 @@ class GaiusACPClient:
 
             # Build environment with MCP config if provided
             env = dict(os.environ)
-
-            # Mistral Vibe uses MISTRAL_API_KEY from environment
-            # No need to remove keys - Vibe uses Mistral API
+            env.update(self.config.agent_env)
 
             if self.config.mcp_config:
-                # Configure Gaius MCP server for Vibe
                 env["VIBE_MCP_CONFIG"] = json.dumps(self.config.mcp_config)
 
             # Spawn agent process with timeout and increased buffer limit
             async with asyncio.timeout(self.config.connection_timeout):
                 # spawn_agent_process returns an async context manager
-                # Pass buffer limit via transport_kwargs to handle large Vibe responses
+                # Pass buffer limit via transport_kwargs to handle large agent responses
                 self._context_manager = spawn_agent_process(
                     gaius_client,
                     self.config.agent_command,
@@ -567,11 +655,13 @@ class GaiusACPClient:
             raise ACPConnectionError(
                 f"Connection timed out after {self.config.connection_timeout}s.\n"
                 f"Guru Meditation: #ACP.00000002.TIMEOUT\n"
-                f"Ensure Mistral Vibe is installed: uv tool install mistral-vibe"
+                f"Ensure grok CLI is in PATH and the selected agent can start.\n"
+                f"  thinking: gaius-ui :9890 + Engine Complete capability=thinking\n"
+                f"  grok:     grok login --device-auth (subscription escalation)"
             )
         except Exception as e:
             raise ACPConnectionError(
-                f"Failed to connect to Mistral Vibe.\n"
+                f"Failed to connect to ACP agent ({self.config.agent}).\n"
                 f"Guru Meditation: #ACP.00000001.CONNFAIL\n"
                 f"Error: {e}"
             )
@@ -582,7 +672,7 @@ class GaiusACPClient:
         context: dict[str, Any] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Send a prompt to Mistral Vibe and get response.
+        """Send a prompt to the ACP agent and get response.
 
         Args:
             message: The prompt message
@@ -590,7 +680,7 @@ class GaiusACPClient:
             timeout: Override default prompt timeout
 
         Returns:
-            Response text from Vibe
+            Response text from the agent
 
         Raises:
             ACPConnectionError: If not connected or prompt fails
@@ -737,7 +827,7 @@ class GaiusACPClient:
         """Check if rate limit was detected during streaming.
 
         Call this after prompt() returns to check if the underlying model
-        (Mistral) hit a rate limit. The response may still contain partial
+        hit a rate limit. The response may still contain partial
         content before the error occurred.
         """
         return self._gaius_client.is_rate_limited() if self._gaius_client else False

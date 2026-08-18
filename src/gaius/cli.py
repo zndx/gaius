@@ -248,7 +248,7 @@ class GaiusCLI:
                 # Self-healing - tiered recovery system
                 elif command == "heal":
                     result["data"] = self._run_async(self._cmd_heal(args))
-                # ACP agent configuration (Mistral Vibe / Grok)
+                # ACP agent configuration (thinking / grok-build)
                 elif command == "acp":
                     result["data"] = self._cmd_acp(args)
                 # Model registry commands (local model specs)
@@ -1439,6 +1439,7 @@ class GaiusCLI:
             ACPConnectionError,
             load_acp_agent_selection,
             resolve_acp_agent,
+            thinking_facade_url,
         )
         from .acp.attribution import get_model_attribution
 
@@ -1465,15 +1466,13 @@ class GaiusCLI:
 
         # Default: status of the configured agent
         agent = load_acp_agent_selection()
-        attribution = get_model_attribution(
-            "grok" if agent == "grok" else "vibe-acp"
-        )
+        attribution = get_model_attribution(agent)
         status: dict = {
             "agent": agent,
             "model": attribution.name,
             "source": (
                 "env:GAIUS_ACP_AGENT" if os.environ.get("GAIUS_ACP_AGENT")
-                else "config:acp.agent (default: vibe)"
+                else "config:acp.agent (default: thinking)"
             ),
         }
         try:
@@ -1483,7 +1482,11 @@ class GaiusCLI:
         except ACPConnectionError as e:
             status["available"] = False
             status["error"] = str(e)
+        if agent == "thinking":
+            status["model_id"] = "gaius-thinking"
+            status["facade"] = thinking_facade_url()
         if agent == "grok":
+            status["model_id"] = "grok-build"
             status["auth"] = (
                 "subscription (grok login)"
                 if (Path.home() / ".grok/auth.json").exists()
