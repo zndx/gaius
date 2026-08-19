@@ -41,6 +41,43 @@ def safe_filename(title: str, max_length: int = 50) -> str:
     return safe.strip("_")
 
 
+def _record_lineage_ol(event: object) -> None:
+    """Persist a RunEvent on Signals Atlas via Engine/RecordLineage."""
+    import json
+
+    import grpc
+
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2_grpc as zpb_grpc
+    from gaius.flows.lattice import GURU_NOLATTICE, engine_target
+
+    payload = event.to_ol_dict() if hasattr(event, "to_ol_dict") else event.to_dict()
+    addr = engine_target()
+    channel = grpc.insecure_channel(addr)
+    try:
+        stub = zpb_grpc.EngineStub(channel)
+        resp = stub.RecordLineage(
+            zpb.LineageRequest(
+                event_json=json.dumps(payload, default=str),
+                event_type=str(payload.get("eventType") or ""),
+            ),
+            timeout=20.0,
+        )
+    except grpc.RpcError as e:
+        raise RuntimeError(
+            f"{GURU_NOLATTICE} Engine/RecordLineage failed at {addr}: "
+            f"{e.code().name} {e.details()}\n"
+            "  Lineage SoR is Signals Atlas OpenLineage (/api/v1/lineage)."
+        ) from e
+    finally:
+        channel.close()
+    if not resp.accepted:
+        raise RuntimeError(
+            f"#LN.00000001.NOATLAS RecordLineage rejected: {resp.error}\n"
+            "  Lineage SoR is Signals Atlas OpenLineage."
+        )
+
+
 class GaiusFlow(FlowSpec):
     """Base flow with Gaius lineage integration.
 
@@ -109,7 +146,6 @@ class GaiusFlow(FlowSpec):
             job_namespace: Job namespace (default: "gaius.flows")
         """
         try:
-            from gaius.hx.lineage.emitter import get_emitter
             from gaius.hx.lineage.events import Job, Run, RunEvent
 
             self._lineage_job = Job(namespace=job_namespace, name=job_name)
@@ -119,12 +155,8 @@ class GaiusFlow(FlowSpec):
             self._lineage_run_id = run.run_id
 
             event = RunEvent.start(self._lineage_job, inputs, run)
-
-            # Run async emit in sync context
-            asyncio.get_event_loop().run_until_complete(
-                get_emitter().emit(event)
-            )
-            logger.info(f"Lineage START emitted for {job_name} (run_id={run.run_id})")
+            _record_lineage_ol(event)
+            logger.info(f"Lineage START recorded at Signals Atlas (run_id={run.run_id})")
 
         except Exception as e:
             # FAIL-FAST: Lineage tracking is critical infrastructure
@@ -149,19 +181,15 @@ class GaiusFlow(FlowSpec):
             return
 
         try:
-            from gaius.hx.lineage.emitter import get_emitter
             from gaius.hx.lineage.events import Run, RunEvent
 
             run = Run(run_id=self._lineage_run_id)
             event = RunEvent.complete(
                 run, self._lineage_job, self._lineage_inputs, outputs
             )
-
-            asyncio.get_event_loop().run_until_complete(
-                get_emitter().emit(event)
-            )
+            _record_lineage_ol(event)
             logger.info(
-                f"Lineage COMPLETE emitted for {self._lineage_job.name} "
+                f"Lineage COMPLETE recorded at Signals Atlas "
                 f"(run_id={self._lineage_run_id})"
             )
 
@@ -188,19 +216,15 @@ class GaiusFlow(FlowSpec):
             return
 
         try:
-            from gaius.hx.lineage.emitter import get_emitter
             from gaius.hx.lineage.events import Run, RunEvent
 
             run = Run(run_id=self._lineage_run_id)
             event = RunEvent.fail(
                 run, self._lineage_job, self._lineage_inputs, error_message
             )
-
-            asyncio.get_event_loop().run_until_complete(
-                get_emitter().emit(event)
-            )
+            _record_lineage_ol(event)
             logger.info(
-                f"Lineage FAIL emitted for {self._lineage_job.name} "
+                f"Lineage FAIL recorded at Signals Atlas "
                 f"(run_id={self._lineage_run_id})"
             )
 

@@ -538,8 +538,10 @@ async def _call_generate_base(
     try:
         # Check if engine is available
         if not use_engine_proxy():
-            logger.warning("Engine not available for .base generation")
-            return "", ValidationResult(valid=False, errors=["Engine not available"]), 0.0
+            raise RuntimeError(
+                "Engine not available for .base generation (intended agent=cerebras-glm).\n"
+                "  Try: just restart-clean"
+            )
 
         # Get scheduler proxy for gRPC routing
         scheduler = await get_scheduler_proxy()
@@ -563,8 +565,10 @@ async def _call_generate_base(
         return yaml_content, validation, cost_usd
 
     except Exception as e:
-        logger.error(f"gRPC scheduler call failed: {e}")
-        return "", ValidationResult(valid=False, errors=[str(e)]), 0.0
+        raise RuntimeError(
+            f"Prospects .base Complete failed (intended agent=cerebras-glm).\n"
+            f"  {e}"
+        ) from e
 
 
 async def _call_diagnose_error(
@@ -635,13 +639,7 @@ async def _call_diagnose_error(
         )
 
     except Exception as e:
-        logger.error(f"gRPC scheduler call failed: {e}")
-        return DiagnosisResult(
-            root_cause=f"Could not diagnose - {str(e)}",
-            fix_hints=[],
-            confidence=0.0,
-            cost_usd=0.0,
-        )
+        raise RuntimeError(f"Prospects diagnose Complete failed: {e}") from e
 
 
 async def _consult_orchestrator(
@@ -693,8 +691,10 @@ Attempts so far: {len(state.attempts)}
         from gaius.client.engine_proxy import get_scheduler_proxy, use_engine_proxy
 
         if not use_engine_proxy():
-            logger.debug("Engine not available, using heuristic decision")
-            return _heuristic_decision(state, turn)
+            raise RuntimeError(
+                "Engine not available for orchestrator Complete "
+                "(intended agent=orchestrator). No heuristic fallback."
+            )
 
         scheduler = await get_scheduler_proxy()
 
@@ -712,8 +712,9 @@ Attempts so far: {len(state.attempts)}
         return _parse_orchestrator_decision(result.content)
 
     except Exception as e:
-        logger.debug(f"Scheduler unavailable ({e}), using heuristic")
-        return _heuristic_decision(state, turn)
+        raise RuntimeError(
+            f"Orchestrator Complete failed (intended agent=orchestrator): {e}"
+        ) from e
 
 
 def _heuristic_decision(state: OrchestrationState, turn: int) -> OrchestratorDecision:

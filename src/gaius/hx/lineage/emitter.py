@@ -101,19 +101,10 @@ class LineageEmitter:
         Returns:
             Event ID if stored successfully, None otherwise.
         """
-        try:
-            # Store in PostgreSQL
-            event_id = await self._store_event(event)
-
-            # Optionally materialize to AGE graph
-            if self._materialize_graph and await self._check_age_available():
-                await self._update_graph(event)
-
-            return event_id
-
-        except Exception as e:
-            logger.error(f"Failed to emit lineage event: {e}")
-            return None
+        event_id = await self._store_event(event)
+        if self._materialize_graph and await self._check_age_available():
+            await self._update_graph(event)
+        return event_id
 
     async def _store_event(self, event: RunEvent) -> int:
         """Store event in lineage_events table.

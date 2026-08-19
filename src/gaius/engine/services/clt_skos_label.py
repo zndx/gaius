@@ -48,17 +48,13 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
     from gaius.engine.services.clt_skos_propose import is_minted_pref_label, load_pref_labels
 
     minted = {k for k, v in load_pref_labels().items() if is_minted_pref_label(v)}
-    stale: set[str] = set()
-    try:
-        async with pool.acquire() as conn:
-            stale = {
-                str(r["notation"])
-                for r in await conn.fetch(
-                    "SELECT notation FROM skos_pref_label WHERE stale"
-                )
-            }
-    except Exception:
-        stale = set()
+    async with pool.acquire() as conn:
+        stale = {
+            str(r["notation"])
+            for r in await conn.fetch(
+                "SELECT notation FROM skos_pref_label WHERE stale"
+            )
+        }
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -297,12 +293,12 @@ async def run_acp_label(
                 clt_uri=case.clt_uri,
                 sdg_uri="",
                 match_kind="prefLabel",
-                verdict="pending",
+                verdict="error",
                 reason=str(e)[:400],
                 item_ids=case.item_ids,
                 run_id=run_id,
             )
-            pending += 1
+            raise
     return {
         "cases": len(cases),
         "labeled": labeled,

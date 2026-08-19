@@ -59,6 +59,11 @@ class EngineStub(object):
                 request_serializer=zndx_dot_engine_dot_v1_dot_engine__pb2.ServerQueryRequest.SerializeToString,
                 response_deserializer=zndx_dot_engine_dot_v1_dot_engine__pb2.ServerQueryResponse.FromString,
                 _registered_method=True)
+        self.RecordLineage = channel.unary_unary(
+                '/zndx.engine.v1.Engine/RecordLineage',
+                request_serializer=zndx_dot_engine_dot_v1_dot_engine__pb2.LineageRequest.SerializeToString,
+                response_deserializer=zndx_dot_engine_dot_v1_dot_engine__pb2.LineageResponse.FromString,
+                _registered_method=True)
 
 
 class EngineServicer(object):
@@ -113,6 +118,15 @@ class EngineServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def RecordLineage(self, request, context):
+        """Persist a runtime lineage event to the Signals SoR (Atlas OpenLineage).
+        Producers (Metaflow, Flink, peers) MUST NOT write a private catalog.
+        (added 2026-08-19, gaius — additive v1.)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_EngineServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -140,6 +154,11 @@ def add_EngineServicer_to_server(servicer, server):
                     servicer.ServerQuery,
                     request_deserializer=zndx_dot_engine_dot_v1_dot_engine__pb2.ServerQueryRequest.FromString,
                     response_serializer=zndx_dot_engine_dot_v1_dot_engine__pb2.ServerQueryResponse.SerializeToString,
+            ),
+            'RecordLineage': grpc.unary_unary_rpc_method_handler(
+                    servicer.RecordLineage,
+                    request_deserializer=zndx_dot_engine_dot_v1_dot_engine__pb2.LineageRequest.FromString,
+                    response_serializer=zndx_dot_engine_dot_v1_dot_engine__pb2.LineageResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -277,6 +296,33 @@ class Engine(object):
             '/zndx.engine.v1.Engine/ServerQuery',
             zndx_dot_engine_dot_v1_dot_engine__pb2.ServerQueryRequest.SerializeToString,
             zndx_dot_engine_dot_v1_dot_engine__pb2.ServerQueryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RecordLineage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/zndx.engine.v1.Engine/RecordLineage',
+            zndx_dot_engine_dot_v1_dot_engine__pb2.LineageRequest.SerializeToString,
+            zndx_dot_engine_dot_v1_dot_engine__pb2.LineageResponse.FromString,
             options,
             channel_credentials,
             insecure,

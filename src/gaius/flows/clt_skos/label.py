@@ -58,7 +58,11 @@ class CltSkosLabelFlow(GaiusFlow):
             finally:
                 await pool.close()
 
-        self.stats = asyncio.run(_run())
+        try:
+            self.stats = asyncio.run(_run())
+        except Exception as e:
+            self.emit_lineage_fail(str(e))
+            raise
         print(f"clt_skos.label.tick {self.stats}")
         self.next(self.end)
 

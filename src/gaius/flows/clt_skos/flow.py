@@ -194,7 +194,11 @@ class CltSkosEvalFlow(GaiusFlow):
             finally:
                 await pool.close()
 
-        self.label_stats = asyncio.run(_run())
+        try:
+            self.label_stats = asyncio.run(_run())
+        except Exception as e:
+            self.emit_lineage_fail(str(e))
+            raise
         print(f"clt_skos.acp_label {self.label_stats}")
         self.next(self.acp_align)
 
@@ -213,7 +217,11 @@ class CltSkosEvalFlow(GaiusFlow):
             finally:
                 await pool.close()
 
-        self.align_stats = asyncio.run(_run())
+        try:
+            self.align_stats = asyncio.run(_run())
+        except Exception as e:
+            self.emit_lineage_fail(str(e))
+            raise
         print(f"clt_skos.acp_align {self.align_stats}")
         self.next(self.end)
 

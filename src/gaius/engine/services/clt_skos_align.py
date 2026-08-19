@@ -205,19 +205,17 @@ async def run_acp_align(
         client = GaiusACPClient()
         await client.connect()
     except Exception as e:
-        for case in cases:
-            await record_alignment(
-                pool,
-                clt_uri=case.clt_uri,
-                sdg_uri="",
-                match_kind="",
-                verdict="pending",
-                reason=f"#ACP.00000001.CONNFAIL {e}",
-                item_ids=case.item_ids,
-                run_id=run_id,
-            )
-            pending += 1
-        return {"cases": len(cases), "aligned": 0, "pending": pending}
+        await record_alignment(
+            pool,
+            clt_uri=cases[0].clt_uri,
+            sdg_uri="",
+            match_kind="",
+            verdict="error",
+            reason=f"#ACP.00000001.CONNFAIL {e}",
+            item_ids=cases[0].item_ids,
+            run_id=run_id,
+        )
+        raise
 
     try:
         for case in cases[:max_cases]:
@@ -243,12 +241,12 @@ async def run_acp_align(
                     clt_uri=case.clt_uri,
                     sdg_uri="",
                     match_kind="",
-                    verdict="pending",
+                    verdict="error",
                     reason=str(e)[:400],
                     item_ids=case.item_ids,
                     run_id=run_id,
                 )
-                pending += 1
+                raise
     finally:
         await client.close()
     return {"cases": len(cases), "aligned": aligned, "pending": pending}

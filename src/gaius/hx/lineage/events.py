@@ -368,9 +368,18 @@ class RunEvent:
 
     def to_dict(self) -> dict:
         """Convert to OpenLineage JSON format."""
+        return self.to_ol_dict()
+
+    def to_ol_dict(self) -> dict:
+        """OL 2.0 RunEvent for Atlas ``POST /api/v1/lineage``."""
         return {
-            "eventType": self.event_type,
+            "eventType": self.run_state.value,
             "eventTime": self.event_time.isoformat(),
+            "producer": "https://github.com/zndx/gaius",
+            "schemaURL": (
+                "https://openlineage.io/spec/2-0-0/OpenLineage.json"
+                "#/$defs/RunEvent"
+            ),
             "run": self.run.to_dict(),
             "job": self.job.to_dict(),
             "inputs": [d.to_dict() for d in self.inputs],

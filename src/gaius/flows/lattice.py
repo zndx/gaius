@@ -18,6 +18,9 @@ from typing import Any
 
 GURU_NOLATTICE = "#GR.00000002.NOLATTICE"
 GURU_NOCAP = "#GR.00000003.NOCAP"
+GURU_UNHEALTHY = "#EP.00000016.NOTREADY"
+GURU_TRUNCATED = "#EP.00000017.TRUNCATED"
+GURU_WRONGMODEL = "#EP.00000018.WRONGMODEL"
 DEFAULT_CAPABILITY = "thinking"
 DEFAULT_TARGET = "127.0.0.1:50051"
 
@@ -79,6 +82,7 @@ def complete(
     channel = grpc.insecure_channel(addr)
     try:
         stub = zpb_grpc.EngineStub(channel)
+        expected_model = _require_healthy_capability(stub, cap, addr, timeout_s=min(10.0, timeout_s))
         resp = stub.Complete(req, timeout=timeout_s)
     except grpc.RpcError as e:
         raise RuntimeError(
@@ -89,15 +93,66 @@ def complete(
         ) from e
     finally:
         channel.close()
+    served = (resp.model or "").strip()
+    if not served:
+        raise RuntimeError(
+            f"{GURU_NOCAP} Complete returned no model for capability={cap!r}.\n"
+            "  Try: /gpu status"
+        )
+    if expected_model and served != expected_model:
+        raise RuntimeError(
+            f"{GURU_WRONGMODEL} Complete served {served!r} for capability={cap!r}; "
+            f"Status advertised {expected_model!r}.\n"
+            "  Do not retarget another capability."
+        )
+    finish = (resp.finish_reason or "").strip().lower()
+    if finish == "length":
+        raise RuntimeError(
+            f"{GURU_TRUNCATED} Complete truncated capability={cap!r} model={served!r}.\n"
+            "  Raise max_tokens; do not accept a partial answer."
+        )
+    text = resp.text or ""
+    if json_schema is not None and not text.strip() and not (resp.reasoning_content or "").strip():
+        raise RuntimeError(
+            f"{GURU_NOCAP} Complete returned empty text for JSON capability={cap!r} "
+            f"model={served!r}."
+        )
     return LatticeComplete(
-        text=resp.text or "",
-        model=resp.model or "",
+        text=text,
+        model=served,
         prompt_tokens=int(resp.prompt_tokens or 0),
         completion_tokens=int(resp.completion_tokens or 0),
         latency_ms=float(resp.latency_ms or 0.0),
         reasoning_content=resp.reasoning_content or "",
         finish_reason=resp.finish_reason or "",
     )
+
+
+def _require_healthy_capability(stub: Any, cap: str, addr: str, *, timeout_s: float) -> str:
+    from gaius.engine.generated.zndx.engine.v1 import engine_pb2 as zpb
+
+    status = stub.Status(zpb.StatusRequest(), timeout=timeout_s)
+    hit = None
+    for ep in status.endpoints:
+        if (ep.capability or "").strip() == cap:
+            hit = ep
+            break
+    if hit is None:
+        raise RuntimeError(
+            f"{GURU_NOCAP} Engine at {addr} does not advertise capability={cap!r}.\n"
+            "  Try: /gpu status"
+        )
+    if not hit.healthy:
+        raise RuntimeError(
+            f"{GURU_UNHEALTHY} capability={cap!r} is not HEALTHY (Complete does not "
+            "cold-start vLLM).\n"
+            f"  model={hit.model or '-'} detail={hit.detail or '-'}\n"
+            "  Try: /gpu start thinking   (or the advertised capability)"
+        )
+    return (hit.model or "").strip()
+
+
+
 
 
 def require_signals_metaflow(environ: dict[str, str] | None = None) -> None:

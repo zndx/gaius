@@ -323,3 +323,59 @@ class GaiusZndxEngineServicer(zpb_grpc.EngineServicer):
         except ServerQueryError as e:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(e))
             return zpb.ServerQueryResponse()  # pragma: no cover — abort raises
+
+    async def RecordLineage(
+        self,
+        request: zpb.LineageRequest,
+        context: aio.ServicerContext,
+    ) -> zpb.LineageResponse:
+        """POST OL RunEvent to Signals Atlas. Not a Gaius-local catalog."""
+        import json as _json
+        import os
+
+        import httpx
+
+        guru = "#LN.00000001.NOATLAS"
+        raw = (request.event_json or "").strip()
+        if not raw:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"{guru} LineageRequest.event_json is empty.",
+            )
+        try:
+            body = _json.loads(raw)
+        except _json.JSONDecodeError as e:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"{guru} event_json is not JSON: {e}",
+            )
+        want = (request.event_type or "").strip().upper()
+        got = str(body.get("eventType") or "").upper()
+        if want and got and want != got:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"{guru} event_type={want!r} != event_json.eventType={got!r}",
+            )
+        url = (
+            os.environ.get("SIGNALS_ATLAS_OL_URL")
+            or "http://127.0.0.1:21010/api/v1/lineage"
+        ).rstrip("/")
+        if not url.endswith("/lineage"):
+            url = url + "/lineage"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, json=body)
+        except Exception as e:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                f"{guru} Atlas OpenLineage POST {url} failed: {e}\n"
+                "  Signals Atlas :21010 is the lineage SoR.",
+            )
+        if resp.status_code >= 400:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                f"{guru} Atlas OpenLineage POST {url} HTTP {resp.status_code}: "
+                f"{resp.text[:300]}\n"
+                "  Signals Atlas :21010 is the lineage SoR.",
+            )
+        return zpb.LineageResponse(accepted=True, error="")
