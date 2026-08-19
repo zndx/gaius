@@ -51,17 +51,34 @@ async def find_unlabeled(pool: Any, *, limit: int = 8) -> list[LabelCase]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT a.layer, a.feature_idx,
-                   count(DISTINCT a.item_id)::int AS n,
+            SELECT t.layer, t.feature_idx,
+                   count(*)::int AS n,
                    array_agg(DISTINCT a.item_id) AS item_ids
-              FROM activation a
-             WHERE a.model = 'clt'
+              FROM feature_tape t
+              JOIN activation a
+                ON a.model = 'clt'
+               AND a.layer = t.layer
+               AND a.feature_idx = t.feature_idx
              GROUP BY 1, 2
-             ORDER BY n DESC, a.layer, a.feature_idx
+             ORDER BY count(*) * avg(t.activation) DESC
              LIMIT $1
             """,
-            max(limit * 4, 16),
+            max(limit * 6, 24),
         )
+        if not rows:
+            rows = await conn.fetch(
+                """
+                SELECT a.layer, a.feature_idx,
+                       count(DISTINCT a.item_id)::int AS n,
+                       array_agg(DISTINCT a.item_id) AS item_ids
+                  FROM activation a
+                 WHERE a.model = 'clt'
+                 GROUP BY 1, 2
+                 ORDER BY n DESC, a.layer, a.feature_idx
+                 LIMIT $1
+                """,
+                max(limit * 4, 16),
+            )
     out: list[LabelCase] = []
     for r in rows:
         layer, feat = int(r["layer"]), int(r["feature_idx"])

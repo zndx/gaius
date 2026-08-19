@@ -77,6 +77,18 @@ def test_feature_chip_label_is_notation_plus_words() -> None:
     assert "L9 F8260" not in feature_chip_label(9, 8260, ["swear"])
 
 
+def test_minted_feature_facet_hides_unlabeled() -> None:
+    from gaius.engine.services.discover_surface import minted_feature_facet
+
+    minted = {"9:8260": "Temporal introduction replay", "2:2855": "2:2855"}
+    got = minted_feature_facet(9, 8260, 10, 1.0, minted)
+    assert got is not None
+    assert got.key == "9:8260"
+    assert got.label == "Temporal introduction replay"
+    assert minted_feature_facet(2, 2855, 10, 1.0, minted) is None
+    assert minted_feature_facet(11, 8224, 10, 1.0, minted) is None
+
+
 def test_is_minted_pref_label() -> None:
     from gaius.engine.services.clt_skos_propose import is_minted_pref_label
 

@@ -638,7 +638,7 @@ async def load_discover(
         from .feature_tape import ensure_tape
 
         await ensure_tape(db_pool)
-        facets.extend(await _feature_facets(db_pool, start))
+        facets.extend(await _feature_facets(db_pool, start, pins=parsed.features))
     except Exception:
         pass
     return DiscoverSurface(
@@ -656,7 +656,34 @@ async def load_discover(
     )
 
 
-async def _feature_facets(pool: Any, start) -> list[DiscoverFacet]:
+def minted_feature_facet(
+    layer: int,
+    feat: int,
+    n: int,
+    salience: float,
+    minted: dict[str, str],
+) -> DiscoverFacet | None:
+    """Facet only when a display prefLabel has been minted."""
+    from .clt_skos_propose import is_minted_pref_label
+
+    notation = f"{layer}:{feat}"
+    pref = minted.get(notation, "")
+    if not is_minted_pref_label(pref):
+        return None
+    return DiscoverFacet(
+        key=notation,
+        kind="feature",
+        count=n,
+        salience=salience,
+        label=pref,
+    )
+
+
+async def _feature_facets(
+    pool: Any,
+    start,
+    pins: list[tuple[int, int]] | None = None,
+) -> list[DiscoverFacet]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -665,32 +692,32 @@ async def _feature_facets(pool: Any, start) -> list[DiscoverFacet]:
              WHERE ts >= $1
              GROUP BY 1, 2
              ORDER BY count(*) * avg(activation) DESC
-             LIMIT 20
+             LIMIT 80
             """,
             start,
         )
-    from .clt_skos_propose import (
-        feature_chip_label,
-        is_minted_pref_label,
-        load_pref_labels,
-    )
+    from .clt_skos_propose import load_pref_labels
 
     minted = load_pref_labels()
     out: list[DiscoverFacet] = []
+    seen: set[str] = set()
     for r in rows:
-        layer, feat = int(r["layer"]), int(r["feature_idx"])
-        notation = f"{layer}:{feat}"
-        pref = minted.get(notation, "")
-        label = pref if is_minted_pref_label(pref) else feature_chip_label(layer, feat)
         n = int(r["n"])
         a = float(r["a"] or 0.0)
-        out.append(
-            DiscoverFacet(
-                key=notation,
-                kind="feature",
-                count=n,
-                salience=n * a,
-                label=label,
-            )
+        facet = minted_feature_facet(
+            int(r["layer"]), int(r["feature_idx"]), n, n * a, minted
         )
+        if facet is None:
+            continue
+        out.append(facet)
+        seen.add(facet.key)
+        if len(out) >= 20:
+            break
+    for layer, feat in pins or []:
+        notation = f"{layer}:{feat}"
+        if notation in seen:
+            continue
+        facet = minted_feature_facet(layer, feat, 0, 0.0, minted)
+        if facet is not None:
+            out.append(facet)
     return out

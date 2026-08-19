@@ -13,6 +13,7 @@
   var timer = null;
   var tick = null;
   var lastEpisode = null;
+  var lastLabels = {};
 
   function esc(s) {
     return String(s || "")
@@ -51,7 +52,16 @@
     selectedEl.innerHTML = q
       .split(/\s+/)
       .map(function (tok) {
-        return '<button type="button" class="chip" data-tok="' + esc(tok) + '">' + esc(tok) + "</button>";
+        var shown = lastLabels[tok] || tok;
+        return (
+          '<button type="button" class="chip" data-tok="' +
+          esc(tok) +
+          '" title="' +
+          esc(tok) +
+          '">' +
+          esc(shown) +
+          "</button>"
+        );
       })
       .join("");
   }
@@ -122,6 +132,12 @@
     var buckets = (data && data.buckets) || [];
     var docs = (data && data.docs) || [];
     var facets = (data && data.facets) || [];
+    lastLabels = {};
+    facets.forEach(function (f) {
+      if (f.kind === "feature" && f.label) {
+        lastLabels["feature:" + f.key] = f.label;
+      }
+    });
     var maxS = 1;
     buckets.forEach(function (b) {
       var s = Number(b.salience || b.n || 0);
