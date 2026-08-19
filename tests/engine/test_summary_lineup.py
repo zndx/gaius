@@ -97,6 +97,24 @@ def test_corpus_seed_body_names_admission() -> None:
     assert "MaxSim" in body
 
 
+def test_inflow_body_includes_extracted_text() -> None:
+    from gaius.engine.services.summary_corpus import _inflow_body
+
+    body = _inflow_body(
+        cid="12",
+        title="Replay",
+        url="https://example.test",
+        source="temporal_blog",
+        origin="kb:current/content/x.md",
+        extracted="# Replay\n\nThe complete extracted article body.",
+        windows=[(1, "DATAENG", "Replay 26")],
+    )
+    assert "complete extracted article body" in body
+    assert "extracted_from" in body
+    assert "kb:current/content/x.md" in body
+    assert "[[corpus/item/1|Replay 26]]" in body
+
+
 def test_extract_links() -> None:
     assert extract_links("See [[current/a]] and [[b|label]].") == [
         "current/a",

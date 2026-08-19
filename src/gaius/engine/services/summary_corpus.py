@@ -255,9 +255,10 @@ def _inflow_body(
     *,
     cid: str,
     title: str,
-    summary: str,
     url: str,
     source: str,
+    origin: str,
+    extracted: str,
     windows: list[tuple[int, str, str]],
 ) -> str:
     display = title or f"Inbound {cid}"
@@ -266,17 +267,15 @@ def _inflow_body(
         "",
         "inbound-document",
         "",
-        f"**{display}** — an inbound document. Admitted windows below are "
-        "the corpus units (see [[lens/corpus|Corpus]]).",
+        f"**{display}** — the extracted inbound document. Admitted windows "
+        "are 512-token slices of this text (see [[lens/corpus|Corpus]]).",
         "",
     ]
-    if summary:
-        lines.append(f"> {_excerpt(summary, 600)}")
-        lines.append("")
     rows = [
         ("prefLabel", display),
         ("source", source),
         ("inflow", cid),
+        ("extracted_from", origin),
     ]
     if url:
         rows.append(("url", url))
@@ -290,6 +289,10 @@ def _inflow_body(
         )
     for iid, code, ex in windows:
         lines.append(f"- [[corpus/item/{iid}|{ex or code or iid}]] · `{code}`")
+    lines.append("")
+    lines.append("**Extracted text.** Complete source the item-text derives from.")
+    lines.append("")
+    lines.append(extracted.rstrip() or "_(empty)_")
     lines.append("")
     return "\n".join(lines)
 
@@ -486,6 +489,7 @@ async def _load_inflow(db_pool: Any, cid: str, week: str) -> LineupNote:
         row = await conn.fetchrow(
             """
             SELECT c.id::text AS cid, c.title, c.summary, c.url,
+                   COALESCE(c.kb_path, '') AS kb_path,
                    COALESCE(s.name, '') AS source
               FROM content_items c
               LEFT JOIN feed_sources s ON s.id = c.source_id
@@ -508,13 +512,23 @@ async def _load_inflow(db_pool: Any, cid: str, week: str) -> LineupNote:
         (int(w["id"]), str(w["aperture_code"] or ""), _excerpt(w["text"] or "", 72))
         for w in wins
     ]
+    from gaius.engine.services.agenda_notes import kb_root_from_env
+    from gaius.engine.services.clt_skos_admit import extracted_source_text
+
     title = str(row["title"] or "") or f"Inbound {cid}"
+    extracted, origin = extracted_source_text(
+        title=title,
+        summary=str(row["summary"] or ""),
+        kb_path=str(row["kb_path"] or ""),
+        kb_root=kb_root_from_env(),
+    )
     body = _inflow_body(
         cid=cid,
         title=title,
-        summary=str(row["summary"] or ""),
         url=str(row["url"] or ""),
         source=str(row["source"] or ""),
+        origin=origin,
+        extracted=extracted,
         windows=windows,
     )
     return LineupNote(

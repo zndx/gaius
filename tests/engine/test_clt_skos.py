@@ -25,6 +25,32 @@ def test_spans_fail_on_oob_position() -> None:
         spans_for_features(feats, [(0, 1)])
 
 
+def test_extracted_source_text_prefers_kb(tmp_path) -> None:
+    from gaius.engine.services.clt_skos_admit import extracted_source_text
+
+    kb = tmp_path / "kb"
+    rel = "current/content/example.md"
+    dest = kb / rel
+    dest.parent.mkdir(parents=True)
+    dest.write_text("# Full article\n\nThe complete extracted body.\n", encoding="utf-8")
+    text, origin = extracted_source_text(
+        title="Title only",
+        summary="Short blurb",
+        kb_path=rel,
+        kb_root=kb,
+    )
+    assert "complete extracted body" in text
+    assert origin == f"kb:{rel}"
+    stub, stub_origin = extracted_source_text(
+        title="Title only",
+        summary="Short blurb",
+        kb_path="",
+        kb_root=kb,
+    )
+    assert stub == "Title only\n\nShort blurb"
+    assert stub_origin == "title+summary"
+
+
 def test_admit_requires_maxsim_when_asked() -> None:
     ap = SdgAperture.load()
     with pytest.raises(RuntimeError, match="NOMAXSIM"):
