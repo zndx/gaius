@@ -39,7 +39,7 @@ from gaius.engine.services.weekly_signals_summary import (
 
 logger = logging.getLogger(__name__)
 
-SECTIONS = ("ontology", "heuristic")
+SECTIONS = ("corpus", "ontology", "heuristic")
 LENSES = ("articles", "projects", "thoughts")
 WIKI = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 TITLE_H = re.compile(r"^#\s+(.+)$", re.M)
@@ -51,7 +51,7 @@ GURU_NOKB = (
     "  Try: set GAIUS_KB_ROOT (default build/dev)"
 )
 GURU_BADSECTION = (
-    "Summary section must be ontology or heuristic.\n"
+    "Summary section must be corpus, ontology, or heuristic.\n"
     "  Guru: #WS.00000005.BADSECTION"
 )
 GURU_BADLENS = (
@@ -602,6 +602,10 @@ async def build_index(
     window = parse_iso_week(week)
     cap = max(1, min(int(limit or 48), 200))
 
+    if section == "corpus":
+        from gaius.engine.services.summary_corpus import build_corpus_index
+
+        return await build_corpus_index(db_pool, window.label, cap)
     if section:
         return _collection_index(root, section, window, cap)
     if lens:

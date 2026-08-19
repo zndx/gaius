@@ -5256,8 +5256,16 @@ class GaiusServicer(GaiusServiceServicer):
                     db_pool=db,
                 )
                 return SummaryGetResponse(note=self._summary_note(idx["seed"]))
+            from ...services.summary_corpus import load_corpus_note, parse_corpus_id
             from ...services.summary_lineup import load_db_thought, parse_thought_id
 
+            if parse_corpus_id(nid)[0]:
+                note = await load_corpus_note(
+                    _summary_db(self._services),
+                    nid,
+                    week=request.week or "",
+                )
+                return SummaryGetResponse(note=self._summary_note(note))
             if parse_thought_id(nid):
                 note = await load_db_thought(
                     _summary_db(self._services),
@@ -5297,6 +5305,18 @@ class GaiusServicer(GaiusServiceServicer):
         try:
             kb = kb_root_from_env()
             target = request.target or ""
+            from ...services.summary_corpus import load_corpus_note, parse_corpus_id
+
+            if parse_corpus_id(target)[0]:
+                note = await load_corpus_note(
+                    _summary_db(self._services),
+                    target,
+                    week=request.week or "",
+                )
+                return SummaryHopResponse(
+                    note=self._summary_note(note),
+                    resolved_id=note.id,
+                )
             if parse_thought_id(target):
                 note = await load_db_thought(
                     _summary_db(self._services),

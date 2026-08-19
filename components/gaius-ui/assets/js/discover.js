@@ -170,6 +170,9 @@
     paintTrends(buckets);
     rowsEl.innerHTML = docs
       .map(function (d) {
+        var open =
+          "/summary?section=corpus&open=" +
+          encodeURIComponent("corpus/inflow/" + (d.source_id || ""));
         return (
           "<tr>" +
           "<td class=\"mono\">" +
@@ -181,9 +184,11 @@
           "<td>" +
           esc(d.source) +
           "</td>" +
-          "<td><strong>" +
+          "<td><a class=\"discover-open\" href=\"" +
+          esc(open) +
+          "\"><strong>" +
           esc(d.title) +
-          "</strong><div class=\"muted\">" +
+          "</strong></a><div class=\"muted\">" +
           esc((d.body || "").slice(0, 180)) +
           "</div></td>" +
           "<td class=\"muted\">—</td>" +

@@ -170,6 +170,8 @@ a:hover {
   padding: 6px 8px; border-bottom: 1px solid var(--chrome-line);
 }
 .discover-table th { font-weight: 600; color: var(--chrome-dim); }
+.discover-open { color: inherit; text-decoration: none; }
+.discover-open:hover { text-decoration: underline; color: var(--color-kumo-brand); }
 @media (max-width: 800px) {
   .discover-body { flex-direction: column; }
   .discover-facets { width: 100%; flex: 1 1 auto; }
